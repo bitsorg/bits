@@ -430,6 +430,11 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # and all dependencies' names go into a package's hash.
     pkg_filename = ("defaults-" + defaults) if p == "defaults-release" else p.lower()
     filename = taps.get(pkg_filename, "%s/%s.sh" % (configDir, pkg_filename))
+    if not os.path.exists(filename):
+      if "/" in pkg_filename:
+        filename = taps.get(pkg_filename, "%s/%s" % (configDir, pkg_filename))
+      else:
+        filename = taps.get(pkg_filename, "%s/%s/latest" % (configDir, pkg_filename))
     err, spec, recipe = parseRecipe(getRecipeReader(filename, configDir))
     dieOnError(err, err)
     # Unless there was an error, both spec and recipe should be valid.
