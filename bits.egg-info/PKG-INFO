@@ -1,0 +1,55 @@
+Metadata-Version: 2.1
+Name: bits
+Version: 1.17.7.dev28+g7c8bf8b
+Summary: Build Tool
+Home-page: https://github.com/bitsorg/bits
+Author: Giulio Eulisse
+Author-email: Giulio Eulisse <giulio.eulisse@cern.ch>, Timo Wilken <timo.wilken@cern.ch>, Predrag Buncic <predrag.buncic@cern.ch>
+License: GPL
+Project-URL: homepage, https://github.com/bitsorg/bits
+Keywords: HEP,CERN
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: Software Development :: Build Tools
+Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)
+Classifier: Programming Language :: Python :: 3.6
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Description-Content-Type: text/x-rst
+License-File: LICENSE.md
+Requires-Dist: pyyaml
+Requires-Dist: requests
+Requires-Dist: distro
+Requires-Dist: jinja2
+Requires-Dist: boto3
+
+
+bits
+========
+
+Bits is a tool to build, install and package large software stacks. It originates from the aliBuild 
+tool, originally developed to simplify building and installing ALICE / ALFA software and attempts to
+ make it more general and usable for other communities that share similar problems and have overlapp
+ing dependencies.
+
+Instant gratification with::
+
+    pip install bits
+     or
+    git clone git@github.com:bitsorg/bits.git; cd bits; export PATH=$PWD:$PATH; cd ..
+    git clone git@github.com:bitsorg/general.bits.git
+    bits init -c general 
+    bits build ROOT
+    bits enter ROOT/latest
+    root -b
+
+Full documentation at:
+
+Pre-requisites
+==============
+
+If you are using bits directly from git clone, you should make sure
+you have `pyyaml` and `argparse` in your python distribution.

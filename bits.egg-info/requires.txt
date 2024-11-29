@@ -1,0 +1,5 @@
+pyyaml
+requests
+distro
+jinja2
+boto3

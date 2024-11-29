@@ -1,7 +1,8 @@
 import unittest
-from alibuild_helpers.utilities import parseRecipe, getRecipeReader, parseDefaults
-from alibuild_helpers.utilities import FileReader, GitReader
-from alibuild_helpers.utilities import validateDefaults
+import platform
+from bits_helpers.utilities import parseRecipe, getRecipeReader, parseDefaults
+from bits_helpers.utilities import FileReader, GitReader
+from bits_helpers.utilities import validateDefaults, SpecError
 from collections import OrderedDict
 
 TEST1="""package: foo

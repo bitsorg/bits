@@ -6,7 +6,7 @@ from textwrap import dedent
 from subprocess import TimeoutExpired
 from shlex import quote
 
-from alibuild_helpers.log import debug, warning, dieOnError
+from bits_helpers.log import debug, warning, dieOnError
 
 def decode_with_fallback(data):
   """Try to decode DATA as utf-8; if that doesn't work, fall back to latin-1.

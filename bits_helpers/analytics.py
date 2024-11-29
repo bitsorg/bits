@@ -5,25 +5,25 @@ import sys
 from os.path import exists, expanduser
 from os import unlink
 
-from alibuild_helpers.cmd import getstatusoutput
-from alibuild_helpers.log import debug, banner
+from bits_helpers.cmd import getstatusoutput
+from bits_helpers.log import debug, banner
 
 
 def generate_analytics_id():
-  os.makedirs(os.path.expanduser("~/.config/alibuild"), exist_ok=True)
-  err, output = getstatusoutput("uuidgen >  ~/.config/alibuild/analytics-uuid")
+  os.makedirs(os.path.expanduser("~/.config/bits"), exist_ok=True)
+  err, output = getstatusoutput("uuidgen >  ~/.config/bits/analytics-uuid")
   # If an error is found while generating the unique user ID, we disable
   # the analytics on the machine.
   if err:
     debug("Could not generate unique ID for user. Disabling analytics")
-    getstatusoutput("touch ~/.config/alibuild/disable-analytics")
+    getstatusoutput("touch ~/.config/bits/disable-analytics")
     return False
   return True
 
 def askForAnalytics():
-  banner("In order to improve user experience, aliBuild would like to gather "
+  banner("In order to improve user experience, Bits would like to gather "
          "analytics about your builds.\nYou can find all the details at:\n\n"
-         "  https://github.com/alisw/alibuild/blob/master/ANALYTICS.md\n")
+         "  https://github.com/bitsorg/bits/blob/master/ANALYTICS.md\n")
   a = input("Is that ok for you [YES/no]? ")
   if a.strip() and a.strip().lower().startswith("n"):
     debug("User requsted disabling analytics.")
@@ -56,24 +56,24 @@ def decideAnalytics(hasDisableFile, hasUuid, isTty, questionCallback):
   return questionCallback()
 
 def report(eventType, **metadata):
-  if "ALIBUILD_NO_ANALYTICS" in os.environ:
+  if "BITS_NO_ANALYTICS" in os.environ:
     return
   opts = {
     "v": "1",
-    "tid": os.environ["ALIBUILD_ANALYTICS_ID"],
-    "cid": os.environ["ALIBUILD_ANALYTICS_USER_UUID"],
+    "tid": os.environ["BITS_ANALYTICS_ID"],
+    "cid": os.environ["BITS_ANALYTICS_USER_UUID"],
     "aip": "1",
     "an": "aliBuild",
-    "av": os.environ["ALIBUILD_VERSION"],
+    "av": os.environ["BITS_VERSION"],
     "t": eventType
   }
   opts.update(metadata)
-  architecture = os.environ["ALIBUILD_ARCHITECTURE"]
+  architecture = os.environ["BITS_ARCHITECTURE"]
   ostype = "Macintosh" if architecture.startswith("osx") else "Linux"
   osversion, osprocessor = architecture.split("_", 1)
   args = ["curl", "--max-time", "5",
-          "--user-agent", "aliBuild/%s (%s; %s %s) Python/%s" % (
-                                                    os.environ["ALIBUILD_VERSION"],
+          "--user-agent", "bitsBuild/%s (%s; %s %s) Python/%s" % (
+                                                    os.environ["BITS_VERSION"],
                                                     ostype,
                                                     osprocessor,
                                                     osversion,
@@ -107,14 +107,14 @@ def report_exception(e):
     exf = "1")
 
 def enable_analytics() -> None:
-  if exists(expanduser("~/.config/alibuild/disable-analytics")):
-    unlink(expanduser("~/.config/alibuild/disable-analytics"))
-  if not exists(expanduser("~/.config/alibuild/analytics-uuid")):
+  if exists(expanduser("~/.config/bits/disable-analytics")):
+    unlink(expanduser("~/.config/bits/disable-analytics"))
+  if not exists(expanduser("~/.config/bits/analytics-uuid")):
     generate_analytics_id()
 
 # We do it in getstatusoutput because python makedirs can actually fail
 # if one of the intermediate directories is not writeable.
 def disable_analytics():
-  getstatusoutput("mkdir -p ~/.config/alibuild && touch ~/.config/alibuild/disable-analytics")
+  getstatusoutput("mkdir -p ~/.config/bits && touch ~/.config/bits/disable-analytics")
   return False
 

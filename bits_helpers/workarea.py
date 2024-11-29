@@ -6,8 +6,8 @@ import shutil
 import tempfile
 from collections import OrderedDict
 
-from alibuild_helpers.log import dieOnError, debug, error
-from alibuild_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash
+from bits_helpers.log import dieOnError, debug, error
+from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash
 
 FETCH_LOG_NAME = "fetch-log.txt"
 
