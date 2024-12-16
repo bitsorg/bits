@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-""" Package alibuild using setuptools
+""" Package bits using setuptools
 """
 
 # Always prefer setuptools over distutils
@@ -18,14 +18,14 @@ with open(os.path.join(here, 'README.rst'), encoding='utf-8') as f:
 install_requires = ['pyyaml', 'requests', 'distro', 'jinja2', 'boto3<1.36.0']
 
 setup(
-    name='alibuild',
+    name='bits',
 
-    description='ALICE Build Tool',
+    description='Software Build Tool',
     long_description=long_description,
     long_description_content_type='text/x-rst',
 
     # The project's main homepage.
-    url='https://alisw.github.io/alibuild',
+    url='https://github.com/bitsorg/bits',
 
     # Author details
     author='Giulio Eulisse',
@@ -68,8 +68,8 @@ setup(
     #   py_modules=["my_module"],
 
     # Single-source our package version using setuptools_scm. This makes it
-    # PEP440-compliant, and it always references the alibuild commit that
-    # aliBuild was built from.
+    # PEP440-compliant, and it always references the bits commit that
+    # bits was built from.
     use_scm_version={'write_to': 'bits_helpers/_version.py'},
     setup_requires=[
         # The 7.* series removed support for Python 3.6.
