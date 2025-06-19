@@ -18,10 +18,15 @@ from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 from bits_helpers.log import ProgressPrint, log_current_package
+from bits_helpers.tar import Tar
+from bits_helpers.git import Git
+from bits_helpers.sl import Sapling
+
 from glob import glob
 from textwrap import dedent
 from collections import OrderedDict
 from shlex import quote
+from pathlib import Path
 
 import concurrent.futures
 import importlib
@@ -54,13 +59,19 @@ def update_git_repos(args, specs, buildOrder):
     If any repository fails to be fetched, then it is retried, while allowing the
     user to input their credentials if required.
     """
-
     def update_repo(package, git_prompt):
-        specs[package]["scm"] = Git()
+        url = Path(specs[package]["source"])
+        if url.name.endswith(".tar.gz") or url.name.endswith(".tgz"):
+            specs[package]["scm"] = Tar("-zxf")
+        elif url.name.endswith(".bz2"):
+            specs[package]["scm"] = Tar("-jxf")
+        elif url.name.endswith(".sl"):
+            specs[package]["scm"] = Sapling()
+        else:
+            specs[package]["scm"] = Git()
+      
         if specs[package]["is_devel_pkg"]:
             specs[package]["source"] = os.path.join(os.getcwd(), specs[package]["package"])
-            if exists(os.path.join(specs[package]["source"], ".sl")):
-                specs[package]["scm"] = Sapling()
         updateReferenceRepoSpec(args.referenceSources, package, specs[package],
                                 fetch=args.fetchRepos, allowGitPrompt=git_prompt)
 

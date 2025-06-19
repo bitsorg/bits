@@ -15,6 +15,7 @@ from shlex import quote
 
 from bits_helpers.cmd import getoutput
 from bits_helpers.git import git
+from bits_helpers.tar import Tar
 
 from bits_helpers.log import error, warning, dieOnError
 
@@ -642,6 +643,15 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
       spec["force_rebuild"] = True
     specs[spec["package"]] = spec
     packages += spec["requires"]
+    archive =  os.environ["BITS_SRC_ARCHIVE"]
+    if archive and "source" in spec:
+       if spec["source"] == "tar.gz": 
+          spec["source"] =  archive + "/" + spec["package"] + "-" + str(spec["tag"]) + ".tar.gz"
+       elif spec["source"] == "tgz": 
+          spec["source"] =  archive + "/" + spec["package"] + "-" + str(spec["tag"]) + ".tgz"
+       elif spec["source"] == "tar.bz2":
+          spec["source"] =  archive + "/" + spec["package"] + "-" + str(spec["tag"]) + ".tar.bz2"
+ 
   return (systemPackages, ownPackages, failedRequirements, validDefaults)
 
 

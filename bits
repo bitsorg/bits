@@ -188,6 +188,7 @@ function configBits() {
 	export BITS_REPO_DIR=${repo_dir:-$BITS_REPO_DIR}
 	export BITS_WORK_DIR=${sw_dir:-$BITS_WORK_DIR}
 	export BITS_PKG_PREFIX=${pkg_prefix:-$BITS_PKG_PREFIX}
+	export BITS_SRC_ARCHIVE=${src_archive:-$BITS_SRC_ARCHIVE}
 
 	mkdir -p $BITS_WORK_DIR || echo "Cannot create directory: " BITS_WORK_DIR 
 }
