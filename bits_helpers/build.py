@@ -11,7 +11,7 @@ from bits_helpers.utilities import parseDefaults, readDefaults
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
 from bits_helpers.utilities import Hasher
-from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash
+from bits_helpers.utilities import resolve_tag, resolve_version, resolve_source, short_commit_hash
 from bits_helpers.git import Git, git
 from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
@@ -60,11 +60,12 @@ def update_git_repos(args, specs, buildOrder):
     user to input their credentials if required.
     """
     def update_repo(package, git_prompt):
+        (specs[package]["source"],specs[package]["tag"]) = resolve_source(specs[package])
         url = Path(specs[package]["source"])
         if url.name.endswith(".tar.gz") or url.name.endswith(".tgz"):
-            specs[package]["scm"] = Tar("-zxf")
+            specs[package]["scm"] = Tar("-zxf",specs[package]["tag"])
         elif url.name.endswith(".bz2"):
-            specs[package]["scm"] = Tar("-jxf")
+            specs[package]["scm"] = Tar("-jxf",specs[package]["tag"])
         elif url.name.endswith(".sl"):
             specs[package]["scm"] = Sapling()
         else:
@@ -72,15 +73,15 @@ def update_git_repos(args, specs, buildOrder):
       
         if specs[package]["is_devel_pkg"]:
             specs[package]["source"] = os.path.join(os.getcwd(), specs[package]["package"])
+ 
         updateReferenceRepoSpec(args.referenceSources, package, specs[package],
                                 fetch=args.fetchRepos, allowGitPrompt=git_prompt)
-
         # Retrieve git heads
         output = logged_scm(specs[package]["scm"], package, args.referenceSources,
                             specs[package]["scm"].listRefsCmd(specs[package].get("reference", specs[package]["source"])),
                             ".", prompt=git_prompt, logOutput=False)
         specs[package]["scm_refs"] = specs[package]["scm"].parseRefs(output)
-
+ 
     progress = ProgressPrint("Updating repositories")
     requires_auth = set()
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:

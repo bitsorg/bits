@@ -91,12 +91,14 @@ def updateReferenceRepo(referenceSources, p, spec,
   @fetch            : whether to fetch updates: if False, only clone if not found
   """
   assert isinstance(spec, OrderedDict)
+
   if spec["is_devel_pkg"] or "source" not in spec:
     return None
-
+ 
   scm = spec["scm"]
 
-  debug("Updating references.")
+  debug("Updating references: %s",spec["source"] )
+  
   referenceRepo = os.path.join(os.path.abspath(referenceSources), p.lower())
 
   call_ignoring_oserrors(os.makedirs, os.path.abspath(referenceSources), exist_ok=True)

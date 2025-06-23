@@ -144,6 +144,19 @@ def resolve_tag(spec):
   """
   return spec["tag"] % nowKwds
 
+def resolve_source(spec):
+  """Expand the url, replacing the following keywords:
+  - %(archive)s
+  - %(version)s
+  - %(package)s
+  """
+  # tag = ''.join(c for c in spec["tag"] if (c.isdigit() or c =='.'
+
+  srcKwds = { "archive": os.environ["BITS_SRC_ARCHIVE"],
+              "version": str(spec["version"]),
+              "package": spec["package"]}
+  return (spec["source"] % srcKwds, spec["tag"] % srcKwds)
+
 
 def normalise_multiple_options(option, sep=","):
   return [x for x in ",".join(option).split(sep) if x]
