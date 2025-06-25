@@ -177,5 +177,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build):
     shutil.rmtree(source_dir, ignore_errors=True)
     scm_exec(scm.cloneSourceCmd(spec["source"], source_dir, spec.get("reference"),
                                 usePartialClone=True))
-    scm_exec(scm.setWriteUrlCmd(spec.get("write_repo", spec["source"])), source_dir)
+    if scm.name == "Git":    
+      scm_exec(scm.setWriteUrlCmd(spec.get("write_repo", spec["source"])), source_dir)
+
     scm_exec(scm.checkoutCmd(spec["tag"]), source_dir)
