@@ -91,8 +91,9 @@ class DoctorTestCase(unittest.TestCase):
                      architecture="osx_x86-64",
                      disable=[],
                      defaults="release",
-                     environment=[])
-                     xdefaults=None)
+                     environment=[],
+                     xdefaults=None,
+                     )
 
     # What to call (longer names deprecated in Python 3.5+)
     if not hasattr(self, "assertRegex"):

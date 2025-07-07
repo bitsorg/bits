@@ -49,7 +49,7 @@ class InitTestCase(unittest.TestCase):
         fetchRepos = False,
         architecture = "slc7_x86-64",
         environment = {},
-        xdefaults = None
+        xdefaults = None,
       )
       self.assertRaises(SystemExit, doInit, args)
       self.assertEqual(mock_info.mock_calls, [call('This will initialise local checkouts for %s\n--dry-run / -n specified. Doing nothing.', 'zlib,AliRoot')])
@@ -90,7 +90,7 @@ class InitTestCase(unittest.TestCase):
         fetchRepos = False,
         architecture = "slc7_x86-64",
         environment = {},
-        xdefaults = None
+        xdefaults = None,
       )
       doInit(args)
       self.assertEqual(mock_git.mock_calls, CLONE_EVERYTHING)
