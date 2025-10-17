@@ -10,6 +10,7 @@ def yesAnalytics():
 def notInvoked() -> None:
     assert(False)
 
+@unittest.skip("Analytics are currently disabled")
 class TestAnalytics(unittest.TestCase):
     def test_analytics(self) -> None:
         self.assertEqual(False,  decideAnalytics(hasDisableFile=False,

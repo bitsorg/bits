@@ -1,6 +1,8 @@
 from textwrap import dedent
+import os
 import unittest
 from unittest import mock
+from unittest.mock import patch
 import tempfile
 
 from bits_helpers.cmd import getstatusoutput
@@ -79,7 +81,7 @@ RECIPES = {
 }
 
 class MockReader:
-    def __init__(self, url, dist=None):
+    def __init__(self, url, dist=None, genPackages=None):
         self._contents = RECIPES[url]
         self.url = "mock://" + url
 

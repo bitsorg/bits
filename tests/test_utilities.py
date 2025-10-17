@@ -5,7 +5,7 @@ import unittest
 # Assuming you are using the mock library to ... mock things
 from unittest.mock import patch
 
-from bits_helpers.utilities import doDetectArch, filterByArchitectureDefaults, disabledByArchitectureDefaults, getPkgDirs
+from bits_helpers.utilities import doDetectArch, filterByArchitectureDefaults, disabledByArchitectureDefaults
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import asList
 from bits_helpers.utilities import prunePaths
@@ -13,6 +13,7 @@ from bits_helpers.utilities import resolve_version
 from bits_helpers.utilities import topological_sort
 from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
 import bits_helpers
+import bits_helpers.log
 import os
 import string
 
@@ -282,7 +283,7 @@ class TestTopologicalSort(unittest.TestCase):
             "C": {"package": "C", "requires": ["D"]},
             "D": {"package": "D", "requires": ["A"]}
         }
-        with patch.object(alibuild_helpers.log, 'error') as mock_error:
+        with patch.object(bits_helpers.log, 'error') as mock_error:
           with self.assertRaises(SystemExit) as cm:
             list(topological_sort(specs))
           self.assertEqual(cm.exception.code, 1)
