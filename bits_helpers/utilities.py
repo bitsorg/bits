@@ -144,8 +144,7 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
 
   with the calculated content.
   """
-  defaults = defaults[0] if defaults else ""
-  defaults_upper = defaults != "release" and "_" + defaults.upper().replace("-", "_") or ""
+  defaults_upper = "" if defaults == ['release'] else "_".join(d.upper() for d in defaults)
   commit_hash = spec.get("commit_hash", "hash_unknown")
   tag = str(spec.get("tag", "tag_unknown"))
   package = spec.get("package")
