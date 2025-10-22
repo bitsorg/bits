@@ -144,6 +144,7 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
 
   with the calculated content.
   """
+  defaults = defaults[0] if defaults else ""
   defaults_upper = defaults != "release" and "_" + defaults.upper().replace("-", "_") or ""
   commit_hash = spec.get("commit_hash", "hash_unknown")
   tag = str(spec.get("tag", "tag_unknown"))
@@ -328,28 +329,31 @@ def disabledByArchitectureDefaults(arch, defaults, requires):
     elif not re.match(matcher, arch):
       yield require
 
-def readDefaults(configDir, defaults, error, architecture, xdefaults):
+def deep_merge_dicts(dict1, dict2):
+    result = dict1.copy()
+    for key, value in dict2.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge_dicts(result[key], value)
+        else:
+            result[key] = value
+    return result
 
-  defaultsFilename = resolveDefaultsFilename(defaults,configDir)
-  err, defaultsMeta, defaultsBody = parseRecipe(getRecipeReader(defaultsFilename))
-  if err:
-    error(err)
-    sys.exit(1)
+def readDefaults(configDir, defaults, error, architecture):
+  defaultsMeta = {}
+  defaultsBody = ""
 
-  if xdefaults is not None:
+  for xdefaults in defaults:
     xDefaults = resolveDefaultsFilename(xdefaults,configDir)
     xMeta = {}
-    xBody = ""
     if exists(xDefaults):
       err, xMeta, xBody = parseRecipe(getRecipeReader(xDefaults))
+      defaultsMeta = deep_merge_dicts(defaultsMeta, xMeta)
+      if xBody.strip() != "":
+        defaultsBody += "\n" + xBody.strip()
       if err:
         error(err)
         sys.exit(1)
-      for x in ["prefer_system","prefer_system_check","env","requires","overrides"]:
-        val = xMeta.get(x)
-        if val is not None:
-          defaultsMeta[x] = val
-         
+
   archDefaults = "%s/defaults-%s.sh" % (configDir, architecture)
   archMeta = {}
   archBody = ""
@@ -538,10 +542,18 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   packages = packages[:]
   generatedPackages = getGeneratedPackages(configDir)
   validDefaults = []  # empty list: all OK; None: no valid default; non-empty list: list of valid ones
-
   while packages:
     p = packages.pop(0)
-    if p in specs or (p == "defaults-release" and ("defaults-" + defaults) in specs):
+    if p in specs:
+      continue
+    skip = False
+    for d in defaults:
+      if p == "defaults-release" and ("defaults-" + d) in specs:
+        skip = True
+        break
+      else:
+        pkg_filename = ("defaults-" + d) if p == "defaults-release" else p.lower()
+    if skip:
       continue
 
     # We rewrite all defaults to "defaults-release", so load the correct
@@ -551,8 +563,6 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # they will end up with the same hash. The defaults must be called
     # "defaults-release" for this to work, since the defaults are a dependency
     # and all dependencies' names go into a package's hash.
-    pkg_filename = ("defaults-" + defaults) if p == "defaults-release" else p.lower()
-
     filename,pkgdir = resolveFilename(taps, pkg_filename, configDir, generatedPackages)
 
     dieOnError(not filename, "Package %s not found in %s" % (p, configDir))

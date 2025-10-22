@@ -490,7 +490,7 @@ def doBuild(args, parser):
   if branch_stream == branch_basename:
     branch_stream = ""
 
-  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture, args.xdefaults)
+  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
   (err, overrides, taps) = parseDefaults(args.disable,
                                         defaultsReader, debug)
   dieOnError(err, err)
@@ -1161,6 +1161,7 @@ def doBuild(args, parser):
                       if "reference" in spec else ""),
       )
     else:
+      buildEnvironment = {key: str(val) for key, val in buildEnvironment}
       os.environ.update(buildEnvironment)
       build_command = "%s -e -x %s/build.sh 2>&1" % (BASH, quote(scriptDir))
 

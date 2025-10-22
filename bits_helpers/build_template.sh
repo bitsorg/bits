@@ -315,7 +315,10 @@ ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
 
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
-  ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
+  for DEFAULT in $BUILD_FAMILY; do
+    echo $DEFAULT
+    ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest-$DEFAULT
+  done
 fi
 
 # When the package is definitely fully installed, install the file that marks
