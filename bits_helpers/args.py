@@ -410,10 +410,7 @@ def finaliseArgs(args, parser):
   if args.action in ["version", "architecture"]:
     return args
 
-  if "::" in args.defaults:
-    args.defaults = args.defaults.split("::")
-  else:
-    args.defaults = [args.defaults]
+  args.defaults = args.defaults.split("::")
 
   # --architecture can be specified in both clean and build.
   if args.action in ["build", "clean"] and not args.architecture:
