@@ -1,4 +1,4 @@
-"""A text templating plugin for aliBuild.
+"""A text templating plugin for Bits.
 
 This plugin allows reusing specs like those that would be used during the
 build, for instance to get the "real" version numbers for various packages.

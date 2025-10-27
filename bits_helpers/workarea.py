@@ -7,6 +7,7 @@ import tempfile
 from collections import OrderedDict
 
 from bits_helpers.log import dieOnError, debug, error
+from bits_helpers.download import download
 from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash
 
 FETCH_LOG_NAME = "fetch-log.txt"
@@ -150,7 +151,14 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build):
   if spec["commit_hash"] != spec["tag"]:
     symlink(spec["commit_hash"], os.path.join(source_parent_dir, spec["tag"].replace("/", "_")))
 
-  if "source" not in spec:
+  if "patches" in spec:
+    os.makedirs(source_dir, exist_ok=True)
+    for patch in spec["patches"]:
+      shutil.copyfile(os.path.join(spec["pkgdir"], 'patches', patch),os.path.join(source_dir, patch))
+  if "sources" in spec:
+    for s in spec["sources"]:
+      download(s,source_dir, work_dir)
+  elif "source" not in spec:
     # There are no sources, so just create an empty SOURCEDIR.
     os.makedirs(source_dir, exist_ok=True)
   elif spec["is_devel_pkg"]:

@@ -37,9 +37,9 @@ def getoutput(command, timeout=None):
   return decode_with_fallback(stdout)
 
 
-def getstatusoutput(command, timeout=None):
+def getstatusoutput(command, timeout=None, cwd=None):
   """Run command and return its return code and output (stdout and stderr)."""
-  proc = Popen(command, shell=isinstance(command, str), stdout=PIPE, stderr=STDOUT)
+  proc = Popen(command, shell=isinstance(command, str), stdout=PIPE, stderr=STDOUT, cwd=cwd)
   try:
     merged_output, _ = proc.communicate(timeout=timeout)
   except TimeoutExpired:
@@ -91,11 +91,12 @@ class DockerRunner:
       cmd += [self._docker_image, "sleep", "inf"]
       self._container = getoutput(cmd).strip()
 
-    def getstatusoutput_docker(cmd):
+    def getstatusoutput_docker(cmd, cwd=None):
       if self._container is None:
-        return getstatusoutput("{} -c {}".format(BASH, quote(cmd)))
+        return getstatusoutput("{} -c {}".format(BASH, quote(cmd)), cwd=cwd)
       return getstatusoutput("docker container exec {} bash -c {}"
-                             .format(quote(self._container), quote(cmd)))
+                             .format(quote(self._container), quote(cmd)),
+                             cwd=cwd)
 
     return getstatusoutput_docker
 
@@ -117,7 +118,7 @@ def install_wrapper_script(name, work_dir):
     if exc.errno != 17:
       raise
   # Create a wrapper script that cleans up the environment, so we don't see the
-  # OpenSSL built by aliBuild.
+  # OpenSSL built by Bits
   with open(os.path.join(script_dir, name), "w") as scriptf:
     # Compute the "real" executable path each time, as the wrapper script might
     # be called on the host or in a container.

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import print_function
 import os
 import sys
 import atexit
@@ -58,7 +57,7 @@ def doMain(args, parser):
       exit(1)
 
   if args.action == "version" or args.action is None:
-    print("aliBuild version: {version} ({arch})".format(
+    print("bits version: {version} ({arch})".format(
       version=__version__ or "unknown", arch=args.architecture or "unknown"))
     sys.exit(0)
 

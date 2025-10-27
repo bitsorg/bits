@@ -11,7 +11,7 @@ from bits_helpers.utilities import parseDefaults, readDefaults
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
 from bits_helpers.utilities import Hasher
-from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash
+from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash, resolve_spec_data
 from bits_helpers.git import Git, git
 from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
@@ -22,6 +22,7 @@ from glob import glob
 from textwrap import dedent
 from collections import OrderedDict
 from shlex import quote
+import tempfile
 
 import concurrent.futures
 import importlib
@@ -218,6 +219,15 @@ def storeHashes(package, specs, considerRelocation):
       hasher(spec.get("source", "none"))
       if "source" in spec:
         hasher(tag)
+  if "sources" in spec:
+    for src in spec["sources"]:
+      h_all(src)
+  if "patches" in spec:
+    for patch in spec["patches"]:
+      h_all(patch)
+      with open(os.path.join(spec["pkgdir"], "patches", patch)) as ref:
+        patch_content = "".join(ref.readlines())
+        h_all(patch_content)
 
   dh = Hasher()
   for dep in spec.get("requires", []):
@@ -386,7 +396,7 @@ def generate_initdotsh(package, specs, architecture, post_build=False):
     # Set "env" variables.
     # We only put the values in double-quotes, so that they can refer to other
     # shell variables or do command substitution (e.g. $(brew --prefix ...)).
-    lines.extend('export {}="{}"'.format(key, value)
+    lines.extend('export {}="{}"'.format(key, resolve_spec_data(spec, value, ""))
                  for key, value in spec.get("env", {}).items()
                  if key != "DYLD_LIBRARY_PATH")
 
@@ -398,19 +408,20 @@ def generate_initdotsh(package, specs, architecture, post_build=False):
                  if key != "DYLD_LIBRARY_PATH")
 
     # First convert all values to list, so that we can use .setdefault().insert() below.
-    prepend_path = {key: asList(value)
+    prepend_path = {key: [resolve_spec_data(spec, dir, "") for dir in asList(value)]
                     for key, value in spec.get("prepend_path", {}).items()}
     # By default we add the .../bin directory to PATH and .../lib to LD_LIBRARY_PATH.
     # Prepend to these paths, so that our packages win against system ones.
-    for key, value in (("PATH", "bin"), ("LD_LIBRARY_PATH", "lib")):
+    for key, value in (("PATH", "bin"), ("LD_LIBRARY_PATH", "lib"),  ("LD_LIBRARY_PATH", "lib64")):
       prepend_path.setdefault(key, []).insert(0, "${}_ROOT/{}".format(bigpackage, value))
-    lines.extend('export {key}="{value}${{{key}+:${key}}}"'
-                 .format(key=key, value=":".join(value))
+    lines.extend('[ ! -d "{value}" ] || export {key}="{value}${{{key}+:${key}}}"'
+                 .format(key=key, value=dir)
                  for key, value in prepend_path.items()
-                 if key != "DYLD_LIBRARY_PATH")
+                 if key != "DYLD_LIBRARY_PATH"
+                 for dir in value)
 
   # Return string without a trailing newline, since we expect call sites to
-  # append that (and the obvious way to inesrt it into the build tempate is by
+  # append that (and the obvious way to inesrt it into the build template is by
   # putting the "%(initdotsh_*)s" on its own line, which has the same effect).
   return "\n".join(lines)
 
@@ -467,9 +478,9 @@ def doBuild(args, parser):
   buildTargetsDone = []
 
   dieOnError(not exists(args.configDir),
-             'Cannot find recipes under directory "%s".\n'
-             'Maybe you need to "cd" to the right directory or '
-             'you forgot to run "bits init"?' % args.configDir)
+            'Cannot find recipes under directory "%s".\n'
+            'Maybe you need to "cd" to the right directory or '
+            'you forgot to run "bits init"?' % args.configDir)
 
   _, value = git(("symbolic-ref", "-q", "HEAD"), directory=args.configDir, check=False)
   branch_basename = re.sub("refs/heads/", "", value)
@@ -479,17 +490,17 @@ def doBuild(args, parser):
   if branch_stream == branch_basename:
     branch_stream = ""
 
-  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture, args.xdefaults)
   (err, overrides, taps) = parseDefaults(args.disable,
-                                         defaultsReader, debug)
+                                        defaultsReader, debug)
   dieOnError(err, err)
 
   makedirs(join(workDir, "SPECS"), exist_ok=True)
 
-  # If the alidist workdir contains a .sl directory, we use Sapling as SCM.
+  # If the bits workdir contains a .sl directory, we use Sapling as SCM.
   # Otherwise, we default to git (without checking for the actual presence of
   # .git). We mustn't check for a .git directory, because some tests use a
-  # subdirectory of the bits source tree as the "alidist" checkout, and
+  # subdirectory of the bits source tree as the "*.bits" checkout, and
   # that won't have a .git directory.
   scm = exists("%s/.sl" % args.configDir) and Sapling() or Git()
   try:
@@ -506,6 +517,10 @@ def doBuild(args, parser):
   install_wrapper_script("git", workDir)
 
   with DockerRunner(args.dockerImage, args.docker_extra_args) as getstatusoutput_docker:
+    def performPreferCheckWithTempDir(pkg, cmd):
+      with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
+        return getstatusoutput_docker(cmd, cwd=temp_dir)
+
     systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = packages,
                      specs                   = specs,
@@ -516,8 +531,8 @@ def doBuild(args, parser):
                      disable                 = args.disable,
                      force_rebuild           = args.force_rebuild,
                      defaults                = args.defaults,
-                     performPreferCheck      = lambda pkg, cmd: getstatusoutput_docker(cmd),
-                     performRequirementCheck = lambda pkg, cmd: getstatusoutput_docker(cmd),
+                     performPreferCheck      = performPreferCheckWithTempDir,
+                     performRequirementCheck = performPreferCheckWithTempDir,
                      performValidateDefaults = lambda spec: validateDefaults(spec, args.defaults),
                      overrides               = overrides,
                      taps                    = taps,
@@ -612,7 +627,7 @@ def doBuild(args, parser):
     spec["commit_hash"] = "0"
     develPackageBranch = ""
     # This is a development package (i.e. a local directory named like
-    # spec["package"]), but there is no "source" key in its alidist recipe,
+    # spec["package"]), but there is no "source" key in its bits recipe,
     # so there shouldn't be any code for it! Presumably, a user has
     # mistakenly named a local directory after one of our packages.
     dieOnError("source" not in spec and spec["is_devel_pkg"],
@@ -621,8 +636,11 @@ def doBuild(args, parser):
                "mistake, please rename the {package} directory or use the "
                "'--no-local {package}' option. If bits should pick up "
                "source code from this directory, add a 'source:' key to "
-               "alidist/{recipe}.sh instead."
+               "{recipe}.sh instead."
                .format(package=p, recipe=p.lower()))
+
+    if "tag" not in spec:
+      spec["tag"] = spec["version"]
     if "source" in spec:
       # Tag may contain date params like %(year)s, %(month)s, %(day)s, %(hour).
       spec["tag"] = resolve_tag(spec)
@@ -649,9 +667,43 @@ def doBuild(args, parser):
         spec["tag"] = args.develPrefix if "develPrefix" in args else develPackageBranch
         spec["commit_hash"] = "0"
 
+    if "sources" in spec:
+      spec["commit_hash"] = spec["tag"]
     # Version may contain date params like tag, plus %(commit_hash)s,
     # %(short_hash)s and %(tag)s.
     spec["version"] = resolve_version(spec, args.defaults, branch_basename, branch_stream)
+
+    spec.setdefault("variables", OrderedDict(spec.get("variables", {})))
+    variables = spec["variables"]
+    if "Python" in spec.get("requires", []):
+        # Find the Python package spec safely
+        python_version_str = ""
+        py_spec = specs.get("Python")
+        if isinstance(py_spec, dict):
+            python_version_str = (py_spec.get("version", "") or "").replace("v", "")
+        python_version = python_version_str.split(".") if python_version_str else []
+
+        # Safely extract major, minor, patch versions
+        major = python_version[0] if len(python_version) > 0 else "0"
+        minor = python_version[1] if len(python_version) > 1 else "0"
+        patch = python_version[2] if len(python_version) > 2 else "0"
+
+        # Populate variables dictionary
+        variables.update({
+            "python_major_version": major,
+            "python_minor_version": minor,
+            "python_patch_version": patch,
+            "python_major_minor": f"{major}.{minor}",
+            "python_major_minor_str": f"{major}{minor}",
+        })
+    for k, v in variables.items():
+      variables[k] = resolve_spec_data(spec, v, args.defaults, branch_basename, branch_stream)
+    if "source" in spec:
+      spec["source"] = resolve_spec_data(spec, spec["source"], args.defaults, branch_basename, branch_stream)
+    if "sources" in spec:
+      spec["sources"] = [resolve_spec_data(spec, src, args.defaults, branch_basename, branch_stream) for src in spec["sources"]]
+    if variables or spec.get("expand_recipe", False):
+      spec["recipe"] = resolve_spec_data(spec, spec["recipe"], args.defaults, branch_basename, branch_stream)
 
     if spec["is_devel_pkg"] and "develPrefix" in args and args.develPrefix != "ali-master":
       spec["version"] = args.develPrefix
@@ -1074,7 +1126,20 @@ def doBuild(args, parser):
       ("FULL_RUNTIME_REQUIRES", " ".join(spec["full_runtime_requires"])),
       ("FULL_BUILD_REQUIRES", " ".join(spec["full_build_requires"])),
       ("FULL_REQUIRES", " ".join(spec["full_requires"])),
+      ("BITS_PREFER_SYSTEM_KEY", spec.get("key", "")),
     ]
+    if "sources" in spec:
+      for idx, src in enumerate(spec["sources"]):
+        buildEnvironment.append(("SOURCE%s" % idx, basename(src)))
+      buildEnvironment.append(("SOURCE_COUNT", str(len(spec["sources"]))))
+    else:
+      buildEnvironment.append(("SOURCE_COUNT", "0"))
+    if "patches" in spec:
+      for idx, src in enumerate(spec["patches"]):
+        buildEnvironment.append(("PATCH%s" % idx, basename(src)))
+      buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
+    else:
+      buildEnvironment.append(("PATCH_COUNT", "0"))
     # Add the extra environment as passed from the command line.
     buildEnvironment += [e.partition('=')[::2] for e in args.environment]
 
@@ -1221,7 +1286,7 @@ def doBuild(args, parser):
         buildErrMsg += dedent(f"""
         Build info:
         OS: {detected_arch}
-        Using bits from bits@{__version__ or "unknown"} recipes in dist@{os.environ["BITS_DIST_HASH"][:10]}
+        Using BITS from bits@{__version__ or "unknown"} recipes in bits@{os.environ["BITS_DIST_HASH"][:10]}
         Build arguments: {args_str}
         """)
 
@@ -1229,7 +1294,7 @@ def doBuild(args, parser):
           buildErrMsg += f'XCode version: {getstatusoutput("xcodebuild -version")[1]}'
 
       except Exception as exc:
-        warning("Failed to gather build info", exc_info=exc)
+        warning("Failed to gather build info: %s", exc)
 
 
       dieOnError(err, buildErrMsg.strip())
@@ -1251,7 +1316,7 @@ def doBuild(args, parser):
              "Your software installation is at:"
              "\n\n  %s\n\n"
              "You can use this package by loading the environment:"
-             "\n\n  alienv enter %s/latest-%s",
+             "\n\n  bits enter %s/latest-%s",
              mainPackage, socket.gethostname(),
              abspath(join(args.workDir, args.architecture)),
              mainPackage, mainBuildFamily)
@@ -1269,3 +1334,4 @@ def doBuild(args, parser):
     banner("Untracked files in the following directories resulted in a rebuild of "
            "the associated package and its dependencies:\n%s\n\nPlease commit or remove them to avoid useless rebuilds.", "\n".join(untrackedFilesDirectories))
   debug("Everything done")
+

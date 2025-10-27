@@ -252,7 +252,7 @@ class RsyncRemoteSync:
     err = execute("""\
     for storePath in {storePaths}; do
       # Only get the first matching tarball. If there are multiple with the
-      # same hash, we only need one and they should be interchangable.
+      # same hash, we only need one and they should be interchangeable.
       if tars=$(rsync -s --list-only "{remoteStore}/$storePath/{pkg}-{ver}-*.{arch}.tar.gz" 2>/dev/null) &&
          # Strip away the metadata in rsync's file listing, leaving only the first filename.
          tar=$(echo "$tars" | sed -rn '1s#[- a-z0-9,/]* [0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}} ##p') &&
@@ -341,7 +341,7 @@ class CVMFSRemoteSync:
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
 
     cvmfs_architecture = re.sub(r"slc(\d+)_x86-64", r"el\1-x86_64", self.architecture)
-    err = execute("""\
+    err = execute(r"""\
     set -x
     # Exit without error in case we do not have any package published
     test -d "{remote_store}/{cvmfs_architecture}/Packages/{package}" || exit 0
@@ -357,7 +357,8 @@ class CVMFSRemoteSync:
       # Create the dummy tarball, if it does not exists
       test -f "{workDir}/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball" && continue
       mkdir -p "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}"
-      ln -sf "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version" "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}"
+      find "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version" ! -name etc -maxdepth 1 -mindepth 1 -exec ln -sf {} "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/" \;
+      cp -fr "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version/etc" "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/etc"
       mkdir -p "{workDir}/TARS/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash"
       tar -C "{workDir}/INSTALLROOT/$pkg_hash" -czf "{workDir}/TARS/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball" .
       rm -rf "{workDir}/INSTALLROOT/$pkg_hash"
@@ -370,6 +371,7 @@ class CVMFSRemoteSync:
       remote_store=self.remoteStore,
       links_path=links_path,
     ))
+    print(f"fetch_symlink: maybe something wrong? {err}")
 
   def upload_symlinks_and_tarball(self, spec) -> None:
     dieOnError(True, "CVMFS backend does not support uploading directly")

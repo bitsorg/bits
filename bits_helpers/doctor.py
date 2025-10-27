@@ -8,6 +8,7 @@ from bits_helpers.log import debug, error, banner, info, success, warning
 from bits_helpers.log import logger
 from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults
 from bits_helpers.cmd import getstatusoutput, DockerRunner
+import tempfile
 
 def prunePaths(workDir) -> None:
   for x in ["PATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"]:
@@ -127,7 +128,7 @@ def doDoctor(args, parser):
   systemInfo()
 
   specs = {}
-  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture, args.xdefaults)
   (err, overrides, taps) = parseDefaults(args.disable, defaultsReader, info)
   if err:
     error("%s", err)
@@ -140,6 +141,9 @@ def doDoctor(args, parser):
     return (ok,msg,valid)
 
   with DockerRunner(args.dockerImage, args.docker_extra_args) as getstatusoutput_docker:
+    def performPreferCheckWithTempDir(pkg, cmd):
+      with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
+        return getstatusoutput_docker(cmd, cwd=temp_dir)
     fromSystem, own, failed, validDefaults = \
       getPackageList(packages                = packages,
                      specs                   = specs,
@@ -149,8 +153,8 @@ def doDoctor(args, parser):
                      architecture            = args.architecture,
                      disable                 = args.disable,
                      defaults                = args.defaults,
-                     performPreferCheck      = lambda pkg, cmd: checkPreferSystem(pkg, cmd, homebrew_replacement, getstatusoutput_docker),
-                     performRequirementCheck = lambda pkg, cmd: checkRequirements(pkg, cmd, homebrew_replacement, getstatusoutput_docker),
+                     performPreferCheck      = performPreferCheckWithTempDir,
+                     performRequirementCheck = performPreferCheckWithTempDir,
                      performValidateDefaults = performValidateDefaults,
                      overrides               = overrides,
                      taps                    = taps,

@@ -141,7 +141,8 @@ function existModules() {
 }
 
 function stripDyld() {
-  echo unset $( (typeset | grep ^DYLD | cut -d= -f1 | grep '_modshare$' | xargs echo ) 2> /dev/null; echo ';' )
+  TO_STRIP=$( (typeset | grep ^DYLD | cut -d= -f1 | grep '_modshare$' | xargs echo ) 2> /dev/null )
+  [ ! "X$TO_STRIP" = X ] && echo unset $TO_STRIP && echo ';'
 }
 
 function readBitsRc() {
@@ -168,7 +169,7 @@ function configBits() {
     
     cfile=""
 
-    for cfg in  $1 .bitsrc $HOME/.bitsrc 
+    for cfg in  $1 bits.rc .bitsrc $HOME/.bitsrc 
     do
 	  if [ "x$cfg" !=  "x" -a -f $cfg ]
 	  then

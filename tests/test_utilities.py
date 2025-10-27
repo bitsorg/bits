@@ -11,6 +11,9 @@ from bits_helpers.utilities import asList
 from bits_helpers.utilities import prunePaths
 from bits_helpers.utilities import resolve_version
 from bits_helpers.utilities import topological_sort
+from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
+import bits_helpers
+import bits_helpers.log
 import os
 import string
 
@@ -272,6 +275,39 @@ class TestTopologicalSort(unittest.TestCase):
         self.assertEqual(frozenset(specs.keys()),
                          frozenset(topological_sort(specs)))
 
+    def test_cycle(self) -> None:
+        """Test that dependency cycles are detected and reported."""
+        specs = {
+            "A": {"package": "A", "requires": ["B"]},
+            "B": {"package": "B", "requires": ["C"]},
+            "C": {"package": "C", "requires": ["D"]},
+            "D": {"package": "D", "requires": ["A"]}
+        }
+        with patch.object(bits_helpers.log, 'error') as mock_error:
+          with self.assertRaises(SystemExit) as cm:
+            list(topological_sort(specs))
+          self.assertEqual(cm.exception.code, 1)
+          mock_error.assert_called_once_with("%s", "Dependency cycle detected: A -> B -> C -> D -> A")
+
+    def test_empty_set(self) -> None:
+        """Test that an empty set of packages is handled correctly."""
+        self.assertEqual([], list(topological_sort({})))
+        
+    def test_single_package(self) -> None:
+        """Test that a single package with no dependencies is handled correctly."""
+        self.assertEqual(["A"], list(topological_sort({
+            "A": {"package": "A", "requires": []}
+        })))
+        
+    def test_independent_packages(self) -> None:
+        """Test that packages with no dependencies between them are handled correctly."""
+        result = list(topological_sort({
+            "A": {"package": "A", "requires": []},
+            "B": {"package": "B", "requires": []},
+            "C": {"package": "C", "requires": []}
+        }))
+        self.assertEqual(set(["A", "B", "C"]), set(result))
+        self.assertEqual(3, len(result))
 
 if __name__ == '__main__':
     unittest.main()

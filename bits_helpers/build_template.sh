@@ -9,7 +9,16 @@ unset AWS_SECRET_ACCESS_KEY
 
 set -e
 set +h
+
+function warning() {
+    printf "\033[0;33m%s\n\033[0m" "$*" >&1;
+}
+
+cversion=$(gcc --version | head -n 1)
+cpath=$(which gcc)
+
 function hash() { true; }
+
 export WORK_DIR="${WORK_DIR_OVERRIDE:-%(workDir)s}"
 
 # Insert our own wrapper scripts into $PATH, patched to use the system OpenSSL,
@@ -129,17 +138,18 @@ function Run() { # dummy function
     true
 }
 
-printenv
-
 if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
   set -o pipefail
   (set -x; unset DYLD_LIBRARY_PATH; source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh"; Run $* 2>&1) | tee "$BUILDROOT/log"
+  [ $? -ne 0 ] && exit 1  
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
   set -o pipefail
   (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log"
+  [ $? -ne 0 ] && exit 1  
 elif [[ "$CACHED_TARBALL" == "" ]]; then
   set -o pipefail
   (set -x; unset DYLD_LIBRARY_PATH; source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh"; Run $* 2>&1) | tee "$BUILDROOT/log"
+  [ $? -ne 0 ] && exit 1  
 else
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
   # files.

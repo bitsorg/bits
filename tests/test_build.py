@@ -1,4 +1,3 @@
-from __future__ import print_function
 from argparse import Namespace
 import os
 import os.path
@@ -202,6 +201,7 @@ class BuildTestCase(unittest.TestCase):
     @patch("bits_helpers.sync.execute", new=dummy_execute)
     @patch("bits_helpers.git.git")
     @patch("bits_helpers.build.exists", new=MagicMock(side_effect=dummy_exists))
+    @patch("bits_helpers.utilities.exists", new=MagicMock(side_effect=dummy_exists))
     @patch("os.path.exists", new=MagicMock(side_effect=dummy_exists))
     @patch("bits_helpers.build.dieOnError", new=MagicMock())
     @patch("bits_helpers.utilities.dieOnError", new=MagicMock())
@@ -278,7 +278,8 @@ class BuildTestCase(unittest.TestCase):
             onlyDeps=False,
             fetchRepos=False,
             forceTracked=False,
-            plugin="legacy"
+            plugin="legacy",
+            makeflow=False
         )
 
         def mkcall(args):

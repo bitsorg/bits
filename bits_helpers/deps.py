@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-from __future__ import print_function
 from bits_helpers.log import debug, error, info, dieOnError
 from bits_helpers.utilities import parseDefaults, readDefaults, getPackageList, validateDefaults
 from bits_helpers.cmd import DockerRunner, execute
@@ -15,7 +14,7 @@ def doDeps(args, parser):
 
   # Resolve all the package parsing boilerplate
   specs = {}
-  defaultsReader = lambda: readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+  defaultsReader = lambda: readDefaults(args.configDir, args.defaults, parser.error, args.architecture. args.xdefaults)
   (err, overrides, taps) = parseDefaults(args.disable, defaultsReader, debug)
   with DockerRunner(args.dockerImage, args.docker_extra_args) as getstatusoutput_docker:
     systemPackages, ownPackages, failed, validDefaults = \
@@ -45,7 +44,7 @@ def doDeps(args, parser):
     s["build_requires"] = [r for r in s["build_requires"] if r not in args.disable and r != "defaults-release"]
     s["runtime_requires"] = [r for r in s["runtime_requires"] if r not in args.disable and r != "defaults-release"]
 
-  # Determine which pacakages are only build/runtime dependencies
+  # Determine which packages are only build/runtime dependencies
   all_build   = set()
   all_runtime = set()
   for k,spec in specs.items():

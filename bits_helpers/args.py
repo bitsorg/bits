@@ -70,6 +70,7 @@ def doParseArgs():
 
   build_parser.add_argument("--defaults", dest="defaults", default="o2", metavar="DEFAULT",
                             help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+
   build_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                             help=("Build as if on the specified architecture. When used with --docker, build "
                                   "inside a Docker image for the specified architecture. Default is the current "
@@ -114,6 +115,8 @@ def doParseArgs():
                             help=("Use makeflow for paralle workflow execution. "))
   build_parser.add_argument("--only-deps", dest="onlyDeps", default=False, action="store_true",
                             help="Only build dependencies, not the main package (e.g. for caching)")
+  build_parser.add_argument("--gcc-toolchain", dest="gccToolchain", default=None, metavar="PACKAGE", action="append",
+                            help=("Override gcc toolchain version tag"))  
 
   build_docker = build_parser.add_argument_group(title="Build inside a container", description="""\
   Builds can be done inside a Docker container, to make it easier to get a
@@ -406,6 +409,11 @@ def finaliseArgs(args, parser):
   # if args.action in ["version", "analytics", "architecture"]:
   if args.action in ["version", "architecture"]:
     return args
+
+  if "::" in args.defaults:
+    args.defaults,args.xdefaults = args.defaults.split("::")
+  else:
+    args.xdefaults = None
 
   # --architecture can be specified in both clean and build.
   if args.action in ["build", "clean"] and not args.architecture:

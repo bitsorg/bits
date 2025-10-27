@@ -15,8 +15,8 @@ from shlex import quote
 
 from bits_helpers.cmd import getoutput
 from bits_helpers.git import git
-from bits_helpers.log import warning, dieOnError
 
+from bits_helpers.log import error, warning, dieOnError
 
 class SpecError(Exception):
   pass
@@ -64,6 +64,27 @@ def topological_sort(specs):
     edges = [(pkg, dep) for pkg, dep in edges if dep != current_package]
     # ...but keep blocking those that still depend on other stuff!
     leaves.extend(new_leaves - {pkg for pkg, _ in edges})
+  # If we have any edges left, we have a cycle
+  if edges:
+    # Find a cycle by following dependencies
+    cycle = []
+    start = edges[0][0]  # Start with any remaining package
+    current = start
+    max_iter = 10000 # Prevent infinite loops
+    while max_iter > 0:
+      max_iter -= 1
+      cycle.append(current)
+      # Find what current depends on
+      for pkg, dep in edges:
+        if pkg == current:
+          current = dep
+          break
+      if current in cycle:  # We found a cycle
+        cycle = cycle[cycle.index(current):]  # Trim to just the cycle
+        dieOnError(True, "Dependency cycle detected: " + " -> ".join(cycle + [cycle[0]]))
+      if current == start:  # We've gone full circle
+        raise RuntimeError("Internal error: cycle detection failed")
+    assert False, "Unreachable error: cycle detection failed"
 
 
 def resolve_store_path(architecture, spec_hash):
@@ -103,9 +124,10 @@ nowKwds = { "year": str(now.year),
             "day": str(now.day).zfill(2),
             "hour": str(now.hour).zfill(2) }
 
-def resolve_version(spec, defaults, branch_basename, branch_stream):
-  """Expand the version replacing the following keywords:
+def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""):
+  """Expand the data replacing the following keywords:
 
+  - %(package)s
   - %(commit_hash)s
   - %(short_hash)s
   - %(tag)s
@@ -113,6 +135,8 @@ def resolve_version(spec, defaults, branch_basename, branch_stream):
   - %(branch_stream)s
   - %(tag_basename)s
   - %(defaults_upper)s
+  - %(version)s
+  - %(root_dir)s
   - %(year)s
   - %(month)s
   - %(day)s
@@ -123,7 +147,10 @@ def resolve_version(spec, defaults, branch_basename, branch_stream):
   defaults_upper = defaults != "release" and "_" + defaults.upper().replace("-", "_") or ""
   commit_hash = spec.get("commit_hash", "hash_unknown")
   tag = str(spec.get("tag", "tag_unknown"))
-  return spec["version"] % {
+  package = spec.get("package")
+  all_vars = {
+    "package": package,
+    "root_dir": "${%s_ROOT}" % package.upper().replace("-","_"),
     "commit_hash": commit_hash,
     "short_hash": commit_hash[0:10],
     "tag": tag,
@@ -131,8 +158,28 @@ def resolve_version(spec, defaults, branch_basename, branch_stream):
     "branch_stream": branch_stream or tag,
     "tag_basename": basename(tag),
     "defaults_upper": defaults_upper,
+    "version": str(spec.get("version", "version_unknown")),
+    "platform_machine": platform.machine(),
+    "sys_platform": sys.platform,
+    "os_name": os.name,
     **nowKwds,
   }
+  for k, v in spec.get("variables",{}).items():
+    all_vars[k] = v
+
+  # Support for indirect variable expansion e.g. with
+  # variables:
+  #   v1: foo
+  #   foo_key: bar
+  #   final: %%(%(v1)s_key)s
+  # "final" will have the value "bar" (first expanded to "%(foo_key)s" and
+  # then to value of "foo_key" i.e. "bar")
+  while re.search("\%\([a-zA-Z][a-zA-Z0-9_]*\)s", data):
+    data = data % all_vars
+  return data
+
+def resolve_version(spec, defaults, branch_basename, branch_stream):
+    return resolve_spec_data(spec, spec["version"], defaults, branch_basename, branch_stream)
 
 def resolve_tag(spec):
   """Expand the tag, replacing the following keywords:
@@ -281,21 +328,28 @@ def disabledByArchitectureDefaults(arch, defaults, requires):
     elif not re.match(matcher, arch):
       yield require
 
-def readDefaults(configDir, defaults, error, architecture):
-  '''
-  defaultsFilename = "%s/defaults-%s.sh" % (configDir, defaults)
-  if not exists(defaultsFilename):
-    error("Default `%s' does not exists. Viable options:\n%s" %
-          (defaults or "<no defaults specified>",
-           "\n".join("- " + basename(x).replace("defaults-", "").replace(".sh", "")
-                     for x in glob(join(configDir, "defaults-*.sh")))))
-  '''
+def readDefaults(configDir, defaults, error, architecture, xdefaults):
+
   defaultsFilename = resolveDefaultsFilename(defaults,configDir)
-  
   err, defaultsMeta, defaultsBody = parseRecipe(getRecipeReader(defaultsFilename))
   if err:
     error(err)
     sys.exit(1)
+
+  if xdefaults is not None:
+    xDefaults = resolveDefaultsFilename(xdefaults,configDir)
+    xMeta = {}
+    xBody = ""
+    if exists(xDefaults):
+      err, xMeta, xBody = parseRecipe(getRecipeReader(xDefaults))
+      if err:
+        error(err)
+        sys.exit(1)
+      for x in ["prefer_system","prefer_system_check","env","requires","overrides"]:
+        val = xMeta.get(x)
+        if val is not None:
+          defaultsMeta[x] = val
+         
   archDefaults = "%s/defaults-%s.sh" % (configDir, architecture)
   archMeta = {}
   archBody = ""
@@ -307,15 +361,24 @@ def readDefaults(configDir, defaults, error, architecture):
     for x in ["env", "disable", "overrides"]:
       defaultsMeta.setdefault(x, {}).update(archMeta.get(x, {}))
     defaultsBody += "\n# Architecture defaults\n" + archBody
+
   return (defaultsMeta, defaultsBody)
 
-
-def getRecipeReader(url:str , dist=None):
-  m = re.search(r'^dist:(.*)@([^@]+)$', url)
-  if m and dist:
+def getRecipeReader(url:str , dist=None, genPackages={}):
+  m = re.search(r'^(dist|generate):(.*)@([^@]+)$', url)
+  if m and m.group(1) == "generate":
+    return GeneratedPackage(genPackages[m.group(2)]["command"])
+  elif m and dist:
     return GitReader(url, dist)
   else:
     return FileReader(url)
+
+# Generate a recipe of package
+class GeneratedPackage(object):
+  def __init__(self, command) -> None:
+    self.command = command
+  def __call__(self):
+    return  getoutput(self.command).strip()
 
 # Read a recipe from a file
 class FileReader(object):
@@ -412,27 +475,34 @@ def parseDefaults(disable, defaultsGetter, log):
 
 def checkForFilename(taps, pkg, d):
   filename = taps.get(pkg, "%s/%s.sh" % (d, pkg))
-  if not os.path.exists(filename):
+  if not exists(filename):
     if "/" in pkg:
       filename = taps.get(pkg, "%s/%s" % (d, pkg))
     else:
       filename = taps.get(pkg, "%s/%s/latest" % (d, pkg))
   return filename
 
-def resolveFilename(taps, pkg, configDir):
+def getConfigPaths(configDir):
   configPath = os.environ.get("BITS_PATH")
-  cfgDir = configDir
-  pkgDirs = [cfgDir]
+  pkgDirs = [configDir]
 
   if configPath:
-    for d in configPath.split(","):
-       pkgDirs.append(cfgDir + "/" + d + ".bits")
+    for d in [join(configDir, "%s.bits" % r) for r in configPath.split(",") if r]:
+       if exists(d):
+         pkgDirs.append(d)
+  return pkgDirs
 
-  for d in pkgDirs:
+def resolveFilename(taps, pkg, configDir, genPackages):
+  if pkg in genPackages:
+    return ("generate:%s@%s" % (pkg, genPackages[pkg]["version"]), genPackages[pkg]["pkgdir"])
+
+  for d in getConfigPaths(configDir):
     filename = checkForFilename(taps,pkg,d)
-    if os.path.exists(filename):
+    if exists(filename):
       return(filename,os.path.abspath(d))
 
+  dieOnError(True, "Package %s not found in %s" % (pkg, configDir))
+    
 def resolveDefaultsFilename(defaults, configDir):
   configPath = os.environ.get("BITS_PATH")
   cfgDir = configDir
@@ -444,14 +514,18 @@ def resolveDefaultsFilename(defaults, configDir):
 
   for d in pkgDirs:
     filename = "%s/defaults-%s.sh" % (d, defaults)
-    if os.path.exists(filename):
+    if exists(filename):
       return(filename)
 
+  error("Default `%s' does not exists.\n" % (filename or "<no defaults specified>"))
+
+  '''
   error("Default `%s' does not exists. Viable options:\n%s" %
           (defaults or "<no defaults specified>",
            "\n".join("- " + basename(x).replace("defaults-", "").replace(".sh", "")
                      for x in glob(join(configDir, "defaults-*.sh")))))
-    
+  '''
+  
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,
                    performValidateDefaults, overrides, taps, log, force_rebuild=()):
@@ -462,6 +536,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   requirementsCache = {}
   trackingEnvCache = {}
   packages = packages[:]
+  generatedPackages = getGeneratedPackages(configDir)
   validDefaults = []  # empty list: all OK; None: no valid default; non-empty list: list of valid ones
 
   while packages:
@@ -478,12 +553,12 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # and all dependencies' names go into a package's hash.
     pkg_filename = ("defaults-" + defaults) if p == "defaults-release" else p.lower()
 
-    filename,pkgdir = resolveFilename(taps, pkg_filename, configDir)
+    filename,pkgdir = resolveFilename(taps, pkg_filename, configDir, generatedPackages)
 
     dieOnError(not filename, "Package %s not found in %s" % (p, configDir))
     assert(filename is not None)
 
-    err, spec, recipe = parseRecipe(getRecipeReader(filename, configDir))
+    err, spec, recipe = parseRecipe(getRecipeReader(filename, configDir, generatedPackages))
     dieOnError(err, err)
     # Unless there was an error, both spec and recipe should be valid.
     # otherwise the error should have been caught above.
@@ -586,9 +661,11 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
             spec = replacement
             # Allows generalising the version based on the actual key provided
             spec["version"] = spec["version"].replace("%(key)s", key)
+            # We need the key to inject the version into the replacement recipe later.
+            spec["key"] = key 
             recipe = replacement.get("recipe", "")
             # If there's an explicitly-specified recipe, we're still building
-            # the package. If not, aliBuild will still "build" it, but it's
+            # the package. If not, Bits will still "build" it, but it's
             # basically instantaneous, so report to the user that we're taking
             # it from the system.
             if recipe:
@@ -648,6 +725,17 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     packages += spec["requires"]
   return (systemPackages, ownPackages, failedRequirements, validDefaults)
 
+def getGeneratedPackages(configDir):
+  pkgs = {}
+  pkgDirs = getConfigPaths(configDir)
+  for pkgdir in pkgDirs:
+    for vp in [x.split(os.sep)[-2] for x in  glob(join(pkgdir,"*","packages.py"))]:
+      sys.path.insert(0,join(pkgdir, vp))
+      pkg = __import__("packages")
+      pkg.getPackages(pkgs, pkgdir)
+      sys.modules.pop('packages')
+      x=sys.path.pop(0)
+  return pkgs
 
 class Hasher:
   def __init__(self) -> None:
