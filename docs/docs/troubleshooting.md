@@ -76,7 +76,7 @@ will tell you something like:
     We will build packages in the following order: defaults-release GMP UUID gSOAP GEANT4 boost MPFR cgal XRootD fastjet ROOT
 
 If you have a system package which you think should be used but it's not, you
-can run `Doctor <package-name>` to try to understand why that was the case
+can run `bits doctor <package-name>` to try to understand why that was the case
 (or you can [open a bug report](https://github.com/alisw/alidist/issues) with its output and we will look at it).
 
 ### What is PIP ? How do I install it?
@@ -155,7 +155,7 @@ it means that bits does not consider you system tool good enough to
 be compatible with the one provided by the recipe. You can verify what
 happens during the system tool detection by running:
 
-    bitsDoctor <package name>
+    bits doctor <package name>
 
 
 ### bits fails with `cannot open file "AvailabilityMacros.h`
@@ -236,7 +236,7 @@ building unless one of the system dependencies is absolutely required
 tool, where simply installing them might be a better option. For this
 reason we suggest that users run:
 
-    bitsDoctor AliPhysics
+    bits doctor AliPhysics
 
 in the same path where their `alidist` folder is, before actually
 starting to build, so that they can get an overview of what will be

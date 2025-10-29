@@ -157,7 +157,7 @@ The following entries are optional in the header:
     built.
 
     Packages in this list are marked specially in the dependency graph
-    produced by `bitsDeps`. Other tools treat these packages differently from
+    produced by `bits deps`. Other tools treat these packages differently from
     `requires`: for instance, RPMs produced for a package won't depend on its
     `build_requires`, and `alibuild-generate-module` won't pull in build
     requirements' modulefiles.
