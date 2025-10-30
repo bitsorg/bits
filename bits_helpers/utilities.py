@@ -483,6 +483,23 @@ def parseRecipe(reader):
     err = "Unable to parse %s. Header missing." % reader.url
   return err, spec, recipe
 
+
+def asDict(d0):
+  if type(d0) == list :                                                                                                                                                                        
+    dlist = []
+    for x in d0:
+      if type(x) == list:
+        for y in x:
+          if type(y) == OrderedDict:
+            dlist.append(y)
+      elif type(x) == OrderedDict:
+        dlist.append(x)
+    d0 = dlist.pop(0)
+    for item in dlist:
+      # d0 = deep_merge_dicts(d0, dlist.pop(0))
+      d0 = d0 | dlist.pop(0)
+  return d0
+
 # (Almost pure part of the defaults parsing)
 # Override defaultsGetter for unit tests.
 def parseDefaults(disable, defaultsGetter, log):
@@ -492,28 +509,17 @@ def parseDefaults(disable, defaultsGetter, log):
   # example they could decide to switch from ROOT 5 to ROOT 6 and they
   # could disable alien for O2. For this reason we need to parse their
   # metadata early and extract the override and disable data.
+
+  # defaultsMeta["disable"] = asDict(defaultsMeta.get("disable", OrderedDict()))
+
   defaultsDisable = asList(defaultsMeta.get("disable", []))
+   
   for x in defaultsDisable:
     log("Package %s has been disabled by current default.", x)
   disable.extend(defaultsDisable)
 
-  d0 = defaultsMeta.get("overrides", OrderedDict())
+  defaultsMeta["overrides"] = asDict(defaultsMeta.get("overrides", OrderedDict()))
 
-  dlist = []
-
-  if type(d0) == list :
-    for x in d0:
-      if type(x) == list:
-        for y in x:
-          if type(y) == OrderedDict:
-            dlist.append(y)
-      elif type(x) == OrderedDict:
-        dlist.append(x)
-      d0 = dlist.pop(0)
-      for item in dlist:
-        d0 = deep_merge_dicts(d0, dlist.pop(0))
-      defaultsMeta["overrides"] = d0
-  
   if type(defaultsMeta.get("overrides", OrderedDict())) != OrderedDict:
     return ("overrides should be a dictionary", None, None)
   overrides, taps = OrderedDict(), {}

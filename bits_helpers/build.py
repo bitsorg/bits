@@ -1237,7 +1237,6 @@ def doBuild(args, parser):
         (spec["package"],
          args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
       )
-
       err = execute(build_command, printer=progress)
       progress.end("failed" if err else "done", err)
       report_event("BuildError" if err else "BuildSuccess", spec["package"], " ".join((
@@ -1246,25 +1245,26 @@ def doBuild(args, parser):
       spec["commit_hash"],
       os.environ["BITS_DIST_HASH"][:10],
        )))
+      buildErrMsg = dedent("""\
+        Error while executing {sd}/build.sh on `{h}'.
+        Log can be found in {w}/BUILD/{p}-latest{devSuffix}/log
+        Please upload it to CERNBox/Dropbox if you intend to request support.
+        Build directory is {w}/BUILD/{p}-latest{devSuffix}/{p}.
+        """).format(
+          h=socket.gethostname(),
+          sd=scriptDir,
+          w=buildWorkDir,
+          p=spec["package"],
+          devSuffix="-" + args.develPrefix
+          if "develPrefix" in args and spec["is_devel_pkg"]
+          else "",
+      )
+      dieOnError(err, buildErrMsg.strip())
 
-      updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
-      if spec["is_devel_pkg"]:
-        updatablePkgs.append(spec["package"])
-
-    buildErrMsg = dedent("""\
-    Error while executing {sd}/build.sh on `{h}'.
-    Log can be found in {w}/BUILD/{p}-latest{devSuffix}/log
-    Please upload it to CERNBox/Dropbox if you intend to request support.
-    Build directory is {w}/BUILD/{p}-latest{devSuffix}/{p}.
-    """).format(
-      h=socket.gethostname(),
-      sd=scriptDir,
-      w=buildWorkDir,
-      p=spec["package"],
-      devSuffix="-" + args.develPrefix
-      if "develPrefix" in args and spec["is_devel_pkg"]
-      else "",
-    )
+    updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
+    if spec["is_devel_pkg"]:
+      updatablePkgs.append(spec["package"])
+    
     if updatablePkgs:
       buildErrMsg += dedent("""
       Note that you have packages in development mode.
