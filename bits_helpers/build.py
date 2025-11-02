@@ -872,7 +872,7 @@ def doBuild(args, parser):
     if possibleDevelPrefix:
       spec["build_family"] = "%s-%s" % (possibleDevelPrefix, args.defaults)
     else:
-      spec["build_family"] = args.defaults
+      spec["build_family"] = "_".join(args.defaults)
     if spec["package"] == mainPackage:
       mainBuildFamily = spec["build_family"]
 
@@ -1303,14 +1303,12 @@ def doBuild(args, parser):
       syncHelper.upload_symlinks_and_tarball(spec)
 
   if not args.onlyDeps:
-      banner("Build of %s successfully completed on `%s'.\n"
+      banner(f"Build of {mainPackage} successfully completed on `{socket.gethostname()}'.\n"
              "Your software installation is at:"
-             "\n\n  %s\n\n"
+             f"\n\n  {abspath(join(args.workDir, args.architecture))}\n\n"
              "You can use this package by loading the environment:"
-             "\n\n  bits enter %s/latest-%s",
-             mainPackage, socket.gethostname(),
-             abspath(join(args.workDir, args.architecture)),
-             mainPackage, mainBuildFamily)
+             f"\n\n  bits enter {mainPackage}/latest-{mainBuildFamily}",
+             )
   else:
       banner("Successfully built dependencies for package %s on `%s'.\n",
              mainPackage, socket.gethostname()
