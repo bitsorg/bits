@@ -65,7 +65,8 @@ class DepsTestCase(unittest.TestCase):
                          outdot="/tmp/out.dot",
                          outgraph="/tmp/outgraph.pdf",
                          package="AliRoot",
-                         defaults="release")
+                         defaults="release",
+                         xdefaults=None)
 
 
         def fake_exists(n):

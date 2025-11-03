@@ -494,7 +494,6 @@ def doBuild(args, parser):
   (err, overrides, taps) = parseDefaults(args.disable,
                                         defaultsReader, debug)
   dieOnError(err, err)
-
   makedirs(join(workDir, "SPECS"), exist_ok=True)
 
   # If the bits workdir contains a .sl directory, we use Sapling as SCM.
