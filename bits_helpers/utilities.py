@@ -331,8 +331,14 @@ def disabledByArchitectureDefaults(arch, defaults, requires):
 def deep_merge_dicts(dict1, dict2):
     result = dict1.copy()
     for key, value in dict2.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+        if key not in result:
+          result[key] = value
+          continue
+        if isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = deep_merge_dicts(result[key], value)
+        elif isinstance(result[key], list) and isinstance(value, list):
+            # merge lists, such as for "disabled"
+            result[key].extend(value)
         else:
             result[key] = value
     return result
