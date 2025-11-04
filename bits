@@ -223,6 +223,9 @@ do
         $BITSDIR/bitsBuild $@
 	    exit $?
         ;;
+    setenv)
+	break
+	;;
 	 *)
 	    shift
         ;;
@@ -277,7 +280,7 @@ do
       --help|help)
 	  printHelp; exit 0 ;;
       -c) 
-	  i+=1; COMMAND_IN_ENV=("$@");
+	  i=$((i+1)); COMMAND_IN_ENV=("${ARGV[@]:${i}}");
 	  break ;;
       *)
 	  ARGS+=(${ARGV[$i]});;
