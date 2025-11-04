@@ -406,16 +406,17 @@ On Mac, 1-2 latest supported OSX versions:
 S3_SUPPORTED_ARCHS = "slc7_x86-64", "slc8_x86-64", "ubuntu2004_x86-64", "ubuntu2204_x86-64", "ubuntu2404_x86-64", "slc9_x86-64", "slc9_aarch64"
 
 def finaliseArgs(args, parser):
-  
+
   # Nothing to finalise for version or analytics
   # if args.action in ["version", "analytics", "architecture"]:
   if args.action in ["version", "architecture"]:
     return args
 
-  if "::" in args.defaults:
-    args.defaults,args.xdefaults = args.defaults.split("::")
-  else:
-    args.xdefaults = None
+  if hasattr(args, "defaults"):
+    if "::" in args.defaults:
+      args.defaults,args.xdefaults = args.defaults.split("::")
+    else:
+      args.xdefaults = None
 
   # --architecture can be specified in both clean and build.
   if args.action in ["build", "clean"] and not args.architecture:

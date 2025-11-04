@@ -92,6 +92,7 @@ class DoctorTestCase(unittest.TestCase):
                      disable=[],
                      defaults="release",
                      environment=[])
+                     xdefaults=None)
 
     # What to call (longer names deprecated in Python 3.5+)
     if not hasattr(self, "assertRegex"):

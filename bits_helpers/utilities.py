@@ -21,7 +21,7 @@ from shlex import quote
 from bits_helpers.cmd import getoutput
 from bits_helpers.git import git
 
-from bits_helpers.log import error, warning, dieOnError
+from bits_helpers.log import error, warning, dieOnError, debug
 
 class SpecError(Exception):
   pass
@@ -333,14 +333,27 @@ def disabledByArchitectureDefaults(arch, defaults, requires):
     elif not re.match(matcher, arch):
       yield require
 
-def deep_merge_dicts(dict1, dict2):
-    result = dict1.copy()
-    for key, value in dict2.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = deep_merge_dicts(result[key], value)
-        else:
-            result[key] = value
-    return result
+
+def merge_ordered_dicts(dict1, dict2):
+  """
+  Merge two ordered dictionaries where dict2's keys overwrite dict1's keys.
+  Preserves order with dict1's keys first, followed by dict2's new keys.
+  """
+  merged = OrderedDict()
+  # Add all keys from dict1 first
+  for key, value in dict1.items():
+    merged[key] = value
+    
+  # Overwrite with dict2's values and add new keys
+  for key, value in dict2.items():
+    if key in merged and isinstance(merged[key], OrderedDict) and isinstance(value, OrderedDict):
+      # Recursively merge nested ordered dictionaries
+      merged[key] = merge_ordered_dicts(merged[key], value)
+    else:
+      # Overwrite existing key or add new key
+      merged[key] = value
+  return merged
+  
   
 def readDefaults(configDir, defaults, error, architecture, xdefaults):
 
@@ -350,6 +363,11 @@ def readDefaults(configDir, defaults, error, architecture, xdefaults):
     error(err)
     sys.exit(1)
 
+  for x in ["overrides"]:
+    defaultsMeta[x] = asDict(defaultsMeta.get(x, OrderedDict()))
+
+  debug("Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
+  
   if xdefaults is not None:
     xDefaults = resolveDefaultsFilename(xdefaults,configDir)
     xMeta = {}
@@ -359,8 +377,8 @@ def readDefaults(configDir, defaults, error, architecture, xdefaults):
       if err:
         error(err)
         sys.exit(1)
-      defaultsMeta = deep_merge_dicts(defaultsMeta, xMeta)
-         
+      defaultsMeta = merge_ordered_dicts(defaultsMeta, xMeta)
+
   archDefaults = "%s/defaults-%s.sh" % (configDir, architecture)
   archMeta = {}
   archBody = ""
@@ -372,6 +390,8 @@ def readDefaults(configDir, defaults, error, architecture, xdefaults):
     for x in ["env", "disable", "overrides"]:
       defaultsMeta.setdefault(x, {}).update(archMeta.get(x, {}))
     defaultsBody += "\n# Architecture defaults\n" + archBody
+
+  debug("Merged Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
 
   return (defaultsMeta, defaultsBody)
 
@@ -483,6 +503,60 @@ def parseRecipe(reader):
     err = "Unable to parse %s. Header missing." % reader.url
   return err, spec, recipe
 
+
+def asDict(overrides_array):
+    """
+    Collapse an array of override dictionaries into a single OrderedDict.
+    
+    Args:
+        overrides_array: A list containing dictionaries and/or lists of dictionaries
+                        to be merged, with later elements taking precedence.
+    Returns:
+        OrderedDict: A single merged OrderedDict
+    """
+    debug("asDict: %s ",json.dumps(overrides_array,indent = 4))
+
+    if not overrides_array:
+        return OrderedDict()
+     
+    if type(overrides_array) == OrderedDict:
+        return overrides_array
+      
+    # Start with an empty OrderedDict
+    result = OrderedDict()
+    
+    for item in overrides_array:
+        if isinstance(item, list):
+            # Handle nested lists - recursively process each element
+            for subitem in item:
+                if isinstance(subitem, dict):
+                    result = merge_dicts(result, subitem)
+        elif isinstance(item, dict):
+            result = merge_dicts(result, item)
+
+    debug("asDict (result): %s ",json.dumps(result))
+    return result
+
+def merge_dicts(dict1, dict2):
+  """
+  Helper function to merge two dictionaries recursively.
+  dict2 values overwrite dict1 values.
+  """
+  merged = OrderedDict(dict1)
+    
+  for key, value in dict2.items():
+    if (key in merged and 
+      isinstance(merged[key], dict) and 
+      isinstance(value, dict)):
+      # Recursively merge nested dictionaries
+      merged[key] = merge_dicts(merged[key], value)
+    else:
+      # Overwrite or add new key-value pair
+      merged[key] = value
+    
+  return merged
+  
+
 # (Almost pure part of the defaults parsing)
 # Override defaultsGetter for unit tests.
 def parseDefaults(disable, defaultsGetter, log):
@@ -492,30 +566,20 @@ def parseDefaults(disable, defaultsGetter, log):
   # example they could decide to switch from ROOT 5 to ROOT 6 and they
   # could disable alien for O2. For this reason we need to parse their
   # metadata early and extract the override and disable data.
+
+  # defaultsMeta["disable"] = asDict(defaultsMeta.get("disable", OrderedDict()))
+
   defaultsDisable = asList(defaultsMeta.get("disable", []))
+   
   for x in defaultsDisable:
     log("Package %s has been disabled by current default.", x)
   disable.extend(defaultsDisable)
 
-  d0 = defaultsMeta.get("overrides", OrderedDict())
+  defaultsMeta["overrides"] = asDict(defaultsMeta.get("overrides", OrderedDict()))
 
-  dlist = []
-
-  if type(d0) == list :
-    for x in d0:
-      if type(x) == list:
-        for y in x:
-          if type(y) == OrderedDict:
-            dlist.append(y)
-      elif type(x) == OrderedDict:
-        dlist.append(x)
-      d0 = dlist.pop(0)
-      for item in dlist:
-        d0 = deep_merge_dicts(d0, dlist.pop(0))
-      defaultsMeta["overrides"] = d0
-  
   if type(defaultsMeta.get("overrides", OrderedDict())) != OrderedDict:
     return ("overrides should be a dictionary", None, None)
+
   overrides, taps = OrderedDict(), {}
   commonEnv = {"env": defaultsMeta["env"]} if "env" in defaultsMeta else {}
   overrides["defaults-release"] = commonEnv

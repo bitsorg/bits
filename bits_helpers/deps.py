@@ -14,7 +14,7 @@ def doDeps(args, parser):
 
   # Resolve all the package parsing boilerplate
   specs = {}
-  defaultsReader = lambda: readDefaults(args.configDir, args.defaults, parser.error, args.architecture. args.xdefaults)
+  defaultsReader = lambda: readDefaults(args.configDir, args.defaults, parser.error, args.architecture, args.xdefaults)
   (err, overrides, taps) = parseDefaults(args.disable, defaultsReader, debug)
 
   extra_env = {"BITS_CONFIG_DIR": "/alidist" if args.docker else path.abspath(args.configDir)}
