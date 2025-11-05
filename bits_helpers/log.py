@@ -126,7 +126,7 @@ def log_success(self, message, *args, **kws):
     self._log(logging.SUCCESS, message, args, **kws)
 logging.Logger.success = log_success
 
-logger = logging.getLogger('alibuild')
+logger = logging.getLogger('bits')
 logger_handler = logging.StreamHandler()
 logger.addHandler(logger_handler)
 logger_handler.setFormatter(LogFormatter("%(levelname)s: %(message)s"))
