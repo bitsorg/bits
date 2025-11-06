@@ -275,7 +275,7 @@ class BuildTestCase(unittest.TestCase):
             configDir="/alidist",
             disable=[],
             force_rebuild=[],
-            defaults="release",
+            defaults=["release"],
             jobs=2,
             annotate={},
             preferSystem=[],

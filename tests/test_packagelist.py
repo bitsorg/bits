@@ -105,7 +105,7 @@ def getPackageListWithDefaults(packages, force_rebuild=()):
         noSystem=None,
         architecture="ARCH",
         disable=[],
-        defaults="release",
+        defaults=["release"],
         # Mock recipes just run "echo" or ":", so this is safe.
         performPreferCheck=performPreferCheckWithTempDir,
         performRequirementCheck=performPreferCheckWithTempDir,
