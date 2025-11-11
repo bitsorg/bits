@@ -24,9 +24,9 @@ except:
   pass
 from bits_helpers.log import ProgressPrint, log_current_package
 from glob import glob
-from textwrap import dedent
 from collections import OrderedDict
 from shlex import quote
+from textwrap import dedent
 import tempfile
 
 import concurrent.futures
@@ -36,6 +36,7 @@ import socket
 import os
 import re
 import shutil
+import sys
 import time
 import subprocess
 
@@ -472,9 +473,11 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   debug("Build command: %s", build_command)
   progress = debug
   if args.builders==1:
+    progress_msg = "Unpacking %s@%s" if cachedTarball else "Compiling %s@%s"
+    if not cachedTarball and not args.debug:
+      progress_msg += " (use --debug for full output)"
     progress = ProgressPrint(
-      ("Unpacking %s@%s" if cachedTarball else
-       "Compiling %s@%s (use --debug for full output)") %
+      progress_msg %
       (spec["package"],
       args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
     )
@@ -497,20 +500,112 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   spec["commit_hash"],
   os.environ["BITS_DIST_HASH"][:10],
   )))
-  buildErrMsg = dedent("""\
-    Error while executing {sd}/build.sh on `{h}'.
-    Log can be found in {w}/log
-    Please upload it to CERNBox/Dropbox if you intend to request support.
-    Build directory is {w}/{p}.
-    """).format(
-      h=socket.gethostname(),
-      sd=scriptDir,
-      w=join(workDir, "BUILD", spec["hash"]),
-      p=spec["package"],
-      devSuffix="-" + args.develPrefix
-      if "develPrefix" in args and spec["is_devel_pkg"]
-      else "",
-  )
+
+  # We do not use the override for devel packages, because we
+  # want to avoid having to rebuild things when the /tmp gets cleaned.
+  if spec["is_devel_pkg"]:
+      buildWorkDir = args.workDir
+  else:
+      buildWorkDir = os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)
+
+  # Determine paths
+  devSuffix = "-" + args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else ""
+  log_path = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/log"
+  build_dir = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/{spec['package']}"
+
+  # Use relative paths if we're inside the work directory
+  try:
+    from os.path import relpath
+    log_path = relpath(log_path, os.getcwd())
+    build_dir = relpath(build_dir, os.getcwd())
+  except (ValueError, OSError):
+    pass  # Keep absolute paths if relpath fails
+
+  # Color codes for error message (if TTY)
+  bold = "\033[1m" if sys.stderr.isatty() else ""
+  red = "\033[31m" if sys.stderr.isatty() else ""
+  reset = "\033[0m" if sys.stderr.isatty() else ""
+
+  # Build the error message
+  devel_note = " (development package)" if spec["is_devel_pkg"] else ""
+  buildErrMsg = f"{red}{bold}BUILD FAILED:{reset} {spec['package']}@{spec['version']}{devel_note}\n"
+  buildErrMsg += "=" * 70 + "\n\n"
+
+  buildErrMsg += f"{bold}Log File:{reset}\n"
+  buildErrMsg += f"  {log_path}\n\n"
+
+  buildErrMsg += f"{bold}Build Directory:{reset}\n"
+  buildErrMsg += f"  {build_dir}\n"
+
+  updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
+  if spec["is_devel_pkg"]:
+    updatablePkgs.append(spec["package"])
+
+  # Gather build info for the error message
+  try:
+    detected_arch = detectArch()
+
+    # Only show safe arguments (no tokens/secrets) in CLI-usable format
+    safe_args = {
+      "pkgname", "defaults", "architecture", "forceUnknownArch",
+      "develPrefix", "jobs", "noSystem", "noDevel", "forceTracked", "plugin",
+      "disable", "annotate", "onlyDeps", "docker"
+    }
+    
+    cli_args = []
+    for k, v in vars(args).items():
+      if not v or k not in safe_args:
+        continue
+      
+      # Format based on type for CLI usage
+      if isinstance(v, bool):
+        if v:  # Only show if True
+          cli_args.append(f"--{k}")
+      elif isinstance(v, list):
+        if v:  # Only show non-empty lists
+          # For lists, use multiple --flag value or --flag=val1,val2
+          for item in v:
+            cli_args.append(f"--{k}={quote(str(item))}")
+      else:
+        # Quote if needed
+        cli_args.append(f"--{k}={quote(str(v))}")
+    
+    args_str = " ".join(cli_args)
+
+    buildErrMsg += f"\n{bold}Environment:{reset}\n"
+    buildErrMsg += f"  OS: {detected_arch}\n"
+    buildErrMsg += f"  bits: {__version__ or 'unknown'} (bits@{os.environ['BITS_DIST_HASH'][:10]})\n"
+
+    if detected_arch.startswith("osx"):
+      xcode_info = getstatusoutput("xcodebuild -version")[1]
+      # Combine XCode version lines into one
+      xcode_lines = xcode_info.strip().split('\n')
+      if len(xcode_lines) >= 2:
+        xcode_str = f"{xcode_lines[0]} ({xcode_lines[1]})"
+      else:
+        xcode_str = xcode_lines[0] if xcode_lines else "Unknown"
+      buildErrMsg += f"  XCode: {xcode_str}\n"
+
+    buildErrMsg += f"  Arguments: {args_str}\n"
+
+  except Exception as exc:
+    warning("Failed to gather build info", exc_info=exc)
+
+  # Add note about development packages if applicable
+  if updatablePkgs:
+    buildErrMsg += f"\n{bold}Development Packages:{reset}\n"
+    buildErrMsg += "  Development sources are not updated automatically.\n"
+    buildErrMsg += "  This may be due to outdated sources. To update:\n"
+    buildErrMsg += "".join(f"\n    ( cd {dp} && git pull --rebase )" for dp in updatablePkgs)
+    buildErrMsg += "\n"
+
+  # Add Next Steps section
+  buildErrMsg += f"\n{bold}Next Steps:{reset}\n"
+  buildErrMsg += f"  • View error log:          cat {log_path}\n"
+  if not args.debug:
+    buildErrMsg += f"  • Rebuild with debug:      bitsBuild build {spec['package']} --debug\n"
+  buildErrMsg += f"  • Please upload the full log to CERNBox/Dropbox if you intend to request support.\n"
+
   dieOnError(err, buildErrMsg.strip())
 
   updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
@@ -687,7 +782,7 @@ def doBuild(args, parser):
     del develCandidates, develCandidatesUpper, develPkgsUpper
 
   if buildOrder:
-    if args.onlyDeps: 
+    if args.onlyDeps:
       builtPackages = buildOrder[:-1]
     else:
       builtPackages = buildOrder
