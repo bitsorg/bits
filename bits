@@ -195,21 +195,22 @@ function configBits() {
 
 config_file=""
 
-for ((i=0;i<$ARGC;i++));
-do
+for ((i=0;i<$ARGC;i++)); do
     arg=${ARGV[$i]}
     opt=${arg%%=*}
     val=${arg##*=}
     case $opt in
        --config)
           config_file=$val
-       ;;   
+       ;;
        *)
+         new_args+=("$arg")
          ;;
    esac
 done
 
-configBits $config_file
+configBits "$config_file"
+set -- "${new_args[@]}"
 
 for arg in $@
 do

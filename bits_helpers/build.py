@@ -547,7 +547,9 @@ def doBuild(args, parser):
              "The following packages are system requirements and could not be found:\n\n- %s\n\n"
              "Please run:\n\n\tbitsDoctor --defaults %s %s\n\nto get a full diagnosis." %
              ("\n- ".join(sorted(failed)), args.defaults, " ".join(args.pkgname)))
-
+  
+  banner("Configured directory:\n%s", os.path.abspath(args.configDir))
+  banner("Package Recipe will be searched in the following order \n%s", os.environ.get("BITS_PATH"))
   for x in specs.values():
     x["requires"] = [r for r in x["requires"] if r not in args.disable]
     x["build_requires"] = [r for r in x["build_requires"] if r not in args.disable]
