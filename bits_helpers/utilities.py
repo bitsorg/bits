@@ -495,7 +495,7 @@ def parseRecipe(reader, generatePackages=None, visited=None):
     if spec and "from" in spec:
       basename = os.path.basename(getattr(reader, "url", "") or "")
       filename = basename[:-3] if basename.endswith(".sh") else basename
-      repoDir = os.path.abspath(os.environ.get("BITS_REPO_DIR"))
+      repoDir = os.environ.get("BITS_REPO_DIR")
       if visited is None:
         visited = []
       if spec["from"] in visited:
