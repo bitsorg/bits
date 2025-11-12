@@ -2,7 +2,7 @@
 bits
 ========
 
-Bits is a tool to build, install and package large software stacks. It originates from the aliBuild tool, originally developed to simplify building and installing ALICE / ALFA software and attempts to make it more general and usable for other communities that share similar problems and have overlapping dependencies.
+Bits is a tool to build, install and package large software stacks. It originates from the aliBuild tool, originally developed to simplify building and installing ALICE / ALFA software and attempts to make it more general and usable for other communities that share similar problems and have overlapping dependencies. It is under active development and subject to rapid changes and should NOT be used in production environment where stability and backward compatibility is important.
 
 Instant gratification with::
 
