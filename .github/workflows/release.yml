@@ -49,7 +49,7 @@ jobs:
           sed -i.bak "
           s|^  url .*|  url \"$url\"|;
           s|^  sha256 .*|  sha256 \"$sha\"|;
-          " "$(brew formula bits)"
+          " "$(brew formula bits -q)"
           rm -f "$(brew formula bits).bak"
       - name: Regenerate bits formula
         run: |
