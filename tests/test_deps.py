@@ -69,11 +69,6 @@ class DepsTestCase(unittest.TestCase):
                          environment=[])
 
         def fake_exists(n):
-            return {"/alidist/aliroot.sh": True}
-        with patch.object(os.path, "exists", fake_exists):
-            doDeps(args, MagicMock())
-
-        def fake_exists(n):
             return True if n in RECIPES else False
 
         with patch.object(os.path, "exists", fake_exists):
