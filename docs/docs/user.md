@@ -367,11 +367,11 @@ server-side pull request checks).
 
 ## Generating a dependency graph
 
-It is possible to generating a PDF with a dependency graph using the `bitsDeps`
+It is possible to generating a PDF with a dependency graph using the `bits deps`
 tool. Assuming you run it from a directory containing `alidist`, and you have
 Graphviz installed on your system, you can simply run:
 
-    bitsDeps O2 --outgraph graph.pdf
+    bits deps O2 --outgraph graph.pdf
 
 The example above generates a dependency graph for the package `O2`, and saving
 the results to a PDF file named `graph.pdf`. This is what the graph looks like:
@@ -385,13 +385,13 @@ others (this can indicate an error in the recipes).
 Connections are color-coded as well: blue connections indicate a runtime
 dependency whereas a grey connection indicate a build dependency.
 
-By default, `bitsDeps` runs the usual system checks to exclude packages that can
+By default, `bits deps` runs the usual system checks to exclude packages that can
 be taken from the system. If you want to display the full list of dependencies,
 you may want to use:
 
-    bitsDeps O2 --no-system --outgraph graph.pdf
+    bits deps O2 --no-system --outgraph graph.pdf
 
-Additional useful options for `bitsDeps` include:
+Additional useful options for `bits deps` include:
 
 - `--neat`: Produce a graph with transitive reduction, removing edges that are
   implied by other paths in the graph. This can make complex dependency graphs
@@ -401,9 +401,9 @@ Additional useful options for `bitsDeps` include:
 
 For example, to generate a simplified graph and keep the dot file:
 
-    bitsDeps O2 --neat --outdot graph.dot --outgraph graph.pdf
+    bits deps O2 --neat --outdot graph.dot --outgraph graph.pdf
 
-Please run `bitsDeps --help` for further information.
+Please run `bits deps --help` for further information.
 
 ## Using the packages you have built
 
