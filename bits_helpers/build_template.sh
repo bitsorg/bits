@@ -1,7 +1,18 @@
 #!/bin/bash
-
+BITS_START_TIMESTAMP=$(date +%%s)
 # Automatically generated build script
 unset DYLD_LIBRARY_PATH
+echo "bits: start building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP"
+
+cleanup() {
+  local exit_code=$?
+  BITS_END_TIMESTAMP=$(date +%%s)
+  BITS_DELTA_TIME=$(($BITS_END_TIMESTAMP - $BITS_START_TIMESTAMP))
+  echo "bits: done building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP (${BITS_DELTA_TIME} s)"
+  exit $exit_code
+}
+
+trap cleanup EXIT
 
 # Cleanup variables which should not be exposed to user code
 unset AWS_ACCESS_KEY_ID
