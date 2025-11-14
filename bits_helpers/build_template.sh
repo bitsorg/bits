@@ -318,6 +318,11 @@ wait "$rsync_pid"
 
 # We've copied files into their final place; now relocate.
 cd "$WORK_DIR"
+cat << 'EOF' >> "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
+if [ -f $WORK_DIR/$PP/etc/profile.d/post-relocate.sh ]; then
+   source "$WORK_DIR/$PP/etc/profile.d/post-relocate.sh"
+fi
+EOF
 if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
   bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
 fi

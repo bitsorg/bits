@@ -345,7 +345,13 @@ def generate_initdotsh(package, specs, architecture, post_build=False):
   # init.sh. This is useful for development off CVMFS, since we have a
   # slightly different directory hierarchy there.
   lines = [': "${BITS_ARCH_PREFIX:=%s}"' % architecture]
-
+  lines.extend((
+    'if [ -z "${WORK_DIR}" ]; then',
+    '  SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )',
+    '  WORK_DIR=$(echo "$SCRIPT_DIR" | awk -F"/$BITS_ARCH_PREFIX" \'{print $1}\')',
+    '  export WORK_DIR',
+    'fi'
+  ))
   # Generate the part which sources the environment for all the dependencies.
   # We guarantee that a dependency is always sourced before the parts
   # depending on it, but we do not guarantee anything for the order in which
