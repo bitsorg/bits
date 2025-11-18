@@ -9,6 +9,7 @@ Instant gratification with::
  $ git clone git@github.com:bitsorg/bits.git; cd bits; export PATH=$PWD:$PATH; cd ..
  $ git clone git@github.com:bitsorg/alice.bits.git
  $ cd alice.bits
+ $ git submodule update --init --recursive
 
 Review and customise bits.rc file (in particular, sw_dir location where all output will be stored)::
 
