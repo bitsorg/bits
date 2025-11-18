@@ -1188,132 +1188,132 @@ def doBuild(args, parser):
     buildList.append((p,build_command,buildEnvironment,cachedTarball,benv,breq))
     buildOrder.pop(0)
 
-  if args.makeflow:
-    mFlow = "makeflow"
-    mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
-    mfFile = mfDir + "/Makeflow"
-    mfCmd = "(cd %s; %s --clean; %s)" % (mfDir, mFlow,mFlow)  
-    makedirs(mfDir, exist_ok=True)
-    jnj = ""
-    try:
-      fp = open(dirname(realpath(__file__))+'/Makeflow.jnj', 'r')
-      jnj = fp.read()
-      fp.close()
-    except:
-      from pkg_resources import resource_string
-      jnj = resource_string("bits_helpers", 'Makeflow.jnj')
-    with open(mfFile, 'w') as mf:
-      mf.write (SandboxedEnvironment(autoescape=False)
-               .from_string(jnj)
-               .render(specs=specs, args=args, ToDo=buildList, Done=buildTargetsDone)
-              )
-    for (p, build_command, buildEnvironment, cachedTarball, benv,breq) in buildList:
-      spec = specs[p]
-      print (
-        ("Unpacking %s@%s" if cachedTarball else
-         "Compiling %s@%s (use --debug for full output)") %
-        (spec["package"],
-         args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
-      )
-    child = subprocess.run(mfCmd, shell=True, capture_output=True, text=True)
-    err = child.returncode
-    print(err,child.stdout)
-    if(err):
-      print(child.stdout)
-    buildErrMsg = dedent("""\
-      Error while executing {cmd} on `{h}'.
-      Log can be found in {w}/log
-      Please upload it to CERNBox/Dropbox if you intend to request support.
-      """).format(
-        h=socket.gethostname(),
-        cmd=mfCmd,
-        w=mfDir
-      )
-    dieOnError(err, buildErrMsg.strip())
-  else:
-    for (p, build_command, buildEnvironment,cachedTarball,benv,breq) in buildList:
-      spec = specs[p]
-      os.environ.update(buildEnvironment)
-      debug("Build command: %s", build_command)
-      progress = ProgressPrint(
-        ("Unpacking %s@%s" if cachedTarball else
-         "Compiling %s@%s (use --debug for full output)") %
-        (spec["package"],
-         args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
-      )
-      err = execute(build_command, printer=progress)
-      progress.end("failed" if err else "done", err)
-      report_event("BuildError" if err else "BuildSuccess", spec["package"], " ".join((
-      args.architecture,
-      spec["version"],
-      spec["commit_hash"],
-      os.environ["BITS_DIST_HASH"][:10],
-       )))
+    if args.makeflow:
+      mFlow = "makeflow"
+      mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
+      mfFile = mfDir + "/Makeflow"
+      mfCmd = "(cd %s; %s --clean; %s)" % (mfDir, mFlow,mFlow)  
+      makedirs(mfDir, exist_ok=True)
+      jnj = ""
+      try:
+        fp = open(dirname(realpath(__file__))+'/Makeflow.jnj', 'r')
+        jnj = fp.read()
+        fp.close()
+      except:
+        from pkg_resources import resource_string
+        jnj = resource_string("bits_helpers", 'Makeflow.jnj')
+      with open(mfFile, 'w') as mf:
+        mf.write (SandboxedEnvironment(autoescape=False)
+                .from_string(jnj)
+                .render(specs=specs, args=args, ToDo=buildList, Done=buildTargetsDone)
+                )
+      for (p, build_command, buildEnvironment, cachedTarball, benv,breq) in buildList:
+        spec = specs[p]
+        print (
+          ("Unpacking %s@%s" if cachedTarball else
+          "Compiling %s@%s (use --debug for full output)") %
+          (spec["package"],
+          args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
+        )
+      child = subprocess.run(mfCmd, shell=True, capture_output=True, text=True)
+      err = child.returncode
+      print(err,child.stdout)
+      if(err):
+        print(child.stdout)
       buildErrMsg = dedent("""\
-        Error while executing {sd}/build.sh on `{h}'.
+        Error while executing {cmd} on `{h}'.
         Log can be found in {w}/log
         Please upload it to CERNBox/Dropbox if you intend to request support.
-        Build directory is {w}/{p}.
         """).format(
           h=socket.gethostname(),
-          sd=scriptDir,
-          w=join(workDir, "BUILD", spec["hash"]),
-          p=spec["package"],
-          devSuffix="-" + args.develPrefix
-          if "develPrefix" in args and spec["is_devel_pkg"]
-          else "",
-      )
+          cmd=mfCmd,
+          w=mfDir
+        )
       dieOnError(err, buildErrMsg.strip())
+    else:
+      for (p, build_command, buildEnvironment,cachedTarball,benv,breq) in buildList:
+        spec = specs[p]
+        os.environ.update(buildEnvironment)
+        debug("Build command: %s", build_command)
+        progress = ProgressPrint(
+          ("Unpacking %s@%s" if cachedTarball else
+          "Compiling %s@%s (use --debug for full output)") %
+          (spec["package"],
+          args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
+        )
+        err = execute(build_command, printer=progress)
+        progress.end("failed" if err else "done", err)
+        report_event("BuildError" if err else "BuildSuccess", spec["package"], " ".join((
+        args.architecture,
+        spec["version"],
+        spec["commit_hash"],
+        os.environ["BITS_DIST_HASH"][:10],
+        )))
+        buildErrMsg = dedent("""\
+          Error while executing {sd}/build.sh on `{h}'.
+          Log can be found in {w}/log
+          Please upload it to CERNBox/Dropbox if you intend to request support.
+          Build directory is {w}/{p}.
+          """).format(
+            h=socket.gethostname(),
+            sd=scriptDir,
+            w=join(workDir, "BUILD", spec["hash"]),
+            p=spec["package"],
+            devSuffix="-" + args.develPrefix
+            if "develPrefix" in args and spec["is_devel_pkg"]
+            else "",
+        )
+        dieOnError(err, buildErrMsg.strip())
 
-    updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
-    if spec["is_devel_pkg"]:
-      updatablePkgs.append(spec["package"])
-    
-    if updatablePkgs:
-      buildErrMsg += dedent("""
-      Note that you have packages in development mode.
-      Devel sources are not updated automatically, you must do it by hand.\n
-      This problem might be due to one or more outdated devel sources.
-      To update all development packages required for this build it is usually sufficient to do:
-      """)
-      buildErrMsg += "".join("\n  ( cd %s && git pull --rebase )" % dp for dp in updatablePkgs)
-
-      # Gather build info for the error message
-      try:
-        safe_args = {
-          "pkgname", "defaults", "architecture", "forceUnknownArch",
-          "develPrefix", "jobs", "noSystem", "noDevel", "forceTracked", "plugin",
-          "disable", "annotate", "onlyDeps", "docker"
-            }
-        args_str = " ".join(f"--{k}={v}" for k, v in vars(args).items() if v and k in safe_args)
-        detected_arch = detectArch()
-        buildErrMsg += dedent(f"""
-        Build info:
-        OS: {detected_arch}
-        Using BITS from bits@{__version__ or "unknown"} recipes in bits@{os.environ["BITS_DIST_HASH"][:10]}
-        Build arguments: {args_str}
+      updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
+      if spec["is_devel_pkg"]:
+        updatablePkgs.append(spec["package"])
+      
+      if updatablePkgs:
+        buildErrMsg += dedent("""
+        Note that you have packages in development mode.
+        Devel sources are not updated automatically, you must do it by hand.\n
+        This problem might be due to one or more outdated devel sources.
+        To update all development packages required for this build it is usually sufficient to do:
         """)
+        buildErrMsg += "".join("\n  ( cd %s && git pull --rebase )" % dp for dp in updatablePkgs)
 
-        if detected_arch.startswith("osx"):
-          buildErrMsg += f'XCode version: {getstatusoutput("xcodebuild -version")[1]}'
+        # Gather build info for the error message
+        try:
+          safe_args = {
+            "pkgname", "defaults", "architecture", "forceUnknownArch",
+            "develPrefix", "jobs", "noSystem", "noDevel", "forceTracked", "plugin",
+            "disable", "annotate", "onlyDeps", "docker"
+              }
+          args_str = " ".join(f"--{k}={v}" for k, v in vars(args).items() if v and k in safe_args)
+          detected_arch = detectArch()
+          buildErrMsg += dedent(f"""
+          Build info:
+          OS: {detected_arch}
+          Using BITS from bits@{__version__ or "unknown"} recipes in bits@{os.environ["BITS_DIST_HASH"][:10]}
+          Build arguments: {args_str}
+          """)
 
-      except Exception as exc:
-        warning("Failed to gather build info: %s", exc)
+          if detected_arch.startswith("osx"):
+            buildErrMsg += f'XCode version: {getstatusoutput("xcodebuild -version")[1]}'
+
+        except Exception as exc:
+          warning("Failed to gather build info: %s", exc)
 
 
-      dieOnError(err, buildErrMsg.strip())
+        dieOnError(err, buildErrMsg.strip())
 
-    # We need to create 2 sets of links, once with the full requires,
-    # once with only direct dependencies, since that's required to
-    # register packages.
-    createDistLinks(spec, specs, args, syncHelper, "dist", "full_requires")
-    createDistLinks(spec, specs, args, syncHelper, "dist-direct", "requires")
-    createDistLinks(spec, specs, args, syncHelper, "dist-runtime", "full_runtime_requires")
+      # We need to create 2 sets of links, once with the full requires,
+      # once with only direct dependencies, since that's required to
+      # register packages.
+      createDistLinks(spec, specs, args, syncHelper, "dist", "full_requires")
+      createDistLinks(spec, specs, args, syncHelper, "dist-direct", "requires")
+      createDistLinks(spec, specs, args, syncHelper, "dist-runtime", "full_runtime_requires")
 
-    # Make sure not to upload local-only packages! These might have been
-    # produced in a previous run with a read-only remote store.
-    if not spec["revision"].startswith("local"):
-      syncHelper.upload_symlinks_and_tarball(spec)
+      # Make sure not to upload local-only packages! These might have been
+      # produced in a previous run with a read-only remote store.
+      if not spec["revision"].startswith("local"):
+        syncHelper.upload_symlinks_and_tarball(spec)
 
   if not args.onlyDeps:
       banner(f"Build of {mainPackage} successfully completed on `{socket.gethostname()}'.\n"

@@ -677,6 +677,15 @@ class Boto3RemoteSync:
 
     # Upload the smaller file first, so that any parallel uploads are more
     # likely to find it and fail.
+    try:
+      os.readlink(os.path.join(self.workdir, link_path))
+    except FileNotFoundError:
+      os.symlink(
+        os.path.join('../..', self.architecture, 'store', spec["hash"][:2], spec["hash"],
+                     f"{spec['package']}-{spec['version']}-{spec['revision']}.{self.architecture}.tar.gz"),
+        os.path.join(self.workdir, link_path)
+      )
+
     self.s3.put_object(Bucket=self.writeStore, Key=link_path,
                        Body=os.readlink(os.path.join(self.workdir, link_path))
                               .lstrip("./").encode("utf-8"))
