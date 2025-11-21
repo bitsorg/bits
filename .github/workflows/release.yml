@@ -41,27 +41,15 @@ jobs:
       - name: Update bits formula with new version
         run: |
           set -x
-          json=$(curl -fSsL "https://pypi.org/pypi/bits/${GITHUB_REF#refs/tags/}/json") # TODO: update with actual package name
+
+          # Remove the trailing 'v' if present in the tag name
+          version="${GITHUB_REF#refs/tags/}"
+          version="${version#v}"
+
+          json=$(curl -fSsL "https://pypi.org/pypi/bits/${version}/json") # TODO: update with actual package name
           sha=$(echo "$json" | jq -r '.urls.[] | select(.filename | endswith(".tar.gz")) | .digests.sha256')
           url=$(echo "$json" | jq -r '.urls.[] | select(.filename | endswith(".tar.gz")) | .url')
-          # Replace keys with two leading spaces only, so we get the toplevel
-          # ones applying to bits, not those for dependencies.
-          sed -i.bak "
-          s|^  url .*|  url \"$url\"|;
-          s|^  sha256 .*|  sha256 \"$sha\"|;
-          " "$(brew formula bits -q)"
-          rm -f "$(brew formula bits).bak"
-      - name: Regenerate bits formula
-        run: |
-          set -x
-          # Sometimes, brew update-python-resources apparently randomly fails,
-          # blaming pipgrip. Retries should hopefully solve this.
-          attempt=0
-          while [ $((attempt++)) -lt 5 ]; do
-            echo "Attempt $attempt/5..." >&2
-            brew update-python-resources bits && break
-            sleep 300
-          done
+          brew bump-formula-pr --write-only bits --url https://pypi.org/project/bits --version "${version}" --sha256 "${sha}" # TODO: update with actual package name
       - name: Push updated formula
         run: |
           set -x
