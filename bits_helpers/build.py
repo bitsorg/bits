@@ -487,7 +487,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
     )
   if args.resourceMonitoring:
-    err, out = run_monitor_on_command(build_command, "%s/%s.json" % (scriptDir, p))
+    err = run_monitor_on_command(build_command, "%s/%s.json" % (scriptDir, p), printer=progress)
   else:
     err = execute(build_command, printer=progress)
   if args.builders==1:

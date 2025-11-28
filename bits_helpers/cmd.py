@@ -56,6 +56,10 @@ def getstatusoutput(command, timeout=None, cwd=None):
 
 def execute(command, printer=debug, timeout=None):
   popen = Popen(command, shell=isinstance(command, str), stdout=PIPE, stderr=STDOUT)
+  return monitor_progress(popen, printer, timeout)
+
+
+def monitor_progress(popen, printer=debug, timeout=None):
   start_time = time.time()
   for line in iter(popen.stdout.readline, b""):
     printer("%s", decode_with_fallback(line).strip("\n"))

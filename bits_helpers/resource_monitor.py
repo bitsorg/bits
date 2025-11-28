@@ -3,6 +3,7 @@ from threading import Thread
 import psutil
 from json import dump as json_dump
 from time import time, sleep
+from bits_helpers.cmd import monitor_progress
 
 # Sampling interval in seconds
 SAMPLE_INTERVAL = 1.0
@@ -72,10 +73,11 @@ def monitor_stats(p_id, stats_file_name):
         json_dump(data, sf)
     return
 
-def run_monitor_on_command(command_to_monitor, stats_file_name):
-    p = subprocess.Popen(command_to_monitor, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds= True)
-    mon_thd = Thread(target=monitor_stats, args=(p.pid, stats_file_name,))
-    mon_thd.start()
-    stout, sterr = p.communicate() # this blocks until the process is finished
-    mon_thd.join() # wait for monitoring thread to write its output
-    return p.returncode, stout
+
+def run_monitor_on_command(command, stats_file_name, printer, timeout=None):
+  popen = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds= True)
+  mon_thd = Thread(target=monitor_stats, args=(popen.pid, stats_file_name,))
+  mon_thd.start()
+  returncode = monitor_progress(popen, printer, timeout)
+  mon_thd.join() # wait for monitoring thread to write its output
+  return returncode
