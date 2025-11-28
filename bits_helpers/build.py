@@ -1431,19 +1431,99 @@ def doBuild(args, parser):
       )
     child = subprocess.run(mfCmd, shell=True, capture_output=True, text=True)
     err = child.returncode
+    
+    buildErrMsg = ""
     if(err):
       print(child.stdout)
+      
+      # Color codes for error message (if TTY)
+      bold = "\033[1m" if sys.stderr.isatty() else ""
+      red = "\033[31m" if sys.stderr.isatty() else ""
+      reset = "\033[0m" if sys.stderr.isatty() else ""
+      
+      # Determine paths
+      log_path = f"{mfDir}/log"
+      
+      # Use relative paths if we're inside the work directory
+      try:
+        from os.path import relpath
+        log_path = relpath(log_path, os.getcwd())
+        mfDir_rel = relpath(mfDir, os.getcwd())
+      except (ValueError, OSError):
+        mfDir_rel = mfDir  # Keep absolute paths if relpath fails
+      
+      # Build the error message
+      buildErrMsg = f"{red}{bold}MAKEFLOW BUILD FAILED{reset}\n"
+      buildErrMsg += "=" * 70 + "\n\n"
+      
+      buildErrMsg += f"{bold}Makeflow Command:{reset}\n"
+      buildErrMsg += f"  {mfCmd}\n\n"
+      
+      buildErrMsg += f"{bold}Log File:{reset}\n"
+      buildErrMsg += f"  {log_path}\n\n"
+      
+      buildErrMsg += f"{bold}Makeflow Directory:{reset}\n"
+      buildErrMsg += f"  {mfDir_rel}\n"
+      
+      # Gather build info for the error message
+      try:
+        detected_arch = detectArch()
+
+        # Only show safe arguments (no tokens/secrets) in CLI-usable format
+        safe_args = {
+          "pkgname", "defaults", "architecture", "forceUnknownArch",
+          "develPrefix", "jobs", "noSystem", "noDevel", "forceTracked", "plugin",
+          "disable", "annotate", "onlyDeps", "docker", "makeflow"
+        }
+        
+        cli_args = []
+        for k, v in vars(args).items():
+          if not v or k not in safe_args:
+            continue
+          
+          # Format based on type for CLI usage
+          if isinstance(v, bool):
+            if v:  # Only show if True
+              cli_args.append(f"--{k}")
+          elif isinstance(v, list):
+            if v:  # Only show non-empty lists
+              for item in v:
+                cli_args.append(f"--{k}={quote(str(item))}")
+          else:
+            # Quote if needed
+            cli_args.append(f"--{k}={quote(str(v))}")
+        
+        args_str = " ".join(cli_args)
+
+        buildErrMsg += f"\n{bold}Environment:{reset}\n"
+        buildErrMsg += f"  OS: {detected_arch}\n"
+        buildErrMsg += f"  bits: {__version__ or 'unknown'} (bits@{os.environ['BITS_DIST_HASH'][:10]})\n"
+
+        if detected_arch.startswith("osx"):
+          xcode_info = getstatusoutput("xcodebuild -version")[1]
+          # Combine XCode version lines into one
+          xcode_lines = xcode_info.strip().split('\n')
+          if len(xcode_lines) >= 2:
+            xcode_str = f"{xcode_lines[0]} ({xcode_lines[1]})"
+          else:
+            xcode_str = xcode_lines[0] if xcode_lines else "Unknown"
+          buildErrMsg += f"  XCode: {xcode_str}\n"
+
+        buildErrMsg += f"  Arguments: {args_str}\n"
+
+      except Exception as exc:
+        warning("Failed to gather build info", exc_info=exc)
+      
+      # Add Next Steps section
+      buildErrMsg += f"\n{bold}Next Steps:{reset}\n"
+      buildErrMsg += f"  • View makeflow log:       cat {log_path}\n"
+      buildErrMsg += f"  • View makeflow file:      cat {mfDir_rel}/Makeflow\n"
+      if not args.debug:
+        buildErrMsg += f"  • Rebuild with debug:      bitsBuild build {' '.join(args.pkgname)} --debug --makeflow\n"
+      buildErrMsg += f"  • Please upload the full log to CERNBox/Dropbox if you intend to request support.\n"
+      
     else:
       debug(child.stdout)
-    buildErrMsg = dedent("""\
-      Error while executing {cmd} on `{h}'.
-      Log can be found in {w}/log
-      Please upload it to CERNBox/Dropbox if you intend to request support.
-      """).format(
-        h=socket.gethostname(),
-        cmd=mfCmd,
-        w=mfDir
-      )
     dieOnError(err, buildErrMsg.strip())
     for (p, _, _, _) in buildList:
       doFinalSync(specs[p], specs, args, syncHelper)
