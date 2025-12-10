@@ -353,7 +353,7 @@ def doParseArgs():
   init_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
                          help=("The toplevel directory under which builds should be done and "
                                "build results should be installed. Default '%(default)s'."))
-  init_dirs.add_argument("-c", "--config-dir", dest="configDir", default="%(prefix)s",
+  init_dirs.add_argument("-c", "--config-dir", dest="configDir", default="%(prefix)salidist",
                          help=("The directory where build recipes will be placed. '%%(prefix)s' will "
                                "be replaced with 'DEVELPREFIX/'. Default '%(default)s'."))
   init_dirs.add_argument("--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
