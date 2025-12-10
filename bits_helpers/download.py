@@ -12,11 +12,19 @@ from urllib.error import URLError
 import base64
 from time import time
 from types import SimpleNamespace
-from bits_helpers.log import error, warning, debug
+from bits_helpers.log import error, warning, debug, info
 import json
 
 urlRe = re.compile(r".*:.*/.*")
 urlAuthRe = re.compile(r'^(http(s|)://)([^:]+:[^@]+)@(.+)$')
+
+
+class MalformedUrl(Exception):
+    def __init__(self, url, missingParams=[]):
+        if not missingParams:
+            self.args = ["ERROR: The following url is malformed: %(url)s." % locals()]
+        else:
+            self.args = ["ERROR: The following parameters are missing from url %(url)s: %(missingParams)s" % locals()]
 
 def format(s, **kwds):
     return s % kwds
@@ -25,12 +33,12 @@ def executeWithErrorCheck(command, errorMessage):
     debug(command)
     error, output = getstatusoutput(command)
     if error:
-        warning(errorMessage + ":")
-        warning("")
-        warning(command)
-        warning("")
-        warning("resulted in:")
-        warning(output)
+        info(errorMessage + ":")
+        info("")
+        info(command)
+        info("")
+        info("resulted in:")
+        info(output)
         return False
     debug(output)
     return True
@@ -291,7 +299,7 @@ downloadHandlers = {
     "git": downloadGit,
     "pip": downloadPip,
     "file": downloadFile
-}   
+}
 
 
 def download(source, dest, work_dir):
@@ -329,16 +337,15 @@ def download(source, dest, work_dir):
     urlTypeRe = re.compile(r"([^:+]*)([^:]*)://.*")
     match = urlTypeRe.match(source)
     if not urlTypeRe.match(source):
-        if not source.startswith("/"):
-            raise MalformedUrl(source)
-    downloadHandler = downloadHandlers[match.group(1)] 
+        raise MalformedUrl(source)
+    downloadHandler = downloadHandlers[match.group(1)]
     filename = source.rsplit("/", 1)[1]
     downloadDir = join(cacheDir, checksum[0:2], checksum)
     try:
         makedirs(downloadDir)
     except OSError as e:
         if not exists(downloadDir):
-            raise downloadDir
+            raise e
 
     realFile = join(downloadDir, filename)
     if not exists(realFile):
@@ -347,5 +354,5 @@ def download(source, dest, work_dir):
     if exists(realFile):
         executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
     else:
-        raise downloadDir
+        raise OSError("Unable to download source %s in to %s" % (source, downloadDir))
     return

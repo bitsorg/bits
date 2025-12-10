@@ -611,7 +611,10 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     buildErrMsg += f"  • Rebuild with debug:      bitsBuild build {spec['package']} --debug\n"
   buildErrMsg += f"  • Please upload the full log to CERNBox/Dropbox if you intend to request support.\n"
 
-  dieOnError(err, buildErrMsg.strip())
+  if err and args.builders>1:
+    return buildErrMsg.strip()
+  else:
+    dieOnError(err, buildErrMsg.strip())
 
   updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
   if spec["is_devel_pkg"]:
@@ -648,7 +651,10 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     except Exception as exc:
       warning("Failed to gather build info: %s", exc)
 
-    dieOnError(err, buildErrMsg.strip())
+    if err and args.builders>1:
+      return buildErrMsg.strip()
+    else:
+      dieOnError(err, buildErrMsg.strip())
 
   doFinalSync(spec, specs, args, syncHelper)
 
@@ -1405,6 +1411,10 @@ def doBuild(args, parser):
 
   if (not args.makeflow) and (args.builders > 1) and buildTargets:
     scheduler.run()
+    for (action, error) in scheduler.errors.items():
+      info("* The action \"%s\" was not completed successfully because %s" % (action, error))
+    if scheduler.brokenJobs:
+      dieOnError(True, "Please fix the above errors.")
   elif args.makeflow and buildTargets:
     mFlow = "makeflow"
     mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
