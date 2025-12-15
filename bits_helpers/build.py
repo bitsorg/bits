@@ -51,7 +51,7 @@ def writeAll(fn, txt) -> None:
 def readHashFile(fn):
   try:
     return open(fn).read().strip("\n")
-  except IOError:
+  except OSError:
     return "0"
 
 
@@ -201,7 +201,7 @@ def storeHashes(package, specs, considerRelocation):
       # spec["env"] is of type OrderedDict[str, str].
       # spec["*_path"] are of type OrderedDict[str, list[str]].
       assert isinstance(spec[key], OrderedDict), \
-        "spec[%r] was of type %r" % (key, type(spec[key]))
+        "spec[{!r}] was of type {!r}".format(key, type(spec[key]))
 
       # Python 3.12 changed the string representation of OrderedDicts from
       # OrderedDict([(key, value)]) to OrderedDict({key: value}), so to remain
@@ -210,7 +210,7 @@ def storeHashes(package, specs, considerRelocation):
       h_all(", ".join(
         # XXX: We still rely on repr("str") being "'str'",
         # and on repr(["a", "b"]) being "['a', 'b']".
-        "(%r, %r)" % (key, value)
+        "({!r}, {!r})".format(key, value)
         for key, value in spec[key].items()
       ))
       h_all("])")
@@ -292,7 +292,7 @@ def hash_local_changes(spec):
   h = Hasher()
   if "track_env" in spec:
     assert isinstance(spec["track_env"], OrderedDict), \
-        "spec[%r] was of type %r" % ("track_env", type(spec["track_env"]))
+        "spec[{!r}] was of type {!r}".format("track_env", type(spec["track_env"]))
 
     # Python 3.12 changed the string representation of OrderedDicts from
     # OrderedDict([(key, value)]) to OrderedDict({key: value}), so to remain
@@ -301,7 +301,7 @@ def hash_local_changes(spec):
     h(", ".join(
         # XXX: We still rely on repr("str") being "'str'",
         # and on repr(["a", "b"]) being "['a', 'b']".
-        "(%r, %r)" % (key, value) for key, value in spec["track_env"].items()))
+        "({!r}, {!r})".format(key, value) for key, value in spec["track_env"].items()))
     h("])")
   def hash_output(msg, args):
     lines = msg % args
@@ -400,7 +400,7 @@ def generate_initdotsh(package, specs, architecture, post_build=False):
     # First, output a sensible error message if types are wrong.
     for key in ("env", "append_path", "prepend_path"):
       dieOnError(not isinstance(spec.get(key, {}), dict),
-                 "Tag `%s' in %s should be a dict." % (key, package))
+                 "Tag `{}' in {} should be a dict.".format(key, package))
 
     # Set "env" variables.
     # We only put the values in double-quotes, so that they can refer to other
@@ -422,7 +422,7 @@ def generate_initdotsh(package, specs, architecture, post_build=False):
     # By default we add the .../bin directory to PATH and .../lib to LD_LIBRARY_PATH.
     # Prepend to these paths, so that our packages win against system ones.
     for key, value in (("PATH", "bin"), ("LD_LIBRARY_PATH", "lib"),  ("LD_LIBRARY_PATH", "lib64")):
-      prepend_path.setdefault(key, []).insert(0, "${}_ROOT/{}".format(bigpackage, value))
+      prepend_path.setdefault(key, []).insert(0, f"${bigpackage}_ROOT/{value}")
     lines.extend('[ ! -d "{value}" ] || export {key}="{value}${{{key}+:${key}}}"'
                  .format(key=key, value=dir)
                  for key, value in prepend_path.items()
@@ -494,7 +494,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
     )
   if args.resourceMonitoring:
-    err = run_monitor_on_command(build_command, "%s/%s.json" % (scriptDir, p), printer=progress)
+    err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=progress)
   else:
     err = execute(build_command, printer=progress)
   if args.builders==1:
@@ -799,7 +799,7 @@ def doBuild(args, parser):
       builtPackages = buildOrder
     if len(builtPackages) > 1:
       banner("Packages will be built in the following order:\n - %s",
-             "\n - ".join(x+" (development package)" if x in develPkgs else "%s@%s" % (x, specs[x]["tag"])
+             "\n - ".join(x+" (development package)" if x in develPkgs else "{}@{}".format(x, specs[x]["tag"])
                           for x in builtPackages if x != "defaults-release"))
     else:
       banner("No dependencies of package %s to build.", buildOrder[-1])
@@ -1101,7 +1101,7 @@ def doBuild(args, parser):
       develPrefix = possibleDevelPrefix
 
     if possibleDevelPrefix:
-      spec["build_family"] = "%s-%s" % (possibleDevelPrefix, args.defaults)
+      spec["build_family"] = "{}-{}".format(possibleDevelPrefix, args.defaults)
     else:
       spec["build_family"] = "_".join(args.defaults)
     if spec["package"] == mainPackage:
@@ -1220,7 +1220,7 @@ def doBuild(args, parser):
 
     # Now that we have all the information about the package we want to build, let's
     # check if it wasn't built / unpacked already.
-    hashPath= "%s/%s/%s/%s-%s" % (workDir,
+    hashPath= "{}/{}/{}/{}-{}".format(workDir,
                                   args.architecture,
                                   spec["package"],
                                   spec["version"],
@@ -1291,7 +1291,7 @@ def doBuild(args, parser):
     # The actual build script.
     debug("spec = %r", spec)
     
-    fp = open(dirname(realpath(__file__))+'/build_template.sh', 'r')
+    fp = open(dirname(realpath(__file__))+'/build_template.sh')
     cmd_raw = fp.read()
     fp.close()
 
@@ -1307,7 +1307,7 @@ def doBuild(args, parser):
                      spec["version"] + "-" + spec["revision"])
 
     makedirs(scriptDir, exist_ok=True)
-    writeAll("%s/%s.sh" % (scriptDir, spec["package"]), spec["recipe"])
+    writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
     writeAll("%s/build.sh" % scriptDir, cmd_raw % {
       "provenance": create_provenance_info(spec["package"], specs, args),
       "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, post_build=False),
@@ -1383,7 +1383,7 @@ def doBuild(args, parser):
         scriptDir=quote(scriptDir),
         extraArgs=" ".join(map(quote, args.docker_extra_args)),
         additionalEnv=" ".join(
-          "-e {}={}".format(var, quote(value)) for var, value in buildEnvironment),
+          f"-e {var}={quote(value)}" for var, value in buildEnvironment),
         # Used e.g. by O2DPG-sim-tests to find the O2DPG repository.
         develVolumes=" ".join(
           '-v "$PWD/$(readlink {pkg} || echo {pkg})":/{pkg}:rw'.format(pkg=quote(spec["package"]))
@@ -1395,8 +1395,8 @@ def doBuild(args, parser):
       )
     else:
       buildEnvironment = ([key, (val if isinstance(val, str) else "_".join(val))] for key, val in buildEnvironment)
-      env_vars = " ".join(["%s=%s" % (key, quote(val)) for key, val in buildEnvironment])
-      build_command =  "env %s %s -e -x %s/build.sh 2>&1" % (env_vars, BASH, quote(scriptDir))
+      env_vars = " ".join(["{}={}".format(key, quote(val)) for key, val in buildEnvironment])
+      build_command =  "env {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
 
     buildTargets.append(p)
     if not args.makeflow:
@@ -1412,18 +1412,18 @@ def doBuild(args, parser):
   if (not args.makeflow) and (args.builders > 1) and buildTargets:
     scheduler.run()
     for (action, error) in scheduler.errors.items():
-      info("* The action \"%s\" was not completed successfully because %s" % (action, error))
+      info("* The action \"{}\" was not completed successfully because {}".format(action, error))
     if scheduler.brokenJobs:
       dieOnError(True, "Please fix the above errors.")
   elif args.makeflow and buildTargets:
     mFlow = "makeflow"
     mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
     mfFile = mfDir + "/Makeflow"
-    mfCmd = "(cd %s; %s --clean; %s)" % (mfDir, mFlow,mFlow)  
+    mfCmd = "(cd {}; {} --clean; {})".format(mfDir, mFlow,mFlow)  
     makedirs(mfDir, exist_ok=True)
     jnj = ""
     try:
-      fp = open(dirname(realpath(__file__))+'/Makeflow.jnj', 'r')
+      fp = open(dirname(realpath(__file__))+'/Makeflow.jnj')
       jnj = fp.read()
       fp.close()
     except:

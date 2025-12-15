@@ -1,5 +1,5 @@
 import re, copy
-class ResourceManager(object):
+class ResourceManager:
     def __init__(self, ESstats, scheduler, highestPriortyOnly = False):
         self.esStats = ESstats
         self.scheduler = scheduler
@@ -32,7 +32,7 @@ class ResourceManager(object):
           else:
             if ext not in pkg_stats:
               idx = -1
-              ext = "%s:%s" % (build_type, ext)
+              ext = "{}:{}".format(build_type, ext)
               for exp in self.esStats["known"]:
                 if re.match(exp[0], ext):
                   idx = exp[1]
@@ -63,13 +63,13 @@ class ResourceManager(object):
             break
         if externals_ordered:
           self.scheduler.debug("Available resources %s" % self.machineResources)
-          self.scheduler.debug("Buildable tasks %s: %s" % (len(externals_ordered), ",".join(externals_ordered)))
+          self.scheduler.debug("Buildable tasks {}: {}".format(len(externals_ordered), ",".join(externals_ordered)))
         return externals_ordered
 
     def releaseResourcesForExternal(self, external):
         if external not in self.allocated: return
         for prm in self.resouceList:
             self.machineResources[prm] +=  self.allocated[external][prm]
-        self.scheduler.debug("Released resources: %s , %s" % (self.allocated[external], self.machineResources))
+        self.scheduler.debug("Released resources: {} , {}".format(self.allocated[external], self.machineResources))
         del self.seenPackages[external]
         del self.allocated[external]

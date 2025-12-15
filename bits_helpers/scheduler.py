@@ -9,7 +9,7 @@ from bits_helpers.resource_manager import ResourceManager
 
 # Helper class to avoid conflict between result
 # codes and quit state transition.
-class _SchedulerQuitCommand(object):
+class _SchedulerQuitCommand:
   pass
 
 def transition(what, fromList, toList):
@@ -20,7 +20,7 @@ def transition(what, fromList, toList):
     raise e
   toList.append(what)
 
-class Scheduler(object):
+class Scheduler:
   # A simple job scheduler.
   # Workers queue is to specify to threads what to do. Results
   # queue is whatched by the master thread to wait for results

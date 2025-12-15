@@ -58,9 +58,9 @@ def packCheckout(tempdir, dest, *exports):
 # We have our own version rather than using the one from os
 # because the latter does not work seem to be thread safe.
 def makedirs(path):
-    returncode, out = getstatusoutput("mkdir -p %s" % (path,))
+    returncode, out = getstatusoutput("mkdir -p {}".format(path))
     if returncode != 0:
-        raise OSError("makedirs() failed (return: %s):\n%s" % (returncode, out))
+        raise OSError("makedirs() failed (return: {}):\n{}".format(returncode, out))
 
 def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
     try:
@@ -72,7 +72,7 @@ def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
             headers['Authorization'] = "Basic %s" % base64.b64encode(m.group(3))
         req = Request(source, headers=headers)
         s = urlopen(req)
-        tmpfile = "%s.%f.tmp" % (dest, time())
+        tmpfile = "{}.{:f}.tmp".format(dest, time())
         f = open(tmpfile, "wb")
         # Read in blocks to avoid using too much memory.
         block_sz = 8192 * 16
@@ -87,10 +87,10 @@ def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
         else:
             unlink(tmpfile)
     except URLError as e:
-        debug("Error while downloading %s: %s" % (source, e))
+        debug("Error while downloading {}: {}".format(source, e))
         return False
     except Exception as e:
-        debug("Error while downloading %s: %s" % (source, e))
+        debug("Error while downloading {}: {}".format(source, e))
         return False
     return True
 
@@ -238,8 +238,8 @@ def downloadPip(source, dest, work_dir):
     pack = pkg[0].strip()
     tar_names = [pack.replace("-", "_"), pack] if '-' in pack else [pack]
     for tar_name in tar_names:
-      pypi_file = '%s-%s.tar.gz' % (tar_name, pkg[1].strip())
-      pypi_url = 'https://pypi.io/packages/source/%s/%s/%s' % (pack[0], pack, pypi_file)
+      pypi_file = '{}-{}.tar.gz'.format(tar_name, pkg[1].strip())
+      pypi_url = 'https://pypi.io/packages/source/{}/{}/{}'.format(pack[0], pack, pypi_file)
       if downloadUrllib2(pypi_url, dest, work_dir, dest_filename=filename):
         return
     pack = pack + '==' + pkg[1].strip()
@@ -282,7 +282,7 @@ def downloadPip(source, dest, work_dir):
 
     if not '--no-deps' in pip_opts: pip_opts = '--no-deps ' + pip_opts
     if not '--no-cache-dir' in pip_opts: pip_opts = '--no-cache-dir ' + pip_opts
-    comm = 'cd ' + dest + ";" + pip + ' download ' + pip_opts + ' --disable-pip-version-check -q -d . %s; [ -e %s ] || mv *.* %s; ls -l' % (pack, filename, filename)
+    comm = 'cd ' + dest + ";" + pip + ' download ' + pip_opts + ' --disable-pip-version-check -q -d . {}; [ -e {} ] || mv *.* {}; ls -l'.format(pack, filename, filename)
     error, output = getstatusoutput(comm)
     return not error
 
@@ -331,7 +331,7 @@ def download(source, dest, work_dir):
             release = releases[1]
         else:
             raise MalformedUrl(source)
-        source = "cmstc://?%s%s%s&module=CMSSW&export=src&output=/%s" % (release, baserel, extratags, output)
+        source = "cmstc://?{}{}{}&module=CMSSW&export=src&output=/{}".format(release, baserel, extratags, output)
 
     cacheDir = abspath(join(work_dir, "SOURCES/cache"))
     urlTypeRe = re.compile(r"([^:+]*)([^:]*)://.*")
@@ -354,5 +354,5 @@ def download(source, dest, work_dir):
     if exists(realFile):
         executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
     else:
-        raise OSError("Unable to download source %s in to %s" % (source, downloadDir))
+        raise OSError("Unable to download source {} in to {}".format(source, downloadDir))
     return

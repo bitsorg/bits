@@ -72,7 +72,7 @@ def report(eventType, **metadata):
   ostype = "Macintosh" if architecture.startswith("osx") else "Linux"
   osversion, osprocessor = architecture.split("_", 1)
   args = ["curl", "--max-time", "5",
-          "--user-agent", "bitsBuild/%s (%s; %s %s) Python/%s" % (
+          "--user-agent", "bitsBuild/{} ({}; {} {}) Python/{}".format(
                                                     os.environ["BITS_VERSION"],
                                                     ostype,
                                                     osprocessor,
