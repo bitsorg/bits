@@ -9,7 +9,7 @@ from collections import OrderedDict
 
 from bits_helpers.log import dieOnError, debug, error
 from bits_helpers.download import download
-from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash
+from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash, asList
 
 FETCH_LOG_NAME = "fetch-log.txt"
 
@@ -115,7 +115,8 @@ def updateReferenceRepo(referenceSources, p, spec,
     cmd = scm.cloneReferenceCmd(spec["source"], referenceRepo, usePartialClone)
     logged_scm(scm, p, referenceSources, cmd, ".", allowGitPrompt)
   elif fetch:
-    cmd = scm.fetchCmd(spec["source"], "+refs/tags/*:refs/tags/*", "+refs/heads/*:refs/heads/*")
+    ref_match_rule = asList(spec.get("ref_match_rule", ["+refs/tags/*:refs/tags/*", "+refs/heads/*:refs/heads/*"]))
+    cmd = scm.fetchCmd(spec["source"], *ref_match_rule)
     logged_scm(scm, p, referenceSources, cmd, referenceRepo, allowGitPrompt)
 
   return referenceRepo  # reference is read-write
