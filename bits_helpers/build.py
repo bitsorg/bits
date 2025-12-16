@@ -700,7 +700,7 @@ def doBuild(args, parser):
 
   defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
   (err, overrides, taps) = parseDefaults(args.disable,
-                                        defaultsReader, debug)
+                                        defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)
   makedirs(join(workDir, "SPECS"), exist_ok=True)
 

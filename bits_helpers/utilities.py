@@ -21,7 +21,7 @@ from shlex import quote
 from bits_helpers.cmd import getoutput
 from bits_helpers.git import git
 
-from bits_helpers.log import error, warning, dieOnError, debug
+from bits_helpers.log import error, warning, dieOnError, debug, banner
 
 class SpecError(Exception):
   pass
@@ -333,27 +333,46 @@ def disabledByArchitectureDefaults(arch, defaults, requires):
     elif not re.match(matcher, arch):
       yield require
 
-def merge_dicts(dict1, dict2):
-  """
-  Merge two ordered dictionaries where dict2's keys updates dict1's keys recursively.
-  """
-  # Add all keys from dict1 first
-  merged = dict1.copy()
-  # Overwrite with dict2's values and add new keys
-  for key, value in dict2.items():
-    if key not in merged:
-      merged[key] = value
-      continue
-    elif isinstance(merged[key], dict) and isinstance(value, dict):
-      # Recursively merge nested ordered dictionaries
-      merged[key] = merge_dicts(merged[key], value)
-    elif isinstance(merged[key], list) and isinstance(value, list):
-      # merge lists, such as for "disabled"
-      merged[key].extend(value)
-    else:
-      # Overwrite existing key or add new key
-      merged[key] = value
-  return merged
+def merge_dicts(dict1, dict2, skip_keys=None) -> OrderedDict:
+    """
+    Merge two ordered dictionaries where dict2's keys updates dict1's keys recursively.
+    
+    Args:
+        dict1: First dictionary (base)
+        dict2: Second dictionary (updates)
+        skip_keys: Set of keys to skip during merge (won't be updated from dict2)
+    
+    Returns:
+        OrderedDict with merged values
+    """
+    if dict2 is None:
+      return dict1.copy()
+    if skip_keys is None:
+        skip_keys = set()
+    
+    # Add all keys from dict1 first
+    merged = dict1.copy()
+    
+    # Overwrite with dict2's values and add new keys
+    for key, value in dict2.items():
+        # Skip keys that are in the skip list
+        if key in skip_keys:
+            continue
+            
+        if key not in merged:
+            # Add new key from dict2
+            merged[key] = value
+        elif isinstance(merged[key], dict) and isinstance(value, dict):
+            # Recursively merge nested ordered dictionaries
+            merged[key] = merge_dicts(merged[key], value, skip_keys)
+        elif isinstance(merged[key], list) and isinstance(value, list):
+            # Merge lists, such as for "disabled"
+            merged[key].extend(value)
+        else:
+            # Overwrite existing key
+            merged[key] = value
+    
+    return merged
 
 def readDefaults(configDir, defaults, error, architecture):
   defaultsMeta = {}
@@ -370,19 +389,6 @@ def readDefaults(configDir, defaults, error, architecture):
         error(err)
         sys.exit(1)
       defaultsMeta = merge_dicts(defaultsMeta, xMeta)
-
-  archDefaults = "%s/defaults-%s.sh" % (configDir, architecture)
-  archMeta = {}
-  archBody = ""
-  if exists(archDefaults):
-    err, archMeta, archBody = parseRecipe(getRecipeReader(defaultsFilename))
-    if err:
-      error(err)
-      sys.exit(1)
-    for x in ["env", "disable", "overrides"]:
-      defaultsMeta.setdefault(x, {}).update(archMeta.get(x, {}))
-    defaultsBody += "\n# Architecture defaults\n" + archBody
-
   debug("Merged Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
 
   return (defaultsMeta, defaultsBody)
@@ -552,8 +558,19 @@ def asDict(overrides_array):
 
 # (Almost pure part of the defaults parsing)
 # Override defaultsGetter for unit tests.
-def parseDefaults(disable, defaultsGetter, log):
+def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=None):
   defaultsMeta, defaultsBody = defaultsGetter()
+  if architecture and configDir:
+    archDefaults = resolveDefaultsFilename(architecture, configDir)
+    if exists(archDefaults):
+      defaultsArchMeta = {}
+      err, defaultsArchMeta, archBody = parseRecipe(getRecipeReader(archDefaults, configDir))
+      if err:
+        dieOnError (err, None, None)
+      banner("Using defaults-%s file found in %s", architecture, configDir)
+      debug("Architecture-specific defaults mentioned in: %s ", archDefaults)
+      defaultsMeta = merge_dicts(defaultsMeta, defaultsArchMeta, skip_keys={"package"})
+
   # Defaults are actually special packages. They can override metadata
   # of any other package and they can disable other packages. For
   # example they could decide to switch from ROOT 5 to ROOT 6 and they
