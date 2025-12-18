@@ -37,6 +37,7 @@ export PATH=$WORK_DIR/wrapper-scripts:$PATH
 # the bits script itself
 #
 # - ARCHITECTURE
+# - BITS_SCRIPT_DIR
 # - BUILD_REQUIRES
 # - CACHED_TARBALL
 # - CAN_DELETE
@@ -212,27 +213,21 @@ EOF
 
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
 # Find which files need relocation.
-{ grep -I -H -l -R "\(INSTALLROOT/$PKGHASH\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } | sed -e 's|^\./||' > "$INSTALLROOT/.original-unrelocated"
+{ grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate"
 
 # Relocate script for <arch>/<pkgname>/<pkgver> structure
-cat > "$INSTALLROOT/relocate-me.sh" <<EoF
-#!/bin/bash -e
-if [[ "\$WORK_DIR" == '' ]]; then
-  echo 'Please, define \$WORK_DIR'
-  exit 1
-fi
+
+cat > "$INSTALLROOT/etc/profile.d/.bits-pkginfo" <<EoF
 OP=${PKGPATH}
 PP=\${PKGPATH:-${PKGPATH}}
 PH=${PKGHASH}
+PKG_DIR="$WORK_DIR"
 EoF
 
-while read -r unrelocated; do
-  echo "sed -e \"s|/[^ ;:]*INSTALLROOT/\$PH/\$OP|\$WORK_DIR/\$PP|g; s|[@][@]PKGREVISION[@]\$PH[@][@]|$PKGREVISION|g\"" \
-       "\$PP/$unrelocated.unrelocated > \$PP/$unrelocated"
-done < "$INSTALLROOT/.original-unrelocated" >> "$INSTALLROOT/relocate-me.sh"
+cp "${BITS_SCRIPT_DIR}/relocate-me.sh" "$INSTALLROOT/"
 
 # Always relocate the modulefile (if present) so that it works also in devel mode.
-if [[ ! -s "$INSTALLROOT/.original-unrelocated" && -f "$INSTALLROOT/etc/modulefiles/$PKGNAME" ]]; then
+if [[ ! -s "$INSTALLROOT/etc/profile.d/.bits-relocate" && -f "$INSTALLROOT/etc/modulefiles/$PKGNAME" ]]; then
   echo "mv -f \$PP/etc/modulefiles/$PKGNAME \$PP/etc/modulefiles/${PKGNAME}.forced-relocation && sed -e \"s|[@][@]PKGREVISION[@]\$PH[@][@]|$PKGREVISION|g\" \$PP/etc/modulefiles/${PKGNAME}.forced-relocation > \$PP/etc/modulefiles/$PKGNAME" >> "$INSTALLROOT/relocate-me.sh"
 fi
 
@@ -289,7 +284,6 @@ EOF
 fi
 
 cat "$INSTALLROOT/relocate-me.sh"
-cat "$INSTALLROOT/.original-unrelocated" | xargs -n1 -I{} cp '{}' '{}'.unrelocated
 fi
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH"
 

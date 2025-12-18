@@ -1349,6 +1349,7 @@ def doBuild(args, parser):
       ("FULL_BUILD_REQUIRES", " ".join(spec["full_build_requires"])),
       ("FULL_REQUIRES", " ".join(spec["full_requires"])),
       ("BITS_PREFER_SYSTEM_KEY", spec.get("key", "")),
+      ("BITS_SCRIPT_DIR", dirname(realpath(__file__))),
     ]
     if "sources" in spec:
       for idx, src in enumerate(spec["sources"]):
