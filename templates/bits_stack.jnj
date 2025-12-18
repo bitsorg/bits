@@ -1,0 +1,9 @@
+# A bits template to extract name and license (when available)
+# from the bits recipes.
+#
+# Use with some variation of:
+#
+# cat bits_stack.jnj | bits build ROOT --defaults o2 --debug --no-system --plugin templating --no-system
+#
+{% for name, spec in specs.items() %}
+{{ name }}{%if spec.license is defined %}: {{ spec.license }}{% endif %}{% endfor %}
