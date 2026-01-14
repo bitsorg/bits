@@ -186,7 +186,7 @@ def doDoctor(args, parser):
            "Look at the error messages above to get hints on what packages you need to install separately.",
            "\n- ".join(failed))
     exitcode = 1
-  if validDefaults and args.defaults not in validDefaults:
+  if validDefaults and any(d not in validDefaults for d in args.defaults):
     banner("The list of packages cannot be built with the defaults you have specified.\n"
            "List of valid defaults:\n\n- %s\n\n"
            "Use the `--defaults' switch to specify one of them.",

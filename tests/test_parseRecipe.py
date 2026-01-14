@@ -113,7 +113,7 @@ class TestRecipes(unittest.TestCase):
     self.assertEqual(ok, True)
     ok, out, validDefaults = validateDefaults({"package": "foo","valid_defaults": ["o2", "o2-dataflow"]}, "release")
     self.assertEqual(ok, False)
-    self.assertEqual(out, 'Cannot compile foo with `release\' default. Valid defaults are\n - o2\n - o2-dataflow')
+    self.assertEqual(out, "Cannot compile foo with `release' default. Valid defaults are\n - o2\n - o2-dataflow")
     ok, out, validDefaults = validateDefaults({"package": "foo","valid_defaults": ["o2", "o2-dataflow"]}, "o2")
     self.assertEqual(ok, True)
     ok, out, validDefaults = validateDefaults({"package": "foo","valid_defaults": "o2-dataflow"}, "o2")

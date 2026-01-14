@@ -61,8 +61,8 @@ def doInit(args):
                                          overrides=overrides,
                                          taps=taps,
                                          log=debug)
-  dieOnError(validDefaults and args.defaults not in validDefaults,
-             "Specified default `%s' is not compatible with the packages you want to build.\n" % args.defaults +
+  dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
+             "Specified default `%s' is not compatible with the packages you want to build.\n" % "::".join(args.defaults) +
              "Valid defaults:\n\n- " +
              "\n- ".join(sorted(validDefaults)))
 

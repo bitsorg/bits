@@ -225,11 +225,13 @@ def validateDefaults(finalPkgSpec, defaults):
   nonStringDefaults = [x for x in validDefaults if not type(x) == str]
   if nonStringDefaults:
     return (False, "valid_defaults needs to be a string or a list of strings. Found %s." % nonStringDefaults, [])
-  if defaults in validDefaults:
+  defaultsList = asList(defaults)
+  invalidDefaults = [d for d in defaultsList if d not in validDefaults]
+  if not invalidDefaults:
     return (True, "", validDefaults)
-  return (False, "Cannot compile %s with `%s' default. Valid defaults are\n%s" % 
+  return (False, "Cannot compile %s with `%s' default. Valid defaults are\n%s" %
                   (finalPkgSpec["package"],
-                   defaults,
+                   ", ".join(invalidDefaults),
                    "\n".join([" - " + x for x in validDefaults])), validDefaults)
 
 

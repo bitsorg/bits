@@ -757,13 +757,13 @@ def doBuild(args, parser):
                      taps                    = taps,
                      log                     = debug)
 
-  dieOnError(validDefaults and args.defaults not in validDefaults,
+  dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
              "Specified default `%s' is not compatible with the packages you want to build.\n"
-             "Valid defaults:\n\n- %s" % (args.defaults, "\n- ".join(sorted(validDefaults or []))))
+             "Valid defaults:\n\n- %s" % ("::".join(args.defaults), "\n- ".join(sorted(validDefaults or []))))
   dieOnError(failed,
              "The following packages are system requirements and could not be found:\n\n- %s\n\n"
              "Please run:\n\n\tbitsDoctor --defaults %s %s\n\nto get a full diagnosis." %
-             ("\n- ".join(sorted(failed)), args.defaults, " ".join(args.pkgname)))
+             ("\n- ".join(sorted(failed)), "::".join(args.defaults), " ".join(args.pkgname)))
   
   banner("Configured directory:\n%s", os.path.abspath(args.configDir))
   banner("Package Recipe will be searched in the following order \n%s", os.environ.get("BITS_PATH"))
