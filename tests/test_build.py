@@ -274,6 +274,7 @@ class BuildTestCase(unittest.TestCase):
             docker=False,
             dockerImage=None,
             docker_extra_args=["--network=host"],
+            containerWorkDir=False,
             architecture=TEST_ARCHITECTURE,
             workDir="/sw",
             pkgname=["root"],

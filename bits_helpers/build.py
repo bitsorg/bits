@@ -732,10 +732,10 @@ def doBuild(args, parser):
 
   install_wrapper_script("git", workDir)
 
-  extra_env = {"BITS_CONFIG_DIR": "/alidist" if args.docker else os.path.abspath(args.configDir)}
+  extra_env = {"BITS_CONFIG_DIR": "/pkgdist" if args.docker else os.path.abspath(args.configDir)}
   extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
 
-  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/alidist:ro"] if args.docker else []) as getstatusoutput_docker:
+  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist:ro"] if args.docker else []) as getstatusoutput_docker:
     def performPreferCheckWithTempDir(pkg, cmd):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
         return getstatusoutput_docker(cmd, cwd=temp_dir)
@@ -1299,10 +1299,12 @@ def doBuild(args, parser):
     cmd_raw = fp.read()
     fp.close()
 
+    container_workDir = ""
+    cachedTarball = spec["cachedTarball"]
     if args.docker:
-      cachedTarball = re.sub("^" + workDir, "/sw", spec["cachedTarball"])
-    else:
-      cachedTarball = spec["cachedTarball"]
+      container_workDir = "/container/bits/sw" if not args.containerUseWorkDir else workDir
+      if not args.containerUseWorkDir:
+        cachedTarball = re.sub("^" + workDir, container_workDir, cachedTarball)
 
     if not cachedTarball:
       checkout_sources(spec, workDir, args.referenceSources, args.docker)
@@ -1310,12 +1312,13 @@ def doBuild(args, parser):
     scriptDir = join(workDir, "SPECS", args.architecture, spec["package"],
                      spec["version"] + "-" + spec["revision"])
 
+    init_workDir = container_workDir if args.docker else args.workDir
     makedirs(scriptDir, exist_ok=True)
     writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
     writeAll("%s/build.sh" % scriptDir, cmd_raw % {
       "provenance": create_provenance_info(spec["package"], specs, args),
-      "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=args.workDir, post_build=False),
-      "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=args.workDir, post_build=True),
+      "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False),
+      "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True),
       "develPrefix": develPrefix,
       "workDir": workDir,
       "configDir": abspath(args.configDir),
@@ -1327,6 +1330,7 @@ def doBuild(args, parser):
 
     # Define the environment so that it can be passed up to the
     # actual build script
+    bits_dir = dirname(dirname(realpath(__file__)))
     buildEnvironment = [
       ("ARCHITECTURE", args.architecture),
       ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
@@ -1353,7 +1357,7 @@ def doBuild(args, parser):
       ("FULL_BUILD_REQUIRES", " ".join(spec["full_build_requires"])),
       ("FULL_REQUIRES", " ".join(spec["full_requires"])),
       ("BITS_PREFER_SYSTEM_KEY", spec.get("key", "")),
-      ("BITS_SCRIPT_DIR", dirname(realpath(__file__))),
+      ("BITS_SCRIPT_DIR", "/bits" if args.docker else bits_dir),
     ]
     if "sources" in spec:
       for idx, src in enumerate(spec["sources"]):
@@ -1378,12 +1382,16 @@ def doBuild(args, parser):
     if args.docker:
       build_command = (
         "docker run --rm --entrypoint= --user $(id -u):$(id -g) "
-        "-v {workdir}:/sw -v{configDir}:/alidist:ro -v {scriptDir}/build.sh:/build.sh:ro "
+        "-v {workdir}:{container_workDir} -v{configDir}:/pkgdist:ro "
+        "-v {scriptDir}/build.sh:/build.sh:ro "
+        "-v {bits_dir}:/bits "
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
-        "-e WORK_DIR_OVERRIDE=/sw -e BITS_CONFIG_DIR_OVERRIDE=/alidist {extraArgs} {image} bash -ex /build.sh"
+        "-e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist {extraArgs} {image} bash -ex /build.sh"
       ).format(
         image=quote(args.dockerImage),
         workdir=quote(abspath(args.workDir)),
+        container_workDir=container_workDir,
+        bits_dir=bits_dir,
         configDir=quote(abspath(args.configDir)),
         scriptDir=quote(scriptDir),
         extraArgs=" ".join(map(quote, args.docker_extra_args)),

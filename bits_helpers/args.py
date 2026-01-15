@@ -140,6 +140,9 @@ def doParseArgs():
                             help=("Command-line arguments to pass to 'docker run'. "
                                   "Passed through verbatim -- separate multiple arguments "
                                   "with spaces, and make sure quoting is correct! Implies --docker."))
+  build_docker.add_argument("--container-use-workdir", dest="containerUseWorkDir", action="store_true", default=False,
+                            help="Use the host work directory inside container. "
+                                 "By default it uses /container/bits/sw directory inside container.")
   build_docker.add_argument("-v", dest="volumes", action="append", default=[],
                             help=("Additional volume to be mounted inside the Docker container, if one is used. "
                                   "May be specified multiple times. Passed verbatim to 'docker run'."))

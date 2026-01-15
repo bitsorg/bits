@@ -224,7 +224,7 @@ PH=${PKGHASH}
 PKG_DIR="$WORK_DIR"
 EoF
 
-cp "${BITS_SCRIPT_DIR}/relocate-me.sh" "$INSTALLROOT/"
+install "${BITS_SCRIPT_DIR}/bits_helpers/relocate-me.sh" "$INSTALLROOT/"
 
 # Always relocate the modulefile (if present) so that it works also in devel mode.
 if [[ ! -s "$INSTALLROOT/etc/profile.d/.bits-relocate" && -f "$INSTALLROOT/etc/modulefiles/$PKGNAME" ]]; then
