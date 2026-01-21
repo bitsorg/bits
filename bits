@@ -213,15 +213,15 @@ configBits "$config_file"
 
 set -- "${new_args[@]}"
 
-for arg in $@
+for arg in "$@"
 do
   case $arg in
     analytics|architecture|build|clean|deps|doctor|init|version)
-        $BITSDIR/bitsBuild $@
+        "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
     -h|--help|-d|--debug|-n|--dry-run)
-        $BITSDIR/bitsBuild $@
+        "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
         *)
