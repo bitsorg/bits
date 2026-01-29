@@ -1105,7 +1105,7 @@ def doBuild(args, parser):
       develPrefix = possibleDevelPrefix
 
     if possibleDevelPrefix:
-      spec["build_family"] = "{}-{}".format(possibleDevelPrefix, args.defaults)
+      spec["build_family"] = "{}-{}".format(possibleDevelPrefix, "_".join(args.defaults))
     else:
       spec["build_family"] = "_".join(args.defaults)
     if spec["package"] == mainPackage:
