@@ -421,6 +421,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
       'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}',
+      'export RECC_PREFIX_MAP="${bigpackage}_ROOT=/recc/{bigpackage}_ROOT:$RECC_PREFIX_MAP"',
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
       "export {bigpackage}_HASH={hash}",
