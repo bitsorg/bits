@@ -1060,7 +1060,6 @@ def doBuild(args, parser):
     # the main build loop to make sure that our dependencies have been assigned
     # a single, definitive hash.
     debug("Calculating hash.")
-    debug("spec = %r", spec)
     debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
     storeHook(p, specs, args.defaults[0])
     storeHashes(p, specs, considerRelocation=args.architecture.startswith("osx"))
