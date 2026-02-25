@@ -181,9 +181,6 @@ function configBits() {
   if [ "x$cfile" != "x" ] 
   then
     readBitsRc $cfile
-  else
-    printf "${ER}ERROR: Could not find bits configuration.${EZ}\n" >&2;
-    exit 1; 
   fi
     
   export BITS_ORGANISATION=${organisation:-$BITS_ORGANISATION}
@@ -193,7 +190,6 @@ function configBits() {
   export BITS_WORK_DIR=${sw_dir:-$BITS_WORK_DIR}
   export BITS_PKG_PREFIX=${pkg_prefix:-$BITS_PKG_PREFIX}
 
-  mkdir -p $BITS_WORK_DIR || echo "Cannot create directory: " BITS_WORK_DIR 
 }
 
 config_file=""
@@ -219,11 +215,12 @@ set -- "${new_args[@]}"
 for arg in "$@"
 do
   case $arg in
-    analytics|architecture|build|clean|deps|doctor|init|version)
+    analytics|architecture|build|clean|deps|doctor|init|version|-debug|-d)
+         mkdir -p $BITS_WORK_DIR || echo "Cannot create directory: " $BITS_WORK_DIR 
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
-    -h|--help|-d|--debug|-n|--dry-run)
+    -h|--help|-n|--dry-run)
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
