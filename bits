@@ -158,39 +158,42 @@ function readBitsRc() {
 
 function configBits() {
 
-	# Backward compatibility defaults
+  # Backward compatibility defaults
 
-	BITS_BRANDING=${BITS_BRANDING:-"bits"}
-	BITS_PATH=${BITS_PATH:-""}
-	BITS_REPO_DIR=${BITS_REPO_DIR:-"alidist"}
-	BITS_WORK_DIR=${BITS_WORK_DIR:-"sw"}
-	BITS_ORGANISATION=${BITS_ORGANISATION:-"ALICE"}
-	BITS_PKG_PREFIX=${BITS_PKG_PREFIX:-"VO_"$BITS_ORGANISATION}
+  BITS_BRANDING=${BITS_BRANDING:-"bits"}
+  BITS_PATH=${BITS_PATH:-""}
+  BITS_REPO_DIR=${BITS_REPO_DIR:-"alidist"}
+  BITS_WORK_DIR=${BITS_WORK_DIR:-"sw"}
+  BITS_ORGANISATION=${BITS_ORGANISATION:-"ALICE"}
+  BITS_PKG_PREFIX=${BITS_PKG_PREFIX:-"VO_"$BITS_ORGANISATION}
     
-    cfile=""
+  cfile=""
 
-    for cfg in  $1 bits.rc .bitsrc $HOME/.bitsrc 
-    do
-	  if [ "x$cfg" !=  "x" -a -f $cfg ]
-	  then
-	    cfile=$cfg
-	    break
-      fi
-    done
-    
-    if [ "x$cfile" != "x" ] 
+  for cfg in  $1 bits.rc .bitsrc $HOME/.bitsrc 
+  do
+    if [ "x$cfg" !=  "x" -a -f $cfg ]
     then
-	  readBitsRc $cfile
+      cfile=$cfg
+      break
     fi
+  done
     
-	export BITS_ORGANISATION=${organisation:-$BITS_ORGANISATION}
-	export BITS_BRANDING=${branding:-$BITS_BRANDING}
-	export BITS_PATH=${search_path:-$BITS_PATH}
-	export BITS_REPO_DIR=${repo_dir:-$BITS_REPO_DIR}
-	export BITS_WORK_DIR=${sw_dir:-$BITS_WORK_DIR}
-	export BITS_PKG_PREFIX=${pkg_prefix:-$BITS_PKG_PREFIX}
+  if [ "x$cfile" != "x" ] 
+  then
+    readBitsRc $cfile
+  else
+    printf "${ER}ERROR: Could not find bits configuration.${EZ}\n" >&2;
+    exit 1; 
+  fi
+    
+  export BITS_ORGANISATION=${organisation:-$BITS_ORGANISATION}
+  export BITS_BRANDING=${branding:-$BITS_BRANDING}
+  export BITS_PATH=${search_path:-$BITS_PATH}
+  export BITS_REPO_DIR=${repo_dir:-$BITS_REPO_DIR}
+  export BITS_WORK_DIR=${sw_dir:-$BITS_WORK_DIR}
+  export BITS_PKG_PREFIX=${pkg_prefix:-$BITS_PKG_PREFIX}
 
-	mkdir -p $BITS_WORK_DIR || echo "Cannot create directory: " BITS_WORK_DIR 
+  mkdir -p $BITS_WORK_DIR || echo "Cannot create directory: " BITS_WORK_DIR 
 }
 
 config_file=""

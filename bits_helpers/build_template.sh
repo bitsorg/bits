@@ -173,20 +173,20 @@ function Run() { # dummy function
 }
 
 if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
-  set -o pipefail
-  set -x;
-  unset DYLD_LIBRARY_PATH;
-  source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" 2>&1 > tee "$BUILDROOT/log"
-  Run $* 2>&1  | tee -a "$BUILDROOT/log" || exit 1
+  set -o pipefail;
+  (unset DYLD_LIBRARY_PATH;
+   set -x;   
+   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
+   )  2>&1 | tee "$BUILDROOT/log" || exit 1
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
-  set -o pipefail
-  (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log" || exit 1
+    set -o pipefail
+    (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log" || exit 1
 elif [[ "$CACHED_TARBALL" == "" ]]; then
-  set -o pipefail
-  set -x;
-  unset DYLD_LIBRARY_PATH
-  source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" 2>&1 > tee "$BUILDROOT/log"
-  Run $* 2>&1 | tee -a "$BUILDROOT/log" || exit 1
+   set -o pipefail;
+   (unset DYLD_LIBRARY_PATH;
+   set -x;   
+   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
+   )  2>&1 | tee "$BUILDROOT/log" || exit 1
 else
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
   # files.
@@ -250,7 +250,7 @@ EoF
 install "${BITS_SCRIPT_DIR}/bits_helpers/relocate-me.sh" "$INSTALLROOT/"
 
 # Always relocate the modulefile (if present) so that it works also in devel mode.
-if [[ ! -s "$INSTALLROOT/etc/profile.d/.bits-relocate" && -f "$INSTALLROOT/etc/modulefiles/$PKGNAME" ]]; then
+if [[ -f "$INSTALLROOT/etc/modulefiles/$PKGNAME" ]]; then
   echo "mv -f \$PP/etc/modulefiles/$PKGNAME \$PP/etc/modulefiles/${PKGNAME}.forced-relocation && sed -e \"s|[@][@]PKGREVISION[@]\$PH[@][@]|$PKGREVISION|g\" \$PP/etc/modulefiles/${PKGNAME}.forced-relocation > \$PP/etc/modulefiles/$PKGNAME" >> "$INSTALLROOT/relocate-me.sh"
 fi
 
