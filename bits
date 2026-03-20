@@ -69,6 +69,13 @@ Usage: $0 \\
         ${ET}BITS_WORK_DIR=<path_to_bits_sw_dir>${EZ}
         ${ET}eval "\`bits shell-helper\`"${EZ}
 
+    ${EM}build${EZ}  Build a package. Use ${ET}bits build --help${EZ} for details.
+    ${EM}clean${EZ}  Clean build artifacts. Use ${ET}bits clean --help${EZ} for details.
+    ${EM}deps${EZ}   Show dependency tree. Use ${ET}bits deps --help${EZ} for details.
+    ${EM}doctor${EZ} Verify build environment. Use ${ET}bits doctor --help${EZ} for details.
+    ${EM}init${EZ}   Initialise a local package. Use ${ET}bits init --help${EZ} for details.
+    ${EM}version${EZ} Display bits version.
+
 EoF
 [[ -z "$1" ]] || printf "${ER}ERROR: $*${EZ}\n" >&2
 }
@@ -220,7 +227,7 @@ do
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
-    -h|--help|-n|--dry-run)
+    -n|--dry-run)
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
@@ -286,7 +293,7 @@ do
 	  unset CLEAN_ENV;;
       --dev)
 	  DEVOPT=1;;
-      --help|help)
+      -h|--help|help)
 	  printHelp; exit 0 ;;
       -c) 
 	  i=$((i+1)); COMMAND_IN_ENV=("${ARGV[@]:${i}}");
@@ -447,7 +454,6 @@ case "$ACTION" in
     exec $MODULECMD "${ARGS[@]}"
     ;;
   '')
-    $BITSDIR/bitsBuild --help
     printHelp "What do you want to do?"
     ;;
   *)
