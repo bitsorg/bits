@@ -627,10 +627,24 @@ def resolveLocalPath(configDir, s):
     return s
 
 def getConfigPaths(configDir):
+  """Return the ordered list of directories to search for recipe files.
+
+  Each entry in the ``BITS_PATH`` environment variable is interpreted as:
+
+  * An **absolute path** – used directly (no ``.bits`` suffix appended).
+    This is used by repository-provider checkouts, which are stored at
+    absolute paths under ``$BITS_WORK_DIR/REPOS/``.
+  * A **relative name** – resolved as ``<configDir>/<name>.bits`` (the
+    original behaviour for named recipe repositories).
+  """
   configPath = os.environ.get("BITS_PATH")
   pkgDirs = [configDir]
   if configPath:
-    for d in [join(configDir, "%s.bits" % r) for r in configPath.split(",") if r]:
+    for r in [x for x in configPath.split(",") if x]:
+      if os.path.isabs(r):
+        d = r          # provider checkout – absolute path used directly
+      else:
+        d = join(configDir, "%s.bits" % r)
       if exists(d):
         pkgDirs.append(d)
   return pkgDirs
@@ -651,8 +665,11 @@ def resolveDefaultsFilename(defaults, configDir, failOnError=True):
   pkgDirs = [cfgDir]
 
   if configPath:
-    for d in configPath.split(","):
-      pkgDirs.append(cfgDir + "/" + d + ".bits")
+    for r in [x for x in configPath.split(",") if x]:
+      if os.path.isabs(r):
+        pkgDirs.append(r)      # provider checkout – absolute path
+      else:
+        pkgDirs.append(cfgDir + "/" + r + ".bits")
 
   for d in pkgDirs:
     filename = "{}/defaults-{}.sh".format(d, defaults)
@@ -671,7 +688,24 @@ def resolveDefaultsFilename(defaults, configDir, failOnError=True):
 
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,
-                   performValidateDefaults, overrides, taps, log, force_rebuild=()):
+                   performValidateDefaults, overrides, taps, log, force_rebuild=(),
+                   provider_dirs=None):
+  """Resolve the full set of packages required by *packages*.
+
+  *provider_dirs* is an optional ``dict`` returned by
+  ``repo_provider.fetch_repo_providers_iteratively``, mapping each provider
+  checkout directory to a ``(package_name, commit_hash)`` tuple.  When a
+  recipe is found inside one of these directories the corresponding spec
+  gains two extra keys:
+
+  ``spec["recipe_provider"]``
+      The name of the provider package whose checkout contains this recipe.
+
+  ``spec["recipe_provider_hash"]``
+      The git commit hash of that provider checkout.  ``storeHashes`` folds
+      this value into the package's content-addressable build hash so that
+      upgrading a provider triggers a rebuild of all packages sourced from it.
+  """
   systemPackages = set()
   ownPackages = set()
   failedRequirements = set()
@@ -681,6 +715,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   packages = packages[:]
   generatedPackages = getGeneratedPackages(configDir)
   validDefaults = []  # empty list: all OK; None: no valid default; non-empty list: list of valid ones
+  if provider_dirs is None:
+    provider_dirs = {}
   while packages:
     p = packages.pop(0)
     if p in specs:
@@ -716,6 +752,15 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     dieOnError(spec["package"].lower() != pkg_filename,
                "{}.sh has different package field: {}".format(p, spec["package"]))
     spec["pkgdir"] = pkgdir
+
+    # Track which repository provider supplied this recipe so that
+    # storeHashes can fold the provider's commit hash into the build hash.
+    if pkgdir in provider_dirs:
+      prov_name, prov_hash = provider_dirs[pkgdir]
+      spec["recipe_provider"] = prov_name
+      spec["recipe_provider_hash"] = prov_hash
+      log("Recipe for '%s' comes from provider '%s' @ %s",
+          p, prov_name, prov_hash[:10])
 
     if p == "defaults-release":
       # Re-rewrite the defaults' name to "defaults-release". Everything auto-

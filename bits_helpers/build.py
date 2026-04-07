@@ -5,6 +5,7 @@ from bits_helpers import __version__
 from bits_helpers.analytics import report_event
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
+from bits_helpers.repo_provider import fetch_repo_providers_iteratively
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
 from bits_helpers.utilities import resolve_store_path
@@ -219,6 +220,16 @@ def storeHashes(package, specs, considerRelocation):
   modifies_full_hash_dicts = ["env", "append_path", "prepend_path"]
   if not spec["is_devel_pkg"] and "track_env" in spec:
     modifies_full_hash_dicts.append("track_env")
+
+  # If this recipe was sourced from a repository provider, fold the provider's
+  # commit hash into every hash variant.  This ensures that upgrading a
+  # provider (which changes its commit hash) triggers a rebuild of every
+  # package whose recipe came from that provider, even if the recipe text
+  # itself did not change.
+  if "recipe_provider_hash" in spec:
+    h_all("recipe_provider:" + spec["recipe_provider_hash"])
+    debug("Folding provider hash %s into hash for %s",
+          spec["recipe_provider_hash"][:10], package)
 
   for key in modifies_full_hash_dicts:
     if key not in spec:
@@ -767,6 +778,23 @@ def doBuild(args, parser):
   extra_env = {"BITS_CONFIG_DIR": "/pkgdist.bits" if args.docker else os.path.abspath(args.configDir)}
   extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
 
+  # ── Repository-provider discovery ─────────────────────────────────────────
+  # Before we run the full dependency resolution we scan the top-level package
+  # list for any packages that carry ``provides_repository: true``.  Each such
+  # package is a recipe repository bundled as a git repo; we clone it into
+  # the local REPOS cache and extend BITS_PATH so that subsequent recipe
+  # lookups in getPackageList can find the recipes it contains.
+  # The scan is iterative: a freshly-cloned provider may itself contain
+  # further providers, which are discovered and cloned on the next pass.
+  provider_dirs = fetch_repo_providers_iteratively(
+    packages          = packages,
+    config_dir        = args.configDir,
+    work_dir          = workDir,
+    reference_sources = args.referenceSources,
+    fetch_repos       = args.fetchRepos,
+    taps              = taps,
+  )
+
   with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist.bits:ro"] if args.docker else []) as getstatusoutput_docker:
     def performPreferCheckWithTempDir(pkg, cmd):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
@@ -787,7 +815,8 @@ def doBuild(args, parser):
                      performValidateDefaults = lambda spec: validateDefaults(spec, args.defaults),
                      overrides               = overrides,
                      taps                    = taps,
-                     log                     = debug)
+                     log                     = debug,
+                     provider_dirs          = provider_dirs)
 
   dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
              "Specified default `%s' is not compatible with the packages you want to build.\n"
