@@ -6,6 +6,7 @@ from bits_helpers.analytics import report_event
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
 from bits_helpers.repo_provider import fetch_repo_providers_iteratively
+from bits_helpers.memory import effective_jobs
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
 from bits_helpers.utilities import resolve_store_path
@@ -1409,7 +1410,7 @@ def doBuild(args, parser):
       ("GIT_COMMITTER_NAME", "unknown"),
       ("GIT_COMMITTER_EMAIL", "unknown"),
       ("INCREMENTAL_BUILD_HASH", spec.get("incremental_hash", "0")),
-      ("JOBS", str(args.jobs)),
+      ("JOBS", str(effective_jobs(args.jobs, spec))),
       ("PKGHASH", spec["hash"]),
       ("PKGNAME", spec["package"]),
       ("PKGDIR", spec["pkgdir"]),

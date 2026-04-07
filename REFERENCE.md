@@ -827,12 +827,30 @@ A recipe file consists of a YAML block, a `---` separator, and a Bash script:
 | `system_requirement` | Bash snippet; exit non-0 to abort with a missing-package error. |
 | `system_requirement_missing` | Error message shown when `system_requirement` fails. |
 
-#### Repository provider (new)
+#### Repository provider
 
 | Field | Description |
 |-------|-------------|
 | `provides_repository` | Set to `true` to mark this recipe as a repository provider. |
 | `repository_position` | `append` (default) or `prepend` — where to insert the cloned directory in `BITS_PATH`. |
+
+#### Memory-aware parallelism
+
+| Field | Description |
+|-------|-------------|
+| `mem_per_job` | Expected peak RSS per parallel compilation process. Accepts a plain integer (MiB) or a string with a unit suffix: `512`, `"1500"`, `"1.5 GiB"`, `"2 GB"`. When set, bits samples available system memory at the start of the package's build and lowers `$JOBS` to `min(requested, floor(available × utilisation / mem_per_job))`. Omitting the field leaves `$JOBS` unchanged. |
+| `mem_utilisation` | Fraction of available memory bits may commit, in the range `0.0`–`1.0`. Default: `0.9`. Only used when `mem_per_job` is also set. |
+
+Examples:
+
+```yaml
+# LLVM — each clang process can peak at ~2 GiB with LTO
+mem_per_job: 2048
+
+# ROOT — template-heavy; be more conservative on shared hosts
+mem_per_job: 1500
+mem_utilisation: 0.80
+```
 
 When `provides_repository: true` is set, the package's `source` URL must point to a git repository containing recipe files. It will be cloned before the main build and its directory added to `BITS_PATH`. See [§13](#13-repository-provider-feature) for full details.
 
