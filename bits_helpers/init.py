@@ -46,7 +46,7 @@ def doInit(args):
   # and system packages as they are irrelevant in this context
   specs = {}
   defaultsReader = lambda: readDefaults(args.configDir, args.defaults, lambda msg: error("%s", msg), args.architecture)
-  (err, overrides, taps) = parseDefaults([], defaultsReader, debug)
+  (err, overrides, taps, _defaultsMeta) = parseDefaults([], defaultsReader, debug)
   (_,_,_,validDefaults) = getPackageList(packages=[ p["name"] for p in pkgs ],
                                          specs=specs,
                                          configDir=args.configDir,

@@ -31,6 +31,7 @@ GLOB_WITH_OBSOLETE_FILES = {
                  "sw/BUILD/fcdfc2e1c9f0433c60b3b000e0e2737d297a9b1c",
                  "sw/BUILD/somethingtodelete"],
   "sw/osx_x86-64/*/": ["sw/osx_x86-64/a/", "sw/osx_x86-64/b/"],
+  "sw/osx_x86-64/*/*/": [],   # grouped layout — no family-grouped packages in this test
   "sw/osx_x86-64/b/latest*": ["sw/osx_x86-64/b/latest",
                               "sw/osx_x86-64/b/latest-release",
                               "sw/osx_x86-64/b/latest-root6"],
@@ -39,8 +40,11 @@ GLOB_WITH_OBSOLETE_FILES = {
                         "sw/osx_x86-64/b/latest", "sw/osx_x86-64/b/v1",
                         "sw/osx_x86-64/b/v2", "sw/osx_x86-64/b/v3",
                         "sw/osx_x86-64/b/v4"],
+  "sw/osx_x86-64/*/*/*": [],  # grouped toDelete — none in this test
   "sw/slc7_x86-64/*/": [],
-  "sw/slc7_x86-64/*/*": []
+  "sw/slc7_x86-64/*/*/": [],
+  "sw/slc7_x86-64/*/*": [],
+  "sw/slc7_x86-64/*/*/*": []
 }
 
 READLINK_MOCKUP_DB = {

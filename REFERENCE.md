@@ -24,10 +24,11 @@
 ### Part III — Reference Guide
 16. [Command-Line Reference](#16-command-line-reference)
 17. [Recipe Format Reference](#17-recipe-format-reference)
-18. [Environment Variables](#18-environment-variables)
-19. [Remote Binary Store Backends](#19-remote-binary-store-backends)
-20. [Docker Support](#20-docker-support)
-21. [Design Principles & Limitations](#21-design-principles--limitations)
+18. [Defaults Profiles](#18-defaults-profiles)
+19. [Environment Variables](#19-environment-variables)
+20. [Remote Binary Store Backends](#20-remote-binary-store-backends)
+21. [Docker Support](#21-docker-support)
+22. [Design Principles & Limitations](#22-design-principles--limitations)
 
 ---
 
@@ -177,7 +178,7 @@ search_path  = /data/bits/extra.bits,localrecipes
 
 The `[ALICE]` section overrides or extends `[bits]` for the `ALICE` organisation. A second organisation (e.g. `[CMS]`) can coexist in the same file with different `sw_dir` and `search_path` values; only the section matching the current `organisation` key is applied.
 
-Every setting can also be overridden by an environment variable — see [§18 Environment Variables](#18-environment-variables) for the full mapping.
+Every setting can also be overridden by an environment variable — see [§19 Environment Variables](#19-environment-variables) for the full mapping.
 
 ---
 
@@ -1098,7 +1099,189 @@ These variables are set automatically inside each package's Bash build script:
 
 ---
 
-## 18. Environment Variables
+## 18. Defaults Profiles
+
+A **defaults profile** is a special recipe file named `defaults-<name>.sh` that lives in the recipe repository alongside ordinary package recipes. It is not a buildable package — its Bash body is never executed. Instead, its YAML header carries **global configuration** that is applied across the entire dependency graph before any package is resolved.
+
+The active profile is selected with `--defaults PROFILE` (default: `release`), which causes bits to load `defaults-release.sh`. Multiple `--defaults` values may be given; their YAML headers are merged left-to-right, with later values winning.
+
+### Role in the build pipeline
+
+Defaults processing happens in two phases:
+
+**Phase 1 — `readDefaults()` + `parseDefaults()`** runs before package resolution. Bits loads each named profile file, merges their YAML headers into a single `defaultsMeta` dict, optionally overlays an architecture-specific file (e.g. `defaults-slc9_x86-64.sh`), then extracts:
+
+- `disable` — packages to exclude from the build graph entirely.
+- `env` — environment variables propagated to every package's `init.sh` (injected via the `defaults-release` pseudo-dependency).
+- `overrides` — per-package YAML patches applied after the recipe is parsed (see below).
+- `package_family` — optional install grouping (see [Package families](#package-families) below).
+
+**Phase 2 — per-package application** happens inside `getPackageList()` as each recipe is parsed. The merged `overrides` dict is checked against the package name (case-insensitive regex match); matching entries are merged into the spec with `spec.update(override)`. This means a defaults file can change any recipe field — version, `requires`, `env`, `prefer_system`, etc. — for targeted packages.
+
+### File syntax
+
+A defaults file is a standard bits recipe file. The YAML header supports a superset of ordinary recipe fields:
+
+```yaml
+package: defaults-release          # must match filename (without defaults- prefix)
+version: v1                        # required; used in the spec but not for building
+
+# ── Global environment ────────────────────────────────────────────────────────
+env:
+  CXXSTD: '20'
+  CMAKE_BUILD_TYPE: 'Release'
+  MY_GLOBAL_FLAG: '-O3'
+
+# ── Disable packages ──────────────────────────────────────────────────────────
+disable:
+  - alien
+  - monalisa
+
+# ── Architecture / defaults compatibility ─────────────────────────────────────
+valid_defaults:
+  - release
+  - o2
+
+# ── Per-package overrides ─────────────────────────────────────────────────────
+overrides:
+  ROOT:
+    version: "6-30-06"
+    requires:
+      - Python
+      - XRootD
+
+  # Regular expression matching — this applies to any package starting with "O2"
+  O2.*:
+    env:
+      O2_BUILD_TYPE: Release
+
+  # Remote tap — load ROOT from a specific git ref in the recipe repo
+  ROOT@v6-30-06-alice1:
+
+# ── Package families (optional) ───────────────────────────────────────────────
+package_family:
+  default: cms
+  lcg:
+    - ROOT
+    - SCRAMV1
+    - demo2
+  cms:
+    - data-*
+    - coral
+---
+# Bash body is allowed but its output is appended to every package's build
+# environment script. In practice this section is almost always empty.
+```
+
+### YAML fields specific to defaults files
+
+| Field | Description |
+|-------|-------------|
+| `env` | Key-value pairs exported into every package's `init.sh` (via `defaults-release` auto-dependency). Equivalent to setting the same `env:` in every recipe. |
+| `disable` | List of package names to exclude from the dependency graph. |
+| `overrides` | Dict keyed by package name or regex. Each value is a YAML fragment merged into that package's spec after it is parsed. Keys are matched case-insensitively as `re.fullmatch` patterns, so regex metacharacters work. |
+| `valid_defaults` | Restricts which profiles this file may be used with. Bits aborts if the requested `--defaults` is not in the list. |
+| `package_family` | Optional install grouping; see [Package families](#package-families) below. |
+
+### Multiple profiles and merging
+
+When more than one profile is given (e.g. `--defaults release --defaults alice`), `readDefaults()` processes them in order and merges their headers using `merge_dicts()`, which performs a deep merge:
+
+- Scalar values: later profile wins.
+- Lists: concatenated.
+- Dicts: recursively merged.
+
+This lets a project-level profile (`alice`) layer on top of a base profile (`release`) without duplicating common settings.
+
+### Architecture-specific overlay
+
+If a file named `defaults-<architecture>.sh` exists in the recipe repository (e.g. `defaults-osx_arm64.sh`), bits silently loads it and merges its header on top of the already-merged profile, skipping the `package` key to avoid a name clash. This is the mechanism for per-platform tweaks such as disabling packages that do not build on a particular OS.
+
+### Package families
+
+The `package_family` key enables optional **install-path grouping**. When present, bits inserts an extra directory segment between the architecture and the package name in every path where the package appears:
+
+```
+sw/<arch>/<family>/<package>/<version>-<revision>/
+```
+
+Without `package_family` the layout is the legacy two-level form and everything is fully backward compatible:
+
+```
+sw/<arch>/<package>/<version>-<revision>/
+```
+
+#### Configuration
+
+```yaml
+package_family:
+  default: cms          # fallback family for any package not matched below
+  lcg:
+    - ROOT
+    - SCRAMV1
+    - demo2
+  cms:
+    - data-*            # fnmatch glob — matches data-Geometry, data-L1T, …
+    - coral
+```
+
+`default` is optional. When omitted, any package that does not match any pattern gets an empty family and falls back to the legacy two-level layout. This means you can roll out families incrementally — only packages explicitly listed get a family segment; everything else is unchanged.
+
+#### Matching rules
+
+- Patterns are matched with `fnmatch.fnmatch` — case-sensitive; `*` matches any sequence of characters, `?` matches a single character.
+- Families are tried in definition order; the **first match wins**.
+- The `default` key is a fallback, not a pattern list, so it is never tried as a family name during matching.
+- A package may only belong to one family.
+
+#### What the family segment affects
+
+Every place that bits constructs a path based on the install location is family-aware:
+
+| Path type | Without family | With family `lcg` |
+|-----------|---------------|------------------|
+| Install dir | `sw/<arch>/ROOT/v6-30-06-1/` | `sw/<arch>/lcg/ROOT/v6-30-06-1/` |
+| `$ROOT_ROOT` in `init.sh` | `…/$BITS_ARCH_PREFIX/ROOT/v6-30-06-1` | `…/$BITS_ARCH_PREFIX/lcg/ROOT/v6-30-06-1` |
+| Dep sourcing in `init.sh` | `. …/ROOT/v6-30-06-1/etc/profile.d/init.sh` | `. …/lcg/ROOT/v6-30-06-1/etc/profile.d/init.sh` |
+| `SPECS/` script dir | `SPECS/<arch>/ROOT/v6-30-06-1/` | `SPECS/<arch>/lcg/ROOT/v6-30-06-1/` |
+| `latest` symlink parent | `sw/<arch>/ROOT/` | `sw/<arch>/lcg/ROOT/` |
+| Shell build `$PKGPATH` | `<arch>/ROOT/<version>-<revision>` | `<arch>/lcg/ROOT/<version>-<revision>` |
+| `$PKGFAMILY` env var | _(empty)_ | `lcg` |
+
+The content-addressed tarball store (`TARS/<arch>/store/<h2>/<hash>/`) and the TARS convenience symlinks are **not** family-aware — they are indexed by hash, not by install path.
+
+#### Dependency paths in `init.sh`
+
+Each dependency's sourcing line uses **that dependency's own family**, not the family of the package being built. If `MyPkg` (family `cms`) depends on `ROOT` (family `lcg`), the generated `init.sh` for `MyPkg` contains:
+
+```bash
+[ -n "${ROOT_REVISION}" ] || \
+  . "$WORK_DIR/$BITS_ARCH_PREFIX"/lcg/ROOT/v6-30-06-1/etc/profile.d/init.sh
+```
+
+and exports:
+
+```bash
+export MYPKG_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/cms/MyPkg/v1-1
+```
+
+This means every package in a mixed-family build is correctly self-describing in its `init.sh` without any additional configuration.
+
+#### Backward compatibility guarantee
+
+`package_family` is entirely opt-in. When the key is absent from all defaults files:
+
+- `resolve_pkg_family()` returns `""` for every package.
+- `PKGFAMILY` is exported as an empty string.
+- `build_template.sh` falls back to the legacy two-segment `PKGPATH`.
+- `init.sh` path templates omit the family segment.
+- `SPECS/`, `latest` symlinks, and `hashPath` all use the original layout.
+
+An existing recipe repository with no `package_family` key will produce bit-for-bit identical install trees, tarballs, and hashes compared to a build that predates the feature.
+
+---
+
+## 19. Environment Variables
 
 ### Build and configuration variables
 
@@ -1133,7 +1316,7 @@ If none is executable, bits prints an install hint and exits with an error.
 
 ---
 
-## 19. Remote Binary Store Backends
+## 20. Remote Binary Store Backends
 
 | URL scheme | Backend | Access |
 |------------|---------|--------|
@@ -1162,7 +1345,7 @@ bits build --remote-store s3://mybucket/builds \
 
 ---
 
-## 20. Docker Support
+## 21. Docker Support
 
 When `--docker` is specified, bits wraps the build in a `docker run` invocation. This is useful for building against an older Linux ABI from a newer host, or for reproducible CI.
 
@@ -1181,7 +1364,7 @@ Bits automatically mounts the work directory, the recipe directories, and `~/.ss
 
 ---
 
-## 21. Design Principles & Limitations
+## 22. Design Principles & Limitations
 
 ### Principles
 

@@ -389,6 +389,23 @@ def better_tarball(spec, old, new):
   return old if hashes.index(old_hash) < hashes.index(new_hash) else new
 
 
+def _pkg_install_path(workDir, architecture, spec):
+  """Return the absolute-style path segment ``<workDir>/<arch>[/<family>]/<pkg>/<ver>-<rev>``.
+
+  When ``spec["pkg_family"]`` is set, the family directory is inserted between
+  the architecture and the package name, giving the grouped layout
+  ``<arch>/<family>/<pkg>/<version>-<revision>``.  When it is empty (the
+  default when no ``package_family`` mapping is configured), the legacy layout
+  ``<arch>/<pkg>/<version>-<revision>`` is preserved.
+  """
+  family = spec.get("pkg_family", "")
+  if family:
+    return join(workDir, architecture, family, spec["package"],
+                "{version}-{revision}".format(**spec))
+  return join(workDir, architecture, spec["package"],
+              "{version}-{revision}".format(**spec))
+
+
 def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
@@ -411,30 +428,39 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # unrelated components are activated.
   # These variables are also required during the build itself, so always
   # generate them.
-  lines.extend((
-    '[ -n "${{{bigpackage}_REVISION}}" ] || '
-    '. "$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}/etc/profile.d/init.sh'
-  ).format(
-    bigpackage=dep.upper().replace("-", "_"),
-    package=quote(specs[dep]["package"]),
-    version=quote(specs[dep]["version"]),
-    revision=quote(specs[dep]["revision"]),
-  ) for dep in spec.get("requires", ()))
+  def _dep_init_path(dep):
+    dep_spec = specs[dep]
+    family = dep_spec.get("pkg_family", "")
+    family_seg = (quote(family) + "/") if family else ""
+    return (
+      '[ -n "${{{bigpackage}_REVISION}}" ] || '
+      '. "$WORK_DIR/$BITS_ARCH_PREFIX"/{family}{package}/{version}-{revision}/etc/profile.d/init.sh'
+    ).format(
+      bigpackage=dep.upper().replace("-", "_"),
+      family=family_seg,
+      package=quote(dep_spec["package"]),
+      version=quote(dep_spec["version"]),
+      revision=quote(dep_spec["revision"]),
+    )
+  lines.extend(_dep_init_path(dep) for dep in spec.get("requires", ()))
 
   if post_build:
     bigpackage = package.upper().replace("-", "_")
 
     # Set standard variables related to the package itself. These should only
     # be set once the build has actually completed.
+    self_family = spec.get("pkg_family", "")
+    self_family_seg = (quote(self_family) + "/") if self_family else ""
     lines.extend(line.format(
       bigpackage=bigpackage,
+      family=self_family_seg,
       package=quote(spec["package"]),
       version=quote(spec["version"]),
       revision=quote(spec["revision"]),
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}',
+      'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{family}{package}/{version}-{revision}',
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
       "export {bigpackage}_HASH={hash}",
@@ -816,7 +842,7 @@ def doBuild(args, parser):
     branch_stream = ""
 
   defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
-  (err, overrides, taps) = parseDefaults(args.disable,
+  (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
                                         defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)
   makedirs(join(workDir, "SPECS"), exist_ok=True)
@@ -886,7 +912,8 @@ def doBuild(args, parser):
                      overrides               = overrides,
                      taps                    = taps,
                      log                     = debug,
-                     provider_dirs          = provider_dirs)
+                     provider_dirs          = provider_dirs,
+                     defaults_meta           = defaultsMeta)
 
   dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
              "Specified default `%s' is not compatible with the packages you want to build.\n"
@@ -1306,9 +1333,10 @@ def doBuild(args, parser):
         # exist (if this is the first run through the loop). On the second run
         # through, the path should have been created by the build process.
         call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               "{wd}/{arch}/{package}/latest-{build_family}".format(wd=workDir, arch=args.architecture, **spec))
+                               join(dirname(_pkg_install_path(workDir, args.architecture, spec)),
+                                    "latest-{build_family}".format(**spec)))
         call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               "{wd}/{arch}/{package}/latest".format(wd=workDir, arch=args.architecture, **spec))
+                               join(dirname(_pkg_install_path(workDir, args.architecture, spec)), "latest"))
 
     # Now we know whether we're using a local or remote package, so we can set
     # the proper hash and tarball directory.
@@ -1340,11 +1368,12 @@ def doBuild(args, parser):
         call_ignoring_oserrors(symlink, spec["hash"], join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + develPrefix))
       # Last package built gets a "latest" mark.
       call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                             join(workDir, args.architecture, spec["package"], "latest"))
+                             join(dirname(_pkg_install_path(workDir, args.architecture, spec)), "latest"))
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
         call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               join(workDir, args.architecture, spec["package"], "latest-" + spec["build_family"]))
+                               join(dirname(_pkg_install_path(workDir, args.architecture, spec)),
+                                    "latest-" + spec["build_family"]))
 
     # Check if this development package needs to be rebuilt.
     if spec["is_devel_pkg"]:
@@ -1355,11 +1384,7 @@ def doBuild(args, parser):
 
     # Now that we have all the information about the package we want to build, let's
     # check if it wasn't built / unpacked already.
-    hashPath= "{}/{}/{}/{}-{}".format(workDir,
-                                  args.architecture,
-                                  spec["package"],
-                                  spec["version"],
-                                  spec["revision"])
+    hashPath = _pkg_install_path(workDir, args.architecture, spec)
     hashFile = hashPath + "/.build-hash"
     # If the folder is a symlink, we consider it to be to CVMFS and
     # take the hash for good.
@@ -1443,7 +1468,10 @@ def doBuild(args, parser):
       if getattr(args, "writeChecksums", False):
         _write_checksums_for_spec(spec, workDir)
 
-    scriptDir = join(workDir, "SPECS", args.architecture, spec["package"],
+    family = spec.get("pkg_family", "")
+    scriptDir = join(workDir, "SPECS", args.architecture,
+                     *([family] if family else []),
+                     spec["package"],
                      spec["version"] + "-" + spec["revision"])
 
     init_workDir = container_workDir if args.docker else args.workDir
@@ -1483,6 +1511,7 @@ def doBuild(args, parser):
       ("GIT_COMMITTER_EMAIL", "unknown"),
       ("INCREMENTAL_BUILD_HASH", spec.get("incremental_hash", "0")),
       ("JOBS", str(effective_jobs(args.jobs, spec))),
+      ("PKGFAMILY", spec.get("pkg_family", "")),
       ("PKGHASH", spec["hash"]),
       ("PKGNAME", spec["package"]),
       ("PKGDIR", spec["pkgdir"]),

@@ -12,6 +12,7 @@ from os.path import basename, join, isdir, islink
 import sys
 import os
 import re
+import fnmatch
 import platform
 
 from datetime import datetime
@@ -377,6 +378,42 @@ def merge_dicts(dict1, dict2, skip_keys=None) -> OrderedDict:
     
     return merged
 
+def resolve_pkg_family(defaults_meta: dict, package_name: str) -> str:
+  """Return the package family for *package_name* from the defaults metadata.
+
+  The ``package_family`` key in a defaults recipe is a mapping of the form::
+
+      package_family:
+        default: cms          # fallback when no pattern matches
+        lcg:
+          - ROOT
+          - SCRAMV1
+        cms:
+          - data-*
+          - coral
+
+  Pattern matching uses :func:`fnmatch.fnmatch` (case-sensitive, ``*`` and
+  ``?`` wildcards supported).  Families are tried in definition order; the
+  first match wins.  If no pattern matches, the ``default`` family is
+  returned.  If ``package_family`` is absent entirely, an empty string is
+  returned so that the install path collapses to the legacy layout
+  ``<arch>/<pkg>/<version>-<revision>``.
+  """
+  family_cfg = defaults_meta.get("package_family")
+  if not family_cfg or not isinstance(family_cfg, dict):
+    return ""
+  default_family = family_cfg.get("default", "")
+  for family, patterns in family_cfg.items():
+    if family == "default":
+      continue
+    if not isinstance(patterns, list):
+      continue
+    for pat in patterns:
+      if fnmatch.fnmatch(package_name, str(pat)):
+        return family
+  return default_family
+
+
 def readDefaults(configDir, defaults, error, architecture):
   defaultsMeta = {}
   defaultsBody = ""
@@ -591,7 +628,7 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
   defaultsMeta["overrides"] = asDict(defaultsMeta.get("overrides", OrderedDict()))
 
   if type(defaultsMeta.get("overrides", OrderedDict())) != OrderedDict:
-    return ("overrides should be a dictionary", None, None)
+    return ("overrides should be a dictionary", None, None, {})
 
   overrides, taps = OrderedDict(), {}
   commonEnv = {"env": defaultsMeta["env"]} if "env" in defaultsMeta else {}
@@ -601,7 +638,7 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
     if "@" in k:
       taps[f] = "dist:"+k
     overrides[f] = dict(**(v or {}))
-  return (None, overrides, taps)
+  return (None, overrides, taps, defaultsMeta)
 
 def checkForFilename(taps, pkg, d, ext=".sh"):
   filename = taps.get(pkg, "{}/{}{}".format(d, pkg, ext))
@@ -690,7 +727,7 @@ def resolveDefaultsFilename(defaults, configDir, failOnError=True):
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,
                    performValidateDefaults, overrides, taps, log, force_rebuild=(),
-                   provider_dirs=None):
+                   provider_dirs=None, defaults_meta=None):
   """Resolve the full set of packages required by *packages*.
 
   *provider_dirs* is an optional ``dict`` returned by
@@ -920,6 +957,10 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     spec["recipe"] = recipe.strip("\n")
     if spec["package"] in force_rebuild:
       spec["force_rebuild"] = True
+    # Resolve optional package family (e.g. "cms", "lcg") from defaults metadata.
+    # Falls back to "" when no package_family mapping is configured, preserving
+    # the legacy install layout <arch>/<pkg>/<version>-<revision>.
+    spec["pkg_family"] = resolve_pkg_family(defaults_meta or {}, spec["package"])
     specs[spec["package"]] = spec
     packages += spec["requires"]
   return (systemPackages, ownPackages, failedRequirements, validDefaults)

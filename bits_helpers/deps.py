@@ -18,7 +18,7 @@ def doDeps(args, parser):
   specs = {}
 
   defaultsReader = lambda: readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
-  (err, overrides, taps) = parseDefaults(args.disable, defaultsReader, debug)
+  (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable, defaultsReader, debug)
  
   def performCheck(pkg, cmd):
     return getstatusoutput(cmd)
@@ -37,7 +37,8 @@ def doDeps(args, parser):
                      performValidateDefaults = lambda spec: validateDefaults(spec, args.defaults),
                      overrides               = overrides,
                      taps                    = taps,
-                     log                     = debug)
+                     log                     = debug,
+                     defaults_meta           = defaultsMeta)
   
   dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
              "Specified default `%s' is not compatible with the packages you want to build.\n" % "::".join(args.defaults) +

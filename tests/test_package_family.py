@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""Tests for the package_family feature (Option C).
+
+Covers:
+  - resolve_pkg_family(): glob matching, default fallback, no-config fallback
+  - spec["pkg_family"] set correctly by getPackageList()
+  - _pkg_install_path(): path construction with and without family
+  - generate_initdotsh(): init.sh paths use the dep's family segment
+"""
+import os
+import sys
+import unittest
+from collections import OrderedDict
+from unittest.mock import MagicMock, patch
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from bits_helpers.utilities import resolve_pkg_family, getPackageList
+from bits_helpers.build import _pkg_install_path, generate_initdotsh
+
+
+# ---------------------------------------------------------------------------
+# resolve_pkg_family
+# ---------------------------------------------------------------------------
+
+class TestResolvePkgFamily(unittest.TestCase):
+
+    FAMILY_CFG = {
+        "package_family": {
+            "default": "cms",
+            "lcg": ["ROOT", "SCRAMV1", "demo2"],
+            "externals": ["boost", "zlib", "xz-*"],
+        }
+    }
+
+    def test_exact_match(self):
+        self.assertEqual(resolve_pkg_family(self.FAMILY_CFG, "ROOT"), "lcg")
+
+    def test_exact_match_second_family(self):
+        self.assertEqual(resolve_pkg_family(self.FAMILY_CFG, "boost"), "externals")
+
+    def test_glob_wildcard(self):
+        self.assertEqual(resolve_pkg_family(self.FAMILY_CFG, "xz-utils"), "externals")
+
+    def test_glob_no_match_returns_default(self):
+        self.assertEqual(resolve_pkg_family(self.FAMILY_CFG, "coral"), "cms")
+
+    def test_no_package_family_key_returns_empty(self):
+        self.assertEqual(resolve_pkg_family({}, "ROOT"), "")
+
+    def test_package_family_not_dict_returns_empty(self):
+        self.assertEqual(resolve_pkg_family({"package_family": None}, "ROOT"), "")
+        self.assertEqual(resolve_pkg_family({"package_family": "bad"}, "ROOT"), "")
+
+    def test_no_default_key_returns_empty_on_no_match(self):
+        cfg = {"package_family": {"lcg": ["ROOT"]}}
+        self.assertEqual(resolve_pkg_family(cfg, "coral"), "")
+
+    def test_default_key_alone(self):
+        cfg = {"package_family": {"default": "common"}}
+        self.assertEqual(resolve_pkg_family(cfg, "anything"), "common")
+
+    def test_case_sensitive(self):
+        """Pattern matching is case-sensitive."""
+        self.assertEqual(resolve_pkg_family(self.FAMILY_CFG, "root"), "cms")  # not lcg
+
+    def test_question_mark_wildcard(self):
+        cfg = {"package_family": {"ml": ["py?hon"]}}
+        self.assertEqual(resolve_pkg_family(cfg, "python"), "ml")
+        self.assertEqual(resolve_pkg_family(cfg, "pyython"), "")
+
+    def test_data_glob(self):
+        cfg = {"package_family": {"default": "cms", "cms": ["data-*"]}}
+        self.assertEqual(resolve_pkg_family(cfg, "data-Geometry"), "cms")
+        self.assertEqual(resolve_pkg_family(cfg, "data-"), "cms")
+        # "data" without dash should fall to default (which is also cms here, but matched differently)
+        self.assertEqual(resolve_pkg_family(cfg, "notdata"), "cms")
+
+    def test_patterns_not_a_list_are_skipped(self):
+        """If a family has a non-list value it is skipped gracefully."""
+        cfg = {"package_family": {"default": "cms", "bad": "ROOT"}}
+        self.assertEqual(resolve_pkg_family(cfg, "ROOT"), "cms")
+
+    def test_defaults_release_gets_empty_family(self):
+        """The defaults package itself should get an empty family (no install dir)."""
+        self.assertEqual(resolve_pkg_family(self.FAMILY_CFG, "defaults-release"), "cms")
+
+
+# ---------------------------------------------------------------------------
+# _pkg_install_path
+# ---------------------------------------------------------------------------
+
+class TestPkgInstallPath(unittest.TestCase):
+
+    def _spec(self, pkg_family=""):
+        return {
+            "package": "ROOT",
+            "version": "v6-30-06",
+            "revision": "1",
+            "pkg_family": pkg_family,
+        }
+
+    def test_no_family_legacy_layout(self):
+        path = _pkg_install_path("sw", "slc9_x86-64", self._spec(""))
+        self.assertEqual(path, "sw/slc9_x86-64/ROOT/v6-30-06-1")
+
+    def test_with_family(self):
+        path = _pkg_install_path("sw", "slc9_x86-64", self._spec("lcg"))
+        self.assertEqual(path, "sw/slc9_x86-64/lcg/ROOT/v6-30-06-1")
+
+    def test_missing_pkg_family_key(self):
+        spec = {"package": "ROOT", "version": "v6", "revision": "2"}
+        path = _pkg_install_path("sw", "osx_x86-64", spec)
+        self.assertEqual(path, "sw/osx_x86-64/ROOT/v6-2")
+
+    def test_nested_workdir(self):
+        path = _pkg_install_path("/opt/sw", "slc9_x86-64", self._spec("cms"))
+        self.assertEqual(path, "/opt/sw/slc9_x86-64/cms/ROOT/v6-30-06-1")
+
+
+# ---------------------------------------------------------------------------
+# generate_initdotsh — family path segments
+# ---------------------------------------------------------------------------
+
+class TestGenerateInitdotshFamily(unittest.TestCase):
+    """Verify that dep sourcing paths and _ROOT exports use the family segment."""
+
+    def _make_specs(self, dep_family="", self_family=""):
+        return {
+            "DepPkg": {
+                "package": "DepPkg",
+                "version": "v1",
+                "revision": "1",
+                "pkg_family": dep_family,
+                "requires": [],
+                "hash": "abc123",
+                "commit_hash": "deadbeef",
+                "is_devel_pkg": False,
+            },
+            "MyPkg": {
+                "package": "MyPkg",
+                "version": "v2",
+                "revision": "3",
+                "pkg_family": self_family,
+                "requires": ["DepPkg"],
+                "hash": "cafe42",
+                "commit_hash": "feedface",
+                "is_devel_pkg": False,
+                "env": {},
+                "append_path": {},
+                "prepend_path": {},
+            },
+        }
+
+    def test_dep_sourcing_no_families(self):
+        specs = self._make_specs()
+        script = generate_initdotsh("MyPkg", specs, "slc9_x86-64", workDir="sw")
+        self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/DepPkg/v1-1/etc/profile.d/init.sh', script)
+
+    def test_dep_sourcing_with_dep_family(self):
+        specs = self._make_specs(dep_family="lcg")
+        script = generate_initdotsh("MyPkg", specs, "slc9_x86-64", workDir="sw")
+        self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/lcg/DepPkg/v1-1/etc/profile.d/init.sh', script)
+
+    def test_self_root_no_family(self):
+        specs = self._make_specs()
+        script = generate_initdotsh("MyPkg", specs, "slc9_x86-64", workDir="sw", post_build=True)
+        self.assertIn('export MYPKG_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/MyPkg/v2-3', script)
+
+    def test_self_root_with_family(self):
+        specs = self._make_specs(self_family="cms")
+        script = generate_initdotsh("MyPkg", specs, "slc9_x86-64", workDir="sw", post_build=True)
+        self.assertIn('export MYPKG_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/cms/MyPkg/v2-3', script)
+
+    def test_dep_family_does_not_bleed_into_self_root(self):
+        """Even if dep has a family, the self ROOT export uses self's own family."""
+        specs = self._make_specs(dep_family="lcg", self_family="cms")
+        script = generate_initdotsh("MyPkg", specs, "slc9_x86-64", workDir="sw", post_build=True)
+        self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/lcg/DepPkg/', script)
+        self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/cms/MyPkg/', script)
+
+
+# ---------------------------------------------------------------------------
+# getPackageList integration — pkg_family is assigned from defaults_meta
+# ---------------------------------------------------------------------------
+
+class TestGetPackageListPkgFamily(unittest.TestCase):
+    """Check that getPackageList assigns pkg_family from the defaults metadata."""
+
+    # Minimal recipe YAML bodies for getPackageList
+    RECIPES = {
+        "myapp": "package: myapp\nversion: v1\n---\n",
+        "defaults-release": "package: defaults-release\nversion: v1\n---\n",
+    }
+
+    def _call_getPackageList(self, defaults_meta):
+        specs = {}
+
+        def fake_prefer_check(pkg, cmd):
+            return (1, "")
+
+        def fake_req_check(pkg, cmd):
+            return (0, "")
+
+        def fake_validate(spec):
+            return (True, "", None)
+
+        def fake_resolveFilename(taps, pkg, configDir, genPkgs):
+            return (pkg + ".sh", "/pkgdir")
+
+        def fake_getRecipeReader(filename, *args, **kwargs):
+            pkg = filename.replace(".sh", "")
+            content = self.RECIPES.get(pkg, "package: {p}\nversion: v1\n---\n".format(p=pkg))
+            return lambda: content
+
+        with patch("bits_helpers.utilities.resolveFilename",
+                   side_effect=fake_resolveFilename), \
+             patch("bits_helpers.utilities.getRecipeReader",
+                   side_effect=fake_getRecipeReader), \
+             patch("bits_helpers.utilities.getGeneratedPackages",
+                   return_value={"/pkgdir": {}}), \
+             patch("bits_helpers.utilities.load_for_spec",
+                   return_value=None), \
+             patch("bits_helpers.utilities.merge_into_spec",
+                   return_value=None):
+            getPackageList(
+                packages=["myapp"],
+                specs=specs,
+                configDir="/fake",
+                preferSystem=False,
+                noSystem="*",
+                architecture="slc9_x86-64",
+                disable=[],
+                defaults=["release"],
+                performPreferCheck=fake_prefer_check,
+                performRequirementCheck=fake_req_check,
+                performValidateDefaults=fake_validate,
+                overrides={"defaults-release": {}},
+                taps={},
+                log=lambda *a, **k: None,
+                defaults_meta=defaults_meta,
+            )
+        return specs
+
+    def test_pkg_family_assigned_when_matched(self):
+        meta = {"package_family": {"default": "cms", "lcg": ["myapp"]}}
+        specs = self._call_getPackageList(meta)
+        self.assertIn("myapp", specs)
+        self.assertEqual(specs["myapp"]["pkg_family"], "lcg")
+
+    def test_pkg_family_uses_default_when_no_match(self):
+        meta = {"package_family": {"default": "cms", "lcg": ["other"]}}
+        specs = self._call_getPackageList(meta)
+        self.assertEqual(specs["myapp"]["pkg_family"], "cms")
+
+    def test_pkg_family_empty_when_no_config(self):
+        specs = self._call_getPackageList({})
+        self.assertEqual(specs["myapp"]["pkg_family"], "")
+
+    def test_pkg_family_empty_when_defaults_meta_none(self):
+        specs = self._call_getPackageList(None)
+        self.assertEqual(specs["myapp"]["pkg_family"], "")
+
+
+if __name__ == "__main__":
+    unittest.main()

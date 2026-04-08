@@ -48,12 +48,20 @@ def decideClean(workDir, architecture, aggressiveCleanup):
   allBuildStuff = glob.glob("%s/BUILD/*" % workDir)
   toDelete += [x for x in allBuildStuff
                if not path.islink(x) and basename(x) not in symlinksBuild]
-  installGlob ="{}/{}/*/".format(workDir, architecture)
-  installedPackages = {dirname(x) for x in glob.glob(installGlob)}
+  # Packages may be installed directly under <arch>/<pkg>/ (legacy layout)
+  # or under <arch>/<family>/<pkg>/ (grouped layout).  We use a two-level
+  # wildcard so that both layouts are discovered by a single glob pair.
+  installGlob1 = "{}/{}/*/".format(workDir, architecture)          # legacy
+  installGlob2 = "{}/{}/*/*/".format(workDir, architecture)        # grouped
+  installedPackages = {dirname(x)
+                       for pat in (installGlob1, installGlob2)
+                       for x in glob.glob(pat)}
   symlinksInstall = []
   for x in installedPackages:
     symlinksInstall += [path.realpath(y) for y in glob.glob(x + "/latest*")]
-  toDelete += [x for x in glob.glob(installGlob+ "*")
+  toDelete += [x
+               for pat in (installGlob1 + "*", installGlob2 + "*")
+               for x in glob.glob(pat)
                if not path.islink(x) and path.realpath(x) not in symlinksInstall]
   toDelete = [x for x in toDelete if path.exists(x)]
   return toDelete
