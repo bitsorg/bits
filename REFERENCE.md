@@ -650,6 +650,12 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--keep-tmp` | Keep temporary build directories after success. |
 | `--resource-monitoring` | Enable per-package CPU/memory monitoring. |
 | `--resources FILE` | JSON resource-utilisation file for scheduling. |
+| `--check-checksums` | Verify checksums declared in `sources`/`patches` entries; emit a warning on mismatch but continue the build. |
+| `--enforce-checksums` | Verify checksums declared in `sources`/`patches` entries; abort the build on any mismatch or if a checksum is missing for a file. |
+| `--print-checksums` | Compute and print the checksum of every downloaded source/patch file (useful for populating recipes). No verification is performed. |
+| `--write-checksums` | After downloading sources and patches, write (or update) `checksums/<package>.checksum` in the recipe directory. Also records the pinned git commit SHA for packages using `source:` + `tag:`. Independent of the `--*-checksums` verification flags. |
+
+The three `--*-checksums` flags are mutually exclusive. `--print-checksums` has the highest precedence when determining the active mode, followed by `--enforce-checksums`, then `--check-checksums`. A per-recipe `enforce_checksums: true` field (see [§17](#17-recipe-format-reference)) acts like `--enforce-checksums` for that package only. `--write-checksums` is independent and can be combined with any of the above.
 
 ---
 
@@ -801,7 +807,8 @@ A recipe file consists of a YAML block, a `---` separator, and a Bash script:
 |-------|-------------|
 | `source` | Git or Sapling repository URL. |
 | `tag` | Tag, branch, or commit to check out. Supports date substitutions. |
-| `sources` | List of additional source URLs (patches, auxiliary repos). |
+| `sources` | List of source archive URLs to download. Each entry may optionally carry an inline checksum (see [Checksum verification](#checksum-verification) below). |
+| `patches` | List of patch file names to apply (relative to `patches/`). Each entry may optionally carry an inline checksum. |
 
 #### Dependencies
 
@@ -854,6 +861,84 @@ mem_utilisation: 0.80
 
 When `provides_repository: true` is set, the package's `source` URL must point to a git repository containing recipe files. It will be cloned before the main build and its directory added to `BITS_PATH`. See [§13](#13-repository-provider-feature) for full details.
 
+#### Checksum verification
+
+Each entry in the `sources` and `patches` lists may carry an inline checksum using a comma suffix:
+
+```
+<url-or-filename>,<algorithm>:<hexdigest>
+```
+
+The checksum is appended after the **last comma** in the entry. Bits recognises a suffix as a checksum only when it matches the pattern `<algo>:<hex>` where `<algo>` is one of `sha256`, `sha512`, `sha1`, or `md5` (case-insensitive). This means URLs that happen to contain commas in query parameters (e.g. `https://example.com/file?a=1,2`) are handled safely — only a suffix that looks like an actual checksum is stripped.
+
+Examples:
+
+```yaml
+sources:
+  # Plain entry — no verification
+  - https://example.com/mylib-1.0.tar.gz
+
+  # SHA-256 checksum declared inline
+  - https://example.com/mylib-1.0.tar.gz,sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+  # SHA-512 is also supported
+  - https://example.com/data.tar.bz2,sha512:cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e
+
+patches:
+  # Patch with MD5 checksum
+  - fix-build.patch,md5:d41d8cd98f00b204e9800998ecf8427e
+```
+
+The `sources` entries are used to populate the `$SOURCE0`, `$SOURCE1`, … environment variables inside the build script. Bits automatically strips the checksum suffix before setting these variables, so the build script always sees a clean filename or URL.
+
+The enforcement behaviour is controlled by the `--check-checksums`, `--enforce-checksums`, and `--print-checksums` CLI flags (see [§16](#16-command-line-reference)) and by the per-recipe field below:
+
+| Field | Description |
+|-------|-------------|
+| `enforce_checksums` | Set to `true` to make this recipe always verify checksums in `enforce` mode, regardless of the global CLI flag. Equivalent to passing `--enforce-checksums` for this package only. |
+
+Mode precedence (highest wins): `--print-checksums` > `--enforce-checksums` > `enforce_checksums: true` > `--check-checksums` > default (`off`).
+
+| Mode | Behaviour |
+|------|-----------|
+| `off` (default) | Checksums in the recipe are stored but never evaluated. |
+| `warn` | A declared checksum is verified; a mismatch emits a warning and the build continues. |
+| `enforce` | A declared checksum is verified and must match; the build aborts on mismatch. If `--enforce-checksums` is active globally, a **missing** checksum also aborts the build. |
+| `print` | The actual checksum of every downloaded file is printed to stdout; no verification is performed. Use this to populate recipes with correct checksums for the first time. |
+
+#### External checksum files
+
+As an alternative to embedding checksums inline, a recipe repository may store them in a dedicated sidecar file. This keeps recipes readable and makes automated checksum management simpler.
+
+**File location:** `<recipe-repo>.bits/checksums/<pkgname>.checksum`
+
+The `checksums/` directory is optional. If the file does not exist, bits falls back to any inline comma-suffix values in the recipe.
+
+**File format (YAML):**
+
+```yaml
+# checksums/mylib.checksum
+# Re-generate with:  bits build --write-checksums mylib
+
+tag: abc123def456abc123def456abc123def456abc1   # pinned commit SHA
+
+sources:
+  https://example.com/mylib-1.0.tar.gz: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  https://example.com/extra-data.tar.bz2: sha512:cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e
+
+patches:
+  fix-endian.patch: sha256:a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3
+  add-missing-header.patch: md5:d41d8cd98f00b204e9800998ecf8427e
+```
+
+All sections are optional. The `tag` field holds the **pinned git commit SHA** expected after checking out `source:` + `tag:`. This protects against tag movement (force-pushed tags pointing to a different commit). The value is a bare 40-character (SHA-1) or 64-character (SHA-256) hex string without an algorithm prefix.
+
+**Merge semantics — external file wins:** if a URL or patch filename appears in both the checksum file and as an inline comma-suffix in the recipe, the checksum file value takes precedence. This makes the checksum file the single authoritative security artefact while retaining the inline syntax as a convenient fallback for simple cases.
+
+**Generating checksum files:** run `bits build --write-checksums <package>` to download sources, compute checksums, record the checked-out commit SHA, and write (or update) the file automatically. Subsequent builds will pick it up without any further changes to the recipe `.sh` file.
+
+**Commit pin enforcement:** the `tag:` pin is verified using the same `--check-checksums` / `--enforce-checksums` modes as source and patch checksums. A mismatch means the tag has been moved to a different commit since the checksum file was generated.
+
 #### Miscellaneous
 
 | Field | Description |
@@ -861,7 +946,6 @@ When `provides_repository: true` is set, the package's `source` URL must point t
 | `valid_defaults` | List of defaults profiles this recipe is compatible with. |
 | `incremental_recipe` | Bash snippet for fast incremental (development) rebuilds. |
 | `relocate_paths` | Paths to rewrite when relocating an installation. |
-| `patches` | Patch file names to apply (relative to `patches/`). |
 | `variables` | Custom key-value pairs for `%(variable)s` substitution in other fields. |
 | `from` | Parent recipe name for recipe inheritance. |
 

@@ -13,6 +13,7 @@ import base64
 from time import time
 from types import SimpleNamespace
 from bits_helpers.log import error, warning, debug, info
+from bits_helpers.checksum import check_file
 import json
 
 urlRe = re.compile(r".*:.*/.*")
@@ -302,11 +303,30 @@ downloadHandlers = {
 }
 
 
-def download(source, dest, work_dir):
+def download(source, dest, work_dir, checksum=None, enforce_mode="off"):
+    """Download *source* into *dest*, optionally verifying its checksum.
+
+    Parameters
+    ----------
+    source:
+        URL to download.  Must be a clean URL with **no** embedded checksum
+        suffix (callers should call ``bits_helpers.checksum.parse_entry``
+        before passing the URL here).
+    dest:
+        Directory into which the downloaded file is placed.
+    work_dir:
+        Top-level work directory (used for the download cache).
+    checksum:
+        Expected checksum string in ``'algo:hexdigest'`` format, or ``None``
+        when the recipe entry carried no checksum declaration.
+    enforce_mode:
+        One of ``"off"`` (default), ``"warn"``, ``"enforce"``, ``"print"``.
+        Passed directly to ``bits_helpers.checksum.check_file``.
+    """
     noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
     isCmsdistGenerated = True if 'cmdist-generated=1' in source else False
     source = fixUrl(source)
-    checksum = getUrlChecksum(source)
+    url_checksum = getUrlChecksum(source)
 
     # Syntactic sugar to allow the following urls for tag collector:
     #
@@ -340,7 +360,7 @@ def download(source, dest, work_dir):
         raise MalformedUrl(source)
     downloadHandler = downloadHandlers[match.group(1)]
     filename = source.rsplit("/", 1)[1]
-    downloadDir = join(cacheDir, checksum[0:2], checksum)
+    downloadDir = join(cacheDir, url_checksum[0:2], url_checksum)
     try:
         makedirs(downloadDir)
     except OSError as e:
@@ -352,6 +372,9 @@ def download(source, dest, work_dir):
         debug ("Trying to fetch source file: %s", source)
         downloadHandler(source, downloadDir, work_dir)
     if exists(realFile):
+        # Verify checksum against the cached copy (covers both fresh downloads
+        # and cache hits so a corrupted cache entry is caught on the next use).
+        check_file(realFile, filename, checksum, enforce_mode)
         executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
     else:
         raise OSError("Unable to download source {} in to {}".format(source, downloadDir))

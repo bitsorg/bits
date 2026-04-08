@@ -22,6 +22,7 @@ from bits_helpers.cmd import getoutput
 from bits_helpers.git import git
 
 from bits_helpers.log import error, warning, dieOnError, debug, banner
+from bits_helpers.checksum_store import load_for_spec, merge_into_spec
 
 class SpecError(Exception):
   pass
@@ -752,6 +753,10 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     dieOnError(spec["package"].lower() != pkg_filename,
                "{}.sh has different package field: {}".format(p, spec["package"]))
     spec["pkgdir"] = pkgdir
+
+    # Load the optional external checksum store (checksums/<pkg>.checksum)
+    # and merge source/patch checksums + commit pin into the spec.
+    merge_into_spec(spec, load_for_spec(spec))
 
     # Track which repository provider supplied this recipe so that
     # storeHashes can fold the provider's commit hash into the build hash.

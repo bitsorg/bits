@@ -197,6 +197,31 @@ def doParseArgs():
   build_system.add_argument("--no-system", dest="noSystem", nargs="?", const="*", default=None, metavar="PACKAGES",
                             help="Never use system packages for the provided, command separated, PACKAGES, even if compatible.")
 
+  build_checksums = build_parser.add_argument_group(
+      title="Source and patch checksum verification",
+      description="Verify the integrity of downloaded source tarballs and patch files "
+                  "declared with an inline checksum suffix (e.g. "
+                  "\"https://example.com/foo.tar.gz,sha256:abc123...\").")
+  build_checksums_mode = build_checksums.add_mutually_exclusive_group()
+  build_checksums_mode.add_argument(
+      "--check-checksums", dest="checkChecksums", action="store_true", default=False,
+      help="Verify checksums when declared; warn on mismatch. "
+           "Missing declarations are silently ignored.")
+  build_checksums_mode.add_argument(
+      "--enforce-checksums", dest="enforceChecksums", action="store_true", default=False,
+      help="Verify checksums when declared; abort on mismatch. "
+           "Also abort when a source or patch entry carries no checksum declaration.")
+  build_checksums_mode.add_argument(
+      "--print-checksums", dest="printChecksums", action="store_true", default=False,
+      help="Compute and print checksums for all downloaded sources and patches "
+           "in ready-to-paste YAML format, then continue the build normally.")
+  build_checksums.add_argument(
+      "--write-checksums", dest="writeChecksums", action="store_true", default=False,
+      help="After downloading sources and patches, write (or update) the "
+           "checksums/<package>.checksum file in the recipe directory. "
+           "Also records the pinned git commit SHA for source: + tag: packages. "
+           "This flag is independent of the verification mode flags above.")
+
   # Options for clean subcommand
   clean_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                             help=("Clean up build results for this architecture. Default is the current system "

@@ -7,6 +7,8 @@ from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
 from bits_helpers.repo_provider import fetch_repo_providers_iteratively
 from bits_helpers.memory import effective_jobs
+from bits_helpers.checksum import parse_entry as parse_checksum_entry, enforcement_mode as checksum_enforcement_mode, checksum_file as compute_checksum_file
+from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksum_file
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
 from bits_helpers.utilities import resolve_store_path
@@ -721,6 +723,73 @@ def doFinalSync(spec, specs, args, syncHelper):
     syncHelper.upload_symlinks_and_tarball(spec)
 
 
+def _write_checksums_for_spec(spec, work_dir):
+  """Compute and write the checksums/<pkg>.checksum file for *spec*.
+
+  Called when ``--write-checksums`` is active.  Computes the actual SHA-256 of
+  every downloaded source tarball and patch file, reads back the current HEAD
+  commit for ``source:`` + ``tag:`` packages, and writes the result to
+  ``<pkgdir>/checksums/<pkgname>.checksum``.
+
+  Silently skips entries whose files cannot be found (e.g. cached tarballs that
+  were not re-downloaded).
+  """
+  from bits_helpers.checksum_store import write_checksum_file as _write_ck
+  from bits_helpers.utilities import short_commit_hash
+
+  pkgdir = spec.get("pkgdir", "")
+  pkgname = spec.get("package", "")
+  if not pkgdir or not pkgname:
+    return
+
+  store = {"tag": None, "sources": {}, "patches": {}}
+
+  # --- sources (downloaded tarballs) ----------------------------------------
+  source_parent = join(work_dir, "SOURCES", pkgname, spec.get("version", ""))
+  src_dir = join(source_parent, short_commit_hash(spec))
+  if "sources" in spec:
+    from bits_helpers.checksum import parse_entry as _pe
+    from bits_helpers.download import getUrlChecksum as _guc
+    import hashlib
+    for s in spec["sources"]:
+      url, _ = _pe(s)
+      # download() stores files under a subdirectory keyed by md5(url)
+      url_hash = _guc(url)
+      from os.path import basename as _bn
+      fname = _bn(url)
+      candidate = join(work_dir, "TMP", url_hash, fname)
+      if not exists(candidate):
+        candidate = join(src_dir, fname)
+      if exists(candidate):
+        store["sources"][url] = compute_checksum_file(candidate)
+      else:
+        warning("--write-checksums: could not find downloaded file for %s", url)
+
+  # --- patches --------------------------------------------------------------
+  if "patches" in spec:
+    from bits_helpers.checksum import parse_entry as _pe
+    for patch_entry in spec["patches"]:
+      patch_name, _ = _pe(patch_entry)
+      patch_path = join(src_dir, patch_name)
+      if exists(patch_path):
+        store["patches"][patch_name] = compute_checksum_file(patch_path)
+
+  # --- git commit pin -------------------------------------------------------
+  if "source" in spec and "tag" in spec:
+    scm = spec.get("scm")
+    if scm is not None:
+      try:
+        store["tag"] = scm.checkedOutCommitName(src_dir).strip()
+      except Exception as exc:  # noqa: BLE001
+        warning("--write-checksums: could not read HEAD for %s: %s", pkgname, exc)
+
+  if store["tag"] or store["sources"] or store["patches"]:
+    path = _write_ck(pkgdir, pkgname, store)
+    info("Wrote checksum file: %s", path)
+  else:
+    debug("--write-checksums: nothing to record for %s", pkgname)
+
+
 def doBuild(args, parser):
   syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
                                args.workDir, getattr(args, "insecure", False))
@@ -1369,7 +1438,10 @@ def doBuild(args, parser):
         cachedTarball = re.sub("^" + workDir, container_workDir, cachedTarball)
 
     if not cachedTarball:
-      checkout_sources(spec, workDir, args.referenceSources, args.docker)
+      checkout_sources(spec, workDir, args.referenceSources, args.docker,
+                       enforce_mode=checksum_enforcement_mode(spec, args))
+      if getattr(args, "writeChecksums", False):
+        _write_checksums_for_spec(spec, workDir)
 
     scriptDir = join(workDir, "SPECS", args.architecture, spec["package"],
                      spec["version"] + "-" + spec["revision"])
@@ -1427,13 +1499,15 @@ def doBuild(args, parser):
     ]
     if "sources" in spec:
       for idx, src in enumerate(spec["sources"]):
-        buildEnvironment.append(("SOURCE%s" % idx, basename(src)))
+        url, _ = parse_checksum_entry(src)   # strip any ,algo:digest suffix
+        buildEnvironment.append(("SOURCE%s" % idx, basename(url)))
       buildEnvironment.append(("SOURCE_COUNT", str(len(spec["sources"]))))
     else:
       buildEnvironment.append(("SOURCE_COUNT", "0"))
     if "patches" in spec:
       for idx, src in enumerate(spec["patches"]):
-        buildEnvironment.append(("PATCH%s" % idx, basename(src)))
+        patch_name, _ = parse_checksum_entry(src)  # strip any ,algo:digest suffix
+        buildEnvironment.append(("PATCH%s" % idx, basename(patch_name)))
       buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
     else:
       buildEnvironment.append(("PATCH_COUNT", "0"))
