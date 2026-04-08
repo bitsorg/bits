@@ -116,35 +116,68 @@ exit
 
 ## 4. Configuration
 
-Bits reads an INI-style configuration file at startup, searching in this order:
+Bits reads an optional INI-style configuration file at startup to set the working directory, recipe search paths, and other defaults. The file is never created automatically — it must be written by the user.
 
-1. File given via `--config=FILE`
-2. `bits.rc` in the current directory
-3. `.bitsrc` in the current directory
-4. `~/.bitsrc` in the home directory
+### File locations and search order
+
+Bits tries the following locations in order and loads the **first file it finds**, ignoring the rest:
+
+| Priority | Path | Description |
+|---|---|---|
+| 1 | `--config=FILE` | Explicit path given on the command line |
+| 2 | `./bits.rc` | Project-local config in the current directory |
+| 3 | `./.bitsrc` | Hidden project-local config |
+| 4 | `~/.bitsrc` | User-level config in the home directory |
+
+If `--config` names a file that does not exist the search continues down the list. If no file is found at all the built-in defaults apply.
+
+### File format
+
+The file uses Windows INI-style syntax. Two section names are recognised:
+
+- **`[bits]`** — read first; provides global defaults.
+- **`[<organisation>]`** — read second and overrides `[bits]`; the section name must match the current `organisation` value (default `ALICE`). This allows a single file to serve multiple organisations with different settings.
+
+Within each section, each line is `key = value` (spaces around `=` are stripped). Lines that do not contain `=` are ignored, so plain-text comments work without a `#` prefix (though `#` comments are harmless too). Sections are delimited by blank lines — the parser reads from the section header up to the first blank line.
+
+### Variables
+
+| Config key | Exported as | Default | Description |
+|---|---|---|---|
+| `organisation` | `BITS_ORGANISATION` | `ALICE` | Organisation name. Also selects the organisation-specific section in this file. |
+| `branding` | `BITS_BRANDING` | `bits` | Tool name used in log and error messages. |
+| `pkg_prefix` | `BITS_PKG_PREFIX` | `VO_<organisation>` | Prefix prepended to package names in `bits q` output. |
+| `repo_dir` | `BITS_REPO_DIR` | `alidist` | Root directory for recipe repositories. |
+| `sw_dir` | `BITS_WORK_DIR` | `sw` | Output and work directory for built packages, source mirrors, and module files. |
+| `search_path` | `BITS_PATH` | _(empty)_ | Comma-separated list of additional recipe search directories. Absolute paths are used directly; relative names have `.bits` appended. |
+
+### Precedence
+
+The config file only fills in values that are not already set. The full precedence chain from highest to lowest is:
+
+```
+explicit CLI flag  >  environment variable  >  bits.rc value  >  built-in default
+```
+
+For example, if `bits.rc` sets `sw_dir = /data/sw` but the user runs `bits build -w /tmp/sw ROOT`, the `-w` flag wins. If neither a flag nor an environment variable is set, `/data/sw` from the config file applies.
 
 ### Example configuration
 
 ```ini
 [bits]
-  organisation = ALICE
+organisation = ALICE
+branding     = bits
 
 [ALICE]
-  # Prefix shown when listing packages with 'bits q'
-  pkg_prefix   = VO_ALICE
-
-  # Root directory for all build products
-  sw_dir       = sw
-
-  # Directory that contains the checked-out recipe repositories
-  repo_dir     = repositories
-
-  # Comma-separated list of recipe repository names to search.
-  # Each name is resolved to <repo_dir>/<name>.bits on disk.
-  search_path  = alice,bits,general,simulation,hepmc,analysis,ml
+pkg_prefix   = VO_ALICE
+sw_dir       = /data/bits/sw
+repo_dir     = /data/bits/alidist
+search_path  = /data/bits/extra.bits,localrecipes
 ```
 
-Every setting can also be overridden by an environment variable — see [§18 Environment Variables](#18-environment-variables) for the full list.
+The `[ALICE]` section overrides or extends `[bits]` for the `ALICE` organisation. A second organisation (e.g. `[CMS]`) can coexist in the same file with different `sw_dir` and `search_path` values; only the section matching the current `organisation` key is applied.
+
+Every setting can also be overridden by an environment variable — see [§18 Environment Variables](#18-environment-variables) for the full mapping.
 
 ---
 
@@ -186,7 +219,19 @@ Bits resolves the full transitive dependency graph of each requested package, co
 
 ## 6. Managing Environments
 
-Bits uses the standard Environment Modules system (`modulecmd`) to manage runtime environments. A *module* corresponds to one built package version.
+Bits uses the standard [Environment Modules](https://modules.sourceforge.net/) system (`modulecmd`) to manage runtime environments. A *module* corresponds to one built package version. The `bits` shell script discovers `modulecmd` automatically in three locations: on `$PATH` (v3), via `envml` (v4+), or via Homebrew (`brew --prefix modules`) on macOS. If none is found, it prints the appropriate install command (`apt-get install environment-modules`, `yum install environment-modules`, or `brew install modules`).
+
+Before any module command runs, bits rebuilds the `MODULES/<ARCH>/` directory by scanning every installed package for an `etc/modulefiles/<PKG>` file and copying it into the right place. Pass `--no-refresh` to skip this scan and use whatever is already on disk.
+
+### Global options
+
+The following options apply to all module sub-commands and must be placed before the sub-command name:
+
+| Option | Description |
+|--------|-------------|
+| `-w DIR`, `--work-dir DIR` | Work directory containing the `sw/` tree. Defaults to `$BITS_WORK_DIR` (then `sw`, then `../sw`). |
+| `-a ARCH`, `--architecture ARCH` | Architecture sub-directory. Auto-detected from `bitsBuild architecture` or the most recently modified directory under the work dir. |
+| `--no-refresh` | Skip rebuilding `MODULES/<ARCH>/` before executing the command. Useful when the installation has not changed. |
 
 ### Enter a sub-shell with modules loaded
 
@@ -196,9 +241,14 @@ bits enter ROOT/latest
 exit   # return to your normal shell
 ```
 
-Options for `bits enter`:
-- `--shellrc` — source your shell startup file (`.bashrc`, `.zshrc`) in the new shell.
-- `--dev` — also load development-mode variables from `etc/profile.d/init.sh`.
+`bits enter` sets the shell prompt to `[MODULE] \w $>` (or equivalent for zsh/ksh) so it is always clear when inside a bits environment. Nesting `bits enter` inside another bits environment is blocked.
+
+| Option | Description |
+|--------|-------------|
+| `--shellrc` | Source your shell startup file (`.bashrc`, `.zshrc`, etc.) in the new shell. By default startup files are suppressed to prevent environment conflicts. |
+| `--dev` | Instead of loading modules through `modulecmd`, source each package's `etc/profile.d/init.sh` directly. Intended for development work. Appends `(dev)` to the shell prompt. |
+
+The shell type is auto-detected from the parent process. Override it with the `MODULES_SHELL` environment variable (accepts `bash`, `zsh`, `ksh`, `csh`, `tcsh`, `sh`).
 
 ### Load / unload in the current shell
 
@@ -209,22 +259,45 @@ eval "$(bits shell-helper)"
 
 # Then in any shell session:
 bits load ROOT/latest        # adds ROOT to the current environment
-bits unload ROOT             # removes it
+bits unload ROOT             # removes it (version can be omitted)
 bits list                    # show currently loaded modules
-bits q [REGEXP]              # list all available modules
+bits q [REGEXP]              # list available modules, optionally filtered
 ```
 
-Without `shell-helper` you must use `eval`:
+Without `shell-helper` you must use `eval` manually:
 
 ```bash
 eval "$(bits load ROOT/latest)"
 eval "$(bits unload ROOT)"
 ```
 
+Pass `-q` to either command to suppress the informational message on stderr.
+
 ### Run a single command in a module environment
 
 ```bash
 bits setenv ROOT/latest -c root -b
+# Everything after -c is executed as-is; the exit code is preserved.
+```
+
+`bits setenv` loads the modules into the current process environment and then `exec`s the command — no new shell is spawned.
+
+### Inspect and manage modules
+
+```bash
+bits q [REGEXP]     # list available modules, filtered by optional regex
+bits list           # list currently loaded modules
+bits avail          # raw modulecmd avail output
+bits modulecmd zsh load ROOT/latest   # pass arguments directly to modulecmd
+```
+
+### Shell helper
+
+Add the following to your `.bashrc`, `.zshrc`, or `.kshrc` so that `bits load` and `bits unload` modify the current shell's environment without requiring an explicit `eval`:
+
+```bash
+BITS_WORK_DIR=/path/to/sw
+eval "$(bits shell-helper)"
 ```
 
 ---
@@ -729,38 +802,97 @@ bits clean [options]
 
 ---
 
-### bits enter / load / unload / setenv
+### bits enter
+
+Spawn a new interactive sub-shell with one or more modules loaded. Exit the sub-shell with `exit` to return to the original environment.
 
 ```bash
-bits enter [--shellrc] [--dev] MODULE[,MODULE2...]
-eval "$(bits load MODULE[,MODULE2...])"
-eval "$(bits unload MODULE)"
-bits setenv MODULE[,MODULE2...] -c COMMAND [ARGS...]
+bits enter [--shellrc] [--dev] MODULE1[,MODULE2,...]
 ```
 
-All four commands drive `modulecmd` behind the scenes. `bits enter` spawns a new interactive sub-shell; `bits load` / `bits unload` print shell code that must be `eval`'d (or used with `bits shell-helper`).
+| Option | Description |
+|--------|-------------|
+| `--shellrc` | Source the user's shell startup file (`.bashrc`, `.zshrc`, etc.) in the new shell. Suppressed by default to avoid environment conflicts. |
+| `--dev` | Source `etc/profile.d/init.sh` from each package directly instead of using `modulecmd`. Development use only. Appends `(dev)` to the shell prompt. |
+
+The shell type is auto-detected from the parent process (`bash`, `zsh`, `ksh`, `csh`/`tcsh`, `sh`). Override with the `MODULES_SHELL` environment variable. The prompt is set to `[MODULE_LIST] \w $>` (or the zsh/ksh equivalent) for the duration of the session. Nesting `bits enter` inside another bits environment is blocked.
+
+---
+
+### bits load / printenv
+
+Print the shell commands to load one or more modules. Must be `eval`'d to take effect, or used via `bits shell-helper`.
+
+```bash
+eval "$(bits load [-q] MODULE1[,MODULE2,...])"
+```
+
+`-q` suppresses the informational message on stderr. `printenv` is an alias for `load`. The modules directory is refreshed and the module is verified to exist before printing. `--dev` mode prints manual `source` commands to stderr instead (eval of dev mode is unsupported).
+
+---
+
+### bits unload
+
+Print the shell commands to unload one or more modules. Must be `eval`'d to take effect.
+
+```bash
+eval "$(bits unload [-q] MODULE1[,MODULE2,...])"
+```
+
+The version may be omitted; `modulecmd` will unload whichever version is currently loaded. `-q` suppresses stderr output. Override the shell with `MODULES_SHELL`.
+
+---
+
+### bits setenv
+
+Load modules into the current process and `exec` a command. No new shell is spawned; the exit code of the command is preserved.
+
+```bash
+bits setenv MODULE1[,MODULE2,...] -c COMMAND [ARGS...]
+```
+
+Everything after `-c` is executed as-is. The modules directory is refreshed and modules are verified before execution.
+
+```bash
+bits setenv ROOT/v6-30 -c root -b
+```
 
 ---
 
 ### bits query / list / avail
 
 ```bash
-bits q [REGEXP]    # list available modules (optionally filtered)
+bits q [REGEXP]    # list available modules, optionally filtered by regex
 bits list          # show currently loaded modules
-bits avail         # show all modules via modulecmd avail
+bits avail         # raw modulecmd avail output
+```
+
+`bits q` lists modules in `BITS_PKG_PREFIX@PKG::VERSION` format. The optional `REGEXP` is a case-insensitive extended regular expression. The modules directory is refreshed before listing. `bits avail` delegates directly to `modulecmd bash avail`.
+
+---
+
+### bits modulecmd
+
+Pass arguments directly to the underlying `modulecmd` binary, after refreshing the module directory. Useful for operations not covered by the higher-level commands or for targeting a specific shell:
+
+```bash
+bits modulecmd zsh load ROOT/v6-30
+# Consult man modulecmd for the full argument list.
 ```
 
 ---
 
 ### bits shell-helper
 
+Emit a shell function definition to be `eval`'d in a shell rc file. Once active, `bits load` and `bits unload` modify the current shell's environment directly without requiring an explicit `eval`.
+
 ```bash
-# Add once to ~/.bashrc or ~/.zshrc:
-BITS_WORK_DIR=<path_to_sw_dir>
+# Add to ~/.bashrc, ~/.zshrc, or ~/.kshrc:
+BITS_WORK_DIR=/path/to/sw
 eval "$(bits shell-helper)"
 ```
 
-After this, `bits load` and `bits unload` modify the current shell's environment directly, without requiring `eval`.
+All other `bits` sub-commands pass through to the `bits` binary unchanged.
 
 ---
 
@@ -968,6 +1100,8 @@ These variables are set automatically inside each package's Bash build script:
 
 ## 18. Environment Variables
 
+### Build and configuration variables
+
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `BITS_BRANDING` | `bits` | Tool branding string used in log output. |
@@ -976,6 +1110,26 @@ These variables are set automatically inside each package's Bash build script:
 | `BITS_REPO_DIR` | `alidist` | Root directory for recipe repositories. |
 | `BITS_WORK_DIR` | `sw` | Output and work directory. |
 | `BITS_PATH` | _(empty)_ | Comma-separated list of additional recipe search directories. Absolute paths are used directly; relative names have `.bits` appended and are resolved under `BITS_REPO_DIR`. |
+
+### Environment module variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MODULES_SHELL` | _(auto-detected)_ | Shell type passed to `modulecmd` and used when spawning a new sub-shell via `bits enter`. Auto-detected from the parent process. Accepted values: `bash`, `zsh`, `ksh`, `csh`, `tcsh`, `sh`. |
+| `MODULEPATH` | _(set by bits)_ | Colon-separated list of directories searched by `modulecmd` for modulefiles. Bits prepends `<WORK_DIR>/MODULES/<ARCH>` and preserves any pre-existing entries. |
+| `BITSLVL` | `0` | Nesting depth counter incremented each time `bits enter` is called. `bits enter` refuses to proceed if this is already greater than 1, preventing double-nesting. |
+| `BITS_ENV` | _(optional)_ | Absolute path to the `bits` executable, used by `shell-helper` to locate bits without relying on `$PATH`. If unset, `shell-helper` resolves `bits` via `type -p bits`. |
+| `BITSBUILD_CHDIR` | _(unset)_ | If set, `<value>/sw` is added to the list of default work directories tried when `--work-dir` is not specified. |
+
+### `modulecmd` discovery
+
+The `bits` script locates `modulecmd` by trying three paths in order:
+
+1. `modulecmd` on `$PATH` — Environment Modules v3.
+2. `$(dirname $(which envml))/../libexec/modulecmd-compat` — Environment Modules v4+.
+3. `$(brew --prefix modules)/libexec/modulecmd-compat` — Homebrew on macOS.
+
+If none is executable, bits prints an install hint and exits with an error.
 
 ---
 
