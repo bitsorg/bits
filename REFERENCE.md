@@ -195,7 +195,7 @@ Bits resolves the full transitive dependency graph of each requested package, co
 
 | Option | Description |
 |--------|-------------|
-| `--defaults PROFILE` | Defaults profile (recipe `defaults-PROFILE.sh`). Default: `release`. |
+| `--defaults PROFILE` | Defaults profile(s) to load. Combines multiple files with `::` (e.g. `--defaults release::myproject`). Default: `release`, which loads `defaults-release.sh`. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
 | `--builders N` | Number of packages to build simultaneously. Default: 1. |
 | `-u`, `--fetch-repos` | Update all source mirrors before building. |
@@ -699,7 +699,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 
 | Option | Description |
 |--------|-------------|
-| `--defaults PROFILE` | Defaults profile (`defaults-PROFILE.sh`). Default: `release`. |
+| `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
@@ -745,7 +745,7 @@ bits deps [options] PACKAGE
 | Option | Description |
 |--------|-------------|
 | `--outgraph FILE` | Output PDF file (required). |
-| `--defaults PROFILE` | Defaults profile to use. |
+| `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `-a ARCH` | Architecture for dependency resolution. |
 | `--disable PACKAGE` | Exclude PACKAGE from the graph (repeatable). |
 | `--prefer-system` | Mark system-provided packages differently. |
@@ -781,7 +781,7 @@ bits init [options] PACKAGE[@VERSION][,PACKAGE[@VERSION]...]
 | `-z PREFIX`, `--devel-prefix PREFIX` | Directory for development checkouts. |
 | `--reference-sources DIR` | Mirror directory to speed up cloning. |
 | `-a ARCH` | Architecture. |
-| `--defaults PROFILE` | Defaults profile. |
+| `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 
 After `bits init`, the created directory is automatically used as the source for subsequent `bits build` invocations of that package.
 
@@ -1106,7 +1106,27 @@ These variables are set automatically inside each package's Bash build script:
 
 A **defaults profile** is a special recipe file named `defaults-<name>.sh` that lives in the recipe repository alongside ordinary package recipes. It is not a buildable package — its Bash body is never executed. Instead, its YAML header carries **global configuration** that is applied across the entire dependency graph before any package is resolved.
 
-The active profile is selected with `--defaults PROFILE` (default: `release`), which causes bits to load `defaults-release.sh`. Multiple `--defaults` values may be given; their YAML headers are merged left-to-right, with later values winning.
+### Selecting a profile
+
+The active profile is selected with `--defaults PROFILE`. If the flag is omitted, bits falls back to `release`, loading `defaults-release.sh`.
+
+`defaults-release.sh` occupies a privileged position: every package in the build graph automatically depends on a pseudo-package named `defaults-release`, which is fulfilled by whatever profile(s) are loaded. This is the mechanism that injects the global `env:` block into every package's `init.sh`.
+
+### Combining multiple profiles with `::`
+
+Two or more profiles can be combined in a single `--defaults` value using `::` as a separator:
+
+```
+bits build --defaults dev::gcc13 MyPackage
+```
+
+This loads `defaults-dev.sh` and `defaults-gcc13.sh` (in that order) and deep-merges their YAML headers into a single configuration. The merge follows the same left-to-right rules as specifying separate profiles: scalars from the later file win, lists are concatenated, dicts are recursively merged.
+
+> **Note:** `defaults-release.sh` is **not** automatically prepended when you use `::`. If you want the release baseline plus a project overlay, write `--defaults release::myproject` explicitly.
+
+### Profile names and the `defaults-release` dependency slot
+
+Internally, bits rewrites all specified profiles to satisfy the universal `defaults-release` auto-dependency. When you write `--defaults gcc13`, the `defaults-gcc13.sh` file is loaded, its content is merged, and the result is presented to every other package as its `defaults-release` dependency — regardless of the actual file name on disk. This ensures that the hash of `defaults-release` is the same across all packages that share the same defaults configuration.
 
 ### Role in the build pipeline
 
@@ -1183,18 +1203,76 @@ package_family:
 | `env` | Key-value pairs exported into every package's `init.sh` (via `defaults-release` auto-dependency). Equivalent to setting the same `env:` in every recipe. |
 | `disable` | List of package names to exclude from the dependency graph. |
 | `overrides` | Dict keyed by package name or regex. Each value is a YAML fragment merged into that package's spec after it is parsed. Keys are matched case-insensitively as `re.fullmatch` patterns, so regex metacharacters work. |
-| `valid_defaults` | Restricts which profiles this file may be used with. Bits aborts if the requested `--defaults` is not in the list. |
+| `valid_defaults` | Restricts which profiles this recipe is compatible with. Each component of the `::` list is checked independently; bits aborts if any component is absent from the list. |
 | `package_family` | Optional install grouping; see [Package families](#package-families) below. |
+| `qualify_arch` | Set to `true` to append the defaults combination to the install architecture string; see [Qualifying the install architecture](#qualifying-the-install-architecture) below. |
 
-### Multiple profiles and merging
+### Qualifying the install architecture
 
-When more than one profile is given (e.g. `--defaults release --defaults alice`), `readDefaults()` processes them in order and merges their headers using `merge_dicts()`, which performs a deep merge:
+By default all packages built with any set of defaults land under the same architecture directory (e.g. `sw/slc7_x86-64/`). If you maintain two profiles that are **incompatible with each other** — for example `gcc12` and `gcc13` — builds from one profile will silently overwrite the install tree of the other.
+
+Setting `qualify_arch: true` in a defaults file instructs bits to **append the defaults combination to the architecture string**, producing a unique install prefix per combination. For example:
+
+```
+bits build --defaults dev::gcc13 MyPackage
+```
+
+with `qualify_arch: true` in `defaults-gcc13.sh` installs everything under:
+
+```
+sw/slc7_x86-64-dev-gcc13/
+```
+
+instead of the plain `sw/slc7_x86-64/`. The `release` component is never appended (it is the implicit baseline); all other components are joined with `-` in the order they appear on the command line.
+
+#### How it works
+
+After merging all defaults files, bits calls `compute_combined_arch()` to derive the effective install prefix:
+
+```python
+compute_combined_arch(defaultsMeta, args.defaults, raw_arch)
+# e.g. ("slc7_x86-64", ["dev", "gcc13"]) → "slc7_x86-64-dev-gcc13"
+```
+
+This combined string is used for:
+
+- **Install tree** — `sw/<combined_arch>/<package>/<version>-<revision>/`
+- **`BITS_ARCH_PREFIX` default** in every `init.sh` — so the environment resolves to the right prefix at runtime
+- **`$EFFECTIVE_ARCHITECTURE`** passed to the build script
+- **`TARS/<combined_arch>/`** symlink directories and store paths — tarballs are keyed on the combined arch, ensuring they do not collide with tarballs from builds using a different defaults combination
+
+The original platform architecture (`slc7_x86-64`) is still passed to the build script as **`$ARCHITECTURE`** (used for platform detection such as the macOS `${ARCHITECTURE:0:3}` check) and to system-package preference matching, so build scripts need no changes.
+
+Packages that declare `architecture: shared` (see [§20](#20-architecture-independent-shared-packages)) are **unaffected** by `qualify_arch`: their effective architecture is always `shared` regardless of which defaults are active.
+
+#### Example defaults file
+
+```yaml
+package: defaults-gcc13
+version: v1
+qualify_arch: true            # ← enables per-defaults isolation
+env:
+  CC: gcc-13
+  CXX: g++-13
+```
+
+#### Cleaning up
+
+The `bits clean` command accepts an explicit `-a`/`--architecture` flag. To clean a qualified-arch tree, pass the combined string:
+
+```
+bits clean -a slc7_x86-64-dev-gcc13
+```
+
+### Merge semantics
+
+When the `::` list contains more than one name (e.g. `--defaults release::alice`), `readDefaults()` processes them left to right and merges their YAML headers using `merge_dicts()`, which performs a deep merge:
 
 - Scalar values: later profile wins.
 - Lists: concatenated.
 - Dicts: recursively merged.
 
-This lets a project-level profile (`alice`) layer on top of a base profile (`release`) without duplicating common settings.
+This lets a project-level profile (`alice`) layer on top of a base profile (`release`) without duplicating common settings. Bits also validates that each component in the `::` list is present in any `valid_defaults` list found in the loaded recipes; it aborts with a clear error message if any component is incompatible.
 
 ### Architecture-specific overlay
 

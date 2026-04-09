@@ -125,6 +125,42 @@ def effective_arch(spec: dict, build_arch: str) -> str:
   return build_arch
 
 
+def compute_combined_arch(defaults_meta: dict, defaults_list: list, raw_arch: str) -> str:
+  """Return the effective architecture string for install paths.
+
+  When any loaded defaults file sets ``qualify_arch: true``, the install
+  directory is qualified with the defaults combination joined by ``-``::
+
+      <raw_arch>-<d1>-<d2>-...
+
+  The ``release`` component is omitted from the suffix because it is the
+  baseline and would add noise (``slc7_x86-64-release`` is less useful than
+  ``slc7_x86-64``).  If, after filtering, no qualifiers remain, *raw_arch*
+  is returned as-is.
+
+  When ``qualify_arch`` is absent or false in the merged defaults metadata the
+  function returns *raw_arch* unchanged, preserving full backward
+  compatibility.
+
+  Examples::
+
+      compute_combined_arch({}, ["release"], "slc7_x86-64")
+      # → "slc7_x86-64"  (no qualify_arch flag)
+
+      compute_combined_arch({"qualify_arch": True}, ["dev", "gcc13"], "slc7_x86-64")
+      # → "slc7_x86-64-dev-gcc13"
+
+      compute_combined_arch({"qualify_arch": True}, ["release"], "slc7_x86-64")
+      # → "slc7_x86-64"  (release-only, no suffix)
+  """
+  if not defaults_meta.get("qualify_arch", False):
+    return raw_arch
+  qualifiers = [d for d in defaults_list if d != "release"]
+  if not qualifiers:
+    return raw_arch
+  return raw_arch + "-" + "-".join(qualifiers)
+
+
 def resolve_store_path(architecture, spec_hash):
   """Return the path where a tarball with the given hash is to be stored.
 

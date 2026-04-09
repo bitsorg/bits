@@ -11,7 +11,7 @@ from bits_helpers.checksum import parse_entry as parse_checksum_entry, enforceme
 from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksum_file
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
-from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH
+from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH, compute_combined_arch
 from bits_helpers.utilities import parseDefaults, readDefaults
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
@@ -840,9 +840,6 @@ def _write_checksums_for_spec(spec, work_dir):
 
 
 def doBuild(args, parser):
-  syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
-                               args.workDir, getattr(args, "insecure", False))
-
   packages = args.pkgname
   specs = {}
   buildOrder = []
@@ -869,6 +866,23 @@ def doBuild(args, parser):
                                         defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)
   makedirs(join(workDir, "SPECS"), exist_ok=True)
+
+  # When any loaded defaults file sets ``qualify_arch: true`` the install tree
+  # is placed under a combined architecture string, e.g. "slc7_x86-64-dev-gcc13"
+  # instead of "slc7_x86-64".  This lets multiple defaults combinations coexist
+  # in the same work directory.  The original raw architecture is preserved so
+  # that it can be passed as $ARCHITECTURE to the build script (where it is
+  # used, for example, to detect macOS via ${ARCHITECTURE:0:3}).
+  raw_architecture = args.architecture
+  args.architecture = compute_combined_arch(defaultsMeta, args.defaults, raw_architecture)
+  if args.architecture != raw_architecture:
+    debug("qualify_arch active: using combined architecture %s (raw: %s)",
+          args.architecture, raw_architecture)
+
+  # syncHelper is constructed after defaults loading so that it receives the
+  # (potentially combined) architecture string.
+  syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
+                               args.workDir, getattr(args, "insecure", False))
 
   # If the bits workdir contains a .sl directory (or .git/sl for git repos
   # with Sapling enabled), we use Sapling as SCM. Otherwise, we default to git
@@ -925,7 +939,7 @@ def doBuild(args, parser):
                      configDir               = args.configDir,
                      preferSystem            = args.preferSystem,
                      noSystem                = args.noSystem,
-                     architecture            = args.architecture,
+                     architecture            = raw_architecture,
                      disable                 = args.disable,
                      force_rebuild           = args.force_rebuild,
                      defaults                = args.defaults,
@@ -1212,7 +1226,7 @@ def doBuild(args, parser):
     debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
     storeHook(p, specs, args.defaults[0])
     storeHashes(p, specs, considerRelocation=(
-      args.architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH
+      raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH
     ))
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
@@ -1539,7 +1553,7 @@ def doBuild(args, parser):
     # actual build script
     bits_dir = dirname(dirname(realpath(__file__)))
     buildEnvironment = [
-      ("ARCHITECTURE", args.architecture),
+      ("ARCHITECTURE", raw_architecture),
       ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
       ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
       ("CACHED_TARBALL", cachedTarball),
