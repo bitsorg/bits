@@ -157,12 +157,19 @@ def clone_or_update_provider(
     os.makedirs(cache_root, exist_ok=True)
 
     # ── 1. Update / create bare mirror ──────────────────────────────────
+    # Always refresh the mirror when a cached checkout already exists so that
+    # we can detect upstream changes on every run (the user may have tagged a
+    # new version of the provider repository since the last build).  On the
+    # very first clone there is no cache yet, so we respect the caller's
+    # ``fetch_repos`` flag to avoid unnecessary network access.
+    has_cached_checkout = exists(join(cache_root, "latest"))
     mirror_spec = OrderedDict(spec)
     mirror_spec["scm"] = scm
     mirror_spec["is_devel_pkg"] = False
     updateReferenceRepoSpec(
         reference_sources, package, mirror_spec,
-        fetch=fetch_repos, usePartialClone=True, allowGitPrompt=False,
+        fetch=fetch_repos or has_cached_checkout,
+        usePartialClone=True, allowGitPrompt=False,
     )
     mirror_dir = mirror_spec.get("reference")
 
@@ -187,8 +194,12 @@ def clone_or_update_provider(
     checkout_dir = join(cache_root, short_hash)
 
     # ── 3. Cache-hit check ───────────────────────────────────────────────
+    # The marker file is written only after a successful checkout.  If it
+    # exists for the hash we just resolved from the (freshly-updated) mirror,
+    # the provider is up-to-date and we can reuse the cached directory.
     marker = join(checkout_dir, ".bits_provider_ok")
     if exists(marker):
+        debug("Provider '%s' is up-to-date (cache hit @ %s)", package, short_hash)
         info("Reusing cached provider '%s' @ %s", package, short_hash)
         symlink(short_hash, join(cache_root, "latest"))
         return checkout_dir, commit_hash

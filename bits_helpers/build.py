@@ -11,7 +11,7 @@ from bits_helpers.checksum import parse_entry as parse_checksum_entry, enforceme
 from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksum_file
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
-from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH, compute_combined_arch
+from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id
 from bits_helpers.utilities import parseDefaults, readDefaults
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
@@ -456,7 +456,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       '[ -n "${{{bigpackage}_REVISION}}" ] || '
       '. {arch_prefix}/{family}{package}/{version}-{revision}/etc/profile.d/init.sh'
     ).format(
-      bigpackage=dep.upper().replace("-", "_"),
+      bigpackage=pkg_to_shell_id(dep),
       arch_prefix=arch_prefix,
       family=family_seg,
       package=quote(dep_spec["package"]),
@@ -466,7 +466,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   lines.extend(_dep_init_path(dep) for dep in spec.get("requires", ()))
 
   if post_build:
-    bigpackage = package.upper().replace("-", "_")
+    bigpackage = pkg_to_shell_id(package)
 
     # Set standard variables related to the package itself. These should only
     # be set once the build has actually completed.

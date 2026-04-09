@@ -109,6 +109,27 @@ Recipes that do **not** define ``architecture: shared`` are completely unaffecte
 """
 
 
+def pkg_to_shell_id(name: str) -> str:
+  """Return a valid shell identifier derived from a package name.
+
+  Replaces every character that is not alphanumeric or underscore with
+  ``_``, then upper-cases the result.  This handles both the common
+  dash-separated convention and less common names that contain dots or
+  other punctuation::
+
+      pkg_to_shell_id("GCC-Toolchain")  -> "GCC_TOOLCHAIN"
+      pkg_to_shell_id("common.bits")    -> "COMMON_BITS"
+      pkg_to_shell_id("o2.framework")   -> "O2_FRAMEWORK"
+
+  The transformation is used wherever a package name must appear as part
+  of a shell variable name, e.g. ``${COMMON_BITS_ROOT}``.  Filesystem
+  paths (tarballs, install dirs, SPECS dirs) always use the original
+  package name unchanged.
+  """
+  import re
+  return re.sub(r'[^A-Za-z0-9_]', '_', name).upper()
+
+
 def effective_arch(spec: dict, build_arch: str) -> str:
   """Return the architecture string to use in paths and tarball names.
 
@@ -224,7 +245,7 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
   package = spec.get("package")
   all_vars = {
     "package": package,
-    "root_dir": "${%s_ROOT}" % package.upper().replace("-","_"),
+    "root_dir": "${%s_ROOT}" % pkg_to_shell_id(package),
     "commit_hash": commit_hash,
     "short_hash": commit_hash[0:10],
     "tag": tag,
