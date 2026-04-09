@@ -44,6 +44,7 @@ def decideClean(workDir, architecture, aggressiveCleanup):
   toDelete = ["%s/TMP" % workDir, "%s/INSTALLROOT" % workDir]
   if aggressiveCleanup:
     toDelete += ["{}/TARS/{}/store".format(workDir, architecture),
+                 "{}/TARS/shared/store".format(workDir),
                  "%s/SOURCES" % (workDir)]
   allBuildStuff = glob.glob("%s/BUILD/*" % workDir)
   toDelete += [x for x in allBuildStuff
@@ -51,16 +52,21 @@ def decideClean(workDir, architecture, aggressiveCleanup):
   # Packages may be installed directly under <arch>/<pkg>/ (legacy layout)
   # or under <arch>/<family>/<pkg>/ (grouped layout).  We use a two-level
   # wildcard so that both layouts are discovered by a single glob pair.
-  installGlob1 = "{}/{}/*/".format(workDir, architecture)          # legacy
-  installGlob2 = "{}/{}/*/*/".format(workDir, architecture)        # grouped
+  # Architecture-independent packages live under shared/ with the same two-level
+  # structure (shared/<pkg>/ or shared/<family>/<pkg>/).
+  installGlob1 = "{}/{}/*/".format(workDir, architecture)          # arch, legacy
+  installGlob2 = "{}/{}/*/*/".format(workDir, architecture)        # arch, grouped
+  installGlob3 = "{}/shared/*/".format(workDir)                    # shared, legacy
+  installGlob4 = "{}/shared/*/*/".format(workDir)                  # shared, grouped
+  allInstallGlobs = (installGlob1, installGlob2, installGlob3, installGlob4)
   installedPackages = {dirname(x)
-                       for pat in (installGlob1, installGlob2)
+                       for pat in allInstallGlobs
                        for x in glob.glob(pat)}
   symlinksInstall = []
   for x in installedPackages:
     symlinksInstall += [path.realpath(y) for y in glob.glob(x + "/latest*")]
   toDelete += [x
-               for pat in (installGlob1 + "*", installGlob2 + "*")
+               for pat in (g + "*" for g in allInstallGlobs)
                for x in glob.glob(pat)
                if not path.islink(x) and path.realpath(x) not in symlinksInstall]
   toDelete = [x for x in toDelete if path.exists(x)]

@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from bits_helpers.cmd import execute
 from bits_helpers.log import debug, info, error, dieOnError, ProgressPrint
-from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink
+from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, effective_arch
 
 
 def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False):
@@ -141,18 +141,19 @@ class HttpRemoteSync:
     return None
 
   def fetch_tarball(self, spec) -> None:
+    arch = effective_arch(spec, self.architecture)
     # Check for any existing tarballs we can use instead of fetching new ones.
     for pkg_hash in spec["remote_hashes"]:
       try:
         have_tarballs = os.listdir(os.path.join(
-          self.workdir, resolve_store_path(self.architecture, pkg_hash)))
+          self.workdir, resolve_store_path(arch, pkg_hash)))
       except OSError:  # store path not readable
         continue
       for tarball in have_tarballs:
         if re.match(r"^{package}-{version}-[0-9]+\.{arch}\.tar\.gz$".format(
             package=re.escape(spec["package"]),
             version=re.escape(spec["version"]),
-            arch=re.escape(self.architecture),
+            arch=re.escape(arch),
         ), os.path.basename(tarball)):
           debug("Previously downloaded tarball for %s with hash %s, reusing",
                 spec["package"], pkg_hash)
@@ -164,7 +165,7 @@ class HttpRemoteSync:
       store_path = use_tarball = None
       # Find the first tarball that matches any possible hash and fetch it.
       for pkg_hash in spec["remote_hashes"]:
-        store_path = resolve_store_path(self.architecture, pkg_hash)
+        store_path = resolve_store_path(arch, pkg_hash)
         tarballs = self.getRetry("{}/{}/".format(self.remoteStore, store_path),
                                  session=session)
         if tarballs:
@@ -188,7 +189,7 @@ class HttpRemoteSync:
         progress.end("done")
 
   def fetch_symlinks(self, spec) -> None:
-    links_path = resolve_links_path(self.architecture, spec["package"])
+    links_path = resolve_links_path(effective_arch(spec, self.architecture), spec["package"])
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
 
     # If we already have a symlink we can use, don't update the list. This
@@ -249,6 +250,7 @@ class RsyncRemoteSync:
     self.workdir = workdir
 
   def fetch_tarball(self, spec) -> None:
+    arch = effective_arch(spec, self.architecture)
     info("Downloading tarball for %s@%s, if available", spec["package"], spec["version"])
     debug("Updating remote store for package %s with hashes %s", spec["package"],
           ", ".join(spec["remote_hashes"]))
@@ -269,15 +271,15 @@ class RsyncRemoteSync:
         break
       fi
     done
-    """.format(pkg=spec["package"], ver=spec["version"], arch=self.architecture,
+    """.format(pkg=spec["package"], ver=spec["version"], arch=arch,
                remoteStore=self.remoteStore,
                workDir=self.workdir,
-               storePaths=" ".join(resolve_store_path(self.architecture, pkg_hash)
+               storePaths=" ".join(resolve_store_path(arch, pkg_hash)
                                    for pkg_hash in spec["remote_hashes"])))
     dieOnError(err, "Unable to fetch tarball from specified store.")
 
   def fetch_symlinks(self, spec) -> None:
-    links_path = resolve_links_path(self.architecture, spec["package"])
+    links_path = resolve_links_path(effective_arch(spec, self.architecture), spec["package"])
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
     err = execute("rsync -rlvW --delete {remote_store}/{links_path}/ {workdir}/{links_path}/".format(
       remote_store=self.remoteStore,
@@ -289,21 +291,23 @@ class RsyncRemoteSync:
   def upload_symlinks_and_tarball(self, spec) -> None:
     if not self.writeStore:
       return
+    arch = effective_arch(spec, self.architecture)
     dieOnError(execute("""\
     set -e
     cd {workdir}
-    tarball={package}-{version}-{revision}.{arch}.tar.gz
+    tarball={package}-{version}-{revision}.{eff_arch}.tar.gz
     rsync -avR --ignore-existing "{links_path}/$tarball" {remote}/
     for link_dir in dist dist-direct dist-runtime; do
-      rsync -avR --ignore-existing "TARS/{arch}/$link_dir/{package}/{package}-{version}-{revision}/" {remote}/
+      rsync -avR --ignore-existing "TARS/{build_arch}/$link_dir/{package}/{package}-{version}-{revision}/" {remote}/
     done
     rsync -avR --ignore-existing "{store_path}/$tarball" {remote}/
     """.format(
       workdir=self.workdir,
       remote=self.remoteStore,
-      store_path=resolve_store_path(self.architecture, spec["hash"]),
-      links_path=resolve_links_path(self.architecture, spec["package"]),
-      arch=self.architecture,
+      store_path=resolve_store_path(arch, spec["hash"]),
+      links_path=resolve_links_path(arch, spec["package"]),
+      eff_arch=arch,
+      build_arch=self.architecture,
       package=spec["package"],
       version=spec["version"],
       revision=spec["revision"],
@@ -326,10 +330,11 @@ class CVMFSRemoteSync:
     self.workdir = workdir
 
   def fetch_tarball(self, spec) -> None:
+    arch = effective_arch(spec, self.architecture)
     info("Downloading tarball for %s@%s-%s, if available", spec["package"], spec["version"], spec["revision"])
     # If we already have a tarball with any equivalent hash, don't check S3.
     for pkg_hash in spec["remote_hashes"] + spec["local_hashes"]:
-      store_path = resolve_store_path(self.architecture, pkg_hash)
+      store_path = resolve_store_path(arch, pkg_hash)
       pattern = os.path.join(self.workdir, store_path, "%s-*.tar.gz" % spec["package"])
       if glob.glob(pattern):
         info("Reusing existing tarball for %s@%s", spec["package"], pkg_hash)
@@ -340,7 +345,8 @@ class CVMFSRemoteSync:
   def fetch_symlinks(self, spec) -> None:
     # When using CVMFS, we create the symlinks grass by reading the .
     info("Fetching available build hashes for %s, from %s", spec["package"], self.remoteStore)
-    links_path = resolve_links_path(self.architecture, spec["package"])
+    arch = effective_arch(spec, self.architecture)
+    links_path = resolve_links_path(arch, spec["package"])
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
 
     cvmfs_architecture = re.sub(r"slc(\d+)_x86-64", r"el\1-x86_64", self.architecture)
@@ -368,7 +374,7 @@ class CVMFSRemoteSync:
     done
     """.format(
       workDir=self.workdir,
-      architecture=self.architecture,
+      architecture=arch,
       cvmfs_architecture=cvmfs_architecture,
       package=spec["package"],
       remote_store=self.remoteStore,
@@ -392,6 +398,7 @@ class S3RemoteSync:
     self.workdir = workdir
 
   def fetch_tarball(self, spec) -> None:
+    arch = effective_arch(spec, self.architecture)
     info("Downloading tarball for %s@%s, if available", spec["package"], spec["version"])
     debug("Updating remote store for package %s with hashes %s",
           spec["package"], ", ".join(spec["remote_hashes"]))
@@ -409,7 +416,7 @@ class S3RemoteSync:
     """.format(
       workDir=self.workdir,
       b=self.remoteStore,
-      storePaths=" ".join(resolve_store_path(self.architecture, pkg_hash)
+      storePaths=" ".join(resolve_store_path(arch, pkg_hash)
                           for pkg_hash in spec["remote_hashes"]),
     ))
     dieOnError(err, "Unable to fetch tarball from specified store.")
@@ -431,7 +438,7 @@ class S3RemoteSync:
     done
     """.format(
       b=self.remoteStore,
-      linksPath=resolve_links_path(self.architecture, spec["package"]),
+      linksPath=resolve_links_path(effective_arch(spec, self.architecture), spec["package"]),
       workDir=self.workdir,
     ))
     dieOnError(err, "Unable to fetch symlinks from specified store.")
@@ -439,12 +446,13 @@ class S3RemoteSync:
   def upload_symlinks_and_tarball(self, spec) -> None:
     if not self.writeStore:
       return
+    arch = effective_arch(spec, self.architecture)
     dieOnError(execute("""\
     set -e
     put () {{
       s3cmd put -s -v --host s3.cern.ch --host-bucket {bucket}.s3.cern.ch "$@" 2>&1
     }}
-    tarball={package}-{version}-{revision}.{arch}.tar.gz
+    tarball={package}-{version}-{revision}.{eff_arch}.tar.gz
     cd {workdir}
 
     # First, upload "main" symlink, to reserve this revision number, in case
@@ -454,7 +462,7 @@ class S3RemoteSync:
 
     # Then, upload dist symlink trees -- these must be in place before the main
     # tarball.
-    find TARS/{arch}/{{dist,dist-direct,dist-runtime}}/{package}/{package}-{version}-{revision}/ \
+    find TARS/{build_arch}/{{dist,dist-direct,dist-runtime}}/{package}/{package}-{version}-{revision}/ \
          -type l | while read -r link; do
       hashedurl=$(readlink "$link" | sed 's|.*/\\.\\./TARS|TARS|')
       echo "$hashedurl" |
@@ -469,9 +477,10 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
     """.format(
       workdir=self.workdir,
       bucket=self.remoteStore,
-      store_path=resolve_store_path(self.architecture, spec["hash"]),
-      links_path=resolve_links_path(self.architecture, spec["package"]),
-      arch=self.architecture,
+      store_path=resolve_store_path(arch, spec["hash"]),
+      links_path=resolve_links_path(arch, spec["package"]),
+      eff_arch=arch,
+      build_arch=self.architecture,
       package=spec["package"],
       version=spec["version"],
       revision=spec["revision"],
@@ -546,18 +555,19 @@ class Boto3RemoteSync:
     return True
 
   def fetch_tarball(self, spec) -> None:
+    arch = effective_arch(spec, self.architecture)
     debug("Updating remote store for package %s with hashes %s", spec["package"],
           ", ".join(spec["remote_hashes"]))
 
     # If we already have a tarball with any equivalent hash, don't check S3.
     for pkg_hash in spec["remote_hashes"]:
-      store_path = resolve_store_path(self.architecture, pkg_hash)
+      store_path = resolve_store_path(arch, pkg_hash)
       if glob.glob(os.path.join(self.workdir, store_path, "%s-*.tar.gz" % spec["package"])):
         debug("Reusing existing tarball for %s@%s", spec["package"], pkg_hash)
         return
 
     for pkg_hash in spec["remote_hashes"]:
-      store_path = resolve_store_path(self.architecture, pkg_hash)
+      store_path = resolve_store_path(arch, pkg_hash)
 
       # We don't already have a tarball with the hash that we need, so download
       # the first existing one from the remote, if possible. (Downloading more
@@ -585,7 +595,7 @@ class Boto3RemoteSync:
 
   def fetch_symlinks(self, spec) -> None:
     from botocore.exceptions import ClientError
-    links_path = resolve_links_path(self.architecture, spec["package"])
+    links_path = resolve_links_path(effective_arch(spec, self.architecture), spec["package"])
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
 
     # Remove existing symlinks: we'll fetch the ones from the remote next.
@@ -633,6 +643,7 @@ class Boto3RemoteSync:
     if not self.writeStore:
       return
 
+    arch = effective_arch(spec, self.architecture)
     dist_symlinks = {}
     for link_dir in ("dist", "dist-direct", "dist-runtime"):
       link_dir = "TARS/{arch}/{link_dir}/{package}/{package}-{version}-{revision}" \
@@ -668,10 +679,10 @@ class Boto3RemoteSync:
       dist_symlinks[link_dir] = symlinks
 
     tarball = "{package}-{version}-{revision}.{architecture}.tar.gz" \
-      .format(architecture=self.architecture, **spec)
-    tar_path = os.path.join(resolve_store_path(self.architecture, spec["hash"]),
+      .format(architecture=arch, **spec)
+    tar_path = os.path.join(resolve_store_path(arch, spec["hash"]),
                             tarball)
-    link_path = os.path.join(resolve_links_path(self.architecture, spec["package"]),
+    link_path = os.path.join(resolve_links_path(arch, spec["package"]),
                              tarball)
     tar_exists = self._s3_key_exists(tar_path)
     link_exists = self._s3_key_exists(link_path)
@@ -692,8 +703,8 @@ class Boto3RemoteSync:
       os.readlink(os.path.join(self.workdir, link_path))
     except FileNotFoundError:
       os.symlink(
-        os.path.join('../..', self.architecture, 'store', spec["hash"][:2], spec["hash"],
-                     f"{spec['package']}-{spec['version']}-{spec['revision']}.{self.architecture}.tar.gz"),
+        os.path.join('../..', arch, 'store', spec["hash"][:2], spec["hash"],
+                     f"{spec['package']}-{spec['version']}-{spec['revision']}.{arch}.tar.gz"),
         os.path.join(self.workdir, link_path)
       )
 

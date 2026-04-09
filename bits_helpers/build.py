@@ -11,7 +11,7 @@ from bits_helpers.checksum import parse_entry as parse_checksum_entry, enforceme
 from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksum_file
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
-from bits_helpers.utilities import resolve_store_path
+from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH
 from bits_helpers.utilities import parseDefaults, readDefaults
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
@@ -123,13 +123,17 @@ def update_git_repos(args, specs, buildOrder):
 # and its direct / indirect dependencies
 def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
   # At the point we call this function, spec has a single, definitive hash.
+  # Use the caller's real architecture for the dist-link directory: dist links
+  # are per-build-platform even when the package itself is shared.
   target_dir = "{work_dir}/TARS/{arch}/{repo}/{package}/{package}-{version}-{revision}" \
     .format(work_dir=args.workDir, arch=args.architecture, repo=repoType, **spec)
   shutil.rmtree(target_dir.encode("utf-8"), ignore_errors=True)
   makedirs(target_dir, exist_ok=True)
   for pkg in [spec["package"]] + list(spec[requiresType]):
+    dep_spec = specs[pkg]
+    dep_arch = effective_arch(dep_spec, args.architecture)
     dep_tarball = "../../../../../TARS/{arch}/store/{short_hash}/{hash}/{package}-{version}-{revision}.{arch}.tar.gz" \
-      .format(arch=args.architecture, short_hash=specs[pkg]["hash"][:2], **specs[pkg])
+      .format(arch=dep_arch, short_hash=dep_spec["hash"][:2], **dep_spec)
     symlink(dep_tarball, target_dir)
 
 def storeHook(package, specs, defaults) -> bool:
@@ -390,13 +394,16 @@ def better_tarball(spec, old, new):
 
 
 def _pkg_install_path(workDir, architecture, spec):
-  """Return the absolute-style path segment ``<workDir>/<arch>[/<family>]/<pkg>/<ver>-<rev>``.
+  """Return the path ``<workDir>/<arch>[/<family>]/<pkg>/<ver>-<rev>``.
 
-  When ``spec["pkg_family"]`` is set, the family directory is inserted between
-  the architecture and the package name, giving the grouped layout
-  ``<arch>/<family>/<pkg>/<version>-<revision>``.  When it is empty (the
-  default when no ``package_family`` mapping is configured), the legacy layout
-  ``<arch>/<pkg>/<version>-<revision>`` is preserved.
+  *architecture* should already be the *effective* architecture for *spec*
+  (i.e. the result of ``effective_arch(spec, build_arch)``).  Callers are
+  responsible for that substitution so that shared packages (``architecture:
+  shared``) install under ``sw/shared/…`` rather than the build platform.
+
+  When ``spec["pkg_family"]`` is also set the family directory is inserted
+  between the architecture and the package name.  When it is empty the legacy
+  two-level layout ``<arch>/<pkg>/<version>-<revision>`` is preserved.
   """
   family = spec.get("pkg_family", "")
   if family:
@@ -428,15 +435,29 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # unrelated components are activated.
   # These variables are also required during the build itself, so always
   # generate them.
+  def _arch_prefix_expr(dep_spec):
+    """Return the shell expression for the install-tree root of *dep_spec*.
+
+    Arch-specific packages use the runtime variable ``$BITS_ARCH_PREFIX`` so
+    that the same init.sh works when relocated (e.g. off CVMFS).
+    Shared packages (``architecture: shared``) always live under the literal
+    directory ``shared/``, so we embed that string directly.
+    """
+    if dep_spec.get("architecture") == SHARED_ARCH:
+      return '"$WORK_DIR/shared"'
+    return '"$WORK_DIR/$BITS_ARCH_PREFIX"'
+
   def _dep_init_path(dep):
     dep_spec = specs[dep]
     family = dep_spec.get("pkg_family", "")
     family_seg = (quote(family) + "/") if family else ""
+    arch_prefix = _arch_prefix_expr(dep_spec)
     return (
       '[ -n "${{{bigpackage}_REVISION}}" ] || '
-      '. "$WORK_DIR/$BITS_ARCH_PREFIX"/{family}{package}/{version}-{revision}/etc/profile.d/init.sh'
+      '. {arch_prefix}/{family}{package}/{version}-{revision}/etc/profile.d/init.sh'
     ).format(
       bigpackage=dep.upper().replace("-", "_"),
+      arch_prefix=arch_prefix,
       family=family_seg,
       package=quote(dep_spec["package"]),
       version=quote(dep_spec["version"]),
@@ -451,8 +472,10 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # be set once the build has actually completed.
     self_family = spec.get("pkg_family", "")
     self_family_seg = (quote(self_family) + "/") if self_family else ""
+    self_arch_prefix = _arch_prefix_expr(spec)
     lines.extend(line.format(
       bigpackage=bigpackage,
+      arch_prefix=self_arch_prefix,
       family=self_family_seg,
       package=quote(spec["package"]),
       version=quote(spec["version"]),
@@ -460,7 +483,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{family}{package}/{version}-{revision}',
+      'export {bigpackage}_ROOT={arch_prefix}/{family}{package}/{version}-{revision}',
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
       "export {bigpackage}_HASH={hash}",
@@ -1188,9 +1211,26 @@ def doBuild(args, parser):
     debug("Calculating hash.")
     debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
     storeHook(p, specs, args.defaults[0])
-    storeHashes(p, specs, considerRelocation=args.architecture.startswith("osx"))
+    storeHashes(p, specs, considerRelocation=(
+      args.architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH
+    ))
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
+
+    # Warn if a package declares architecture: shared but has arch-specific
+    # deps — the shared label would be misleading in that case because its
+    # hash (and therefore install path) will differ across platforms.
+    if spec.get("architecture") == SHARED_ARCH:
+      arch_specific_deps = [
+        dep for dep in spec.get("requires", [])
+        if dep != "defaults-release" and specs[dep].get("architecture") != SHARED_ARCH
+      ]
+      if arch_specific_deps:
+        warning(
+          "Package %s declares 'architecture: shared' but depends on "
+          "arch-specific package(s): %s. Its hash may differ across platforms.",
+          spec["package"], ", ".join(arch_specific_deps),
+        )
 
     if spec["is_devel_pkg"] and getattr(syncHelper, "writeStore", None):
       warning("Disabling remote write store from now since %s is a development package.", spec["package"])
@@ -1225,12 +1265,13 @@ def doBuild(args, parser):
     # Make sure this regex broadly matches the regex below that parses the
     # symlink's target. Overly-broadly matching the version, for example, can
     # lead to false positives that trigger a warning below.
+    spec_arch = effective_arch(spec, args.architecture)
     links_regex = re.compile(r"{package}-{version}-(?:local)?[0-9]+\.{arch}\.tar\.gz".format(
       package=re.escape(spec["package"]),
       version=re.escape(spec["version"]),
-      arch=re.escape(args.architecture),
+      arch=re.escape(spec_arch),
     ))
-    symlink_dir = join(workDir, "TARS", args.architecture, spec["package"])
+    symlink_dir = join(workDir, "TARS", spec_arch, spec["package"])
     try:
       packages = [join(symlink_dir, symlink_path)
                   for symlink_path in os.listdir(symlink_dir)
@@ -1277,7 +1318,7 @@ def doBuild(args, parser):
     for symlink_path in packages:
       realPath = readlink(symlink_path)
       matcher = "../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/{package}-{version}-((?:local)?[0-9]+).{arch}.tar.gz$" \
-        .format(arch=args.architecture, **spec)
+        .format(arch=spec_arch, **spec)
       match = re.match(matcher, realPath)
       if not match:
         warning("Symlink %s -> %s couldn't be parsed", symlink_path, realPath)
@@ -1333,10 +1374,10 @@ def doBuild(args, parser):
         # exist (if this is the first run through the loop). On the second run
         # through, the path should have been created by the build process.
         call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               join(dirname(_pkg_install_path(workDir, args.architecture, spec)),
+                               join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)),
                                     "latest-{build_family}".format(**spec)))
         call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               join(dirname(_pkg_install_path(workDir, args.architecture, spec)), "latest"))
+                               join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)), "latest"))
 
     # Now we know whether we're using a local or remote package, so we can set
     # the proper hash and tarball directory.
@@ -1368,11 +1409,11 @@ def doBuild(args, parser):
         call_ignoring_oserrors(symlink, spec["hash"], join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + develPrefix))
       # Last package built gets a "latest" mark.
       call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                             join(dirname(_pkg_install_path(workDir, args.architecture, spec)), "latest"))
+                             join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)), "latest"))
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
         call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               join(dirname(_pkg_install_path(workDir, args.architecture, spec)),
+                               join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)),
                                     "latest-" + spec["build_family"]))
 
     # Check if this development package needs to be rebuilt.
@@ -1384,7 +1425,7 @@ def doBuild(args, parser):
 
     # Now that we have all the information about the package we want to build, let's
     # check if it wasn't built / unpacked already.
-    hashPath = _pkg_install_path(workDir, args.architecture, spec)
+    hashPath = _pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)
     hashFile = hashPath + "/.build-hash"
     # If the folder is a symlink, we consider it to be to CVMFS and
     # take the hash for good.
@@ -1438,7 +1479,7 @@ def doBuild(args, parser):
     # directory contains files with non-ASCII names, e.g. Golang/Boost.
     shutil.rmtree(dirname(hashFile).encode("utf-8"), True)
 
-    tar_hash_dir = os.path.join(workDir, resolve_store_path(args.architecture, spec["hash"]))
+    tar_hash_dir = os.path.join(workDir, resolve_store_path(effective_arch(spec, args.architecture), spec["hash"]))
     debug("Looking for cached tarball in %s", tar_hash_dir)
     spec["cachedTarball"] = ""
     if not spec["is_devel_pkg"]:
@@ -1469,7 +1510,7 @@ def doBuild(args, parser):
         _write_checksums_for_spec(spec, workDir)
 
     family = spec.get("pkg_family", "")
-    scriptDir = join(workDir, "SPECS", args.architecture,
+    scriptDir = join(workDir, "SPECS", effective_arch(spec, args.architecture),
                      *([family] if family else []),
                      spec["package"],
                      spec["version"] + "-" + spec["revision"])
@@ -1499,6 +1540,7 @@ def doBuild(args, parser):
     bits_dir = dirname(dirname(realpath(__file__)))
     buildEnvironment = [
       ("ARCHITECTURE", args.architecture),
+      ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
       ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
       ("CACHED_TARBALL", cachedTarball),
       ("CAN_DELETE", args.aggressiveCleanup and "1" or ""),

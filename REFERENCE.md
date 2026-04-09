@@ -25,10 +25,11 @@
 16. [Command-Line Reference](#16-command-line-reference)
 17. [Recipe Format Reference](#17-recipe-format-reference)
 18. [Defaults Profiles](#18-defaults-profiles)
-19. [Environment Variables](#19-environment-variables)
-20. [Remote Binary Store Backends](#20-remote-binary-store-backends)
-21. [Docker Support](#21-docker-support)
-22. [Design Principles & Limitations](#22-design-principles--limitations)
+19. [Architecture-Independent (Shared) Packages](#19-architecture-independent-shared-packages)
+20. [Environment Variables](#20-environment-variables)
+21. [Remote Binary Store Backends](#21-remote-binary-store-backends)
+22. [Docker Support](#22-docker-support)
+23. [Design Principles & Limitations](#23-design-principles--limitations)
 
 ---
 
@@ -1081,6 +1082,7 @@ All sections are optional. The `tag` field holds the **pinned git commit SHA** e
 | `relocate_paths` | Paths to rewrite when relocating an installation. |
 | `variables` | Custom key-value pairs for `%(variable)s` substitution in other fields. |
 | `from` | Parent recipe name for recipe inheritance. |
+| `architecture` | Set to `shared` to mark a package as architecture-independent (see [§19](#19-architecture-independent-shared-packages)). |
 
 ### Build-time environment variables
 
@@ -1095,7 +1097,8 @@ These variables are set automatically inside each package's Bash build script:
 | `$PKGNAME` | Package name. |
 | `$PKGVERSION` | Package version. |
 | `$PKGHASH` | Unique content-addressable build hash. |
-| `$ARCHITECTURE` | Target architecture string (e.g. `ubuntu2204_x86-64`). |
+| `$ARCHITECTURE` | Build-platform architecture string (e.g. `ubuntu2204_x86-64`). Always reflects the real build host, even for shared packages. |
+| `$EFFECTIVE_ARCHITECTURE` | Effective installation architecture. Equals `$ARCHITECTURE` for normal packages; equals `shared` for packages marked `architecture: shared`. Use this in paths that should land under the shared tree. |
 
 ---
 
@@ -1281,7 +1284,104 @@ An existing recipe repository with no `package_family` key will produce bit-for-
 
 ---
 
-## 19. Environment Variables
+## 19. Architecture-Independent (Shared) Packages
+
+Some packages — calibration databases, reference data files, pure-Python libraries, architecture-neutral scripts — produce identical output regardless of the build platform. Rebuilding them on every architecture wastes time and storage. The `architecture: shared` recipe field tells bits to install such packages into a single, platform-neutral directory tree that all architectures can read.
+
+### Declaring a package as shared
+
+Add the field to the YAML header of the recipe:
+
+```yaml
+package: my-calibration-db
+version: "2024-01"
+---
+# Bash body that downloads or generates the data
+curl -O https://example.com/calib-2024-01.tar.gz
+tar -xzf calib-2024-01.tar.gz -C "$INSTALLROOT"
+```
+
+becomes
+
+```yaml
+package: my-calibration-db
+version: "2024-01"
+architecture: shared
+---
+curl -O https://example.com/calib-2024-01.tar.gz
+tar -xzf calib-2024-01.tar.gz -C "$INSTALLROOT"
+```
+
+No other change to the recipe or to the packages that depend on it is required.
+
+### Install-tree layout
+
+| Package type | Install path |
+|---|---|
+| Normal | `<work_dir>/<arch>/<pkg>/<version>-<revision>` |
+| Shared, no family | `<work_dir>/shared/<pkg>/<version>-<revision>` |
+| Shared, with family | `<work_dir>/shared/<family>/<pkg>/<version>-<revision>` |
+
+The `shared/` segment replaces the architecture string throughout: in the install tree, in tarball names (`<pkg>-<version>-<revision>.shared.tar.gz`), and in the remote binary store (`TARS/shared/store/…`).
+
+### `$EFFECTIVE_ARCHITECTURE`
+
+Every build script receives two architecture variables:
+
+- `$ARCHITECTURE` — the real build-host architecture, always present, unchanged.
+- `$EFFECTIVE_ARCHITECTURE` — `shared` for shared packages, equal to `$ARCHITECTURE` otherwise.
+
+Use `$EFFECTIVE_ARCHITECTURE` wherever a path should end up in the shared tree. The existing `$ARCHITECTURE` variable is still available for platform-specific logic such as selecting compiler flags.
+
+```bash
+# Example: a recipe that installs under the effective arch tree
+install -m 644 mydata.db "$INSTALLROOT/share/"
+echo "Installing to $EFFECTIVE_ARCHITECTURE tree"
+```
+
+### Environment initialisation (`init.sh`)
+
+When a package depends on a shared package, bits generates the corresponding `init.sh` source line with a **literal** path prefix instead of the runtime variable `$BITS_ARCH_PREFIX`. This is intentional: shared packages are never relocated (they contain no compiled binaries), so the literal `shared/` segment is always correct, including in CVMFS deployments.
+
+```bash
+# Dependency on an arch-specific package — uses runtime variable:
+[ -n "${MYLIB_REVISION}" ] || \
+  . "$WORK_DIR/$BITS_ARCH_PREFIX"/mylib/1.0-1/etc/profile.d/init.sh
+
+# Dependency on a shared package — uses literal path:
+[ -n "${MY_CALIBRATION_DB_REVISION}" ] || \
+  . "$WORK_DIR/shared"/my-calibration-db/2024-01-1/etc/profile.d/init.sh
+```
+
+### Hashing and reproducibility
+
+The build hash of a shared package is computed from the same inputs as any other package (recipe text, dependency hashes). Because `architecture` is not directly hashed (it enters only through the dependency tree), a shared package with no compiled dependencies will produce the **same hash on every platform**. This means:
+
+- A shared package built on `slc7_x86-64` can be fetched and reused on `osx_x86-64` or `ubuntu2204_x86-64` without rebuilding.
+- Once uploaded to the remote store, it is a single artifact shared by all build platforms.
+
+### Warning: arch-specific dependencies
+
+If a package marked `architecture: shared` depends on a package that is *not* shared (other than `defaults-release`), bits emits a warning at build time:
+
+```
+WARNING: Package my-calibration-db declares 'architecture: shared' but depends on
+arch-specific package(s): mylib. Its hash may differ across platforms.
+```
+
+This is not an error — bits will still build the package — but the hash will vary across platforms (because the arch-specific dependency has a different hash on each platform), negating the cross-platform reuse benefit. In most cases the fix is either to remove the arch-specific dependency or to mark that dependency as shared too.
+
+### Relocation
+
+Relocation (path-rewriting for CVMFS deployment) is **disabled** for shared packages. Shared packages should contain only data, scripts, or pure-Python code; if a shared package were relocated the `shared/` prefix would still be constant anyway. If your package genuinely requires relocation, it should not be marked `architecture: shared`.
+
+### Backward compatibility
+
+The feature is entirely opt-in. A recipe without `architecture: shared` behaves exactly as before — its effective architecture is the build-host architecture string and its install paths are unchanged.
+
+---
+
+## 20. Environment Variables
 
 ### Build and configuration variables
 
@@ -1316,7 +1416,7 @@ If none is executable, bits prints an install hint and exits with an error.
 
 ---
 
-## 20. Remote Binary Store Backends
+## 21. Remote Binary Store Backends
 
 | URL scheme | Backend | Access |
 |------------|---------|--------|
@@ -1345,7 +1445,7 @@ bits build --remote-store s3://mybucket/builds \
 
 ---
 
-## 21. Docker Support
+## 22. Docker Support
 
 When `--docker` is specified, bits wraps the build in a `docker run` invocation. This is useful for building against an older Linux ABI from a newer host, or for reproducible CI.
 
@@ -1364,7 +1464,7 @@ Bits automatically mounts the work directory, the recipe directories, and `~/.ss
 
 ---
 
-## 22. Design Principles & Limitations
+## 23. Design Principles & Limitations
 
 ### Principles
 

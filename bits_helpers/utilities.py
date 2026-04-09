@@ -94,6 +94,37 @@ def topological_sort(specs):
     assert False, "Unreachable error: cycle detection failed"
 
 
+SHARED_ARCH = "shared"
+"""Sentinel value used in all paths for architecture-independent packages.
+
+When a recipe sets ``architecture: shared``, bits substitutes this string for
+the real build architecture in every path component (install dir, tarball name,
+TARS store, SPECS dir, ``$PKGPATH``).  The result is that the package is
+installed under ``sw/shared/<pkg>/<version>-<revision>/`` and its tarball is
+stored under ``TARS/shared/store/…``, making it reusable by any architecture
+without rebuilding.
+
+Recipes that do **not** define ``architecture: shared`` are completely unaffected
+— ``effective_arch()`` returns the real build architecture for them.
+"""
+
+
+def effective_arch(spec: dict, build_arch: str) -> str:
+  """Return the architecture string to use in paths and tarball names.
+
+  If the recipe declares ``architecture: shared`` the function returns
+  :data:`SHARED_ARCH` (``"shared"``), so that the package is installed in a
+  location that every build platform can read.
+
+  For all other recipes (including those that omit the field entirely) the
+  function returns *build_arch* unchanged, preserving full backward
+  compatibility.
+  """
+  if spec.get("architecture") == SHARED_ARCH:
+    return SHARED_ARCH
+  return build_arch
+
+
 def resolve_store_path(architecture, spec_hash):
   """Return the path where a tarball with the given hash is to be stored.
 

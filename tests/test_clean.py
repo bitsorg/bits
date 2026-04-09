@@ -44,7 +44,11 @@ GLOB_WITH_OBSOLETE_FILES = {
   "sw/slc7_x86-64/*/": [],
   "sw/slc7_x86-64/*/*/": [],
   "sw/slc7_x86-64/*/*": [],
-  "sw/slc7_x86-64/*/*/*": []
+  "sw/slc7_x86-64/*/*/*": [],
+  "sw/shared/*/": [],
+  "sw/shared/*/*/": [],
+  "sw/shared/*/*": [],
+  "sw/shared/*/*/*": []
 }
 
 READLINK_MOCKUP_DB = {
@@ -70,10 +74,12 @@ class CleanTestCase(unittest.TestCase):
                                     'sw/osx_x86-64/b/v1', 'sw/osx_x86-64/b/v3'])
         toDelete = decideClean(workDir="sw", architecture="osx_x86-64", aggressiveCleanup=True)
         self.assertEqual(toDelete, ['sw/TMP', 'sw/INSTALLROOT', 'sw/TARS/osx_x86-64/store',
+                                    'sw/TARS/shared/store',
                                     'sw/SOURCES', 'sw/BUILD/somethingtodelete',
                                     'sw/osx_x86-64/b/v1', 'sw/osx_x86-64/b/v3'])
         toDelete = decideClean(workDir="sw", architecture="slc7_x86-64", aggressiveCleanup=True)
         self.assertEqual(toDelete, ['sw/TMP', 'sw/INSTALLROOT', 'sw/TARS/slc7_x86-64/store',
+                                    'sw/TARS/shared/store',
                                     'sw/SOURCES', 'sw/BUILD/somethingtodelete'])
 
     @patch('bits_helpers.clean.glob')
@@ -90,6 +96,7 @@ class CleanTestCase(unittest.TestCase):
             "sw/TMP",
             "sw/INSTALLROOT",
             "sw/TARS/osx_x86-64/store",
+            "sw/TARS/shared/store",
             "sw/SOURCES",
             "sw/BUILD/somethingtodelete",
             "sw/osx_x86-64/b/v1",

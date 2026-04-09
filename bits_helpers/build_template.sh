@@ -62,6 +62,7 @@ export PATH=$WORK_DIR/wrapper-scripts:$PATH
 # the bits script itself
 #
 # - ARCHITECTURE
+# - EFFECTIVE_ARCHITECTURE
 # - BITS_SCRIPT_DIR
 # - BUILD_REQUIRES
 # - CACHED_TARBALL
@@ -85,9 +86,9 @@ export PKG_VERSION="$PKGVERSION"
 export PKG_BUILDNUM="$PKGREVISION"
 
 if [ -n "${PKGFAMILY:-}" ]; then
-  export PKGPATH=${ARCHITECTURE}/${PKGFAMILY}/${PKGNAME}/${PKGVERSION}-${PKGREVISION}
+  export PKGPATH=${EFFECTIVE_ARCHITECTURE}/${PKGFAMILY}/${PKGNAME}/${PKGVERSION}-${PKGREVISION}
 else
-  export PKGPATH=${ARCHITECTURE}/${PKGNAME}/${PKGVERSION}-${PKGREVISION}
+  export PKGPATH=${EFFECTIVE_ARCHITECTURE}/${PKGNAME}/${PKGVERSION}-${PKGREVISION}
 fi
 mkdir -p "$WORK_DIR/BUILD" "$WORK_DIR/SOURCES" "$WORK_DIR/TARS" \
          "$WORK_DIR/SPECS" "$WORK_DIR/INSTALLROOT"
@@ -180,7 +181,7 @@ if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
   set -o pipefail;
   (unset DYLD_LIBRARY_PATH;
    set -x;   
-   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
+   source "$WORK_DIR/SPECS/$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
    )  2>&1 | tee "$BUILDROOT/log" || exit 1
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
     set -o pipefail
@@ -188,8 +189,8 @@ elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDD
 elif [[ "$CACHED_TARBALL" == "" ]]; then
    set -o pipefail;
    (unset DYLD_LIBRARY_PATH;
-   set -x;   
-   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
+   set -x;
+   source "$WORK_DIR/SPECS/$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
    )  2>&1 | tee "$BUILDROOT/log" || exit 1
 else
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
@@ -199,7 +200,7 @@ else
   tar -xzf "$CACHED_TARBALL" -C "$WORK_DIR/TMP/$PKGHASH"
   mkdir -p $(dirname $INSTALLROOT)
   rm -rf $INSTALLROOT
-  mv $WORK_DIR/TMP/$PKGHASH/$ARCHITECTURE/$PKGNAME/$PKGVERSION-* $INSTALLROOT
+  mv $WORK_DIR/TMP/$PKGHASH/$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PKGVERSION-* $INSTALLROOT
   pushd $WORK_DIR/INSTALLROOT/$PKGHASH
   if [ -w "$INSTALLROOT" ]; then
       WORK_DIR=$WORK_DIR /bin/bash -ex $INSTALLROOT/relocate-me.sh
@@ -321,11 +322,11 @@ fi
 
 # Archive creation
 HASHPREFIX=`echo $PKGHASH | cut -b1,2`
-HASH_PATH=$ARCHITECTURE/store/$HASHPREFIX/$PKGHASH
+HASH_PATH=$EFFECTIVE_ARCHITECTURE/store/$HASHPREFIX/$PKGHASH
 mkdir -p "${WORK_DIR}/TARS/$HASH_PATH" \
-         "${WORK_DIR}/TARS/$ARCHITECTURE/$PKGNAME"
+         "${WORK_DIR}/TARS/$EFFECTIVE_ARCHITECTURE/$PKGNAME"
 
-PACKAGE_WITH_REV=$PKGNAME-$PKGVERSION-$PKGREVISION.$ARCHITECTURE.tar.gz
+PACKAGE_WITH_REV=$PKGNAME-$PKGVERSION-$PKGREVISION.$EFFECTIVE_ARCHITECTURE.tar.gz
 # Copy and tar/compress (if applicable) in parallel.
 # Use -H to match tar's behaviour of preserving hardlinks.
 rsync -aH "$WORK_DIR/INSTALLROOT/$PKGHASH/" "$WORK_DIR" & rsync_pid=$!
@@ -343,23 +344,23 @@ elif [ -z "$CACHED_TARBALL" ]; then
   mv "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing" \
      "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
   ln -nfs "../../$HASH_PATH/$PACKAGE_WITH_REV" \
-     "$WORK_DIR/TARS/$ARCHITECTURE/$PKGNAME/$PACKAGE_WITH_REV"
+     "$WORK_DIR/TARS/$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PACKAGE_WITH_REV"
 fi
 wait "$rsync_pid"
 
 # We've copied files into their final place; now relocate.
 cd "$WORK_DIR"
-if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
-  /bin/bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
+if [ -w "$WORK_DIR/$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
+  /bin/bash -ex "$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
 fi
 
 
 # Last package built gets a "latest" mark.
-ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
+ln -snf $PKGVERSION-$PKGREVISION $EFFECTIVE_ARCHITECTURE/$PKGNAME/latest
 
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
-  ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
+  ln -snf $PKGVERSION-$PKGREVISION $EFFECTIVE_ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
 fi
 
 # When the package is definitely fully installed, install the file that marks
