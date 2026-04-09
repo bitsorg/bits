@@ -147,7 +147,6 @@ Within each section, each line is `key = value` (spaces around `=` are stripped)
 | Config key | Exported as | Default | Description |
 |---|---|---|---|
 | `organisation` | `BITS_ORGANISATION` | `ALICE` | Organisation name. Also selects the organisation-specific section in this file. |
-| `branding` | `BITS_BRANDING` | `bits` | Tool name used in log and error messages. |
 | `pkg_prefix` | `BITS_PKG_PREFIX` | `VO_<organisation>` | Prefix prepended to package names in `bits q` output. |
 | `repo_dir` | `BITS_REPO_DIR` | `alidist` | Root directory for recipe repositories. |
 | `sw_dir` | `BITS_WORK_DIR` | `sw` | Output and work directory for built packages, source mirrors, and module files. |
@@ -168,7 +167,6 @@ For example, if `bits.rc` sets `sw_dir = /data/sw` but the user runs `bits build
 ```ini
 [bits]
 organisation = ALICE
-branding     = bits
 
 [ALICE]
 pkg_prefix   = VO_ALICE
@@ -583,9 +581,97 @@ repository_position: prepend   # or: append
 
 The `source` URL must point to a git repository whose top-level directory contains `*.sh` recipe files (the same layout as any other `*.bits` directory).
 
-### How providers are discovered
+### Always-on providers (`always_load: true`)
 
-Before the main `getPackageList` call, `bits build` runs `fetch_repo_providers_iteratively`:
+A provider recipe can be marked to load unconditionally — before the dependency graph is even traversed — by setting `always_load: true` alongside `provides_repository: true`:
+
+```yaml
+package: shared-recipes
+version: "1"
+source: https://github.com/myorg/shared-recipes.git
+tag: stable
+provides_repository: true
+always_load: true
+repository_position: prepend
+```
+
+Any recipe file in the primary config directory (`-c / --configDir`) that has both flags set is cloned and added to `BITS_PATH` at startup, making its recipes visible to all subsequent dependency resolution without any package needing to declare an explicit dependency on it. This is the recommended way to distribute a curated set of approved recipes across a team.
+
+### The `bits-providers` standard repository
+
+Bits ships a **built-in default provider** pointing at the official `bitsorg/bits-providers` repository on GitHub. This repository contains vetted, community-approved recipes and is loaded automatically on every build unless overridden:
+
+```
+BITS_PROVIDERS=https://github.com/bitsorg/bits-providers  (default)
+```
+
+**Overriding or disabling the default:**
+
+```bash
+# Use a private provider repository instead
+export BITS_PROVIDERS=https://github.com/myorg/my-recipes.git@main
+
+# Or set it persistently in bits.rc / .bitsrc / ~/.bitsrc:
+# [bits]
+# providers = https://github.com/myorg/my-recipes.git@stable
+
+# Pin to a specific tag
+export BITS_PROVIDERS=https://github.com/bitsorg/bits-providers@v2.0
+```
+
+The `@tag` suffix is optional; when omitted, `main` is used.
+
+### Auto-synthesised `bits-providers` package
+
+When `BITS_PROVIDERS` is set (explicitly or via the built-in default), bits automatically synthesises and loads a virtual package named **`bits-providers`** equivalent to writing the following recipe by hand:
+
+```yaml
+package: bits-providers
+version: "1"
+source: <BITS_PROVIDERS URL>
+tag: <BITS_PROVIDERS tag>          # defaults to "main"
+provides_repository: true
+always_load: true
+repository_position: prepend
+```
+
+This package is loaded in Phase 1 (before the iterative scan), so its recipes are visible from the very first dependency-resolution pass. Because the package name `bits-providers` is reserved, any recipe file of that name found in the config directory is skipped during the Phase 2 config-dir scan to prevent double-cloning.
+
+### `bits.rc` configuration
+
+Provider settings can be stored persistently in a bits configuration file. Bits searches for the following files in order and reads the first one found:
+
+1. `bits.rc` (current directory)
+2. `.bitsrc` (current directory)
+3. `~/.bitsrc` (home directory)
+
+Relevant keys in the `[bits]` section:
+
+```ini
+[bits]
+# Override or disable the default BITS_PROVIDERS URL.
+# An explicit BITS_PROVIDERS environment variable takes precedence.
+providers = https://github.com/myorg/my-recipes.git@stable
+```
+
+### Precedence for `BITS_PROVIDERS`
+
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 (highest) | `BITS_PROVIDERS` environment variable | `export BITS_PROVIDERS=…` |
+| 2 | `providers` key in `bits.rc` / `.bitsrc` / `~/.bitsrc` | `providers = …` |
+| 3 (default) | Built-in default | `https://github.com/bitsorg/bits-providers` |
+
+### How providers are discovered (two-phase)
+
+`bits build` loads providers in two phases before the main `getPackageList` call:
+
+**Phase 1 — always-on providers** (`load_always_on_providers`):
+
+1. If `BITS_PROVIDERS` is set, synthesise and clone the `bits-providers` package and prepend it to `BITS_PATH`.
+2. Glob `*.sh` files in the config directory; clone any that have both `provides_repository: true` and `always_load: true` (skipping `bits-providers` if already handled).
+
+**Phase 2 — iterative dependency-driven scan** (`fetch_repo_providers_iteratively`):
 
 1. Walk the dependency graph from the requested packages.
 2. When a package with `provides_repository: true` is encountered for the first time, clone its source repository into the cache and add the checkout to `BITS_PATH`.
@@ -594,7 +680,7 @@ Before the main `getPackageList` call, `bits build` runs `fetch_repo_providers_i
 
 This naturally handles **nested providers**: a provider whose own recipe repository contains a further provider recipe.
 
-### Cache layout
+### Cache layout and staleness
 
 Provider checkouts are cached under the work directory so that identical commits are never re-cloned:
 
@@ -609,6 +695,8 @@ $BITS_WORK_DIR/
 ```
 
 A checkout is reused (cache hit) when `.bits_provider_ok` already exists for the resolved commit hash. If the recipe's `tag` resolves to a new commit, a fresh checkout is made alongside the old one; no stale data is ever overwritten.
+
+**Staleness detection:** On every run after the first, bits refreshes the provider's git mirror (even when `--no-fetch` is active) so that tag advances in the upstream repository are always detected. This ensures that a team-wide recipe update published as a new tag is picked up on the next build without any manual cache purge.
 
 ### Effect on build hashes
 
@@ -644,13 +732,17 @@ tox -e darwin  # reduced matrix for macOS
 | Test file | What it covers |
 |-----------|---------------|
 | `test_args.py` | CLI argument parsing |
+| `test_always_on_providers.py` | `_read_bits_rc`, `_parse_provider_url`, `_make_bits_providers_spec`, `load_always_on_providers` (BITS_PROVIDERS path, `always_load` scan, double-clone prevention, failure isolation) |
 | `test_build.py` | `doBuild` integration, hash computation, build script generation |
 | `test_clean.py` | Stale-artifact detection and removal |
 | `test_cmd.py` | `DockerRunner` and subprocess helpers |
 | `test_deps.py` | Dependency graph generation |
 | `test_git.py` | Git SCM wrapper |
-| `test_sync.py` | Remote store backends (requires `botocore` for S3 tests) |
+| `test_pkg_to_shell_id.py` | `pkg_to_shell_id` sanitisation (dots, dashes, `@`, `+`); `generate_initdotsh` export correctness for dot-in-package-name |
+| `test_provider_staleness.py` | Mirror always refreshed when cache exists; upstream tag advances detected; `fetch_repos=False` respected on first run |
+| `test_qualify_arch.py` | `compute_combined_arch`, `qualify_arch` end-to-end through `effective_arch`, install path, and `init.sh` generation |
 | `test_repo_provider.py` | Repository provider: `getConfigPaths` absolute paths, `_add_to_bits_path`, `clone_or_update_provider` caching, iterative discovery, nested providers, hash propagation |
+| `test_sync.py` | Remote store backends (requires `botocore` for S3 tests) |
 
 ### Guidelines for new tests
 
@@ -973,6 +1065,7 @@ A recipe file consists of a YAML block, a `---` separator, and a Bash script:
 | Field | Description |
 |-------|-------------|
 | `provides_repository` | Set to `true` to mark this recipe as a repository provider. |
+| `always_load` | Set to `true` (alongside `provides_repository: true`) to clone this provider unconditionally at startup, before any dependency-graph traversal. Recipes in the provider's repository are then visible to all packages without requiring an explicit dependency. |
 | `repository_position` | `append` (default) or `prepend` — where to insert the cloned directory in `BITS_PATH`. |
 
 #### Memory-aware parallelism
@@ -993,7 +1086,7 @@ mem_per_job: 1500
 mem_utilisation: 0.80
 ```
 
-When `provides_repository: true` is set, the package's `source` URL must point to a git repository containing recipe files. It will be cloned before the main build and its directory added to `BITS_PATH`. See [§13](#13-repository-provider-feature) for full details.
+When `provides_repository: true` is set, the package's `source` URL must point to a git repository containing recipe files. It will be cloned before the main build and its directory added to `BITS_PATH`. Adding `always_load: true` causes the clone to happen unconditionally at startup (Phase 1) rather than only when the package appears in the dependency graph (Phase 2). See [§13](#13-repository-provider-feature) for full details.
 
 #### Checksum verification
 

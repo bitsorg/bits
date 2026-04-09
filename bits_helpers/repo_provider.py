@@ -46,6 +46,7 @@ build hash so that upgrading a provider triggers a rebuild of all packages
 sourced from it.
 """
 
+import glob
 import os
 import shutil
 from collections import OrderedDict
@@ -68,6 +69,9 @@ MAX_PROVIDER_ITERATIONS = 20
 
 # Sub-directory under the work dir where provider checkouts are cached
 REPOS_CACHE_SUBDIR = "REPOS"
+
+# Reserved package name for the BITS_PROVIDERS / bits.rc synthesised provider
+BITS_PROVIDERS_PACKAGE = "bits-providers"
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────
@@ -234,6 +238,149 @@ def clone_or_update_provider(
     symlink(short_hash, join(cache_root, "latest"))
     info("Provider '%s' ready at %s", package, checkout_dir)
     return checkout_dir, commit_hash
+
+
+# ── Always-on provider loading ───────────────────────────────────────────────
+
+def _parse_provider_url(url_spec: str) -> tuple:
+  """Parse a provider URL with an optional ``@tag`` suffix.
+
+  Returns ``(url, tag)`` where *tag* defaults to ``"main"`` when not given::
+
+      _parse_provider_url("https://github.com/org/repo.git")
+      # → ("https://github.com/org/repo.git", "main")
+
+      _parse_provider_url("https://github.com/org/repo.git@stable")
+      # → ("https://github.com/org/repo.git", "stable")
+  """
+  url, sep, tag = url_spec.partition("@")
+  return url.strip(), (tag.strip() or "main")
+
+
+def _make_bits_providers_spec(url: str, tag: str) -> OrderedDict:
+  """Synthesise the virtual ``bits-providers`` provider spec from a URL + tag.
+
+  The returned spec matches the layout bits.rc users would write by hand::
+
+      package: bits-providers
+      version: "1"
+      source: <url>
+      tag: <tag>
+      provides_repository: true
+      always_load: true
+      repository_position: prepend
+  """
+  return OrderedDict([
+    ("package",               BITS_PROVIDERS_PACKAGE),
+    ("version",               "1"),
+    ("source",                url),
+    ("tag",                   tag),
+    ("provides_repository",   True),
+    ("always_load",           True),
+    ("repository_position",   "prepend"),
+  ])
+
+
+def load_always_on_providers(
+  config_dir: str,
+  work_dir: str,
+  reference_sources: str,
+  fetch_repos: bool,
+  bits_providers: str = None,
+  taps: dict = None,
+) -> dict:
+  """Clone providers that must be loaded unconditionally before any
+  dependency-graph traversal.
+
+  Two sources of always-on providers are consulted in order:
+
+  1. **``bits_providers`` / ``BITS_PROVIDERS``** — when *bits_providers* is
+     non-empty a virtual :data:`BITS_PROVIDERS_PACKAGE` recipe is synthesised
+     from the URL (with an optional ``@tag`` suffix, default ``main``) and
+     cloned immediately.  This corresponds to the auto-constructed recipe::
+
+         package: bits-providers
+         version: "1"
+         source: <url>
+         tag: <tag>
+         provides_repository: true
+         always_load: true
+         repository_position: prepend
+
+  2. **``always_load: true`` recipes in the primary config dir** — every
+     recipe file in *config_dir* that declares **both** ``provides_repository:
+     true`` and ``always_load: true`` is cloned before ``getPackageList``
+     runs.  A recipe named ``bits-providers`` is skipped here when source 1
+     already handled it (avoiding a double-clone).
+
+  Returns a ``{checkout_dir: (package_name, commit_hash)}`` dict in the same
+  format as :func:`fetch_repo_providers_iteratively`, so its entries can be
+  merged into the final ``provider_dirs`` for build-hash propagation.
+
+  Failures in individual clones are logged as warnings and do not abort the
+  build, so a temporarily unreachable provider repository does not block work
+  on packages that do not depend on it.
+  """
+  provider_dirs: dict = {}
+  taps = taps or {}
+
+  # ── 1. BITS_PROVIDERS / bits.rc ``providers`` ───────────────────────────
+  if bits_providers:
+    url, tag = _parse_provider_url(bits_providers)
+    spec = _make_bits_providers_spec(url, tag)
+    debug("Always-on provider from BITS_PROVIDERS: %s @ %s", url, tag)
+    try:
+      checkout_dir, commit_hash = clone_or_update_provider(
+        spec, work_dir, reference_sources, fetch_repos,
+      )
+      _add_to_bits_path(checkout_dir, spec["repository_position"])
+      provider_dirs[checkout_dir] = (BITS_PROVIDERS_PACKAGE, commit_hash)
+    except SystemExit:
+      warning(
+        "Failed to load BITS_PROVIDERS from %s — continuing without it.",
+        bits_providers,
+      )
+
+  # ── 2. ``always_load: true`` recipes in the primary config dir ──────────
+  for sh_path in sorted(glob.glob(os.path.join(abspath(config_dir), "*.sh"))):
+    try:
+      err, spec, _ = parseRecipe(getRecipeReader(sh_path))
+    except Exception:
+      continue
+    if err or spec is None:
+      continue
+    if not (spec.get("always_load") and spec.get("provides_repository")):
+      continue
+    pkg = spec["package"]
+    # Skip if BITS_PROVIDERS already loaded a recipe with the reserved name so
+    # we do not clone the same (or a conflicting) repository twice.
+    if pkg == BITS_PROVIDERS_PACKAGE and bits_providers:
+      debug("Skipping always_load recipe '%s': already handled via BITS_PROVIDERS",
+            pkg)
+      continue
+    debug("Always-loading provider '%s' from config dir", pkg)
+    try:
+      checkout_dir, commit_hash = clone_or_update_provider(
+        spec, work_dir, reference_sources, fetch_repos,
+      )
+      position = spec.get("repository_position", "append")
+      _add_to_bits_path(checkout_dir, position)
+      provider_dirs[checkout_dir] = (pkg, commit_hash)
+    except SystemExit:
+      warning(
+        "Failed to always-load provider '%s' — continuing without it.", pkg,
+      )
+
+  if provider_dirs:
+    banner(
+      "Always-on providers loaded:\n%s",
+      "\n".join(
+        "  %-20s  %s  (commit %s)" % (name, checkout, commit[:10])
+        for checkout, (name, commit) in provider_dirs.items()
+      ),
+    )
+
+  return provider_dirs
 
 
 # ── Iterative provider discovery ────────────────────────────────────────────

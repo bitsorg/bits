@@ -5,7 +5,7 @@ from bits_helpers import __version__
 from bits_helpers.analytics import report_event
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
-from bits_helpers.repo_provider import fetch_repo_providers_iteratively
+from bits_helpers.repo_provider import fetch_repo_providers_iteratively, load_always_on_providers
 from bits_helpers.memory import effective_jobs
 from bits_helpers.checksum import parse_entry as parse_checksum_entry, enforcement_mode as checksum_enforcement_mode, checksum_file as compute_checksum_file
 from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksum_file
@@ -913,12 +913,22 @@ def doBuild(args, parser):
   extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
 
   # ── Repository-provider discovery ─────────────────────────────────────────
-  # Before we run the full dependency resolution we scan the top-level package
-  # list for any packages that carry ``provides_repository: true``.  Each such
-  # package is a recipe repository bundled as a git repo; we clone it into
-  # the local REPOS cache and extend BITS_PATH so that subsequent recipe
-  # lookups in getPackageList can find the recipes it contains.
-  # The scan is iterative: a freshly-cloned provider may itself contain
+  # Phase 1 – Always-on providers: recipes with ``always_load: true`` (and
+  # optionally the auto-synthesised ``bits-providers`` package built from
+  # $BITS_PROVIDERS / bits.rc).  These are cloned *before* the iterative scan
+  # so that the recipes they contain are visible to getPackageList right away.
+  always_on_dirs = load_always_on_providers(
+    config_dir        = args.configDir,
+    work_dir          = workDir,
+    reference_sources = args.referenceSources,
+    fetch_repos       = args.fetchRepos,
+    bits_providers    = getattr(args, "bits_providers", None),
+    taps              = taps,
+  )
+
+  # Phase 2 – Iterative scan: walk the top-level package list for any packages
+  # that carry ``provides_repository: true`` and clone them into the local REPOS
+  # cache, extending BITS_PATH.  A freshly-cloned provider may itself contain
   # further providers, which are discovered and cloned on the next pass.
   provider_dirs = fetch_repo_providers_iteratively(
     packages          = packages,
@@ -928,6 +938,7 @@ def doBuild(args, parser):
     fetch_repos       = args.fetchRepos,
     taps              = taps,
   )
+  provider_dirs.update(always_on_dirs)
 
   with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist.bits:ro"] if args.docker else []) as getstatusoutput_docker:
     def performPreferCheckWithTempDir(pkg, cmd):

@@ -1,6 +1,7 @@
 import argparse
 from bits_helpers.utilities import detectArch, normalise_multiple_options
 from bits_helpers.workarea import cleanup_git_log
+import configparser
 import multiprocessing
 
 import re
@@ -8,7 +9,7 @@ import os
 import shlex
 
 import subprocess as commands
-from os.path import abspath, dirname, basename
+from os.path import abspath, dirname, basename, exists
 import sys
 
 # Default workdir: fall back on "sw" if env is not set or empty
@@ -16,6 +17,34 @@ DEFAULT_WORK_DIR = os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK
 
 # cd to this directory before start
 DEFAULT_CHDIR = os.environ.get("BITS_CHDIR") or "."
+
+# Search order for bits.rc config files (highest priority first).
+# Each entry is evaluated at import time so that ~ is expanded once.
+_BITS_RC_SEARCH_PATHS = [
+    "bits.rc",
+    ".bitsrc",
+    os.path.expanduser("~/.bitsrc"),
+]
+
+
+def _read_bits_rc() -> dict:
+  """Return settings from the first bits.rc / .bitsrc / ~/.bitsrc found.
+
+  Only the ``[bits]`` section is returned; all keys are lower-cased.
+  Returns an empty dict when no config file is present.
+
+  Example bits.rc::
+
+      [bits]
+      providers = https://github.com/org/bits-stdlib.git@stable
+      sw_dir    = /opt/sw
+  """
+  cfg = configparser.ConfigParser()
+  for path in _BITS_RC_SEARCH_PATHS:
+    if exists(path):
+      cfg.read(path)
+      break
+  return dict(cfg["bits"]) if "bits" in cfg else {}
 
 
 # This is syntactic sugar for the --dist option (which should really be called
@@ -451,6 +480,24 @@ def finaliseArgs(args, parser):
 
   if hasattr(args, "defaults"):
     args.defaults = args.defaults.split("::")
+
+  # ── bits.rc / BITS_PROVIDERS ─────────────────────────────────────────────
+  # Read persistent configuration from the first bits.rc / .bitsrc /
+  # ~/.bitsrc found, then resolve ``bits_providers``.  Precedence:
+  #   1. BITS_PROVIDERS environment variable (explicit override)
+  #   2. ``providers`` key in the [bits] section of the config file
+  #   3. Built-in default: the official bitsorg/bits-providers repository
+  #
+  # The resolved value is stored on ``args`` and also written back to the
+  # environment so that child processes inherit it.
+  _BITS_PROVIDERS_DEFAULT = "https://github.com/bitsorg/bits-providers"
+  _rc = _read_bits_rc()
+  args.bits_providers = (
+    os.environ.get("BITS_PROVIDERS")
+    or _rc.get("providers")
+    or _BITS_PROVIDERS_DEFAULT
+  )
+  os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
 
   # --architecture can be specified in both clean and build.
   if args.action in ["build", "clean"] and not args.architecture:
