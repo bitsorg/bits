@@ -59,23 +59,23 @@ Quick Start (Building ROOT)
 Basic Commands
 --------------
 
-+----------------------------+-----------------------------------------+
-| Command                    | Description                             |
-+============================+=========================================+
-| ``bits build <pkg>``       | Build a package and its dependencies.   |
-+----------------------------+-----------------------------------------+
-| `                          | Spawn a subshell with the package       |
-| `bits enter <pkg>/latest`` | environment loaded.                     |
-+----------------------------+-----------------------------------------+
-| ``bits load <pkg>``        | Print commands to load a module (must   |
-|                            | be ``eval``\ 'd).                       |
-+----------------------------+-----------------------------------------+
-| ``bits q [regex]``         | List available modules.                 |
-+----------------------------+-----------------------------------------+
-| ``bits clean``             | Remove stale build artifacts.           |
-+----------------------------+-----------------------------------------+
-| ``bits doctor <pkg>``      | Verify system requirements.             |
-+----------------------------+-----------------------------------------+
++-----------------------------+-----------------------------------------+
+| Command                     | Description                             |
++=============================+=========================================+
+| ``bits build <pkg>``        | Build a package and its dependencies.   |
++-----------------------------+-----------------------------------------+
+| ``bits enter <pkg>/latest`` | Spawn a subshell with the package       |
+|                             | environment loaded.                     |
++-----------------------------+-----------------------------------------+
+| ``bits load <pkg>``         | Print commands to load a module (must   |
+|                             | be ``eval``\ 'd).                       |
++-----------------------------+-----------------------------------------+
+| ``bits q [regex]``          | List available modules.                 |
++-----------------------------+-----------------------------------------+
+| ``bits clean``              | Remove stale build artifacts.           |
++-----------------------------+-----------------------------------------+
+| ``bits doctor <pkg>``       | Verify system requirements.             |
++-----------------------------+-----------------------------------------+
 
 `Full command reference <REFERENCE.md#16-command-line-reference>`__
 
@@ -114,7 +114,7 @@ Create a file ``<package>.sh`` inside a ``*.bits`` directory with:
    source: https://github.com/example/mylib.git
    tag: v1.0
    requires:
-     - zlib
+      - zlib
    ---
    ./configure --prefix="$INSTALLROOT"
    make -j${JOBS:-1}
