@@ -105,22 +105,7 @@ Create a ``bits.rc`` file (INI format) to set defaults:
 Writing a Recipe
 ----------------
 
-Create a file ``<package>.sh`` inside a ``*.bits`` directory with:
-
-.. code:: yaml
-
-   package: mylib
-   version: "1.0"
-   source: https://github.com/example/mylib.git
-   tag: v1.0
-   requires:
-      - zlib
-   ---
-   ./configure --prefix="$INSTALLROOT"
-   make -j${JOBS:-1}
-   make install
-
-`Complete recipe reference <REFERENCE.md#17-recipe-format-reference>`__
+`See complete recipe reference <REFERENCE.md#17-recipe-format-reference>`__
 
 --------------
 
