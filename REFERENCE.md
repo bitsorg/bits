@@ -673,12 +673,43 @@ providers = https://github.com/myorg/my-recipes.git@stable
 
 **Phase 2 — iterative dependency-driven scan** (`fetch_repo_providers_iteratively`):
 
-1. Walk the dependency graph from the requested packages.
+The scan is seeded with the union of:
+- the user-requested packages, and
+- any top-level `requires` / `build_requires` declared in the active defaults file(s).
+
+This second seed is what allows a defaults file to trigger provider loading (see [Triggering providers from a defaults file](#triggering-providers-from-a-defaults-file) below).
+
+1. Walk the dependency graph from the seeded list.
 2. When a package with `provides_repository: true` is encountered for the first time, clone its source repository into the cache and add the checkout to `BITS_PATH`.
 3. Restart the walk — recipes newly visible on the extended path (including further providers) are now reachable.
 4. Repeat until stable (no new providers found) or until `MAX_PROVIDER_ITERATIONS` (20) is reached.
 
 This naturally handles **nested providers**: a provider whose own recipe repository contains a further provider recipe.
+
+### Triggering providers from a defaults file
+
+A defaults file can load a repository provider for all builds that use it by declaring the provider in a top-level `requires` or `build_requires` field:
+
+```yaml
+package: defaults-gcc13
+version: "1"
+
+# Pull in the organisation's recipe repository on every build that uses
+# defaults-gcc13, even if no individual package lists it as a dependency.
+requires:
+  - myorg-recipes      # must have provides_repository: true in its .sh file
+```
+
+The provider's recipe (`myorg-recipes.sh`) must be findable on the existing `BITS_PATH` at the time Phase 2 starts — i.e., it should live in the primary config directory or be provided by a Phase 1 always-on provider. Once cloned, its recipes are visible to all subsequent dependency resolution.
+
+This is subtly different from `always_load: true` on the provider recipe itself:
+
+| Mechanism | When it fires | Scope |
+|-----------|--------------|-------|
+| `always_load: true` on the provider | Every build, unconditionally | Global — applies regardless of which defaults are active |
+| `requires: [provider]` in a defaults file | Only when that defaults profile is active | Per-defaults — different profiles can load different providers |
+
+Both mechanisms are fully backward-compatible: existing defaults files without a top-level `requires` are unaffected.
 
 ### Cache layout and staleness
 
@@ -733,6 +764,7 @@ tox -e darwin  # reduced matrix for macOS
 |-----------|---------------|
 | `test_args.py` | CLI argument parsing |
 | `test_always_on_providers.py` | `_read_bits_rc`, `_parse_provider_url`, `_make_bits_providers_spec`, `load_always_on_providers` (BITS_PROVIDERS path, `always_load` scan, double-clone prevention, failure isolation) |
+| `test_defaults_requires_provider.py` | `parseDefaults` propagating top-level `requires`; defaults-provider seed construction; provider discovery seeded from defaults requires; backward compatibility |
 | `test_build.py` | `doBuild` integration, hash computation, build script generation |
 | `test_clean.py` | Stale-artifact detection and removal |
 | `test_cmd.py` | `DockerRunner` and subprocess helpers |
@@ -1231,6 +1263,7 @@ Defaults processing happens in two phases:
 - `env` — environment variables propagated to every package's `init.sh` (injected via the `defaults-release` pseudo-dependency).
 - `overrides` — per-package YAML patches applied after the recipe is parsed (see below).
 - `package_family` — optional install grouping (see [Package families](#package-families) below).
+- `requires` / `build_requires` — repository providers to load unconditionally for builds using this profile (see [Triggering providers from a defaults file](#triggering-providers-from-a-defaults-file) in §13).
 
 **Phase 2 — per-package application** happens inside `getPackageList()` as each recipe is parsed. The merged `overrides` dict is checked against the package name (case-insensitive regex match); matching entries are merged into the spec with `spec.update(override)`. This means a defaults file can change any recipe field — version, `requires`, `env`, `prefer_system`, etc. — for targeted packages.
 

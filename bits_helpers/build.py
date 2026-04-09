@@ -930,8 +930,25 @@ def doBuild(args, parser):
   # that carry ``provides_repository: true`` and clone them into the local REPOS
   # cache, extending BITS_PATH.  A freshly-cloned provider may itself contain
   # further providers, which are discovered and cloned on the next pass.
+  #
+  # The scan is also seeded with any top-level ``requires`` / ``build_requires``
+  # declared directly in the active defaults file(s).  This allows a defaults
+  # file to trigger provider loading with the ordinary ``requires`` field:
+  #
+  #   requires:
+  #     - my-org-recipes   # a recipe whose .sh declares provides_repository: true
+  #
+  # ``filterByArchitectureDefaults`` is intentionally skipped here: being
+  # conservative (pre-loading a provider on every architecture) is safe and
+  # avoids a chicken-and-egg where the provider's own recipes would be needed
+  # to evaluate the architecture condition.
+  defaults_provider_seed = (
+    list(defaultsMeta.get("requires", []))
+    + list(defaultsMeta.get("build_requires", []))
+  )
+
   provider_dirs = fetch_repo_providers_iteratively(
-    packages          = packages,
+    packages          = packages + defaults_provider_seed,
     config_dir        = args.configDir,
     work_dir          = workDir,
     reference_sources = args.referenceSources,
