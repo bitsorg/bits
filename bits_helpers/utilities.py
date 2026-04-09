@@ -904,6 +904,21 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
           warning("%s.sh contains a recipe, which will be ignored", pkg_filename)
       recipe = ""
 
+      # Strip top-level ``requires`` / ``build_requires`` from the defaults
+      # spec before the dependency-following step below.  These fields are
+      # consumed earlier, in the Phase 2 provider scan (before getPackageList
+      # is called), to seed ``fetch_repo_providers_iteratively``.  If they
+      # were left here, every package listed in defaults ``requires`` would
+      # auto-receive a ``defaults-release`` build dependency (line 1037), which
+      # creates an unresolvable cycle:
+      #
+      #   defaults-release → provider-pkg → defaults-release
+      #
+      # Clearing them here is safe: the provider repos they reference are
+      # already loaded and their recipes are on BITS_PATH.
+      spec.pop("requires", None)
+      spec.pop("build_requires", None)
+
     dieOnError(spec["package"] != p,
                "{} should be spelt {}.".format(p, spec["package"]))
 

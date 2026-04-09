@@ -702,6 +702,8 @@ requires:
 
 The provider's recipe (`myorg-recipes.sh`) must be findable on the existing `BITS_PATH` at the time Phase 2 starts — i.e., it should live in the primary config directory or be provided by a Phase 1 always-on provider. Once cloned, its recipes are visible to all subsequent dependency resolution.
 
+> **Important — provider packages only.** The `requires` field in a defaults file is consumed exclusively by the Phase 2 provider scan. It does **not** add the listed packages as regular build dependencies. Because every non-defaults package automatically receives a `defaults-release` build dependency inside `getPackageList`, allowing defaults' own `requires` to propagate into the build graph would create an unresolvable cycle (`defaults-release → provider-pkg → defaults-release`). To prevent this, bits strips `requires` and `build_requires` from the `defaults-release` spec before the dependency-following step in `getPackageList`. The provider repositories are already loaded and their recipes are on `BITS_PATH` by this point, so nothing is lost.
+
 This is subtly different from `always_load: true` on the provider recipe itself:
 
 | Mechanism | When it fires | Scope |
@@ -1263,7 +1265,7 @@ Defaults processing happens in two phases:
 - `env` — environment variables propagated to every package's `init.sh` (injected via the `defaults-release` pseudo-dependency).
 - `overrides` — per-package YAML patches applied after the recipe is parsed (see below).
 - `package_family` — optional install grouping (see [Package families](#package-families) below).
-- `requires` / `build_requires` — repository providers to load unconditionally for builds using this profile (see [Triggering providers from a defaults file](#triggering-providers-from-a-defaults-file) in §13).
+- `requires` / `build_requires` — repository providers (packages with `provides_repository: true`) to clone and add to `BITS_PATH` for builds using this profile. These are consumed by the Phase 2 provider scan and are **not** added as regular build dependencies (to avoid a dependency cycle — see [Triggering providers from a defaults file](#triggering-providers-from-a-defaults-file) in §13).
 
 **Phase 2 — per-package application** happens inside `getPackageList()` as each recipe is parsed. The merged `overrides` dict is checked against the package name (case-insensitive regex match); matching entries are merged into the spec with `spec.update(override)`. This means a defaults file can change any recipe field — version, `requires`, `env`, `prefer_system`, etc. — for targeted packages.
 
