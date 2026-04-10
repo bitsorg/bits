@@ -1,16 +1,17 @@
+# Standard library
 import configparser
-from bits_helpers.git import git, Git
-from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults
-from bits_helpers.log import debug, error, warning, banner, info
-from bits_helpers.log import dieOnError
-from bits_helpers.workarea import updateReferenceRepoSpec
-from bits_helpers.cmd import getstatusoutput
-from io import StringIO
-
-from os.path import join
-import os.path as path
 import os
 import sys
+from io import StringIO
+from os.path import join
+import os.path as path
+
+# Internal
+from bits_helpers.cmd import getstatusoutput
+from bits_helpers.git import git, Git
+from bits_helpers.log import banner, debug, dieOnError, error, info, warning
+from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults
+from bits_helpers.workarea import updateReferenceRepoSpec
 
 
 def parsePackagesDefinition(pkgname):
@@ -117,7 +118,8 @@ def doInitConfig(args):
 
 
 def doInit(args):
-  assert(args.pkgname != None)
+  if args.pkgname is None:
+    raise ValueError("doInit: args.pkgname must not be None")
 
   pkgs = parsePackagesDefinition(args.pkgname) if args.pkgname else []
 
@@ -129,9 +131,9 @@ def doInit(args):
     return doInitConfig(args)
 
   # ── Clone mode (existing behaviour) ────────────────────────────────────────
-  assert(type(args.dist) == dict)
-  assert(sorted(args.dist.keys()) == ["repo", "ver"])
-  assert(type(pkgs) == list)
+  assert isinstance(args.dist, dict), "args.dist must be a dict"
+  assert sorted(args.dist.keys()) == ["repo", "ver"], "args.dist must have keys 'repo' and 'ver'"
+  assert isinstance(pkgs, list), "pkgs must be a list"
 
   if args.dryRun:
     info("This will initialise local checkouts for %s\n"

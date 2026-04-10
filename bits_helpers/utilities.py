@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
-import os
-import yaml
+# Standard library
+import fnmatch
+import hashlib
 import json
+import os
+import platform
+import re
+import sys
+from collections import OrderedDict
+from datetime import datetime
+from glob import glob
+from os.path import basename, exists, isdir, islink, join
+from shlex import quote
 from typing import Any, IO
 
+# Third-party
+import yaml
 
-from os.path import exists
-import hashlib
-from glob import glob
-from os.path import basename, join, isdir, islink
-import sys
-import os
-import re
-import fnmatch
-import platform
-
-from datetime import datetime
-from collections import OrderedDict
-from shlex import quote
+# Internal
+from bits_helpers.checksum_store import load_for_spec, merge_into_spec
+from bits_helpers.cmd import getoutput
+from bits_helpers.git import git
+from bits_helpers.log import banner, debug, dieOnError, error, warning
 
 from bits_helpers.cmd import getoutput
 from bits_helpers.git import git
@@ -49,7 +53,7 @@ def symlink(link_target, link_name):
   os.symlink(link_target, link_name)
 
 
-asList = lambda x : x if type(x) == list else [x]
+asList = lambda x: x if isinstance(x, list) else [x]
 
 
 def topological_sort(specs):
@@ -223,21 +227,25 @@ def resolve_links_path(architecture, package):
 def short_commit_hash(spec):
   """Shorten the spec's commit hash to make it more human-readable.
 
-  This is complicated by the fact that the commit_hash property is not
-  necessarily a commit hash, but might be a tag name. If it is a tag name,
-  return it as-is, else assume it is actually a commit hash and shorten it.
+  The ``commit_hash`` property may hold a tag name rather than an actual git
+  hash.  When the tag and the commit hash are the same, the value is returned
+  as-is; otherwise only the first 10 characters (a typical git short-hash) are
+  returned.
   """
-  if spec["tag"] == spec["commit_hash"]:
-    return spec["commit_hash"]
-  return spec["commit_hash"][:10]
+  return (spec["commit_hash"]
+          if spec["tag"] == spec["commit_hash"]
+          else spec["commit_hash"][:10])
 
 
-# Date fields to substitute: they are zero-padded
+# Date fields available for tag/version substitution; zero-padded where needed.
+# NOTE: captured once at module import time — they do not update during the run.
 now = datetime.now()
-nowKwds = { "year": str(now.year),
-            "month": str(now.month).zfill(2),
-            "day": str(now.day).zfill(2),
-            "hour": str(now.hour).zfill(2) }
+nowKwds = {
+  "year":  str(now.year),
+  "month": str(now.month).zfill(2),
+  "day":   str(now.day).zfill(2),
+  "hour":  str(now.hour).zfill(2),
+}
 
 def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""):
   """Expand the data replacing the following keywords:
@@ -332,7 +340,7 @@ def validateDefaults(finalPkgSpec, defaults):
   if "valid_defaults" not in finalPkgSpec:
     return (True, "", [])
   validDefaults = asList(finalPkgSpec["valid_defaults"])
-  nonStringDefaults = [x for x in validDefaults if not type(x) == str]
+  nonStringDefaults = [x for x in validDefaults if not isinstance(x, str)]
   if nonStringDefaults:
     return (False, "valid_defaults needs to be a string or a list of strings. Found %s." % nonStringDefaults, [])
   defaultsList = asList(defaults)
@@ -425,22 +433,30 @@ def detectArch():
   except Exception:
     return doDetectArch(hasOsRelease, osReleaseLines, ["unknown", "", ""], "", "")
 
+def _parse_req_matcher(r):
+  """Split a requirement string into ``(requirement_name, matcher)`` pair.
+
+  Requirement strings may be plain package names or ``name:matcher`` where
+  *matcher* is either an architecture regex or ``defaults=<regex>``.
+  """
+  return r.split(":", 1) if ":" in r else (r, ".*")
+
 def filterByArchitectureDefaults(arch, defaults, requires):
+  """Yield requirements from *requires* that are satisfied by *arch*/*defaults*."""
   for r in requires:
-    require, matcher = ":" in r and r.split(":", 1) or (r, ".*")
+    require, matcher = _parse_req_matcher(r)
     if matcher.startswith("defaults="):
-      wanted = matcher[len("defaults="):]
-      if re.match(wanted, defaults):
+      if re.match(matcher[len("defaults="):], defaults):
         yield require
-    if re.match(matcher, arch):
+    elif re.match(matcher, arch):
       yield require
 
 def disabledByArchitectureDefaults(arch, defaults, requires):
+  """Yield requirements from *requires* that are *not* satisfied by *arch*/*defaults*."""
   for r in requires:
-    require, matcher = ":" in r and r.split(":", 1) or (r, ".*")
+    require, matcher = _parse_req_matcher(r)
     if matcher.startswith("defaults="):
-      wanted = matcher[len("defaults="):]
-      if not re.match(wanted, defaults):
+      if not re.match(matcher[len("defaults="):], defaults):
         yield require
     elif not re.match(matcher, arch):
       yield require
@@ -673,9 +689,7 @@ def parseRecipe(reader, generatePackages=None, visited=None):
     err = str(e)
   except SpecError as e:
     err = "Malformed header for {}\n{}".format(reader.url, str(e))
-  except yaml.scanner.ScannerError as e:
-    err = "Unable to parse {}\n{}".format(reader.url, str(e))
-  except yaml.parser.ParserError as e:
+  except (yaml.scanner.ScannerError, yaml.parser.ParserError) as e:
     err = "Unable to parse {}\n{}".format(reader.url, str(e))
   except ValueError:
     err = "Unable to parse %s. Header missing." % reader.url
@@ -699,7 +713,7 @@ def asDict(overrides_array):
     if not overrides_array:
         return OrderedDict()
      
-    if type(overrides_array) == OrderedDict:
+    if isinstance(overrides_array, OrderedDict):
         return overrides_array
       
     # Start with an empty OrderedDict
@@ -737,8 +751,6 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
   # example they could decide to switch from ROOT 5 to ROOT 6 and they
   # could disable alien for O2. For this reason we need to parse their
   # metadata early and extract the override and disable data.
-
-  # defaultsMeta["disable"] = asDict(defaultsMeta.get("disable", OrderedDict()))
 
   defaultsDisable = asList(defaultsMeta.get("disable", []))
    
@@ -813,37 +825,26 @@ def resolveFilename(taps, pkg, configDir, generatedPackages, ext=".sh"):
     if d in generatedPackages and pkg in generatedPackages[d]:
       meta = generatedPackages[d][pkg]
       return ("generate:{}@{}".format(pkg, meta["version"]), meta["pkgdir"])
-    filename = checkForFilename(taps, pkg, d, ext=".sh")
+    filename = checkForFilename(taps, pkg, d, ext=ext)
     if exists(filename):
       return (filename, d)
   dieOnError(True, "Package {} not found in {}".format(pkg, configDir))
 
 def resolveDefaultsFilename(defaults, configDir, failOnError=True):
-  configPath = os.environ.get("BITS_PATH")
-  cfgDir = configDir
-  pkgDirs = [cfgDir]
+  """Return the path of ``defaults-<defaults>.sh`` searched across all config paths.
 
-  if configPath:
-    for r in [x for x in configPath.split(",") if x]:
-      if os.path.isabs(r):
-        pkgDirs.append(r)      # provider checkout – absolute path
-      else:
-        pkgDirs.append(cfgDir + "/" + r + ".bits")
-
-  for d in pkgDirs:
-    filename = "{}/defaults-{}.sh".format(d, defaults)
-    if exists(filename):
-      return(filename)
+  Uses :func:`getConfigPaths` to build the search list so that BITS_PATH
+  provider checkouts are honoured consistently with :func:`resolveFilename`.
+  """
+  filename = None
+  for d in getConfigPaths(configDir):
+    candidate = "{}/defaults-{}.sh".format(d, defaults)
+    if exists(candidate):
+      return candidate
+    filename = candidate  # keep last candidate for the error message
 
   if failOnError:
-    error("Default `%s' does not exists.\n" % (filename or "<no defaults specified>"))
-
-  '''
-  error("Default `%s' does not exists. Viable options:\n%s" %
-          (defaults or "<no defaults specified>",
-           "\n".join("- " + basename(x).replace("defaults-", "").replace(".sh", "")
-                     for x in glob(join(configDir, "defaults-*.sh")))))
-  '''
+    error("Default `%s' does not exist.\n" % (defaults or "<no defaults specified>"))
 
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,
@@ -1127,24 +1128,28 @@ def getGeneratedPackages(configDir):
   return all_pkgs
 
 
+def _coerce_to_list(val):
+  """Return *val* as a list.
+
+  If *val* is a comma-separated string (spaces stripped), split it.
+  If it is already a list, return it unchanged.
+  """
+  if isinstance(val, str):
+    return val.replace(" ", "").split(",")
+  return val
+
 def handleMergePolicy(override_spec, final_base):
   mergePolicy = override_spec.get("merge_policy", {})
-  remove_keys = mergePolicy.get("remove", [])
-  force_inherit = mergePolicy.get("inherit", [])
-  if isinstance(remove_keys, str):
-    remove_keys = remove_keys.replace(" ", "").split(",")
+  remove_keys  = _coerce_to_list(mergePolicy.get("remove", []))
+  force_inherit = _coerce_to_list(mergePolicy.get("inherit", []))
+  merge_keys   = _coerce_to_list(mergePolicy.get("merge", []))
   recipe_append = "recipe" not in remove_keys
   for k in remove_keys:
     if k in final_base:
       final_base.pop(k, None)
-  if isinstance(force_inherit, str):
-    force_inherit = force_inherit.replace(" ", "").split(",")
   for key in force_inherit:
     if key in final_base:
       override_spec[key] = final_base[key]
-  merge_keys = mergePolicy.get("merge", [])
-  if isinstance(merge_keys, str):
-    merge_keys = merge_keys.replace(" ", "").split(",")
   override_spec.pop("merge_policy", None)
   override_spec.pop("from", None)
   for key in merge_keys:
@@ -1176,9 +1181,10 @@ def handleMergePolicy(override_spec, final_base):
 
 class Hasher:
   def __init__(self) -> None:
-    self.h = hashlib.sha1()
+    # usedforsecurity=False is required on FIPS-enabled systems (Python ≥ 3.9).
+    self.h = hashlib.sha1(usedforsecurity=False)
   def __call__(self, txt):
-    if not type(txt) == bytes:
+    if not isinstance(txt, bytes):
       txt = txt.encode('utf-8', 'ignore')
     self.h.update(txt)
   def hexdigest(self):

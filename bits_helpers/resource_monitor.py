@@ -1,25 +1,46 @@
+# Standard library
 import subprocess
 from threading import Thread
-import psutil
 from json import dump as json_dump
 from time import time, sleep
+
+# Third-party
+import psutil
+
+# Internal
 from bits_helpers.cmd import monitor_progress
 
 # Sampling interval in seconds
 SAMPLE_INTERVAL = 1.0
+
+# PIDs whose CPU counter has been initialised (first call always returns 0.0).
+# NOTE: mutated from a single monitoring thread — not designed for concurrent use.
 cpu_initialized = set()
 
-def update_monitor_stats(proc):
-    global cpu_initialized
-    children = []
-    try: children = proc.children(recursive=True)
-    except: return {}
-    stats = {"rss": 0, "vms": 0, "shared": 0, "data": 0, "uss": 0, "pss": 0, "num_fds": 0, "num_threads": 0, "processes": 0, "cpu": 0}
-    clds = len(children)
-    if clds==0: return stats
-    stats['processes'] = clds
 
-    # Step 1: Initialize CPU counters for new PIDs
+def update_monitor_stats(proc):
+    """Collect resource stats for all children of *proc*.
+
+    Returns a dict with cumulative CPU%, memory, thread, and FD counts, or an
+    empty dict when the process has no children or has already exited.
+    """
+    children = []
+    try:
+        children = proc.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return {}
+
+    stats = {
+        "rss": 0, "vms": 0, "shared": 0, "data": 0,
+        "uss": 0, "pss": 0,
+        "num_fds": 0, "num_threads": 0,
+        "processes": 0, "cpu": 0,
+    }
+    if not children:
+        return stats
+    stats["processes"] = len(children)
+
+    # Step 1: Initialise CPU counters for new PIDs (first sample always returns 0).
     current_pids = set()
     for p in children:
         pid = p.pid
@@ -28,13 +49,13 @@ def update_monitor_stats(proc):
             try:
                 p.cpu_percent(interval=None)
                 cpu_initialized.add(pid)
-            except:
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
-    # Step 2: Sleep once to allow CPU measurement
+    # Step 2: Sleep once to allow a meaningful CPU measurement window.
     sleep(SAMPLE_INTERVAL)
 
-    # Step 3: Collect CPU%, memory, threads, FDs
+    # Step 3: Collect CPU%, memory, threads, and file descriptors.
     for p in children:
         try:
             stats["cpu"] += int(p.cpu_percent(interval=None))
@@ -42,23 +63,29 @@ def update_monitor_stats(proc):
                 mem = p.memory_full_info()
                 stats["uss"] += getattr(mem, "uss", 0)
                 stats["pss"] += getattr(mem, "pss", 0)
-            except:
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 mem = p.memory_info()
             for a in ["rss", "vms", "shared", "data"]:
-                stats[a] += getattr(mem, a)
+                stats[a] += getattr(mem, a, 0)
             stats["num_threads"] += p.num_threads()
             try:
                 stats["num_fds"] += p.num_fds()
-            except:
+            except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+                # num_fds() is not available on Windows
                 pass
-        except:
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    # Step 4: Cleanup exited PIDs
+    # Step 4: Remove PIDs that have exited since Step 1.
     cpu_initialized.intersection_update(current_pids)
     return stats
 
+
 def monitor_stats(p_id, stats_file_name):
+    """Periodically sample resource usage of process *p_id* until it exits.
+
+    Results are written as a JSON array to *stats_file_name*.
+    """
     stime = int(time())
     p = psutil.Process(p_id)
     data = []
@@ -67,17 +94,25 @@ def monitor_stats(p_id, stats_file_name):
         if not stats:
             sleep(SAMPLE_INTERVAL)
             continue
-        stats['time'] = int(time()-stime)
+        stats["time"] = int(time() - stime)
         data.append(stats)
     with open(stats_file_name, "w") as sf:
         json_dump(data, sf)
-    return
 
 
 def run_monitor_on_command(command, stats_file_name, printer, timeout=None):
-  popen = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds= True)
-  mon_thd = Thread(target=monitor_stats, args=(popen.pid, stats_file_name,))
-  mon_thd.start()
-  returncode = monitor_progress(popen, printer, timeout)
-  mon_thd.join() # wait for monitoring thread to write its output
-  return returncode
+    """Run *command* in a subprocess while recording its resource usage.
+
+    Launches a monitoring thread that writes periodic resource snapshots to
+    *stats_file_name* (JSON array).  Returns the command's exit code.
+    """
+    popen = subprocess.Popen(
+        command, shell=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        close_fds=True,
+    )
+    mon_thd = Thread(target=monitor_stats, args=(popen.pid, stats_file_name))
+    mon_thd.start()
+    returncode = monitor_progress(popen, printer, timeout)
+    mon_thd.join()  # wait for the monitoring thread to flush its output
+    return returncode

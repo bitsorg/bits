@@ -124,7 +124,8 @@ def checksum_file(path: str, algorithm: str = "sha256") -> str:
             "Unsupported checksum algorithm %r.  "
             "Supported: %s" % (algorithm, ", ".join(sorted(SUPPORTED_ALGORITHMS)))
         )
-    h = hashlib.new(algo)
+    # usedforsecurity=False is required on FIPS-enabled systems (Python ≥ 3.9).
+    h = hashlib.new(algo, usedforsecurity=False)
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(65536), b""):
             h.update(chunk)

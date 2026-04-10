@@ -1,12 +1,12 @@
-# Import as function if they do not have any side effects
-from os.path import dirname, basename
-
-# Import as modules if I need to mock them later
-import os.path as path
-import os
+# Standard library
 import glob
-import sys
+import os
+import os.path as path
 import shutil
+import sys
+from os.path import basename, dirname
+
+# Internal
 from bits_helpers import log
 
 

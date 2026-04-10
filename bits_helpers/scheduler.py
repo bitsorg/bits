@@ -1,10 +1,13 @@
+# Standard library
 import json
-from queue import Queue, PriorityQueue
-from io import StringIO
-from threading import Thread
-from time import sleep
 import threading
 import traceback
+from io import StringIO
+from queue import Queue, PriorityQueue
+from threading import Thread
+from time import sleep
+
+# Internal
 from bits_helpers.resource_manager import ResourceManager
 
 # Helper class to avoid conflict between result
@@ -109,7 +112,7 @@ class Scheduler:
           traceback.print_exc(file=s)
           result = s.getvalue()
 
-        if type(result) == _SchedulerQuitCommand:
+        if isinstance(result, _SchedulerQuitCommand):
           self.notifyTaskMaster(self.__releaseWorker)
           return
         self.debug(taskId + ":" + str(item[0]) + " done")
@@ -134,12 +137,12 @@ class Scheduler:
 
   def parallel(self, taskId, deps, taskType, *spec):
     if taskId in self.jobs: return
-    self.jobs[taskId] = {"taskType": taskType, "scheduler": "parallel", "deps": deps, "spec":spec, "priorty": 1}
+    self.jobs[taskId] = {"taskType": taskType, "scheduler": "parallel", "deps": deps, "spec":spec, "priority": 1}
     if taskType in ["build", "download", "fetch"]:
       try:
-          self.jobs[taskId]["priorty"] = 100000-spec[1].requiredBy
-      except:
-          self.jobs[taskId]["priorty"] = 1
+          self.jobs[taskId]["priority"] = 100000 - spec[1].requiredBy
+      except AttributeError:
+          self.jobs[taskId]["priority"] = 1
     self.pendingJobs.append(taskId)
     self.finalJobDeps.append(taskId)
 
@@ -175,13 +178,13 @@ class Scheduler:
       pendingDeps = [dep for dep in self.jobs[taskId]["deps"] if not dep in self.doneJobs]
       if pendingDeps:
         continue
-      allJobs.append({"id": taskId, "priorty": self.jobs[taskId]["priorty"]})
+      allJobs.append({"id": taskId, "priority": self.jobs[taskId]["priority"]})
     buildJobs =[]
     downloadJobs = []
     forceJobs = []
     bldCount = self.runningJobsCount["max_build"]-self.runningJobsCount["build"]
     dwnCount = self.runningJobsCount["max_download"]-self.runningJobsCount["download"]
-    for task in sorted(allJobs, key=lambda k: k['priorty']):
+    for task in sorted(allJobs, key=lambda k: k['priority']):
       taskId = task["id"]
       taskType = self.jobs[taskId]["taskType"]
       if taskType == "download":
@@ -203,7 +206,7 @@ class Scheduler:
       if taskType in self.runningJobsCount:
         self.runningJobsCount[taskType] += 1
       transition(taskId, self.pendingJobs, self.runningJobs)
-      self.__scheduleParallel(taskId, self.jobs[taskId]["spec"], priorty=self.jobs[taskId]["priorty"])
+      self.__scheduleParallel(taskId, self.jobs[taskId]["spec"], priority=self.jobs[taskId]["priority"])
 
   # Update the job with the result of running.
   def __updateJobStatus(self, taskId, error):
@@ -218,8 +221,8 @@ class Scheduler:
     self.errors[taskId] = error
 
   # One task at the time.
-  def __scheduleParallel(self, taskId, commandSpec, priorty=1):
-    self.workersQueue.put((priorty, taskId, commandSpec))
+  def __scheduleParallel(self, taskId, commandSpec, priority=1):
+    self.workersQueue.put((priority, taskId, commandSpec))
 
   # Helper to enqueue commands for all the threads.
   def shout(self, *commandSpec):

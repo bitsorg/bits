@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-import sys
+"""Convenience wrapper — equivalent to ``bits doctor``.
+
+Re-execs ``bitsBuild`` with ``doctor`` inserted as the first argument so that
+the full argument parser and all sub-command logic live in one place.
+"""
 import os
-from os.path import dirname, join, abspath
+import sys
+from os.path import abspath, dirname, join
+
 if __name__ == "__main__":
   bitsBuild = join(dirname(abspath(sys.argv[0])), "bitsBuild")
-  os.execv(bitsBuild, [ bitsBuild, "doctor" ] + sys.argv[1:])
+  os.execv(bitsBuild, [bitsBuild, "doctor"] + sys.argv[1:])

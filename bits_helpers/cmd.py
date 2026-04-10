@@ -1,12 +1,14 @@
+# Standard library
+import errno
 import os
 import os.path
 import time
-from subprocess import Popen, PIPE, STDOUT
-from textwrap import dedent
-from subprocess import TimeoutExpired
 from shlex import quote
+from subprocess import Popen, PIPE, STDOUT, TimeoutExpired
+from textwrap import dedent
 
-from bits_helpers.log import debug, error, dieOnError
+# Internal
+from bits_helpers.log import debug, dieOnError, error
 
 def decode_with_fallback(data):
   """Try to decode DATA as utf-8; if that doesn't work, fall back to latin-1.
@@ -129,8 +131,7 @@ def install_wrapper_script(name, work_dir):
   try:
     os.makedirs(script_dir)
   except OSError as exc:
-    # Errno 17 means the directory already exists.
-    if exc.errno != 17:
+    if exc.errno != errno.EEXIST:  # directory already exists — that's fine
       raise
   # Create a wrapper script that cleans up the environment, so we don't see the
   # OpenSSL built by Bits
