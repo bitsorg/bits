@@ -83,7 +83,7 @@ class TestResolvePkgFamily(unittest.TestCase):
 
     def test_defaults_release_gets_empty_family(self):
         """The defaults package itself should get an empty family (no install dir)."""
-        self.assertEqual(resolve_pkg_family(self.FAMILY_CFG, "defaults-release"), "cms")
+        self.assertEqual(resolve_pkg_family(self.FAMILY_CFG, "defaults-release"), "")
 
 
 # ---------------------------------------------------------------------------
