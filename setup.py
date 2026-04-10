@@ -18,7 +18,7 @@ with open(os.path.join(here, 'README.rst'), encoding='utf-8') as f:
 install_requires = ['pyyaml', 'requests', 'distro', 'jinja2', 'boto3']
 
 setup(
-    name='bits',
+    name='build-bits',
 
     description='Software Build Tool',
     long_description=long_description,
