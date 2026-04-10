@@ -34,7 +34,11 @@ Eval(){
    eval $ret
 }
 
-[ -f .bitsenv ] && source .bitsenv && [ x$BITSENV_DEBUG == x1 ] && printf "found .bitsenv"
+# SECURITY: Do NOT source .bitsenv from the current working directory.
+# Sourcing a file from CWD allows arbitrary code execution if an attacker
+# can place a malicious .bitsenv in any directory the user might cd into.
+# Settings are instead picked up via the -m / -p flags or environment variables.
+#[ -f .bitsenv ] && source .bitsenv  # removed: CWD sourcing is a code-execution vector
 
 argc=$#
 argv=("$@")
@@ -56,33 +60,29 @@ do
    esac
 done
 
-if [ -z $platform ]
-then
-    if [[ "$BITS_PLATFORM" != "" ]]
-    then
-	printf "WARNING: overriding detected platform ($platform) with $BITS_PLATFORM\n" >&2;
-	platform=$BITS_PLATFORM;
+if [[ -z "$platform" ]]; then
+    if [[ -n "$BITS_PLATFORM" ]]; then
+        printf "WARNING: overriding detected platform (%s) with %s\n" "$platform" "$BITS_PLATFORM" >&2
+        platform="$BITS_PLATFORM"
     else
-	platform=$(bits architecture)
-    fi	
+        platform=$(bits architecture)
+    fi
 fi
 
-if [ -z $moduledir ]
-then
-  if [[ "$BITS_MODULEDIR" != "" ]]; then
+if [[ -z "$moduledir" ]]; then
+  if [[ -n "$BITS_MODULEDIR" ]]; then
     moduledir="$BITS_MODULEDIR"
-  elif [[ `basename $prog` == bitsenv && `basename $path` == bin ]]; then
-    moduledir=`dirname "$path"`
+  elif [[ "$(basename "$prog")" == bitsenv && "$(basename "$path")" == bin ]]; then
+    moduledir="$(dirname "$path")"
   fi
 fi
 
-if [ -z $moduledir ]
-then
-   bits=`which bits`
-   if [ ! -z $bits ]
-   then
-      exec $bits $@ 
-   fi    
+if [[ -z "$moduledir" ]]; then
+   bits=$(command -v bits 2>/dev/null)
+   if [[ -n "$bits" ]]; then
+      # Quote both $bits and $@ to prevent word-splitting on paths with spaces.
+      exec "$bits" "$@"
+   fi
    printf "Could not determine module directory, please set BITS_MODULEDIR\n"
    exit 1
 fi
@@ -119,26 +119,30 @@ function modulepath() {
 }
 
 function test_toolchain() {
-  local TMPPREF=/tmp/bitsenv_helloworld
-  cat > $TMPPREF.cpp <<EOF
+  # Use mktemp to avoid predictable /tmp paths that are vulnerable to
+  # symlink attacks and race conditions (CWE-377 / CWE-362).
+  local TMPDIR_TC
+  TMPDIR_TC=$(mktemp -d)
+  local TMPPREF="${TMPDIR_TC}/helloworld"
+  cat > "${TMPPREF}.cpp" <<'EOF'
 #include <iostream>
-int main(int argn, char *argv[]) {
+int main(int, char *[]) {
   std::cout << "hello world" << std::endl;
   return 0;
 }
 EOF
-  g++ -o $TMPPREF ${TMPPREF}.cpp > ${TMPPREF}.log 2>&1
-  if [[ `/tmp/bitsenv_helloworld 2> /dev/null` != "hello world" ]]; then
-    echo "WARNING: We are using GNU C++ compiler at $(which g++ 2> /dev/null)" >&2
+  g++ -o "$TMPPREF" "${TMPPREF}.cpp" > "${TMPPREF}.log" 2>&1
+  if [[ "$("$TMPPREF" 2>/dev/null)" != "hello world" ]]; then
+    echo "WARNING: We are using GNU C++ compiler at $(command -v g++ 2>/dev/null)" >&2
     echo "WARNING: This compiler is unable to produce valid executables on this platform!" >&2
     echo "WARNING: Error from g++ follows:" >&2
-    while IFS= read LINE; do
+    while IFS= read -r LINE; do
       echo "WARNING: $LINE" >&2
-    done < <(cat ${TMPPREF}.log)
+    done < "${TMPPREF}.log"
   else
-    echo "NOTICE: loaded compiler ($(which g++)) seems to produce valid executables" >&2
+    echo "NOTICE: loaded compiler ($(command -v g++)) seems to produce valid executables" >&2
   fi
-  rm -f ${TMPPREF}*
+  rm -rf "$TMPDIR_TC"
 }
 
 
@@ -147,16 +151,63 @@ EOF
 #
 # Returned list (on stdout) is also sorted: packages with a certain priority
 # are moved at the beginning of the list.
-function normalize_sort_packages() {
-  NORM=( $(echo $1 | sed -e 's%::%/%g' -e 's%,% %g') )
-  [[ $BITSENV_DEBUG == 1 ]] && printf "NOTICE: list of packages normalized to ${NORM[*]}\n" >&2
-  echo ${NORM[*]}
+# Remove duplicate entries from a colon-separated path variable, preserving
+# the order of first occurrence.  Empty elements (artefacts of double-colons
+# or leading/trailing colons) are also discarded.
+#
+# Usage: dedup_pathvar VARNAME   (operates in-place, re-exports the variable)
+function dedup_pathvar() {
+  local varname="$1"
+  local current="${!varname}"
+  [[ -z "$current" ]] && return 0
+
+  local result="" elem
+  local -A _seen   # associative array used as a hash-set
+  local IFS=:
+  for elem in $current; do
+    [[ -z "$elem" ]] && continue          # skip empty elements
+    if [[ -z "${_seen[$elem]+x}" ]]; then # not yet seen
+      _seen[$elem]=1
+      result="${result:+${result}:}${elem}"
+    fi
+  done
+  unset _seen
+  printf -v "$varname" '%s' "$result"
+  export "$varname"
 }
 
-export PATH=$PATH:$path
+# Deduplicate all path-like variables that accumulate duplicates when module
+# environments are nested.  DYLD_LIBRARY_PATH is the macOS equivalent of
+# LD_LIBRARY_PATH; both are normalised alongside PATH.
+function dedup_path_vars() {
+  local var
+  for var in PATH LD_LIBRARY_PATH DYLD_LIBRARY_PATH; do
+    [[ -n "${!var}" ]] && dedup_pathvar "$var"
+  done
+  [[ $BITSENV_DEBUG == 1 ]] && \
+    printf "NOTICE: PATH deduplicated: %s\n" "$PATH" >&2
+}
 
-if [  -d $modules/$version/$distro_dir/$distro_release ]
-then
+function normalize_sort_packages() {
+  # Use pure bash string ops instead of piping through sed to avoid
+  # word-splitting and potential injection issues with package names.
+  local input="${1//,/ }"     # commas → spaces
+  local token result=()
+  for token in $input; do
+    token="${token//::///}"   # :: → /
+    result+=("$token")
+  done
+  [[ $BITSENV_DEBUG == 1 ]] && printf "NOTICE: list of packages normalized to %s\n" "${result[*]}" >&2
+  echo "${result[*]}"
+}
+
+# Extend PATH and immediately deduplicate all path-like variables so that
+# any duplicates already present from outer (nested) module environments
+# are collapsed before new entries are added.
+export PATH=$PATH:$path
+dedup_path_vars
+
+if [[ -d "$modules/$version/$distro_dir/$distro_release" ]]; then
    moduleenv="env LD_LIBRARY_PATH=$modules/$version/$distro_dir/$distro_release/lib"
    modulecmd="$modules/$version/$distro_dir/$distro_release/bin/modulecmd"
 else
@@ -164,27 +215,27 @@ else
    modulecmd="$modules/$version/$distro_dir/$distro_xrelease/bin/modulecmd"
 fi
 
-if [[ ! -f $modulecmd ]]; then
+if [[ ! -f "$modulecmd" ]]; then
   # Fallback on system-installed
   [[ $BITSENV_DEBUG == 1 ]] && printf "NOTICE: using modulecmd from the system\n" >&2
   modulecmd=modulecmd
   moduleenv=
 fi
 
-[[ $BITSENV_DEBUG == 1 ]] && printf "modulecmd=$modulecmd\nmoduleenv=$moduleenv\n" >&2
+[[ $BITSENV_DEBUG == 1 ]] && printf "modulecmd=%s\nmoduleenv=%s\n" "$modulecmd" "$moduleenv" >&2
 
-T=`mktemp`
+T=$(mktemp)
 
-$moduleenv $modulecmd &> $T
+$moduleenv "$modulecmd" &> "$T"
 
 if [[ $? == 127 ]]; then
-      echo "Unknown distribution release: $distro_name $distro_release"
-      [[ $BITSENV_DEBUG == 1 ]] && printf "ERROR: full error message is: `cat $T`\n" >&2
-      rm -f $T
+      printf "Unknown distribution release: %s %s\n" "$distro_name" "$distro_release"
+      [[ $BITSENV_DEBUG == 1 ]] && printf "ERROR: full error message is: %s\n" "$(cat "$T")" >&2
+      rm -f "$T"
       exit 1
 fi
 
-rm -f $T
+rm -f "$T"
 unset T
 
 tclsh <<EOF >/dev/null 2>&1
@@ -215,7 +266,7 @@ done
 
 export MODULEPATH="$moduledir/etc/toolchain/modulefiles/$platform:$moduledir/$platform/Modules/modulefiles"
 
-[ x$BITSENV_DEBUG == x1 ] && printf "MODULEPATH=$MODULEPATH\n" >&2
+[[ "$BITSENV_DEBUG" == 1 ]] && printf "MODULEPATH=%s\n" "$MODULEPATH" >&2
 
 COMMAND_IN_ENV=()
 
@@ -225,9 +276,10 @@ do
      enter)
        shift 1
        args=$(normalize_sort_packages "$1")
-       before=`printenv`
-       Eval $moduleenv $modulecmd bash load $args 2>/dev/null || exit 1
-       after=`printenv | grep -v LS_COLORS=`
+       before=$(printenv)
+       Eval $moduleenv "$modulecmd" bash load $args 2>/dev/null || exit 1
+       dedup_path_vars
+       after=$(printenv | grep -v LS_COLORS=)
        _LM_ENV=""
        for var in $after
        do
@@ -242,39 +294,41 @@ do
      setenv)
        shift 1
        args=$(normalize_sort_packages "$1")
-       Eval $moduleenv $modulecmd bash load $args 2>/dev/null || exit 1
+       Eval $moduleenv "$modulecmd" bash load $args 2>/dev/null || exit 1
+       dedup_path_vars
        shift 1
        ;;
      checkenv)
        shift 1
        args=$(normalize_sort_packages "$1")
-       Eval $moduleenv $modulecmd bash load $args || exit 1
+       Eval $moduleenv "$modulecmd" bash load $args || exit 1
+       dedup_path_vars
        PREV_PKG=
        PREV_VER=
        PKG_ERR=
-       while read LMF; do
+       while IFS= read -r LMF; do
          VER=${LMF##*/}
          PKG=${LMF%/*}
          PKG=${PKG##*/}
-         if [[ $PKG == $PREV_PKG && $VER != $PREV_VER ]]; then
-           printf "ERROR: attempting to load $PKG $VER when conflicting version $PREV_VER already loaded\n" >&2
+         if [[ "$PKG" == "$PREV_PKG" && "$VER" != "$PREV_VER" ]]; then
+           printf "ERROR: attempting to load %s %s when conflicting version %s already loaded\n" \
+             "$PKG" "$VER" "$PREV_VER" >&2
            PKG_ERR=1
          fi
-         PREV_PKG=$PKG
-         PREV_VER=$VER
-       done < <(echo $_LMFILES_ | sed -e 's/:/\n/g' | sort)
+         PREV_PKG="$PKG"
+         PREV_VER="$VER"
+       done < <(printf '%s\n' "${_LMFILES_//:/$'\n'}" | sort)
        [[ $PKG_ERR ]] && exit 1
        [[ $BITSENV_DEBUG == 1 ]] && printf "NOTICE: all packages loaded successfully\n" >&2
        exit 0
        ;;
      printenv)
        shift 1
-       if [ x$1 = x ]
-       then
-          echo $_LM_ENV
+       if [[ -z "$1" ]]; then
+          echo "$_LM_ENV"
        fi
        args=$(normalize_sort_packages "$1")
-       $moduleenv $modulecmd bash load $args 2>/dev/null
+       $moduleenv "$modulecmd" bash load $args 2>/dev/null
        exit
        ;;
      -m|-?modules|-?mdir|-?moduledir)
@@ -301,11 +355,11 @@ do
        Help
        ;;
      q|query)
-       $moduleenv $modulecmd bash -t avail  2>&1 | grep -v -e : -e "^$"
+       $moduleenv "$modulecmd" bash -t avail  2>&1 | grep -v -e : -e "^$"
        exit $?
        ;;
      *)
-       $moduleenv $modulecmd bash $*
+       $moduleenv "$modulecmd" bash "$@"
        exit
      ;;
     esac

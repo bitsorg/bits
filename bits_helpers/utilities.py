@@ -1181,8 +1181,14 @@ def handleMergePolicy(override_spec, final_base):
 
 class Hasher:
   def __init__(self) -> None:
-    # usedforsecurity=False is required on FIPS-enabled systems (Python ≥ 3.9).
-    self.h = hashlib.sha1(usedforsecurity=False)
+    # usedforsecurity=False suppresses the FIPS rejection of SHA-1 on
+    # systems where SHA-1 is blocked for security use (Python ≥ 3.9 only).
+    # Fall back gracefully on Python 3.8 and earlier where the parameter
+    # does not exist.
+    try:
+      self.h = hashlib.sha1(usedforsecurity=False)
+    except TypeError:
+      self.h = hashlib.sha1()  # Python < 3.9
   def __call__(self, txt):
     if not isinstance(txt, bytes):
       txt = txt.encode('utf-8', 'ignore')
