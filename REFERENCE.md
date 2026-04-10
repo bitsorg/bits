@@ -128,7 +128,7 @@ exit
 
 ## 4. Configuration
 
-Bits reads an optional INI-style configuration file at startup to set the working directory, recipe search paths, and other defaults. The file is never created automatically — it must be written by the user.
+Bits reads an optional INI-style configuration file at startup to set the working directory, recipe search paths, and other defaults. The file can be created manually or with `bits init` in [config mode](#config-mode----write-persistent-settings-to-bitsrc).
 
 ### File locations and search order
 
@@ -154,6 +154,10 @@ Within each section, each line is `key = value` (spaces around `=` are stripped)
 
 ### Variables
 
+The `[bits]` section recognises two classes of keys: legacy shell-level variables (exported to the environment for use by shell scripts) and Python-level settings (applied directly to `bits` option defaults before argument parsing).
+
+**Shell-level variables** (also exported to the environment for shell scripts):
+
 | Config key | Exported as | Default | Description |
 |---|---|---|---|
 | `organisation` | `BITS_ORGANISATION` | `ALICE` | Organisation name. Also selects the organisation-specific section in this file. |
@@ -161,6 +165,22 @@ Within each section, each line is `key = value` (spaces around `=` are stripped)
 | `repo_dir` | `BITS_REPO_DIR` | `alidist` | Root directory for recipe repositories. |
 | `sw_dir` | `BITS_WORK_DIR` | `sw` | Output and work directory for built packages, source mirrors, and module files. |
 | `search_path` | `BITS_PATH` | _(empty)_ | Comma-separated list of additional recipe search directories. Absolute paths are used directly; relative names have `.bits` appended. |
+
+**Python-level option defaults** (set before argument parsing; overridden by any explicit CLI flag or environment variable):
+
+| Config key | Equivalent CLI flag | Description |
+|---|---|---|
+| `remote_store` | `--remote-store URL` | Binary store to fetch pre-built tarballs from. |
+| `write_store` | `--write-store URL` | Binary store to upload newly-built tarballs to. |
+| `providers` | `--providers URL` / `$BITS_PROVIDERS` | URL of the bits-providers repository. |
+| `work_dir` | `-w DIR` / `$BITS_WORK_DIR` | Default work/output directory. |
+| `architecture` | `-a ARCH` | Default target architecture. |
+| `defaults` | `--defaults PROFILE` | Default profile(s), `::` separated. |
+| `config_dir` | `-c DIR` | Default recipe directory. |
+| `reference_sources` | `--reference-sources DIR` | Default mirror directory. |
+| `organisation` | `--organisation NAME` | Organisation tag (see also shell-level table above). |
+
+These keys can be written automatically with `bits init` — see [§16 bits init config mode](#config-mode----write-persistent-settings-to-bitsrc).
 
 ### Precedence
 
@@ -448,6 +468,22 @@ bits init libfoo            # create a writable source checkout
 bits build libfoo           # rebuilds only libfoo (devel mode)
 eval "$(bits load libfoo/latest)"
 ```
+
+### Set up a project with a persistent binary store
+
+Instead of passing `--remote-store` on every `bits build` invocation, write it once with `bits init` (no package name):
+
+```bash
+# One-time setup — writes bits.rc in the current directory
+bits init --remote-store https://store.example.com/store \
+          --write-store  b3://mybucket/store \
+          --organisation MYORG
+
+# Every subsequent invocation picks up the settings automatically
+bits build ROOT
+```
+
+To check what will be written before touching the file system, add `--dry-run`. To update a single key in an existing `bits.rc` without replacing the whole file, add `--append`.
 
 ### Debug a failed build
 
@@ -1180,11 +1216,15 @@ Evaluates each package's `system_requirement` and `prefer_system` snippets and r
 
 ### bits init
 
-Create a writable local source checkout for development work.
+`bits init` has two distinct modes selected by whether a PACKAGE name is given.
+
+#### Clone mode — create a writable source checkout (legacy / unchanged)
 
 ```bash
 bits init [options] PACKAGE[@VERSION][,PACKAGE[@VERSION]...]
 ```
+
+Clones the upstream source repository for each named package into a writable local directory. After `bits init`, the created directory is automatically used as the source for subsequent `bits build` invocations of that package.
 
 | Option | Description |
 |--------|-------------|
@@ -1194,7 +1234,53 @@ bits init [options] PACKAGE[@VERSION][,PACKAGE[@VERSION]...]
 | `-a ARCH` | Architecture. |
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 
-After `bits init`, the created directory is automatically used as the source for subsequent `bits build` invocations of that package.
+#### Config mode — write persistent settings to bits.rc
+
+When **no PACKAGE** is given, `bits init` writes the supplied options to a `bits.rc` file and exits. All subsequent `bits` invocations in that directory (or globally, if written to `~/.bitsrc`) will use those settings as defaults without requiring them to be repeated on every command line. Explicit CLI flags always take precedence over bits.rc values.
+
+```bash
+# Persist a remote binary store for the current project
+bits init --remote-store https://store.example.com/store
+
+# Persist both a read store and a write store
+bits init --remote-store https://store.example.com/store \
+          --write-store b3://mybucket/store
+
+# Record the organisation and update (not replace) the existing bits.rc
+bits init --organisation ALICE --append
+
+# Preview what would be written without touching the file
+bits init --dry-run --remote-store https://store.example.com/store
+
+# Write to a specific file (default is bits.rc in the current directory)
+bits init --rc-file ~/.bitsrc --remote-store https://store.example.com/store
+```
+
+| Config option | bits.rc key | Description |
+|---------------|-------------|-------------|
+| `--remote-store URL` | `remote_store` | Binary store to fetch pre-built tarballs from. |
+| `--write-store URL` | `write_store` | Binary store to upload newly-built tarballs to. |
+| `--providers URL` | `providers` | URL of the bits-providers repository (overrides `BITS_PROVIDERS`). |
+| `--organisation NAME` | `organisation` | Organisation tag used by defaults profiles and recipe tooling. |
+| `-w DIR`, `--work-dir DIR` | `work_dir` | Default work/output directory (overrides `BITS_WORK_DIR`). |
+| `-a ARCH`, `--architecture ARCH` | `architecture` | Default target architecture. |
+| `--defaults PROFILE` | `defaults` | Default profile(s), `::` separated. |
+| `-c DIR`, `--config-dir DIR` | `config_dir` | Default recipe directory. |
+| `--reference-sources DIR` | `reference_sources` | Default mirror directory. |
+| `--rc-file FILE` | — | Destination file. Default: `bits.rc` in the current directory. |
+| `--append` | — | Merge new settings into the existing file rather than replacing it. |
+
+**Search order for bits.rc.** Bits searches for persistent configuration in the following locations (highest priority first): `bits.rc`, `.bitsrc`, `~/.bitsrc`. The first file found is used. Only the `[bits]` INI section is read.
+
+**Example `bits.rc` created by config mode:**
+
+```ini
+[bits]
+remote_store = https://store.example.com/store
+write_store  = b3://mybucket/store
+work_dir     = /opt/sw
+organisation = MYORG
+```
 
 ---
 

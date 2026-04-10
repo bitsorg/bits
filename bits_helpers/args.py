@@ -449,10 +449,61 @@ def doParseArgs():
                          help=("The directory where reference git repositories will be cloned. "
                                "'%%(workDir)s' will be substituted by WORKDIR. Default '%(default)s'."))
 
+  # Options for creating / updating bits.rc (config mode: no PACKAGE given)
+  init_cfg = init_parser.add_argument_group(
+      title="Persistent configuration (bits.rc)",
+      description="These options write settings to bits.rc so you do not need to repeat them "
+                  "on every 'bits build' invocation. When no PACKAGE is given, 'bits init' "
+                  "writes the supplied options to bits.rc and exits.")
+  init_cfg.add_argument("--providers", dest="providers", default=None, metavar="URL",
+                        help="URL of the bits-providers repository (written as 'providers' in bits.rc). "
+                             "Equivalent to the BITS_PROVIDERS environment variable.")
+  init_cfg.add_argument("--remote-store", dest="initRemoteStore", default=None, metavar="URL",
+                        help="Binary store to fetch pre-built tarballs from (written as 'remote_store' "
+                             "in bits.rc). Accepts the same URL formats as 'bits build --remote-store'.")
+  init_cfg.add_argument("--write-store", dest="initWriteStore", default=None, metavar="URL",
+                        help="Binary store to upload newly-built tarballs to (written as 'write_store' "
+                             "in bits.rc). Accepts the same URL formats as 'bits build --write-store'.")
+  init_cfg.add_argument("--organisation", dest="organisation", default=None, metavar="NAME",
+                        help="Organisation name stored under the 'organisation' key in bits.rc. "
+                             "May be used by defaults profiles and recipe tooling.")
+  init_cfg.add_argument("--rc-file", dest="rcFile", default="bits.rc", metavar="FILE",
+                        help="Path of the bits.rc file to create or update. Default '%(default)s'.")
+  init_cfg.add_argument("--append", dest="appendRc", action="store_true", default=False,
+                        help="Merge the new settings into an existing bits.rc rather than "
+                             "overwriting it. Without this flag a fresh file is written.")
+
   # Options for the version subcommand
   version_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                               help=("Display the specified architecture next to the version number. Default is "
                                     "the current system architecture, which is '%(default)s'."))
+
+  # Apply bits.rc values as default overrides so that persistent settings written
+  # by "bits init" (config mode) take effect on every subsequent invocation.
+  # CLI flags still win: set_defaults only fills gaps not covered by the user.
+  _rc_early = _read_bits_rc()
+  _rc_defaults: dict = {}
+  _RC_KEY_TO_DEST = [
+      # (bits.rc key,        argparse dest)
+      ("work_dir",           "workDir"),
+      ("architecture",       "architecture"),
+      ("defaults",           "defaults"),
+      ("config_dir",         "configDir"),
+      ("reference_sources",  "referenceSources"),
+      ("remote_store",       "remoteStore"),
+      ("write_store",        "writeStore"),
+      ("organisation",       "organisation"),
+  ]
+  for _rc_key, _dest in _RC_KEY_TO_DEST:
+    if _rc_early.get(_rc_key):
+      _rc_defaults[_dest] = _rc_early[_rc_key]
+  if _rc_defaults:
+    # set_defaults on the *parent* parser is overridden by each subparser's own
+    # argument-level defaults (add_argument(..., default=...)).  We must call
+    # set_defaults on every subparser individually so that bits.rc values win
+    # over hardcoded argument defaults while still losing to explicit CLI flags.
+    for _sp in [build_parser, clean_parser, deps_parser, doctor_parser, init_parser]:
+      _sp.set_defaults(**_rc_defaults)
 
   # Make sure old option ordering behavior is actually still working
   prog = sys.argv[0]
@@ -466,7 +517,22 @@ def doParseArgs():
     return 2
   rest.sort(key=optionOrder)
   sys.argv = [prog] + rest
+
+  # For "bits init" config mode: record which flags were explicit on the CLI so
+  # that doInitConfig() can write only the settings the user actually specified.
+  # We scan argv AFTER the sort so the subcommand is reliably at index 1.
+  _init_explicit_flags: set = set()
+  _argv_tail = sys.argv[2:]   # everything after the subcommand name
+  for _tok in _argv_tail:
+    if _tok.startswith("--"):
+      # normalise: "--remote-store" → "remote_store", "--work-dir=sw" → "work_dir"
+      _init_explicit_flags.add(_tok.lstrip("-").split("=")[0].replace("-", "_"))
+    elif _tok.startswith("-") and len(_tok) == 2:
+      # short flags: -w, -a, -C, -z
+      _init_explicit_flags.add(_tok[1:])
+
   args = finaliseArgs(parser.parse_args(), parser)
+  args._init_explicit = _init_explicit_flags
   return (args, parser)
 
 VALID_ARCHS_RE = "^slc[5-9]_(x86-64|ppc64|aarch64)$|^(ubuntu|ubt|osx|fedora)[0-9]*_(x86-64|arm64)$"
