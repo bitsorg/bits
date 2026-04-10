@@ -2181,7 +2181,123 @@ Bits automatically mounts the work directory, the recipe directories, and `~/.ss
 
 ---
 
-## 23. Design Principles & Limitations
+## 23. Forcing or Dropping the Revision Suffix (`force_revision`)
+
+By default every installed package path and tarball filename includes a
+**revision counter** assigned by bits, e.g.:
+
+```
+slc9_amd64/gcc/15.2.1-1
+```
+
+The trailing `-1` is the revision.  For some packages — notably CMS software
+releases where the version string `CMSSW_13_0_0` is the authoritative label
+used by downstream infrastructure — this suffix is undesirable.  The
+`force_revision` feature lets you pin the revision to a specific value or drop
+it entirely, **without touching the recipe file**.
+
+---
+
+### 23.1 Configuration mechanism
+
+`force_revision` is set in a `defaults-*.sh` file, never in a recipe.  This
+lets different groups reuse the same recipes while opting in or out
+independently.
+
+#### Per-package override
+
+Use the `overrides:` block to target individual packages by regex:
+
+```yaml
+overrides:
+  "cmssw_.*":
+    force_revision: ""          # drop the revision suffix entirely
+  "special-tool":
+    force_revision: "rc1"       # pin to a literal string
+```
+
+When the regex matches a package name (case-insensitive), `spec["revision"]`
+is set to the given value before any counter logic runs.
+
+#### Global fallback
+
+Add a top-level `force_revision:` field to apply to every package not already
+matched by an override entry:
+
+```yaml
+# drops the revision suffix from every package in this defaults profile
+force_revision: ""
+```
+
+A global value of `~` (YAML null) means "not set" and has no effect.
+
+---
+
+### 23.2 How the install path changes
+
+| `force_revision` | Example install path |
+|---|---|
+| *(not set, default)* | `slc9_amd64/CMSSW_13_0_0/CMSSW_13_0_0-1` |
+| `"1"` (pinned to 1) | `slc9_amd64/CMSSW_13_0_0/CMSSW_13_0_0-1` |
+| `"rc1"` (literal) | `slc9_amd64/CMSSW_13_0_0/CMSSW_13_0_0-rc1` |
+| `""` (empty, drop) | `slc9_amd64/CMSSW_13_0_0/CMSSW_13_0_0` |
+
+The **content-addressed store path** (`TARS/<arch>/store/<h2>/<hash>/`) is
+unaffected regardless of the value — binary integrity is always preserved via
+the hash.
+
+---
+
+### 23.3 Risks and caveats
+
+**Symlink overwrite risk (empty revision only)**
+
+When `force_revision: ""` is used, two different builds of the same version
+share the same install path.  The convenience symlinks (`latest`, `latest-*`)
+will be silently overwritten by the later build.  The content-hash store entry
+is NOT overwritten, so the binary itself is safe — but only the *last* build
+will be accessible via the version-named path.
+
+bits emits a runtime `WARNING` when it detects `force_revision: ""` on a
+package.
+
+**No `local` prefix protection**
+
+Normally bits prefixes revision numbers with `local` (e.g. `local1`) when
+there is no writable remote store, to avoid conflicts with a remote that might
+assign the same integer revision.  When `force_revision` is set this prefix
+logic is bypassed — the revision is used exactly as given.  If you use a
+literal integer (e.g. `force_revision: "1"`) in a mixed local/remote workflow,
+revision collision is possible.
+
+**Shared across defaults profiles**
+
+The `force_revision` value is read from the active defaults profile at build
+time.  If you share a workspace between two groups that use different defaults
+files — one with `force_revision: ""` and one without — the paths they install
+to will differ.  Keep workspaces separate or agree on a common value.
+
+---
+
+### 23.4 Implementation notes
+
+Internally bits computes the install-path segment with the helper:
+
+```python
+# bits_helpers/utilities.py
+def ver_rev(spec):
+    rev = spec.get("revision", "")
+    return "{}-{}".format(spec["version"], rev) if rev else spec["version"]
+```
+
+Every place in the codebase that previously wrote
+`"{version}-{revision}".format(**spec)` now calls `ver_rev(spec)` so that the
+forced/dropped revision is honoured consistently across the install tree,
+tarballs, symlinks, `init.sh`, dist trees, and all remote-store backends.
+
+---
+
+## 24. Design Principles & Limitations
 
 ### Principles
 

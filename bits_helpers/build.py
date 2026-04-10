@@ -11,7 +11,7 @@ from bits_helpers.checksum import parse_entry as parse_checksum_entry, enforceme
 from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksum_file
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
-from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id
+from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id, ver_rev
 from bits_helpers.utilities import parseDefaults, readDefaults
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
@@ -125,15 +125,23 @@ def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
   # At the point we call this function, spec has a single, definitive hash.
   # Use the caller's real architecture for the dist-link directory: dist links
   # are per-build-platform even when the package itself is shared.
-  target_dir = "{work_dir}/TARS/{arch}/{repo}/{package}/{package}-{version}-{revision}" \
-    .format(work_dir=args.workDir, arch=args.architecture, repo=repoType, **spec)
+  #
+  # ver_rev() is used here (and for each dependency below) so that packages
+  # with force_revision set in the defaults profile produce dist-tree directory
+  # names and tarball symlink targets that match the actual install paths.
+  target_dir = "{work_dir}/TARS/{arch}/{repo}/{package}/{package}-{ver_rev}" \
+    .format(work_dir=args.workDir, arch=args.architecture, repo=repoType,
+            ver_rev=ver_rev(spec), **spec)
   shutil.rmtree(target_dir.encode("utf-8"), ignore_errors=True)
   makedirs(target_dir, exist_ok=True)
   for pkg in [spec["package"]] + list(spec[requiresType]):
     dep_spec = specs[pkg]
     dep_arch = effective_arch(dep_spec, args.architecture)
-    dep_tarball = "../../../../../TARS/{arch}/store/{short_hash}/{hash}/{package}-{version}-{revision}.{arch}.tar.gz" \
-      .format(arch=dep_arch, short_hash=dep_spec["hash"][:2], **dep_spec)
+    # ver_rev(dep_spec) accounts for each dependency's own force_revision
+    # setting, which may differ from the top-level package's setting.
+    dep_tarball = "../../../../../TARS/{arch}/store/{short_hash}/{hash}/{package}-{ver_rev}.{arch}.tar.gz" \
+      .format(arch=dep_arch, short_hash=dep_spec["hash"][:2],
+              ver_rev=ver_rev(dep_spec), **dep_spec)
     symlink(dep_tarball, target_dir)
 
 def storeHook(package, specs, defaults) -> bool:
@@ -394,7 +402,7 @@ def better_tarball(spec, old, new):
 
 
 def _pkg_install_path(workDir, architecture, spec):
-  """Return the path ``<workDir>/<arch>[/<family>]/<pkg>/<ver>-<rev>``.
+  """Return the path ``<workDir>/<arch>[/<family>]/<pkg>/<ver>[-<rev>]``.
 
   *architecture* should already be the *effective* architecture for *spec*
   (i.e. the result of ``effective_arch(spec, build_arch)``).  Callers are
@@ -404,13 +412,15 @@ def _pkg_install_path(workDir, architecture, spec):
   When ``spec["pkg_family"]`` is also set the family directory is inserted
   between the architecture and the package name.  When it is empty the legacy
   two-level layout ``<arch>/<pkg>/<version>-<revision>`` is preserved.
+
+  Uses :func:`ver_rev` so that packages with ``force_revision: ""`` in their
+  defaults profile install under ``<version>/`` rather than
+  ``<version>-<revision>/``.
   """
   family = spec.get("pkg_family", "")
   if family:
-    return join(workDir, architecture, family, spec["package"],
-                "{version}-{revision}".format(**spec))
-  return join(workDir, architecture, spec["package"],
-              "{version}-{revision}".format(**spec))
+    return join(workDir, architecture, family, spec["package"], ver_rev(spec))
+  return join(workDir, architecture, spec["package"], ver_rev(spec))
 
 
 def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False):
@@ -452,16 +462,21 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     family = dep_spec.get("pkg_family", "")
     family_seg = (quote(family) + "/") if family else ""
     arch_prefix = _arch_prefix_expr(dep_spec)
+    # ver_rev(dep_spec) is used instead of "{version}-{revision}" so that
+    # dependencies whose revision was forced or dropped via force_revision in
+    # defaults are sourced from the correct path in the generated init.sh.
+    # Using the raw revision string here would produce a trailing dash
+    # ("8.5.0-") when force_revision is set to "" (empty), breaking the
+    # environment for every downstream package.
     return (
       '[ -n "${{{bigpackage}_REVISION}}" ] || '
-      '. {arch_prefix}/{family}{package}/{version}-{revision}/etc/profile.d/init.sh'
+      '. {arch_prefix}/{family}{package}/{ver_rev}/etc/profile.d/init.sh'
     ).format(
       bigpackage=pkg_to_shell_id(dep),
       arch_prefix=arch_prefix,
       family=family_seg,
       package=quote(dep_spec["package"]),
-      version=quote(dep_spec["version"]),
-      revision=quote(dep_spec["revision"]),
+      ver_rev=quote(ver_rev(dep_spec)),
     )
   lines.extend(_dep_init_path(dep) for dep in spec.get("requires", ()))
 
@@ -479,11 +494,15 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       family=self_family_seg,
       package=quote(spec["package"]),
       version=quote(spec["version"]),
+      # ver_rev() produces "version-revision" or just "version" when
+      # force_revision is set to "" via defaults; the ROOT export path must
+      # match the actual install directory produced by _pkg_install_path().
+      ver_rev=quote(ver_rev(spec)),
       revision=quote(spec["revision"]),
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      'export {bigpackage}_ROOT={arch_prefix}/{family}{package}/{version}-{revision}',
+      'export {bigpackage}_ROOT={arch_prefix}/{family}{package}/{ver_rev}',
       'export RECC_PREFIX_MAP="${bigpackage}_ROOT=/recc/{bigpackage}_ROOT:$RECC_PREFIX_MAP"',
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
@@ -1305,33 +1324,58 @@ def doBuild(args, parser):
     # available.
     debug("Checking for packages already built.")
 
-    # Make sure this regex broadly matches the regex below that parses the
-    # symlink's target. Overly-broadly matching the version, for example, can
-    # lead to false positives that trigger a warning below.
-    spec_arch = effective_arch(spec, args.architecture)
-    links_regex = re.compile(r"{package}-{version}-(?:local)?[0-9]+\.{arch}\.tar\.gz".format(
-      package=re.escape(spec["package"]),
-      version=re.escape(spec["version"]),
-      arch=re.escape(spec_arch),
-    ))
-    symlink_dir = join(workDir, "TARS", spec_arch, spec["package"])
-    try:
-      packages = [join(symlink_dir, symlink_path)
-                  for symlink_path in os.listdir(symlink_dir)
-                  if links_regex.fullmatch(symlink_path)]
-    except OSError:
-      # If symlink_dir does not exist or cannot be accessed, return an empty
-      # list of packages.
-      packages = []
-    del links_regex, symlink_dir
+    # ---- force_revision bypass -----------------------------------------------
+    # When force_revision is provided in defaults-*.sh (per-package overrides:
+    # block or top-level global field), skip the symlink-scanning and revision
+    # counter logic entirely.  The content-addressed store still uses the
+    # package hash, so binary integrity is preserved regardless of the label.
+    #
+    # Risk: if force_revision is "" (empty), two incompatible builds of the
+    # same version will share the same install path (<pkg>/<version>/) and the
+    # convenience symlink will be silently overwritten by the later build.
+    # The hash-addressed store path is NOT affected.
+    if "force_revision" in spec:
+      forced = spec["force_revision"]   # "" → revision-less; "X" → literal
+      spec["revision"] = forced
+      if not forced:
+        warning(
+          "Package %s: force_revision is empty — install path will omit "
+          "the revision suffix (%s/%s). If two incompatible builds of "
+          "this version coexist the convenience symlink will be silently "
+          "overwritten.", spec["package"], spec["package"], spec["version"],
+        )
+      # Hash was already computed; align spec["hash"] to the remote store
+      # (forced revisions are never prefixed with "local").
+      spec["hash"] = spec["remote_revision_hash"]
+    else:
+      # Normal revision-counter logic: scan existing symlinks and find the
+      # next free (or already-matching) revision number.
+      #
+      # Make sure this regex broadly matches the regex below that parses the
+      # symlink's target. Overly-broadly matching the version, for example,
+      # can lead to false positives that trigger a warning below.
+      spec_arch = effective_arch(spec, args.architecture)
+      # The revision group is made optional ((?:-(?:local)?[0-9]+)?) so that
+      # symlinks created when force_revision="" (revision-less path) are also
+      # picked up by subsequent normal builds of the same version.
+      links_regex = re.compile(
+        r"{package}-{version}(?:-(?:local)?[0-9]+)?\.{arch}\.tar\.gz".format(
+          package=re.escape(spec["package"]),
+          version=re.escape(spec["version"]),
+          arch=re.escape(spec_arch),
+        ))
+      symlink_dir = join(workDir, "TARS", spec_arch, spec["package"])
+      try:
+        packages = [join(symlink_dir, symlink_path)
+                    for symlink_path in os.listdir(symlink_dir)
+                    if links_regex.fullmatch(symlink_path)]
+      except OSError:
+        # If symlink_dir does not exist or cannot be accessed, return an empty
+        # list of packages.
+        packages = []
+      del links_regex, symlink_dir
 
-    # In case there is no installed software, revision is 1
-    # If there is already an installed package:
-    # - Remove it if we do not know its hash
-    # - Use the latest number in the version, to decide its revision
-    debug("Packages already built using this version\n%s", "\n".join(packages))
-
-    # Calculate the build_family for the package
+    # Calculate the build_family for the package.
     #
     # If the package is a devel package, we need to associate it a devel
     # prefix, either via the -z option or using its checked out branch. This
@@ -1353,81 +1397,98 @@ def doBuild(args, parser):
     if spec["package"] == mainPackage:
       mainBuildFamily = spec["build_family"]
 
-    candidate = None
-    busyRevisions = set()
-    # We can tell that the remote store is read-only if it has an empty or
-    # no writeStore property. See below for explanation of why we need this.
-    revisionPrefix = "" if getattr(syncHelper, "writeStore", "") else "local"
-    for symlink_path in packages:
-      realPath = readlink(symlink_path)
-      matcher = "../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/{package}-{version}-((?:local)?[0-9]+).{arch}.tar.gz$" \
-        .format(arch=spec_arch, **spec)
-      match = re.match(matcher, realPath)
-      if not match:
-        warning("Symlink %s -> %s couldn't be parsed", symlink_path, realPath)
-        continue
-      rev_hash, revision = match.groups()
+    if "force_revision" not in spec:
+      # Normal revision-counter path: scan existing symlinks to find a reusable
+      # or the next free revision number.
+      # In case there is no installed software, revision is 1
+      # If there is already an installed package:
+      # - Remove it if we do not know its hash
+      # - Use the latest number in the version, to decide its revision
+      debug("Packages already built using this version\n%s", "\n".join(packages))
 
-      if not (("local" in revision and rev_hash in spec["local_hashes"]) or
-              ("local" not in revision and rev_hash in spec["remote_hashes"])):
-        # This tarball's hash doesn't match what we need. Remember that its
-        # revision number is taken, in case we assign our own later.
-        if revision.startswith(revisionPrefix) and revision[len(revisionPrefix):].isdigit():
-          # Strip revisionPrefix; the rest is an integer. Convert it to an int
-          # so we can get a sensible max() existing revision below.
-          busyRevisions.add(int(revision[len(revisionPrefix):]))
-        continue
+      candidate = None
+      busyRevisions = set()
+      # We can tell that the remote store is read-only if it has an empty or
+      # no writeStore property. See below for explanation of why we need this.
+      revisionPrefix = "" if getattr(syncHelper, "writeStore", "") else "local"
+      for symlink_path in packages:
+        realPath = readlink(symlink_path)
+        # The revision group is optional ((?:-((?:local)?[0-9]+))?) to handle
+        # symlinks previously created with force_revision="" (revision-less).
+        matcher = (
+          r"../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/"
+          r"{package}-{version}(?:-((?:local)?[0-9]+))?\.{arch}\.tar\.gz$"
+        ).format(arch=spec_arch, **spec)
+        match = re.match(matcher, realPath)
+        if not match:
+          warning("Symlink %s -> %s couldn't be parsed", symlink_path, realPath)
+          continue
+        rev_hash, revision = match.groups()
+        if revision is None:
+          # Symlink points to a revision-less tarball (force_revision="").
+          # Treat it as a busy slot so we do not overwrite it inadvertently.
+          continue
 
-      # Don't re-use local revisions when we have a read-write store, so that
-      # packages we'll upload later don't depend on local revisions.
-      if getattr(syncHelper, "writeStore", False) and "local" in revision:
-        debug("Skipping revision %s because we want to upload later", revision)
-        continue
+        if not (("local" in revision and rev_hash in spec["local_hashes"]) or
+                ("local" not in revision and rev_hash in spec["remote_hashes"])):
+          # This tarball's hash doesn't match what we need. Remember that its
+          # revision number is taken, in case we assign our own later.
+          if revision.startswith(revisionPrefix) and revision[len(revisionPrefix):].isdigit():
+            # Strip revisionPrefix; the rest is an integer. Convert it to an int
+            # so we can get a sensible max() existing revision below.
+            busyRevisions.add(int(revision[len(revisionPrefix):]))
+          continue
 
-      # If we have an hash match, we use the old revision for the package
-      # and we do not need to build it. Because we prefer reusing remote
-      # revisions, only store a local revision if there is no other candidate
-      # for reuse yet.
-      candidate = better_tarball(spec, candidate, (revision, rev_hash, symlink_path))
+        # Don't re-use local revisions when we have a read-write store, so that
+        # packages we'll upload later don't depend on local revisions.
+        if getattr(syncHelper, "writeStore", False) and "local" in revision:
+          debug("Skipping revision %s because we want to upload later", revision)
+          continue
 
-    try:
-      revision, rev_hash, symlink_path = candidate
-    except TypeError:  # raised if candidate is still None
-      # If we can't reuse an existing revision, assign the next free revision
-      # to this package. If we're not uploading it, name it localN to avoid
-      # interference with the remote store -- in case this package is built
-      # somewhere else, the next revision N might be assigned there, and would
-      # conflict with our revision N.
-      # The code finding busyRevisions above already ensures that revision
-      # numbers start with revisionPrefix, and has left us plain ints.
-      spec["revision"] = revisionPrefix + str(
-        min(set(range(1, max(busyRevisions) + 2)) - busyRevisions)
-        if busyRevisions else 1)
-    else:
-      spec["revision"] = revision
-      # Remember what hash we're actually using.
-      spec["local_revision_hash" if revision.startswith("local")
-           else "remote_revision_hash"] = rev_hash
-      if spec["is_devel_pkg"] and "incremental_recipe" in spec:
-        spec["obsolete_tarball"] = symlink_path
+        # If we have an hash match, we use the old revision for the package
+        # and we do not need to build it. Because we prefer reusing remote
+        # revisions, only store a local revision if there is no other candidate
+        # for reuse yet.
+        candidate = better_tarball(spec, candidate, (revision, rev_hash, symlink_path))
+
+      try:
+        revision, rev_hash, symlink_path = candidate
+      except TypeError:  # raised if candidate is still None
+        # If we can't reuse an existing revision, assign the next free revision
+        # to this package. If we're not uploading it, name it localN to avoid
+        # interference with the remote store -- in case this package is built
+        # somewhere else, the next revision N might be assigned there, and would
+        # conflict with our revision N.
+        # The code finding busyRevisions above already ensures that revision
+        # numbers start with revisionPrefix, and has left us plain ints.
+        spec["revision"] = revisionPrefix + str(
+          min(set(range(1, max(busyRevisions) + 2)) - busyRevisions)
+          if busyRevisions else 1)
       else:
-        debug("Package %s with hash %s is already found in %s. Not building.",
-              p, rev_hash, symlink_path)
-        # Ignore errors here, because the path we're linking to might not
-        # exist (if this is the first run through the loop). On the second run
-        # through, the path should have been created by the build process.
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)),
-                                    "latest-{build_family}".format(**spec)))
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)), "latest"))
+        spec["revision"] = revision
+        # Remember what hash we're actually using.
+        spec["local_revision_hash" if revision.startswith("local")
+             else "remote_revision_hash"] = rev_hash
+        if spec["is_devel_pkg"] and "incremental_recipe" in spec:
+          spec["obsolete_tarball"] = symlink_path
+        else:
+          debug("Package %s with hash %s is already found in %s. Not building.",
+                p, rev_hash, symlink_path)
+          # Ignore errors here, because the path we're linking to might not
+          # exist (if this is the first run through the loop). On the second run
+          # through, the path should have been created by the build process.
+          call_ignoring_oserrors(symlink, ver_rev(spec),
+                                 join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)),
+                                      "latest-{build_family}".format(**spec)))
+          call_ignoring_oserrors(symlink, ver_rev(spec),
+                                 join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)), "latest"))
 
-    # Now we know whether we're using a local or remote package, so we can set
-    # the proper hash and tarball directory.
-    if spec["revision"].startswith("local"):
-      spec["hash"] = spec["local_revision_hash"]
-    else:
-      spec["hash"] = spec["remote_revision_hash"]
+      # Now we know whether we're using a local or remote package, so we can
+      # set the proper hash and tarball directory.
+      if spec["revision"].startswith("local"):
+        spec["hash"] = spec["local_revision_hash"]
+      else:
+        spec["hash"] = spec["remote_revision_hash"]
 
     # We do not use the override for devel packages, because we
     # want to avoid having to rebuild things when the /tmp gets cleaned.
@@ -1451,11 +1512,11 @@ def doBuild(args, parser):
       if develPrefix:
         call_ignoring_oserrors(symlink, spec["hash"], join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + develPrefix))
       # Last package built gets a "latest" mark.
-      call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
+      call_ignoring_oserrors(symlink, ver_rev(spec),
                              join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)), "latest"))
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
+        call_ignoring_oserrors(symlink, ver_rev(spec),
                                join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)),
                                     "latest-" + spec["build_family"]))
 
@@ -1553,10 +1614,12 @@ def doBuild(args, parser):
         _write_checksums_for_spec(spec, workDir)
 
     family = spec.get("pkg_family", "")
+    # ver_rev(spec) is used so that the SPECS directory name matches the actual
+    # install path when force_revision is set (e.g. "" drops the revision suffix).
     scriptDir = join(workDir, "SPECS", effective_arch(spec, args.architecture),
                      *([family] if family else []),
                      spec["package"],
-                     spec["version"] + "-" + spec["revision"])
+                     ver_rev(spec))
 
     init_workDir = container_workDir if args.docker else args.workDir
     makedirs(scriptDir, exist_ok=True)

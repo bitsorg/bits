@@ -182,6 +182,26 @@ def compute_combined_arch(defaults_meta: dict, defaults_list: list, raw_arch: st
   return raw_arch + "-" + "-".join(qualifiers)
 
 
+def ver_rev(spec):
+  """Return the version-revision directory segment for *spec*.
+
+  Normally this is ``<version>-<revision>`` (e.g. ``8.5.0-1``).
+
+  When a package has ``force_revision`` set via a ``defaults-*.sh``
+  ``overrides:`` entry or a top-level ``force_revision:`` in the defaults
+  file, the revision may be a fixed string *or* an empty string.  An empty
+  string means the revision suffix is dropped entirely, yielding just
+  ``<version>`` (e.g. ``CMSSW_13_0_0`` instead of ``CMSSW_13_0_0-1``).
+
+  Every place in the codebase that previously wrote
+  ``"{version}-{revision}".format(**spec)`` must call this helper instead so
+  that the forced/dropped revision is honoured consistently across the install
+  tree, tarballs, symlinks, init.sh, and dist trees.
+  """
+  rev = spec.get("revision", "")
+  return "{}-{}".format(spec["version"], rev) if rev else spec["version"]
+
+
 def resolve_store_path(architecture, spec_hash):
   """Return the path where a tarball with the given hash is to be stored.
 
@@ -932,6 +952,17 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         continue
       log("Overrides for package %s: %s", spec["package"], overrides[override])
       spec.update(overrides.get(override, {}) or {})
+
+    # Apply global force_revision from the top-level defaults field as a
+    # fallback.  Per-package overrides (set via spec.update() above) take
+    # precedence because they ran first.  A value of "" means "drop the
+    # revision suffix entirely"; None means "not set, do not apply".
+    if "force_revision" not in spec \
+            and defaults_meta is not None \
+            and "force_revision" in defaults_meta:
+      raw = defaults_meta.get("force_revision")
+      if raw is not None:
+        spec["force_revision"] = "" if raw == "" else str(raw)
 
     # If --always-prefer-system is passed or if prefer_system is set to true
     # inside the recipe, use the script specified in the prefer_system_check

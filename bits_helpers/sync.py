@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from bits_helpers.cmd import execute
 from bits_helpers.log import debug, info, error, dieOnError, ProgressPrint
-from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, effective_arch
+from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, effective_arch, ver_rev
 
 
 def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False):
@@ -150,7 +150,10 @@ class HttpRemoteSync:
       except OSError:  # store path not readable
         continue
       for tarball in have_tarballs:
-        if re.match(r"^{package}-{version}-[0-9]+\.{arch}\.tar\.gz$".format(
+        # The revision group is made optional ((?:-[0-9]+)?) so that tarballs
+        # built with force_revision="" (revision-less name) are also matched
+        # and reused without a redundant re-download.
+        if re.match(r"^{package}-{version}(?:-[0-9]+)?\.{arch}\.tar\.gz$".format(
             package=re.escape(spec["package"]),
             version=re.escape(spec["version"]),
             arch=re.escape(arch),
@@ -292,13 +295,20 @@ class RsyncRemoteSync:
     if not self.writeStore:
       return
     arch = effective_arch(spec, self.architecture)
+    # ver_rev(spec) is used here instead of "{version}-{revision}" because the
+    # tarball filename and the dist-symlink directory name must match what was
+    # written to disk by build_template.sh.  When force_revision is set to ""
+    # via defaults-*.sh the revision suffix is absent entirely, so the tarball
+    # is named "<pkg>-<version>.<arch>.tar.gz".  The content-addressed store
+    # path (under TARS/<arch>/store/<h2>/<hash>/) is unaffected — that path
+    # always uses the package hash, not the version-revision label.
     dieOnError(execute("""\
     set -e
     cd {workdir}
-    tarball={package}-{version}-{revision}.{eff_arch}.tar.gz
+    tarball={package}-{ver_rev}.{eff_arch}.tar.gz
     rsync -avR --ignore-existing "{links_path}/$tarball" {remote}/
     for link_dir in dist dist-direct dist-runtime; do
-      rsync -avR --ignore-existing "TARS/{build_arch}/$link_dir/{package}/{package}-{version}-{revision}/" {remote}/
+      rsync -avR --ignore-existing "TARS/{build_arch}/$link_dir/{package}/{package}-{ver_rev}/" {remote}/
     done
     rsync -avR --ignore-existing "{store_path}/$tarball" {remote}/
     """.format(
@@ -309,8 +319,7 @@ class RsyncRemoteSync:
       eff_arch=arch,
       build_arch=self.architecture,
       package=spec["package"],
-      version=spec["version"],
-      revision=spec["revision"],
+      ver_rev=ver_rev(spec),
     )), "Unable to upload tarball.")
 
 class CVMFSRemoteSync:
@@ -447,12 +456,16 @@ class S3RemoteSync:
     if not self.writeStore:
       return
     arch = effective_arch(spec, self.architecture)
+    # ver_rev(spec) is used here (not "{version}-{revision}") for the same
+    # reason as in RsyncRemoteSync: the tarball filename and dist-symlink
+    # directory must match what build_template.sh wrote to disk.  If
+    # force_revision was set to "" the label has no revision suffix at all.
     dieOnError(execute("""\
     set -e
     put () {{
       s3cmd put -s -v --host s3.cern.ch --host-bucket {bucket}.s3.cern.ch "$@" 2>&1
     }}
-    tarball={package}-{version}-{revision}.{eff_arch}.tar.gz
+    tarball={package}-{ver_rev}.{eff_arch}.tar.gz
     cd {workdir}
 
     # First, upload "main" symlink, to reserve this revision number, in case
@@ -462,7 +475,7 @@ class S3RemoteSync:
 
     # Then, upload dist symlink trees -- these must be in place before the main
     # tarball.
-    find TARS/{build_arch}/{{dist,dist-direct,dist-runtime}}/{package}/{package}-{version}-{revision}/ \
+    find TARS/{build_arch}/{{dist,dist-direct,dist-runtime}}/{package}/{package}-{ver_rev}/ \
          -type l | while read -r link; do
       hashedurl=$(readlink "$link" | sed 's|.*/\\.\\./TARS|TARS|')
       echo "$hashedurl" |
@@ -482,8 +495,7 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
       eff_arch=arch,
       build_arch=self.architecture,
       package=spec["package"],
-      version=spec["version"],
-      revision=spec["revision"],
+      ver_rev=ver_rev(spec),
     )), "Unable to upload tarball.")
 
 
@@ -646,8 +658,12 @@ class Boto3RemoteSync:
     arch = effective_arch(spec, self.architecture)
     dist_symlinks = {}
     for link_dir in ("dist", "dist-direct", "dist-runtime"):
-      link_dir = "TARS/{arch}/{link_dir}/{package}/{package}-{version}-{revision}" \
-        .format(arch=self.architecture, link_dir=link_dir, **spec)
+      # ver_rev(spec) ensures the dist-symlink directory name matches what
+      # build_template.sh created; with force_revision="" the name has no
+      # revision suffix (e.g. "pkg-1.2.3" instead of "pkg-1.2.3-1").
+      link_dir = "TARS/{arch}/{link_dir}/{package}/{package}-{ver_rev}" \
+        .format(arch=self.architecture, link_dir=link_dir,
+                ver_rev=ver_rev(spec), **spec)
 
       debug("Comparing dist symlinks against S3 from %s", link_dir)
 
@@ -678,8 +694,12 @@ class Boto3RemoteSync:
 
       dist_symlinks[link_dir] = symlinks
 
-    tarball = "{package}-{version}-{revision}.{architecture}.tar.gz" \
-      .format(architecture=arch, **spec)
+    # ver_rev(spec) is used so the tarball filename is consistent with what
+    # build_template.sh wrote: "{pkg}-{ver_rev}.{arch}.tar.gz".  The content-
+    # addressed store key (under store/<h2>/<hash>/) is unaffected and always
+    # uses the package hash rather than the version-revision label.
+    tarball = "{package}-{ver_rev}.{architecture}.tar.gz" \
+      .format(architecture=arch, ver_rev=ver_rev(spec), **spec)
     tar_path = os.path.join(resolve_store_path(arch, spec["hash"]),
                             tarball)
     link_path = os.path.join(resolve_links_path(arch, spec["package"]),
@@ -702,9 +722,11 @@ class Boto3RemoteSync:
     try:
       os.readlink(os.path.join(self.workdir, link_path))
     except FileNotFoundError:
+      # ver_rev(spec) keeps the symlink target consistent with the on-disk
+      # tarball name created by build_template.sh (which uses $_VERREV).
       os.symlink(
         os.path.join('../..', arch, 'store', spec["hash"][:2], spec["hash"],
-                     f"{spec['package']}-{spec['version']}-{spec['revision']}.{arch}.tar.gz"),
+                     f"{spec['package']}-{ver_rev(spec)}.{arch}.tar.gz"),
         os.path.join(self.workdir, link_path)
       )
 
