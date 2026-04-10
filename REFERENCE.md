@@ -45,7 +45,7 @@
 
 **Bits** is a build orchestration and dependency management tool for complex software stacks. It is derived from [aliBuild](https://github.com/alisw/alibuild), the build system developed for the ALICE experiment software at CERN, and is designed for communities that need to build and maintain large collections of interdependent packages with reproducibility, parallelism, and minimal overhead.
 
-> **Acknowledgement.** Bits is a fork of [aliBuild](https://github.com/alisw/alibuild), originally created by the ALICE/ALFA collaboration at CERN. The recipe format, dependency-resolution model, content-addressable build hashing, remote binary store, and Docker build support all originate from aliBuild. Bits extends aliBuild with the repository provider mechanism, package families, shared packages, and other features described in this document.
+> **Acknowledgement.** Bits is a fork of [aliBuild](https://github.com/alisw/alibuild), originally created by the ALICE collaboration at CERN. The recipe format, dependency-resolution model, content-addressable build hashing, remote binary store, and Docker build support all originate from aliBuild. Bits extends aliBuild with the repository provider mechanism, package families, shared packages, extended parallel builds and other features described in this document.
 
 Bits is **not** a traditional package manager like `apt` or `conda`. Instead it automates fetching sources, resolving dependencies, building, and installing software in a controlled, reproducible environment. Each package is described by a *recipe* — a plain-text file with a YAML metadata header and a Bash build script — stored in a version-controlled recipe repository.
 
@@ -178,9 +178,9 @@ organisation = ALICE
 
 [ALICE]
 pkg_prefix   = VO_ALICE
-sw_dir       = /data/bits/sw
-repo_dir     = /data/bits/alidist
-search_path  = /data/bits/extra.bits,localrecipes
+sw_dir       = ../sw
+repo_dir     = .
+search_path  = common.bits
 ```
 
 The `[ALICE]` section overrides or extends `[bits]` for the `ALICE` organisation. A second organisation (e.g. `[CMS]`) can coexist in the same file with different `sw_dir` and `search_path` values; only the section matching the current `organisation` key is applied.
@@ -246,24 +246,6 @@ bits build --makeflow MyStack
 # Debug a Makeflow failure
 bits build --makeflow --debug MyStack
 ```
-
-**What bits generates:**
-
-For a build of packages A → B → C (C depends on B depends on A), bits writes a file like:
-
-```makefile
-# sw/BUILD/<hash>/makeflow/Makeflow
-A.build:
-   LOCAL <build-command-for-A> && touch A.build
-
-B.build:  A.build
-   LOCAL <build-command-for-B> && touch B.build
-
-C.build:  A.build B.build
-   LOCAL <build-command-for-C> && touch C.build
-```
-
-Makeflow interprets this file, respects the dependency edges, and launches builds in parallel wherever the graph allows. Each task runs with the `LOCAL` qualifier, meaning it executes on the local machine (as opposed to being dispatched to a remote worker farm).
 
 **Output locations (useful for debugging):**
 
@@ -661,7 +643,7 @@ source "$WORK_DIR/SPECS/.../PackageName.sh" && \
   [[ $(type -t Run) == function ]] && Run "$@"
 ```
 
-`bits-recipe-tools` ships include files — `CMakeRecipe`, `AutotoolsRecipe`, and others — each of which defines a `Run()` function that orchestrates the build in terms of five lifecycle hooks:
+`bits-recipe-tools` ships include files — `CMakeRecipe`, `AutoToolsRecipe`, and others — each of which defines a `Run()` function that orchestrates the build in terms of five lifecycle hooks:
 
 | Hook | Default behaviour |
 |------|-------------------|
@@ -870,10 +852,6 @@ This package is loaded in Phase 1 (before the iterative scan), so its recipes ar
 ### `bits.rc` configuration
 
 Provider settings can be stored persistently in a bits configuration file. Bits searches for the following files in order and reads the first one found:
-
-1. `bits.rc` (current directory)
-2. `.bitsrc` (current directory)
-3. `~/.bitsrc` (home directory)
 
 Relevant keys in the `[bits]` section:
 
