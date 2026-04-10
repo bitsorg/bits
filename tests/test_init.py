@@ -429,10 +429,19 @@ class BitsRcDefaultsAppliedTest(unittest.TestCase):
         self.assertEqual(args.remoteStore, "https://cli-store.example.com")
 
     def test_no_rc_uses_hardcoded_default(self):
-        """Without bits.rc the original hardcoded default must be used."""
+        """Without bits.rc the original hardcoded default must be used.
+
+        Use an explicit architecture that is not in S3_SUPPORTED_ARCHS so that
+        finaliseArgs does not silently inject the CERN S3 URL, which would mask
+        a missing rc default and make the assertion architecture-dependent.
+        """
         with patch("bits_helpers.args.cleanup_git_log"):
-            args = self._parse(["build", "zlib", "--force-unknown-architecture"])
-        # Default is "" (empty string, no remote store)
+            args = self._parse([
+                "build", "zlib",
+                "--architecture", "test_x86-64",
+                "--force-unknown-architecture",
+            ])
+        # The argparse hardcoded default for --remote-store is "".
         self.assertEqual(args.remoteStore, "")
 
 
