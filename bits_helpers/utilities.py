@@ -567,8 +567,9 @@ class FileReader:
   def __init__(self, url) -> None:
     self.url = url
   def __call__(self):
-    return open(self.url).read()
-
+    with open(self.url) as f:
+      return f.read()
+      
 # Read a recipe from a git repository using git show.
 class GitReader:
   def __init__(self, url, configDir) -> None:
