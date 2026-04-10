@@ -8,6 +8,7 @@
 3. [Quick Start](#3-quick-start)
 4. [Configuration](#4-configuration)
 5. [Building Packages](#5-building-packages)
+    - [Parallel build modes](#parallel-build-modes)
 6. [Managing Environments](#6-managing-environments)
 7. [Cleaning Up](#7-cleaning-up)
 8. [Practical Scenarios](#8-practical-scenarios)
@@ -17,6 +18,7 @@
 10. [Setting Up a Development Environment](#10-setting-up-a-development-environment)
 11. [Key Source Files](#11-key-source-files)
 12. [Writing Recipes](#12-writing-recipes)
+    - [Function-based recipes with bits-recipe-tools](#function-based-recipes-with-bits-recipe-tools)
 13. [Repository Provider Feature](#13-repository-provider-feature)
 14. [Writing and Running Tests](#14-writing-and-running-tests)
 15. [Contributing](#15-contributing)
@@ -28,6 +30,10 @@
 19. [Architecture-Independent (Shared) Packages](#19-architecture-independent-shared-packages)
 20. [Environment Variables](#20-environment-variables)
 21. [Remote Binary Store Backends](#21-remote-binary-store-backends)
+    - [Supported backends](#supported-backends)
+    - [Content-addressable tarball layout](#content-addressable-tarball-layout)
+    - [Build lifecycle with a store](#build-lifecycle-with-a-store)
+    - [CI/CD patterns](#cicd-patterns)
 22. [Docker Support](#22-docker-support)
 23. [Design Principles & Limitations](#23-design-principles--limitations)
 
@@ -37,7 +43,9 @@
 
 ## 1. Introduction
 
-**Bits** is a build orchestration and dependency management tool for complex software stacks. It originated from `aliBuild`, developed for the ALICE/ALFA software at CERN, and is designed for communities that need to build and maintain large collections of interdependent packages with reproducibility, parallelism, and minimal overhead.
+**Bits** is a build orchestration and dependency management tool for complex software stacks. It is derived from [aliBuild](https://github.com/alisw/alibuild), the build system developed for the ALICE experiment software at CERN, and is designed for communities that need to build and maintain large collections of interdependent packages with reproducibility, parallelism, and minimal overhead.
+
+> **Acknowledgement.** Bits is a fork of [aliBuild](https://github.com/alisw/alibuild), originally created by the ALICE/ALFA collaboration at CERN. The recipe format, dependency-resolution model, content-addressable build hashing, remote binary store, and Docker build support all originate from aliBuild. Bits extends aliBuild with the repository provider mechanism, package families, shared packages, and other features described in this document.
 
 Bits is **not** a traditional package manager like `apt` or `conda`. Instead it automates fetching sources, resolving dependencies, building, and installing software in a controlled, reproducible environment. Each package is described by a *recipe* — a plain-text file with a YAML metadata header and a Bash build script — stored in a version-controlled recipe repository.
 
@@ -195,7 +203,8 @@ Bits resolves the full transitive dependency graph of each requested package, co
 |--------|-------------|
 | `--defaults PROFILE` | Defaults profile(s) to load. Combines multiple files with `::` (e.g. `--defaults release::myproject`). Default: `release`, which loads `defaults-release.sh`. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
-| `--builders N` | Number of packages to build simultaneously. Default: 1. |
+| `--builders N` | Number of packages to build simultaneously using the Python scheduler. Default: 1 (serial). Mutually exclusive with `--makeflow`. |
+| `--makeflow` | Hand the entire dependency graph to the external [Makeflow](https://ccl.cse.nd.edu/software/makeflow/) workflow engine instead of the built-in Python scheduler. Mutually exclusive with `--builders N`. |
 | `-u`, `--fetch-repos` | Update all source mirrors before building. |
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
 | `--remote-store URL` | Binary store to pull pre-built tarballs from. |
@@ -205,6 +214,74 @@ Bits resolves the full transitive dependency graph of each requested package, co
 | `--debug` | Verbose debug output. |
 | `--dry-run` | Print what would happen without executing. |
 | `--keep-tmp` | Preserve build directories after success (useful for debugging). |
+
+### Parallel build modes
+
+Bits offers two independent mechanisms for building multiple packages at the same time. They are mutually exclusive — if `--makeflow` is given, `--builders` is ignored.
+
+#### `--builders N` — Python scheduler (default)
+
+The built-in Python scheduler runs up to *N* package builds concurrently using a thread-pool with a priority queue. Dependencies are tracked in memory: a package is only dispatched once all of its transitive dependencies have finished.
+
+```bash
+# Build up to 4 packages simultaneously, each using 8 cores
+bits build --builders 4 --jobs 8 MyStack
+```
+
+**Characteristics:**
+
+- No external dependencies — works out of the box.
+- Scheduling is priority-aware: packages required by more dependents are started first.
+- Optional resource-aware scheduling: if `--resources FILE` is provided (a JSON file that declares expected CPU and RSS per package), bits will not start a new package build unless the declared resources are available. This prevents memory exhaustion on machines where several large packages would otherwise run at the same time.
+- Errors from any worker are reported after the full run completes and cause bits to exit with a non-zero status.
+
+#### `--makeflow` — Makeflow workflow engine
+
+When `--makeflow` is passed, bits does **not** execute builds during the dependency-graph walk. Instead, it collects every pending build command into a [Makeflow](https://ccl.cse.nd.edu/software/makeflow/) declarative workflow file and then invokes the `makeflow` binary to execute the graph. Makeflow must be installed separately (it is part of the [CCTools](https://ccl.cse.nd.edu/software/) suite).
+
+```bash
+# Run the full build under Makeflow
+bits build --makeflow MyStack
+
+# Debug a Makeflow failure
+bits build --makeflow --debug MyStack
+```
+
+**What bits generates:**
+
+For a build of packages A → B → C (C depends on B depends on A), bits writes a file like:
+
+```makefile
+# sw/BUILD/<hash>/makeflow/Makeflow
+A.build:
+   LOCAL <build-command-for-A> && touch A.build
+
+B.build:  A.build
+   LOCAL <build-command-for-B> && touch B.build
+
+C.build:  A.build B.build
+   LOCAL <build-command-for-C> && touch C.build
+```
+
+Makeflow interprets this file, respects the dependency edges, and launches builds in parallel wherever the graph allows. Each task runs with the `LOCAL` qualifier, meaning it executes on the local machine (as opposed to being dispatched to a remote worker farm).
+
+**Output locations (useful for debugging):**
+
+| Path | Contents |
+|------|----------|
+| `sw/BUILD/<hash>/makeflow/Makeflow` | The generated workflow definition. |
+| `sw/BUILD/<hash>/makeflow/log` | Makeflow's execution log. |
+
+**When Makeflow fails**, bits prints a structured error message with the exact paths, the failed command, and suggested next steps — including how to rerun with `--debug` and where to find the full log.
+
+**Choosing between the two modes:**
+
+| | `--builders N` | `--makeflow` |
+|-|---|---|
+| External dependency | None | `makeflow` binary (CCTools) |
+| Parallelism control | You set *N* | Makeflow decides |
+| Resource awareness | Optional (`--resources`) | Not built-in |
+| Best for | Interactive builds, CI | Large distributed or cluster builds |
 
 ### How a build proceeds
 
@@ -351,19 +428,38 @@ cat log
 ### Share pre-built artifacts over S3
 
 ```bash
-# CI: build and upload
-bits build --write-store s3://mybucket/builds ROOT
+# CI: build and upload (boto3 backend; ::rw sets both --remote-store and --write-store)
+export AWS_ACCESS_KEY_ID=ci-key
+export AWS_SECRET_ACCESS_KEY=ci-secret
+bits build --remote-store b3://mybucket/bits-cache::rw ROOT
 
-# Developer: download instead of rebuilding
-bits build --remote-store s3://mybucket/builds ROOT
+# Developer workstation: fetch from the same cache, never upload
+bits build --remote-store b3://mybucket/bits-cache ROOT
 ```
 
-### Parallel build
+See [§21](#21-remote-binary-store-backends) for the full list of backends (HTTP, S3, boto3, rsync, CVMFS) and detailed CI/CD patterns.
+
+### Parallel build with the Python scheduler
 
 ```bash
+# Build up to 4 independent packages simultaneously, each using 8 cores
 bits build --builders 4 --jobs 8 my_large_stack
-# 4 independent packages built at once, each using 8 cores
 ```
+
+The built-in Python scheduler dispatches packages as soon as their dependencies are satisfied. See [§5 Parallel build modes](#parallel-build-modes) for resource-aware scheduling with `--resources`.
+
+### Parallel build with Makeflow
+
+```bash
+# Hand the dependency graph to the Makeflow workflow engine
+bits build --makeflow my_large_stack
+
+# Inspect what Makeflow generated (useful if a build fails)
+cat sw/BUILD/*/makeflow/Makeflow
+cat sw/BUILD/*/makeflow/log
+```
+
+Makeflow must be installed separately from the [CCTools](https://ccl.cse.nd.edu/software/) suite. It automatically parallelises across all packages where the dependency graph permits.
 
 ### Build for a different Linux version (Docker)
 
@@ -551,6 +647,140 @@ cd "$SOURCEDIR"
 ```
 
 For the complete list of YAML header fields and build-time environment variables see [§17 Recipe Format Reference](#17-recipe-format-reference).
+
+### Function-based recipes with bits-recipe-tools
+
+The `bits-recipe-tools` package (available at `https://github.com/bitsorg/bits-recipe-tools`) provides a higher-level recipe authoring style built around reusable shell function hooks. Instead of writing a flat Bash build script, the recipe author overrides only the steps that differ from the standard template.
+
+#### How it works
+
+`build_template.sh` sources the compiled recipe script and then calls a function named `Run` if one is defined:
+
+```bash
+source "$WORK_DIR/SPECS/.../PackageName.sh" && \
+  [[ $(type -t Run) == function ]] && Run "$@"
+```
+
+`bits-recipe-tools` ships include files — `CMakeRecipe`, `AutotoolsRecipe`, and others — each of which defines a `Run()` function that orchestrates the build in terms of five lifecycle hooks:
+
+| Hook | Default behaviour |
+|------|-------------------|
+| `Prepare()` | Sets up the build directory and any pre-configure steps. |
+| `Configure()` | Runs `cmake` (or `./configure`) with standard flags. |
+| `Make()` | Runs `make -j$JOBS` (or `cmake --build`). |
+| `MakeInstall()` | Runs `make install` (or `cmake --install`). |
+| `PostInstall()` | Runs any post-install fixups (e.g. removing libtool archives). |
+
+A recipe overrides only the hooks it needs to customise; all others run with sensible defaults.
+
+#### MODULE_OPTIONS — controlling modulefile generation
+
+When using `bits-recipe-tools`, the variable `MODULE_OPTIONS` controls how the Environment Modules modulefile is generated for the package. It must be set **before** sourcing the include file so that the `PostInstall()` hook picks it up:
+
+```bash
+MODULE_OPTIONS="--bin --lib"
+. $(bits-include CMakeRecipe)
+```
+
+`MODULE_OPTIONS` is a space-separated list of flags. Each flag causes `bits-recipe-tools` to add a specific entry to `$INSTALLROOT/etc/modulefiles/$PKGNAME`:
+
+| Flag | Effect on the modulefile |
+|------|--------------------------|
+| `--bin` | Prepends `$INSTALLROOT/bin` to `PATH`. |
+| `--lib` | Prepends `$INSTALLROOT/lib` to `LD_LIBRARY_PATH`. |
+| `--cmake` | Adds `$INSTALLROOT` to `CMAKE_PREFIX_PATH`. |
+| `--root` | Defines the variable `ROOT_<PACKAGE>` (uppercased package name) as `$INSTALLROOT`. |
+
+Flags can be combined freely. Omitting `MODULE_OPTIONS` entirely causes the helper to use its built-in defaults, which is usually appropriate for standard library packages.
+
+```bash
+# A typical compiled library: export bin, lib, and the ROOT variable
+MODULE_OPTIONS="--bin --lib --root"
+. $(bits-include CMakeRecipe)
+
+# A CMake-only build tool: just add to CMAKE_PREFIX_PATH
+MODULE_OPTIONS="--cmake"
+. $(bits-include CMakeRecipe)
+
+# A header-only library: CMake discovery and the ROOT variable, no runtime paths
+MODULE_OPTIONS="--cmake --root"
+. $(bits-include CMakeRecipe)
+```
+
+#### Loading an include file
+
+The `bits-include` helper command resolves an include file shipped by `bits-recipe-tools` and returns its absolute path, which the recipe then sources with `.`:
+
+```bash
+. $(bits-include CMakeRecipe)
+```
+
+`bits-recipe-tools` must be listed as a `build_requires` of the recipe.
+
+#### Example — header-only CMake library (cppgsl)
+
+```yaml
+package: cppgsl
+version: "4.0.0"
+source: https://github.com/microsoft/GSL.git
+tag: "v4.0.0"
+build_requires:
+  - cmake
+  - bits-recipe-tools
+---
+# Header-only library: add to CMAKE_PREFIX_PATH and define ROOT_CPPGSL.
+MODULE_OPTIONS="--cmake --root"
+. $(bits-include CMakeRecipe)
+
+# Override only the Configure step to disable tests.
+Configure() {
+  cmake -S "$SOURCEDIR" -B "$BUILDDIR" \
+        -DCMAKE_INSTALL_PREFIX="$INSTALLROOT" \
+        -DGSL_TEST=OFF \
+        -DCMAKE_BUILD_TYPE=Release
+}
+```
+
+`CMakeRecipe` provides the `Run()` dispatcher and default `Prepare`, `Make`, `MakeInstall`, and `PostInstall` implementations. The recipe above overrides only `Configure()` to pass the `-DGSL_TEST=OFF` flag; everything else is inherited from the template. `MODULE_OPTIONS` is set before sourcing the include so the `PostInstall()` step uses it when generating the modulefile.
+
+#### Example — Autotools library
+
+```yaml
+package: libfoo
+version: "1.4.2"
+source: https://example.com/libfoo.git
+tag: "v1.4.2"
+build_requires:
+  - autotools
+  - bits-recipe-tools
+---
+. $(bits-include AutotoolsRecipe)
+
+# The default Configure() runs:
+#   "$SOURCEDIR/configure" --prefix="$INSTALLROOT"
+# Override it to add custom options.
+Configure() {
+  "$SOURCEDIR/configure" \
+    --prefix="$INSTALLROOT" \
+    --enable-shared \
+    --disable-static
+}
+```
+
+#### Writing a recipe without an include file
+
+The function pattern works without `bits-recipe-tools` too. Any recipe may define a `Run()` function directly:
+
+```bash
+Run() {
+  cmake -S "$SOURCEDIR" -B "$BUILDDIR" \
+        -DCMAKE_INSTALL_PREFIX="$INSTALLROOT"
+  cmake --build "$BUILDDIR" --parallel "$JOBS"
+  cmake --install "$BUILDDIR"
+}
+```
+
+This is equivalent to a flat script but is sometimes clearer when the build needs multiple named phases.
 
 ---
 
@@ -829,7 +1059,8 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
-| `--builders N` | Packages to build simultaneously. Default: 1. |
+| `--builders N` | Packages to build simultaneously using the built-in Python scheduler. Default: 1 (serial). Mutually exclusive with `--makeflow`; if both are given, `--makeflow` takes precedence. |
+| `--makeflow` | Generate a [Makeflow](https://ccl.cse.nd.edu/software/makeflow/) workflow file from the dependency graph and execute it with the `makeflow` binary (must be installed separately from CCTools). Bits collects all pending builds, writes `sw/BUILD/<hash>/makeflow/Makeflow`, then runs `makeflow` to execute the graph in parallel. Mutually exclusive with `--builders N`. |
 | `-e KEY=VALUE` | Extra environment variable binding (repeatable). |
 | `-z PREFIX`, `--devel-prefix PREFIX` | Version prefix for development packages. |
 | `-u`, `--fetch-repos` | Fetch/update source mirrors before building. |
@@ -1065,10 +1296,40 @@ A recipe file consists of a YAML block, a `---` separator, and a Bash script:
 
 | Field | Description |
 |-------|-------------|
-| `source` | Git or Sapling repository URL. |
-| `tag` | Tag, branch, or commit to check out. Supports date substitutions. |
-| `sources` | List of source archive URLs to download. Each entry may optionally carry an inline checksum (see [Checksum verification](#checksum-verification) below). |
-| `patches` | List of patch file names to apply (relative to `patches/`). Each entry may optionally carry an inline checksum. |
+| `source` | Git or Sapling repository URL. The repository is cloned / updated into `$SOURCEDIR`. |
+| `tag` | Tag, branch, or commit to check out. Supports date substitutions (`%(year)s`, `%(month)s`, `%(day)s`, `%(hour)s`). |
+| `sources` | List of source archive URLs (or local `file://` paths) to download before the build. Each file is placed in `$SOURCEDIR` and exposed as `$SOURCE0`, `$SOURCE1`, … Each entry may optionally carry an inline checksum (see [Checksum verification](#checksum-verification) below). |
+| `patches` | List of patch file names to apply, relative to the `patches/` directory inside the recipe repository. Patch files are copied to `$SOURCEDIR` and exposed as `$PATCH0`, `$PATCH1`, … before the recipe body runs. Each entry may optionally carry an inline checksum. |
+
+**Source archives detail.** When `sources:` is specified, bits downloads each archive to `$SOURCEDIR` using the file's basename as the local filename. Archives are not automatically unpacked — the recipe is responsible for extraction. The variable `$SOURCE_COUNT` holds the total count so scripts can handle a variable-length list:
+
+```yaml
+sources:
+  - https://example.com/mylib-1.0.tar.gz,sha256:e3b0c...
+  - https://example.com/mylib-data-1.0.tar.gz
+```
+
+```bash
+# Unpack first archive
+tar -xzf "$SOURCEDIR/$SOURCE0" -C "$BUILDDIR"
+# Optionally unpack subsequent archives
+[ "$SOURCE_COUNT" -gt 1 ] && tar -xzf "$SOURCEDIR/$SOURCE1" -C "$BUILDDIR/data"
+```
+
+**Patches detail.** Patch file names listed in `patches:` must exist in the `patches/` subdirectory of the recipe repository. They are copied to `$SOURCEDIR` and the corresponding `$PATCHn` variables let the script apply them in order:
+
+```yaml
+patches:
+  - fix-include-order.patch
+  - disable-broken-test.patch,md5:d41d8cd98f00b204e9800998ecf8427e
+```
+
+```bash
+cd "$SOURCEDIR"
+for i in $(seq 0 $(( PATCH_COUNT - 1 ))); do
+  eval pf="\$PATCH$i"; patch -p1 < "$SOURCEDIR/$pf"
+done
+```
 
 #### Dependencies
 
@@ -1213,19 +1474,107 @@ All sections are optional. The `tag` field holds the **pinned git commit SHA** e
 
 ### Build-time environment variables
 
-These variables are set automatically inside each package's Bash build script:
+These variables are set automatically inside each package's Bash build script. They cannot be overridden by the recipe; they are injected by `build_template.sh` before the recipe body is sourced.
+
+#### Core build paths
 
 | Variable | Purpose |
 |----------|---------|
-| `$INSTALLROOT` | Install all files here (the final installation prefix). |
-| `$BUILDDIR` | Temporary build directory. |
-| `$SOURCEDIR` | Checked-out source directory. |
-| `$JOBS` | Number of parallel compilation jobs (from `-j`). |
-| `$PKGNAME` | Package name. |
-| `$PKGVERSION` | Package version. |
-| `$PKGHASH` | Unique content-addressable build hash. |
+| `$INSTALLROOT` | Install all files here (the final installation prefix). The directory is created by bits before the recipe runs. |
+| `$BUILDDIR` | Temporary build directory inside `$BUILDROOT`. Created automatically. |
+| `$SOURCEDIR` | Checked-out (or prepared) source directory. For git sources this is the working tree. For archive sources this is the directory to which archives are downloaded. |
+| `$BUILDROOT` | Parent of `$BUILDDIR`; corresponds to `BUILD/<pkghash>/` in the work tree. |
+| `$PKGPATH` | Relative path from the work directory to the install root, including any family segment: `<arch>[/<family>]/<pkg>/<version>-<revision>`. Useful for constructing paths in modulefiles. |
+
+#### Package identity
+
+| Variable | Purpose |
+|----------|---------|
+| `$PKGNAME` | Package name as declared in the recipe. |
+| `$PKGVERSION` | Package version string. |
+| `$PKGREVISION` | Build revision (integer, incremented on each local rebuild). |
+| `$PKGHASH` | Unique content-addressable build hash (hex string). |
+| `$PKGFAMILY` | Install family (empty string if no family is assigned). Set by `package_family` in the defaults profile; see [Package families](#package-families). |
+| `$BUILD_FAMILY` | The full `build_family` string, which may include the defaults combination used. |
+
+#### Architecture
+
+| Variable | Purpose |
+|----------|---------|
 | `$ARCHITECTURE` | Build-platform architecture string (e.g. `ubuntu2204_x86-64`). Always reflects the real build host, even for shared packages. |
 | `$EFFECTIVE_ARCHITECTURE` | Effective installation architecture. Equals `$ARCHITECTURE` for normal packages; equals `shared` for packages marked `architecture: shared`. Use this in paths that should land under the shared tree. |
+
+#### Parallelism
+
+| Variable | Purpose |
+|----------|---------|
+| `$JOBS` | Number of parallel compilation jobs. Derived from `-j <n>` and optionally reduced by `mem_per_job` / `mem_utilisation` if the system has less free memory than the requested parallelism would require. Always pass this to `make`, `cmake --build`, `ninja`, etc. |
+
+#### Source archives
+
+When the recipe uses the `sources:` field, bits downloads each archive to `$SOURCEDIR` before the recipe runs and sets:
+
+| Variable | Purpose |
+|----------|---------|
+| `$SOURCE0` | Filename (basename) of the first archive. |
+| `$SOURCE1` | Filename of the second archive (if present). |
+| `$SOURCEn` | Filename of the *n*-th archive (zero-indexed). |
+| `$SOURCE_COUNT` | Total number of source archives. `0` when no `sources:` field is present. |
+
+Example usage:
+
+```bash
+# Unpack the primary archive
+tar -xzf "$SOURCEDIR/$SOURCE0" -C "$BUILDDIR"
+
+# Unpack a supplementary data archive
+if [ "$SOURCE_COUNT" -gt 1 ]; then
+  tar -xzf "$SOURCEDIR/$SOURCE1" -C "$BUILDDIR/data"
+fi
+```
+
+#### Patch files
+
+When the recipe uses the `patches:` field, the patch files are made available in `$SOURCEDIR` and:
+
+| Variable | Purpose |
+|----------|---------|
+| `$PATCH0` | Filename (basename) of the first patch file. |
+| `$PATCH1` | Filename of the second patch file (if present). |
+| `$PATCHn` | Filename of the *n*-th patch file (zero-indexed). |
+| `$PATCH_COUNT` | Total number of patch files. `0` when no `patches:` field is present. |
+
+Applying patches in a build script:
+
+```bash
+cd "$SOURCEDIR"
+for i in $(seq 0 $(( PATCH_COUNT - 1 ))); do
+  eval patch_file="\$PATCH$i"
+  patch -p1 < "$SOURCEDIR/$patch_file"
+done
+```
+
+#### Dependencies
+
+| Variable | Purpose |
+|----------|---------|
+| `$REQUIRES` | Space-separated list of runtime + build-time dependencies for this package. |
+| `$BUILD_REQUIRES` | Space-separated list of build-time-only dependencies. |
+| `$RUNTIME_REQUIRES` | Space-separated list of runtime-only dependencies. |
+| `$FULL_REQUIRES` | Full transitive closure of `requires` (all levels). |
+| `$FULL_BUILD_REQUIRES` | Full transitive closure of `build_requires`. |
+| `$FULL_RUNTIME_REQUIRES` | Full transitive closure of `runtime_requires`. |
+
+For each dependency `DEP` that has been built, bits also sets `${DEP_ROOT}` to the absolute install path of that dependency, so recipes can reference dependency files directly (e.g. `$ZLIB_ROOT/include/zlib.h`).
+
+#### Miscellaneous
+
+| Variable | Purpose |
+|----------|---------|
+| `$COMMIT_HASH` | The git commit SHA that was checked out for the `source:` field. |
+| `$INCREMENTAL_BUILD_HASH` | Non-zero when an incremental recipe is in use (development mode). |
+| `$DEVEL_PREFIX` | Non-empty for development packages (the directory name of the devel source tree). |
+| `$BITS_SCRIPT_DIR` | Absolute path to the bits installation directory. Useful for referencing helpers shipped with bits. |
 
 ---
 
@@ -1589,6 +1938,26 @@ The feature is entirely opt-in. A recipe without `architecture: shared` behaves 
 
 ## 20. Environment Variables
 
+### Recipe build-time variables
+
+Variables injected by bits into every package build script. See [§17 Build-time environment variables](#build-time-environment-variables) for the full reference including `$SOURCE0`/`$PATCHn`/`$PKGFAMILY` and dependency path variables.
+
+| Variable | Purpose |
+|----------|---------|
+| `$INSTALLROOT` | Installation prefix. All package files go here. |
+| `$BUILDDIR` | Temporary build working directory. |
+| `$SOURCEDIR` | Checked-out source or downloaded archive directory. |
+| `$JOBS` | Parallel job count (from `-j`, adjusted by `mem_per_job`). |
+| `$PKGNAME` | Package name. |
+| `$PKGVERSION` | Package version. |
+| `$PKGHASH` | Content-addressable build hash. |
+| `$PKGFAMILY` | Install family (empty if no family assigned). |
+| `$ARCHITECTURE` | Real build-host architecture string. |
+| `$EFFECTIVE_ARCHITECTURE` | `shared` for shared packages, otherwise same as `$ARCHITECTURE`. |
+| `$SOURCE_COUNT` | Number of source archives (0 if no `sources:` field). |
+| `$PATCH_COUNT` | Number of patch files (0 if no `patches:` field). |
+| `$BITS_PROVIDERS` | URL or comma-separated list of URLs identifying the active provider repository set. Set from `BITS_PROVIDERS` env var, `providers` key in `bits.rc`, or built-in default. |
+
 ### Build and configuration variables
 
 | Variable | Default | Purpose |
@@ -1599,6 +1968,7 @@ The feature is entirely opt-in. A recipe without `architecture: shared` behaves 
 | `BITS_REPO_DIR` | `alidist` | Root directory for recipe repositories. |
 | `BITS_WORK_DIR` | `sw` | Output and work directory. |
 | `BITS_PATH` | _(empty)_ | Comma-separated list of additional recipe search directories. Absolute paths are used directly; relative names have `.bits` appended and are resolved under `BITS_REPO_DIR`. |
+| `BITS_PROVIDERS` | `https://github.com/bitsorg/bits-providers` | URL(s) of the repository provider set to use. Can be set in the environment, in `bits.rc` as `providers = …`, or overridden per-run. The built-in default points to the official bits-providers repository. |
 
 ### Environment module variables
 
@@ -1624,30 +1994,171 @@ If none is executable, bits prints an install hint and exits with an error.
 
 ## 21. Remote Binary Store Backends
 
-| URL scheme | Backend | Access |
-|------------|---------|--------|
-| `http://` or `https://` | HTTP | Read-only; exponential-backoff retries |
-| `s3://BUCKET/PATH` | Amazon S3 (AWS CLI) | Read and write |
-| `b3://BUCKET/PATH` | S3-compatible via `boto3` | Read and write |
-| `cvmfs://REPO/PATH` | CernVM File System | Read-only |
-| `rsync://HOST/PATH` or local path | rsync | Read and write |
+A **remote binary store** is an external storage location where bits uploads completed build tarballs and from which future builds can download them, skipping recompilation entirely. The mechanism is content-addressable: every tarball is keyed on a hash that captures the recipe, source commit, dependency hashes, and build environment. If the hash already exists in the store, bits fetches the tarball instead of building.
 
-The path layout under the store root mirrors the local `TARS/` directory:
+### CLI options
 
-```
-<store-root>/TARS/<architecture>/store/<hash[:2]>/<hash>/<tarball>
-```
+| Option | Description |
+|--------|-------------|
+| `--remote-store URL` | Fetch pre-built tarballs from this store before deciding whether to build. |
+| `--write-store URL` | Upload each newly-built tarball to this store after a successful build. May be the same URL as `--remote-store`. |
+| `--remote-store URL::rw` | Shorthand: sets both `--remote-store` and `--write-store` to `URL` in a single flag. |
+| `--no-remote-store` | Disable the remote store even on architectures where one is enabled by default. |
+| `--insecure` | Skip TLS certificate verification for `https://` stores. |
 
-### Usage
+When either `--remote-store` or `--write-store` is given, bits automatically sets `--no-system` to prevent system packages from affecting the build hash.
+
+### Supported backends
+
+| URL scheme | Backend | Read | Write | Authentication |
+|------------|---------|:----:|:-----:|----------------|
+| `http://` or `https://` | HTTP/HTTPS | ✓ | — | None (public) or TLS; use `--insecure` to skip cert check |
+| `s3://BUCKET/PATH` | Amazon S3 via `s3cmd` | ✓ | ✓ | `~/.s3cfg` config file |
+| `b3://BUCKET/PATH` | S3-compatible via `boto3` | ✓ | ✓ | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` env vars |
+| `cvmfs://REPO/PATH` | CernVM File System | ✓ | — | None (read-only filesystem) |
+| `rsync://HOST/PATH` or `/local/path` | rsync | ✓ | ✓ | SSH keys (`~/.ssh/`) or filesystem permissions |
+
+#### HTTP / HTTPS
+
+The HTTP backend is the simplest and most portable. It is read-only: bits fetches tarballs with automatic exponential-backoff retries (up to four attempts) but cannot upload. Use it for public artifact mirrors or CI read caches:
 
 ```bash
-# Fetch during build (read store)
-bits build --remote-store https://buildserver/tarballs ROOT
-
-# Build and upload (write store)
-bits build --remote-store s3://mybucket/builds \
-           --write-store  s3://mybucket/builds ROOT
+bits build --remote-store https://artifacts.example.com/bits ROOT
 ```
+
+Pair it with a writable backend (rsync or boto3) for the write side if needed.
+
+#### S3 via `s3cmd` (`s3://`)
+
+Uses the [`s3cmd`](https://s3tools.org/s3cmd) command-line tool. Credentials are read from `~/.s3cfg`. Supports both AWS and S3-compatible services (Ceph, MinIO, etc.) when the endpoint is configured in `~/.s3cfg`.
+
+```bash
+bits build --remote-store s3://mybucket/bits-cache \
+           --write-store  s3://mybucket/bits-cache ROOT
+```
+
+#### S3-compatible via `boto3` (`b3://`)
+
+The preferred S3 backend. Uses the `boto3` Python library for efficient parallel uploads (up to 32 concurrent connections). Authentication is via environment variables:
+
+```bash
+export AWS_ACCESS_KEY_ID=your-key-id
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+
+bits build --remote-store b3://mybucket/bits-cache \
+           --write-store  b3://mybucket/bits-cache ROOT
+# Equivalent shorthand:
+bits build --remote-store b3://mybucket/bits-cache::rw ROOT
+```
+
+Upload order is designed to avoid partial-artifact races: the main package symlink is written first (reserving the revision number), then all dependency-set symlinks are uploaded in parallel, and the final tarball is written last. A downloader that finds the symlink but not yet the tarball simply waits for the next build cycle.
+
+#### CernVM File System (`cvmfs://`)
+
+Read-only. Instead of unpacking a remote tarball, bits creates a small local tarball containing symlinks that point into the already-mounted CVMFS repository. The build environment is constructed from the CVMFS paths without copying data locally:
+
+```bash
+bits build --remote-store cvmfs://cvmfs.example.cern.ch/sw ROOT
+```
+
+#### rsync / local filesystem
+
+Supports both remote hosts (via SSH) and local paths. Useful for shared NFS or a build server accessible over SSH:
+
+```bash
+# Remote via SSH
+bits build --remote-store rsync://buildserver.example.com/bits-cache \
+           --write-store  rsync://buildserver.example.com/bits-cache ROOT
+
+# Local filesystem path (useful for cross-project caching on the same machine)
+bits build --remote-store /shared/bits-cache \
+           --write-store  /shared/bits-cache ROOT
+```
+
+### Content-addressable tarball layout
+
+Every tarball is named and stored by its build hash. The layout is the same locally (in the `TARS/` work directory) and in the remote store:
+
+```
+TARS/
+└── <architecture>/
+    ├── store/
+    │   └── <hash[0:2]>/          ← two-character prefix for directory sharding
+    │       └── <hash>/
+    │           └── <pkg>-<version>-<revision>.<architecture>.tar.gz
+    └── <package>/                 ← convenience symlinks by package name
+        ├── <pkg>-<version>-<revision>.<architecture>.tar.gz -> ../../store/…
+        └── <pkg>-<version>-<revision>.<architecture>.tar.gz.manifest
+```
+
+For packages marked `architecture: shared` (see [§19](#19-architecture-independent-shared-packages)) the architecture segment is replaced with `shared`:
+
+```
+TARS/shared/store/<hash[0:2]>/<hash>/<pkg>-<version>-<revision>.shared.tar.gz
+```
+
+The hash is a 40-character SHA-1 computed from the recipe text, package name and version, checked-out source commit, all transitive dependency hashes, relocation paths, and hooks. Changing anything in this set produces a different hash and therefore a different cache entry.
+
+### Dependency-set symlink trees
+
+After each successful build, bits creates three symlink trees under `TARS/<arch>/dist/` that group together everything needed to reproduce or run the package:
+
+| Directory | Contents |
+|-----------|----------|
+| `dist/<pkg>-<ver>-<rev>/` | Full transitive closure — all build and runtime dependencies. |
+| `dist-direct/<pkg>-<ver>-<rev>/` | Direct dependencies only (`requires` + `build_requires`). |
+| `dist-runtime/<pkg>-<ver>-<rev>/` | Runtime transitive closure (`runtime_requires`). |
+
+Each entry in these trees is a symlink to the corresponding tarball in `store/`. The trees are uploaded to the remote store alongside the tarball so that a downstream consumer can fetch an entire coherent set with a single rsync or S3 prefix listing.
+
+### Build lifecycle with a store
+
+```
+bits build --remote-store URL --write-store URL PACKAGE
+```
+
+For each package in topological order:
+
+1. **Hash** — Compute the content-addressable hash from recipe, source commit, and dependency hashes.
+2. **Fetch** — Ask the remote store for `TARS/<arch>/store/<h2>/<hash>/*.tar.gz`. If found, download it.
+3. **Unpack or build** — If a cached tarball was downloaded, unpack it into `$INSTALLROOT` and skip compilation. Otherwise run the full Bash build script.
+4. **Pack** — After a successful from-source build, `build_template.sh` compresses `$INSTALLROOT` into a tarball at `TARS/<arch>/store/<h2>/<hash>/<pkg>-<ver>-<rev>.<arch>.tar.gz`.
+5. **Upload** — Bits uploads the tarball and the dist symlink trees to the write store. Development builds (revisions starting with `local`) are never uploaded.
+
+### Revision numbering
+
+Within a given hash, bits assigns monotonically increasing integer revisions (`1`, `2`, …). A rebuild of the same recipe and inputs (same hash) gets the next available integer. Development-mode builds (created by `bits init`) use a `local` prefix (`local1`, `local2`, …) and are excluded from upload to prevent polluting the shared cache with unreviewed in-progress builds.
+
+### CI/CD patterns
+
+#### Read-only cache for developers, read-write for CI
+
+```bash
+# CI job: build and publish
+export AWS_ACCESS_KEY_ID=ci-key
+export AWS_SECRET_ACCESS_KEY=ci-secret
+bits build --remote-store b3://mybucket/bits-cache::rw MyStack
+
+# Developer workstation: fetch from CI cache, never upload
+bits build --remote-store b3://mybucket/bits-cache MyStack
+```
+
+#### Layered stores: fast read from HTTP, write to S3
+
+```bash
+bits build --remote-store https://public-mirror.example.com/bits \
+           --write-store  b3://private-bucket/bits MyStack
+```
+
+Bits tries to download from the HTTP mirror first; if a tarball is missing it builds from source and uploads to the private S3 bucket. A periodic sync job can mirror the S3 bucket to the HTTP server.
+
+#### Local filesystem cache for team NFS
+
+```bash
+bits build --remote-store /nfs/shared/bits-cache::rw MyStack
+```
+
+All team members building on machines with access to the shared NFS path reuse each other's artifacts automatically.
 
 ---
 
