@@ -53,6 +53,9 @@ class NoRemoteSync:
     pass
   def upload_symlinks_and_tarball(self, spec) -> None:
     pass
+  def upload_shell_command(self, spec):
+    """Return None: no remote store, nothing to upload."""
+    return None
   def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
     return False
   def upload_source(self, local_path, url_checksum, filename) -> None:
@@ -260,6 +263,10 @@ class HttpRemoteSync:
   def upload_symlinks_and_tarball(self, spec) -> None:
     pass
 
+  def upload_shell_command(self, spec):
+    """Return None: HTTP backend is read-only."""
+    return None
+
   def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
     """Try to fetch a source archive from the HTTP remote store.
 
@@ -330,27 +337,19 @@ class RsyncRemoteSync:
     ))
     dieOnError(err, "Unable to fetch symlinks from specified store.")
 
-  def upload_symlinks_and_tarball(self, spec) -> None:
-    if not self.writeStore:
-      return
+  def _upload_script(self, spec) -> str:
+    """Return the formatted rsync shell script for uploading *spec*'s artifacts."""
     arch = effective_arch(spec, self.architecture)
-    # ver_rev(spec) is used here instead of "{version}-{revision}" because the
-    # tarball filename and the dist-symlink directory name must match what was
-    # written to disk by build_template.sh.  When force_revision is set to ""
-    # via defaults-*.sh the revision suffix is absent entirely, so the tarball
-    # is named "<pkg>-<version>.<arch>.tar.gz".  The content-addressed store
-    # path (under TARS/<arch>/store/<h2>/<hash>/) is unaffected — that path
-    # always uses the package hash, not the version-revision label.
-    dieOnError(execute("""\
-    set -e
-    cd {workdir}
-    tarball={package}-{ver_rev}.{eff_arch}.tar.gz
-    rsync -avR --ignore-existing "{links_path}/$tarball" {remote}/
-    for link_dir in dist dist-direct dist-runtime; do
-      rsync -avR --ignore-existing "TARS/{build_arch}/$link_dir/{package}/{package}-{ver_rev}/" {remote}/
-    done
-    rsync -avR --ignore-existing "{store_path}/$tarball" {remote}/
-    """.format(
+    return """\
+set -e
+cd {workdir}
+tarball={package}-{ver_rev}.{eff_arch}.tar.gz
+rsync -avR --ignore-existing "{links_path}/$tarball" {remote}/
+for link_dir in dist dist-direct dist-runtime; do
+  rsync -avR --ignore-existing "TARS/{build_arch}/$link_dir/{package}/{package}-{ver_rev}/" {remote}/
+done
+rsync -avR --ignore-existing "{store_path}/$tarball" {remote}/
+""".format(
       workdir=self.workdir,
       remote=self.remoteStore,
       store_path=resolve_store_path(arch, spec["hash"]),
@@ -359,7 +358,33 @@ class RsyncRemoteSync:
       build_arch=self.architecture,
       package=spec["package"],
       ver_rev=ver_rev(spec),
-    )), "Unable to upload tarball.")
+    )
+
+  def upload_symlinks_and_tarball(self, spec) -> None:
+    if not self.writeStore:
+      return
+    # ver_rev(spec) is used here instead of "{version}-{revision}" because the
+    # tarball filename and the dist-symlink directory name must match what was
+    # written to disk by build_template.sh.  When force_revision is set to ""
+    # via defaults-*.sh the revision suffix is absent entirely, so the tarball
+    # is named "<pkg>-<version>.<arch>.tar.gz".  The content-addressed store
+    # path (under TARS/<arch>/store/<h2>/<hash>/) is unaffected — that path
+    # always uses the package hash, not the version-revision label.
+    dieOnError(execute(self._upload_script(spec)), "Unable to upload tarball.")
+
+  def upload_shell_command(self, spec):
+    """Return an inline shell command that uploads *spec*'s tarball and symlinks.
+
+    Used by --pipeline Makeflow .upload rules so that the upload runs as a
+    separate Makeflow target, concurrently with downstream package builds.
+    Returns None when no write store is configured.
+    """
+    if not self.writeStore:
+      return None
+    # Emit the script as a single shell -c '...' invocation so Makeflow can
+    # embed it directly in the Makeflow file without a wrapper script.
+    script = self._upload_script(spec).replace("'", "'\\''")
+    return "bash -e -c '{}'".format(script)
 
   def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
     """Try to fetch a source archive from the rsync remote store.
@@ -460,6 +485,10 @@ class CVMFSRemoteSync:
   def upload_symlinks_and_tarball(self, spec) -> None:
     dieOnError(True, "CVMFS backend does not support uploading directly")
 
+  def upload_shell_command(self, spec):
+    """Return None: CVMFS backend is read-only."""
+    return None
+
   def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
     """Try to fetch a source archive from the CVMFS filesystem mount.
 
@@ -541,15 +570,9 @@ class S3RemoteSync:
     ))
     dieOnError(err, "Unable to fetch symlinks from specified store.")
 
-  def upload_symlinks_and_tarball(self, spec) -> None:
-    if not self.writeStore:
-      return
+  def _upload_script(self, spec) -> str:
     arch = effective_arch(spec, self.architecture)
-    # ver_rev(spec) is used here (not "{version}-{revision}") for the same
-    # reason as in RsyncRemoteSync: the tarball filename and dist-symlink
-    # directory must match what build_template.sh wrote to disk.  If
-    # force_revision was set to "" the label has no revision suffix at all.
-    dieOnError(execute("""\
+    return """\
     set -e
     put () {{
       s3cmd put -s -v --host s3.cern.ch --host-bucket {bucket}.s3.cern.ch "$@" 2>&1
@@ -585,7 +608,28 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
       build_arch=self.architecture,
       package=spec["package"],
       ver_rev=ver_rev(spec),
-    )), "Unable to upload tarball.")
+    )
+
+  def upload_symlinks_and_tarball(self, spec) -> None:
+    if not self.writeStore:
+      return
+    # ver_rev(spec) is used here (not "{version}-{revision}") for the same
+    # reason as in RsyncRemoteSync: the tarball filename and dist-symlink
+    # directory must match what build_template.sh wrote to disk.  If
+    # force_revision was set to "" the label has no revision suffix at all.
+    dieOnError(execute(self._upload_script(spec)), "Unable to upload tarball.")
+
+  def upload_shell_command(self, spec) -> "str | None":
+    """Return an inline shell command that uploads this package's artifacts.
+
+    Returns None if there is no writable store configured.
+    Used by the Makeflow .upload rule when --pipeline is active.
+    """
+    if not self.writeStore:
+      return None
+    script = self._upload_script(spec)
+    escaped = script.replace("'", "'\\''")
+    return "bash -e -c '{script}'".format(script=escaped)
 
   def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
     """Try to fetch a source archive from the S3 (s3cmd) remote store.
@@ -626,6 +670,8 @@ class Boto3RemoteSync:
   """
 
   def __init__(self, remoteStore, writeStore, architecture, workdir) -> None:
+    self._remote_url = remoteStore   # original URL (with b3:// prefix) for upload_shell_command
+    self._write_url = writeStore     # original URL (with b3:// prefix) for upload_shell_command
     self.remoteStore = re.sub("^b3://", "", remoteStore)
     self.writeStore = re.sub("^b3://", "", writeStore)
     self.architecture = architecture
@@ -923,3 +969,27 @@ class Boto3RemoteSync:
     debug("Uploading source archive %s to S3 (%s)", filename, remote_key)
     self.s3.upload_file(Bucket=self.writeStore, Key=remote_key,
                         Filename=local_path)
+
+  def upload_shell_command(self, spec) -> "str | None":
+    """Return a shell command that uploads this package's artifacts via upload_cmd.py.
+
+    Returns None if there is no writable store configured.
+    Used by the Makeflow .upload rule when --pipeline is active.
+    The actual upload logic lives in bits_helpers/upload_cmd.py, which reads
+    PKGNAME/PKGVERSION/PKGREVISION/PKGHASH from the environment and accepts
+    the store URLs as CLI arguments.
+    """
+    if not self.writeStore:
+      return None
+    return (
+      "python3 -m bits_helpers.upload_cmd"
+      " --remote-store {remote}"
+      " --write-store {write}"
+      " --work-dir {workdir}"
+      " --architecture {arch}"
+    ).format(
+      remote=self._remote_url,
+      write=self._write_url,
+      workdir=self.workdir,
+      arch=self.architecture,
+    )

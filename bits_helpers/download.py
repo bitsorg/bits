@@ -4,17 +4,51 @@ except ImportError:
     from hashlib import md5 as md5adder
 from os.path import abspath, join, exists, dirname, basename
 from os import rename, unlink
+import os
 import re
 from tempfile import mkdtemp
 from subprocess import getstatusoutput
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 import base64
-from time import time
+from time import time, sleep
 from types import SimpleNamespace
 from bits_helpers.log import error, warning, debug, info
 from bits_helpers.checksum import check_file
 import json
+
+
+# ---------------------------------------------------------------------------
+# Sentinel-file helpers for concurrent prefetch coordination
+# ---------------------------------------------------------------------------
+
+def _sentinel_path(path):
+    """Return the sentinel file path for *path* (appends '.downloading')."""
+    return path + ".downloading"
+
+
+def _acquire_download(path):
+    """Atomically create a sentinel for *path*.
+
+    Returns ``True`` if this caller successfully created the sentinel (i.e.
+    this caller owns the download) and ``False`` if another thread/process
+    already holds it.  The sentinel contains the current PID so stale files
+    from crashed processes can be identified at startup.
+    """
+    try:
+        fd = os.open(_sentinel_path(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+
+
+def _wait_for_sentinel(path):
+    """Block until no in-progress download sentinel exists for *path*."""
+    sentinel = _sentinel_path(path)
+    while os.path.exists(sentinel):
+        sleep(0.25)
 
 urlRe = re.compile(r".*:.*/.*")
 urlAuthRe = re.compile(r'^(http(s|)://)([^:]+:[^@]+)@(.+)$')
@@ -381,6 +415,9 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
             raise e
 
     realFile = join(downloadDir, filename)
+    # If a background prefetch thread is currently downloading this file,
+    # wait for it to finish before inspecting the cache.
+    _wait_for_sentinel(realFile)
     fetched_from_upstream = False
     if not exists(realFile):
         # Before hitting the upstream URL, check whether the remote store

@@ -353,7 +353,7 @@ if [ "$CAN_DELETE" = 1 ]; then
   # We're deleting the tarball anyway, so no point in creating a new one.
   # There might be an old existing tarball, and we should delete it.
   rm -f "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
-elif [ -z "$CACHED_TARBALL" ]; then
+elif [ -z "$CACHED_TARBALL" ] && [ -z "$SKIP_TARBALL" ]; then
   # Use pigz to compress, if we can, because it's multicore.
   gzip=$(command -v pigz) || gzip=$(command -v gzip)
   # We don't have an existing tarball, and we want to keep the one we create now.
@@ -364,6 +364,8 @@ elif [ -z "$CACHED_TARBALL" ]; then
      "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
   ln -nfs "../../$HASH_PATH/$PACKAGE_WITH_REV" \
      "$WORK_DIR/TARS/$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PACKAGE_WITH_REV"
+# else: SKIP_TARBALL=1 means a separate tar_template.sh rule creates the
+# tarball and main symlink asynchronously (--pipeline --makeflow mode).
 fi
 wait "$rsync_pid"
 

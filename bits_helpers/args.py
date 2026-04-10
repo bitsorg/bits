@@ -199,6 +199,28 @@ def doParseArgs():
                                   "except ::rw is not recognised. Implies --no-system."))
   build_remote.add_argument("--insecure", dest="insecure", action="store_true",
                             help="Don't validate TLS certificates when connecting to an https:// remote store.")
+  build_remote.add_argument("--pipeline", dest="pipeline", action="store_true", default=False,
+                            help="""\
+                            (Requires --makeflow) Activates Options 1 and 4: split each package's Makeflow
+                            rules into three targets (.build, .tar, .upload) so tarball creation and remote
+                            upload run concurrently with downstream package builds. Silently ignored without
+                            --makeflow. Has no effect when --write-store is not set.
+                            """)
+  build_remote.add_argument("--prefetch-workers", dest="prefetchWorkers", type=int, default=0,
+                            metavar="N",
+                            help="""\
+                            Start N background threads that pre-download pre-built tarballs and source
+                            archives for all packages in the build graph before they are needed. A
+                            .downloading sentinel file coordinates with the build loop so no file is
+                            fetched twice. Default: 0 (disabled). Works in all build modes.
+                            """)
+  build_remote.add_argument("--parallel-sources", dest="parallelSources", type=int, default=1,
+                            metavar="N",
+                            help="""\
+                            Download up to N source URLs in parallel within a single package's sources:
+                            list. Default: 1 (sequential, preserving existing behaviour). Works in all
+                            build modes.
+                            """)
 
   build_dirs = build_parser.add_argument_group(title="Customise bits directories")
   build_dirs.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,

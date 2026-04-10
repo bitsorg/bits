@@ -5,6 +5,7 @@ import os.path
 import shutil
 import tempfile
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 from bits_helpers.log import dieOnError, debug, error, warning
@@ -176,13 +177,18 @@ def _verify_commit_pin(scm, spec, source_dir: str, enforce_mode: str) -> None:
 
 
 def checkout_sources(spec, work_dir, reference_sources, containerised_build,
-                     enforce_mode="off", sync_helper=None):
+                     enforce_mode="off", sync_helper=None, parallel_sources=1):
   """Check out sources to be compiled, potentially from a given reference.
 
   ``sync_helper`` is an optional sync-backend instance (from
   ``bits_helpers.sync``).  When provided it is forwarded to every
   ``download()`` call so that source archives are fetched from / archived
   to the remote store as described in ``bits_helpers.download.download``.
+
+  ``parallel_sources`` controls how many URLs in the ``sources:`` list are
+  downloaded concurrently.  The default (1) preserves the original sequential
+  behaviour.  Values >1 use a ``ThreadPoolExecutor`` and raise the first
+  exception encountered, preserving the same failure semantics.
   """
   scm = spec["scm"]
 
@@ -218,11 +224,27 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
       shutil.copyfile(os.path.join(spec["pkgdir"], 'patches', patch_name), dst)
       check_file_checksum(dst, patch_name, patch_checksum, enforce_mode)
   if "sources" in spec:
-    for s in spec["sources"]:
+    def _download_one(s):
       url, inline_checksum = parse_entry(s)
       src_checksum = _source_checksums.get(url) or inline_checksum
       download(url, source_dir, work_dir, checksum=src_checksum,
                enforce_mode=enforce_mode, sync_helper=sync_helper)
+
+    if parallel_sources <= 1 or len(spec["sources"]) <= 1:
+      # Sequential path: preserves original behaviour for the common case.
+      for s in spec["sources"]:
+        _download_one(s)
+    else:
+      # Parallel path: submit all source downloads and re-raise the first error.
+      with ThreadPoolExecutor(max_workers=parallel_sources) as pool:
+        futures = {pool.submit(_download_one, s): s for s in spec["sources"]}
+        first_exc = None
+        for fut in as_completed(futures):
+          exc = fut.exception()
+          if exc is not None and first_exc is None:
+            first_exc = exc
+        if first_exc is not None:
+          raise first_exc
   elif "source" not in spec:
     # There are no sources, so just create an empty SOURCEDIR.
     os.makedirs(source_dir, exist_ok=True)

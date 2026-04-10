@@ -9,6 +9,7 @@
 4. [Configuration](#4-configuration)
 5. [Building Packages](#5-building-packages)
     - [Parallel build modes](#parallel-build-modes)
+    - [Async pipeline options](#--pipeline----pipelined-tarball-creation-and-upload-makeflow-only)
 6. [Managing Environments](#6-managing-environments)
 7. [Cleaning Up](#7-cleaning-up)
 8. [Practical Scenarios](#8-practical-scenarios)
@@ -206,6 +207,9 @@ Bits resolves the full transitive dependency graph of each requested package, co
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
 | `--builders N` | Number of packages to build simultaneously using the Python scheduler. Default: 1 (serial). Mutually exclusive with `--makeflow`. |
 | `--makeflow` | Hand the entire dependency graph to the external [Makeflow](https://ccl.cse.nd.edu/software/makeflow/) workflow engine instead of the built-in Python scheduler. Mutually exclusive with `--builders N`. |
+| `--pipeline` | Split each Makeflow rule into three stages (`.build`, `.tar`, `.upload`) so that tarball creation and upload overlap with downstream builds. Requires `--makeflow`; silently disabled otherwise. Incompatible with `--docker`. |
+| `--prefetch-workers N` | Spawn *N* background threads that fetch remote tarballs and source archives ahead of the main build loop. Default: 0 (disabled). Has no effect when no remote store is configured. |
+| `--parallel-sources N` | Download up to *N* `sources:` URLs concurrently within a single package checkout. Default: 1 (sequential). |
 | `-u`, `--fetch-repos` | Update all source mirrors before building. |
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
 | `--remote-store URL` | Binary store to pull pre-built tarballs from. |
@@ -265,6 +269,53 @@ bits build --makeflow --debug MyStack
 | Parallelism control | You set *N* | Makeflow decides |
 | Resource awareness | Optional (`--resources`) | Not built-in |
 | Best for | Interactive builds, CI | Large distributed or cluster builds |
+
+#### `--pipeline` — pipelined tarball creation and upload (Makeflow only)
+
+When both `--makeflow` and `--pipeline` are given, each package's Makeflow rule is split into three sequential stages:
+
+| Stage | Makeflow target | What it does |
+|-------|----------------|--------------|
+| Build | `<pkg>.build` | Compiles the package; skips tarball creation (`SKIP_TARBALL=1`). |
+| Tar   | `<pkg>.tar`   | Creates the versioned tarball and dist-link tree in a `tar_template.sh` invocation. |
+| Upload | `<pkg>.upload` | Uploads the tarball to the write store (Boto3 or rsync). Omitted when no write store is configured or when using an HTTP/CVMFS read-only backend. |
+
+Because `.tar` and `.upload` are separate Makeflow rules, Makeflow can overlap them with downstream package builds as soon as the `.build` rule completes. This is particularly effective in large stacks where package *B* depends on *A* but the tarball upload of *A* is slow: *B* can start building while *A*'s tarball is still being uploaded.
+
+```bash
+bits build --makeflow --pipeline --write-store b3://mybucket/store MyStack
+```
+
+Constraints:
+- Requires `--makeflow`; silently reverts to standard behaviour when used without it.
+- Incompatible with `--docker` (Docker builds manage their own archive step).
+
+#### `--prefetch-workers N` — background tarball prefetch
+
+Prefetch workers download remote tarballs and source archives in the background while the build loop is running. This hides network latency for the common case where a remote binary store holds most packages.
+
+```bash
+# Fetch up to 4 tarballs concurrently in the background
+bits build --prefetch-workers 4 --remote-store https://store.example.com/store MyStack
+```
+
+Bits spawns a thread pool of *N* threads at startup and immediately submits a prefetch task for every pending package. Each task:
+1. Attempts to fetch the pre-built tarball from the remote store into the content-addressable store directory.
+2. Downloads any `sources:` URLs declared in the recipe.
+
+Coordination with the main build loop uses *sentinel files*: a `<path>.downloading` file is created atomically when a thread claims a download, and deleted when the download finishes. The main loop waits for the sentinel before calling `fetch_tarball`, so it never blocks on a download that is already in progress. Stale sentinels from a crashed previous run are cleaned up automatically at startup.
+
+`--prefetch-workers` has no effect when no `--remote-store` is configured, or when the remote store is read-only (e.g. HTTP).
+
+#### `--parallel-sources N` — concurrent source downloads
+
+Each package may declare multiple `sources:` URLs (e.g. upstream release tarball plus a patch archive). By default, bits downloads these sequentially. With `--parallel-sources N`, up to *N* URLs are fetched concurrently within a single package checkout:
+
+```bash
+bits build --parallel-sources 4 MyStack
+```
+
+If any source download fails, the exception is re-raised immediately and the package build is aborted. The remaining concurrent downloads are cancelled via thread pool shutdown. When `N ≤ 1` or the package has only a single source, the sequential code path is used (no overhead from the thread pool).
 
 ### How a build proceeds
 
@@ -443,6 +494,27 @@ cat sw/BUILD/*/makeflow/log
 ```
 
 Makeflow must be installed separately from the [CCTools](https://ccl.cse.nd.edu/software/) suite. It automatically parallelises across all packages where the dependency graph permits.
+
+### Pipelined build with overlapping upload (Makeflow + pipeline)
+
+```bash
+# Overlap tarball upload with downstream builds; prefetch tarballs 4 at a time
+bits build --makeflow --pipeline \
+           --write-store b3://mybucket/store \
+           --prefetch-workers 4 \
+           my_large_stack
+```
+
+`--pipeline` splits each package's Makeflow rule into `.build` / `.tar` / `.upload` stages so that upload of package *A* can overlap with the build of package *B*. `--prefetch-workers` hides network latency by downloading remote tarballs in the background before the build loop needs them. See [§5 Async pipeline options](#--pipeline----pipelined-tarball-creation-and-upload-makeflow-only) for full details.
+
+### Speed up source downloads
+
+```bash
+# Download up to 4 source archives in parallel within each package
+bits build --parallel-sources 4 my_large_stack
+```
+
+Useful when a package lists several large `sources:` URLs. Failed downloads still abort the build immediately.
 
 ### Build for a different Linux version (Docker)
 
@@ -1040,6 +1112,9 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
 | `--builders N` | Packages to build simultaneously using the built-in Python scheduler. Default: 1 (serial). Mutually exclusive with `--makeflow`; if both are given, `--makeflow` takes precedence. |
 | `--makeflow` | Generate a [Makeflow](https://ccl.cse.nd.edu/software/makeflow/) workflow file from the dependency graph and execute it with the `makeflow` binary (must be installed separately from CCTools). Bits collects all pending builds, writes `sw/BUILD/<hash>/makeflow/Makeflow`, then runs `makeflow` to execute the graph in parallel. Mutually exclusive with `--builders N`. |
+| `--pipeline` | Split each Makeflow rule into `.build`, `.tar`, and `.upload` stages so that tarball creation and upload can overlap with downstream builds. Requires `--makeflow`; silently ignored otherwise. Incompatible with `--docker`. |
+| `--prefetch-workers N` | Spawn *N* background threads to fetch remote tarballs and source archives ahead of the main build loop. Default: 0 (disabled). No effect without `--remote-store`. |
+| `--parallel-sources N` | Download up to *N* `sources:` URLs concurrently within a single package checkout. Default: 1 (sequential). |
 | `-e KEY=VALUE` | Extra environment variable binding (repeatable). |
 | `-z PREFIX`, `--devel-prefix PREFIX` | Version prefix for development packages. |
 | `-u`, `--fetch-repos` | Fetch/update source mirrors before building. |

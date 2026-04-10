@@ -55,6 +55,100 @@ def writeAll(fn, txt) -> None:
   f.close()
 
 
+def _generate_create_links_sh(spec, specs, args) -> str:
+  """Generate a self-contained shell script that recreates the dist symlink trees.
+
+  Used by the Makeflow .build rule (--pipeline --makeflow) so that dist-link
+  creation runs inside the build rule instead of requiring Python's ``specs``
+  dict later.  The generated script bakes in all dependency information at
+  Python build time.
+  """
+  from bits_helpers.utilities import effective_arch, ver_rev, resolve_links_path
+  lines = ["#!/usr/bin/env bash", "set -e", ""]
+  for repo_type, requires_key in [
+    ("dist",         "full_requires"),
+    ("dist-direct",  "requires"),
+    ("dist-runtime", "full_runtime_requires"),
+  ]:
+    target_dir = (
+      "{work_dir}/TARS/{arch}/{repo}/{package}/{package}-{ver_rev}"
+      .format(
+        work_dir=args.workDir, arch=args.architecture,
+        repo=repo_type, ver_rev=ver_rev(spec), **spec,
+      )
+    )
+    lines.append("# -- %s --" % repo_type)
+    lines.append("rm -rf %s" % target_dir)
+    lines.append("mkdir -p %s" % target_dir)
+    for pkg in [spec["package"]] + list(spec[requires_key]):
+      dep_spec = specs[pkg]
+      dep_arch = effective_arch(dep_spec, args.architecture)
+      dep_tarball = (
+        "../../../../../TARS/{arch}/store/{short_hash}/{hash}/{package}-{ver_rev}.{arch}.tar.gz"
+        .format(arch=dep_arch, short_hash=dep_spec["hash"][:2],
+                ver_rev=ver_rev(dep_spec), **dep_spec)
+      )
+      lines.append('ln -nfs %s %s/' % (dep_tarball, target_dir))
+    lines.append("")
+  return "\n".join(lines)
+
+
+def _prefetch_package(spec, sync_helper, work_dir, build_arch) -> None:
+  """Background task: prefetch the prebuilt tarball + all source archives.
+
+  Uses the sentinel-file mechanism (``<path>.downloading`` files; see
+  ``bits_helpers.download``) so that the main build loop and Makeflow shell
+  rules can detect in-progress downloads and wait for completion.
+
+  Sentinel for the tarball: ``<tar_hash_dir>.downloading``.
+  Sentinels for source archives: ``<source_file>.downloading`` (managed inside
+  ``download()`` via ``_acquire_download``/``_wait_for_sentinel``).
+
+  This function is designed to be run in a thread pool; any exception is
+  propagated to the executor framework.
+  """
+  from bits_helpers.download import _acquire_download, _wait_for_sentinel, download
+  from bits_helpers.checksum import parse_entry as _pe
+
+  arch = effective_arch(spec, build_arch)
+  tar_hash_dir = os.path.join(work_dir, resolve_store_path(arch, spec["hash"]))
+
+  # --- Tarball prefetch -------------------------------------------------------
+  if not spec.get("is_devel_pkg"):
+    # Try to atomically claim the tarball download slot.
+    # sentinel path: tar_hash_dir + ".downloading"
+    if _acquire_download(tar_hash_dir):
+      try:
+        os.makedirs(tar_hash_dir, exist_ok=True)
+        sync_helper.fetch_tarball(spec)
+      finally:
+        # Always remove the sentinel so the main loop is never left waiting.
+        sentinel = tar_hash_dir + ".downloading"
+        try:
+          os.unlink(sentinel)
+        except OSError:
+          pass
+    else:
+      # Another thread is already fetching this tarball; just wait.
+      _wait_for_sentinel(tar_hash_dir)
+
+  # --- Source archive prefetch ------------------------------------------------
+  # download() already uses _acquire_download/_wait_for_sentinel internally, so
+  # concurrent prefetch threads coordinate automatically.
+  source_parent = os.path.join(work_dir, "SOURCES", spec["package"], spec["version"])
+  checksums = spec.get("source_checksums") or {}
+  for s in spec.get("sources", []):
+    url, inline_checksum = _pe(s)
+    src_checksum = checksums.get(url) or inline_checksum
+    try:
+      download(url, source_parent, work_dir, checksum=src_checksum,
+               enforce_mode="off", sync_helper=sync_helper)
+    except Exception:
+      # Prefetch is best-effort: log the error but don't abort.
+      debug("Prefetch: error downloading %s for %s (will retry at build time)",
+            url, spec.get("package", "?"))
+
+
 def readHashFile(fn):
   try:
     return open(fn).read().strip("\n")
@@ -782,6 +876,12 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
 
 
 def doFinalSync(spec, specs, args, syncHelper):
+  # When --pipeline --makeflow is active, the Makeflow .build rule runs
+  # create_links.sh (dist symlinks) and the .upload rule handles the upload.
+  # Nothing to do here in that mode.
+  if getattr(args, "pipeline", False) and args.makeflow:
+    return
+
   # We need to create 2 sets of links, once with the full requires,
   # once with only direct dependencies, since that's required to
   # register packages.
@@ -1337,6 +1437,12 @@ def doBuild(args, parser):
   if args.dryRun:
     info("--dry-run / -n specified. Not building.")
     return
+
+  # Validate --pipeline: it requires --makeflow.
+  if getattr(args, "pipeline", False) and not args.makeflow:
+    warning("--pipeline requires --makeflow; disabling --pipeline for this run.")
+    args.pipeline = False
+
   # We now iterate on all the packages, making sure we build correctly every
   # single one of them. This is done this way so that the second time we run we
   # can check if the build was consistent and if it is, we bail out.
@@ -1366,6 +1472,40 @@ def doBuild(args, parser):
     from bits_helpers.scheduler import Scheduler
     from bits_helpers.log import logger
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources)
+
+  # --- Stale sentinel cleanup -------------------------------------------------
+  # Remove any leftover *.downloading sentinels from a previous run that was
+  # killed before it could clean up.  This must happen BEFORE launching the
+  # prefetch pool so that no live sentinels are confused with stale ones.
+  # Use os.walk rather than glob(..., recursive=True) to avoid the mock in tests.
+  if os.path.isdir(workDir):
+    for _root, _dirs, _files in os.walk(workDir):
+      for _fname in _files:
+        if _fname.endswith(".downloading"):
+          _s = os.path.join(_root, _fname)
+          debug("Removing stale sentinel: %s", _s)
+          try:
+            os.unlink(_s)
+          except OSError:
+            pass
+
+  # --- Optional prefetch pool -------------------------------------------------
+  _prefetch_workers = getattr(args, "prefetchWorkers", 0)
+  _prefetch_executor = None
+  if _prefetch_workers > 0 and buildOrder and not isinstance(syncHelper,
+      __import__("bits_helpers.sync", fromlist=["NoRemoteSync"]).NoRemoteSync):
+    debug("Starting %d prefetch worker(s)", _prefetch_workers)
+    _prefetch_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=_prefetch_workers,
+        thread_name_prefix="bits-prefetch",
+    )
+    for _pkg in buildOrder:
+      _pspec = specs[_pkg]
+      _prefetch_executor.submit(_prefetch_package, _pspec, syncHelper, workDir, args.architecture)
+    # Do NOT call executor.shutdown() here — we let it run in the background
+    # and join lazily via a daemon-thread finaliser registered below.
+    import atexit
+    atexit.register(lambda ex=_prefetch_executor: ex.shutdown(wait=False, cancel_futures=True))
 
   while buildOrder:
     p = buildOrder.pop(0)
@@ -1693,6 +1833,12 @@ def doBuild(args, parser):
     debug("Looking for cached tarball in %s", tar_hash_dir)
     spec["cachedTarball"] = ""
     if not spec["is_devel_pkg"]:
+      # If a prefetch worker is downloading this tarball, wait for it to finish
+      # before we try to use the result.  The sentinel (tar_hash_dir + ".downloading")
+      # is only created when a prefetch pool is active, so skip the check otherwise.
+      if _prefetch_workers > 0:
+        from bits_helpers.download import _wait_for_sentinel as _wfs
+        _wfs(tar_hash_dir)
       syncHelper.fetch_tarball(spec)
       tarballs = glob(os.path.join(tar_hash_dir, "*gz"))
       spec["cachedTarball"] = tarballs[0] if len(tarballs) else ""
@@ -1724,7 +1870,8 @@ def doBuild(args, parser):
       # post-build phase so they work for already-cached packages too.
       checkout_sources(spec, workDir, args.referenceSources, args.docker,
                        enforce_mode=_download_time_mode(effective_checksum_mode),
-                       sync_helper=syncHelper)
+                       sync_helper=syncHelper,
+                       parallel_sources=getattr(args, "parallelSources", 1))
 
     # Collect every processed spec for the post-build checksum phase.
     # This includes specs whose tarball was cached (cachedTarball != "").
@@ -1815,6 +1962,62 @@ def doBuild(args, parser):
     # Add the computed track_env environment
     buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
 
+    # -- Pipeline mode: prepare tar/upload commands and write helper scripts ----
+    # Requires --makeflow and is incompatible with --docker (which requires
+    # explicit volume mounts for extra scripts).
+    _use_pipeline = getattr(args, "pipeline", False) and args.makeflow and not args.docker
+    tar_command = None
+    upload_command = None
+    if _use_pipeline:
+      import stat as _stat
+      # Signal build_template.sh to skip tarball creation.
+      buildEnvironment.append(("SKIP_TARBALL", "1"))
+
+      # Write tar.sh from the installed template.
+      _tar_tpl_path = join(dirname(realpath(__file__)), "tar_template.sh")
+      with open(_tar_tpl_path) as _f:
+        _tar_tpl = _f.read()
+      writeAll(scriptDir + "/tar.sh", _tar_tpl)
+      os.chmod(scriptDir + "/tar.sh",
+               _stat.S_IRWXU | _stat.S_IRGRP | _stat.S_IXGRP | _stat.S_IROTH | _stat.S_IXOTH)
+
+      # Write create_links.sh (bakes in dependency symlink commands so the
+      # shell rule does not need Python's specs dict).
+      writeAll(scriptDir + "/create_links.sh",
+               _generate_create_links_sh(spec, specs, args))
+      os.chmod(scriptDir + "/create_links.sh",
+               _stat.S_IRWXU | _stat.S_IRGRP | _stat.S_IXGRP | _stat.S_IROTH | _stat.S_IXOTH)
+
+      # Build the tar command (env vars for tar_template.sh).
+      _tar_env = " ".join(
+        "{}={}".format(k, quote(v)) for k, v in [
+          ("WORK_DIR",               workDir),
+          ("PKGNAME",                spec["package"]),
+          ("PKGVERSION",             spec["version"]),
+          ("PKGREVISION",            spec["revision"]),
+          ("PKGHASH",                spec["hash"]),
+          ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
+          ("CACHED_TARBALL",         cachedTarball),
+        ]
+      )
+      tar_command = "env {} {} -e -x {}/tar.sh 2>&1".format(_tar_env, BASH, quote(scriptDir))
+
+      # Build the upload command (wrapped with the env vars that upload_cmd.py
+      # / the inline s3cmd script read from the environment).
+      _raw_upload = syncHelper.upload_shell_command(spec)
+      if _raw_upload:
+        _upload_env = " ".join(
+          "{}={}".format(k, quote(v)) for k, v in [
+            ("PKGNAME",                spec["package"]),
+            ("PKGVERSION",            spec["version"]),
+            ("PKGREVISION",           spec["revision"]),
+            ("PKGHASH",               spec["hash"]),
+            ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
+            ("BUILD_ARCH",            args.architecture),
+          ]
+        )
+        upload_command = "env {} {} 2>&1".format(_upload_env, _raw_upload)
+
     # In case the --docker options is passed, we setup a docker container which
     # will perform the actual build. Otherwise build as usual using bash.
     if args.docker:
@@ -1857,8 +2060,14 @@ def doBuild(args, parser):
         build_deps = ["build:%s" % d for d in specs[p]["full_requires"] if d in buildTargets]
         scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
     else:
-      breq  = " ".join([str(element) + ".build" for element in spec["full_requires"] if element in buildTargets])
-      buildList.append((p,build_command,cachedTarball,breq))
+      breq = " ".join([str(element) + ".build" for element in spec["full_requires"] if element in buildTargets])
+      # In pipeline mode, append create_links.sh to the .build command so that
+      # dist symlinks are created inside the same rule (before .tar/.upload run).
+      _build_cmd = build_command
+      if _use_pipeline:
+        _build_cmd = "{} && {} -e -x {}/create_links.sh".format(
+            build_command, BASH, quote(scriptDir))
+      buildList.append((p, _build_cmd, tar_command, upload_command, cachedTarball, breq))
 
   if (not args.makeflow) and (args.builders > 1) and buildTargets:
     scheduler.run()
@@ -1885,7 +2094,7 @@ def doBuild(args, parser):
               .from_string(jnj)
               .render(specs=specs, args=args, ToDo=buildList)
               )
-    for (p, build_command, cachedTarball, breq) in buildList:
+    for (p, build_command, tar_command, upload_command, cachedTarball, breq) in buildList:
       spec = specs[p]
       print (
         ("Unpacking %s@%s" if cachedTarball else
@@ -1989,7 +2198,7 @@ def doBuild(args, parser):
     else:
       debug(child.stdout)
     dieOnError(err, buildErrMsg.strip())
-    for (p, _, _, _) in buildList:
+    for (p, _, _, _, _, _) in buildList:
       doFinalSync(specs[p], specs, args, syncHelper)
 
   # ── Post-build checksum phase ──────────────────────────────────────────────

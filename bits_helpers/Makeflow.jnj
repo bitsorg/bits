@@ -1,7 +1,17 @@
 # Makeflow template
 
-{% for (p, build_command, cachedTarball, breq) in ToDo %}
+{% for (p, build_command, tar_command, upload_command, cachedTarball, breq) in ToDo %}
 {{p}}.build:  {{breq}}
    LOCAL {{build_command}} && touch {{p}}.build
 
+{% if tar_command %}
+{{p}}.tar:  {{p}}.build
+   LOCAL {{tar_command}} && touch {{p}}.tar
+
+{% if upload_command %}
+{{p}}.upload:  {{p}}.tar
+   LOCAL {{upload_command}} && touch {{p}}.upload
+
+{% endif %}
+{% endif %}
 {% endfor %}
