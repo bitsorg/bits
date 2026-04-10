@@ -1723,7 +1723,8 @@ def doBuild(args, parser):
       # must fire before compilation.  print/write are deferred to the
       # post-build phase so they work for already-cached packages too.
       checkout_sources(spec, workDir, args.referenceSources, args.docker,
-                       enforce_mode=_download_time_mode(effective_checksum_mode))
+                       enforce_mode=_download_time_mode(effective_checksum_mode),
+                       sync_helper=syncHelper)
 
     # Collect every processed spec for the post-build checksum phase.
     # This includes specs whose tarball was cached (cachedTarball != "").

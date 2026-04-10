@@ -176,8 +176,14 @@ def _verify_commit_pin(scm, spec, source_dir: str, enforce_mode: str) -> None:
 
 
 def checkout_sources(spec, work_dir, reference_sources, containerised_build,
-                     enforce_mode="off"):
-  """Check out sources to be compiled, potentially from a given reference."""
+                     enforce_mode="off", sync_helper=None):
+  """Check out sources to be compiled, potentially from a given reference.
+
+  ``sync_helper`` is an optional sync-backend instance (from
+  ``bits_helpers.sync``).  When provided it is forwarded to every
+  ``download()`` call so that source archives are fetched from / archived
+  to the remote store as described in ``bits_helpers.download.download``.
+  """
   scm = spec["scm"]
 
   def scm_exec(command, directory=".", check=True):
@@ -215,7 +221,8 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     for s in spec["sources"]:
       url, inline_checksum = parse_entry(s)
       src_checksum = _source_checksums.get(url) or inline_checksum
-      download(url, source_dir, work_dir, checksum=src_checksum, enforce_mode=enforce_mode)
+      download(url, source_dir, work_dir, checksum=src_checksum,
+               enforce_mode=enforce_mode, sync_helper=sync_helper)
   elif "source" not in spec:
     # There are no sources, so just create an empty SOURCEDIR.
     os.makedirs(source_dir, exist_ok=True)

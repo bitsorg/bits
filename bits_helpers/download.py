@@ -303,7 +303,8 @@ downloadHandlers = {
 }
 
 
-def download(source, dest, work_dir, checksum=None, enforce_mode="off"):
+def download(source, dest, work_dir, checksum=None, enforce_mode="off",
+             sync_helper=None):
     """Download *source* into *dest*, optionally verifying its checksum.
 
     Parameters
@@ -322,6 +323,18 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off"):
     enforce_mode:
         One of ``"off"`` (default), ``"warn"``, ``"enforce"``, ``"print"``.
         Passed directly to ``bits_helpers.checksum.check_file``.
+    sync_helper:
+        Optional sync-backend instance (any class from ``bits_helpers.sync``).
+        When provided:
+
+        * A cache miss first attempts ``sync_helper.fetch_source()`` before
+          hitting the upstream URL, so the remote store acts as a mirror
+          that survives upstream disappearance.
+        * A successful upstream download is immediately archived via
+          ``sync_helper.upload_source()`` so future builds (on any machine
+          with the same remote store) can skip the upstream download.
+
+        Pass ``None`` (the default) to preserve the previous behaviour.
     """
     noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
     isCmsdistGenerated = True if 'cmdist-generated=1' in source else False
@@ -368,13 +381,30 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off"):
             raise e
 
     realFile = join(downloadDir, filename)
+    fetched_from_upstream = False
     if not exists(realFile):
-        debug ("Trying to fetch source file: %s", source)
-        downloadHandler(source, downloadDir, work_dir)
+        # Before hitting the upstream URL, check whether the remote store
+        # already has an archived copy of this source.  This makes rebuilds
+        # resilient to upstream URL disappearance.
+        if sync_helper is not None:
+            debug("Trying remote store for source file: %s", filename)
+            sync_helper.fetch_source(url_checksum, filename, downloadDir)
+
+        if not exists(realFile):
+            debug("Trying to fetch source file: %s", source)
+            downloadHandler(source, downloadDir, work_dir)
+            fetched_from_upstream = True
+
     if exists(realFile):
         # Verify checksum against the cached copy (covers both fresh downloads
         # and cache hits so a corrupted cache entry is caught on the next use).
         check_file(realFile, filename, checksum, enforce_mode)
+        # Archive to the write store when the file came from the upstream URL
+        # (i.e. it was not already in the local cache or the remote store).
+        # This ensures every new download is preserved for future builds.
+        if fetched_from_upstream and sync_helper is not None:
+            debug("Archiving source file %s to remote store", filename)
+            sync_helper.upload_source(realFile, url_checksum, filename)
         executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
     else:
         raise OSError("Unable to download source {} in to {}".format(source, downloadDir))

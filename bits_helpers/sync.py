@@ -31,6 +31,20 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False)
   return NoRemoteSync()
 
 
+def _source_remote_path(url_checksum, filename):
+  """Return the remote-store path for a cached source archive.
+
+  The path mirrors the local ``SOURCES/cache/`` structure so that a plain
+  rsync or S3 sync of the ``SOURCES/cache/`` subtree is sufficient to
+  populate (or restore) the remote archive.
+
+  Example::
+
+      SOURCES/cache/ab/abcd1234.../libfoo-1.2.tar.gz
+  """
+  return "SOURCES/cache/{}/{}/{}".format(url_checksum[:2], url_checksum, filename)
+
+
 class NoRemoteSync:
   """Helper class which does not do anything to sync"""
   def fetch_symlinks(self, spec) -> None:
@@ -38,6 +52,10 @@ class NoRemoteSync:
   def fetch_tarball(self, spec) -> None:
     pass
   def upload_symlinks_and_tarball(self, spec) -> None:
+    pass
+  def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
+    return False
+  def upload_source(self, local_path, url_checksum, filename) -> None:
     pass
 
 class PartialDownloadError(Exception):
@@ -242,6 +260,27 @@ class HttpRemoteSync:
   def upload_symlinks_and_tarball(self, spec) -> None:
     pass
 
+  def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
+    """Try to fetch a source archive from the HTTP remote store.
+
+    Returns True if the file was successfully retrieved, False otherwise.
+    """
+    remote_path = _source_remote_path(url_checksum, filename)
+    dest = os.path.join(dest_dir, filename)
+    os.makedirs(dest_dir, exist_ok=True)
+    result = self.getRetry("{}/{}".format(self.remoteStore, remote_path),
+                           dest=dest, log=False)
+    if not result and os.path.exists(dest):
+      # getRetry returned None/False but may have left a partial file.
+      try:
+        os.unlink(dest)
+      except OSError:
+        pass
+    return bool(result) and os.path.exists(dest)
+
+  def upload_source(self, local_path, url_checksum, filename) -> None:
+    pass  # HTTP backend is read-only; uploads must use rsync/S3/boto3
+
 
 class RsyncRemoteSync:
   """Helper class to sync package build directory using RSync."""
@@ -322,6 +361,33 @@ class RsyncRemoteSync:
       ver_rev=ver_rev(spec),
     )), "Unable to upload tarball.")
 
+  def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
+    """Try to fetch a source archive from the rsync remote store.
+
+    Returns True if the file was successfully retrieved, False otherwise.
+    """
+    remote_path = _source_remote_path(url_checksum, filename)
+    os.makedirs(dest_dir, exist_ok=True)
+    err = execute('rsync -vW "{remote}/{path}" "{dest}/" 2>/dev/null'.format(
+      remote=self.remoteStore,
+      path=remote_path,
+      dest=dest_dir,
+    ))
+    return not err and os.path.exists(os.path.join(dest_dir, filename))
+
+  def upload_source(self, local_path, url_checksum, filename) -> None:
+    """Upload a source archive to the rsync write store."""
+    if not self.writeStore:
+      return
+    remote_dir = "SOURCES/cache/{}/{}".format(url_checksum[:2], url_checksum)
+    err = execute('rsync -avW --ignore-existing "{src}" "{remote}/{path}/"'.format(
+      src=local_path,
+      remote=self.writeStore,
+      path=remote_dir,
+    ))
+    dieOnError(err, "Unable to upload source archive to store.")
+
+
 class CVMFSRemoteSync:
   """ Sync packages build directory from CVMFS or similar
       FS based deployment. The tarball will be created on the fly with a single
@@ -393,6 +459,29 @@ class CVMFSRemoteSync:
 
   def upload_symlinks_and_tarball(self, spec) -> None:
     dieOnError(True, "CVMFS backend does not support uploading directly")
+
+  def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
+    """Try to fetch a source archive from the CVMFS filesystem mount.
+
+    The CVMFS remote store is a read-only filesystem path; we attempt a
+    plain file copy from the mirrored SOURCES/cache subtree.
+    """
+    remote_path = os.path.join(self.remoteStore,
+                               _source_remote_path(url_checksum, filename))
+    dest = os.path.join(dest_dir, filename)
+    if not os.path.exists(remote_path):
+      return False
+    os.makedirs(dest_dir, exist_ok=True)
+    import shutil
+    try:
+      shutil.copy2(remote_path, dest)
+      return True
+    except OSError:
+      return False
+
+  def upload_source(self, local_path, url_checksum, filename) -> None:
+    pass  # CVMFS backend does not support uploading directly
+
 
 class S3RemoteSync:
   """Sync package build directory from and to S3 using s3cmd.
@@ -497,6 +586,31 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
       package=spec["package"],
       ver_rev=ver_rev(spec),
     )), "Unable to upload tarball.")
+
+  def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
+    """Try to fetch a source archive from the S3 (s3cmd) remote store.
+
+    Returns True if the file was successfully retrieved, False otherwise.
+    """
+    remote_path = _source_remote_path(url_checksum, filename)
+    dest = os.path.join(dest_dir, filename)
+    os.makedirs(dest_dir, exist_ok=True)
+    err = execute("""\
+    s3cmd get -s --no-check-md5 --host s3.cern.ch --host-bucket {b}.s3.cern.ch \
+          "s3://{b}/{path}" "{dest}" 2>/dev/null
+    """.format(b=self.remoteStore, path=remote_path, dest=dest))
+    return not err and os.path.exists(dest)
+
+  def upload_source(self, local_path, url_checksum, filename) -> None:
+    """Upload a source archive to the S3 (s3cmd) write store."""
+    if not self.writeStore:
+      return
+    remote_path = _source_remote_path(url_checksum, filename)
+    err = execute("""\
+    s3cmd put -s -v --host s3.cern.ch --host-bucket {b}.s3.cern.ch \
+          --skip-existing "{src}" "s3://{b}/{path}" 2>&1
+    """.format(b=self.writeStore, src=local_path, path=remote_path))
+    dieOnError(err, "Unable to upload source archive to store.")
 
 
 class Boto3RemoteSync:
@@ -778,3 +892,34 @@ class Boto3RemoteSync:
 
     self.s3.upload_file(Bucket=self.writeStore, Key=tar_path,
                         Filename=os.path.join(self.workdir, tar_path))
+
+  def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
+    """Try to fetch a source archive from the boto3/S3 remote store.
+
+    Returns True if the file was successfully retrieved, False otherwise.
+    """
+    from botocore.exceptions import ClientError
+    remote_key = _source_remote_path(url_checksum, filename)
+    dest = os.path.join(dest_dir, filename)
+    os.makedirs(dest_dir, exist_ok=True)
+    try:
+      self.s3.download_file(Bucket=self.remoteStore, Key=remote_key, Filename=dest)
+    except ClientError as exc:
+      code = exc.response["Error"]["Code"]
+      if code in ("404", "NoSuchKey"):
+        debug("Source archive %s not found in remote store", filename)
+        return False
+      raise
+    return True
+
+  def upload_source(self, local_path, url_checksum, filename) -> None:
+    """Upload a source archive to the boto3/S3 write store."""
+    if not self.writeStore:
+      return
+    remote_key = _source_remote_path(url_checksum, filename)
+    if self._s3_key_exists(remote_key):
+      debug("Source archive %s already in remote store, skipping upload", filename)
+      return
+    debug("Uploading source archive %s to S3 (%s)", filename, remote_key)
+    self.s3.upload_file(Bucket=self.writeStore, Key=remote_key,
+                        Filename=local_path)

@@ -34,6 +34,7 @@
     - [Content-addressable tarball layout](#content-addressable-tarball-layout)
     - [Build lifecycle with a store](#build-lifecycle-with-a-store)
     - [CI/CD patterns](#cicd-patterns)
+    - [Source archive caching](#source-archive-caching)
 22. [Docker Support](#22-docker-support)
 23. [Design Principles & Limitations](#23-design-principles--limitations)
 
@@ -2169,6 +2170,54 @@ bits build --remote-store /nfs/shared/bits-cache::rw MyStack
 ```
 
 All team members building on machines with access to the shared NFS path reuse each other's artifacts automatically.
+
+### Source archive caching
+
+Packages that use the `sources:` key in their recipe (downloadable URL tarballs, distinct from the primary `source:` git repository) are now archived in the remote store in addition to being cached locally. This means bits can rebuild a package even if the upstream server has removed or moved the tarball.
+
+#### How it works
+
+When bits encounters a `sources:` entry it proceeds in three steps:
+
+1. **Local cache hit** — if `SOURCES/cache/<h2>/<hash>/<filename>` already exists on disk, it is used immediately and the remote store is not contacted at all.
+2. **Remote store hit** — if the local cache is empty, bits asks the configured backend for the archived copy before contacting the upstream URL. On success the file is placed in the local cache and no upload is required (it is already in the store).
+3. **Upstream download + archive** — only when both the local cache and the remote store miss does bits download from the original URL. The freshly downloaded file is then uploaded to the write store so that future builds (and other machines) can benefit from step 2.
+
+#### Remote namespace
+
+Source archives occupy a dedicated namespace inside the same store used for build tarballs:
+
+```
+SOURCES/cache/<hash[0:2]>/<hash>/<filename>
+```
+
+This mirrors the local `SOURCES/cache/` layout exactly, so the remote path can be derived mechanically from the URL's MD5 checksum (`hash`) and the bare filename. For example:
+
+```
+SOURCES/cache/a1/a1b2c3d4.../libfoo-1.2.tar.gz
+```
+
+#### Backend support matrix
+
+| Backend | `fetch_source` | `upload_source` | Notes |
+|---------|---------------|-----------------|-------|
+| `NoRemoteSync` | — | — | No store configured; local cache only. |
+| `HttpRemoteSync` | ✓ | — | Read-only; HTTP stores do not support upload. |
+| `RsyncRemoteSync` | ✓ | ✓ | Uses `rsync -vW`; skipped if `--write-store` is absent. |
+| `S3RemoteSync` | ✓ | ✓ | Uses `s3cmd get/put`; skipped if `--write-store` is absent. |
+| `Boto3RemoteSync` | ✓ | ✓ | Native boto3 API; skips upload if the key already exists. |
+| `CVMFSRemoteSync` | ✓ | — | Read-only filesystem mount; upload not supported. |
+
+#### Enabling source archive caching
+
+No extra flags are needed. Source caching is activated automatically whenever a remote store is configured:
+
+```bash
+# Build ROOT; source tarballs fetched via sources: are archived to S3.
+bits build --remote-store b3://mybucket/bits-cache::rw ROOT
+```
+
+If `--remote-store` is set but `--write-store` is not (or the backend is HTTP/CVMFS), bits will still try to fetch source archives from the store but will silently skip uploading — the same behaviour as for build tarballs.
 
 ---
 
