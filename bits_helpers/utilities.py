@@ -506,7 +506,19 @@ def resolve_pkg_family(defaults_meta: dict, package_name: str) -> str:
   returned.  If ``package_family`` is absent entirely, an empty string is
   returned so that the install path collapses to the legacy layout
   ``<arch>/<pkg>/<version>-<revision>``.
+
+  **Defaults packages** (``defaults-*``) are always excluded from family
+  assignment regardless of the ``package_family`` configuration, including the
+  ``default:`` fallback.  These pseudo-packages carry configuration rather than
+  installed software; assigning them to a family would corrupt their install
+  path and break the ``init.sh`` sourcing chain for every downstream package.
   """
+  # Defaults packages are special pseudo-packages and must never receive a
+  # family.  The default: fallback in package_family would otherwise silently
+  # pull them in, causing their SPECS/ and install paths to include a family
+  # directory that nothing expects.
+  if package_name.startswith("defaults-"):
+    return ""
   family_cfg = defaults_meta.get("package_family")
   if not family_cfg or not isinstance(family_cfg, dict):
     return ""

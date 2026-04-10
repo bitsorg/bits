@@ -230,26 +230,33 @@ def doParseArgs():
       title="Source and patch checksum verification",
       description="Verify the integrity of downloaded source tarballs and patch files "
                   "declared with an inline checksum suffix (e.g. "
-                  "\"https://example.com/foo.tar.gz,sha256:abc123...\").")
+                  "\"https://example.com/foo.tar.gz,sha256:abc123...\"). "
+                  "These flags override the checksum_mode / write_checksums fields "
+                  "that can be set in a defaults-*.sh profile.")
   build_checksums_mode = build_checksums.add_mutually_exclusive_group()
   build_checksums_mode.add_argument(
       "--check-checksums", dest="checkChecksums", action="store_true", default=False,
-      help="Verify checksums when declared; warn on mismatch. "
-           "Missing declarations are silently ignored.")
+      help="Verify checksums during download; warn on mismatch. "
+           "Missing declarations are silently ignored. "
+           "Overrides checksum_mode in the active defaults profile.")
   build_checksums_mode.add_argument(
       "--enforce-checksums", dest="enforceChecksums", action="store_true", default=False,
-      help="Verify checksums when declared; abort on mismatch. "
-           "Also abort when a source or patch entry carries no checksum declaration.")
+      help="Verify checksums during download; abort on mismatch. "
+           "Also abort when a source or patch entry carries no checksum declaration. "
+           "Overrides checksum_mode in the active defaults profile.")
   build_checksums_mode.add_argument(
       "--print-checksums", dest="printChecksums", action="store_true", default=False,
-      help="Compute and print checksums for all downloaded sources and patches "
-           "in ready-to-paste YAML format, then continue the build normally.")
+      help="Compute and print checksums for all sources and patches in "
+           "ready-to-paste YAML format after the build completes. "
+           "Works for already-compiled packages (reads from the download cache). "
+           "Overrides checksum_mode in the active defaults profile.")
   build_checksums.add_argument(
       "--write-checksums", dest="writeChecksums", action="store_true", default=False,
-      help="After downloading sources and patches, write (or update) the "
-           "checksums/<package>.checksum file in the recipe directory. "
-           "Also records the pinned git commit SHA for source: + tag: packages. "
-           "This flag is independent of the verification mode flags above.")
+      help="Write (or update) the checksums/<package>.checksum file in the "
+           "recipe directory after the build completes. Works for already-compiled "
+           "packages (reads from the download cache). Also records the pinned git "
+           "commit SHA for source: + tag: packages. Independent of the mode flags "
+           "above; overrides write_checksums in the active defaults profile.")
 
   # Options for clean subcommand
   clean_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,

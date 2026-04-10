@@ -1060,12 +1060,12 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--keep-tmp` | Keep temporary build directories after success. |
 | `--resource-monitoring` | Enable per-package CPU/memory monitoring. |
 | `--resources FILE` | JSON resource-utilisation file for scheduling. |
-| `--check-checksums` | Verify checksums declared in `sources`/`patches` entries; emit a warning on mismatch but continue the build. |
-| `--enforce-checksums` | Verify checksums declared in `sources`/`patches` entries; abort the build on any mismatch or if a checksum is missing for a file. |
-| `--print-checksums` | Compute and print the checksum of every downloaded source/patch file (useful for populating recipes). No verification is performed. |
-| `--write-checksums` | After downloading sources and patches, write (or update) `checksums/<package>.checksum` in the recipe directory. Also records the pinned git commit SHA for packages using `source:` + `tag:`. Independent of the `--*-checksums` verification flags. |
+| `--check-checksums` | Verify checksums declared in `sources`/`patches` entries during download; emit a warning on mismatch but continue the build. Overrides `checksum_mode:` in the active defaults profile. |
+| `--enforce-checksums` | Verify checksums declared in `sources`/`patches` entries during download; abort the build on any mismatch or if a checksum is missing for a file. Overrides `checksum_mode:`. |
+| `--print-checksums` | Compute and print checksums for all sources and patches in ready-to-paste YAML format **after** the build completes. Works for already-compiled packages (reads from the download cache). Overrides `checksum_mode:`. |
+| `--write-checksums` | Write (or update) `checksums/<package>.checksum` in the recipe directory **after** the build completes. Works for already-compiled packages. Also records the pinned git commit SHA for `source:` + `tag:` packages. Overrides `write_checksums:` in the active defaults profile. |
 
-The three `--*-checksums` flags are mutually exclusive. `--print-checksums` has the highest precedence when determining the active mode, followed by `--enforce-checksums`, then `--check-checksums`. A per-recipe `enforce_checksums: true` field (see [§17](#17-recipe-format-reference)) acts like `--enforce-checksums` for that package only. `--write-checksums` is independent and can be combined with any of the above.
+The three `--*-checksums` flags are mutually exclusive. Precedence (highest → lowest): `--print-checksums` > `--enforce-checksums` > `--check-checksums` > `checksum_mode:` in defaults profile > per-recipe `enforce_checksums: true` > `off`. `--write-checksums` is independent and can be combined with any of the above. Both `--print-checksums` and `--write-checksums` can also be set site-wide via `checksum_mode: print` and `write_checksums: true` in the active defaults profile (see [§18 — Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles)).
 
 ---
 
@@ -1661,6 +1661,38 @@ package_family:
 | `valid_defaults` | Restricts which profiles this recipe is compatible with. Each component of the `::` list is checked independently; bits aborts if any component is absent from the list. |
 | `package_family` | Optional install grouping; see [Package families](#package-families) below. |
 | `qualify_arch` | Set to `true` to append the defaults combination to the install architecture string; see [Qualifying the install architecture](#qualifying-the-install-architecture) below. |
+| `checksum_mode` | Base checksum verification policy for every build using this profile. Accepted values: `off` (default), `warn`, `enforce`, `print`. Equivalent to passing the corresponding `--*-checksums` flag on every invocation. CLI flags override this setting; see [Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles) below. |
+| `write_checksums` | Set to `true` to automatically write/update `checksums/<pkg>.checksum` files after every build. Equivalent to passing `--write-checksums` on every invocation. The CLI flag overrides this setting. |
+
+### Checksum policy in defaults profiles
+
+Groups that require a consistent security policy can embed it directly in the defaults file rather than relying on every developer to remember the right CLI flag:
+
+```yaml
+# In defaults-production.sh — enforce checksums on all builds using this profile
+checksum_mode: enforce
+
+# Also regenerate checksums automatically after each build
+write_checksums: true
+```
+
+**Accepted values for `checksum_mode`:**
+
+| Value | Behaviour | CLI equivalent |
+|-------|-----------|----------------|
+| `off` | No verification (default) | *(none)* |
+| `warn` | Verify declared checksums; warn on mismatch; ignore missing | `--check-checksums` |
+| `enforce` | Verify declared checksums; abort on mismatch; abort if any declaration is missing | `--enforce-checksums` |
+| `print` | Compute and print checksums after the build; no verification | `--print-checksums` |
+
+**Precedence (highest → lowest):**
+
+1. CLI flag (`--print/enforce/check-checksums`) — unconditional override for this run.
+2. Per-package recipe field (`enforce_checksums: true`) — opts that package into `enforce` mode regardless of the profile.
+3. Defaults profile `checksum_mode:` — site-wide base policy.
+4. `off` — no verification if nothing is configured.
+
+**Timing:** `warn` and `enforce` fire during source download (before compilation), acting as a security gate. `print` and `write` operations run as a single consolidated pass **after all packages have finished building**. This means they cover packages whose binary tarball was already cached (and whose sources were not re-downloaded during this run), as long as the source files are still present in `SOURCES/cache/`.
 
 ### Qualifying the install architecture
 

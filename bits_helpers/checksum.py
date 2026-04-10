@@ -141,20 +141,54 @@ def verify_file(path: str, expected: str) -> bool:
 
 # ── Enforcement ───────────────────────────────────────────────────────────────
 
-def enforcement_mode(spec: dict, args) -> str:
-    """Return the effective enforcement mode for *spec* given CLI *args*.
+def enforcement_mode(spec: dict, args, defaults_meta: dict = None) -> str:
+    """Return the effective enforcement mode for *spec*.
+
+    Precedence (highest → lowest):
+
+    1. **CLI flags** — ``--print/enforce/check-checksums`` are the unconditional
+       override; whichever is active wins immediately.
+    2. **Per-package recipe field** — ``enforce_checksums: true`` in the recipe
+       enables ``"enforce"`` for that package regardless of the defaults profile.
+    3. **Defaults profile** — ``checksum_mode: warn|enforce|print`` in the active
+       ``defaults-*.sh`` provides the site-wide base policy.
+    4. **Off** — no verification when nothing is configured.
+
+    *defaults_meta* is the mapping returned by ``parseDefaults()``; pass it
+    whenever it is available so that the defaults profile is honoured.  The
+    function remains fully backward-compatible when called without it.
 
     Returns one of ``"off"``, ``"warn"``, ``"enforce"``, ``"print"``.
     """
-    if getattr(args, "printChecksums", False):
-        return "print"
-    if getattr(args, "enforceChecksums", False):
-        return "enforce"
-    if getattr(args, "checkChecksums", False):
-        return "warn"
-    if spec.get("enforce_checksums"):
-        return "enforce"
+    # CLI is the unconditional override — checked first, no fallback.
+    if getattr(args, "printChecksums",   False): return "print"
+    if getattr(args, "enforceChecksums", False): return "enforce"
+    if getattr(args, "checkChecksums",   False): return "warn"
+    # Per-package opt-in in the recipe.
+    if spec.get("enforce_checksums"):            return "enforce"
+    # Defaults profile base policy — read when defaults are loaded, applied here.
+    if defaults_meta:
+        mode = defaults_meta.get("checksum_mode", "off")
+        if mode in ("warn", "enforce", "print"):
+            return mode
     return "off"
+
+
+def write_checksums_enabled(args, defaults_meta: dict = None) -> bool:
+    """Return ``True`` if checksum writing is requested.
+
+    Precedence:
+
+    1. ``--write-checksums`` CLI flag — unconditional override.
+    2. ``write_checksums: true`` in the active ``defaults-*.sh`` — site-wide base.
+
+    *defaults_meta* is the mapping returned by ``parseDefaults()``.  The
+    function is backward-compatible when called without it (returns the CLI
+    flag value only).
+    """
+    if getattr(args, "writeChecksums", False):
+        return True
+    return bool(defaults_meta and defaults_meta.get("write_checksums", False))
 
 
 def check_file(path: str, filename: str, checksum_or_none, mode: str) -> None:

@@ -7,7 +7,10 @@ from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
 from bits_helpers.repo_provider import fetch_repo_providers_iteratively, load_always_on_providers
 from bits_helpers.memory import effective_jobs
-from bits_helpers.checksum import parse_entry as parse_checksum_entry, enforcement_mode as checksum_enforcement_mode, checksum_file as compute_checksum_file
+from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
+                                    enforcement_mode as checksum_enforcement_mode,
+                                    write_checksums_enabled,
+                                    checksum_file as compute_checksum_file)
 from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksum_file
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
@@ -792,6 +795,104 @@ def doFinalSync(spec, specs, args, syncHelper):
     syncHelper.upload_symlinks_and_tarball(spec)
 
 
+def _download_time_mode(mode: str) -> str:
+  """Return the enforcement mode to apply *during* source download.
+
+  ``warn`` and ``enforce`` are security gates — they must fire before the
+  compiler ever sees a source file, so they remain active during download.
+
+  ``print`` and ``off`` have no pre-build security purpose: ``print`` is
+  deferred to :func:`_run_post_build_checksum_phase` so that it covers
+  packages whose tarball was already cached (and whose sources were therefore
+  not re-downloaded this run).
+  """
+  return mode if mode in ("warn", "enforce") else "off"
+
+
+def _print_checksums_for_spec(spec, work_dir):
+  """Print computed checksums for all sources and patches of *spec*.
+
+  Reads from the download cache (``SOURCES/cache/``) so that this works even
+  when the package tarball was cached and ``checkout_sources()`` was not called
+  this run.  Missing cache entries are warned about but do not abort.
+  """
+  from bits_helpers.checksum import parse_entry as _pe, checksum_file as _cf
+  from bits_helpers.download import getUrlChecksum as _guc
+  from bits_helpers.utilities import short_commit_hash
+
+  pkgname = spec.get("package", "")
+  version = spec.get("version", "")
+  src_dir = join(work_dir, "SOURCES", pkgname, version, short_commit_hash(spec))
+
+  printed_header = [False]   # mutable cell so the nested helper can set it
+
+  def _header():
+    if not printed_header[0]:
+      print("# %s" % pkgname)
+      printed_header[0] = True
+
+  if "sources" in spec:
+    sources_printed = False
+    for s in spec["sources"]:
+      url, _ = _pe(s)
+      fname = url.rsplit("/", 1)[-1]
+      url_hash = _guc(url)
+      # Primary cache location written by download(); fall back to src_dir.
+      candidate = join(work_dir, "SOURCES", "cache", url_hash[:2], url_hash, fname)
+      if not exists(candidate):
+        candidate = join(work_dir, "TMP", url_hash, fname)   # legacy path
+      if not exists(candidate):
+        candidate = join(src_dir, fname)
+      if exists(candidate):
+        _header()
+        if not sources_printed:
+          print("sources:")
+          sources_printed = True
+        print("  %s: %s" % (url, _cf(candidate)))
+      else:
+        warning("--print-checksums: cannot find cached source for %s in %s",
+                pkgname, url)
+
+  if "patches" in spec:
+    patches_printed = False
+    for patch_entry in spec["patches"]:
+      patch_name, _ = _pe(patch_entry)
+      patch_path = join(spec.get("pkgdir", ""), "patches", patch_name)
+      if exists(patch_path):
+        _header()
+        if not patches_printed:
+          print("patches:")
+          patches_printed = True
+        print("  %s: %s" % (patch_name, _cf(patch_path)))
+
+  if printed_header[0]:
+    print()   # blank line between packages
+
+
+def _run_post_build_checksum_phase(specs, work_dir, do_print, do_write):
+  """Run print / write checksum operations for *all* packages in one pass.
+
+  Called after the main build loop so that:
+
+  * Output from ``--print-checksums`` appears as a single consolidated block
+    rather than being scattered through the build log.
+  * Both operations cover packages whose tarball was already cached (and whose
+    sources were therefore not re-downloaded this run), as long as the source
+    files are still present in ``SOURCES/cache/``.
+
+  ``warn`` / ``enforce`` verification is intentionally **not** handled here —
+  those modes are security gates that run during download via
+  :func:`_download_time_mode`.
+  """
+  if do_print:
+    banner("Checksums")
+  for spec in specs:
+    if do_print:
+      _print_checksums_for_spec(spec, work_dir)
+    if do_write:
+      _write_checksums_for_spec(spec, work_dir)
+
+
 def _write_checksums_for_spec(spec, work_dir):
   """Compute and write the checksums/<pkg>.checksum file for *spec*.
 
@@ -1249,6 +1350,11 @@ def doBuild(args, parser):
   ), args.architecture)
 
   buildList=[]
+  # Specs collected during the build loop for the post-build checksum phase.
+  # Every processed spec is appended here, including those whose tarball was
+  # already cached, so that --print-checksums / --write-checksums (and the
+  # equivalent defaults-profile fields) cover the full build closure.
+  specs_for_checksum_phase = []
   # If we are building only the dependencies, the last package in
   # the build order can be considered done.
   if args.onlyDeps and len(buildOrder) > 1:
@@ -1607,11 +1713,21 @@ def doBuild(args, parser):
       if not args.containerUseWorkDir:
         cachedTarball = re.sub("^" + workDir, container_workDir, cachedTarball)
 
+    # Resolve the effective checksum mode for this package, taking into account
+    # CLI flags, per-recipe enforce_checksums, and the defaults-profile
+    # checksum_mode field (via defaultsMeta).
+    effective_checksum_mode = checksum_enforcement_mode(spec, args, defaultsMeta)
+
     if not cachedTarball:
+      # During download only apply warn/enforce — these are security gates that
+      # must fire before compilation.  print/write are deferred to the
+      # post-build phase so they work for already-cached packages too.
       checkout_sources(spec, workDir, args.referenceSources, args.docker,
-                       enforce_mode=checksum_enforcement_mode(spec, args))
-      if getattr(args, "writeChecksums", False):
-        _write_checksums_for_spec(spec, workDir)
+                       enforce_mode=_download_time_mode(effective_checksum_mode))
+
+    # Collect every processed spec for the post-build checksum phase.
+    # This includes specs whose tarball was cached (cachedTarball != "").
+    specs_for_checksum_phase.append(spec)
 
     family = spec.get("pkg_family", "")
     # ver_rev(spec) is used so that the SPECS directory name matches the actual
@@ -1874,6 +1990,21 @@ def doBuild(args, parser):
     dieOnError(err, buildErrMsg.strip())
     for (p, _, _, _) in buildList:
       doFinalSync(specs[p], specs, args, syncHelper)
+
+  # ── Post-build checksum phase ──────────────────────────────────────────────
+  # Runs after all packages have been built (or confirmed up-to-date) so that
+  # output is consolidated and so that already-cached packages are covered.
+  # warn/enforce remain in checkout_sources (pre-build security gate);
+  # only print/write are handled here.
+  #
+  # The mode is resolved from the global config (CLI flags + defaults profile),
+  # not from the per-spec effective_checksum_mode of the last loop iteration.
+  _global_mode = checksum_enforcement_mode({}, args, defaultsMeta)
+  _do_print = (_global_mode == "print")
+  _do_write = write_checksums_enabled(args, defaultsMeta)
+  if (_do_print or _do_write) and specs_for_checksum_phase:
+    _run_post_build_checksum_phase(specs_for_checksum_phase, workDir,
+                                   do_print=_do_print, do_write=_do_write)
 
   if not args.onlyDeps:
       banner(f"Build of {mainPackage} successfully completed on `{socket.gethostname()}'.\n"
