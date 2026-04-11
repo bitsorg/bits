@@ -901,6 +901,29 @@ def doFinalSync(spec, specs, args, syncHelper):
       from bits_helpers.store_integrity import record_tarball_checksum
       record_tarball_checksum(spec, args.workDir, args.architecture)
 
+  # ── Manifest recording ─────────────────────────────────────────────────────
+  # Record the completed package in the incremental build manifest so that a
+  # partial build still yields a useful record.  The outcome is:
+  #   • "from_store"         — spec["cachedTarball"] was non-empty (we unpacked
+  #                            a tarball recalled from the remote store).
+  #   • "built_from_source"  — the build script ran; the tarball was produced
+  #                            locally and (for non-local revisions) uploaded.
+  if getattr(args, "manifest", None) is not None:
+    from bits_helpers.utilities import resolve_store_path, effective_arch, ver_rev
+    _cached = spec.get("cachedTarball", "")
+    _outcome = "from_store" if _cached else "built_from_source"
+    # Locate the local tarball for checksum recording.
+    _arch = effective_arch(spec, args.architecture)
+    _tarball_name = "{}-{}.{}.tar.gz".format(
+      spec["package"], ver_rev(spec), _arch)
+    _tarball_path = os.path.join(
+      args.workDir,
+      resolve_store_path(_arch, spec["hash"]),
+      _tarball_name,
+    )
+    args.manifest.add_package(spec, _outcome,
+                               _tarball_path if os.path.isfile(_tarball_path) else None)
+
 
 def _download_time_mode(mode: str) -> str:
   """Return the enforcement mode to apply *during* source download.
@@ -1185,6 +1208,25 @@ def doBuild(args, parser):
     provider_policy   = getattr(args, "provider_policy", {}),
   )
   provider_dirs.update(always_on_dirs)
+
+  # ── Build manifest initialisation ─────────────────────────────────────────
+  # The manifest is always written; it records every package, provider, and
+  # checksum so the build can be reproduced later with --from-manifest.
+  from bits_helpers.manifest import BuildManifest
+  args.manifest = BuildManifest(
+    work_dir          = workDir,
+    requested_packages= packages,
+    architecture      = args.architecture,
+    defaults          = args.defaults,
+    config_dir        = args.configDir,
+    config_commit     = os.environ.get("BITS_DIST_HASH", ""),
+    # Use the last (top-level) requested package as the filename identifier.
+    # This mirrors how mainPackage = buildOrder[-1] is resolved later; using
+    # packages[-1] here avoids having to delay manifest creation until after
+    # the full dependency graph has been resolved.
+    target            = packages[-1] if packages else "",
+  )
+  args.manifest.add_providers(provider_dirs)
 
   with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist.bits:ro"] if args.docker else []) as getstatusoutput_docker:
     def performPreferCheckWithTempDir(pkg, cmd):
@@ -1829,6 +1871,9 @@ def doBuild(args, parser):
           rmdir(join(workDir, "INSTALLROOT"))
         except Exception:
           pass
+      # Record in the build manifest that this package was already installed.
+      if getattr(args, "manifest", None) is not None:
+        args.manifest.add_package(spec, "already_installed")
       continue
 
     if fileHash != "0":
@@ -2251,5 +2296,11 @@ def doBuild(args, parser):
   if untrackedFilesDirectories:
     banner("Untracked files in the following directories resulted in a rebuild of "
            "the associated package and its dependencies:\n%s\n\nPlease commit or remove them to avoid useless rebuilds.", "\n".join(untrackedFilesDirectories))
+
+  # Finalise the build manifest.
+  if getattr(args, "manifest", None) is not None:
+    args.manifest.complete()
+    banner("Build manifest written to:\n  %s", args.manifest.path)
+
   debug("Everything done")
 

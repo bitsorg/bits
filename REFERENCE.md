@@ -40,6 +40,11 @@
 22. [Docker Support](#22-docker-support)
 23. [Forcing or Dropping the Revision Suffix (`force_revision`)](#23-forcing-or-dropping-the-revision-suffix-force_revision)
 24. [Design Principles & Limitations](#24-design-principles--limitations)
+25. [Build Manifest](#25-build-manifest)
+    - [What is recorded](#what-is-recorded)
+    - [Manifest location and naming](#manifest-location-and-naming)
+    - [Manifest schema reference](#manifest-schema-reference)
+    - [Replaying a build with `--from-manifest`](#replaying-a-build-with---from-manifest)
 
 ---
 
@@ -1376,6 +1381,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--write-checksums` | Write (or update) `checksums/<package>.checksum` in the recipe directory **after** the build completes. Works for already-compiled packages. Also records the pinned git commit SHA for `source:` + `tag:` packages. Overrides `write_checksums:` in the active defaults profile. |
 | `--store-integrity` | Enable local tarball integrity verification. After each upload the tarball's SHA-256 is recorded in `$WORK_DIR/STORE_CHECKSUMS/`. On every subsequent recall from the remote store the digest is recomputed and compared; a mismatch is a fatal error. Disabled by default for backward compatibility. Can also be enabled persistently with `store_integrity = true` in `bits.rc`. See [§21 Store integrity verification](#store-integrity-verification). |
 | `--provider-policy POLICY` | Control where each repository-provider's checkout is inserted into `BITS_PATH`. Format: comma-separated `name:position` pairs where `position` is `prepend` or `append`. Example: `--provider-policy bits-providers:prepend,myorg:append`. By default every provider is appended regardless of its recipe declaration. Can also be set in `bits.rc` as `provider_policy = …`. See [§13 Provider policy](#provider-policy). |
+| `--from-manifest FILE` | Replay a build from a manifest JSON file. The `PACKAGE` positional argument is optional when this flag is given — bits uses the `requested_packages` field recorded in the manifest. Each recalled tarball is verified against the manifest's `tarball_sha256`. See [§25 Build Manifest](#25-build-manifest). |
 
 The three `--*-checksums` flags are mutually exclusive. Precedence (highest → lowest): `--print-checksums` > `--enforce-checksums` > `--check-checksums` > `checksum_mode:` in defaults profile > per-recipe `enforce_checksums: true` > `off`. `--write-checksums` is independent and can be combined with any of the above. Both `--print-checksums` and `--write-checksums` can also be set site-wide via `checksum_mode: print` and `write_checksums: true` in the active defaults profile (see [§18 — Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles)).
 
@@ -2852,3 +2858,190 @@ tarballs, symlinks, `init.sh`, dist trees, and all remote-store backends.
 - **Linux and macOS only** — Bits runs on Linux and macOS (Intel and Apple Silicon).
 - **Environment Modules required** for `bits enter / load / unload` — the `modulecmd` binary must be installed separately.
 - **Active development** — The recipe format and Python APIs may change between versions. Evaluate thoroughly before adopting in production pipelines.
+
+---
+
+## 25. Build Manifest
+
+Every `bits build` run writes a self-contained JSON manifest to the work
+directory.  The manifest captures everything bits needs to reproduce the
+build at a later date: the requested packages, architecture, defaults
+profile, provider checkouts, and the identity (hash + tarball checksum) of
+every package that was built or retrieved from the remote store.
+
+```bash
+# Build normally — manifest is always written
+bits build ROOT
+
+# The manifest file is printed in the success banner, e.g.:
+#   Build manifest written to:
+#     $WORK_DIR/bits-manifest-20260411T143000Z.json
+#
+# A convenience symlink is kept current after every write:
+ls -la $WORK_DIR/bits-manifest-latest.json
+```
+
+### What is recorded
+
+The manifest records every input and output that could affect reproducibility:
+
+**Global build parameters**
+
+| Field | Description |
+|---|---|
+| `bits_version` | Version string of the bits tool itself |
+| `bits_dist_hash` | Git commit of the bits distribution (= `BITS_DIST_HASH`) |
+| `requested_packages` | Packages passed on the command line |
+| `architecture` | Combined architecture string (may include defaults suffix) |
+| `defaults` | Active defaults profile(s) |
+| `config_dir` | Absolute path to the recipe repository (`.bits` checkout) |
+| `config_commit` | HEAD commit of the recipe repository at build time |
+| `status` | `"in_progress"` → `"complete"` or `"failed"` |
+
+**Providers** (one entry per repository-provider package)
+
+| Field | Description |
+|---|---|
+| `name` | Provider package name |
+| `checkout_dir` | Absolute path of the local clone |
+| `commit` | Full git commit hash of the cloned provider |
+| `remote_url` | `origin` remote URL (or `null` if not readable) |
+
+**Packages** (one entry per package, in build order)
+
+| Field | Description |
+|---|---|
+| `package` | Package name |
+| `version` | Package version |
+| `revision` | Assigned revision (local or remote) |
+| `hash` | Content-addressable build hash |
+| `commit_hash` | Source commit hash (or `"0"` for untracked sources) |
+| `outcome` | `"already_installed"`, `"from_store"`, or `"built_from_source"` |
+| `tarball` | Tarball filename (or `null`) |
+| `tarball_sha256` | `sha256:<hex>` digest of the tarball, if present |
+| `completed_at` | ISO-8601 UTC timestamp of package completion |
+
+### Manifest location and naming
+
+Manifests are written to the bits work directory (`--work-dir`, default `sw`):
+
+```
+$WORK_DIR/
+  bits-manifest-20260411T143000Z.json   ← one file per build run (UTC timestamp)
+  bits-manifest-latest.json             ← symlink to the most recent manifest
+```
+
+The manifest is written **incrementally**: after each package completes (or
+is confirmed already installed), so a failed build still produces a partial
+manifest recording what succeeded.
+
+The `bits-manifest-latest.json` symlink is updated atomically after every
+incremental write using `os.replace()` on a temporary symlink, so readers
+always see a consistent view.
+
+### Manifest schema reference
+
+```json
+{
+  "schema_version": 1,
+  "bits_version": "1.0.0",
+  "bits_dist_hash": "a1b2c3d4e5...",
+  "created_at": "2026-04-11T14:30:00Z",
+  "updated_at": "2026-04-11T14:45:12Z",
+  "status": "complete",
+  "requested_packages": ["ROOT"],
+  "architecture": "slc7_x86-64",
+  "defaults": ["release"],
+  "config_dir": "/home/user/myrecipes",
+  "config_commit": "abc123def456...",
+  "providers": [
+    {
+      "name": "myorg-recipes",
+      "checkout_dir": "/home/user/sw/REPOS/myorg-recipes",
+      "commit": "deadbeef12345678...",
+      "remote_url": "https://github.com/myorg/recipes.git"
+    }
+  ],
+  "packages": [
+    {
+      "package": "zlib",
+      "version": "1.2.11",
+      "revision": "3",
+      "hash": "abcd1234abcd1234...",
+      "commit_hash": "0",
+      "outcome": "from_store",
+      "tarball": "zlib-1.2.11-3.slc7_x86-64.tar.gz",
+      "tarball_sha256": "sha256:e3b0c44298fc1c14...",
+      "completed_at": "2026-04-11T14:31:05Z"
+    },
+    {
+      "package": "ROOT",
+      "version": "6.32.04",
+      "revision": "2",
+      "hash": "ef567890ef567890...",
+      "commit_hash": "feedcafe...",
+      "outcome": "built_from_source",
+      "tarball": "ROOT-6.32.04-2.slc7_x86-64.tar.gz",
+      "tarball_sha256": "sha256:f4ca408ad2b...",
+      "completed_at": "2026-04-11T14:45:10Z"
+    }
+  ]
+}
+```
+
+When a build fails, the manifest contains a `"failed_package"` field and
+optionally a `"failure_reason"`:
+
+```json
+{
+  "status": "failed",
+  "failed_package": "ROOT",
+  "failure_reason": "build script exited 1"
+}
+```
+
+### Replaying a build with `--from-manifest`
+
+Pass `--from-manifest FILE` to instruct bits to re-run the build described
+by a manifest.  The `PACKAGE` positional argument is optional when
+`--from-manifest` is given — the manifest's `requested_packages` list is
+used automatically:
+
+```bash
+# Replay from the latest manifest (no package name needed):
+bits build --from-manifest $WORK_DIR/bits-manifest-latest.json
+
+# Override a specific package while replaying the rest:
+bits build --from-manifest bits-manifest-20260411T143000Z.json ROOT
+
+# Pin to a specific manifest from the archive:
+bits build --from-manifest bits-manifest-20260101T090000Z.json
+```
+
+During a replay run bits will:
+
+1. Read `requested_packages`, `architecture`, `defaults`, and `config_commit`
+   from the manifest and use them as the effective build parameters.
+2. Build the dependency graph as usual, but with versions and hashes pinned
+   to the values recorded in the manifest.
+3. Verify each recalled tarball's `sha256` against the manifest entry,
+   providing end-to-end integrity even for a replay run.
+
+> **Note on `config_commit` pinning:** The replay currently uses the
+> `config_commit` field for informational purposes.  To guarantee an exact
+> replay you should check out the same commit of the recipe repository before
+> invoking `bits build --from-manifest`.
+
+### Manifest and store integrity
+
+The build manifest and the [store integrity ledger](#store-integrity-verification)
+are complementary:
+
+- The **ledger** (`STORE_CHECKSUMS/`) guards individual tarballs against
+  store-backend tampering during the current build cycle.
+- The **manifest** records the complete provenance of a build run and
+  enables future replays and audits.
+
+When both `--store-integrity` and a manifest are active, the manifest's
+`tarball_sha256` fields provide a second, portable copy of the digest that
+survives even if the local ledger directory is deleted.

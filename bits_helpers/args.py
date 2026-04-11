@@ -351,6 +351,21 @@ def doParseArgs():
       ),
   )
 
+  # From-manifest flag (build replay)
+  build_parser.add_argument(
+      "--from-manifest", dest="fromManifest", metavar="FILE", default=None,
+      help=(
+          "Replay a previous build from a manifest JSON file written by bits.  "
+          "The manifest records the requested packages, architecture, defaults, "
+          "providers, and per-package checksums.  When this flag is given the "
+          "PACKAGE positional argument is optional; if omitted, the packages "
+          "listed in the manifest's 'requested_packages' field are built.  "
+          "Each recalled tarball is verified against the manifest's "
+          "'tarball_sha256' to detect store tampering.  "
+          "Example: bits build --from-manifest bits-manifest-latest.json"
+      ),
+  )
+
   # Options for clean subcommand
   clean_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                             help=("Clean up build results for this architecture. Default is the current system "
@@ -685,6 +700,32 @@ def finaliseArgs(args, parser):
   # args so that build.py can pass it straight through to the provider loader.
   _raw_policy = getattr(args, "providerPolicy", None) or _rc.get("provider_policy", "")
   args.provider_policy = _parse_provider_policy(_raw_policy)
+
+  # ── from-manifest (build replay) ─────────────────────────────────────────
+  # When --from-manifest is given, the manifest's ``requested_packages`` list
+  # is used as the package list so the user does not have to repeat it on the
+  # command line.  An explicitly provided PACKAGE argument takes precedence
+  # (allows overriding a specific package while reusing the rest of the
+  # manifest's configuration).
+  from_manifest = getattr(args, "fromManifest", None)
+  if from_manifest and args.action == "build":
+    import json, os as _os
+    if not _os.path.isfile(from_manifest):
+      parser.error("--from-manifest: file not found: %s" % from_manifest)
+    try:
+      with open(from_manifest) as _fh:
+        _manifest_data = json.load(_fh)
+    except (ValueError, OSError) as _exc:
+      parser.error("--from-manifest: cannot read manifest: %s" % _exc)
+    # If no packages were given on the command line, fill them in from the
+    # manifest so the user can just say: bits build --from-manifest FILE
+    if not getattr(args, "pkgname", None):
+      args.pkgname = list(_manifest_data.get("requested_packages", []))
+      if not args.pkgname:
+        parser.error("--from-manifest: manifest has no 'requested_packages'")
+    # Store the loaded manifest data on args so doBuild can use it for
+    # version pinning and tarball verification.
+    args.fromManifestData = _manifest_data
 
   # --architecture can be specified in both clean and build.
   if args.action in ["build", "clean"] and not args.architecture:

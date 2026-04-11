@@ -1,0 +1,310 @@
+"""Build manifest — captures all inputs and outputs of a bits build run.
+
+Purpose
+-------
+A build manifest records every parameter, provider, package, and checksum
+involved in a build so that the exact same build can be reliably reproduced
+later from the manifest alone::
+
+    bits build --from-manifest bits-manifest-20260411T143000Z.json
+
+The manifest is written **incrementally**: after each package completes (or
+is confirmed already up-to-date), so a partial build still yields a useful
+record of what was completed before the failure.
+
+Location
+--------
+Manifests are written to the work directory::
+
+    $WORK_DIR/
+      bits-manifest-<ISO-timestamp>.json   ← one per build run
+      bits-manifest-latest.json            ← symlink to the most recent
+
+The ``bits-manifest-latest.json`` symlink is updated atomically after each
+incremental write.
+
+Schema (version 1)
+------------------
+::
+
+    {
+      "schema_version":    int,         # always 1 for this implementation
+      "bits_version":      str,         # bits package version (or "unknown")
+      "bits_dist_hash":    str,         # BITS_DIST_HASH env var
+      "created_at":        ISO-8601,
+      "updated_at":        ISO-8601,
+      "status":            "in_progress" | "complete" | "failed",
+      "failed_package":    str,         # only present when status == "failed"
+      "failure_reason":    str,         # only present when status == "failed"
+      "requested_packages": [str],      # packages passed on the command line
+      "architecture":      str,
+      "defaults":          [str],
+      "config_dir":        str,         # absolute path to the .bits checkout
+      "config_commit":     str,         # BITS_DIST_HASH of the config repo
+      "providers":         [ProviderEntry],
+      "packages":          [PackageEntry]
+    }
+
+    ProviderEntry::
+    {
+      "name":         str,              # provider package name
+      "checkout_dir": str,              # absolute path of the local clone
+      "commit":       str,              # full git commit hash
+      "remote_url":   str | null        # 'origin' remote URL (or null)
+    }
+
+    PackageEntry::
+    {
+      "package":       str,
+      "version":       str,
+      "revision":      str,
+      "hash":          str,             # content-addressable build hash
+      "commit_hash":   str,             # source commit hash (or "0")
+      "outcome":       "already_installed" | "from_store" | "built_from_source",
+      "tarball":       str | null,      # tarball filename
+      "tarball_sha256": str | null,     # sha256:<hex> of the tarball, if present
+      "completed_at":  ISO-8601
+    }
+
+Replay
+------
+When ``bits build --from-manifest FILE`` is invoked, bits reads the manifest
+and re-runs the build with the same ``requested_packages``, ``architecture``,
+``defaults``, and ``config_commit`` pinned.  Each package entry's ``hash``
+and ``tarball_sha256`` are used to verify the recalled tarballs, providing
+end-to-end integrity even for a replay.
+"""
+
+import json
+import os
+import re
+import subprocess
+from datetime import datetime, timezone
+
+try:
+    from bits_helpers import __version__
+except ImportError:
+    __version__ = None
+
+from bits_helpers.log import debug, warning
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _now_iso() -> str:
+    """Return the current UTC time as an ISO-8601 string."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _git_remote_url(directory: str):
+    """Return the ``origin`` remote URL for *directory*, or ``None`` on failure."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=directory,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            url = result.stdout.decode(errors="replace").strip()
+            return url or None
+        return None
+    except Exception:
+        return None
+
+
+def _tarball_sha256(tarball_path: str):
+    """Return the SHA-256 digest of *tarball_path* (``sha256:<hex>``), or ``None``."""
+    if not tarball_path or not os.path.isfile(tarball_path):
+        return None
+    try:
+        from bits_helpers.checksum import checksum_file
+        return checksum_file(tarball_path)
+    except Exception as exc:
+        warning("manifest: could not checksum %s: %s", tarball_path, exc)
+        return None
+
+
+# ── BuildManifest ─────────────────────────────────────────────────────────────
+
+class BuildManifest:
+    """Incremental build manifest written to ``$WORK_DIR/bits-manifest-*.json``.
+
+    Typical lifecycle::
+
+        manifest = BuildManifest(work_dir, requested_packages, ...)
+        manifest.add_providers(provider_dirs)          # after provider load
+        # main build loop:
+        manifest.add_package(spec, "already_installed")
+        manifest.add_package(spec, "from_store", tarball_path)
+        manifest.add_package(spec, "built_from_source", tarball_path)
+        # end of build:
+        manifest.complete()   # or manifest.fail(package_name, reason)
+    """
+
+    SCHEMA_VERSION = 1
+    _LATEST_SYMLINK = "bits-manifest-latest.json"
+
+    def __init__(
+        self,
+        work_dir: str,
+        requested_packages: list,
+        architecture: str,
+        defaults: list,
+        config_dir: str,
+        config_commit: str,
+        target: str = "",
+    ):
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self._work_dir = work_dir
+        # Sanitise the target name so it is always safe as a filename component
+        # (package names are typically alphanumeric + hyphens, but guard anyway).
+        _safe_target = re.sub(r"[^A-Za-z0-9_.+-]", "_", target) if target else ""
+        _name = (
+            "bits-manifest-{}-{}.json".format(_safe_target, timestamp)
+            if _safe_target
+            else "bits-manifest-{}.json".format(timestamp)
+        )
+        self._path = os.path.join(work_dir, _name)
+        self._data = {
+            "schema_version":     self.SCHEMA_VERSION,
+            "bits_version":       __version__ or "unknown",
+            "bits_dist_hash":     os.environ.get("BITS_DIST_HASH", ""),
+            "created_at":         _now_iso(),
+            "updated_at":         _now_iso(),
+            "status":             "in_progress",
+            "requested_packages": list(requested_packages),
+            "architecture":       architecture,
+            "defaults":           list(defaults),
+            "config_dir":         os.path.abspath(config_dir),
+            "config_commit":      config_commit,
+            "providers":          [],
+            "packages":           [],
+        }
+        self._save()
+        debug("manifest: initialised at %s", self._path)
+
+    # ── Accessors ─────────────────────────────────────────────────────────────
+
+    @property
+    def path(self) -> str:
+        """Absolute path of the manifest JSON file."""
+        return self._path
+
+    # ── Provider recording ────────────────────────────────────────────────────
+
+    def add_providers(self, provider_dirs: dict) -> None:
+        """Record all provider entries from a ``{checkout_dir: (name, commit)}`` dict.
+
+        This is the dict returned by both ``load_always_on_providers()`` and
+        ``fetch_repo_providers_iteratively()``.  Call once after merging both.
+        """
+        for checkout_dir, (name, commit) in provider_dirs.items():
+            abs_dir = os.path.abspath(checkout_dir)
+            entry = {
+                "name":         name,
+                "checkout_dir": abs_dir,
+                "commit":       commit,
+                "remote_url":   _git_remote_url(abs_dir),
+            }
+            self._data["providers"].append(entry)
+            debug("manifest: recorded provider %s @ %s", name, commit[:10])
+        if provider_dirs:
+            self._data["updated_at"] = _now_iso()
+            self._save()
+
+    # ── Package recording ─────────────────────────────────────────────────────
+
+    def add_package(
+        self,
+        spec: dict,
+        outcome: str,
+        tarball_path: str = None,
+    ) -> None:
+        """Record a completed package in the manifest.
+
+        Parameters
+        ----------
+        spec:
+            The spec dict for the package (as used throughout build.py).
+        outcome:
+            One of ``"already_installed"``, ``"from_store"``,
+            ``"built_from_source"``.
+        tarball_path:
+            Absolute path to the local tarball file, if one exists.  Used to
+            compute ``tarball_sha256``.
+        """
+        entry = {
+            "package":        spec.get("package", ""),
+            "version":        spec.get("version", ""),
+            "revision":       spec.get("revision", ""),
+            "hash":           spec.get("hash", ""),
+            "commit_hash":    spec.get("commit_hash", ""),
+            "outcome":        outcome,
+            "tarball":        os.path.basename(tarball_path) if tarball_path else None,
+            "tarball_sha256": _tarball_sha256(tarball_path),
+            "completed_at":   _now_iso(),
+        }
+        self._data["packages"].append(entry)
+        self._data["updated_at"] = _now_iso()
+        self._save()
+        debug("manifest: %s recorded as %s", spec.get("package", "?"), outcome)
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def complete(self) -> None:
+        """Mark the manifest as successfully completed and write a final save."""
+        self._data["status"] = "complete"
+        self._data["updated_at"] = _now_iso()
+        self._save()
+        debug("manifest: complete — %s", self._path)
+
+    def fail(self, package_name: str = "", reason: str = "") -> None:
+        """Mark the manifest as failed (e.g. build script exited non-zero).
+
+        The manifest still contains all packages recorded up to this point,
+        so partial builds are preserved for inspection.
+        """
+        self._data["status"] = "failed"
+        self._data["updated_at"] = _now_iso()
+        if package_name:
+            self._data["failed_package"] = package_name
+        if reason:
+            self._data["failure_reason"] = reason
+        self._save()
+        debug("manifest: failed at package %s", package_name or "(unknown)")
+
+    # ── Serialisation ─────────────────────────────────────────────────────────
+
+    @classmethod
+    def load(cls, path: str) -> dict:
+        """Load and return the manifest at *path* as a plain ``dict``.
+
+        This is a lightweight helper for the ``--from-manifest`` replay path.
+        It does not return a ``BuildManifest`` instance (which would try to
+        write a *new* manifest file).
+        """
+        with open(path) as fh:
+            return json.load(fh)
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _save(self) -> None:
+        """Atomically write the JSON manifest and update the ``latest`` symlink."""
+        tmp = self._path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(self._data, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, self._path)
+
+        # Update the ``bits-manifest-latest.json`` symlink atomically.
+        latest = os.path.join(self._work_dir, self._LATEST_SYMLINK)
+        tmp_link = latest + ".tmp"
+        try:
+            if os.path.lexists(tmp_link):
+                os.unlink(tmp_link)
+            os.symlink(os.path.basename(self._path), tmp_link)
+            os.replace(tmp_link, latest)
+        except OSError as exc:
+            warning("manifest: could not update latest symlink: %s", exc)
