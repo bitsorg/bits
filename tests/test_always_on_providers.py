@@ -100,8 +100,9 @@ class TestMakeBitsProvidersSpec(unittest.TestCase):
     def test_always_load_true(self):
         self.assertTrue(self.spec["always_load"])
 
-    def test_repository_position_prepend(self):
-        self.assertEqual(self.spec["repository_position"], "prepend")
+    def test_repository_position_append(self):
+        # Default is now "append" — providers cannot self-elevate to prepend.
+        self.assertEqual(self.spec["repository_position"], "append")
 
     def test_returns_ordered_dict(self):
         self.assertIsInstance(self.spec, OrderedDict)
@@ -485,7 +486,8 @@ class TestLoadAlwaysOnProviders(unittest.TestCase):
     @patch("bits_helpers.repo_provider._add_to_bits_path")
     @patch("bits_helpers.repo_provider.clone_or_update_provider")
     def test_repository_position_forwarded_to_bits_path(self, mock_clone, mock_add):
-        """The ``repository_position`` from the recipe is passed to _add_to_bits_path."""
+        """The ``repository_position`` from the recipe is forwarded to _add_to_bits_path
+        as the *recipe_position* keyword argument alongside the provider name and policy."""
         checkout_dir = os.path.join(self.work_dir, "prepend-recipes")
         os.makedirs(checkout_dir)
         mock_clone.return_value = (checkout_dir, "deadbeef")
@@ -502,7 +504,12 @@ class TestLoadAlwaysOnProviders(unittest.TestCase):
             bits_providers    = None,
         )
 
-        mock_add.assert_called_once_with(checkout_dir, "prepend")
+        mock_add.assert_called_once_with(
+            checkout_dir,
+            recipe_position="prepend",
+            provider_name="prepend-recipes",
+            policy={},
+        )
 
 
 if __name__ == "__main__":

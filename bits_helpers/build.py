@@ -893,6 +893,13 @@ def doFinalSync(spec, specs, args, syncHelper):
   # produced in a previous run with a read-only remote store.
   if not spec["revision"].startswith("local"):
     syncHelper.upload_symlinks_and_tarball(spec)
+    # Record the tarball's SHA-256 in the local integrity ledger so that
+    # future recalls from the store can be verified against it.
+    # Only active when --store-integrity is set (or store_integrity = true
+    # in bits.rc); off by default for backward compatibility.
+    if getattr(args, "storeIntegrity", False):
+      from bits_helpers.store_integrity import record_tarball_checksum
+      record_tarball_checksum(spec, args.workDir, args.architecture)
 
 
 def _download_time_mode(mode: str) -> str:
@@ -1144,6 +1151,7 @@ def doBuild(args, parser):
     fetch_repos       = args.fetchRepos,
     bits_providers    = getattr(args, "bits_providers", None),
     taps              = taps,
+    provider_policy   = getattr(args, "provider_policy", {}),
   )
 
   # Phase 2 – Iterative scan: walk the top-level package list for any packages
@@ -1174,6 +1182,7 @@ def doBuild(args, parser):
     reference_sources = args.referenceSources,
     fetch_repos       = args.fetchRepos,
     taps              = taps,
+    provider_policy   = getattr(args, "provider_policy", {}),
   )
   provider_dirs.update(always_on_dirs)
 
@@ -1844,6 +1853,12 @@ def doBuild(args, parser):
       spec["cachedTarball"] = tarballs[0] if len(tarballs) else ""
       debug("Found tarball in %s" % spec["cachedTarball"]
             if spec["cachedTarball"] else "No cache tarballs found")
+      # Verify the recalled tarball against the local integrity ledger.
+      # Only active when --store-integrity is set (or store_integrity = true
+      # in bits.rc); off by default for backward compatibility.
+      if spec["cachedTarball"] and getattr(args, "storeIntegrity", False):
+        from bits_helpers.store_integrity import verify_tarball_checksum
+        verify_tarball_checksum(spec, workDir, args.architecture, spec["cachedTarball"])
 
     # The actual build script.
     debug("spec = %r", spec)

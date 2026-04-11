@@ -12,7 +12,7 @@
     - [Async pipeline options](#--pipeline----pipelined-tarball-creation-and-upload-makeflow-only)
 6. [Managing Environments](#6-managing-environments)
 7. [Cleaning Up](#7-cleaning-up)
-8. [Practical Scenarios](#8-practical-scenarios)
+8. [Cookbook](#8-cookbook)
 
 ### Part II — Developer Guide
 9. [Architecture Overview](#9-architecture-overview)
@@ -36,8 +36,10 @@
     - [Build lifecycle with a store](#build-lifecycle-with-a-store)
     - [CI/CD patterns](#cicd-patterns)
     - [Source archive caching](#source-archive-caching)
+    - [Store integrity verification](#store-integrity-verification)
 22. [Docker Support](#22-docker-support)
-23. [Design Principles & Limitations](#23-design-principles--limitations)
+23. [Forcing or Dropping the Revision Suffix (`force_revision`)](#23-forcing-or-dropping-the-revision-suffix-force_revision)
+24. [Design Principles & Limitations](#24-design-principles--limitations)
 
 ---
 
@@ -173,6 +175,8 @@ The `[bits]` section recognises two classes of keys: legacy shell-level variable
 | `remote_store` | `--remote-store URL` | Binary store to fetch pre-built tarballs from. |
 | `write_store` | `--write-store URL` | Binary store to upload newly-built tarballs to. |
 | `providers` | `--providers URL` / `$BITS_PROVIDERS` | URL of the bits-providers repository. |
+| `provider_policy` | `--provider-policy POLICY` | Comma-separated `name:position` pairs controlling where each repository-provider's checkout lands in `BITS_PATH`. See [§13 Provider policy](#provider-policy). |
+| `store_integrity` | `--store-integrity` | Set to `true`, `1`, or `yes` to enable local tarball integrity verification. Off by default. See [§21 Store integrity verification](#store-integrity-verification). |
 | `work_dir` | `-w DIR` / `$BITS_WORK_DIR` | Default work/output directory. |
 | `architecture` | `-a ARCH` | Default target architecture. |
 | `defaults` | `--defaults PROFILE` | Default profile(s), `::` separated. |
@@ -218,6 +222,18 @@ bits build [options] PACKAGE [PACKAGE ...]
 ```
 
 Bits resolves the full transitive dependency graph of each requested package, computes a content-addressable hash for every node, downloads any pre-built artifacts that already exist in a remote store, and builds the rest in topological order.
+
+### How a build proceeds
+
+1. **Recipe discovery** — Bits locates `<package>.sh` in each directory on `search_path` (appending `.bits` to each name). Repository-provider packages (see [§13](#13-repository-provider-feature)) are cloned first to extend the search path before the main resolution pass.
+2. **Dependency resolution** — `requires`, `build_requires`, and `runtime_requires` fields are read recursively, forming a DAG. Cycles are reported as errors.
+3. **Hash computation** — A hash is computed for each package from its recipe text, source commit, dependency hashes, and environment. Packages with a matching hash in a store are downloaded instead of rebuilt.
+4. **Source fetching** — Source repositories are cloned into a local mirror and then checked out into a build area. Up to 8 repositories are fetched in parallel.
+5. **Build execution** — Each package's Bash script runs in an isolated environment with sanitised locale and only its declared dependencies visible.
+6. **Post-build** — A modulefile and a versioned tarball are written; the tarball may be uploaded to a write store.
+
+
+---
 
 ### Common options
 
@@ -337,14 +353,6 @@ bits build --parallel-sources 4 MyStack
 
 If any source download fails, the exception is re-raised immediately and the package build is aborted. The remaining concurrent downloads are cancelled via thread pool shutdown. When `N ≤ 1` or the package has only a single source, the sequential code path is used (no overhead from the thread pool).
 
-### How a build proceeds
-
-1. **Recipe discovery** — Bits locates `<package>.sh` in each directory on `search_path` (appending `.bits` to each name). Repository-provider packages (see [§13](#13-repository-provider-feature)) are cloned first to extend the search path before the main resolution pass.
-2. **Dependency resolution** — `requires`, `build_requires`, and `runtime_requires` fields are read recursively, forming a DAG. Cycles are reported as errors.
-3. **Hash computation** — A hash is computed for each package from its recipe text, source commit, dependency hashes, and environment. Packages with a matching hash in a store are downloaded instead of rebuilt.
-4. **Source fetching** — Source repositories are cloned into a local mirror and then checked out into a build area. Up to 8 repositories are fetched in parallel.
-5. **Build execution** — Each package's Bash script runs in an isolated environment with sanitised locale and only its declared dependencies visible.
-6. **Post-build** — A modulefile and a versioned tarball are written; the tarball may be uploaded to a write store.
 
 ---
 
@@ -450,7 +458,7 @@ The default (non-aggressive) clean removes the `TMP/` staging area, stale `BUILD
 
 ---
 
-## 8. Practical Scenarios
+## 8. Cookbook
 
 ### Build a complete stack from scratch
 
@@ -563,6 +571,140 @@ bits build --docker --architecture ubuntu2004_x86-64 ROOT
 ```bash
 bits deps --outgraph deps.pdf ROOT   # requires Graphviz
 ```
+
+### Run a single command in the built environment
+
+```bash
+bits setenv ROOT/v6-30 -c root -b
+```
+
+Use `bits setenv` to execute a single command (with optional arguments) in the built environment without spawning an interactive shell. The target module must be installed first. Exit code and output pass through unchanged.
+
+### Load modules persistently into the current shell
+
+Add to `~/.bashrc`, `~/.zshrc`, or `~/.kshrc`:
+
+```bash
+BITS_WORK_DIR=/path/to/sw
+eval "$(bits shell-helper)"
+```
+
+Then in any new shell session:
+
+```bash
+bits load ROOT/latest      # load into current shell
+bits unload ROOT           # unload from current shell
+```
+
+The `bits shell-helper` function modifies the current shell's environment directly without requiring an explicit `eval`. Combine with multiple modules: `bits load ROOT/latest,Python/3.11-1`.
+
+### Override a package version without editing the recipe
+
+Defaults profiles can pin package versions globally without modifying recipe files:
+
+```yaml
+# In defaults-myproject.sh
+overrides:
+  ROOT:
+    version: "6-30-06"
+```
+
+Then build with:
+
+```bash
+bits build --defaults release::myproject MyStack
+```
+
+This is useful for shared recipes where different projects need different versions, or for emergency pinning when a new version breaks downstream packages.
+
+### Enforce reproducible source downloads with checksums
+
+First, compute and write checksums for all sources:
+
+```bash
+bits build --write-checksums MyPackage
+```
+
+This creates or updates `checksums/MyPackage.checksum` in the recipe directory. Then enforce them on all future builds:
+
+```bash
+bits build --enforce-checksums MyPackage
+```
+
+Or make it the site default in a defaults profile:
+
+```yaml
+# defaults-production.sh
+checksum_mode: enforce
+```
+
+Any mismatch or missing checksum will abort the build, catching supply-chain tampering or silent mirror corruption.
+
+### Build memory-hungry packages without exhausting RAM
+
+For packages with large parallel builds that risk OOM, limit concurrent builds and/or specify per-package resource budgets:
+
+```bash
+# Option 1: reduce concurrent package builds
+bits build --builders 1 --jobs 8 my_stack
+
+# Option 2: use a resource file
+bits build --builders 4 --resources my_resources.json my_stack
+```
+
+Where `my_resources.json` declares expected CPU and memory per package:
+
+```json
+{
+  "gcc": {"cpu": 4, "rss_mb": 1024},
+  "llvm": {"cpu": 8, "rss_mb": 4096}
+}
+```
+
+The Python scheduler will not start a new build unless the declared resources are free, preventing overcommit.
+
+### Use a private recipe repository alongside the defaults
+
+Set `BITS_PATH` to prepend a custom repository to the search path:
+
+```bash
+BITS_PATH=myorg.bits bits build MyPackage
+```
+
+Or configure it persistently:
+
+```bash
+bits init --config-dir myorg.bits MyPackage
+```
+
+This is useful for building private packages that depend on public recipes, or for maintaining a vendor-specific overlay (e.g. a fork of `gcc` with custom patches) without modifying the main recipe repository.
+
+### CI/CD: build and publish only on the main branch
+
+Use conditional logic in CI to upload binaries only for production builds:
+
+```bash
+if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+  bits build --write-store b3://mybucket/store::rw MyStack
+else
+  # Feature branches: build locally but do not publish
+  bits build MyStack
+fi
+```
+
+The `::rw` suffix sets both `--remote-store` and `--write-store` (if already configured). For more control, use separate variables:
+
+```bash
+if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+  WRITE_STORE="b3://mybucket/store"
+else
+  WRITE_STORE=""
+fi
+
+bits build --remote-store b3://mybucket/store --write-store "$WRITE_STORE" MyStack
+```
+
+This ensures PR builds download cached binaries but never pollute the production store.
 
 ---
 
@@ -971,6 +1113,62 @@ Relevant keys in the `[bits]` section:
 providers = https://github.com/myorg/my-recipes.git@stable
 ```
 
+### Provider policy
+
+By default every repository-provider's checkout is **appended** to `BITS_PATH`, regardless of what its `repository_position` field declares.  This is the safe default: an appended provider can only add new recipes, never silently replace an existing one.
+
+A provider that needs to appear *before* other directories — for example to shadow a recipe in the default repository with a patched version — must be explicitly granted `prepend` access by the operator via the `provider_policy` setting.  Provider recipes cannot self-elevate.
+
+#### Configuration
+
+In `bits.rc` (persistent, applies to every run in this work tree):
+
+```ini
+[bits]
+# Grant one provider prepend access; keep all others at the safe default.
+provider_policy = bits-providers:prepend
+
+# Multiple entries are comma-separated.
+provider_policy = bits-providers:prepend, myorg-extras:append
+```
+
+On the command line (per-invocation override):
+
+```bash
+bits build --provider-policy bits-providers:prepend MyPackage
+```
+
+The CLI flag takes precedence over `bits.rc`.
+
+#### How position is resolved
+
+For each provider, bits evaluates the policy in this order:
+
+| Priority | Source | Effect |
+|----------|--------|--------|
+| 1 (highest) | `provider_policy` entry for this provider | Exact position used, overrides recipe |
+| 2 | Recipe's `repository_position` field, **only if `append`** | Respected as-is |
+| 3 (default) | Recipe's `repository_position: prepend` **without policy** | Downgraded to `append`; a warning names the required `bits.rc` line |
+| 4 | No field in recipe | `append` |
+
+When a provider is about to be prepended (whether from policy or recipe), bits scans recipes already visible on `BITS_PATH` and warns for every name collision, listing the affected recipes and the `bits.rc` line that would suppress the warning.  The primary config directory (passed via `-c / --config-dir`) is always position 0 in the search order and **cannot** be shadowed by any provider.
+
+#### Example: patching a default recipe
+
+Suppose `myorg-patches` contains a modified `zlib.sh` that you want to take precedence over the version in the upstream provider:
+
+```ini
+[bits]
+provider_policy = myorg-patches:prepend
+```
+
+```bash
+bits build --provider-policy myorg-patches:prepend ROOT
+# Warning: Provider 'myorg-patches' will shadow 1 recipe(s) already visible
+#   from /path/to/bits-providers: zlib
+# (expected and intended — the warning is informational)
+```
+
 ### Precedence for `BITS_PROVIDERS`
 
 | Priority | Source | Example |
@@ -1176,6 +1374,8 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--enforce-checksums` | Verify checksums declared in `sources`/`patches` entries during download; abort the build on any mismatch or if a checksum is missing for a file. Overrides `checksum_mode:`. |
 | `--print-checksums` | Compute and print checksums for all sources and patches in ready-to-paste YAML format **after** the build completes. Works for already-compiled packages (reads from the download cache). Overrides `checksum_mode:`. |
 | `--write-checksums` | Write (or update) `checksums/<package>.checksum` in the recipe directory **after** the build completes. Works for already-compiled packages. Also records the pinned git commit SHA for `source:` + `tag:` packages. Overrides `write_checksums:` in the active defaults profile. |
+| `--store-integrity` | Enable local tarball integrity verification. After each upload the tarball's SHA-256 is recorded in `$WORK_DIR/STORE_CHECKSUMS/`. On every subsequent recall from the remote store the digest is recomputed and compared; a mismatch is a fatal error. Disabled by default for backward compatibility. Can also be enabled persistently with `store_integrity = true` in `bits.rc`. See [§21 Store integrity verification](#store-integrity-verification). |
+| `--provider-policy POLICY` | Control where each repository-provider's checkout is inserted into `BITS_PATH`. Format: comma-separated `name:position` pairs where `position` is `prepend` or `append`. Example: `--provider-policy bits-providers:prepend,myorg:append`. By default every provider is appended regardless of its recipe declaration. Can also be set in `bits.rc` as `provider_policy = …`. See [§13 Provider policy](#provider-policy). |
 
 The three `--*-checksums` flags are mutually exclusive. Precedence (highest → lowest): `--print-checksums` > `--enforce-checksums` > `--check-checksums` > `checksum_mode:` in defaults profile > per-recipe `enforce_checksums: true` > `off`. `--write-checksums` is independent and can be combined with any of the above. Both `--print-checksums` and `--write-checksums` can also be set site-wide via `checksum_mode: print` and `write_checksums: true` in the active defaults profile (see [§18 — Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles)).
 
@@ -1722,11 +1922,15 @@ For each dependency `DEP` that has been built, bits also sets `${DEP_ROOT}` to t
 
 A **defaults profile** is a special recipe file named `defaults-<name>.sh` that lives in the recipe repository alongside ordinary package recipes. It is not a buildable package — its Bash body is never executed. Instead, its YAML header carries **global configuration** that is applied across the entire dependency graph before any package is resolved.
 
+
 ### Selecting a profile
 
 The active profile is selected with `--defaults PROFILE`. If the flag is omitted, bits falls back to `release`, loading `defaults-release.sh`.
 
 `defaults-release.sh` occupies a privileged position: every package in the build graph automatically depends on a pseudo-package named `defaults-release`, which is fulfilled by whatever profile(s) are loaded. This is the mechanism that injects the global `env:` block into every package's `init.sh`.
+
+
+---
 
 ### Combining multiple profiles with `::`
 
@@ -1740,23 +1944,8 @@ This loads `defaults-dev.sh` and `defaults-gcc13.sh` (in that order) and deep-me
 
 > **Note:** `defaults-release.sh` is **not** automatically prepended when you use `::`. If you want the release baseline plus a project overlay, write `--defaults release::myproject` explicitly.
 
-### Profile names and the `defaults-release` dependency slot
 
-Internally, bits rewrites all specified profiles to satisfy the universal `defaults-release` auto-dependency. When you write `--defaults gcc13`, the `defaults-gcc13.sh` file is loaded, its content is merged, and the result is presented to every other package as its `defaults-release` dependency — regardless of the actual file name on disk. This ensures that the hash of `defaults-release` is the same across all packages that share the same defaults configuration.
-
-### Role in the build pipeline
-
-Defaults processing happens in two phases:
-
-**Phase 1 — `readDefaults()` + `parseDefaults()`** runs before package resolution. Bits loads each named profile file, merges their YAML headers into a single `defaultsMeta` dict, optionally overlays an architecture-specific file (e.g. `defaults-slc9_x86-64.sh`), then extracts:
-
-- `disable` — packages to exclude from the build graph entirely.
-- `env` — environment variables propagated to every package's `init.sh` (injected via the `defaults-release` pseudo-dependency).
-- `overrides` — per-package YAML patches applied after the recipe is parsed (see below).
-- `package_family` — optional install grouping (see [Package families](#package-families) below).
-- `requires` / `build_requires` — repository providers (packages with `provides_repository: true`) to clone and add to `BITS_PATH` for builds using this profile. These are consumed by the Phase 2 provider scan and are **not** added as regular build dependencies (to avoid a dependency cycle — see [Triggering providers from a defaults file](#triggering-providers-from-a-defaults-file) in §13).
-
-**Phase 2 — per-package application** happens inside `getPackageList()` as each recipe is parsed. The merged `overrides` dict is checked against the package name (case-insensitive regex match); matching entries are merged into the spec with `spec.update(override)`. This means a defaults file can change any recipe field — version, `requires`, `env`, `prefer_system`, etc. — for targeted packages.
+---
 
 ### File syntax
 
@@ -1813,6 +2002,9 @@ package_family:
 # environment script. In practice this section is almost always empty.
 ```
 
+
+---
+
 ### YAML fields specific to defaults files
 
 | Field | Description |
@@ -1825,6 +2017,26 @@ package_family:
 | `qualify_arch` | Set to `true` to append the defaults combination to the install architecture string; see [Qualifying the install architecture](#qualifying-the-install-architecture) below. |
 | `checksum_mode` | Base checksum verification policy for every build using this profile. Accepted values: `off` (default), `warn`, `enforce`, `print`. Equivalent to passing the corresponding `--*-checksums` flag on every invocation. CLI flags override this setting; see [Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles) below. |
 | `write_checksums` | Set to `true` to automatically write/update `checksums/<pkg>.checksum` files after every build. Equivalent to passing `--write-checksums` on every invocation. The CLI flag overrides this setting. |
+
+
+---
+
+### Role in the build pipeline
+
+Defaults processing happens in two phases:
+
+**Phase 1 — `readDefaults()` + `parseDefaults()`** runs before package resolution. Bits loads each named profile file, merges their YAML headers into a single `defaultsMeta` dict, optionally overlays an architecture-specific file (e.g. `defaults-slc9_x86-64.sh`), then extracts:
+
+- `disable` — packages to exclude from the build graph entirely.
+- `env` — environment variables propagated to every package's `init.sh` (injected via the `defaults-release` pseudo-dependency).
+- `overrides` — per-package YAML patches applied after the recipe is parsed (see below).
+- `package_family` — optional install grouping (see [Package families](#package-families) below).
+- `requires` / `build_requires` — repository providers (packages with `provides_repository: true`) to clone and add to `BITS_PATH` for builds using this profile. These are consumed by the Phase 2 provider scan and are **not** added as regular build dependencies (to avoid a dependency cycle — see [Triggering providers from a defaults file](#triggering-providers-from-a-defaults-file) in §13).
+
+**Phase 2 — per-package application** happens inside `getPackageList()` as each recipe is parsed. The merged `overrides` dict is checked against the package name (case-insensitive regex match); matching entries are merged into the spec with `spec.update(override)`. This means a defaults file can change any recipe field — version, `requires`, `env`, `prefer_system`, etc. — for targeted packages.
+
+
+---
 
 ### Checksum policy in defaults profiles
 
@@ -1856,76 +2068,8 @@ write_checksums: true
 
 **Timing:** `warn` and `enforce` fire during source download (before compilation), acting as a security gate. `print` and `write` operations run as a single consolidated pass **after all packages have finished building**. This means they cover packages whose binary tarball was already cached (and whose sources were not re-downloaded during this run), as long as the source files are still present in `SOURCES/cache/`.
 
-### Qualifying the install architecture
 
-By default all packages built with any set of defaults land under the same architecture directory (e.g. `sw/slc7_x86-64/`). If you maintain two profiles that are **incompatible with each other** — for example `gcc12` and `gcc13` — builds from one profile will silently overwrite the install tree of the other.
-
-Setting `qualify_arch: true` in a defaults file instructs bits to **append the defaults combination to the architecture string**, producing a unique install prefix per combination. For example:
-
-```
-bits build --defaults dev::gcc13 MyPackage
-```
-
-with `qualify_arch: true` in `defaults-gcc13.sh` installs everything under:
-
-```
-sw/slc7_x86-64-dev-gcc13/
-```
-
-instead of the plain `sw/slc7_x86-64/`. The `release` component is never appended (it is the implicit baseline); all other components are joined with `-` in the order they appear on the command line.
-
-#### How it works
-
-After merging all defaults files, bits calls `compute_combined_arch()` to derive the effective install prefix:
-
-```python
-compute_combined_arch(defaultsMeta, args.defaults, raw_arch)
-# e.g. ("slc7_x86-64", ["dev", "gcc13"]) → "slc7_x86-64-dev-gcc13"
-```
-
-This combined string is used for:
-
-- **Install tree** — `sw/<combined_arch>/<package>/<version>-<revision>/`
-- **`BITS_ARCH_PREFIX` default** in every `init.sh` — so the environment resolves to the right prefix at runtime
-- **`$EFFECTIVE_ARCHITECTURE`** passed to the build script
-- **`TARS/<combined_arch>/`** symlink directories and store paths — tarballs are keyed on the combined arch, ensuring they do not collide with tarballs from builds using a different defaults combination
-
-The original platform architecture (`slc7_x86-64`) is still passed to the build script as **`$ARCHITECTURE`** (used for platform detection such as the macOS `${ARCHITECTURE:0:3}` check) and to system-package preference matching, so build scripts need no changes.
-
-Packages that declare `architecture: shared` (see [§20](#20-architecture-independent-shared-packages)) are **unaffected** by `qualify_arch`: their effective architecture is always `shared` regardless of which defaults are active.
-
-#### Example defaults file
-
-```yaml
-package: defaults-gcc13
-version: v1
-qualify_arch: true            # ← enables per-defaults isolation
-env:
-  CC: gcc-13
-  CXX: g++-13
-```
-
-#### Cleaning up
-
-The `bits clean` command accepts an explicit `-a`/`--architecture` flag. To clean a qualified-arch tree, pass the combined string:
-
-```
-bits clean -a slc7_x86-64-dev-gcc13
-```
-
-### Merge semantics
-
-When the `::` list contains more than one name (e.g. `--defaults release::alice`), `readDefaults()` processes them left to right and merges their YAML headers using `merge_dicts()`, which performs a deep merge:
-
-- Scalar values: later profile wins.
-- Lists: concatenated.
-- Dicts: recursively merged.
-
-This lets a project-level profile (`alice`) layer on top of a base profile (`release`) without duplicating common settings. Bits also validates that each component in the `::` list is present in any `valid_defaults` list found in the loaded recipes; it aborts with a clear error message if any component is incompatible.
-
-### Architecture-specific overlay
-
-If a file named `defaults-<architecture>.sh` exists in the recipe repository (e.g. `defaults-osx_arm64.sh`), bits silently loads it and merges its header on top of the already-merged profile, skipping the `package` key to avoid a name clash. This is the mechanism for per-platform tweaks such as disabling packages that do not build on a particular OS.
+---
 
 ### Package families
 
@@ -2008,6 +2152,90 @@ This means every package in a mixed-family build is correctly self-describing in
 - `SPECS/`, `latest` symlinks, and `hashPath` all use the original layout.
 
 An existing recipe repository with no `package_family` key will produce bit-for-bit identical install trees, tarballs, and hashes compared to a build that predates the feature.
+
+---
+
+
+
+---
+
+### Qualifying the install architecture
+
+By default all packages built with any set of defaults land under the same architecture directory (e.g. `sw/slc7_x86-64/`). If you maintain two profiles that are **incompatible with each other** — for example `gcc12` and `gcc13` — builds from one profile will silently overwrite the install tree of the other.
+
+Setting `qualify_arch: true` in a defaults file instructs bits to **append the defaults combination to the architecture string**, producing a unique install prefix per combination. For example:
+
+```
+bits build --defaults dev::gcc13 MyPackage
+```
+
+with `qualify_arch: true` in `defaults-gcc13.sh` installs everything under:
+
+```
+sw/slc7_x86-64-dev-gcc13/
+```
+
+instead of the plain `sw/slc7_x86-64/`. The `release` component is never appended (it is the implicit baseline); all other components are joined with `-` in the order they appear on the command line.
+
+#### How it works
+
+After merging all defaults files, bits calls `compute_combined_arch()` to derive the effective install prefix:
+
+```python
+compute_combined_arch(defaultsMeta, args.defaults, raw_arch)
+# e.g. ("slc7_x86-64", ["dev", "gcc13"]) → "slc7_x86-64-dev-gcc13"
+```
+
+This combined string is used for:
+
+- **Install tree** — `sw/<combined_arch>/<package>/<version>-<revision>/`
+- **`BITS_ARCH_PREFIX` default** in every `init.sh` — so the environment resolves to the right prefix at runtime
+- **`$EFFECTIVE_ARCHITECTURE`** passed to the build script
+- **`TARS/<combined_arch>/`** symlink directories and store paths — tarballs are keyed on the combined arch, ensuring they do not collide with tarballs from builds using a different defaults combination
+
+The original platform architecture (`slc7_x86-64`) is still passed to the build script as **`$ARCHITECTURE`** (used for platform detection such as the macOS `${ARCHITECTURE:0:3}` check) and to system-package preference matching, so build scripts need no changes.
+
+Packages that declare `architecture: shared` (see [§20](#20-architecture-independent-shared-packages)) are **unaffected** by `qualify_arch`: their effective architecture is always `shared` regardless of which defaults are active.
+
+#### Example defaults file
+
+```yaml
+package: defaults-gcc13
+version: v1
+qualify_arch: true            # ← enables per-defaults isolation
+env:
+  CC: gcc-13
+  CXX: g++-13
+```
+
+#### Cleaning up
+
+The `bits clean` command accepts an explicit `-a`/`--architecture` flag. To clean a qualified-arch tree, pass the combined string:
+
+```
+bits clean -a slc7_x86-64-dev-gcc13
+```
+
+
+---
+
+### Architecture-specific overlay
+
+If a file named `defaults-<architecture>.sh` exists in the recipe repository (e.g. `defaults-osx_arm64.sh`), bits silently loads it and merges its header on top of the already-merged profile, skipping the `package` key to avoid a name clash. This is the mechanism for per-platform tweaks such as disabling packages that do not build on a particular OS.
+
+
+---
+
+### Merge semantics
+
+When the `::` list contains more than one name (e.g. `--defaults release::alice`), `readDefaults()` processes them left to right and merges their YAML headers using `merge_dicts()`, which performs a deep merge:
+
+- Scalar values: later profile wins.
+- Lists: concatenated.
+- Dicts: recursively merged.
+
+This lets a project-level profile (`alice`) layer on top of a base profile (`release`) without duplicating common settings. Bits also validates that each component in the `::` list is present in any `valid_defaults` list found in the loaded recipes; it aborts with a clear error message if any component is incompatible.
+
 
 ---
 
@@ -2380,6 +2608,94 @@ bits build --remote-store b3://mybucket/bits-cache::rw ROOT
 
 If `--remote-store` is set but `--write-store` is not (or the backend is HTTP/CVMFS), bits will still try to fetch source archives from the store but will silently skip uploading — the same behaviour as for build tarballs.
 
+### Store integrity verification
+
+Remote store backends — S3 buckets, rsync servers, HTTP mirrors — are operated by infrastructure that bits does not control.  An operator with write access to the backend, or an attacker who has compromised it, could silently replace a legitimate build tarball with a trojanised one.  Because bits unpacks and executes tarball content directly, such a replacement would result in arbitrary code execution on every machine that subsequently fetches the affected package.
+
+The **store integrity ledger** is an opt-in defence against this class of attack.  It is disabled by default to preserve backward compatibility with existing work directories.
+
+#### How it works
+
+After each successful upload to the write store, bits computes the SHA-256 digest of the local tarball and writes it to a file in `$WORK_DIR/STORE_CHECKSUMS/`, mirroring the remote store path:
+
+```
+$WORK_DIR/
+  STORE_CHECKSUMS/
+    TARS/
+      <architecture>/
+        store/
+          <hash[0:2]>/
+            <hash>/
+              <pkg>-<ver>-<rev>.<arch>.tar.gz.sha256
+```
+
+`STORE_CHECKSUMS/` is a **local-only subtree** — it is never uploaded to the remote store and therefore cannot be forged through the same channel it protects against.
+
+The next time the tarball is recalled from the store, bits recomputes the SHA-256 and compares it against the ledger.  Three outcomes are possible:
+
+| Outcome | Effect |
+|---------|--------|
+| **Match** | The file is intact; the build continues normally. |
+| **No ledger entry** | The tarball predates the feature, or the work directory was rebuilt. A warning is emitted and the digest is recorded for future verification. Build continues. |
+| **Mismatch** | Always fatal: bits prints the expected and actual digests, explains how to investigate, and aborts. |
+
+A missing ledger entry can be made fatal too — useful for CI pipelines that have adopted the feature from day one — by setting the environment variable `BITS_STRICT_STORE_INTEGRITY=1`.
+
+#### Enabling store integrity verification
+
+Per-invocation:
+
+```bash
+bits build --store-integrity --remote-store b3://mybucket/bits-cache::rw ROOT
+```
+
+Persistent opt-in via `bits.rc` (recommended for teams that have adopted the feature):
+
+```ini
+[bits]
+store_integrity = true
+```
+
+Accepted values for the config key: `true`, `1`, `yes` (case-insensitive).
+
+#### Strict mode for CI (no unverified tarballs)
+
+```bash
+export BITS_STRICT_STORE_INTEGRITY=1
+bits build --store-integrity --remote-store b3://mybucket/bits-cache ROOT
+```
+
+In strict mode a tarball that has no ledger entry — rather than a mismatched entry — is also treated as a fatal error.  Use this when you want to guarantee that every recalled tarball was recorded by *this* instance (not an older one that predates the feature).
+
+#### Investigating a mismatch
+
+When bits reports an integrity failure the output includes:
+
+- The **expected** SHA-256 from the local ledger (what was recorded at upload time).
+- The **actual** SHA-256 of the recalled file (what arrived from the remote store).
+- The local tarball path and the ledger file path.
+
+Steps to investigate:
+
+1. Delete the local tarball so bits will re-fetch it:
+   ```bash
+   rm -rf $WORK_DIR/TARS/<arch>/store/<h2>/<hash>/
+   ```
+2. Fetch the tarball from a second, independent source (e.g. a different mirror or the original CI artefact) and compute its SHA-256 manually:
+   ```bash
+   sha256sum <pkg>-<ver>-<rev>.<arch>.tar.gz
+   ```
+3. Compare with the ledger entry:
+   ```bash
+   cat $WORK_DIR/STORE_CHECKSUMS/TARS/<arch>/store/<h2>/<hash>/<tarball>.sha256
+   ```
+4. If the independent source matches the ledger but the store does not, the store has been compromised.  Rotate credentials, audit access logs, and rebuild from source.
+5. If you have confirmed the mismatch is benign (e.g. a legitimate force-push to the store), reset the ledger entry:
+   ```bash
+   rm $WORK_DIR/STORE_CHECKSUMS/TARS/<arch>/store/<h2>/<hash>/<tarball>.sha256
+   ```
+   The next build run will re-record the current digest and warn instead of aborting.
+
 ---
 
 ## 22. Docker Support
@@ -2531,7 +2847,8 @@ tarballs, symlinks, `init.sh`, dist trees, and all remote-store backends.
 
 ### Current limitations
 
+- **No Windows support** — Windows is not supported.
 - **Git and Sapling only** — No Subversion, Mercurial, or plain-tarball sources (except via `sources:` with `file://` URLs).
-- **Linux and macOS only** — Windows is not supported.
+- **Linux and macOS only** — Bits runs on Linux and macOS (Intel and Apple Silicon).
 - **Environment Modules required** for `bits enter / load / unload` — the `modulecmd` binary must be installed separately.
 - **Active development** — The recipe format and Python APIs may change between versions. Evaluate thoroughly before adopting in production pipelines.

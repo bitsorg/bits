@@ -27,6 +27,49 @@ _BITS_RC_SEARCH_PATHS = [
 ]
 
 
+def _parse_provider_policy(value: str) -> dict:
+  """Parse a ``provider_policy`` string into a ``{provider_name: position}`` dict.
+
+  The format is a comma-separated list of ``name:position`` pairs where
+  *position* is either ``"prepend"`` or ``"append"``::
+
+      bits-providers:prepend, myorg-recipes:append
+
+  Provider names are lower-cased for consistent lookup.  Malformed entries
+  and unrecognised position values are skipped with a warning printed to
+  stderr.  Returns an empty dict for an empty or missing *value*.
+
+  This is the sole parsing point used by both the ``bits.rc`` key
+  ``provider_policy`` and the ``--provider-policy`` CLI flag so that
+  both inputs share identical validation logic.
+  """
+  from bits_helpers.log import warning as log_warning
+  result = {}
+  if not value:
+    return result
+  for token in value.split(","):
+    token = token.strip()
+    if not token:
+      continue
+    name, sep, pos = token.partition(":")
+    name = name.strip().lower()
+    pos  = pos.strip().lower()
+    if not name or not sep:
+      log_warning(
+        "provider_policy: ignoring malformed entry %r — expected name:position",
+        token,
+      )
+      continue
+    if pos not in ("prepend", "append"):
+      log_warning(
+        "provider_policy: ignoring entry %r — position must be 'prepend' or 'append'",
+        token,
+      )
+      continue
+    result[name] = pos
+  return result
+
+
 def _read_bits_rc() -> dict:
   """Return settings from the first bits.rc / .bitsrc / ~/.bitsrc found.
 
@@ -280,6 +323,34 @@ def doParseArgs():
            "commit SHA for source: + tag: packages. Independent of the mode flags "
            "above; overrides write_checksums in the active defaults profile.")
 
+  # Store-integrity flag
+  build_parser.add_argument(
+      "--store-integrity", dest="storeIntegrity", action="store_true", default=False,
+      help=(
+          "Enable local tarball integrity ledger.  After each upload the tarball's "
+          "SHA-256 is recorded in $WORK_DIR/STORE_CHECKSUMS/.  On every subsequent "
+          "recall the digest is recomputed and compared; a mismatch is a fatal error "
+          "that indicates the file may have been tampered with in the remote store.  "
+          "Disabled by default for backward compatibility.  "
+          "May also be enabled persistently with 'store_integrity = true' in bits.rc."
+      ),
+  )
+
+  # Provider-policy flag
+  build_parser.add_argument(
+      "--provider-policy", dest="providerPolicy", metavar="POLICY", default=None,
+      help=(
+          "Control where each repository-provider's checkout is inserted into "
+          "BITS_PATH.  Format: a comma-separated list of NAME:POSITION pairs, "
+          "where POSITION is either 'prepend' or 'append' (case-insensitive).  "
+          "Example: --provider-policy bits-providers:prepend,myorg:append  "
+          "By default every provider uses 'append' (safe mode) regardless of "
+          "what its recipe declares.  This flag (or the equivalent bits.rc key "
+          "'provider_policy') is the only way to grant a provider prepend "
+          "access."
+      ),
+  )
+
   # Options for clean subcommand
   clean_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                             help=("Clean up build results for this architecture. Default is the current system "
@@ -493,6 +564,10 @@ def doParseArgs():
       ("remote_store",       "remoteStore"),
       ("write_store",        "writeStore"),
       ("organisation",       "organisation"),
+      # provider_policy is handled separately in finaliseArgs (needs parsing),
+      # but listing it here causes the raw string to be set as a default so
+      # the CLI flag still wins via normal argparse precedence.
+      ("provider_policy",    "providerPolicy"),
   ]
   for _rc_key, _dest in _RC_KEY_TO_DEST:
     if _rc_early.get(_rc_key):
@@ -593,6 +668,23 @@ def finaliseArgs(args, parser):
     or _BITS_PROVIDERS_DEFAULT
   )
   os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
+
+  # ── store_integrity ───────────────────────────────────────────────────────
+  # The flag is off by default.  It can be activated either by the CLI flag
+  # (--store-integrity) or by adding 'store_integrity = true' to bits.rc.
+  # The CLI flag always wins when present; the rc key serves as a persistent
+  # opt-in so the feature does not need to be spelled out on every invocation.
+  if not getattr(args, "storeIntegrity", False):
+    args.storeIntegrity = _rc.get("store_integrity", "").strip().lower() in ("1", "true", "yes")
+
+  # ── provider_policy ──────────────────────────────────────────────────────
+  # Resolve the effective provider-position policy from (highest priority):
+  #   1. --provider-policy CLI flag
+  #   2. provider_policy key in bits.rc / .bitsrc
+  # The raw string is parsed into {name: "prepend"|"append"} and stored on
+  # args so that build.py can pass it straight through to the provider loader.
+  _raw_policy = getattr(args, "providerPolicy", None) or _rc.get("provider_policy", "")
+  args.provider_policy = _parse_provider_policy(_raw_policy)
 
   # --architecture can be specified in both clean and build.
   if args.action in ["build", "clean"] and not args.architecture:

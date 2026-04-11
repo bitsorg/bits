@@ -81,12 +81,119 @@ def _provider_cache_root(work_dir: str, package: str) -> str:
     return join(abspath(work_dir), REPOS_CACHE_SUBDIR, package.lower())
 
 
-def _add_to_bits_path(directory: str, position: str = "append") -> None:
+def _check_for_shadows(
+    incoming_dir: str,
+    position: str,
+    provider_name: str = "",
+) -> None:
+    """Warn when *incoming_dir* being added as *position* would shadow recipes
+    already visible on ``BITS_PATH``.
+
+    Shadowing can only happen when *position* is ``"prepend"`` — the new
+    directory lands before every entry already present.  The function computes
+    the set of recipe base-names (``*.sh`` files, lower-cased, extension
+    stripped) for *incoming_dir* and compares it against all directories
+    currently listed in ``BITS_PATH``.  Each collision produces an individual
+    warning so that the operator can take corrective action via
+    ``provider_policy``.
+
+    The primary config dir (always position 0 in ``getConfigPaths``) is *not*
+    stored in ``BITS_PATH`` and is therefore not included in this scan.  It
+    is searched first unconditionally and cannot be shadowed by any provider
+    regardless of position.
+    """
+    if position != "prepend":
+        return  # append can never shadow entries that come before it
+
+    current = os.environ.get("BITS_PATH", "")
+    existing_dirs = [p for p in current.split(",") if p and os.path.isdir(p)]
+    if not existing_dirs:
+        return  # nothing on BITS_PATH yet — no shadowing possible
+
+    incoming_recipes = {
+        os.path.splitext(os.path.basename(f))[0].lower()
+        for f in glob.glob(os.path.join(incoming_dir, "*.sh"))
+    }
+    if not incoming_recipes:
+        return  # empty provider directory — nothing to shadow
+
+    label = (
+        "Provider %r" % provider_name
+        if provider_name
+        else "Directory %r" % incoming_dir
+    )
+    for existing_dir in existing_dirs:
+        existing_recipes = {
+            os.path.splitext(os.path.basename(f))[0].lower()
+            for f in glob.glob(os.path.join(existing_dir, "*.sh"))
+        }
+        shadowed = incoming_recipes & existing_recipes
+        if shadowed:
+            warning(
+                "%s is being prepended and will shadow %d recipe(s) already "
+                "visible from %s: %s\n"
+                "  To suppress this warning grant prepend explicitly in bits.rc:\n"
+                "    provider_policy = %s:prepend\n"
+                "  Or force the safe default:\n"
+                "    provider_policy = %s:append",
+                label, len(shadowed), existing_dir,
+                ", ".join(sorted(shadowed)),
+                provider_name or "?",
+                provider_name or "?",
+            )
+
+
+def _add_to_bits_path(
+    directory: str,
+    recipe_position: str = "append",
+    provider_name: str = "",
+    policy: dict = None,
+) -> None:
     """Extend the in-process ``BITS_PATH`` with *directory*.
 
     The change is written to ``os.environ`` so that every subsequent call to
     ``getConfigPaths`` (which reads ``BITS_PATH``) picks it up.
+
+    Position resolution (highest priority first)
+    --------------------------------------------
+    1. **User policy** — if *provider_name* appears in *policy* the value
+       there wins unconditionally.
+    2. **Recipe default** — ``repository_position`` from the provider recipe,
+       but only when it is ``"append"`` (the safe direction).  A recipe that
+       asks for ``"prepend"`` is *downgraded* to ``"append"`` unless the user
+       has explicitly granted prepend via *policy* (rule 1).
+    3. **Built-in default** — ``"append"`` when nothing else applies.
+
+    This means providers can never self-elevate to ``"prepend"`` without an
+    explicit user opt-in, closing the class of recipe-controlled PATH-hijacking
+    attacks described in the security analysis.
     """
+    policy = policy or {}
+
+    # Determine effective position
+    if provider_name and provider_name in policy:
+        position = policy[provider_name]
+        if position != recipe_position:
+            debug(
+                "Provider %r: policy overrides recipe position %r → %r",
+                provider_name, recipe_position, position,
+            )
+    elif recipe_position == "prepend" and provider_name:
+        # Recipe asks for prepend but the user has not granted it — downgrade.
+        warning(
+            "Provider %r requested repository_position: prepend but no "
+            "provider_policy entry grants it.  Falling back to append (safe "
+            "default).  To allow prepend, add to bits.rc:\n"
+            "  provider_policy = %s:prepend",
+            provider_name, provider_name,
+        )
+        position = "append"
+    else:
+        position = recipe_position
+
+    # Warn before mutating BITS_PATH (Solution B — shadow detection)
+    _check_for_shadows(directory, position, provider_name)
+
     current = os.environ.get("BITS_PATH", "")
     parts = [p for p in current.split(",") if p]
     if directory in parts:
@@ -277,7 +384,7 @@ def _make_bits_providers_spec(url: str, tag: str) -> OrderedDict:
     ("tag",                   tag),
     ("provides_repository",   True),
     ("always_load",           True),
-    ("repository_position",   "prepend"),
+    ("repository_position",   "append"),
   ])
 
 
@@ -288,6 +395,7 @@ def load_always_on_providers(
   fetch_repos: bool,
   bits_providers: str = None,
   taps: dict = None,
+  provider_policy: dict = None,
 ) -> dict:
   """Clone providers that must be loaded unconditionally before any
   dependency-graph traversal.
@@ -323,6 +431,7 @@ def load_always_on_providers(
   """
   provider_dirs: dict = {}
   taps = taps or {}
+  policy = provider_policy or {}
 
   # ── 1. BITS_PROVIDERS / bits.rc ``providers`` ───────────────────────────
   if bits_providers:
@@ -333,7 +442,12 @@ def load_always_on_providers(
       checkout_dir, commit_hash = clone_or_update_provider(
         spec, work_dir, reference_sources, fetch_repos,
       )
-      _add_to_bits_path(checkout_dir, spec["repository_position"])
+      _add_to_bits_path(
+        checkout_dir,
+        recipe_position=spec["repository_position"],
+        provider_name=BITS_PROVIDERS_PACKAGE,
+        policy=policy,
+      )
       provider_dirs[checkout_dir] = (BITS_PROVIDERS_PACKAGE, commit_hash)
     except SystemExit:
       warning(
@@ -363,8 +477,12 @@ def load_always_on_providers(
       checkout_dir, commit_hash = clone_or_update_provider(
         spec, work_dir, reference_sources, fetch_repos,
       )
-      position = spec.get("repository_position", "append")
-      _add_to_bits_path(checkout_dir, position)
+      _add_to_bits_path(
+        checkout_dir,
+        recipe_position=spec.get("repository_position", "append"),
+        provider_name=pkg,
+        policy=policy,
+      )
       provider_dirs[checkout_dir] = (pkg, commit_hash)
     except SystemExit:
       warning(
@@ -392,6 +510,7 @@ def fetch_repo_providers_iteratively(
     reference_sources: str,
     fetch_repos: bool,
     taps: dict,
+    provider_policy: dict = None,
 ) -> dict:
     """Discover, clone, and register all repository-provider packages
     reachable from the *packages* list.
@@ -412,6 +531,7 @@ def fetch_repo_providers_iteratively(
     """
     # checkout_dir -> (pkg_name, commit_hash)
     provider_dirs: dict = {}
+    policy = provider_policy or {}
     # package names already cloned (avoids re-cloning on every restart)
     cloned: set = set()
     # packages we have successfully read (cache to avoid re-parsing)
@@ -453,8 +573,12 @@ def fetch_repo_providers_iteratively(
                 checkout_dir, commit_hash = clone_or_update_provider(
                     spec, work_dir, reference_sources, fetch_repos,
                 )
-                position = spec.get("repository_position", "append")
-                _add_to_bits_path(checkout_dir, position)
+                _add_to_bits_path(
+                    checkout_dir,
+                    recipe_position=spec.get("repository_position", "append"),
+                    provider_name=pkg,
+                    policy=policy,
+                )
                 provider_dirs[checkout_dir] = (pkg, commit_hash)
                 cloned.add(pkg)
 

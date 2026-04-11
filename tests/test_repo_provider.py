@@ -302,7 +302,8 @@ class TestFetchRepoProvidersIteratively(unittest.TestCase):
 
     # ── helpers ────────────────────────────────────────────────────────────
 
-    def _call(self, packages, read_spec_side_effect, clone_side_effect=None):
+    def _call(self, packages, read_spec_side_effect, clone_side_effect=None,
+              provider_policy=None):
         """Run fetch_repo_providers_iteratively with mocked internals."""
         if clone_side_effect is None:
             # Default: return a unique tmp dir + dummy hash per provider call
@@ -325,6 +326,7 @@ class TestFetchRepoProvidersIteratively(unittest.TestCase):
                 reference_sources=os.path.join(self.tmp, "mirror"),
                 fetch_repos=False,
                 taps={},
+                provider_policy=provider_policy or {},
             )
 
     # ── tests ──────────────────────────────────────────────────────────────
@@ -381,8 +383,8 @@ class TestFetchRepoProvidersIteratively(unittest.TestCase):
         if len(parts) > 1:
             self.assertNotEqual(parts[0], checkout)
 
-    def test_provider_added_to_bits_path_prepend(self):
-        """Provider with repository_position=prepend is prepended."""
+    def test_provider_added_to_bits_path_prepend_without_policy_falls_back_to_append(self):
+        """A recipe declaring prepend is downgraded to append when no policy grants it."""
         specs = {"p": _spec("p", provides=True, position="prepend")}
 
         def read(pkg, *_):
@@ -392,7 +394,25 @@ class TestFetchRepoProvidersIteratively(unittest.TestCase):
         checkout = os.path.join(self.tmp, "p")
         self._call(["p"], read, lambda *a, **kw: (checkout, "h1"))
         parts = os.environ["BITS_PATH"].split(",")
-        self.assertEqual(parts[0], checkout)
+        # Without a policy granting prepend the provider must be appended
+        self.assertNotEqual(parts[0], checkout,
+                            "Provider should be appended, not prepended, without policy")
+        self.assertIn(checkout, parts, "Provider checkout must still appear in BITS_PATH")
+
+    def test_provider_added_to_bits_path_prepend_with_policy(self):
+        """A recipe declaring prepend IS prepended when the user's policy explicitly grants it."""
+        specs = {"p": _spec("p", provides=True, position="prepend")}
+
+        def read(pkg, *_):
+            return specs.get(pkg)
+
+        os.environ["BITS_PATH"] = "existing"
+        checkout = os.path.join(self.tmp, "p")
+        self._call(["p"], read, lambda *a, **kw: (checkout, "h1"),
+                   provider_policy={"p": "prepend"})
+        parts = os.environ["BITS_PATH"].split(",")
+        self.assertEqual(parts[0], checkout,
+                         "Provider should be prepended when policy grants it")
 
     def test_provider_not_cloned_twice(self):
         """The same provider package is cloned at most once."""
