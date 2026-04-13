@@ -273,6 +273,16 @@ def doParseArgs():
                             list. Default: 1 (sequential, preserving existing behaviour). Works in all
                             build modes.
                             """)
+  build_remote.add_argument("--makeflow-jobs", dest="makeflowJobs", type=int, default=4,
+                            metavar="N",
+                            help="""\
+                            (Requires --makeflow) Maximum number of build jobs Makeflow runs in parallel
+                            on the local machine (passed as --max-local N to makeflow). Each build job
+                            itself uses all available CPU cores (controlled by -j / --jobs), so running
+                            too many simultaneously causes CPU oversubscription and degrades performance.
+                            Default: 4. Set to 0 to let Makeflow use its own default (number of CPU
+                            cores, which typically causes severe oversubscription).
+                            """)
 
   build_dirs = build_parser.add_argument_group(title="Customise bits directories")
   build_dirs.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,

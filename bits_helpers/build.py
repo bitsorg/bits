@@ -2204,7 +2204,10 @@ def doBuild(args, parser):
     mFlow = "makeflow"
     mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
     mfFile = mfDir + "/Makeflow"
-    mfCmd = "(cd {}; {} --clean; {})".format(mfDir, mFlow,mFlow)  
+    _mf_max_local = getattr(args, "makeflowJobs", 4)
+    _mf_local_flag = "--max-local {}".format(_mf_max_local) if _mf_max_local > 0 else ""
+    mfCmd = "(cd {dir}; {mf} --clean; {mf} {local})".format(
+        dir=mfDir, mf=mFlow, local=_mf_local_flag)
     makedirs(mfDir, exist_ok=True)
     jnj = ""
     try:
