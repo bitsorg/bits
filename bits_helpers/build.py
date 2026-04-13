@@ -1918,7 +1918,6 @@ def doBuild(args, parser):
         verify_tarball_checksum(spec, workDir, args.architecture, spec["cachedTarball"])
 
     # The actual build script.
-    debug("spec = %r", spec)
     
     fp = open(dirname(realpath(__file__))+'/build_template.sh')
     cmd_raw = fp.read()
