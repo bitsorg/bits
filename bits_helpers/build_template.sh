@@ -219,11 +219,24 @@ else
   tar -xzf "$CACHED_TARBALL" -C "$WORK_DIR/TMP/$PKGHASH"
   mkdir -p $(dirname $INSTALLROOT)
   rm -rf $INSTALLROOT
-  # Use $PKGPATH (= $EFFECTIVE_ARCHITECTURE[/$PKGFAMILY]/$PKGNAME/$_VERREV) so
-  # the source path matches exactly what tar extracted.  The old glob
-  # $PKGVERSION-* failed when PKGREVISION is empty (e.g. defaults-release sets
-  # force_revision: "") because _VERREV is then just $PKGVERSION with no dash.
-  mv "$WORK_DIR/TMP/$PKGHASH/$PKGPATH" "$INSTALLROOT"
+  # Locate the versioned directory the tarball actually extracted.  We cannot
+  # rely on $PKGPATH being an exact match: the tarball's internal path may
+  # differ when it was packed with a different PKGFAMILY treatment (e.g. a
+  # prior fix gave defaults-release a family it no longer has, or vice versa),
+  # or when PKGREVISION was empty at pack time vs. non-empty now.  Strategy:
+  #   1. Find the $PKGNAME directory anywhere under $EFFECTIVE_ARCHITECTURE
+  #      at depth 1 (no family) or depth 2 (with family).
+  #   2. Grab the single versioned sub-directory inside it.
+  #   3. Fall back to the exact $PKGPATH if the find yields nothing.
+  _extracted_pkgname=$(find "$WORK_DIR/TMP/$PKGHASH/$EFFECTIVE_ARCHITECTURE" \
+                            -maxdepth 2 -mindepth 1 \
+                            -type d -name "$PKGNAME" 2>/dev/null | head -1)
+  if [ -n "$_extracted_pkgname" ]; then
+    _extracted_verdir=$(find "$_extracted_pkgname" \
+                             -maxdepth 1 -mindepth 1 -type d | head -1)
+  fi
+  _extracted_src=${_extracted_verdir:-${_extracted_pkgname:-$WORK_DIR/TMP/$PKGHASH/$PKGPATH}}
+  mv "$_extracted_src" "$INSTALLROOT"
   pushd $WORK_DIR/INSTALLROOT/$PKGHASH
   if [ -w "$INSTALLROOT" ]; then
       WORK_DIR=$WORK_DIR /bin/bash -ex $INSTALLROOT/relocate-me.sh
