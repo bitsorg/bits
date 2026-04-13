@@ -215,7 +215,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
   _source_checksums = spec.get("source_checksums") or {}
   _patch_checksums = spec.get("patch_checksums") or {}
 
-  if "patches" in spec:
+  if spec.get("patches"):
     os.makedirs(source_dir, exist_ok=True)
     for patch_entry in spec["patches"]:
       patch_name, inline_checksum = parse_entry(patch_entry)
@@ -223,7 +223,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
       dst = os.path.join(source_dir, patch_name)
       shutil.copyfile(os.path.join(spec["pkgdir"], 'patches', patch_name), dst)
       check_file_checksum(dst, patch_name, patch_checksum, enforce_mode)
-  if "sources" in spec:
+  if spec.get("sources"):
     def _download_one(s):
       url, inline_checksum = parse_entry(s)
       src_checksum = _source_checksums.get(url) or inline_checksum
@@ -245,8 +245,10 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
             first_exc = exc
         if first_exc is not None:
           raise first_exc
-  elif "source" not in spec:
-    # There are no sources, so just create an empty SOURCEDIR.
+  elif not spec.get("source"):
+    # There are no sources (neither tarball URLs nor a git repo), so just
+    # create an empty SOURCEDIR.  Also handles the Makeflow serialisation path
+    # where source is always present in the JSON but may be an empty string.
     os.makedirs(source_dir, exist_ok=True)
   elif spec["is_devel_pkg"]:
     shutil.rmtree(source_dir, ignore_errors=True)
