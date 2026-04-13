@@ -2202,9 +2202,9 @@ def doBuild(args, parser):
       dieOnError(True, "Please fix the above errors.")
   elif args.makeflow and buildTargets:
     mFlow = "makeflow"
-    # mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
-    mfDir = join(workDir, "BUILD", spec["hash"])
+    mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
     mfFile = mfDir + "/Makeflow"
+    makedirs(mfDir, exist_ok=True)
     mfCmd = "(cd {}; {} --clean; {})".format(mfDir, mFlow,mFlow)  
     makedirs(mfDir, exist_ok=True)
     jnj = ""
