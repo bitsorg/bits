@@ -219,7 +219,11 @@ else
   tar -xzf "$CACHED_TARBALL" -C "$WORK_DIR/TMP/$PKGHASH"
   mkdir -p $(dirname $INSTALLROOT)
   rm -rf $INSTALLROOT
-  mv $WORK_DIR/TMP/$PKGHASH/$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PKGVERSION-* $INSTALLROOT
+  # Use $PKGPATH (= $EFFECTIVE_ARCHITECTURE[/$PKGFAMILY]/$PKGNAME/$_VERREV) so
+  # the source path matches exactly what tar extracted.  The old glob
+  # $PKGVERSION-* failed when PKGREVISION is empty (e.g. defaults-release sets
+  # force_revision: "") because _VERREV is then just $PKGVERSION with no dash.
+  mv "$WORK_DIR/TMP/$PKGHASH/$PKGPATH" "$INSTALLROOT"
   pushd $WORK_DIR/INSTALLROOT/$PKGHASH
   if [ -w "$INSTALLROOT" ]; then
       WORK_DIR=$WORK_DIR /bin/bash -ex $INSTALLROOT/relocate-me.sh

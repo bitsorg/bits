@@ -45,6 +45,13 @@
     - [Manifest location and naming](#manifest-location-and-naming)
     - [Manifest schema reference](#manifest-schema-reference)
     - [Replaying a build with `--from-manifest`](#replaying-a-build-with---from-manifest)
+26. [CVMFS Publishing Pipeline](#26-cvmfs-publishing-pipeline)
+    - [Overview](#overview-1)
+    - [bits publish](#bits-publish)
+    - [bits-cvmfs-ingest — building from source](#bits-cvmfs-ingest--building-from-source)
+    - [bits-cvmfs-ingest — configuration and running](#bits-cvmfs-ingest--configuration-and-running)
+    - [cvmfs-publish.sh — the publisher script](#cvmfs-publishsh--the-publisher-script)
+    - [CI/CD integration](#cicd-integration-1)
 
 ---
 
@@ -3045,3 +3052,407 @@ are complementary:
 When both `--store-integrity` and a manifest are active, the manifest's
 `tarball_sha256` fields provide a second, portable copy of the digest that
 survives even if the local ledger directory is deleted.
+
+---
+
+## 26. CVMFS Publishing Pipeline
+
+### Overview
+
+The CVMFS publishing pipeline allows a package that has been built with
+`bits build` to be pre-staged into CVMFS backend storage and published via
+a fast, catalog-only transaction — instead of the conventional approach where
+every file is compressed and hashed inside the transaction itself.
+
+The key insight is that CVMFS content-addressed storage separates two
+independent concerns: (a) ingesting file blobs into the backend and (b)
+updating the SQLite catalog.  Only (b) requires an exclusive transaction.
+By doing (a) ahead of time — in parallel, on separate hosts — the transaction
+window shrinks to seconds regardless of package size.
+
+**Pipeline stages and host responsibilities**
+
+| Stage | Runs on | Tool |
+|---|---|---|
+| Build | Platform build host | `bits build` |
+| Copy | Build host | `bits publish` (local rsync) |
+| Relocate | Build host | `bits publish` → `relocate-me.sh` |
+| Transfer | Build host → Ingestion host | `bits publish` (rsync + inotifywait) |
+| Ingest | Ingestion host | `cvmfs-ingest` |
+| Publish | Stratum-0 / publisher host | `cvmfs-publish.sh` |
+
+The original INSTALLROOT produced by `bits build` is never modified.  All
+relocation happens on a temporary copy that is discarded after transfer.
+
+**Repositories**
+
+- `bits` (this repository) — provides the `bits publish` command.
+- [`bits-cvmfs-ingest`](https://github.com/bitsorg/bits-cvmfs-ingest) —
+  provides the `cvmfs-ingest` Go daemon and `cvmfs-publish.sh`.
+- `bits-workflows` — provides reusable GitHub Actions and GitLab CI pipeline
+  definitions.
+
+---
+
+### bits publish
+
+`bits publish` is a `bits` sub-command that orchestrates the build-host side
+of the pipeline: copy, relocate, and stream to the ingestion spool.
+
+```
+bits publish PACKAGE [VERSION]
+             --cvmfs-target PATH
+             --spool [USER@HOST:]PATH
+             [--work-dir WORKDIR]
+             [--architecture ARCH]
+             [--scratch-dir DIR]
+             [--rsync-opts OPTS]
+```
+
+**Arguments**
+
+| Argument / Flag | Required | Description |
+|---|---|---|
+| `PACKAGE` | yes | Package name, as used in the recipe (e.g. `absl`). |
+| `VERSION` | no | Version string (e.g. `20230802.1-1`). Defaults to the latest build found under `WORKDIR`. |
+| `--cvmfs-target PATH` | yes | Absolute path the package will occupy on CVMFS, e.g. `/cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9`. This path is passed to `relocate-me.sh` as the new install prefix. |
+| `--spool` | yes | Ingestion spool root.  Either a local directory (`/var/spool/cvmfs-ingest`) or a remote rsync target (`user@host:/path`). |
+| `--work-dir WORKDIR` | no | bits work directory.  Default: `sw` (or `$BITS_WORK_DIR`). |
+| `--architecture ARCH` | no | Build architecture.  Default: auto-detected. |
+| `--scratch-dir DIR` | no | Directory for the temporary CVMFS working copy.  Default: system temp dir. |
+| `--rsync-opts OPTS` | no | Extra options passed verbatim to every `rsync` invocation, e.g. `"-e 'ssh -i ~/.ssh/my_key'"`. |
+
+**What it does**
+
+1. Locates the package's immutable INSTALLROOT under `WORKDIR` (via the
+   `latest` symlink or by scanning for `VERSION`).
+2. `rsync -a`-copies the INSTALLROOT to a scratch working copy.  The
+   original is never touched again.
+3. Starts an `inotifywait` watcher on the working copy (when available) so
+   that files modified by relocation are queued for transfer immediately.
+4. Runs `relocate-me.sh` in the working copy with `INSTALL_BASE` set to
+   `--cvmfs-target`.  Relocation and transfer overlap in time.
+5. Falls back to a single bulk rsync if `inotifywait` is unavailable.
+6. Writes a `<pkg-id>.done` sentinel to `<spool>/incoming/`.  The sentinel
+   carries the `pkg_id` and `cvmfs_target` so the ingestion daemon can
+   operate without additional configuration.
+7. Removes the scratch working copy.
+
+**pkg-id format**
+
+The package identifier used to name spool directories and manifests is:
+
+```
+<package>-<version_dir>-<arch_with_slashes_replaced_by_underscores>
+```
+
+Example: `absl-20230802.1-1-x86_64_el9`
+
+**Example**
+
+```bash
+bits publish absl \
+  --cvmfs-target /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9 \
+  --spool ingestuser@ingest-host.example.com:/var/spool/cvmfs-ingest \
+  --rsync-opts "-e 'ssh -i ~/.ssh/ingest_key'"
+```
+
+---
+
+### bits-cvmfs-ingest — building from source
+
+The ingestion daemon is a standalone Go project hosted at
+[`github.com/bitsorg/bits-cvmfs-ingest`](https://github.com/bitsorg/bits-cvmfs-ingest).
+
+**Prerequisites**
+
+- Go 1.22 or newer (`go version` to check).
+- Network access to download Go module dependencies (or a pre-populated
+  module cache / GOPROXY).
+
+**Clone and build**
+
+```bash
+git clone https://github.com/bitsorg/bits-cvmfs-ingest.git
+cd bits-cvmfs-ingest
+go mod tidy          # downloads and pins all dependencies; generates go.sum
+go build ./cmd/cvmfs-ingest/
+```
+
+This produces a `cvmfs-ingest` binary in the current directory.
+
+**Static binary for deployment**
+
+The ingestion host typically runs a different Linux distribution from the
+build host.  Build a fully static binary to avoid libc version mismatches:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+  go build -o cvmfs-ingest ./cmd/cvmfs-ingest/
+```
+
+For AArch64 (e.g. an ARM ingestion node):
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+  go build -o cvmfs-ingest-aarch64 ./cmd/cvmfs-ingest/
+```
+
+**Install system-wide**
+
+```bash
+go install ./cmd/cvmfs-ingest/
+# installs to $(go env GOPATH)/bin/cvmfs-ingest   (typically ~/go/bin/)
+```
+
+Add `$(go env GOPATH)/bin` to `PATH` or copy the binary to `/usr/local/bin`.
+
+**Verify**
+
+```bash
+./cvmfs-ingest --help
+```
+
+---
+
+### bits-cvmfs-ingest — configuration and running
+
+`cvmfs-ingest` has no configuration file; all settings are passed as
+command-line flags.
+
+**Spool directory layout**
+
+The daemon owns and manages these subdirectories under `--spool`:
+
+```
+<spool>/
+  incoming/      ← rsync destination from build hosts
+  processing/    ← package trees moved here atomically on .done arrival
+  completed/     ← manifests (.manifest.json) and graft trees (.grafts/)
+```
+
+**Flags**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--spool PATH` | *(required)* | Root of the spool directory tree.  The daemon creates subdirectories automatically. |
+| `--backend TYPE` | `local` | Backend type: `local` (filesystem) or `s3` (S3-compatible object store). |
+| `--backend-path PATH` | *(required for local)* | Root path of the CVMFS backend filesystem, e.g. `/srv/cvmfs/sft.cern.ch`.  Blobs are written under `<path>/data/<hash[:2]>/<hash[2:]>`. |
+| `--s3-bucket NAME` | *(required for s3)* | S3 bucket name. |
+| `--s3-prefix PREFIX` | *(empty)* | Optional key prefix inside the bucket (no trailing slash). |
+| `--s3-endpoint URL` | *(empty)* | Custom endpoint for S3-compatible stores (Ceph, MinIO, EOS S3). Leave empty for AWS S3. |
+| `--s3-region REGION` | `us-east-1` | S3 region. |
+| `--hash ALGO` | `sha1` | Content hash algorithm: `sha1` (CVMFS default) or `sha256`. Must match the repository's hash algorithm. |
+| `--concurrency N` | `2×GOMAXPROCS` | Worker pool size for parallel compress+hash+upload. |
+| `--once` | `false` | Process existing spool contents and exit without starting the watch loop.  Used by CI jobs. |
+| `--log-level LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error`. |
+
+**S3 credentials** are read from the standard AWS credential chain:
+environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`),
+`~/.aws/credentials`, or an IAM instance role.
+
+**Daemon mode — local backend**
+
+```bash
+cvmfs-ingest \
+  --spool        /var/spool/cvmfs-ingest \
+  --backend      local \
+  --backend-path /srv/cvmfs/sft.cern.ch \
+  --hash         sha1 \
+  --concurrency  8 \
+  --log-level    info
+```
+
+The daemon watches `incoming/` for `.done` sentinels and processes packages
+as they arrive.  Send `SIGTERM` or `SIGINT` (Ctrl-C) for a clean shutdown.
+
+**Daemon mode — S3 backend**
+
+```bash
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+
+cvmfs-ingest \
+  --spool        /var/spool/cvmfs-ingest \
+  --backend      s3 \
+  --s3-bucket    cvmfs-backend \
+  --s3-prefix    sft.cern.ch \
+  --s3-endpoint  https://s3.cern.ch \
+  --hash         sha1 \
+  --concurrency  16
+```
+
+**Once mode — for CI jobs**
+
+```bash
+cvmfs-ingest \
+  --spool        /var/spool/cvmfs-ingest \
+  --backend      local \
+  --backend-path /srv/cvmfs/sft.cern.ch \
+  --once
+```
+
+Processes all packages whose sentinel has arrived and exits with code `0` on
+success or non-zero if any package failed.
+
+**Restart safety**
+
+On startup, the daemon scans `processing/` for any directories left by a
+previously interrupted run and re-ingests them.  Blob uploads are idempotent
+(existing blobs are detected via `HEAD` / `stat` and skipped), so re-running
+on a partially-ingested package is safe.
+
+**Output — completed manifest**
+
+For each successfully ingested package, the daemon writes:
+
+```
+<spool>/completed/<pkg-id>.manifest.json   ← consumed by cvmfs-publish.sh
+<spool>/completed/<pkg-id>.grafts/         ← graft sidecar tree
+```
+
+The manifest is a JSON document:
+
+```json
+{
+  "pkg_id":          "absl-20230802.1-1-x86_64_el9",
+  "cvmfs_target":    "/cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9",
+  "grafts_dir":      "/var/spool/cvmfs-ingest/completed/absl-20230802.1-1-x86_64_el9.grafts",
+  "created_at":      "2026-04-12T14:23:00Z",
+  "file_count":      1842,
+  "total_size_bytes": 312456192,
+  "files": [
+    {
+      "rel_path":        "lib/libabsl_base.so.2308021",
+      "hash":            "a3f1...",
+      "hash_algo":       "sha1",
+      "size":            204800,
+      "compressed_size": 98304,
+      "blob_key":        "a3/f1..."
+    }
+  ]
+}
+```
+
+---
+
+### cvmfs-publish.sh — the publisher script
+
+`cvmfs-publish.sh` is a shell script that opens a CVMFS transaction, places
+the pre-staged graft tree into the repository mount point, and publishes.
+It lives in the `bits-cvmfs-ingest` repository and must run on the
+stratum-0 host (or a host with write access to the CVMFS transaction lock).
+
+**Usage**
+
+```bash
+bash cvmfs-publish.sh \
+  --repo     sft.cern.ch \
+  --manifest /var/spool/cvmfs-ingest/completed/absl-20230802.1-1-x86_64_el9.manifest.json \
+  [--dry-run]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--repo NAME` | yes | CVMFS repository name (e.g. `sft.cern.ch`). |
+| `--manifest PATH` | yes | Path to the `.manifest.json` written by `cvmfs-ingest`. |
+| `--dry-run` | no | Print what would happen without opening a transaction. |
+
+**What it does**
+
+1. Parses `cvmfs_target` and `grafts_dir` from the manifest.
+2. Opens a `cvmfs_server transaction <repo>`.
+3. `rsync`s the graft tree (empty file stubs and `.cvmfsgraft-*` sidecars —
+   no bulk file content) into `<repo-mount>/<cvmfs_target>/`.
+4. Calls `cvmfs_server publish <repo>`.  Because all blobs are already in
+   the backend, the catalog update completes in seconds.
+5. Aborts the transaction cleanly via `cvmfs_server abort -f` on any error.
+
+**Batching multiple packages**
+
+To minimise the number of transactions, call `cvmfs-publish.sh` once per
+package in rapid succession or wrap multiple calls in a single transaction
+manually.  The catalog update overhead per package is small once the
+transaction is already open.
+
+---
+
+### CI/CD integration
+
+Reusable workflow definitions are provided in the `bits-workflows` repository.
+
+#### GitHub Actions
+
+Add to your workflow:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    repository: bitsorg/bits-workflows
+    path: bits-workflows
+
+# Or use the workflow directly via workflow_dispatch:
+# .github/workflows/cvmfs-publish.yml in bits-workflows
+```
+
+The `cvmfs-publish.yml` workflow accepts these inputs via `workflow_dispatch`
+(or the GitHub API / SPA web UI):
+
+| Input | Description |
+|---|---|
+| `package` | Package name (e.g. `absl`). |
+| `version` | Version string (optional — defaults to latest build). |
+| `platform` | Runner label, e.g. `x86_64-el9`. |
+| `cvmfs_target` | Final CVMFS install path. |
+| `rebuild` | Force rebuild (`true`/`false`). |
+
+Required repository **secrets**:
+
+| Secret | Description |
+|---|---|
+| `SPOOL_SSH_KEY` | SSH private key for rsync to the ingestion host. |
+| `SPOOL_USER` | SSH username on the ingestion host. |
+| `SPOOL_HOST` | Ingestion host address. |
+| `SPOOL_PATH` | Absolute spool root path on the ingestion host. |
+| `CVMFS_REPO` | CVMFS repository name. |
+
+Required repository **variables** (Settings → CI/CD → Variables):
+
+| Variable | Default | Description |
+|---|---|---|
+| `CVMFS_BACKEND_TYPE` | `local` | `local` or `s3`. |
+| `CVMFS_BACKEND_PATH` | — | Local backend root path. |
+| `CVMFS_HASH_ALGO` | `sha1` | `sha1` or `sha256`. |
+| `INGEST_CONCURRENCY` | `0` | Worker count (`0` = auto). |
+
+**Self-hosted runner labels** that must be registered:
+
+| Label | Used by |
+|---|---|
+| `bits-build-<platform>` | Build + publish job (e.g. `bits-build-x86_64-el9`) |
+| `bits-ingest` | Ingestion job |
+| `bits-cvmfs-publisher` | CVMFS transaction job |
+
+#### GitLab CI
+
+Include the pipeline from `bits-workflows`:
+
+```yaml
+# .gitlab-ci.yml in your project
+include:
+  - project: bitsorg/bits-workflows
+    file: .gitlab/cvmfs-publish.yml
+    ref: main
+```
+
+Trigger via the GitLab API or web UI with pipeline variables:
+
+```bash
+curl --request POST \
+     --form "token=$CI_JOB_TOKEN" \
+     --form "ref=main" \
+     --form "variables[PACKAGE]=absl" \
+     --form "variables[PLATFORM]=x86_64-el9" \
+     --form "variables[CVMFS_TARGET]=/cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9" \
+     "https://gitlab.cern.ch/api/v4/projects/<id>/trigger/pipeline"
+```

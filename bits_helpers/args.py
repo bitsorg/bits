@@ -132,6 +132,15 @@ def doParseArgs():
                                       description="Initialise development packages.")
   version_parser = subparsers.add_parser("version", help="display %(prog)s version",
                                          description="Display %(prog)s and architecture.")
+  publish_parser = subparsers.add_parser(
+      "publish",
+      help="copy, relocate, and stream a built package to a CVMFS ingestion spool",
+      description=(
+          "Copies the immutable installation from WORKDIR, relocates it to the "
+          "final CVMFS target path, and streams the result to an ingestion spool "
+          "for content-addressed pre-staging before the CVMFS transaction."
+      ),
+  )
 
   # Options for the analytics command
   # analytics_parser.add_argument("state", choices=["on", "off"], help="Whether to report analytics or not")
@@ -563,6 +572,24 @@ def doParseArgs():
   version_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                               help=("Display the specified architecture next to the version number. Default is "
                                     "the current system architecture, which is '%(default)s'."))
+
+  # Options for the publish command
+  publish_parser.add_argument("package", metavar="PACKAGE",
+                              help="Name of the package to publish.")
+  publish_parser.add_argument("version", metavar="VERSION", nargs="?", default=None,
+                              help="Version (and optional revision) to publish. Defaults to the latest build.")
+  publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=True, metavar="PATH",
+                              help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9).")
+  publish_parser.add_argument("--spool", dest="spool", required=True, metavar="[USER@HOST:]PATH",
+                              help="Ingestion spool root.  Either a local directory or a remote rsync target (user@host:/path).")
+  publish_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
+                              help="bits work directory containing the installed packages. Default: %(default)s.")
+  publish_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
+                              help="Target architecture. Default: %(default)s.")
+  publish_parser.add_argument("--scratch-dir", dest="scratchDir", default=None, metavar="DIR",
+                              help="Directory for the temporary CVMFS working copy. Defaults to a system temp dir.")
+  publish_parser.add_argument("--rsync-opts", dest="rsyncOpts", default=None, metavar="OPTS",
+                              help="Extra options passed verbatim to rsync (e.g. '-e \"ssh -i key\"').")
 
   # Apply bits.rc values as default overrides so that persistent settings written
   # by "bits init" (config mode) take effect on every subsequent invocation.
