@@ -1835,9 +1835,13 @@ def doBuild(args, parser):
     # check if it wasn't built / unpacked already.
     hashPath = _pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)
     hashFile = hashPath + "/.build-hash"
-    # If the folder is a symlink, we consider it to be to CVMFS and
-    # take the hash for good.
-    if os.path.islink(hashPath):
+    # If the folder is a symlink that resolves to an existing directory,
+    # we consider it to be on CVMFS and take the hash for good.
+    # We must also check os.path.isdir() (which follows symlinks) so that
+    # dangling symlinks — e.g. created by a previous --makeflow run that
+    # wrote fetch_symlinks() entries before the actual tarball existed —
+    # are NOT mistaken for a successfully installed package.
+    if os.path.islink(hashPath) and os.path.isdir(hashPath):
       fileHash = spec["hash"]
     else:
       fileHash = readHashFile(hashFile)
