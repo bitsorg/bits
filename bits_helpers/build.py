@@ -2202,12 +2202,10 @@ def doBuild(args, parser):
       dieOnError(True, "Please fix the above errors.")
   elif args.makeflow and buildTargets:
     mFlow = "makeflow"
-    mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
+    # mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
+    mfDir = join(workDir, "BUILD", spec["hash"])
     mfFile = mfDir + "/Makeflow"
-    _mf_max_local = getattr(args, "makeflowJobs", 4)
-    _mf_local_flag = "--max-local {}".format(_mf_max_local) if _mf_max_local > 0 else ""
-    mfCmd = "(cd {dir}; {mf} --clean; {mf} {local})".format(
-        dir=mfDir, mf=mFlow, local=_mf_local_flag)
+    mfCmd = "(cd {}; {} --clean; {})".format(mfDir, mFlow,mFlow)  
     makedirs(mfDir, exist_ok=True)
     jnj = ""
     try:
@@ -2324,7 +2322,7 @@ def doBuild(args, parser):
       buildErrMsg += f"  • Please upload the full log to CERNBox/Dropbox if you intend to request support.\n"
       
     else:
-      debug("%s", child.stdout)
+      debug(child.stdout)
     dieOnError(err, buildErrMsg.strip())
     for (p, _, _, _, _, _, _) in buildList:
       doFinalSync(specs[p], specs, args, syncHelper)
