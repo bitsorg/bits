@@ -2321,7 +2321,7 @@ def doBuild(args, parser):
       buildErrMsg += f"  • Please upload the full log to CERNBox/Dropbox if you intend to request support.\n"
       
     else:
-      debug(child.stdout)
+      debug("%s", child.stdout)
     dieOnError(err, buildErrMsg.strip())
     for (p, _, _, _, _, _, _) in buildList:
       doFinalSync(specs[p], specs, args, syncHelper)

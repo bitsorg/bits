@@ -210,6 +210,29 @@ def dummy_readlink(x):
     }[x]
 
 
+# Paths that os.path.isfile() should report as existing in the mock world.
+# These correspond to the symlink entries in dummy_readlink that have valid
+# (non-dangling) targets — i.e., every key in the dummy_readlink dict.
+_MOCK_EXISTING_FILES = frozenset({
+    f"/sw/TARS/{TEST_ARCHITECTURE}/defaults-release/defaults-release-v1-1.{TEST_ARCHITECTURE}.tar.gz",
+})
+
+# Save a reference to the real os.path.isfile *before* any test patch
+# replaces it.  dummy_isfile must not call os.path.isfile (which becomes
+# the mock during the test) or it will recurse infinitely.
+_real_isfile = os.path.isfile
+
+def dummy_isfile(x):
+    """Mock for os.path.isfile that returns True for paths known to the mock
+    world (the symlinks in dummy_readlink whose targets "exist"), and falls
+    back to the real os.path.isfile for everything else.  This is needed so
+    that the dangling-symlink guard added to the revision-scan loop in
+    build.py does not treat mock symlinks as dangling."""
+    if x in _MOCK_EXISTING_FILES:
+        return True
+    return _real_isfile(x)
+
+
 def dummy_exists(x):
     # Convert Path objects to strings for comparison
     path_str = str(x) if hasattr(x, '__fspath__') else x
@@ -241,6 +264,7 @@ class BuildTestCase(unittest.TestCase):
     @patch("bits_helpers.build.exists", new=MagicMock(side_effect=dummy_exists))
     @patch("bits_helpers.utilities.exists", new=MagicMock(side_effect=dummy_exists))
     @patch("os.path.exists", new=MagicMock(side_effect=dummy_exists))
+    @patch("os.path.isfile", new=MagicMock(side_effect=dummy_isfile))
     @patch("bits_helpers.build.dieOnError", new=MagicMock())
     @patch("bits_helpers.utilities.dieOnError", new=MagicMock())
     @patch("bits_helpers.utilities.warning")
