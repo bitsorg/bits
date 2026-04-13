@@ -179,6 +179,10 @@ class HttpRemoteSync:
             version=re.escape(spec["version"]),
             arch=re.escape(arch),
         ), os.path.basename(tarball)):
+          tarball_full = os.path.join(self.workdir, resolve_store_path(arch, pkg_hash), tarball)
+          if not os.path.isfile(tarball_full):
+            warning("Dangling symlink in tarball store (ignoring): %s", tarball_full)
+            continue
           debug("Previously downloaded tarball for %s with hash %s, reusing",
                 spec["package"], pkg_hash)
           return
@@ -436,7 +440,8 @@ class CVMFSRemoteSync:
     for pkg_hash in spec["remote_hashes"] + spec["local_hashes"]:
       store_path = resolve_store_path(arch, pkg_hash)
       pattern = os.path.join(self.workdir, store_path, "%s-*.tar.gz" % spec["package"])
-      if glob.glob(pattern):
+      # Use os.path.isfile() to skip dangling symlinks that glob would otherwise return.
+      if any(os.path.isfile(t) for t in glob.glob(pattern)):
         info("Reusing existing tarball for %s@%s", spec["package"], pkg_hash)
         return
     info("Could not find prebuilt tarball for %s@%s-%s, will be rebuilt",
@@ -734,7 +739,9 @@ class Boto3RemoteSync:
     # If we already have a tarball with any equivalent hash, don't check S3.
     for pkg_hash in spec["remote_hashes"]:
       store_path = resolve_store_path(arch, pkg_hash)
-      if glob.glob(os.path.join(self.workdir, store_path, "%s-*.tar.gz" % spec["package"])):
+      # Use os.path.isfile() to skip dangling symlinks that glob would otherwise return.
+      if any(os.path.isfile(t) for t in glob.glob(
+          os.path.join(self.workdir, store_path, "%s-*.tar.gz" % spec["package"]))):
         debug("Reusing existing tarball for %s@%s", spec["package"], pkg_hash)
         return
 

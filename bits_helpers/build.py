@@ -1709,6 +1709,13 @@ def doBuild(args, parser):
       # no writeStore property. See below for explanation of why we need this.
       revisionPrefix = "" if getattr(syncHelper, "writeStore", "") else "local"
       for symlink_path in packages:
+        # Skip dangling symlinks: a missing target means the tarball was deleted
+        # from the store (e.g. by a partial cleanup) and cannot be reused.
+        # readlink() succeeds even for dangling symlinks, so we must check
+        # existence explicitly.
+        if not os.path.isfile(symlink_path):
+          warning("Ignoring dangling symlink in tarball directory: %s", symlink_path)
+          continue
         realPath = readlink(symlink_path)
         # The revision group is optional ((?:-((?:local)?[0-9]+))?) to handle
         # symlinks previously created with force_revision="" (revision-less).
@@ -1894,7 +1901,8 @@ def doBuild(args, parser):
         from bits_helpers.download import _wait_for_sentinel as _wfs
         _wfs(tar_hash_dir)
       syncHelper.fetch_tarball(spec)
-      tarballs = glob(os.path.join(tar_hash_dir, "*gz"))
+      tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
+                  if os.path.isfile(t)]  # skip dangling symlinks
       spec["cachedTarball"] = tarballs[0] if len(tarballs) else ""
       debug("Found tarball in %s" % spec["cachedTarball"]
             if spec["cachedTarball"] else "No cache tarballs found")
