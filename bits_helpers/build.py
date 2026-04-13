@@ -1928,10 +1928,15 @@ def doBuild(args, parser):
       # During download only apply warn/enforce — these are security gates that
       # must fire before compilation.  print/write are deferred to the
       # post-build phase so they work for already-cached packages too.
-      checkout_sources(spec, workDir, args.referenceSources, args.docker,
-                       enforce_mode=_download_time_mode(effective_checksum_mode),
-                       sync_helper=syncHelper,
-                       parallel_sources=getattr(args, "parallelSources", 1))
+      #
+      # In Makeflow mode we skip the sequential checkout here and instead
+      # generate a .checkout Makeflow rule per package so that all clones and
+      # archive downloads run in parallel as part of the DAG.
+      if not args.makeflow:
+        checkout_sources(spec, workDir, args.referenceSources, args.docker,
+                         enforce_mode=_download_time_mode(effective_checksum_mode),
+                         sync_helper=syncHelper,
+                         parallel_sources=getattr(args, "parallelSources", 1))
 
     # Collect every processed spec for the post-build checksum phase.
     # This includes specs whose tarball was cached (cachedTarball != "").
@@ -2127,7 +2132,56 @@ def doBuild(args, parser):
       if _use_pipeline:
         _build_cmd = "{} && {} -e -x {}/create_links.sh".format(
             build_command, BASH, quote(scriptDir))
-      buildList.append((p, _build_cmd, tar_command, upload_command, cachedTarball, breq))
+
+      # --- Makeflow checkout rule -----------------------------------------
+      # When the package needs to be built from source (no cached tarball),
+      # generate a spec_checkout.json + checkout.sh in scriptDir and record
+      # the command so the Jinja template can emit a parallel .checkout rule.
+      # This moves all git clones / archive downloads out of the sequential
+      # Python preparation phase and into independent Makeflow tasks.
+      checkout_cmd = ""
+      if not cachedTarball:
+        _scm_type = "sapling" if isinstance(spec.get("scm"), Sapling) else "git"
+        _checkout_spec = {
+          "scm_type":         _scm_type,
+          "package":          spec["package"],
+          "version":          spec["version"],
+          "commit_hash":      spec.get("commit_hash", ""),
+          "tag":              spec.get("tag", spec["version"]),
+          "pkgdir":           spec.get("pkgdir", ""),
+          "source":           spec.get("source", ""),
+          "is_devel_pkg":     spec.get("is_devel_pkg", False),
+          "reference":        spec.get("reference", ""),
+          "write_repo":       spec.get("write_repo", ""),
+          "patches":          spec.get("patches", []),
+          "sources":          spec.get("sources", []),
+          "source_checksums": spec.get("source_checksums") or {},
+          "patch_checksums":  spec.get("patch_checksums") or {},
+        }
+        _checkout_json = join(scriptDir, "spec_checkout.json")
+        with open(_checkout_json, "w") as _fh:
+          json.dump(_checkout_spec, _fh)
+        _ref = quote(args.referenceSources) if args.referenceSources else "''"
+        _enforce = quote(_download_time_mode(effective_checksum_mode))
+        _psrc = str(getattr(args, "parallelSources", 1))
+        checkout_cmd = (
+          "PYTHONPATH={bits_dir} {py} -m bits_helpers.checkout_runner"
+          " --spec-json {json}"
+          " --work-dir {wd}"
+          " --reference-sources {ref}"
+          " --enforce-mode {enforce}"
+          " --parallel-sources {psrc}"
+        ).format(
+          bits_dir=quote(bits_dir),
+          py=quote(sys.executable),
+          json=quote(_checkout_json),
+          wd=quote(workDir),
+          ref=_ref,
+          enforce=_enforce,
+          psrc=_psrc,
+        )
+
+      buildList.append((p, _build_cmd, tar_command, upload_command, cachedTarball, breq, checkout_cmd))
 
   if (not args.makeflow) and (args.builders > 1) and buildTargets:
     scheduler.run()
@@ -2154,7 +2208,7 @@ def doBuild(args, parser):
               .from_string(jnj)
               .render(specs=specs, args=args, ToDo=buildList)
               )
-    for (p, build_command, tar_command, upload_command, cachedTarball, breq) in buildList:
+    for (p, build_command, tar_command, upload_command, cachedTarball, breq, checkout_cmd) in buildList:
       spec = specs[p]
       print (
         ("Unpacking %s@%s" if cachedTarball else
@@ -2258,7 +2312,7 @@ def doBuild(args, parser):
     else:
       debug(child.stdout)
     dieOnError(err, buildErrMsg.strip())
-    for (p, _, _, _, _, _) in buildList:
+    for (p, _, _, _, _, _, _) in buildList:
       doFinalSync(specs[p], specs, args, syncHelper)
 
   # ── Post-build checksum phase ──────────────────────────────────────────────
