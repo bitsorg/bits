@@ -184,24 +184,37 @@ architectures. The goal is to cover every architecture in the CERN experiment po
   bits-console instance.
 - Define a `release` build schedule that rebuilds and uploads the full stack on every
   merged commit to the main recipe branch.
-- Add a `bits doctor --check-store` command that tells the user whether a pre-built
-  tarball is available for their platform before they commit to a full compilation.
+- ✅ Add a `bits doctor --check-store` command that tells the user whether a pre-built
+  tarball is available for their platform before they commit to a full compilation —
+  implemented in `bits_helpers/doctor.py` (`_probe_tarball_in_store`,
+  `_run_check_store_checks`, `_emit_check_store_text`, `_emit_check_store_json`).
+  Resolves the full dependency tree, computes per-package hashes, and probes the
+  remote store via HTTP HEAD (or local path check); branch builds without
+  `--fetch-repos` are flagged as approximate.
 - Document the store configuration more prominently in the quick-start guide.
 
-#### N2. Unconditional sandbox as a recommended default
+#### N2. Unconditional sandbox as a recommended default ✅ IMPLEMENTED
 
-The `--sandbox=auto` mode is currently advisory and falls back silently to `off` when
-podman is unavailable. Flip this for CI environments: the bits-console-generated
-pipeline YAML should always pass `--sandbox=podman` when the `bits-build-*` runner has
-podman available. Local developer builds keep `auto` as the default.
+The `--sandbox=auto` mode was advisory and fell back silently to `off` when podman
+was unavailable.  This milestone flips the default for CI environments to `podman`,
+while keeping `auto` for local developer builds.
 
-**Actions:**
-- Add a `sandbox` field to `ui-config.yaml` so community maintainers can mandate
-  sandboxing for their CI pipelines.
-- Document the podman installation requirement in `INSTALL.txt` as a recommended (not
-  optional) step for build runners.
-- ✅ Add a `bits doctor` check that reports podman availability and the effective sandbox
-  mode — implemented as part of N4 (`_check_podman()` in `bits_helpers/doctor.py`).
+**What was implemented:**
+
+| Component | Change |
+|-----------|--------|
+| `repos/bits-console/ui-config.yaml` (template) | Added `sandbox_mode` and `sandbox_required` fields with full comment block |
+| `communities/ALICE/ui-config.yaml` | `sandbox_mode: "podman"`, `sandbox_required: "false"` |
+| `communities/LHCb/ui-config.yaml` | `sandbox_mode: "podman"`, `sandbox_required: "false"` |
+| `communities/LCG/ui-config.yaml` | `sandbox_mode: "podman"`, `sandbox_required: "false"` |
+| `.gitlab/cvmfs-publish.yml` | `SANDBOX_MODE` / `SANDBOX_REQUIRED` documented in header; `SANDBOX_ARGS` construction block; `$SANDBOX_ARGS` injected into `bits build` |
+| `INSTALL.txt` §1 STEP 3 | Podman (rootless) installation instructions for EL9, EL8, Ubuntu |
+| `bits_helpers/doctor.py` | `_check_podman()` — reports podman availability and version (implemented in N4) |
+
+**Supported `sandbox_mode` values (ui-config.yaml → `SANDBOX_MODE` pipeline variable):**
+- `podman` — always sandbox; fail fast if podman absent and `sandbox_required: "true"`
+- `auto` — sandbox if podman present, silent fallback otherwise (bits default)
+- `off` — no `--sandbox` flag passed (use only when podman is not available)
 
 #### N3. Cross-compilation via QEMU + Docker ✓ *implemented*
 
@@ -681,7 +694,7 @@ concretiser.
 | ID | Item | Horizon | Impact | Effort |
 |----|------|---------|--------|--------|
 | N1 | Binary store coverage and promotion | Near | High | Medium |
-| N2 | Sandbox as recommended CI default | Near | High | Low |
+| N2 | Sandbox as recommended CI default ✅ | Near | High | Low |
 | N3 | QEMU cross-compilation ✅ | Near | Medium | Low |
 | N4 | `bits doctor --runner` ✅ | Near | Medium | Low |
 | N5 | Developer workflow docs + `bits status` ✅ (partial) | Near | High | Low |

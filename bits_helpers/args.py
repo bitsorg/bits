@@ -605,6 +605,24 @@ def doParseArgs():
   doctor_dirs.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","alidist"),
                            help="The directory containing build recipes. Default '%(default)s'.")
 
+  # Mode flags — apply to --runner, --check-store, and future modes
+  doctor_parser.add_argument(
+      "--json", dest="json_output", action="store_true", default=False,
+      help="Emit a machine-readable JSON report.  "
+           "Applies to --runner and --check-store modes.",
+  )
+  doctor_parser.add_argument(
+      "--check-store", dest="checkStore", action="store_true", default=False,
+      help=(
+          "After resolving the dependency tree, probe the remote store to report "
+          "which packages have a pre-built tarball and which will need compilation.  "
+          "Requires --remote-store (or a default store for the architecture).  "
+          "Makes one HTTP HEAD request per package.  "
+          "For branch builds, re-run with 'bits status --fetch-repos --check-store' "
+          "for exact hashes."
+      ),
+  )
+
   doctor_runner = doctor_parser.add_argument_group(
       title="Runner environment validation (--runner mode)",
       description=(
@@ -619,10 +637,6 @@ def doParseArgs():
       "--runner", dest="runner", action="store_true", default=False,
       help="Validate the full build-runner environment.  "
            "May be combined with --json for machine-readable output.",
-  )
-  doctor_runner.add_argument(
-      "--json", dest="json_output", action="store_true", default=False,
-      help="Emit a machine-readable JSON report (--runner mode only).",
   )
   doctor_runner.add_argument(
       "--cvmfs-repos", dest="cvmfsRepos", metavar="PATH", action="append", default=[],

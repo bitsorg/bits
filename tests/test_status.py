@@ -461,6 +461,9 @@ class TestDoStatus(unittest.TestCase):
         self.arch = "slc9_x86-64"
         self.work_dir = os.path.join(self.tmp, "sw")
         os.makedirs(self.work_dir)
+        # Create the recipes dir so doStatus's configDir existence guard passes
+        # in tests that mock getPackageList rather than populating real recipes.
+        os.makedirs(os.path.join(self.tmp, "recipes"), exist_ok=True)
 
     def tearDown(self):
         import shutil

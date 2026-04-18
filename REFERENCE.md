@@ -1515,11 +1515,12 @@ Colour coding in the generated graph: **gold** = requested top-level package; **
 
 ### bits doctor
 
-Check that the system satisfies all requirements for the requested packages, or validate the full build-runner environment with `--runner`.
+Check that the system satisfies all requirements for the requested packages, validate the full build-runner environment with `--runner`, or probe the remote binary store with `--check-store`.
 
 ```bash
 bits doctor [options] [PACKAGE ...]          # recipe system-requirement check
 bits doctor --runner [options]               # runner environment validation
+bits doctor --check-store PACKAGE ...        # pre-build store availability report
 ```
 
 **Recipe-check mode** (default) evaluates each package's `system_requirement` and `prefer_system` snippets in the dependency tree and reports which packages can be satisfied by the host and which will be built by bits. The `PACKAGE` positional argument is required in this mode.
@@ -1537,26 +1538,80 @@ bits doctor --runner [options]               # runner environment validation
 | Free disk space in `--work-dir` ≥ `--min-disk` GiB | always |
 | Remote store reachable and credentials present | when `--remote-store` is configured |
 
+**`--check-store` mode** runs the standard dependency-tree resolution (same as recipe-check mode), computes the expected tarball hash for each package bits would need to build, and probes the remote store to report which are pre-built. The report is informational: exit code is always 0. Use it to estimate how much of a build will compile vs. be downloaded.
+
+Hash computation notes:
+
+- For tagged releases (the common CI case) the hash is exact — the tag string deterministically identifies the commit.
+- For branch builds without `--fetch-repos`, the commit hash is approximated with "0". If the store probe shows FAIL for all packages in a branch build, re-run via `bits status --fetch-repos --check-store` for accurate hashes.
+- The store tarball path for an `https://` store follows the pattern: `{store}/TARS/{arch}/store/{hash[:2]}/{hash}/{pkg}-{ver}-{rev}.{arch}.tar.gz`.
+
+`--check-store` output example (text):
+```
+bits doctor --check-store  —  architecture: slc9_x86-64
+  Store: https://s3.cern.ch/swift/v1/alibuild-repo
+
+  package                              status  detail
+  ──────────────────────────────────────────────────────────────────────────────
+  zlib                                 PASS    available: zlib-1.3.1-1.slc9_x86-64.tar.gz (hash 3f2c8d...)
+  GSL                                  PASS    available: GSL-2.7.1-1.slc9_x86-64.tar.gz  (hash a1b2c3...)
+  ROOT                                 FAIL    not in store — will build from source: ROOT-6.32.00-1.slc9_x86-64.tar.gz
+
+  2 of 3 package(s) available in store; 1 will build from source.
+```
+
+`--check-store` JSON output (abbreviated):
+```json
+{
+  "mode": "check-store",
+  "architecture": "slc9_x86-64",
+  "store": "https://s3.cern.ch/swift/v1/alibuild-repo",
+  "packages": [
+    {"package": "zlib", "status": "PASS", "detail": "available: ..."},
+    {"package": "ROOT", "status": "FAIL", "detail": "not in store — will build from source: ..."}
+  ],
+  "summary": {"PASS": 2, "FAIL": 1, "WARN": 0, "SKIP": 0},
+  "notes": []
+}
+```
+
 | Option | Default | Description |
 |--------|---------|-------------|
+| `--check-store` | off | Probe the remote store for each package bits would build. Requires `--remote-store`. Always exits 0. |
 | `--runner` | off | Validate the full build-runner environment instead of checking package recipes. |
-| `--json` | off | Emit a machine-readable JSON report (only meaningful with `--runner`). |
-| `--cvmfs-repos PATH` | _(none)_ | CVMFS mount path to check (repeatable). Can also be set as `cvmfs_repos = /cvmfs/a,/cvmfs/b` in `bits.rc`. |
-| `--min-disk GIB` | `10.0` | Minimum free disk in `--work-dir`. Lower triggers WARN, not FAIL. |
-| `-a ARCH`, `--architecture ARCH` | auto-detected | Architecture used for QEMU binfmt check. |
-| `--defaults PROFILE` | `release` | Defaults profile for recipe dependency resolution (recipe-check mode only). |
-| `-w DIR`, `--work-dir DIR` | `sw` | Work directory checked for disk space. |
-| `--docker` | off | Run recipe checks inside a Docker container (also enables the docker-daemon and QEMU checks in `--runner` mode). |
-| `--remote-store URL` | _(none)_ | Remote binary store URL checked for reachability in `--runner` mode. |
+| `--json` | off | Emit a machine-readable JSON report (works with `--runner` and `--check-store`). |
+| `--cvmfs-repos PATH` | _(none)_ | CVMFS mount path to check (repeatable, `--runner` mode only). Can also be set as `cvmfs_repos = /cvmfs/a,/cvmfs/b` in `bits.rc`. |
+| `--min-disk GIB` | `10.0` | Minimum free disk in `--work-dir` (`--runner` mode). Lower triggers WARN, not FAIL. |
+| `-a ARCH`, `--architecture ARCH` | auto-detected | Target architecture. |
+| `--defaults PROFILE` | `release` | Defaults profile for dependency resolution. |
+| `-w DIR`, `--work-dir DIR` | `sw` | Work directory checked for disk space (`--runner`). |
+| `--docker` | off | Run recipe checks inside a Docker container (also enables docker-daemon and QEMU checks in `--runner`). |
+| `--remote-store URL` | _(none)_ | Remote binary store URL; checked for reachability in `--runner` mode and probed per-package in `--check-store` mode. |
 | `--insecure` | off | Skip TLS certificate validation when probing an `https://` store. |
 
 **Exit codes (recipe-check mode):** 0 = all requirements satisfied; 1 = missing system packages or compiler/git absent; 2 = no valid defaults combination; 3 = no valid defaults for the package set at all.
 
 **Exit codes (`--runner` mode):** 0 = all checks PASS or WARN; 1 = one or more checks FAIL.
 
+**Exit codes (`--check-store` mode):** always 0 (informational).
+
 **Example — pre-build system check:**
 ```bash
 bits doctor O2Physics
+```
+
+**Example — store availability report before a long build:**
+```bash
+bits doctor --check-store \
+    --remote-store https://s3.cern.ch/swift/v1/alibuild-repo \
+    -a slc9_x86-64 -c lcg.bits ROOT
+```
+
+**Example — store report (JSON output):**
+```bash
+bits doctor --check-store --json \
+    --remote-store https://s3.cern.ch/swift/v1/alibuild-repo \
+    -a slc9_x86-64 -c lcg.bits ROOT Geant4
 ```
 
 **Example — runner health check (human-readable):**

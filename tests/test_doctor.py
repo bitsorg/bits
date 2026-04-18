@@ -17,6 +17,10 @@ from bits_helpers.doctor import (
     _check_podman,
     _check_qemu_binfmt,
     _check_store,
+    _emit_check_store_json,
+    _emit_check_store_text,
+    _probe_tarball_in_store,
+    _run_check_store_checks,
     _run_runner_checks,
     doDoctor,
 )
@@ -523,6 +527,291 @@ class TestDoDocorRunnerMode(unittest.TestCase):
                 doDoctor(args, mock_parser)
         # parser.error called for missing configDir — non-zero
         self.assertNotEqual(ctx.exception.code, 0)
+
+
+# ── _probe_tarball_in_store ────────────────────────────────────────────────────
+
+class TestProbeTarballInStore(unittest.TestCase):
+    """Unit tests for the per-package store probe function."""
+
+    def _spec(self, pkg="ROOT", version="6.32.00", rev="1",
+              arch=None, remote_hashes=None):
+        spec = {
+            "package":       pkg,
+            "version":       version,
+            "revision":      rev,
+            "remote_hashes": remote_hashes if remote_hashes is not None
+                             else ["abcdef1234567890" * 2],
+        }
+        if arch:
+            spec["architecture"] = arch
+        return spec
+
+    # ── HTTP store ─────────────────────────────────────────────────────────────
+
+    def test_pass_http_200(self):
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__  = MagicMock(return_value=False)
+        mock_resp.status    = 200
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            status, detail = _probe_tarball_in_store(
+                self._spec(), "slc9_x86-64",
+                "https://s3.cern.ch/swift/v1/bits-repo")
+        self.assertEqual(status, PASS)
+        self.assertIn("available", detail)
+        self.assertIn("ROOT", detail)
+
+    def test_fail_http_404_all_hashes(self):
+        import urllib.error
+        with patch("urllib.request.urlopen",
+                   side_effect=urllib.error.HTTPError(None, 404, "Not Found", {}, None)):
+            status, detail = _probe_tarball_in_store(
+                self._spec(), "slc9_x86-64",
+                "https://s3.cern.ch/swift/v1/bits-repo")
+        self.assertEqual(status, FAIL)
+        self.assertIn("build from source", detail)
+
+    def test_warn_http_500(self):
+        import urllib.error
+        with patch("urllib.request.urlopen",
+                   side_effect=urllib.error.HTTPError(None, 500, "Server Error", {}, None)):
+            status, detail = _probe_tarball_in_store(
+                self._spec(), "slc9_x86-64",
+                "https://s3.cern.ch/swift/v1/bits-repo")
+        self.assertEqual(status, WARN)
+        self.assertIn("500", detail)
+
+    def test_warn_http_connection_error(self):
+        with patch("urllib.request.urlopen", side_effect=OSError("Connection refused")):
+            status, detail = _probe_tarball_in_store(
+                self._spec(), "slc9_x86-64",
+                "https://s3.cern.ch/swift/v1/bits-repo")
+        self.assertEqual(status, WARN)
+
+    # ── Local filesystem store ─────────────────────────────────────────────────
+
+    def test_pass_local_file_exists(self):
+        with tempfile.TemporaryDirectory() as store_dir:
+            spec = self._spec(remote_hashes=["aabbccddeeff0011" * 2])
+            h    = spec["remote_hashes"][0]
+            arch = "slc9_x86-64"
+            tarball = "ROOT-6.32.00-1.%s.tar.gz" % arch
+            tarball_dir = os.path.join(store_dir, "TARS", arch, "store", h[:2], h)
+            os.makedirs(tarball_dir)
+            open(os.path.join(tarball_dir, tarball), "w").close()
+            status, detail = _probe_tarball_in_store(spec, arch, store_dir)
+        self.assertEqual(status, PASS)
+        self.assertIn("available", detail)
+
+    def test_fail_local_file_missing(self):
+        with tempfile.TemporaryDirectory() as store_dir:
+            status, detail = _probe_tarball_in_store(
+                self._spec(), "slc9_x86-64", store_dir)
+        self.assertEqual(status, FAIL)
+
+    # ── Non-probeable stores ───────────────────────────────────────────────────
+
+    def test_skip_rsync_store(self):
+        status, detail = _probe_tarball_in_store(
+            self._spec(), "slc9_x86-64", "rsync://store.example.com/bits")
+        self.assertEqual(status, SKIP)
+
+    def test_skip_s3_store(self):
+        status, detail = _probe_tarball_in_store(
+            self._spec(), "slc9_x86-64", "s3://my-bucket/bits")
+        self.assertEqual(status, SKIP)
+
+    # ── Missing hashes ─────────────────────────────────────────────────────────
+
+    def test_warn_no_remote_hashes(self):
+        spec = self._spec(remote_hashes=[])
+        status, detail = _probe_tarball_in_store(
+            spec, "slc9_x86-64", "https://store.example.com/bits")
+        self.assertEqual(status, WARN)
+        self.assertIn("hash not computed", detail)
+
+
+# ── _run_check_store_checks ────────────────────────────────────────────────────
+
+class TestRunCheckStoreChecks(unittest.TestCase):
+    """Unit tests for the check-store orchestration."""
+
+    def _args(self, store="https://s3.cern.ch/swift/v1/bits-repo", **kw):
+        base = dict(
+            architecture="slc9_x86-64",
+            remoteStore=store,
+            insecure=False,
+        )
+        base.update(kw)
+        return Namespace(**base)
+
+    def _specs(self):
+        """Return a minimal specs dict like getPackageList would produce."""
+        from collections import OrderedDict
+        specs = OrderedDict()
+        specs["DepA"] = {
+            "package": "DepA", "version": "1.0", "revision": "1",
+            "tag": "v1.0", "recipe": "pkg: DepA\n", "requires": [],
+        }
+        specs["ROOT"] = {
+            "package": "ROOT", "version": "6.32.00", "revision": "1",
+            "tag": "v6-32-00-patches", "recipe": "pkg: ROOT\n",
+            "requires": ["DepA"],
+        }
+        return specs
+
+    def test_skip_when_no_store(self):
+        checks = _run_check_store_checks(
+            self._args(store=""), self._specs(),
+            own={"ROOT"}, always_built=set())
+        self.assertEqual(len(checks), 1)
+        status = checks[0][1]
+        self.assertEqual(status, SKIP)
+
+    def test_skip_when_nothing_to_build(self):
+        checks = _run_check_store_checks(
+            self._args(), self._specs(),
+            own=set(), always_built=set())
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0][1], SKIP)
+        self.assertIn("nothing", checks[0][2].lower())
+
+    def test_calls_store_hashes_and_probe(self):
+        """Check that storeHashes is called and probe is invoked per target."""
+        def fake_store_hashes(pkg, specs, considerRelocation):
+            specs[pkg]["remote_hashes"] = ["deadbeef01234567" * 2]
+            specs[pkg]["local_hashes"]  = ["deadbeef01234567" * 2]
+
+        with patch("bits_helpers.build.storeHashes", side_effect=fake_store_hashes), \
+             patch("bits_helpers.doctor._probe_tarball_in_store",
+                   return_value=(PASS, "available")) as mock_probe:
+            checks = _run_check_store_checks(
+                self._args(), self._specs(),
+                own={"ROOT"}, always_built={"DepA"})
+        # Both ROOT and DepA are targets → probe called twice
+        self.assertEqual(mock_probe.call_count, 2)
+        statuses = [s for _, s, _ in checks if _ != "note"]
+        self.assertTrue(all(s == PASS for s in statuses if s != WARN))
+
+    def test_approx_note_when_no_tag(self):
+        """A spec without a 'tag' key should trigger the approximation warning."""
+        specs = {
+            "Foo": {"package": "Foo", "version": "1.0", "revision": "1",
+                    "recipe": "pkg: Foo\n", "requires": []},
+            # No 'tag' key → commit_hash will be set to "0"
+        }
+
+        def fake_store_hashes(pkg, specs_, considerRelocation):
+            specs_[pkg].setdefault("remote_hashes", [])
+            specs_[pkg].setdefault("local_hashes",  [])
+
+        with patch("bits_helpers.build.storeHashes", side_effect=fake_store_hashes):
+            checks = _run_check_store_checks(
+                self._args(), specs,
+                own={"Foo"}, always_built=set())
+        note_names = [n for n, _, _ in checks]
+        self.assertIn("(note)", note_names)
+
+    def test_json_output_structure(self):
+        import io
+        checks = [
+            ("ROOT",  PASS, "available: ROOT-6.32.00-1.slc9_x86-64.tar.gz (hash abcdef12)"),
+            ("DepA",  FAIL, "not in store — will build from source"),
+        ]
+        captured = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = captured
+        try:
+            _emit_check_store_json(checks, "slc9_x86-64",
+                                   "https://s3.cern.ch/swift/v1/bits-repo")
+        finally:
+            sys.stdout = old_stdout
+        report = json.loads(captured.getvalue())
+        self.assertEqual(report["mode"], "check-store")
+        self.assertIn("packages", report)
+        self.assertIn("summary", report)
+        self.assertEqual(report["summary"][PASS], 1)
+        self.assertEqual(report["summary"][FAIL], 1)
+
+    def test_doDoctor_check_store_exits_0(self):
+        """--check-store mode always exits 0 regardless of store results."""
+        from io import StringIO
+        checks = [("ROOT", FAIL, "not in store — will build from source")]
+        args = Namespace(
+            packages=["ROOT"],
+            architecture="slc9_x86-64",
+            docker=False, dockerImage=None,
+            docker_extra_args=["--network=host"],
+            debug=False, preferSystem=[], noSystem="*",
+            disable=[], defaults=["release"], environment=[],
+            runner=False, checkStore=True,
+            remoteStore="https://s3.cern.ch/swift/v1/bits-repo",
+            insecure=False, json_output=False,
+            workDir=tempfile.gettempdir(),
+            configDir="/nonexistent_for_check_store_test",
+        )
+        mock_parser = MagicMock()
+        mock_parser.error.side_effect = SystemExit(2)
+        with patch("bits_helpers.doctor.exists", return_value=False):
+            with self.assertRaises(SystemExit) as ctx:
+                doDoctor(args, mock_parser)
+        # configDir doesn't exist → exits via parser.error before reaching --check-store
+        self.assertNotEqual(ctx.exception.code, 0)  # configDir guard fires first
+
+    def test_doDoctor_check_store_full_flow(self):
+        """End-to-end: --check-store with mocked getPackageList and probe."""
+        import io
+        from io import StringIO
+
+        fake_specs = {
+            "ROOT": {"package": "ROOT", "version": "6.32.00", "revision": "1",
+                     "tag": "v6-32-00", "recipe": "pkg: ROOT\n", "requires": []},
+        }
+
+        def fake_gpl(**kw):
+            for pkg, spec in fake_specs.items():
+                kw["specs"][pkg] = spec
+            return (set(), {"ROOT"}, set(), None)
+
+        def fake_store_hashes(pkg, specs_, considerRelocation):
+            specs_[pkg]["remote_hashes"] = ["aa" * 16]
+            specs_[pkg]["local_hashes"]  = ["aa" * 16]
+
+        args = Namespace(
+            packages=["ROOT"],
+            architecture="slc9_x86-64",
+            docker=False, dockerImage=None,
+            docker_extra_args=["--network=host"],
+            debug=False, preferSystem=[], noSystem="*",
+            disable=[], defaults=["release"], environment=[],
+            runner=False, checkStore=True,
+            remoteStore="https://s3.cern.ch/swift/v1/bits-repo",
+            insecure=False, json_output=True,
+            workDir=tempfile.gettempdir(),
+            configDir="/tmp",
+        )
+        captured = io.StringIO()
+        with patch("bits_helpers.doctor.exists", return_value=True), \
+             patch("bits_helpers.doctor.expanduser", return_value="/tmp/.rootlogon.C"), \
+             patch("bits_helpers.doctor.os.path.exists", return_value=False), \
+             patch("bits_helpers.doctor.getPackageList", side_effect=fake_gpl), \
+             patch("bits_helpers.doctor.parseDefaults",
+                   return_value=(None, {}, [], {})), \
+             patch("bits_helpers.doctor.readDefaults", return_value={}), \
+             patch("bits_helpers.doctor.validateDefaults",
+                   return_value=(True, "", ["release"])), \
+             patch("bits_helpers.build.storeHashes", side_effect=fake_store_hashes), \
+             patch("urllib.request.urlopen",
+                   side_effect=__import__("urllib.error", fromlist=["HTTPError"])
+                   .HTTPError(None, 404, "Not Found", {}, None)), \
+             patch("sys.stdout", captured):
+            with self.assertRaises(SystemExit) as ctx:
+                doDoctor(args, MagicMock())
+        self.assertEqual(ctx.exception.code, 0)
+        report = json.loads(captured.getvalue())
+        self.assertEqual(report["mode"], "check-store")
+        self.assertIn("packages", report)
 
 
 if __name__ == "__main__":

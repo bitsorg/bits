@@ -9,6 +9,10 @@ With ``--runner`` it additionally validates the full build-runner environment:
 compiler, git, Docker daemon, podman/sandbox, QEMU binfmt handlers, CVMFS
 mounts, disk space, and remote store reachability.
 
+With ``--check-store`` it resolves the dependency tree, computes the expected
+tarball hash for each package bits would build, and probes the remote store to
+report which packages are pre-built and which will need compilation.
+
 Exit codes (recipe-check mode)
 -------------------------------
 0  All system requirements satisfied; build can proceed.
@@ -20,6 +24,10 @@ Exit codes (--runner mode)
 --------------------------
 0  All checks PASS or WARN.
 1  One or more checks FAIL.
+
+Exit codes (--check-store mode)
+--------------------------------
+0  Always (the report is informational; missing tarballs are expected).
 """
 
 import json
@@ -34,7 +42,10 @@ from typing import List, Tuple
 
 from bits_helpers.cmd import DockerRunner, getstatusoutput
 from bits_helpers.log import banner, debug, error, info, logger, success, warning
-from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults
+from bits_helpers.utilities import (
+    getPackageList, parseDefaults, readDefaults, validateDefaults,
+    effective_arch, ver_rev,
+)
 
 # ── Status constants ───────────────────────────────────────────────────────────
 PASS = "PASS"
@@ -49,6 +60,8 @@ _COLOUR = {
     SKIP: "\033[90m",   # dark grey
 }
 _RESET = "\033[0m"
+
+CheckResult = Tuple[str, str, str]  # (name, status, detail)
 
 
 def _colour(status: str, text: str) -> str:
@@ -306,9 +319,177 @@ def _check_store(url: str, insecure: bool = False) -> Tuple[str, str]:
     return SKIP, "unrecognised store scheme; skipping connectivity check: %s" % url
 
 
-# ── Runner check orchestration ─────────────────────────────────────────────────
+# ── Store tarball probe (--check-store mode) ───────────────────────────────────
 
-CheckResult = Tuple[str, str, str]  # (name, status, detail)
+def _probe_tarball_in_store(spec: dict, arch: str, store_url: str,
+                             insecure: bool = False) -> Tuple[str, str]:
+    """Probe whether a pre-built tarball for *spec* is available in the remote store.
+
+    Supports:
+    * ``https://`` / ``http://`` — HTTP HEAD request for the tarball path.
+    * Local directory path starting with ``/``  — ``os.path.isfile`` check.
+    * Everything else (rsync://, s3://, b3://) — SKIP (credentials needed).
+
+    Returns ``(status, detail)``.
+    """
+    remote_hashes = spec.get("remote_hashes") or []
+    if not remote_hashes:
+        return WARN, "hash not computed for %s (commit ref unknown; re-run with --fetch-repos)" % spec["package"]
+
+    pkg_arch = effective_arch(spec, arch)
+    pkg      = spec["package"]
+    vr       = ver_rev(spec)
+    tarball  = "%s-%s.%s.tar.gz" % (pkg, vr, pkg_arch)
+
+    for h in remote_hashes:
+        store_path = "TARS/%s/store/%s/%s/%s" % (pkg_arch, h[:2], h, tarball)
+
+        if store_url.startswith("http"):
+            import urllib.request
+            import urllib.error
+            import ssl
+            url = "%s/%s" % (store_url.rstrip("/"), store_path)
+            ctx = None
+            if insecure:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            try:
+                req = urllib.request.Request(url, method="HEAD")
+                with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                    if resp.status < 400:
+                        return PASS, "available: %s  (hash %s)" % (tarball, h[:16])
+            except urllib.error.HTTPError as exc:
+                if exc.code in (403, 404):
+                    continue   # not found at this hash — try next
+                return WARN, "HTTP %d probing store for %s: %s" % (exc.code, pkg, url[:80])
+            except Exception as exc:
+                return WARN, "store probe failed for %s: %s" % (pkg, exc)
+
+        elif store_url.startswith("/"):
+            full_path = os.path.join(store_url, store_path)
+            if os.path.isfile(full_path):
+                return PASS, "available: %s  (hash %s)" % (tarball, h[:16])
+
+        else:
+            return SKIP, "store scheme not probeable without credentials — %s" % store_url[:60]
+
+    return FAIL, "not in store — will build from source: %s" % tarball
+
+
+def _run_check_store_checks(args, specs: dict, own: set,
+                             always_built: set) -> List[CheckResult]:
+    """Probe the remote store for each package bits would build.
+
+    Populates ``commit_hash`` (best-effort: tag string for tagged releases,
+    "0" for branch builds without ``--fetch-repos``) then calls ``storeHashes``
+    in topological order before probing each target package.
+
+    Returns ``[(name, status, detail), ...]``.
+    """
+    # Lazy import — bits_helpers.build is heavy (jinja2, analytics, slow init).
+    from bits_helpers.build import storeHashes as _storeHashes
+
+    store_url = (getattr(args, "remoteStore", "") or "").rstrip("/")
+    arch      = getattr(args, "architecture", "")
+    insecure  = getattr(args, "insecure", False)
+
+    if not store_url:
+        return [("remote store", SKIP,
+                 "no --remote-store configured; cannot check store availability")]
+
+    # Populate commit_hash for each spec that lacks one.
+    # For tagged releases this is exact; for branch builds it is approximate
+    # (use --fetch-repos in 'bits status --check-store' for accurate hashes).
+    hash_approx = False
+    for pkg, spec in specs.items():
+        if "commit_hash" not in spec:
+            tag = spec.get("tag", "")
+            if tag:
+                spec["commit_hash"] = tag
+            else:
+                spec["commit_hash"] = "0"
+                hash_approx = True
+
+    # Compute all hashes in topological order (specs is insertion-ordered,
+    # dependencies before dependents, as returned by getPackageList).
+    for pkg in list(specs.keys()):
+        try:
+            _storeHashes(pkg, specs, considerRelocation=False)
+        except Exception:
+            pass  # leave spec without remote_hashes; probe will WARN
+
+    targets: List[CheckResult] = []
+    for pkg in specs:  # topological order — preserves readability in output
+        if pkg not in own and pkg not in always_built:
+            continue
+        spec   = specs[pkg]
+        status, detail = _probe_tarball_in_store(spec, arch, store_url, insecure)
+        targets.append((pkg, status, detail))
+
+    if not targets:
+        return [("(nothing to build)", SKIP,
+                 "all packages satisfied from the system — nothing to look up in the store")]
+
+    if hash_approx:
+        targets.insert(0, (
+            "(note)", WARN,
+            "Some commit hashes are approximate (branch builds without "
+            "--fetch-repos). Re-run 'bits status --fetch-repos --check-store' "
+            "for exact results.",
+        ))
+
+    return targets
+
+
+# ── check-store output emitters ────────────────────────────────────────────────
+
+def _emit_check_store_text(checks: List[CheckResult], arch: str,
+                            store_url: str) -> None:
+    from bits_helpers.log import banner as _banner
+    _banner("bits doctor --check-store  —  architecture: %s", arch)
+    print("  Store: %s\n" % store_url)
+    print("  %-36s %-6s  %s" % ("package", "status", "detail"))
+    print("  " + "-" * 78)
+    for name, status, detail in checks:
+        first_line, *rest = detail.split("\n")
+        label = _colour(status, "%-6s" % status)
+        print("  %-36s %s  %s" % (name[:36], label, first_line))
+        for extra in rest:
+            if extra.strip():
+                print("  %-36s         %s" % ("", extra))
+    print()
+    n_pass = sum(1 for _, s, _ in checks if s == PASS)
+    n_fail = sum(1 for _, s, _ in checks if s == FAIL)
+    n_skip = sum(1 for _, s, _ in checks if s == SKIP)
+    n_shown = len(checks) - n_skip
+    print("  %d of %d package(s) available in store; %d will build from source." % (
+        n_pass, n_shown, n_fail))
+
+
+def _emit_check_store_json(checks: List[CheckResult], arch: str,
+                            store_url: str) -> None:
+    report = {
+        "mode":         "check-store",
+        "architecture": arch,
+        "store":        store_url,
+        "packages": [
+            {"package": name, "status": status, "detail": detail}
+            for name, status, detail in checks
+            if name != "(note)"
+        ],
+        "summary": {
+            PASS: sum(1 for n, s, _ in checks if s == PASS and n != "(note)"),
+            FAIL: sum(1 for n, s, _ in checks if s == FAIL and n != "(note)"),
+            WARN: sum(1 for n, s, _ in checks if s == WARN and n != "(note)"),
+            SKIP: sum(1 for n, s, _ in checks if s == SKIP and n != "(note)"),
+        },
+        "notes": [d for n, _, d in checks if n == "(note)"],
+    }
+    print(json.dumps(report, indent=2))
+
+
+# ── Runner check orchestration ─────────────────────────────────────────────────
 
 
 def _run_runner_checks(args) -> List[CheckResult]:
@@ -515,6 +696,18 @@ def doDoctor(args, parser):
                            log                     = info)
 
     alwaysBuilt = {x for x in specs} - fromSystem - own - failed
+
+    # ── --check-store mode: probe remote store for each package bits would build ─
+    if getattr(args, "checkStore", False):
+        store_url = (getattr(args, "remoteStore", "") or "").rstrip("/")
+        store_checks = _run_check_store_checks(args, specs, own, alwaysBuilt)
+        if getattr(args, "json_output", False):
+            _emit_check_store_json(store_checks, args.architecture, store_url)
+        else:
+            _emit_check_store_text(store_checks, args.architecture, store_url)
+        sys.exit(0)
+
+    # ── Standard recipe-check output ────────────────────────────────────────────
     if alwaysBuilt:
         banner("The following packages will be built by bits because\n"
                " usage of a system version of it is not allowed or supported, by policy:\n\n- %s",
