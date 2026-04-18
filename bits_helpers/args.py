@@ -247,6 +247,34 @@ def doParseArgs():
                             help=("Additional volume to be mounted inside the Docker container, if one is used. "
                                   "May be specified multiple times. Passed verbatim to 'docker run'."))
 
+  build_sandbox = build_parser.add_argument_group(title="Recipe sandbox", description="""\
+  Run each recipe build script inside an isolated sandbox to limit the impact
+  of malicious or buggy recipes.  On Linux, podman (rootless) is used; on
+  macOS, the built-in sandbox-exec is used (no VM, no overhead).
+  When --docker is active, a nested podman container is added inside the
+  builder container for an additional isolation layer.
+  """)
+  build_sandbox.add_argument(
+      "--sandbox", dest="sandbox", metavar="MODE", default="auto",
+      choices=["off", "auto", "podman", "sandbox-exec"],
+      help=(
+          "Recipe sandbox mode. "
+          "'auto' (default): use podman on Linux if available, "
+          "sandbox-exec on macOS, nested podman when --docker is active. "
+          "'podman': always use podman (requires --docker or --sandbox-image). "
+          "'sandbox-exec': macOS only. "
+          "'off': no sandboxing."
+      ),
+  )
+  build_sandbox.add_argument(
+      "--sandbox-image", dest="sandboxImage", metavar="IMAGE", default=None,
+      help=(
+          "Container image to use for --sandbox=podman when not using --docker. "
+          "Implies --sandbox=podman. "
+          "Defaults to the --docker image when --docker is set."
+      ),
+  )
+
   build_remote = build_parser.add_argument_group(title="Re-use prebuilt tarballs", description="""\
   Reusing prebuilt tarballs saves compilation time, as common packages need not
   be rebuilt from scratch. rsync://, https://, b3:// and s3:// remote stores
@@ -857,6 +885,10 @@ def finaliseArgs(args, parser):
     # architecture we want to build for.
     if args.docker and not args.dockerImage:
       args.dockerImage = "registry.cern.ch/alisw/%s-builder" % args.architecture.split("_")[0]
+
+    # --sandbox-image implies --sandbox=podman
+    if getattr(args, "sandboxImage", None) and getattr(args, "sandbox", "auto") == "auto":
+      args.sandbox = "podman"
 
   if "annotate" in args:
     for comment_assignment in args.annotate:

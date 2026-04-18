@@ -259,6 +259,37 @@ container. Environment variables can be passed to docker by specifying
 them with the `-e` option. Extra volumes can be specified with the -v
 option using the same syntax used by Docker.
 
+### Recipe sandbox
+
+Bits can run each recipe build script inside an isolated sandbox to reduce
+the risk from untrusted recipes. On Linux the sandbox uses rootless podman;
+on macOS it uses the built-in `sandbox-exec` (no virtual machine, no
+overhead). When `--docker` is active, a nested podman layer is added inside
+the builder container.
+
+The sandbox is controlled by `--sandbox MODE`:
+
+- `auto` (default) — pick the best available option automatically; fall
+  back silently to `off` when nothing is installed.
+- `podman` — always use podman (requires `--docker` or `--sandbox-image`).
+- `sandbox-exec` — macOS only.
+- `off` — disable sandboxing.
+
+Outgoing network access is **blocked** by default inside the sandbox. For
+recipes that need to download dependencies at build time (e.g. `pip install`),
+add `sandbox_network: off` to the recipe header:
+
+```yaml
+package: my-tool
+version: "1.0"
+sandbox_network: off
+---
+pip install -r requirements.txt
+```
+
+See [§22a of the reference manual](reference.md#22a-recipe-sandbox) for the
+full option reference.
+
 ## Defaults
 
 By default, `bits` uses the `o2` defaults (`--defaults o2`), which are

@@ -13,6 +13,7 @@ from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
                                     checksum_file as compute_checksum_file)
 from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksum_file
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
+from bits_helpers.sandbox import wrap_build_command
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
 from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id, ver_rev
 from bits_helpers.utilities import parseDefaults, readDefaults
@@ -2153,6 +2154,20 @@ def doBuild(args, parser):
       buildEnvironment = ([key, (val if isinstance(val, str) else "_".join(val))] for key, val in buildEnvironment)
       env_vars = " ".join(["{}={}".format(key, quote(val)) for key, val in buildEnvironment])
       build_command =  "env {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
+
+    # Apply recipe sandbox (podman / sandbox-exec) if configured.
+    # sandbox=auto selects the best available mode; sandbox=off is a no-op.
+    # Per-recipe: sandbox_network: on (default) blocks outgoing network;
+    #             sandbox_network: off allows it.
+    build_command = wrap_build_command(
+        build_command,
+        spec,
+        args,
+        workdir=abspath(args.workDir),
+        docker_active=bool(getattr(args, "docker", False)),
+        container_workdir=container_workDir if getattr(args, "docker", False) else None,
+        docker_image=getattr(args, "dockerImage", None),
+    )
 
     # defaults-* packages are pure build-time configuration with no source to
     # compile. In Makeflow mode, run them synchronously in the preparation phase

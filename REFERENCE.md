@@ -43,6 +43,11 @@
 22. [Docker Support](#22-docker-support)
     - [workDir mount point inside the container](#workdir-mount-point-inside-the-container)
     - [No-relocation builds with `--cvmfs-prefix`](#no-relocation-builds-with---cvmfs-prefix)
+22a. [Recipe Sandbox](#22a-recipe-sandbox)
+    - [How it works](#how-it-works)
+    - [Sandbox modes](#sandbox-modes)
+    - [Per-recipe network control](#per-recipe-network-control)
+    - [Docker-in-Docker (DinD)](#docker-in-docker-dind)
 23. [Forcing or Dropping the Revision Suffix (`force_revision`)](#23-forcing-or-dropping-the-revision-suffix-force_revision)
 24. [Design Principles & Limitations](#24-design-principles--limitations)
 25. [Build Manifest](#25-build-manifest)
@@ -1452,6 +1457,8 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--docker-extra-args ARGS` | Extra arguments for `docker run`. |
 | `--cvmfs-prefix PATH` | Bind-mount the workDir at `PATH` inside the container instead of the default `/container/bits/sw`. When set, packages compile with their final CVMFS paths already embedded so that `bits publish --no-relocate` can skip the relocation step. Requires `--docker`; has no effect without it. |
 | `--container-use-workdir` | Mount the workDir at the same path inside the container (i.e. `container_workDir = workDir`). Useful when the host and container share the same filesystem namespace. Mutually exclusive with `--cvmfs-prefix`; if both are set `--cvmfs-prefix` takes precedence. |
+| `--sandbox MODE` | Sandbox each recipe build script for extra isolation. `auto` (default): podman on Linux if available, `sandbox-exec` on macOS, nested podman inside Docker containers. `podman`: always use podman (requires `--docker` or `--sandbox-image`). `sandbox-exec`: macOS only. `off`: no sandboxing. See [§22a Recipe Sandbox](#22a-recipe-sandbox). |
+| `--sandbox-image IMAGE` | Container image for `--sandbox=podman` when not using `--docker`. Implies `--sandbox=podman`. Defaults to the `--docker` image when `--docker` is set. |
 | `--force` | Rebuild even if the package hash already exists. |
 | `--keep-tmp` | Keep temporary build directories after success. |
 | `--resource-monitoring` | Enable per-package CPU/memory monitoring. |
@@ -1828,6 +1835,23 @@ mem_utilisation: 0.80
 ```
 
 When `provides_repository: true` is set, the package's `source` URL must point to a git repository containing recipe files. It will be cloned before the main build and its directory added to `BITS_PATH`. Adding `always_load: true` causes the clone to happen unconditionally at startup (Phase 1) rather than only when the package appears in the dependency graph (Phase 2). See [§13](#13-repository-provider-feature) for full details.
+
+#### Build sandbox
+
+| Field | Description |
+|-------|-------------|
+| `sandbox_network` | Controls outgoing network access when the build script runs inside a sandbox. `on` (default) — network is **blocked**. `off` — network is **allowed** (useful for recipes that `pip install` or `gem install` at build time). Ignored when `--sandbox=off`. See [§22a Recipe Sandbox](#22a-recipe-sandbox). |
+
+Example:
+
+```yaml
+package: my-python-tool
+version: "1.0"
+tag: v1.0
+sandbox_network: off   # allow pip install during build
+---
+pip install -r requirements.txt
+```
 
 #### Checksum verification
 
@@ -2853,6 +2877,83 @@ bits publish ROOT \
 ```
 
 **Persistent workDir across CI jobs.** For communities that publish to CVMFS regularly, keeping the workDir alive between CI jobs (on a persistent build runner) turns `--cvmfs-prefix` into an incremental cache: only packages whose recipe or source changed are rebuilt; already-installed dependencies are reused from the previous run. The `bits cleanup` subcommand manages the cache size over time (see [§7 bits cleanup](#bits-cleanup--evict-packages-from-a-persistent-workdir)).
+
+---
+
+## 22a. Recipe Sandbox
+
+Bits can run each recipe build script inside an isolated sandbox to limit the damage a malicious or buggy recipe can do. The sandbox wraps the actual `bash build.sh` execution — it does not affect source downloads, tarball extraction, or publishing.
+
+### How it works
+
+| Platform | Default sandbox | Mechanism |
+|----------|-----------------|-----------|
+| Linux (local build) | podman if available, otherwise `off` | Rootless `podman run` with `--userns=keep-id` |
+| macOS (local build) | `sandbox-exec` if available, otherwise `off` | Built-in SBPL sandbox profile; no VM, no overhead |
+| Any platform, `--docker` active | Nested podman inside the container, if available | `podman run` launched from inside the Docker build container |
+
+The workDir is bind-mounted at the same absolute path inside the podman container so that all paths embedded in the build environment (`$WORK_DIR`, `$INSTALLROOT`, `$SOURCEDIR`, etc.) resolve correctly.
+
+### Sandbox modes
+
+Pass `--sandbox MODE` to `bits build`:
+
+| Mode | Behaviour |
+|------|-----------|
+| `auto` | (default) Pick the best available option — podman on Linux, `sandbox-exec` on macOS, nested podman when `--docker` is active. Falls back to `off` with a warning if nothing is available. |
+| `podman` | Always use podman. Requires the podman binary to be reachable and `podman info` to succeed. When used without `--docker`, also requires `--sandbox-image` to name the container image. |
+| `sandbox-exec` | macOS only. Fails with an error on Linux. |
+| `off` | No sandboxing. Recipe runs directly on the host (same as the behaviour before this feature was added). |
+
+```bash
+# Let bits choose (the default)
+bits build ROOT
+
+# Force podman with a specific image (no --docker required)
+bits build --sandbox=podman --sandbox-image alisw/slc9-builder:latest ROOT
+
+# Disable sandboxing explicitly
+bits build --sandbox=off ROOT
+```
+
+When `--docker` is used, `--sandbox-image` defaults to the same image as `--docker-image`, so no extra flag is needed:
+
+```bash
+# Docker build with nested podman sandbox — same image used for both layers
+bits build --docker --docker-image alisw/slc9-builder:latest ROOT
+```
+
+### Per-recipe network control
+
+By default the sandbox blocks all outgoing network access from the recipe script. Some recipes need to reach the internet during their build (for example, to run `pip install` or `gem install`). Use the `sandbox_network` recipe field to opt in:
+
+```yaml
+package: my-tool
+version: "1.0"
+sandbox_network: off   # allow outgoing network inside the sandbox
+---
+pip install -r requirements.txt
+make install
+```
+
+| `sandbox_network` value | Effect |
+|-------------------------|--------|
+| `on` | (default) Outgoing network is **blocked**. The restriction is active. |
+| `off` | Outgoing network is **allowed**. The restriction is lifted. |
+
+The field is silently ignored when `--sandbox=off`.
+
+### Docker-in-Docker (DinD)
+
+If `bits --docker` is invoked from inside an existing Docker container (for example, a GitLab CI job that itself runs inside Docker), adding a nested podman layer is still possible but requires the outer Docker container to have been started with:
+
+```
+--security-opt seccomp=unconfined
+```
+
+or an equivalent unprivileged user-namespace configuration. Without this, the kernel will reject the `clone(CLONE_NEWUSER)` call that podman uses for rootless containers.
+
+Bits detects this situation automatically (by checking for `/.dockerenv` and `/proc/1/cgroup`) and emits a warning at build time. If the outer container cannot be reconfigured, disable sandboxing for that job with `--sandbox=off`.
 
 ---
 
