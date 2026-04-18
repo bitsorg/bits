@@ -14,11 +14,12 @@ record of what was completed before the failure.
 
 Location
 --------
-Manifests are written to the work directory::
+Manifests are written to a dedicated subdirectory of the work directory::
 
     $WORK_DIR/
-      bits-manifest-<ISO-timestamp>.json   ← one per build run
-      bits-manifest-latest.json            ← symlink to the most recent
+      MANIFESTS/
+        bits-manifest-<ISO-timestamp>.json   ← one per build run
+        bits-manifest-latest.json            ← symlink to the most recent
 
 The ``bits-manifest-latest.json`` symlink is updated atomically after each
 incremental write.
@@ -158,6 +159,10 @@ class BuildManifest:
     ):
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self._work_dir = work_dir
+        # All manifest files live under $WORK_DIR/MANIFESTS/ so they don't
+        # clutter the top-level work directory.
+        self._manifest_dir = os.path.join(work_dir, "MANIFESTS")
+        os.makedirs(self._manifest_dir, exist_ok=True)
         # Sanitise the target name so it is always safe as a filename component
         # (package names are typically alphanumeric + hyphens, but guard anyway).
         _safe_target = re.sub(r"[^A-Za-z0-9_.+-]", "_", target) if target else ""
@@ -166,7 +171,7 @@ class BuildManifest:
             if _safe_target
             else "bits-manifest-{}.json".format(timestamp)
         )
-        self._path = os.path.join(work_dir, _name)
+        self._path = os.path.join(self._manifest_dir, _name)
         self._data = {
             "schema_version":     self.SCHEMA_VERSION,
             "bits_version":       __version__ or "unknown",
@@ -191,6 +196,11 @@ class BuildManifest:
     def path(self) -> str:
         """Absolute path of the manifest JSON file."""
         return self._path
+
+    @property
+    def manifest_dir(self) -> str:
+        """Directory that holds all manifest files for this work directory."""
+        return self._manifest_dir
 
     # ── Provider recording ────────────────────────────────────────────────────
 
@@ -299,7 +309,8 @@ class BuildManifest:
         os.replace(tmp, self._path)
 
         # Update the ``bits-manifest-latest.json`` symlink atomically.
-        latest = os.path.join(self._work_dir, self._LATEST_SYMLINK)
+        # The symlink lives alongside the timestamped files inside MANIFESTS/.
+        latest = os.path.join(self._manifest_dir, self._LATEST_SYMLINK)
         tmp_link = latest + ".tmp"
         try:
             if os.path.lexists(tmp_link):

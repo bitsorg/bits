@@ -22,6 +22,7 @@ from bits_helpers.analytics import (askForAnalytics, decideAnalytics,
 from bits_helpers.args import doParseArgs
 from bits_helpers.build import doBuild
 from bits_helpers.clean import doClean
+from bits_helpers.cleanup import doCleanup
 from bits_helpers.deps import doDeps
 from bits_helpers.doctor import doDoctor
 from bits_helpers.init import doInit
@@ -85,6 +86,10 @@ def doMain(args, parser):
   if args.action == "clean":
     doClean(workDir=args.workDir, architecture=args.architecture,
             aggressiveCleanup=args.aggressiveCleanup, dryRun=args.dryRun)
+    sys.exit(0)
+
+  if args.action == "cleanup":
+    doCleanup(args, parser)
     sys.exit(0)
 
   if args.action == "init":

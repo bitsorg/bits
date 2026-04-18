@@ -227,8 +227,9 @@ def doPublish(args, parser):
     info("cvmfs target: %s", cvmfs_target)
     info("spool       : %s", spool)
 
+    no_relocate = getattr(args, "noRelocate", False)
     relocate_script = join(installroot, "relocate-me.sh")
-    if not exists(relocate_script):
+    if not no_relocate and not exists(relocate_script):
         error("relocate-me.sh not found in %s — was this package built with bits?", installroot)
         sys.exit(1)
 
@@ -254,41 +255,52 @@ def doPublish(args, parser):
     rsync_copy = ["rsync", "-a", installroot + "/", copy_dir + "/"]
     subprocess.run(rsync_copy, check=True)
 
-    # ------------------------------------------------------------------
-    # 3. Start inotifywait watcher (overlaps with relocation)
-    # ------------------------------------------------------------------
-    watcher = _stream_with_inotify(copy_dir, spool, pkg_id, rsync_opts)
-
-    # ------------------------------------------------------------------
-    # 4. Relocate working copy to final CVMFS target path
-    # ------------------------------------------------------------------
-    info("Relocating to %s …", cvmfs_target)
-    env = {**os.environ, "INSTALL_BASE": cvmfs_target}
-    result = subprocess.run(
-        ["bash", "-e", relocate_script],
-        cwd=copy_dir,
-        env=env,
-        check=False,
-    )
-    if result.returncode != 0:
-        error("relocate-me.sh failed (exit %d)", result.returncode)
-        if watcher:
-            watcher.terminate()
-        sys.exit(result.returncode)
-
-    # ------------------------------------------------------------------
-    # 5. Stop watcher; bulk-rsync if inotify was unavailable
-    # ------------------------------------------------------------------
-    if watcher:
-        import time
-        # Give the drain thread a moment to flush the last events.
-        time.sleep(1)
-        watcher.terminate()
-        watcher.wait()
-    else:
-        info("Transferring relocated tree to spool …")
+    if no_relocate:
+        # ------------------------------------------------------------------
+        # 3–5. Skip relocation: package was built with --cvmfs-prefix so
+        #      all embedded paths are already correct for CVMFS.  Stream
+        #      the working copy to the spool in a single bulk rsync.
+        # ------------------------------------------------------------------
+        info("--no-relocate: skipping relocation (package built at final CVMFS path)")
+        info("Transferring tree to spool …")
         _rsync_to_spool(copy_dir + "/", spool, pkg_id,
                         extra_opts=rsync_opts, remove_source=False)
+    else:
+        # ------------------------------------------------------------------
+        # 3. Start inotifywait watcher (overlaps with relocation)
+        # ------------------------------------------------------------------
+        watcher = _stream_with_inotify(copy_dir, spool, pkg_id, rsync_opts)
+
+        # ------------------------------------------------------------------
+        # 4. Relocate working copy to final CVMFS target path
+        # ------------------------------------------------------------------
+        info("Relocating to %s …", cvmfs_target)
+        env = {**os.environ, "INSTALL_BASE": cvmfs_target}
+        result = subprocess.run(
+            ["bash", "-e", relocate_script],
+            cwd=copy_dir,
+            env=env,
+            check=False,
+        )
+        if result.returncode != 0:
+            error("relocate-me.sh failed (exit %d)", result.returncode)
+            if watcher:
+                watcher.terminate()
+            sys.exit(result.returncode)
+
+        # ------------------------------------------------------------------
+        # 5. Stop watcher; bulk-rsync if inotify was unavailable
+        # ------------------------------------------------------------------
+        if watcher:
+            import time
+            # Give the drain thread a moment to flush the last events.
+            time.sleep(1)
+            watcher.terminate()
+            watcher.wait()
+        else:
+            info("Transferring relocated tree to spool …")
+            _rsync_to_spool(copy_dir + "/", spool, pkg_id,
+                            extra_opts=rsync_opts, remove_source=False)
 
     # ------------------------------------------------------------------
     # 6. Write sentinel

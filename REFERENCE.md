@@ -6,12 +6,15 @@
 1. [Introduction](#1-introduction)
 2. [Installation & Prerequisites](#2-installation--prerequisites)
 3. [Quick Start](#3-quick-start)
+    - [The bits development-to-deployment workflow](WORKFLOWS.md) ↗
 4. [Configuration](#4-configuration)
 5. [Building Packages](#5-building-packages)
     - [Parallel build modes](#parallel-build-modes)
     - [Async pipeline options](#--pipeline----pipelined-tarball-creation-and-upload-makeflow-only)
 6. [Managing Environments](#6-managing-environments)
 7. [Cleaning Up](#7-cleaning-up)
+    - [bits clean — remove temporary build artifacts](#bits-clean--remove-temporary-build-artifacts)
+    - [bits cleanup — evict packages from a persistent workDir](#bits-cleanup--evict-packages-from-a-persistent-workdir)
 8. [Cookbook](#8-cookbook)
 
 ### Part II — Developer Guide
@@ -38,6 +41,8 @@
     - [Source archive caching](#source-archive-caching)
     - [Store integrity verification](#store-integrity-verification)
 22. [Docker Support](#22-docker-support)
+    - [workDir mount point inside the container](#workdir-mount-point-inside-the-container)
+    - [No-relocation builds with `--cvmfs-prefix`](#no-relocation-builds-with---cvmfs-prefix)
 23. [Forcing or Dropping the Revision Suffix (`force_revision`)](#23-forcing-or-dropping-the-revision-suffix-force_revision)
 24. [Design Principles & Limitations](#24-design-principles--limitations)
 25. [Build Manifest](#25-build-manifest)
@@ -52,6 +57,7 @@
     - [bits-cvmfs-ingest — configuration and running](#bits-cvmfs-ingest--configuration-and-running)
     - [cvmfs-publish.sh — the publisher script](#cvmfs-publishsh--the-publisher-script)
     - [CI/CD integration](#cicd-integration-1)
+    - [bits-console — web interface for the GitLab-driven pipeline](#bits-console--web-interface-for-the-gitlab-driven-pipeline)
 
 ---
 
@@ -74,6 +80,18 @@ Key capabilities at a glance:
 - Docker-based builds for cross-compilation or reproducible CI environments
 - Git and Sapling SCM support
 - Dynamic recipe repositories loaded at dependency-resolution time
+
+### What sets bits apart from other package managers
+
+The key distinction between bits and conventional package managers (apt, conda, Spack, …) is that it operates on a **single, unified recipe language and build system that works identically on a developer's laptop and in CI**. There is no separate "local build tool" and "CI build tool". The exact same `bits build` command that a developer runs interactively also drives the CI pipeline that publishes packages to CVMFS for the entire community.
+
+This has three practical consequences:
+
+**Local development with full-stack context.** A developer can check out a package's source in a local directory, run `bits build`, and have bits automatically build that local version while resolving all other dependencies from the upstream repository. The full software stack is available on the developer's workstation without any manual environment setup.
+
+**"Works on my machine" is meaningful.** Because the build environment — recipe, flags, dependency graph, compiler toolchain — is identical locally and in CI, a package that builds and runs correctly locally will behave the same in CI. There is no hidden discrepancy between local and CI environments.
+
+**A continuous path from edit to CVMFS.** The lifecycle of a change travels along a single, unbroken toolchain: local edit → local build & test → commit → CI build → CVMFS publication. Each step reuses the same recipes, the same binary store, and the same bits commands. The [full development workflow](WORKFLOWS.md) is described in detail in WORKFLOWS.md.
 
 ---
 
@@ -137,6 +155,19 @@ root -b
 # 6. Leave the sub-shell to return to your normal environment
 exit
 ```
+
+---
+
+## 3a. The bits Development-to-Deployment Workflow {#the-bits-development-to-deployment-workflow}
+
+The key distinction between bits and conventional package managers is that a **single, shared toolchain connects every developer's laptop to the experiment's CVMFS software repository**. The exact same `bits build` command that a developer runs interactively drives the CI pipeline that publishes packages to CVMFS for the entire community. Local source checkouts (`git clone <repo>` placed next to the recipe directory) are detected automatically and built in preference to the upstream version — while all other dependencies are resolved from the shared recipe repository as usual.
+
+The workflow spans five phases: local setup from shared recipes → local development with full-stack context → full-stack local testing → commit and peer review → CI build and CVMFS publication. The CI publication step supports two distinct paths, resulting in packages in **different CVMFS namespaces** depending on the role of the person triggering the build:
+
+- **Group Admin path** — builds the full experiment software stack (e.g. ROOT + Geant4 + O2) and publishes it to the group experiment namespace (`/cvmfs/alice.cern.ch/`, `/cvmfs/sft.cern.ch/lcg/`), available experiment-wide to all grid jobs and interactive sessions.
+- **Individual User path** — builds and publishes a single package to a personal or contrib namespace (`/cvmfs/sft.cern.ch/sw/<user>/`, `lcg/contrib/`), independently of the group stack rebuild cycle.
+
+The full phase-by-phase walkthrough, workflow diagram, and command examples are in **[WORKFLOWS.md](WORKFLOWS.md)**.
 
 ---
 
@@ -255,7 +286,7 @@ Bits resolves the full transitive dependency graph of each requested package, co
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
 | `--builders N` | Number of packages to build simultaneously using the Python scheduler. Default: 1 (serial). Mutually exclusive with `--makeflow`. |
 | `--makeflow` | Hand the entire dependency graph to the external [Makeflow](https://ccl.cse.nd.edu/software/makeflow/) workflow engine instead of the built-in Python scheduler. Mutually exclusive with `--builders N`. |
-| `--pipeline` | Split each Makeflow rule into three stages (`.build`, `.tar`, `.upload`) so that tarball creation and upload overlap with downstream builds. Requires `--makeflow`; silently disabled otherwise. Incompatible with `--docker`. |
+| `--pipeline` | Split each Makeflow rule into three stages (`.build`, `.tar`, `.upload`) so that tarball creation and upload overlap with downstream builds. Requires `--makeflow`; silently disabled otherwise. |
 | `--prefetch-workers N` | Spawn *N* background threads that fetch remote tarballs and source archives ahead of the main build loop. Default: 0 (disabled). Has no effect when no remote store is configured. |
 | `--parallel-sources N` | Download up to *N* `sources:` URLs concurrently within a single package checkout. Default: 1 (sequential). |
 | `-u`, `--fetch-repos` | Update all source mirrors before building. |
@@ -336,7 +367,7 @@ bits build --makeflow --pipeline --write-store b3://mybucket/store MyStack
 
 Constraints:
 - Requires `--makeflow`; silently reverts to standard behaviour when used without it.
-- Incompatible with `--docker` (Docker builds manage their own archive step).
+- When combined with `--docker`, the `.tar` and `.upload` stages still run on the host after the container exits (via the volume mount), so the pipeline is fully compatible with Docker builds.
 
 #### `--prefetch-workers N` — background tarball prefetch
 
@@ -455,6 +486,10 @@ eval "$(bits shell-helper)"
 
 ## 7. Cleaning Up
 
+Bits provides two distinct cleaning subcommands for different scenarios.
+
+### bits clean — remove temporary build artifacts
+
 ```bash
 bits clean [options]
 ```
@@ -463,10 +498,42 @@ bits clean [options]
 |--------|-------------|
 | `-w DIR` | Work directory to clean. Default: `sw`. |
 | `-a ARCH` | Restrict to this architecture. |
-| `--aggressive-cleanup` | Also remove source mirrors and distribution tarballs. |
+| `--aggressive-cleanup` | Also remove source mirrors and `TARS/` content. |
 | `-n`, `--dry-run` | Show what would be removed without deleting. |
 
-The default (non-aggressive) clean removes the `TMP/` staging area, stale `BUILD/` directories (those without a `latest` symlink), and stale versioned installation directories. Aggressive cleanup additionally removes source mirrors and `TARS/` content.
+The default (non-aggressive) clean removes the `TMP/` staging area, stale `BUILD/` directories (those without a `latest` symlink), and stale versioned installation directories. Aggressive cleanup additionally removes source mirrors and `TARS/` content. Use `bits clean` after temporary or experimental builds to reclaim disk space without affecting the persistent package cache.
+
+### bits cleanup — evict packages from a persistent workDir
+
+`bits cleanup` manages a long-lived, shared workDir by evicting packages that have not been used recently or when disk space falls below a threshold. It is intended for **persistent CI build caches** where packages accumulate over time.
+
+```bash
+bits cleanup [options]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-w DIR`, `--work-dir DIR` | `sw` | workDir to manage. |
+| `-a ARCH`, `--architecture ARCH` | auto-detected | Architecture to evict packages for. |
+| `--max-age DAYS` | `7.0` | Evict packages whose sentinel has not been touched in more than `DAYS` days. Set to `0` to disable age-based eviction. |
+| `--min-free GIB` | _(none)_ | Evict the least-recently-used packages until at least `GIB` GiB of free disk space is available on the workDir filesystem. |
+| `--disk-pressure-only` | — | Run only the disk-pressure eviction pass; skip age-based eviction regardless of `--max-age`. Useful as a pre-build guard. |
+| `-n`, `--dry-run` | — | Show which packages would be evicted without removing anything. |
+
+**How it works.** Every time a package is built or confirmed already installed, bits touches a *sentinel file* at `$WORK_DIR/.packages/<arch>/<package>/<version>`. The `cleanup` command reads these sentinels, sorts packages by last-touched time (oldest first), and evicts those that are too old or that need to be removed to recover disk space. A package whose sentinel is locked by an in-progress build is always skipped safely.
+
+**Typical usage patterns:**
+
+```bash
+# Pre-build: free space if below 50 GiB, evicting LRU packages first
+bits cleanup --min-free 50 --disk-pressure-only || true
+
+# Nightly cron: evict packages not used in 7 days
+bits cleanup --max-age 7
+
+# See what would be removed without touching anything
+bits cleanup --max-age 3 --min-free 100 --dry-run
+```
 
 ---
 
@@ -807,7 +874,9 @@ pylint bits_helpers/
 | `bits_helpers/deps.py` | DOT/PDF dependency graph generation via Graphviz |
 | `bits_helpers/init.py` | `bits init` — writable development checkouts |
 | `bits_helpers/doctor.py` | `bits doctor` — system-requirements checking |
-| `bits_helpers/clean.py` | `bits clean` — stale artifact removal |
+| `bits_helpers/clean.py` | `bits clean` — stale artifact removal from temporary build area |
+| `bits_helpers/cleanup.py` | `bits cleanup` — LRU + disk-pressure eviction from persistent workDir; sentinel management |
+| `bits_helpers/publish.py` | `bits publish` — copy, relocate, and stream packages to a CVMFS ingestion spool |
 | `bits_helpers/scheduler.py` | Multi-threaded parallel build scheduler |
 | `bits_helpers/sync.py` | Remote binary store backends (HTTP, S3, Boto3, CVMFS, rsync) |
 | `bits_helpers/git.py` | Git SCM wrapper |
@@ -1291,7 +1360,10 @@ tox -e darwin  # reduced matrix for macOS
 
 | Test file | What it covers |
 |-----------|---------------|
-| `test_args.py` | CLI argument parsing |
+| `test_args.py` | CLI argument parsing (legacy tests) |
+| `test_new_args.py` | New CLI arguments: `bits cleanup` subparser, `--cvmfs-prefix`, `--no-relocate`; backward-compatibility assertions |
+| `test_cleanup.py` | `bits_helpers/cleanup.py`: sentinel paths, LRU eviction, age-based eviction, disk-pressure mode, flock concurrency safety |
+| `test_container_workdir.py` | `container_workDir` / `cachedTarball` path rewriting logic in `build.py`; all four flag combinations; `re.escape()` correctness for paths with regex metacharacters |
 | `test_always_on_providers.py` | `_read_bits_rc`, `_parse_provider_url`, `_make_bits_providers_spec`, `load_always_on_providers` (BITS_PROVIDERS path, `always_load` scan, double-clone prevention, failure isolation) |
 | `test_defaults_requires_provider.py` | `parseDefaults` propagating top-level `requires`; defaults-provider seed construction; provider discovery seeded from defaults requires; backward compatibility |
 | `test_build.py` | `doBuild` integration, hash computation, build script generation |
@@ -1358,7 +1430,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
 | `--builders N` | Packages to build simultaneously using the built-in Python scheduler. Default: 1 (serial). Mutually exclusive with `--makeflow`; if both are given, `--makeflow` takes precedence. |
 | `--makeflow` | Generate a [Makeflow](https://ccl.cse.nd.edu/software/makeflow/) workflow file from the dependency graph and execute it with the `makeflow` binary (must be installed separately from CCTools). Bits collects all pending builds, writes `sw/BUILD/<hash>/makeflow/Makeflow`, then runs `makeflow` to execute the graph in parallel. Mutually exclusive with `--builders N`. |
-| `--pipeline` | Split each Makeflow rule into `.build`, `.tar`, and `.upload` stages so that tarball creation and upload can overlap with downstream builds. Requires `--makeflow`; silently ignored otherwise. Incompatible with `--docker`. |
+| `--pipeline` | Split each Makeflow rule into `.build`, `.tar`, and `.upload` stages so that tarball creation and upload can overlap with downstream builds. Requires `--makeflow`; silently ignored otherwise. |
 | `--prefetch-workers N` | Spawn *N* background threads to fetch remote tarballs and source archives ahead of the main build loop. Default: 0 (disabled). No effect without `--remote-store`. |
 | `--parallel-sources N` | Download up to *N* `sources:` URLs concurrently within a single package checkout. Default: 1 (sequential). |
 | `-e KEY=VALUE` | Extra environment variable binding (repeatable). |
@@ -1376,8 +1448,10 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--always-prefer-system` | Always prefer system packages. |
 | `--check-system-packages` | Check system packages without building. |
 | `--docker` | Build inside a Docker container. |
-| `--docker-image IMAGE` | Docker image to use. |
+| `--docker-image IMAGE` | Docker image to use. Implies `--docker`. |
 | `--docker-extra-args ARGS` | Extra arguments for `docker run`. |
+| `--cvmfs-prefix PATH` | Bind-mount the workDir at `PATH` inside the container instead of the default `/container/bits/sw`. When set, packages compile with their final CVMFS paths already embedded so that `bits publish --no-relocate` can skip the relocation step. Requires `--docker`; has no effect without it. |
+| `--container-use-workdir` | Mount the workDir at the same path inside the container (i.e. `container_workDir = workDir`). Useful when the host and container share the same filesystem namespace. Mutually exclusive with `--cvmfs-prefix`; if both are set `--cvmfs-prefix` takes precedence. |
 | `--force` | Rebuild even if the package hash already exists. |
 | `--keep-tmp` | Keep temporary build directories after success. |
 | `--resource-monitoring` | Enable per-package CPU/memory monitoring. |
@@ -1499,7 +1573,7 @@ organisation = MYORG
 
 ### bits clean
 
-Remove stale build artifacts.
+Remove stale build artifacts from the temporary build area.
 
 ```bash
 bits clean [options]
@@ -1511,6 +1585,25 @@ bits clean [options]
 | `-a ARCH` | Restrict to this architecture. |
 | `--aggressive-cleanup` | Also remove source mirrors and `TARS/` content. |
 | `-n`, `--dry-run` | Show what would be removed without deleting. |
+
+---
+
+### bits cleanup
+
+Evict packages from a **persistent workDir** based on last-use age and/or available disk space. Intended for shared CI build caches where packages accumulate over time. See [§7 bits cleanup](#bits-cleanup--evict-packages-from-a-persistent-workdir) for full details.
+
+```bash
+bits cleanup [options]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-w DIR`, `--work-dir DIR` | `sw` | workDir to manage. |
+| `-a ARCH`, `--architecture ARCH` | auto-detected | Architecture to evict packages for. |
+| `--max-age DAYS` | `7.0` | Evict packages not touched in more than `DAYS` days. Set to `0` to disable age-based eviction. |
+| `--min-free GIB` | _(none)_ | Evict LRU packages until `GIB` GiB are free on the workDir filesystem. |
+| `--disk-pressure-only` | — | Run only the disk-pressure pass; skip age-based eviction. |
+| `-n`, `--dry-run` | — | Show what would be evicted without removing anything. |
 
 ---
 
@@ -2728,6 +2821,36 @@ bits build --docker --docker-extra-args "--memory=8g --cpus=4" ROOT
 
 Bits automatically mounts the work directory, the recipe directories, and `~/.ssh` (for authenticated git operations) into the container. The `DockerRunner` class in `bits_helpers/cmd.py` manages container lifecycle and cleanup.
 
+### workDir mount point inside the container
+
+By default the workDir is bind-mounted at `/container/bits/sw` inside the container, so that the container-internal paths do not collide with the host paths. Two flags change this behaviour:
+
+| Flag | Effect |
+|------|--------|
+| `--container-use-workdir` | Mount the workDir at the same path as on the host (i.e. `container_workDir = workDir`). Useful when the host and container share the same filesystem. |
+| `--cvmfs-prefix PATH` | Mount the workDir at `PATH` inside the container. Packages then compile with `PATH` embedded in all install-time paths. |
+
+### No-relocation builds with `--cvmfs-prefix`
+
+In a conventional CVMFS publishing workflow the package is first compiled with the bits workDir as its install prefix (e.g. `/data/alice/sw/slc9_x86-64/ROOT/6.32.0-1`), and then `relocate-me.sh` rewrites every embedded path to the final CVMFS location (e.g. `/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0`). Relocation is a post-build transformation that can be expensive for packages with many compiled files.
+
+`--cvmfs-prefix` eliminates this step entirely: by mounting the workDir at the final CVMFS prefix inside the container, the compiler sees that path as `$INSTALLROOT` and embeds it directly. The package is already at its deployment-ready paths when the build finishes.
+
+```bash
+# Build ROOT with the final CVMFS prefix embedded at compile time
+bits build --docker \
+           --cvmfs-prefix /cvmfs/sft.cern.ch/lcg/releases \
+           ROOT
+
+# Publish without relocation — the package is already at the right paths
+bits publish ROOT \
+           --cvmfs-target /cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0 \
+           --spool ingestuser@ingest.example.com:/var/spool/cvmfs-ingest \
+           --no-relocate
+```
+
+**Persistent workDir across CI jobs.** For communities that publish to CVMFS regularly, keeping the workDir alive between CI jobs (on a persistent build runner) turns `--cvmfs-prefix` into an incremental cache: only packages whose recipe or source changed are rebuilt; already-installed dependencies are reused from the previous run. The `bits cleanup` subcommand manages the cache size over time (see [§7 bits cleanup](#bits-cleanup--evict-packages-from-a-persistent-workdir)).
+
 ---
 
 ## 23. Forcing or Dropping the Revision Suffix (`force_revision`)
@@ -2882,10 +3005,10 @@ bits build ROOT
 
 # The manifest file is printed in the success banner, e.g.:
 #   Build manifest written to:
-#     $WORK_DIR/bits-manifest-20260411T143000Z.json
+#     $WORK_DIR/MANIFESTS/bits-manifest-20260411T143000Z.json
 #
 # A convenience symlink is kept current after every write:
-ls -la $WORK_DIR/bits-manifest-latest.json
+ls -la $WORK_DIR/MANIFESTS/bits-manifest-latest.json
 ```
 
 ### What is recorded
@@ -2930,13 +3053,16 @@ The manifest records every input and output that could affect reproducibility:
 
 ### Manifest location and naming
 
-Manifests are written to the bits work directory (`--work-dir`, default `sw`):
+Manifests are written to a dedicated subdirectory of the bits work directory (`--work-dir`, default `sw`):
 
 ```
 $WORK_DIR/
-  bits-manifest-20260411T143000Z.json   ← one file per build run (UTC timestamp)
-  bits-manifest-latest.json             ← symlink to the most recent manifest
+  MANIFESTS/
+    bits-manifest-20260411T143000Z.json   ← one file per build run (UTC timestamp)
+    bits-manifest-latest.json             ← symlink to the most recent manifest
 ```
+
+Keeping manifests in `MANIFESTS/` prevents them from cluttering the work directory root alongside package install trees.
 
 The manifest is written **incrementally**: after each package completes (or
 is confirmed already installed), so a failed build still produces a partial
@@ -3016,7 +3142,7 @@ used automatically:
 
 ```bash
 # Replay from the latest manifest (no package name needed):
-bits build --from-manifest $WORK_DIR/bits-manifest-latest.json
+bits build --from-manifest $WORK_DIR/MANIFESTS/bits-manifest-latest.json
 
 # Override a specific package while replaying the rest:
 bits build --from-manifest bits-manifest-20260411T143000Z.json ROOT
@@ -3107,6 +3233,7 @@ bits publish PACKAGE [VERSION]
              [--architecture ARCH]
              [--scratch-dir DIR]
              [--rsync-opts OPTS]
+             [--no-relocate]
 ```
 
 **Arguments**
@@ -3115,12 +3242,13 @@ bits publish PACKAGE [VERSION]
 |---|---|---|
 | `PACKAGE` | yes | Package name, as used in the recipe (e.g. `absl`). |
 | `VERSION` | no | Version string (e.g. `20230802.1-1`). Defaults to the latest build found under `WORKDIR`. |
-| `--cvmfs-target PATH` | yes | Absolute path the package will occupy on CVMFS, e.g. `/cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9`. This path is passed to `relocate-me.sh` as the new install prefix. |
+| `--cvmfs-target PATH` | yes | Absolute path the package will occupy on CVMFS, e.g. `/cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9`. This path is passed to `relocate-me.sh` as the new install prefix, unless `--no-relocate` is given. |
 | `--spool` | yes | Ingestion spool root.  Either a local directory (`/var/spool/cvmfs-ingest`) or a remote rsync target (`user@host:/path`). |
 | `--work-dir WORKDIR` | no | bits work directory.  Default: `sw` (or `$BITS_WORK_DIR`). |
 | `--architecture ARCH` | no | Build architecture.  Default: auto-detected. |
 | `--scratch-dir DIR` | no | Directory for the temporary CVMFS working copy.  Default: system temp dir. |
 | `--rsync-opts OPTS` | no | Extra options passed verbatim to every `rsync` invocation, e.g. `"-e 'ssh -i ~/.ssh/my_key'"`. |
+| `--no-relocate` | no | Skip the `relocate-me.sh` step and stream the installation tree to the spool as-is. Use this when the package was built with `--cvmfs-prefix` so its paths already match the deployment target. |
 
 **What it does**
 
@@ -3456,3 +3584,83 @@ curl --request POST \
      --form "variables[CVMFS_TARGET]=/cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9" \
      "https://gitlab.cern.ch/api/v4/projects/<id>/trigger/pipeline"
 ```
+
+---
+
+### bits-console — web interface for the GitLab-driven pipeline
+
+**bits-console** is a GitLab Pages single-page application that provides a browser-based interface to the CVMFS publishing pipeline. It is hosted at `https://bits-console.web.cern.ch` and backed by the private GitLab project `gitlab.cern.ch/bitsorg/bits-console`.
+
+Instead of crafting raw API calls or navigating the GitLab web UI, operators and users interact with a purpose-built console that:
+
+- Browses all packages in the community's recipe repositories (live, directly from GitHub).
+- Shows the current CVMFS publication status of each package.
+- Allows **production builds** (published to the community's `cvmfs_prefix`) for group-admins and bits-admins.
+- Allows **personal-area builds** (published to `cvmfs_user_prefix/<username>/…`) for all authenticated users.
+- Provides a pipeline log viewer, scheduled-build management, and per-community settings.
+
+#### Architecture at a glance
+
+```
+bits-console (GitLab Pages SPA)
+  │
+  ├── communities/<name>/ui-config.yaml   ← per-community settings
+  │
+  └── triggers GitLab CI pipeline (.gitlab/cvmfs-publish.yml)
+        │
+        ├── Stage 1: bits build   (build runner, bits CLI, Docker)
+        │     └── bits cleanup --disk-pressure-only  (pre-build guard)
+        │     └── bits build --docker [--cvmfs-prefix] <PACKAGE>
+        │     └── bits publish [--no-relocate]  → rsync → spool
+        │
+        ├── Stage 2: cvmfs-ingest  (ingestion host, bits-cvmfs-ingest daemon)
+        │
+        └── Stage 3: cvmfs-publish.sh  (stratum-0, CVMFS transaction)
+```
+
+#### The community configuration file (`ui-config.yaml`)
+
+Each community's behaviour is driven by `communities/<name>/ui-config.yaml`. The key fields that control the build and cache pipeline are:
+
+| Field | Default | Description |
+|---|---|---|
+| `cvmfs_prefix` | _(required)_ | Production CVMFS install prefix (e.g. `/cvmfs/sft.cern.ch/lcg/releases`). Passed as `--cvmfs-prefix` to `bits build` and as `--cvmfs-target` base to `bits publish`. |
+| `cvmfs_user_prefix` | _(required)_ | Personal-area prefix for non-admin user builds. |
+| `cvmfs_repo` | _(required)_ | CVMFS repository name (e.g. `sft.cern.ch`). |
+| `platforms` | _(required)_ | Pipe-separated `<label>\|<docker-image>` pairs, one per line. The `<label>` becomes the runner tag (`bits-build-<label>`) and the platform selector in the UI. |
+| `build_parallelism_enabled` | `"false"` | Enable parallel dependency-graph builds. |
+| `build_parallelism_mode` | `"makeflow"` | `"makeflow"` (external Makeflow engine) or `"builders"` (built-in Python scheduler). |
+| `build_parallelism_builders` | `"4"` | Number of simultaneous package builds when `mode` is `"builders"`. |
+| `cache_max_age_days` | `"7"` | Passed to `bits cleanup --max-age`. Set to `"0"` to disable age-based eviction. |
+| `cache_min_free_gb` | `"50"` | Free-space threshold for the pre-build disk-pressure cleanup pass. |
+
+Full field reference and example configurations are in the bits-console `REFERENCE.md`, accessible at `https://bits-console.web.cern.ch/REFERENCE.md` or in the `bits-console` GitLab repository.
+
+#### Pipeline variables used by the GitLab pipeline
+
+When bits-console triggers a pipeline it passes the following variables to `cvmfs-publish.yml`:
+
+| Variable | Description |
+|---|---|
+| `PACKAGE` | Package name to build and publish. |
+| `VERSION` | Version string (optional; defaults to latest). |
+| `PLATFORM` | Runner platform label (e.g. `x86_64-el9`). |
+| `CVMFS_TARGET` | Final CVMFS install path for this package version. |
+| `CVMFS_PREFIX` | Community CVMFS releases prefix. When set, `bits build` uses `--cvmfs-prefix` and `bits publish` uses `--no-relocate`. Leave unset for the traditional build-then-relocate workflow. |
+| `REBUILD` | Set to `"true"` to force a rebuild even if the package is already installed. |
+| `PARALLEL_BUILD` | Set to `"true"` to enable parallel dependency-graph builds. |
+| `PARALLEL_MODE` | `"makeflow"` or `"builders"`. |
+| `PARALLEL_BUILDERS` | Number of builders for `"builders"` mode. |
+| `JOBS` | Compiler threads per package (`-j N`). `0` = auto-detect. |
+| `CACHE_MIN_FREE_GB` | Free-space threshold for the pre-build cleanup guard. |
+
+CI/CD project secrets (`SPOOL_SSH_KEY`, `SPOOL_USER`, `SPOOL_HOST`, `SPOOL_PATH`, `CVMFS_REPO`, etc.) are configured once in GitLab **Settings → CI/CD → Variables** and are never exposed to the browser.
+
+#### Getting access and further documentation
+
+Access is granted by a bits-admin via GitLab project membership (Reporter for browsing, Developer for triggering builds). Full documentation — including how to add a community, configure runners, manage the CVMFS path model, and administer the SPA — is in:
+
+- **bits-console README** — quick-start, roles, runner setup, and community configuration.
+- **bits-console REFERENCE** — complete `ui-config.yaml` field reference, JavaScript module API, deployment guide, and security model.
+
+Both documents are maintained alongside the application code in the `bits-console` GitLab repository at `https://gitlab.cern.ch/bitsorg/bits-console`.

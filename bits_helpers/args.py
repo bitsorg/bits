@@ -124,6 +124,16 @@ def doParseArgs():
                                        description="Build a package.")
   clean_parser = subparsers.add_parser("clean", help="clean up build area",
                                        description="Clean up the build area.")
+  cleanup_parser = subparsers.add_parser(
+      "cleanup",
+      help="evict stale packages from a persistent workDir",
+      description=(
+          "Evict packages from the persistent build workDir whose sentinel files "
+          "have not been touched within the configured age window, and/or free space "
+          "when disk usage exceeds a threshold (least-recently-used first). "
+          "Safe to run concurrently with active build jobs."
+      ),
+  )
   deps_parser = subparsers.add_parser("deps", help="generate a dependency graph for a given package",
                                       description="Generate a dependency graph for a given package.")
   doctor_parser = subparsers.add_parser("doctor", help="verify status of your system",
@@ -224,6 +234,15 @@ def doParseArgs():
   build_docker.add_argument("--container-use-workdir", dest="containerUseWorkDir", action="store_true", default=False,
                             help="Use the host work directory inside container. "
                                  "By default it uses /container/bits/sw directory inside container.")
+  build_docker.add_argument("--cvmfs-prefix", dest="cvmfsPrefix", default=None, metavar="PATH",
+                            help=("When set, bind-mount the host workDir at PATH inside the container "
+                                  "so that packages are compiled with PATH as their install prefix. "
+                                  "PATH should be the community's CVMFS releases path "
+                                  "(e.g. /cvmfs/sft.cern.ch/lcg/releases). "
+                                  "With this option the relocation step in 'bits publish' is not needed "
+                                  "because the embedded paths are already correct for CVMFS. "
+                                  "Implies --container-use-workdir behaviour for the CVMFS mount. "
+                                  "Use --no-relocate on 'bits publish' to skip relocation when publishing."))
   build_docker.add_argument("-v", dest="volumes", action="append", default=[],
                             help=("Additional volume to be mounted inside the Docker container, if one is used. "
                                   "May be specified multiple times. Passed verbatim to 'docker run'."))
@@ -600,6 +619,31 @@ def doParseArgs():
                               help="Directory for the temporary CVMFS working copy. Defaults to a system temp dir.")
   publish_parser.add_argument("--rsync-opts", dest="rsyncOpts", default=None, metavar="OPTS",
                               help="Extra options passed verbatim to rsync (e.g. '-e \"ssh -i key\"').")
+  publish_parser.add_argument("--no-relocate", dest="noRelocate", action="store_true", default=False,
+                              help=("Skip the relocation step. Use this when the package was built "
+                                    "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
+                                    "so all embedded paths are already correct."))
+
+  # Options for the cleanup subcommand
+  cleanup_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
+                              metavar="WORKDIR",
+                              help="Persistent bits work directory to clean. Default: %(default)s.")
+  cleanup_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH",
+                              default=detectedArch,
+                              help="Architecture sub-directory to scan. Default: %(default)s.")
+  cleanup_parser.add_argument("--max-age", dest="maxAgeDays", type=float, default=7.0, metavar="DAYS",
+                              help=("Evict packages whose sentinel has not been touched in more than "
+                                    "DAYS days. Default: %(default)s. Set to 0 to disable age-based "
+                                    "eviction (only disk-pressure mode runs)."))
+  cleanup_parser.add_argument("--min-free", dest="minFreeGb", type=float, default=None, metavar="GIB",
+                              help=("When free space on the workDir filesystem is below GIB gibibytes, "
+                                    "evict least-recently-used packages until the threshold is met. "
+                                    "Disabled by default; set a value to enable disk-pressure eviction."))
+  cleanup_parser.add_argument("--disk-pressure-only", dest="diskPressureOnly", action="store_true",
+                              default=False,
+                              help="Run only disk-pressure eviction; skip age-based eviction.")
+  cleanup_parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
+                              help="Print what would be evicted without actually removing anything.")
 
   # Apply bits.rc values as default overrides so that persistent settings written
   # by "bits init" (config mode) take effect on every subsequent invocation.
@@ -629,14 +673,22 @@ def doParseArgs():
     # argument-level defaults (add_argument(..., default=...)).  We must call
     # set_defaults on every subparser individually so that bits.rc values win
     # over hardcoded argument defaults while still losing to explicit CLI flags.
-    for _sp in [build_parser, clean_parser, deps_parser, doctor_parser, init_parser]:
+    for _sp in [build_parser, clean_parser, cleanup_parser, deps_parser, doctor_parser, init_parser]:
       _sp.set_defaults(**_rc_defaults)
 
   # Make sure old option ordering behavior is actually still working
   prog = sys.argv[0]
   rest = sys.argv[1:]
+  _cleanup_invocation = "cleanup" in rest
   def optionOrder(x):
-    if x in ["--debug", "-d", "-n", "--dry-run"]:
+    # --debug/-d must come before any subcommand so the parent parser sees them.
+    # --dry-run/-n is also a top-level flag (for build), BUT the "cleanup"
+    # subparser has its OWN --dry-run/-n.  If we're in a cleanup invocation
+    # we must NOT hoist -n/-dry-run before "cleanup" or the parent parser will
+    # consume it and the cleanup subparser's default (False) will overwrite it.
+    if x in ["--debug", "-d"]:
+      return 0
+    if x in ["-n", "--dry-run"] and not _cleanup_invocation:
       return 0
 #   if x in ["build", "init", "clean", "analytics", "doctor", "deps"]:
     if x in ["build", "init", "clean", "doctor", "deps"]:

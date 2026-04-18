@@ -160,7 +160,7 @@ class TestManifestInit(unittest.TestCase):
 
     def test_latest_symlink_created(self):
         m = _make_manifest(self.tmp)
-        latest = os.path.join(self.tmp, BuildManifest._LATEST_SYMLINK)
+        latest = os.path.join(m.manifest_dir, BuildManifest._LATEST_SYMLINK)
         self.assertTrue(os.path.islink(latest))
         self.assertEqual(os.readlink(latest), os.path.basename(m.path))
 
@@ -408,14 +408,14 @@ class TestLatestSymlink(unittest.TestCase):
 
     def test_latest_points_to_manifest(self):
         m = _make_manifest(self.tmp)
-        latest = os.path.join(self.tmp, BuildManifest._LATEST_SYMLINK)
+        latest = os.path.join(m.manifest_dir, BuildManifest._LATEST_SYMLINK)
         target = os.readlink(latest)
         self.assertEqual(target, os.path.basename(m.path))
 
     def test_latest_updated_after_add_package(self):
         m = _make_manifest(self.tmp)
         m.add_package(_make_spec(), "already_installed")
-        latest = os.path.join(self.tmp, BuildManifest._LATEST_SYMLINK)
+        latest = os.path.join(m.manifest_dir, BuildManifest._LATEST_SYMLINK)
         self.assertTrue(os.path.islink(latest))
         # Reading via the symlink must work and match the real manifest.
         with open(latest) as fh:
@@ -429,7 +429,7 @@ class TestLatestSymlink(unittest.TestCase):
         m1 = _make_manifest(self.tmp)
         import time; time.sleep(0.01)  # ensure distinct timestamps
         m2 = _make_manifest(self.tmp)
-        latest = os.path.join(self.tmp, BuildManifest._LATEST_SYMLINK)
+        latest = os.path.join(m2.manifest_dir, BuildManifest._LATEST_SYMLINK)
         self.assertEqual(os.readlink(latest), os.path.basename(m2.path))
 
 

@@ -57,7 +57,8 @@ exit
 | `bits enter <pkg>/latest` | Spawn a subshell with the package environment loaded. |
 | `bits load <pkg>` | Print commands to load a module (must be `eval`'d). |
 | `bits q [regex]` | List available modules. |
-| `bits clean` | Remove stale build artifacts. |
+| `bits clean` | Remove stale build artifacts from a temporary build area. |
+| `bits cleanup` | Evict old or infrequently used packages from a persistent workDir. |
 | `bits doctor <pkg>` | Verify system requirements. |
 
 [Full command reference](REFERENCE.md#16-command-line-reference)
@@ -109,6 +110,11 @@ make install
 ```bash
 bits clean                # remove temporary build directories
 bits clean --aggressive-cleanup   # also remove source mirrors and tarballs
+
+# Persistent workDir cache management (evict old / low-disk-space packages)
+bits cleanup --max-age 14         # evict packages not used in the last 14 days
+bits cleanup --min-free 100       # free space until at least 100 GiB available
+bits cleanup -n                   # dry-run: show what would be removed
 ```
 
 [Cleaning options](REFERENCE.md#7-cleaning-up)
@@ -121,11 +127,16 @@ bits clean --aggressive-cleanup   # also remove source mirrors and tarballs
 # Build inside a Docker container for a specific Linux version
 bits build --docker --architecture ubuntu2004_x86-64 ROOT
 
+# Build with the workDir bind-mounted at the final CVMFS path inside the
+# container — packages compile with their deployment paths already embedded,
+# so no relocation step is needed at publish time.
+bits build --docker --cvmfs-prefix /cvmfs/sft.cern.ch/lcg/releases ROOT
+
 # Use a remote binary store (S3, HTTP, rsync) to share pre-built artifacts
 bits build --remote-store s3://mybucket/builds ROOT
 ```
 
-[Docker support](REFERENCE.md#21-docker-support) | [Remote stores](REFERENCE.md#20-remote-binary-store-backends)
+[Docker support](REFERENCE.md#22-docker-support) | [Remote stores](REFERENCE.md#21-remote-binary-store-backends)
 
 ---
 
@@ -148,13 +159,23 @@ pytest                  # fast unit tests only
 
 ---
 
+## The bits Workflow: From Local Dev to CVMFS
+
+bits uses a single toolchain from your laptop to experiment-wide CVMFS. Clone a package source next to your recipe checkout and bits detects it automatically, building your local version while resolving all other dependencies from the shared recipe repo. Once tested locally, the change follows an unbroken path: commit → recipe MR → CI build → `bits publish` → CVMFS. Group admins publish full experiment stacks; individual users can publish single packages to a separate namespace — both paths use the same commands and the same recipes.
+
+See **[WORKFLOWS.md](WORKFLOWS.md)** for the full phase-by-phase walkthrough and workflow diagram.
+
+---
+
 ## Next Steps
 
+- [Development-to-deployment workflow & diagram](WORKFLOWS.md)
 - [Environment management (`bits enter`, `load`, `unload`)](REFERENCE.md#6-managing-environments)
 - [Dependency graph visualisation](REFERENCE.md#bits-deps)
 - [Repository provider feature (dynamic recipe repos)](REFERENCE.md#13-repository-provider-feature)
 - [Defaults profiles](REFERENCE.md#18-defaults-profiles)
-- [Design principles & limitations](REFERENCE.md#22-design-principles--limitations)
+- [Design principles & limitations](REFERENCE.md#24-design-principles--limitations)
+- [CVMFS publishing pipeline & bits-console](REFERENCE.md#26-cvmfs-publishing-pipeline)
 
 ---
 

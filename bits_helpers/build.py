@@ -924,6 +924,14 @@ def doFinalSync(spec, specs, args, syncHelper):
     args.manifest.add_package(spec, _outcome,
                                _tarball_path if os.path.isfile(_tarball_path) else None)
 
+  # Touch the sentinel so the cleanup command counts this package as recently used.
+  try:
+    from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
+    from bits_helpers.utilities import ver_rev as _ver_rev
+    _touch_sentinel(args.workDir, args.architecture, spec["package"], _ver_rev(spec))
+  except Exception:
+    pass
+
 
 def _download_time_mode(mode: str) -> str:
   """Return the enforcement mode to apply *during* source download.
@@ -1885,6 +1893,12 @@ def doBuild(args, parser):
       # Record in the build manifest that this package was already installed.
       if getattr(args, "manifest", None) is not None:
         args.manifest.add_package(spec, "already_installed")
+      # Touch the sentinel so the cleanup command knows this package was used.
+      try:
+        from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
+        _touch_sentinel(workDir, args.architecture, spec["package"], ver_rev(spec))
+      except Exception:
+        pass
       continue
 
     if fileHash != "0":
@@ -1926,9 +1940,19 @@ def doBuild(args, parser):
     container_workDir = ""
     cachedTarball = spec["cachedTarball"]
     if args.docker:
-      container_workDir = "/container/bits/sw" if not args.containerUseWorkDir else workDir
-      if not args.containerUseWorkDir:
-        cachedTarball = re.sub("^" + workDir, container_workDir, cachedTarball)
+      cvmfs_prefix = getattr(args, "cvmfsPrefix", None)
+      if cvmfs_prefix:
+        # When --cvmfs-prefix is set, mount workDir at the CVMFS path inside
+        # the container.  The build system then compiles packages with their
+        # final CVMFS install prefix, eliminating the relocation step on publish.
+        container_workDir = cvmfs_prefix
+        # Adjust any cached tarball path the same way.
+        cachedTarball = re.sub("^" + re.escape(workDir), container_workDir, cachedTarball)
+      elif not args.containerUseWorkDir:
+        container_workDir = "/container/bits/sw"
+        cachedTarball = re.sub("^" + re.escape(workDir), container_workDir, cachedTarball)
+      else:
+        container_workDir = workDir
 
     # Resolve the effective checksum mode for this package, taking into account
     # CLI flags, per-recipe enforce_checksums, and the defaults-profile
@@ -2039,9 +2063,11 @@ def doBuild(args, parser):
     buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
 
     # -- Pipeline mode: prepare tar/upload commands and write helper scripts ----
-    # Requires --makeflow and is incompatible with --docker (which requires
-    # explicit volume mounts for extra scripts).
-    _use_pipeline = getattr(args, "pipeline", False) and args.makeflow and not args.docker
+    # Requires --makeflow. Compatible with --docker because tar.sh, create_links.sh,
+    # and upload_command all run on the HOST after the container exits; they access
+    # the build output via args.workDir, which the container already volume-mounts.
+    _is_config_pkg = spec["package"].startswith("defaults-")
+    _use_pipeline = getattr(args, "pipeline", False) and args.makeflow and not _is_config_pkg
     tar_command = None
     upload_command = None
     if _use_pipeline:
@@ -2128,6 +2154,15 @@ def doBuild(args, parser):
       env_vars = " ".join(["{}={}".format(key, quote(val)) for key, val in buildEnvironment])
       build_command =  "env {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
 
+    # defaults-* packages are pure build-time configuration with no source to
+    # compile. In Makeflow mode, run them synchronously in the preparation phase
+    # instead of emitting Makeflow rules. This removes them from the DAG critical
+    # path and allows dependent packages to start without waiting for a Makeflow slot.
+    if args.makeflow and _is_config_pkg:
+      runBuildCommand(scheduler, p, specs, args, build_command,
+                      cachedTarball, scriptDir, workDir, syncHelper)
+      continue  # skip buildTargets.append and buildList.append
+
     buildTargets.append(p)
     if not args.makeflow:
       if args.builders == 1:
@@ -2205,7 +2240,10 @@ def doBuild(args, parser):
     mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
     mfFile = mfDir + "/Makeflow"
     makedirs(mfDir, exist_ok=True)
-    mfCmd = "(cd {}; {} --clean; {})".format(mfDir, mFlow,mFlow)  
+    _mf_max_local = getattr(args, "makeflowJobs", 4)
+    _mf_local_flag = "--max-local {}".format(_mf_max_local) if _mf_max_local > 0 else ""
+    mfCmd = "(cd {dir}; {mf} --clean; {mf} {local})".format(
+        dir=mfDir, mf=mFlow, local=_mf_local_flag)
     makedirs(mfDir, exist_ok=True)
     jnj = ""
     try:

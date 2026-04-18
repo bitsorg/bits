@@ -69,11 +69,12 @@ Usage: $0 \\
         ${ET}BITS_WORK_DIR=<path_to_bits_sw_dir>${EZ}
         ${ET}eval "\`bits shell-helper\`"${EZ}
 
-    ${EM}build${EZ}  Build a package. Use ${ET}bits build --help${EZ} for details.
-    ${EM}clean${EZ}  Clean build artifacts. Use ${ET}bits clean --help${EZ} for details.
-    ${EM}deps${EZ}   Show dependency tree. Use ${ET}bits deps --help${EZ} for details.
-    ${EM}doctor${EZ} Verify build environment. Use ${ET}bits doctor --help${EZ} for details.
-    ${EM}init${EZ}   Initialise a local package. Use ${ET}bits init --help${EZ} for details.
+    ${EM}build${EZ}   Build a package. Use ${ET}bits build --help${EZ} for details.
+    ${EM}clean${EZ}   Clean build artifacts. Use ${ET}bits clean --help${EZ} for details.
+    ${EM}cleanup${EZ} Evict stale packages from a persistent workDir. Use ${ET}bits cleanup --help${EZ} for details.
+    ${EM}deps${EZ}    Show dependency tree. Use ${ET}bits deps --help${EZ} for details.
+    ${EM}doctor${EZ}  Verify build environment. Use ${ET}bits doctor --help${EZ} for details.
+    ${EM}init${EZ}    Initialise a local package. Use ${ET}bits init --help${EZ} for details.
     ${EM}version${EZ} Display bits version.
 
 EoF
@@ -267,7 +268,7 @@ set -- "${new_args[@]}"
 for arg in "$@"
 do
   case $arg in
-    analytics|architecture|build|clean|deps|doctor|init|version|-debug|-d)
+    analytics|architecture|build|clean|cleanup|deps|doctor|init|version|-debug|-d)
          mkdir -p "$BITS_WORK_DIR" || echo "Cannot create directory: $BITS_WORK_DIR"
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?
