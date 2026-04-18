@@ -125,7 +125,7 @@ There is no standard library of detection snippets and no automated fallback pol
 when detection fails. EasyBuild has similar weaknesses; Spack's external packages
 mechanism is more systematic.
 
-#### Honest overall characterisation
+#### Conclusion
 
 bits is the right tool for anyone deploying large C++/Fortran/CUDA scientific software
 stacks to CVMFS via GitLab CI, especially when interactive development with local
