@@ -151,6 +151,20 @@ def doParseArgs():
           "for content-addressed pre-staging before the CVMFS transaction."
       ),
   )
+  verify_parser = subparsers.add_parser(
+      "verify",
+      help="verify a live deployment against a build manifest",
+      description=(
+          "Check that a live deployment is consistent with a bits build manifest.  "
+          "For each package in the manifest, the tarball is located under "
+          "--cvmfs-root and/or --work-dir, its SHA-256 is recomputed, and the "
+          "result is compared to the value recorded in the manifest.  "
+          "For each provider, the current HEAD commit of the local checkout is "
+          "compared to the commit recorded in the manifest.  "
+          "Exit 0 = clean, 1 = FAIL (mismatch), 2 = MISS (tarball not found), "
+          "3 = manifest unreadable."
+      ),
+  )
 
   # Options for the analytics command
   # analytics_parser.add_argument("state", choices=["on", "off"], help="Whether to report analytics or not")
@@ -683,6 +697,31 @@ def doParseArgs():
   cleanup_parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
                               help="Print what would be evicted without actually removing anything.")
 
+  # Options for the verify subcommand
+  verify_parser.add_argument(
+      "--from-manifest", dest="fromManifest", required=True, metavar="FILE",
+      help="Path to the bits build manifest JSON file to verify against.",
+  )
+  verify_parser.add_argument(
+      "--cvmfs-root", dest="cvmfsRoot", metavar="PATH", default=None,
+      help=("Root of the CVMFS tarball store to search first "
+            "(e.g. /cvmfs/alice.cern.ch).  "
+            "Searched before --work-dir."),
+  )
+  verify_parser.add_argument(
+      "-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="DIR",
+      help=("Local bits work directory containing the TARS/ store.  "
+            "Default '%(default)s'."),
+  )
+  verify_parser.add_argument(
+      "--no-providers", dest="noProviders", action="store_true", default=False,
+      help="Skip verification of provider checkout commits.",
+  )
+  verify_parser.add_argument(
+      "--json", dest="json_output", action="store_true", default=False,
+      help="Emit a machine-readable JSON report instead of the human-readable table.",
+  )
+
   # Apply bits.rc values as default overrides so that persistent settings written
   # by "bits init" (config mode) take effect on every subsequent invocation.
   # CLI flags still win: set_defaults only fills gaps not covered by the user.
@@ -711,7 +750,7 @@ def doParseArgs():
     # argument-level defaults (add_argument(..., default=...)).  We must call
     # set_defaults on every subparser individually so that bits.rc values win
     # over hardcoded argument defaults while still losing to explicit CLI flags.
-    for _sp in [build_parser, clean_parser, cleanup_parser, deps_parser, doctor_parser, init_parser]:
+    for _sp in [build_parser, clean_parser, cleanup_parser, deps_parser, doctor_parser, init_parser, verify_parser]:
       _sp.set_defaults(**_rc_defaults)
 
   # Make sure old option ordering behavior is actually still working
@@ -785,9 +824,9 @@ S3_SUPPORTED_ARCHS = "slc7_x86-64", "slc8_x86-64", "ubuntu2004_x86-64", "ubuntu2
 
 def finaliseArgs(args, parser):
 
-  # Nothing to finalise for version or analytics
+  # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
-  if args.action in ["version", "architecture"]:
+  if args.action in ["version", "architecture", "verify"]:
     return args
 
   if hasattr(args, "defaults"):

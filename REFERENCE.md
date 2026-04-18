@@ -49,6 +49,13 @@
     - [Sandbox modes](#sandbox-modes)
     - [Per-recipe network control](#per-recipe-network-control)
     - [Docker-in-Docker (DinD)](#docker-in-docker-dind)
+22c. [bits verify — Deployment Verification](#22c-bits-verify--deployment-verification)
+    - [What is checked](#what-is-checked)
+    - [Search order](#search-order)
+    - [Output formats](#output-formats)
+    - [Exit codes](#exit-codes)
+    - [Status values](#status-values)
+    - [CLI reference](#cli-reference-verify)
 23. [Forcing or Dropping the Revision Suffix (`force_revision`)](#23-forcing-or-dropping-the-revision-suffix-force_revision)
 24. [Design Principles & Limitations](#24-design-principles--limitations)
 25. [Build Manifest](#25-build-manifest)
@@ -3079,6 +3086,129 @@ support nested namespaces under QEMU:
 ```bash
 bits build MyAnalysis -a slc9_aarch64 --docker --sandbox=off
 ```
+
+---
+
+## 22c. bits verify — Deployment Verification
+
+`bits verify` confirms that a live deployment — packages in a CVMFS mount or a
+local work directory — matches the build manifest written by `bits build`.  It
+is the primary tool for closing the loop between the build record and what is
+actually deployed on worker nodes.
+
+```
+bits verify --from-manifest bits-manifest-2026-01-15.json \
+            --cvmfs-root /cvmfs/alice.cern.ch \
+            --work-dir /opt/sw
+```
+
+### What is checked
+
+**Packages** — for each entry in `manifest.packages[]`:
+
+1. The tarball is located in the content-addressed store under `TARS/<arch>/store/<hash[:2]>/<hash>/<tarball>`.
+2. Its SHA-256 is recomputed and compared to `tarball_sha256` in the manifest.
+3. Packages with `outcome: already_installed` and no recorded tarball are silently marked **SKIP** — no output tarball is expected for them.
+
+**Providers** — for each entry in `manifest.providers[]`:
+
+1. If the `checkout_dir` does not exist on the current machine, the entry is **SKIP** (provider checkouts are usually only present on build hosts).
+2. Otherwise, `git rev-parse HEAD` is run in the checkout and the result is compared to the manifest's `commit` field.
+
+**Architecture** — the `architecture` field in the manifest is compared to the
+current host architecture (via `detectArch()`).  A mismatch is a **FAIL** and
+counts toward the exit code.
+
+### Search order
+
+Tarballs are searched in this order:
+
+1. `--cvmfs-root PATH` (if given) — typically the CVMFS mount point.
+2. `--work-dir DIR` (default: `sw`) — the local bits work directory.
+
+The first root where the content-addressed tarball file exists is used.  This
+allows verifying a deployment that spans both CVMFS (for the common stack) and
+a local overlay (for personal analysis packages).
+
+### Output formats
+
+**Human-readable (default)**
+
+```
+━━━ bits verify  —  bits-manifest-2026-01-15.json ━━━━━━━━━━━━━━━━━━━
+
+  File:       /builds/bits-manifest-2026-01-15.json
+  Schema:     v2
+  Created:    2026-01-15T08:42:11Z
+  Build:      success
+
+  Architecture: PASS  slc9_x86-64
+
+  Packages (4):
+        package                        version-revision   detail
+    --------------------------------------------------------------------------
+    PASS  ROOT                           6.32.02-1          sha256 OK
+    PASS  Geant4                         11.2.1-2           sha256 OK
+    SKIP  CMake                          3.28.0-0           already_installed — no output tarball expected
+    MISS  MyAnalysis                     1.0-3              tarball not found
+        searched: /cvmfs/alice.cern.ch/TARS/slc9_x86-64/store/ab/ab3f.../MyAnalysis-1.0-3.slc9_x86-64.tar.gz
+
+  Providers (1):
+        name                           detail
+    --------------------------------------------------------------------------
+    SKIP  alidist                        checkout not present locally
+
+  Summary: 2 PASS  0 FAIL  1 MISS  2 SKIP  (of 5 total)
+```
+
+ANSI colours are emitted when stdout is a TTY: green for PASS, red for FAIL,
+yellow for MISS, dark grey for SKIP.
+
+**JSON (`--json`)**
+
+```json
+{
+  "manifest_created_at": "2026-01-15T08:42:11Z",
+  "manifest_status": "success",
+  "schema_version": 2,
+  "architecture": { "manifest": "slc9_x86-64", "host": "slc9_x86-64", "status": "PASS" },
+  "packages": [
+    { "package": "ROOT", "version": "6.32.02", "revision": "1", "status": "PASS", "detail": "sha256 OK" },
+    ...
+  ],
+  "providers": [ ... ],
+  "summary": { "PASS": 2, "FAIL": 0, "MISS": 1, "SKIP": 2 },
+  "exit_code": 2
+}
+```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | All verifiable entries match — deployment is consistent with the manifest. |
+| 1 | One or more entries are **FAIL** (hash mismatch or provider commit mismatch). |
+| 2 | One or more entries are **MISS** (tarball not found; consistency unknown). If there are also FAILs, exit code 1 takes precedence. |
+| 3 | The manifest file cannot be read or is malformed. |
+
+### Status values
+
+| Status | Meaning |
+|--------|---------|
+| **PASS** | Entry verified successfully. |
+| **FAIL** | Checksum or commit mismatch — the deployed artifact differs from the build record. |
+| **MISS** | Tarball not found in any search root — cannot confirm consistency. |
+| **SKIP** | Entry not verifiable on this machine (already-installed packages, absent provider checkouts). |
+
+### CLI reference {#cli-reference-verify}
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from-manifest FILE` | _(required)_ | Path to the bits build manifest JSON file. |
+| `--cvmfs-root PATH` | _(none)_ | Root of a CVMFS tarball store to search first (e.g. `/cvmfs/alice.cern.ch`). |
+| `-w / --work-dir DIR` | `sw` | Local bits work directory containing the `TARS/` store. |
+| `--no-providers` | off | Skip verification of provider checkout commits. |
+| `--json` | off | Emit a machine-readable JSON report instead of the human-readable table. |
 
 ---
 

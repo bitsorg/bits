@@ -27,6 +27,7 @@ from bits_helpers.deps import doDeps
 from bits_helpers.doctor import doDoctor
 from bits_helpers.init import doInit
 from bits_helpers.publish import doPublish
+from bits_helpers.verify import doVerify
 from bits_helpers.log import debug, error, info, logger
 from bits_helpers.utilities import detectArch
 
@@ -102,6 +103,11 @@ def doMain(args, parser):
 
   if args.action == "publish":
     doPublish(args, parser)
+    sys.exit(0)
+
+  if args.action == "verify":
+    doVerify(args, parser)
+    # doVerify calls sys.exit() internally, but be explicit
     sys.exit(0)
 
 

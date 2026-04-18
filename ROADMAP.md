@@ -336,7 +336,7 @@ store, generating a `ui-config.yaml` template, registering the first GitLab runn
 and performing a smoke-build of a simple package to validate the setup end-to-end.
 Output is a filled-in `ui-config.yaml` and a `INSTALL.txt`-style setup log.
 
-#### M5. Manifest-driven CVMFS deployment verification
+#### M5. Manifest-driven CVMFS deployment verification ✅ IMPLEMENTED
 
 **CVMFS is the primary binary distribution channel for bits.**  Once a package is
 built and published to CVMFS via `bits publish`, every authorised user gains
@@ -354,26 +354,34 @@ maintains in `$WORK_DIR` is appropriate for CI pipelines and individual develope
 machines, where it avoids recompilation within a single site — not for
 cross-institution software distribution.
 
-What the manifest *does* enable, and what is not yet implemented, is **deployment
-verification**: given a manifest produced at build time and a live CVMFS mount,
-confirm that every installed package matches the recorded `hash` and
-`tarball_sha256`, and that every source was built from the exact `commit_hash`
+**Implementation — `bits verify`.**  The `bits verify` subcommand was added in
+full.  Given a manifest produced at build time and a live CVMFS mount (or local
+work directory), it confirms that every installed package matches the recorded
+`tarball_sha256`, and that every provider checkout is at the exact `commit`
 declared in the manifest.
 
 ```bash
 # Verify the live CVMFS environment at /cvmfs/alice.cern.ch matches this manifest
 bits verify --from-manifest alice-o2-20260411.json --cvmfs-root /cvmfs/alice.cern.ch
+
+# Local workDir only, skip provider checks, machine-readable output
+bits verify --from-manifest manifest.json --work-dir sw --no-providers --json
 ```
+
+Status values are PASS / FAIL / MISS / SKIP with exit codes 0 / 1 / 2 / 3.
+Both human-readable tabular output (with TTY colour support) and a machine-readable
+JSON report (`--json`) are supported.  Provider commit verification is silently
+skipped when the checkout is not present on the executing machine (the common case
+on worker nodes).
 
 This is valuable for:
 - physics analyses that must demonstrate reproducibility for a journal submission,
 - audit trails required by experiment computing boards,
 - catching silent divergence when a CVMFS repository is rolled back or hotpatched.
 
-The technical foundation — content-addressed hashes, manifest SHA-256 fields, and
-the `source_checksums` now embedded inline — is complete.  The remaining work is
-the `bits verify` command and the documentation that frames the manifest as the
-bits supply-chain audit record.
+Files added / modified: `bits_helpers/verify.py` (new), `bits_helpers/args.py`
+(new `verify` subparser), `bitsBuild` (dispatch), `tests/test_verify.py` (27
+tests, all passing), `REFERENCE.md` (§22c).
 
 #### M6. Personal analysis overlay via S3 tarball cache
 
@@ -610,14 +618,14 @@ concretiser.
 |----|------|---------|--------|--------|
 | N1 | Binary store coverage and promotion | Near | High | Medium |
 | N2 | Sandbox as recommended CI default | Near | High | Low |
-| N3 | QEMU cross-compilation | Near | Medium | Low |
+| N3 | QEMU cross-compilation ✅ | Near | Medium | Low |
 | N4 | `bits doctor --runner` | Near | Medium | Low |
 | N5 | Developer workflow docs + `bits status` | Near | High | Low |
 | M1 | Version ranges on dependencies | Medium | High | Medium |
 | M2 | `prefer_system` standard library | Medium | Medium | Medium |
 | M3 | Reproducible build attestation (SLSA L2) | Medium | High | High |
 | M4 | Community onboarding wizard | Medium | High | Medium |
-| M5 | Manifest-driven CVMFS deployment verification (`bits verify`) | Medium | High | Low |
+| M5 | Manifest-driven CVMFS deployment verification (`bits verify`) ✅ | Medium | High | Low |
 | M6 | Personal analysis overlay via S3 tarball cache (`bits push/fetch`) | Medium | High | Medium |
 | M7 | ABI constraint exports (`abi_exports`) | Medium | High | Medium |
 | M8 | Shell-function activation (`bits activate`) | Medium | Medium | Low |
