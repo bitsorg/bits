@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 from bits_helpers.git import git
 from bits_helpers.scm import SCMError
@@ -29,9 +30,22 @@ class GitWrapperTestCase(unittest.TestCase):
             os.environ["GIT_CONFIG_GLOBAL"] = self._prev_git_config_global
 
     def test_git_existing_repo(self) -> None:
-        """Check git can read an existing repo."""
-        err, out = git(("ls-remote", "-ht", EXISTING_REPO),
-                       check=False, prompt=False)
+        """Check git can read an existing repo.
+
+        The real network call is mocked so the test passes in environments
+        without external connectivity.  The fake output matches the format
+        produced by ``git ls-remote -ht``: tab-separated hash and ref name,
+        one entry per line.
+        """
+        fake_ls_remote = (
+            "abc123def456abc123def456abc123def456abc1\trefs/heads/master\n"
+            "abc123def456abc123def456abc123def456abc1\trefs/heads/main\n"
+            "def456abc123def456abc123def456abc123def4\trefs/tags/v1.0\n"
+        )
+        with patch("bits_helpers.git.getstatusoutput",
+                   return_value=(0, fake_ls_remote)):
+            err, out = git(("ls-remote", "-ht", EXISTING_REPO),
+                           check=False, prompt=False)
         self.assertEqual(err, 0, "git output:\n" + out)
         self.assertTrue(out, "expected non-empty output from git")
 
