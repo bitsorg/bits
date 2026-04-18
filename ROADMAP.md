@@ -1,7 +1,5 @@
 # bits — Roadmap
 
-## Positioning and Competitive Context
-
 bits is a purpose-built build and distribution system for large scientific software
 stacks. Understanding where it stands relative to alternatives is essential for
 prioritising future development.
