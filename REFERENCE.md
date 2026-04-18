@@ -29,6 +29,13 @@
 
 ### Part III — Reference Guide
 16. [Command-Line Reference](#16-command-line-reference)
+    - [bits build](#bits-build)
+    - [bits deps](#bits-deps)
+    - [bits doctor](#bits-doctor)
+    - [bits verify](#bits-verify)
+    - [bits init](#bits-init)
+    - [bits clean / bits cleanup](#bits-clean)
+    - [bits publish](#bits-publish-1)
 17. [Recipe Format Reference](#17-recipe-format-reference)
 18. [Defaults Profiles](#18-defaults-profiles)
 19. [Architecture-Independent (Shared) Packages](#19-architecture-independent-shared-packages)
@@ -1507,13 +1514,90 @@ Colour coding in the generated graph: **gold** = requested top-level package; **
 
 ### bits doctor
 
-Check that the system satisfies all requirements for the requested packages.
+Check that the system satisfies all requirements for the requested packages, or validate the full build-runner environment with `--runner`.
 
 ```bash
-bits doctor [options] PACKAGE [PACKAGE ...]
+bits doctor [options] [PACKAGE ...]          # recipe system-requirement check
+bits doctor --runner [options]               # runner environment validation
 ```
 
-Evaluates each package's `system_requirement` and `prefer_system` snippets and reports results with colour-coded pass/warn/fail output.
+**Recipe-check mode** (default) evaluates each package's `system_requirement` and `prefer_system` snippets in the dependency tree and reports which packages can be satisfied by the host and which will be built by bits. The `PACKAGE` positional argument is required in this mode.
+
+**`--runner` mode** skips the recipe scan and instead runs a structured checklist of the build-runner environment. Each check returns PASS / FAIL / WARN / SKIP. WARN is advisory; only FAIL affects the exit code.
+
+| Check performed | When included |
+|-----------------|---------------|
+| `git` on PATH | always |
+| C++ compiler (`c++`, `g++`, or `clang++`) | always |
+| Docker daemon reachable | `--docker` or `--runner` |
+| QEMU binfmt handler for the target architecture | when `--docker` is set |
+| podman availability and user-namespace support | always |
+| CVMFS repository path(s) accessible and non-empty | `--cvmfs-repos` / `bits.rc cvmfs_repos` |
+| Free disk space in `--work-dir` ≥ `--min-disk` GiB | always |
+| Remote store reachable and credentials present | when `--remote-store` is configured |
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--runner` | off | Validate the full build-runner environment instead of checking package recipes. |
+| `--json` | off | Emit a machine-readable JSON report (only meaningful with `--runner`). |
+| `--cvmfs-repos PATH` | _(none)_ | CVMFS mount path to check (repeatable). Can also be set as `cvmfs_repos = /cvmfs/a,/cvmfs/b` in `bits.rc`. |
+| `--min-disk GIB` | `10.0` | Minimum free disk in `--work-dir`. Lower triggers WARN, not FAIL. |
+| `-a ARCH`, `--architecture ARCH` | auto-detected | Architecture used for QEMU binfmt check. |
+| `--defaults PROFILE` | `release` | Defaults profile for recipe dependency resolution (recipe-check mode only). |
+| `-w DIR`, `--work-dir DIR` | `sw` | Work directory checked for disk space. |
+| `--docker` | off | Run recipe checks inside a Docker container (also enables the docker-daemon and QEMU checks in `--runner` mode). |
+| `--remote-store URL` | _(none)_ | Remote binary store URL checked for reachability in `--runner` mode. |
+| `--insecure` | off | Skip TLS certificate validation when probing an `https://` store. |
+
+**Exit codes (recipe-check mode):** 0 = all requirements satisfied; 1 = missing system packages or compiler/git absent; 2 = no valid defaults combination; 3 = no valid defaults for the package set at all.
+
+**Exit codes (`--runner` mode):** 0 = all checks PASS or WARN; 1 = one or more checks FAIL.
+
+**Example — pre-build system check:**
+```bash
+bits doctor O2Physics
+```
+
+**Example — runner health check (human-readable):**
+```bash
+bits doctor --runner -a slc9_x86-64 \
+    --remote-store https://s3.cern.ch/swift/v1/alibuild-repo \
+    --cvmfs-repos /cvmfs/alice.cern.ch
+```
+
+**Example — runner health check (JSON, for bits-console):**
+```bash
+bits doctor --runner --json \
+    --cvmfs-repos /cvmfs/alice.cern.ch \
+    --remote-store https://s3.cern.ch/swift/v1/alibuild-repo
+```
+
+**bits.rc keys relevant to `bits doctor`:**
+
+| Key | Description |
+|-----|-------------|
+| `prerequisites_url` | URL shown when the C++ compiler or git is missing. Defaults to the ALICE prerequisite guide. |
+| `cvmfs_repos` | Comma-separated list of CVMFS paths checked in `--runner` mode (e.g. `/cvmfs/alice.cern.ch,/cvmfs/sft.cern.ch`). |
+
+---
+
+### bits verify
+
+Check that a live deployment matches the build manifest written by `bits build`. See [§22c bits verify — Deployment Verification](#22c-bits-verify--deployment-verification) for full details.
+
+```bash
+bits verify --from-manifest FILE [options]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--from-manifest FILE` | _(required)_ | Path to the bits build manifest JSON file. |
+| `--cvmfs-root PATH` | _(none)_ | CVMFS tarball store root to search first. |
+| `-w DIR`, `--work-dir DIR` | `sw` | Local bits work directory containing the `TARS/` store. |
+| `--no-providers` | off | Skip provider checkout commit verification. |
+| `--json` | off | Emit a machine-readable JSON report. |
+
+**Exit codes:** 0 = consistent; 1 = FAIL (hash/commit mismatch); 2 = MISS (tarball not found); 3 = manifest unreadable.
 
 ---
 

@@ -520,9 +520,10 @@ def doParseArgs():
                            help="Never use system packages for PACKAGES, even if compatible.")
 
   # Options for the doctor subcommand
-  doctor_parser.add_argument("packages", metavar="PACKAGE", nargs="+",
+  doctor_parser.add_argument("packages", metavar="PACKAGE", nargs="*", default=[],
                              help=("Check whether all system requirements of %(metavar)s are satisfied. "
-                                   "May be specified multiple times."))
+                                   "May be specified multiple times. "
+                                   "Optional when --runner is used."))
   doctor_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                              help=("Resolve requirements as if on the specified architecture. When used with "
                                    "--docker, use a Docker image for the specified architecture. Default is "
@@ -587,8 +588,39 @@ def doParseArgs():
   doctor_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,  # TODO: previous default was "workDir".
                            help=("The toplevel directory under which builds should be done and build results "
                                  "should be installed. Default '%(default)s'."))
-  doctor_dirs.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","alidist"), 
+  doctor_dirs.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","alidist"),
                            help="The directory containing build recipes. Default '%(default)s'.")
+
+  doctor_runner = doctor_parser.add_argument_group(
+      title="Runner environment validation (--runner mode)",
+      description=(
+          "When --runner is given, bits doctor validates the full build-runner "
+          "environment — compiler, git, Docker daemon, podman/sandbox, QEMU binfmt "
+          "handlers, CVMFS mounts, disk space, and remote-store reachability — "
+          "instead of checking package system requirements.  "
+          "The PACKAGE positional argument is optional in this mode."
+      ),
+  )
+  doctor_runner.add_argument(
+      "--runner", dest="runner", action="store_true", default=False,
+      help="Validate the full build-runner environment.  "
+           "May be combined with --json for machine-readable output.",
+  )
+  doctor_runner.add_argument(
+      "--json", dest="json_output", action="store_true", default=False,
+      help="Emit a machine-readable JSON report (--runner mode only).",
+  )
+  doctor_runner.add_argument(
+      "--cvmfs-repos", dest="cvmfsRepos", metavar="PATH", action="append", default=[],
+      help=("CVMFS repository path to check (e.g. /cvmfs/alice.cern.ch).  "
+            "May be specified multiple times.  "
+            "Can also be set as 'cvmfs_repos' (comma-separated) in bits.rc."),
+  )
+  doctor_runner.add_argument(
+      "--min-disk", dest="minDisk", type=float, default=10.0, metavar="GIB",
+      help="Minimum free disk space in GiB expected in --work-dir.  "
+           "A lower value triggers a WARN, not a FAIL.  Default: %(default)s.",
+  )
 
   # Options for the init subcommand
   init_parser.add_argument("pkgname", nargs="?", default="", metavar="PACKAGE",
@@ -741,6 +773,8 @@ def doParseArgs():
       # but listing it here causes the raw string to be set as a default so
       # the CLI flag still wins via normal argparse precedence.
       ("provider_policy",    "providerPolicy"),
+      # prerequisites_url: community-specific URL shown when compiler/git absent.
+      ("prerequisites_url",  "prerequisitesUrl"),
   ]
   for _rc_key, _dest in _RC_KEY_TO_DEST:
     if _rc_early.get(_rc_key):

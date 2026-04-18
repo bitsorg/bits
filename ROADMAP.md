@@ -200,8 +200,8 @@ podman available. Local developer builds keep `auto` as the default.
   sandboxing for their CI pipelines.
 - Document the podman installation requirement in `INSTALL.txt` as a recommended (not
   optional) step for build runners.
-- Add a `bits doctor` check that reports podman availability and the effective sandbox
-  mode.
+- ✅ Add a `bits doctor` check that reports podman availability and the effective sandbox
+  mode — implemented as part of N4 (`_check_podman()` in `bits_helpers/doctor.py`).
 
 #### N3. Cross-compilation via QEMU + Docker ✓ *implemented*
 
@@ -238,17 +238,53 @@ build time) and validation builds confirming that a recipe compiles on a target
 architecture before scheduling a native-runner CI job for the full stack. Full
 experiment stacks (ROOT, Geant4) require a native runner of the target architecture.
 
-#### N4. `bits doctor` hardening
+#### N4. `bits doctor` hardening ✅ IMPLEMENTED
 
-`bits doctor` currently checks system requirements for a given package. Extend it to
-verify the full runner environment: store connectivity, podman availability, CVMFS
-mount health, GitLab runner registration, and disk space.
+`bits doctor` previously checked system requirements for a given package but had
+several correctness gaps.  This milestone hardens it on all fronts.
 
-**Actions:**
-- Add `bits doctor --runner` mode that validates the complete build-runner setup
-  against the checklist in `INSTALL.txt`.
-- Emit machine-readable JSON (`--output json`) so the bits-console health panel can
-  consume and display runner status.
+**What was implemented:**
+
+- **Bug fix — duplicate `DockerRunner` context.**  The old code opened and closed a
+  container twice: once for the compiler probe and again for `getPackageList`.  Both
+  probes now share a single long-running container, halving container startup overhead
+  for `--docker` users.
+
+- **Bug fix — compiler missing → non-zero exit.**  A missing C++ compiler previously
+  emitted only a `warning` and let `doDoctor` exit 0.  It now sets `exitcode = 1`
+  consistently with the git check.
+
+- **Configurable prerequisite URL.**  The hardcoded ALICE-specific prerequisite links
+  (`alice-doc.github.io/...`) are replaced by a `prerequisites_url` key read from
+  `bits.rc` / `.bitsrc`.  Each community can point users at their own docs; the
+  default remains the ALICE guide for backward compatibility.
+
+- **`--runner` mode.**  A new flag triggers a structured environment checklist
+  instead of the recipe dependency scan:
+
+  | Check | Function |
+  |-------|----------|
+  | git on PATH | `_check_host_tool("git")` |
+  | C++ compiler | `_check_compiler()` |
+  | Docker daemon | `_check_docker_daemon()` (when `--docker` or `--runner`) |
+  | QEMU binfmt handler | `_check_qemu_binfmt(arch)` (when `--docker`) |
+  | podman / sandbox | `_check_podman()` |
+  | CVMFS repos | `_check_cvmfs_repo(path)` (per `--cvmfs-repos` or bits.rc) |
+  | Disk space | `_check_disk_space(workDir, minDisk)` |
+  | Remote store | `_check_store(url)` (https/s3/b3/rsync) |
+
+  Each check returns a `(PASS | FAIL | WARN | SKIP, detail)` pair.  FAIL counts
+  toward exit code 1; WARN is advisory and does not affect the exit code.
+
+- **`--json` flag.**  Emits a machine-readable JSON report (same structure as
+  `bits verify --json`) so the bits-console health panel can consume runner status.
+
+- **`--cvmfs-repos PATH`** (repeatable) and **`--min-disk GIB`** flags.  CVMFS repos
+  can also be set as `cvmfs_repos` (comma-separated paths) in `bits.rc`.
+
+- **37 tests** in `tests/test_doctor.py` cover all new check functions, JSON output,
+  the runner orchestrator, and the `doDoctor` dispatch, plus preserve all existing
+  recipe-check tests.
 
 #### N5. Developer workflow documentation and tooling
 
@@ -619,7 +655,7 @@ concretiser.
 | N1 | Binary store coverage and promotion | Near | High | Medium |
 | N2 | Sandbox as recommended CI default | Near | High | Low |
 | N3 | QEMU cross-compilation ✅ | Near | Medium | Low |
-| N4 | `bits doctor --runner` | Near | Medium | Low |
+| N4 | `bits doctor --runner` ✅ | Near | Medium | Low |
 | N5 | Developer workflow docs + `bits status` | Near | High | Low |
 | M1 | Version ranges on dependencies | Medium | High | Medium |
 | M2 | `prefer_system` standard library | Medium | Medium | Medium |
