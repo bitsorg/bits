@@ -203,20 +203,40 @@ podman available. Local developer builds keep `auto` as the default.
 - Add a `bits doctor` check that reports podman availability and the effective sandbox
   mode.
 
-#### N3. Cross-compilation via QEMU + Docker
+#### N3. Cross-compilation via QEMU + Docker ✓ *implemented*
 
-Register `qemu-user-static` binfmt handlers on build runners. An ARM64 builder image
-then runs transparently on an x86-64 host, allowing a single runner to produce
-tarballs for multiple architectures. No changes to bits itself are required; this is
-pure runner and CI configuration.
+A single x86-64 build runner can now produce tarballs for additional CPU
+architectures (aarch64, ppc64le, s390x, riscv64) using QEMU user-mode emulation.
+Docker pulls the matching image variant and QEMU transparently executes the foreign
+ELF binaries — recipes require no modification.
 
-**Actions:**
-- Document the QEMU binfmt setup in `INSTALL.txt` under a new "Multi-architecture
-  builds" section.
-- Add `qemu_targets` field to `ui-config.yaml` to let a community opt into
-  cross-architecture CI.
-- Test and document the `--cvmfs-prefix` + QEMU combination (the prefix path must
-  match the deployment path on CVMFS, which is architecture-specific).
+**What was implemented:**
+
+- `docker_platform_for_arch()` in `bits_helpers/utilities.py`: maps bits
+  architecture strings (e.g. `slc9_aarch64`) to Docker `--platform` values
+  (e.g. `linux/arm64`).
+- `DockerRunner` in `bits_helpers/cmd.py`: accepts a `platform` parameter and
+  injects `--platform` into the long-running helper container.
+- `finaliseArgs` in `bits_helpers/args.py`: automatically derives and injects the
+  platform when the target architecture differs from the host; no manual flag
+  required for the common case.
+- `--docker-platform PLATFORM` CLI flag: explicit override; `native` suppresses
+  automatic injection for runners that are already native.
+- Per-package `docker run` build command string in `bits_helpers/build.py`: also
+  receives `--platform` when cross-compiling.
+- Warning emitted when cross-compiling with `--sandbox` enabled (nested QEMU +
+  podman requires `--security-opt seccomp=unconfined` and may fail).
+- `INSTALL.txt` §5: full multi-architecture runner setup guide with QEMU binfmt
+  registration, builder image verification, and bits-console `qemu_targets` field.
+- `REFERENCE.md` §22b and `docs/docs/user.md`: complete cross-compilation
+  documentation including architecture mapping table, performance expectations,
+  CVMFS prefix interaction, and sandbox caveats.
+
+**Scope and performance note:** QEMU user-mode emulation runs at 20–50 % of native
+speed. The intended scope is personal analysis overlays (a few packages, minutes of
+build time) and validation builds confirming that a recipe compiles on a target
+architecture before scheduling a native-runner CI job for the full stack. Full
+experiment stacks (ROOT, Geant4) require a native runner of the target architecture.
 
 #### N4. `bits doctor` hardening
 

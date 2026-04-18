@@ -243,6 +243,16 @@ def doParseArgs():
                                   "because the embedded paths are already correct for CVMFS. "
                                   "Implies --container-use-workdir behaviour for the CVMFS mount. "
                                   "Use --no-relocate on 'bits publish' to skip relocation when publishing."))
+  build_docker.add_argument("--docker-platform", dest="dockerPlatform", metavar="PLATFORM", default=None,
+                            help=("Docker --platform argument for cross-compilation "
+                                  "(e.g. linux/arm64, linux/amd64, linux/ppc64le). "
+                                  "When not set, bits derives the platform automatically from --architecture: "
+                                  "if the target architecture differs from the host, the matching platform is used "
+                                  "so that QEMU transparently emulates the target inside the builder container. "
+                                  "Pass 'native' to suppress automatic platform injection and always use "
+                                  "the daemon-default (host-native) image variant. "
+                                  "Requires QEMU binfmt handlers to be registered on the Docker host; "
+                                  "see the cross-compilation section in the reference manual."))
   build_docker.add_argument("-v", dest="volumes", action="append", default=[],
                             help=("Additional volume to be mounted inside the Docker container, if one is used. "
                                   "May be specified multiple times. Passed verbatim to 'docker run'."))
@@ -885,6 +895,29 @@ def finaliseArgs(args, parser):
     # architecture we want to build for.
     if args.docker and not args.dockerImage:
       args.dockerImage = "registry.cern.ch/alisw/%s-builder" % args.architecture.split("_")[0]
+
+    # ── --docker-platform / cross-compilation ─────────────────────────────────
+    # Derive the Docker --platform value from --architecture when the user has
+    # not set it explicitly.  If the target architecture matches the host we
+    # leave it as None (no --platform flag → daemon uses native image variant,
+    # zero overhead).  If they differ we inject the matching platform string so
+    # that Docker pulls the correct image variant and QEMU transparently
+    # emulates the target ISA inside the builder container.
+    #
+    # The special sentinel value "native" lets users opt out of automatic
+    # injection even when cross-compiling (useful on native ARM runners that
+    # happen to run an x86-64 bits client, or for testing).
+    if args.docker:
+      if getattr(args, "dockerPlatform", None) == "native":
+        args.dockerPlatform = None
+      elif not getattr(args, "dockerPlatform", None):
+        from bits_helpers.utilities import docker_platform_for_arch, detectArch as _detectArch
+        target_plat = docker_platform_for_arch(args.architecture)
+        host_plat   = docker_platform_for_arch(_detectArch())
+        if target_plat and target_plat != host_plat:
+          args.dockerPlatform = target_plat
+        else:
+          args.dockerPlatform = None
 
     # --sandbox-image implies --sandbox=podman
     if getattr(args, "sandboxImage", None) and getattr(args, "sandbox", "auto") == "auto":

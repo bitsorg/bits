@@ -44,6 +44,7 @@
     - [workDir mount point inside the container](#workdir-mount-point-inside-the-container)
     - [No-relocation builds with `--cvmfs-prefix`](#no-relocation-builds-with---cvmfs-prefix)
 22a. [Recipe Sandbox](#22a-recipe-sandbox)
+22b. [Cross-compilation via QEMU](#22b-cross-compilation-via-qemu)
     - [How it works](#how-it-works)
     - [Sandbox modes](#sandbox-modes)
     - [Per-recipe network control](#per-recipe-network-control)
@@ -1457,6 +1458,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--docker-extra-args ARGS` | Extra arguments for `docker run`. |
 | `--cvmfs-prefix PATH` | Bind-mount the workDir at `PATH` inside the container instead of the default `/container/bits/sw`. When set, packages compile with their final CVMFS paths already embedded so that `bits publish --no-relocate` can skip the relocation step. Requires `--docker`; has no effect without it. |
 | `--container-use-workdir` | Mount the workDir at the same path inside the container (i.e. `container_workDir = workDir`). Useful when the host and container share the same filesystem namespace. Mutually exclusive with `--cvmfs-prefix`; if both are set `--cvmfs-prefix` takes precedence. |
+| `--docker-platform PLATFORM` | Docker `--platform` argument for cross-compilation (e.g. `linux/arm64`, `linux/amd64`, `linux/ppc64le`). When not set, bits derives the platform automatically from `--architecture`: if the target differs from the host the matching platform is injected so QEMU emulates the target inside the builder container. Pass `native` to suppress automatic injection. Requires QEMU binfmt handlers on the Docker host. See [§22b Cross-compilation via QEMU](#22b-cross-compilation-via-qemu). |
 | `--sandbox MODE` | Sandbox each recipe build script for extra isolation. `auto` (default): podman on Linux if available, `sandbox-exec` on macOS, nested podman inside Docker containers. `podman`: always use podman (requires `--docker` or `--sandbox-image`). `sandbox-exec`: macOS only. `off`: no sandboxing. See [§22a Recipe Sandbox](#22a-recipe-sandbox). |
 | `--sandbox-image IMAGE` | Container image for `--sandbox=podman` when not using `--docker`. Implies `--sandbox=podman`. Defaults to the `--docker` image when `--docker` is set. |
 | `--force` | Rebuild even if the package hash already exists. |
@@ -2954,6 +2956,129 @@ If `bits --docker` is invoked from inside an existing Docker container (for exam
 or an equivalent unprivileged user-namespace configuration. Without this, the kernel will reject the `clone(CLONE_NEWUSER)` call that podman uses for rootless containers.
 
 Bits detects this situation automatically (by checking for `/.dockerenv` and `/proc/1/cgroup`) and emits a warning at build time. If the outer container cannot be reconfigured, disable sandboxing for that job with `--sandbox=off`.
+
+---
+
+## 22b. Cross-compilation via QEMU
+
+Bits supports cross-compilation on any Docker-capable host by combining Docker's
+`--platform` flag with QEMU user-mode emulation.  When the target architecture
+differs from the host, Docker pulls the matching image variant (e.g. `arm64`)
+and uses QEMU to transparently execute the foreign ELF binaries — the build script
+sees a native `aarch64` environment without any changes to the recipe.
+
+### One-time host setup
+
+Register QEMU binfmt handlers on the Docker host (persists until reboot):
+
+```bash
+# Option A — via the multiarch helper image (recommended, requires docker)
+docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+# Option B — via the OS package manager (Debian / Ubuntu)
+apt-get install -y qemu-user-static binfmt-support
+update-binfmts --enable
+
+# Verify
+docker run --rm --platform linux/arm64 alpine uname -m   # should print: aarch64
+docker run --rm --platform linux/ppc64le alpine uname -m # should print: ppc64le
+```
+
+This is a one-time privileged operation on the runner host.  Subsequent containers
+do not need elevated privileges; the kernel handles the QEMU dispatch transparently.
+
+### Supported target platforms
+
+| bits `--architecture` substring | Docker `--platform` |
+|----------------------------------|---------------------|
+| `x86-64` / `x86_64` | `linux/amd64` |
+| `aarch64` / `arm64` | `linux/arm64` |
+| `ppc64le` | `linux/ppc64le` |
+| `s390x` | `linux/s390x` |
+| `riscv64` | `linux/riscv64` |
+
+### Automatic platform injection
+
+When `--docker` is active, bits derives the required `--platform` string from
+`--architecture` automatically and compares it to the detected host architecture.
+If they differ, `--platform` is injected into both `docker run` invocations (the
+long-running helper container used for pre-flight checks and the per-package build
+container).  **No extra flags are needed for the common case**:
+
+```bash
+# On an x86-64 host, build for aarch64 — platform injected automatically
+bits build MyAnalysis -a slc9_aarch64 --docker
+
+# Equivalent explicit form
+bits build MyAnalysis -a slc9_aarch64 --docker --docker-platform linux/arm64
+```
+
+Pass `--docker-platform native` to suppress automatic injection and always use the
+daemon-default image variant (useful on a native ARM runner running an x86-64 bits
+client, or for testing without QEMU overhead).
+
+### Builder image availability
+
+The target architecture must have a corresponding builder image variant published
+as a multi-arch manifest or a separate tag.  For the CERN experiment ecosystem, the
+relevant images are the `alisw/*-builder` series.  Confirm availability before
+scheduling cross-compilation CI jobs:
+
+```bash
+# Check whether the arm64 variant exists for the slc9 builder
+docker manifest inspect registry.cern.ch/alisw/slc9-builder:latest | \
+  grep -A2 '"platform"'
+```
+
+If only the `x86-64` variant exists, an ARM-native runner (available on CERN's
+infrastructure and cheaply on cloud spot markets) is the practical alternative for
+full-stack cross-compilation.
+
+### Architecture matching for batch jobs
+
+Tarballs built for one architecture will not run on another.  When using the
+S3-overlay workflow (personal analysis packages pushed to an S3 bucket and fetched
+by WLCG batch jobs), the batch job description must constrain worker node selection
+to match the build architecture:
+
+```
+# HTCondor
+Requirements = (TARGET.OpSysAndVer == "CentOS9") && (TARGET.Arch == "X86_64")
+
+# DIRAC JDL
+SystemConfig = x86_64-slc9-gcc13-opt
+```
+
+`bits fetch` verifies the manifest's `architecture` field against the executing
+node before unpacking anything and aborts with a clear diagnostic on mismatch.
+
+### Performance expectations
+
+QEMU user-mode emulation runs at roughly 20–50 % of native execution speed for
+compute-heavy C++ compilation.  This is acceptable for small analysis packages
+(seconds to minutes per package) but impractical for large stacks such as ROOT or
+Geant4 (builds would take 10–20 hours).  The recommended scope for QEMU
+cross-compilation is:
+
+- Personal analysis overlays (M6 workflow): a few packages, tens of MB of output.
+- Validation builds: confirming that a recipe compiles clean on a target
+  architecture before scheduling a native-runner CI job for the full stack.
+
+For full experiment stacks on non-x86-64 architectures, use a native runner of
+the target architecture.
+
+### Sandbox interaction
+
+Nested QEMU + rootless podman (the DinD sandbox scenario) requires
+`--security-opt seccomp=unconfined` on the outer `docker run` and may still fail
+on older kernels without unprivileged user-namespace support.  Bits emits a warning
+when cross-compilation is active and `--sandbox` is not `off`.  For cross-compilation
+builds, `--sandbox=off` is the recommended setting unless the runner is known to
+support nested namespaces under QEMU:
+
+```bash
+bits build MyAnalysis -a slc9_aarch64 --docker --sandbox=off
+```
 
 ---
 

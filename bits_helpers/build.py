@@ -1237,7 +1237,9 @@ def doBuild(args, parser):
   )
   args.manifest.add_providers(provider_dirs)
 
-  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist.bits:ro"] if args.docker else []) as getstatusoutput_docker:
+  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env,
+                    extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist.bits:ro"] if args.docker else [],
+                    platform=getattr(args, "dockerPlatform", None)) as getstatusoutput_docker:
     def performPreferCheckWithTempDir(pkg, cmd):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
         return getstatusoutput_docker(cmd, cwd=temp_dir)
@@ -2124,14 +2126,17 @@ def doBuild(args, parser):
     # In case the --docker options is passed, we setup a docker container which
     # will perform the actual build. Otherwise build as usual using bash.
     if args.docker:
+      _docker_platform = getattr(args, "dockerPlatform", None)
       build_command = (
         "docker run --rm --entrypoint= --user $(id -u):$(id -g) "
+        "{platformArg}"
         "-v {workdir}:{container_workDir} -v{configDir}:/pkgdist.bits:ro "
         "-v {scriptDir}/build.sh:/build.sh:ro "
         "-v {bits_dir}:/bits "
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
         "-e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
       ).format(
+        platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
         image=quote(args.dockerImage),
         workdir=quote(abspath(args.workDir)),
         container_workDir=container_workDir,
@@ -2154,6 +2159,19 @@ def doBuild(args, parser):
       buildEnvironment = ([key, (val if isinstance(val, str) else "_".join(val))] for key, val in buildEnvironment)
       env_vars = " ".join(["{}={}".format(key, quote(val)) for key, val in buildEnvironment])
       build_command =  "env {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
+
+    # Warn when cross-compiling (QEMU) with sandboxing enabled: nested podman
+    # inside a QEMU-emulated container requires seccomp=unconfined on the outer
+    # docker run and may still fail on kernels without unprivileged userns.
+    # Recommend --sandbox=off for cross-compilation builds.
+    if getattr(args, "dockerPlatform", None) and getattr(args, "sandbox", "off") != "off":
+      from bits_helpers.log import warning as _warn
+      _warn(
+          "Cross-compilation (--docker-platform %s) with --sandbox=%s: "
+          "nested QEMU + podman may fail unless the outer container is run with "
+          "--security-opt seccomp=unconfined.  Pass --sandbox=off if builds fail.",
+          args.dockerPlatform, args.sandbox,
+      )
 
     # Apply recipe sandbox (podman / sandbox-exec) if configured.
     # sandbox=auto selects the best available mode; sandbox=off is a no-op.

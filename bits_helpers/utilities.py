@@ -134,6 +134,39 @@ def pkg_to_shell_id(name: str) -> str:
   return re.sub(r'[^A-Za-z0-9_]', '_', name).upper()
 
 
+# Mapping from bits architecture substrings to Docker --platform values.
+# Matched by substring so that compound strings like "slc9_aarch64" or
+# "ubuntu2204_x86-64" resolve correctly.
+_BITS_ARCH_TO_DOCKER_PLATFORM = {
+    "x86-64":  "linux/amd64",
+    "x86_64":  "linux/amd64",
+    "aarch64": "linux/arm64",
+    "arm64":   "linux/arm64",
+    "ppc64le": "linux/ppc64le",
+    "s390x":   "linux/s390x",
+    "riscv64": "linux/riscv64",
+}
+
+
+def docker_platform_for_arch(bits_arch: str):
+    """Return the Docker ``--platform`` value for a bits architecture string.
+
+    Examples::
+
+        docker_platform_for_arch("slc9_aarch64")  -> "linux/arm64"
+        docker_platform_for_arch("slc9_x86-64")   -> "linux/amd64"
+        docker_platform_for_arch("osx_arm64")      -> "linux/arm64"
+        docker_platform_for_arch("unknown")        -> None
+
+    Returns ``None`` when the architecture substring is not recognised, which
+    lets callers decide whether to fall back to the Docker daemon default.
+    """
+    for key, plat in _BITS_ARCH_TO_DOCKER_PLATFORM.items():
+        if key in bits_arch:
+            return plat
+    return None
+
+
 def effective_arch(spec: dict, build_arch: str) -> str:
   """Return the architecture string to use in paths and tarball names.
 

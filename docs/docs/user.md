@@ -290,6 +290,51 @@ pip install -r requirements.txt
 See [§22a of the reference manual](reference.md#22a-recipe-sandbox) for the
 full option reference.
 
+### Cross-compilation via QEMU
+
+Bits can build packages for a different CPU architecture on a single host by
+combining Docker's `--platform` flag with QEMU user-mode emulation.  When the
+target architecture differs from the host, Docker pulls the matching image
+variant and QEMU transparently executes the foreign binaries — the recipe
+sees a native environment for the target architecture.
+
+**One-time runner setup** — register QEMU binfmt handlers on the Docker host:
+
+```bash
+docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+# Verify
+docker run --rm --platform linux/arm64 alpine uname -m   # aarch64
+```
+
+**Building for a different architecture** — no extra flags needed in the
+common case; bits injects `--platform` automatically when the target
+architecture differs from the host:
+
+```bash
+# On an x86-64 host, produce an aarch64 tarball
+bits build MyAnalysis -a slc9_aarch64 --docker
+
+# With an explicit CVMFS prefix for the aarch64 deployment path
+bits build MyAnalysis -a slc9_aarch64 --docker \
+  --cvmfs-prefix /cvmfs/alice.cern.ch/el9/aarch64
+```
+
+Use `--docker-platform native` to suppress automatic injection (e.g. on a
+native ARM runner where no QEMU is needed).
+
+**Performance note** — QEMU runs at roughly 20–50 % of native speed.  This
+is fine for small analysis packages but impractical for large stacks (ROOT,
+Geant4).  For full-stack cross-compilation, use a native runner of the target
+architecture.
+
+**Sandbox** — nested QEMU + podman may fail without `--security-opt
+seccomp=unconfined` on the outer container.  Use `--sandbox=off` for
+cross-compilation builds unless the runner is known to support it.
+
+See [§22b of the reference manual](reference.md#22b-cross-compilation-via-qemu)
+for the full option reference and architecture mapping table.
+
 ## Defaults
 
 By default, `bits` uses the `o2` defaults (`--defaults o2`), which are
