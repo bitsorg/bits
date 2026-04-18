@@ -164,8 +164,8 @@ The key distinction between bits and conventional package managers is that a **s
 
 The workflow spans five phases: local setup from shared recipes → local development with full-stack context → full-stack local testing → commit and peer review → CI build and CVMFS publication. The CI publication step supports two distinct paths, resulting in packages in **different CVMFS namespaces** depending on the role of the person triggering the build:
 
-- **Group Admin path** — builds the full experiment software stack (e.g. ROOT + Geant4 + O2) and publishes it to the group experiment namespace (`/cvmfs/alice.cern.ch/`, `/cvmfs/sft.cern.ch/lcg/`), available experiment-wide to all grid jobs and interactive sessions.
-- **Individual User path** — builds and publishes a single package to a personal or contrib namespace (`/cvmfs/sft.cern.ch/sw/<user>/`, `lcg/contrib/`), independently of the group stack rebuild cycle.
+- **Production build** (`group-admin` / `bits-admin`) — triggered via the **Build → Production** button in bits-console; publishes to the community's `cvmfs_prefix` (e.g. `/cvmfs/sft.cern.ch/lcg/releases/`), available experiment-wide. The pipeline enforces this role server-side; it cannot be bypassed.
+- **Personal-area build** (any authenticated user) — triggered via the **Build → Personal area** button; publishes to `cvmfs_user_prefix/<username>/…` (e.g. `/cvmfs/sft.cern.ch/lcg/user/jsmith/`), independent of the group stack rebuild cycle and accessible without admin rights.
 
 The full phase-by-phase walkthrough, workflow diagram, and command examples are in **[WORKFLOWS.md](WORKFLOWS.md)**.
 
@@ -2836,13 +2836,16 @@ In a conventional CVMFS publishing workflow the package is first compiled with t
 
 `--cvmfs-prefix` eliminates this step entirely: by mounting the workDir at the final CVMFS prefix inside the container, the compiler sees that path as `$INSTALLROOT` and embeds it directly. The package is already at its deployment-ready paths when the build finishes.
 
+> **Note.** In the normal bits-console workflow these commands are run by the CI pipeline on a registered build runner — not typed by the user. bits-console passes `cvmfs_prefix` from the community's `ui-config.yaml` to the pipeline, which then calls `bits build --docker --cvmfs-prefix …` and `bits publish --no-relocate` automatically. The flags are documented here for CI pipeline authors and runner administrators.
+
 ```bash
-# Build ROOT with the final CVMFS prefix embedded at compile time
+# These commands run inside the bits-console-triggered CI pipeline on the build runner.
+# Pipeline stage 1 — build with deployment paths embedded at compile time:
 bits build --docker \
            --cvmfs-prefix /cvmfs/sft.cern.ch/lcg/releases \
            ROOT
 
-# Publish without relocation — the package is already at the right paths
+# Pipeline stage 1 (continued) — upload to spool; no relocation needed:
 bits publish ROOT \
            --cvmfs-target /cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0 \
            --spool ingestuser@ingest.example.com:/var/spool/cvmfs-ingest \
@@ -3573,7 +3576,9 @@ include:
     ref: main
 ```
 
-Trigger via the GitLab API or web UI with pipeline variables:
+**Normal usage — bits-console.** The intended way to trigger this pipeline is through **[bits-console](https://bits-console.web.cern.ch)**. bits-console reads the community's `ui-config.yaml`, presents the package browser and platform selector in the browser, and calls the GitLab pipeline API on the user's behalf. The role distinction between production builds (`group-admin` / `bits-admin`) and personal-area builds (`group-user`) is enforced server-side by the pipeline based on `GITLAB_USER_LOGIN` against the `GROUP_ADMINS_<NAME>` CI variable — bits-console surfaces this as two separate buttons (**Build → Production** vs **Build → Personal area**).
+
+**Programmatic or direct triggering.** For CI automation outside bits-console (e.g. a nightly cron or a downstream pipeline), the GitLab pipeline API can be called directly. The same role enforcement applies — the token owner's GitLab identity determines which targets are permitted:
 
 ```bash
 curl --request POST \

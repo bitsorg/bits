@@ -127,14 +127,11 @@ bits cleanup -n                   # dry-run: show what would be removed
 # Build inside a Docker container for a specific Linux version
 bits build --docker --architecture ubuntu2004_x86-64 ROOT
 
-# Build with the workDir bind-mounted at the final CVMFS path inside the
-# container — packages compile with their deployment paths already embedded,
-# so no relocation step is needed at publish time.
-bits build --docker --cvmfs-prefix /cvmfs/sft.cern.ch/lcg/releases ROOT
-
 # Use a remote binary store (S3, HTTP, rsync) to share pre-built artifacts
 bits build --remote-store s3://mybucket/builds ROOT
 ```
+
+The `--cvmfs-prefix` flag (which embeds the final CVMFS deployment path at compile time so no relocation is needed at publish time) and `bits publish --no-relocate` are used by the **bits-console-triggered CI pipeline** on the build runners — they are not normally typed by end users. See [WORKFLOWS.md Phase 5](WORKFLOWS.md#phase-5--ci-build-and-cvmfs-publication-via-bits-console) for the user-facing workflow and [REFERENCE.md §22](REFERENCE.md#22-docker-support) for the flag reference.
 
 [Docker support](REFERENCE.md#22-docker-support) | [Remote stores](REFERENCE.md#21-remote-binary-store-backends)
 

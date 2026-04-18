@@ -103,73 +103,74 @@ Opening a merge request on the recipe repository initiates the standard peer-rev
 
 ---
 
-## Phase 5 — CI build and CVMFS publication
+## Phase 5 — CI build and CVMFS publication via bits-console
 
-Once the recipe MR is merged, a GitLab CI pipeline takes over. Bits supports two distinct publication paths, which result in packages landing on CVMFS in **different namespaces** depending on who triggers the build and what kind of publication is intended.
+Once the recipe MR is merged, publication is driven entirely through **[bits-console](https://bits-console.web.cern.ch)** — a browser-based interface that triggers GitLab CI pipelines on registered build runners. There are no CLI commands to run at this stage: `bits build` and `bits publish` run inside the pipeline, not on your workstation.
 
-### Group Admin path — group software stack
+The distinction between a group-wide production build and a personal-area build is **not a command-line flag**. It is determined by your role in the project, enforced server-side by the pipeline based on your GitLab identity, and surfaced in the UI as two separate buttons.
 
-A group administrator (or a pipeline triggered via [bits-console](REFERENCE.md#bits-console--web-interface-for-the-gitlab-driven-pipeline)) builds the full experiment software stack:
+### Step 1 — Connect to bits-console
 
-```bash
-bits build --docker \
-           --architecture el9_x86-64 \
-           --cvmfs-prefix /cvmfs/alice.cern.ch \
-           ROOT
+1. Navigate to **[bits-console.web.cern.ch](https://bits-console.web.cern.ch)**.
+2. Select your community on the landing page (ALICE, LCG, LHCb, …). Your choice is remembered in the browser.
+3. Click **Connect** and paste your GitLab personal access token.
+   - Scope `read_api` is enough to browse packages and view CVMFS status.
+   - Scope `api` (Developer access) is required to trigger builds.
 
-bits publish --no-relocate \
-             --remote-store s3://experiment-builds \
-             ROOT
-```
+### Step 2 — Browse and trigger a build
 
-The `--cvmfs-prefix` flag mounts the workDir inside the container at the final CVMFS installation path, so compiled-in paths already match the deployment location. `--no-relocate` on `bits publish` skips the relocation step that would otherwise be needed.
+The **Package Browser** lists all packages from the community's configured recipe repos, with current version, build status, and CVMFS publication status. Click any package to open the build modal, then choose a target platform and click one of the two build buttons:
 
-The resulting tarballs are uploaded to the shared binary store, ingested by the CVMFS stratum-0, and published to the **group experiment namespace**:
+| Button | Who sees it | Where the result lands |
+|--------|-------------|------------------------|
+| **Build → Production** | `bits-admin` and `group-admin` only | `cvmfs_prefix` configured in the community profile, e.g. `/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.30/x86_64-el9` |
+| **Build → Personal area** | All users (`group-admin` and `group-user`) | `cvmfs_user_prefix/<your-username>/…`, e.g. `/cvmfs/sft.cern.ch/lcg/user/jsmith/ROOT/6.30/x86_64-el9` |
 
-```
-/cvmfs/alice.cern.ch/        ← ALICE group stack
-/cvmfs/sft.cern.ch/lcg/      ← LCG release stack
-```
+The pipeline enforces this independently of the UI. Even a manually crafted API call is rejected unless `GITLAB_USER_LOGIN` matches an entry in the `GROUP_ADMINS_<NAME>` CI variable on the GitLab project. There is no way to publish to the production namespace without the correct role.
 
-This namespace is available experiment-wide: to every developer's `bits enter` session, to batch grid jobs at WLCG sites, and to downstream CI pipelines.
+### Production builds (group-admin)
 
-### Individual User path — single-package publication
+Clicking **Build → Production** queues a GitLab CI pipeline that:
 
-An individual developer can publish a single package independently of the full group stack rebuild cycle:
+1. Runs `bits build --docker` on a registered build runner, with the workDir bind-mounted at the community's `cvmfs_prefix` path inside the container so binaries compile with their final deployment paths embedded.
+2. Runs `bits publish --no-relocate` to upload content-addressed tarballs to the shared binary store. No relocation step is needed because the paths were already correct at compile time.
+3. Ingests the tarballs via `bits-cvmfs-ingest`, opens a CVMFS transaction, and runs `cvmfs_server publish` on the stratum-0.
 
-```bash
-bits build --docker \
-           --architecture el9_x86-64 \
-           mylib
+The result is available experiment-wide on the **production CVMFS namespace** — to all developers' `bits enter` sessions, to batch grid jobs at WLCG sites, and to downstream CI pipelines. Stratum-1 replicas propagate the change automatically.
 
-bits publish --remote-store s3://experiment-builds mylib
-```
+### Personal-area builds (group-user)
 
-The resulting package lands in a **separate namespace** on CVMFS:
+Clicking **Build → Personal area** triggers the same pipeline, but the build is published to the user's **personal namespace** on CVMFS:
 
 ```
-/cvmfs/sft.cern.ch/sw/<user>/mylib/2.0/
-/cvmfs/sft.cern.ch/lcg/contrib/mylib/
+cvmfs_user_prefix/<username>/<package>/<version>/<platform>/
+e.g.  /cvmfs/sft.cern.ch/lcg/user/jsmith/ROOT/6.30/x86_64-el9
 ```
 
-This path is independent of the group stack. Consumers — specific users, analysis teams, or per-user CI pipelines — can access the package without waiting for a full group stack rebuild. This is the natural path for patch releases and hotfixes.
+This path is completely independent of the production namespace and of the group stack rebuild cycle. Any user with Developer access can publish packages here without waiting for a group-admin to approve a full stack rebuild. It is the natural path for personal builds, patch testing, and hotfixes that need to be shared with a specific analysis team before a production release.
+
+### Step 3 — Monitor progress
+
+The **Builds** tab in bits-console shows a live pipeline list with log streaming. The **CVMFS Status** tab updates once ingestion completes and the stratum-0 transaction is published.
 
 ### End-to-end summary
 
 ```
-Developer workstation        Shared GitLab CI                    CVMFS
-────────────────────────────────────────────────────────────────────────
-git clone <mylib-repo>       bits build --docker                 CVMFS transaction
-  ↓ edit & test locally        --cvmfs-prefix /cvmfs/...           ↓
-bits build mylib               ROOT                            available to all
-  ↓ full-stack verified      bits publish --no-relocate          (group namespace)
-git push + recipe MR           ROOT → s3://experiment-builds
-  ↓ peer review              ↓                               OR
-MR merged                    bits build --docker mylib
-                               bits publish mylib              (user namespace)
+Developer workstation        bits-console (browser)           CVMFS
+──────────────────────────────────────────────────────────────────────
+git clone <mylib-repo>       Select community → sign in
+  ↓ edit & test locally      Browse packages → open build modal
+bits build mylib                ↓
+  ↓ full-stack verified      [Build → Production]          production namespace
+git push + recipe MR            → pipeline runs on CI runner  /cvmfs/.../releases/…
+  ↓ peer review & merge       ↓ bits build --docker           available to all
+                             [Build → Personal area]       personal namespace
+                                → same pipeline, user prefix  /cvmfs/.../user/<me>/…
+                             Monitor: Builds tab + CVMFS       accessible by you /
+                             Status tab                        your analysis team
 ```
 
-**bits-console** provides a browser interface for triggering and monitoring these CI pipelines without leaving your web browser, and for browsing the published package inventory on CVMFS. See [§26 of REFERENCE.md](REFERENCE.md#26-cvmfs-publishing-pipeline) for the full pipeline documentation.
+See the [bits-console documentation](repos/bits-console/README.md) for the full role reference, `ui-config.yaml` fields, runner setup, and scheduled build configuration.
 
 ---
 
