@@ -151,6 +151,20 @@ def doParseArgs():
           "for content-addressed pre-staging before the CVMFS transaction."
       ),
   )
+  status_parser = subparsers.add_parser(
+      "status",
+      help="show what bits build would do for each package (dry run)",
+      description=(
+          "Resolve the full dependency tree for the requested package(s) and "
+          "report what bits build would do for each package without actually "
+          "building anything.  Each package is classified as: already_installed, "
+          "from_store (local tarball), from_remote_store (remote tarball, requires "
+          "--check-store), local_checkout (development package, will rebuild), "
+          "local_checkout_unchanged (development package, nothing changed), "
+          "build_from_source (will compile), or hash_unknown (git refs not cached; "
+          "re-run with --fetch-repos to resolve)."
+      ),
+  )
   verify_parser = subparsers.add_parser(
       "verify",
       help="verify a live deployment against a build manifest",
@@ -754,6 +768,86 @@ def doParseArgs():
       help="Emit a machine-readable JSON report instead of the human-readable table.",
   )
 
+  # Options for the status subcommand
+  status_parser.add_argument(
+      "pkgname", metavar="PACKAGE", nargs="+",
+      help="One or more packages to resolve (including all dependencies).",
+  )
+  status_parser.add_argument(
+      "--defaults", dest="defaults", default="release", metavar="DEFAULT",
+      help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.",
+  )
+  status_parser.add_argument(
+      "-a", "--architecture", dest="architecture", metavar="ARCH",
+      default=detectedArch,
+      help=("Target architecture. Default is the current system architecture, "
+            "which is '%(default)s'."),
+  )
+  status_parser.add_argument(
+      "-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="DIR",
+      help=("The bits work directory to inspect. Default '%(default)s'."),
+  )
+  status_parser.add_argument(
+      "-c", "--config", dest="configDir",
+      default=os.environ.get("BITS_REPO_DIR", "alidist"),
+      help="The directory containing build recipes. Default '%(default)s'.",
+  )
+  status_parser.add_argument(
+      "-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
+      help=("Change to the specified directory before doing anything. "
+            "Default '%(default)s'."),
+  )
+  status_parser.add_argument(
+      "--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
+      default="%(workDir)s/MIRROR",
+      help=("Directory where reference git repos are cached. "
+            "'%%(workDir)s' will be substituted. Default '%(default)s'."),
+  )
+  status_parser.add_argument(
+      "--no-local", dest="noDevel", metavar="PACKAGE", default=[],
+      action="append",
+      help=("Do not treat the named package as a local checkout even if a "
+            "matching directory exists in the current directory. "
+            "May be repeated or comma-separated."),
+  )
+  status_parser.add_argument(
+      "--force-tracked", dest="forceTracked", default=False, action="store_true",
+      help="Ignore all local checkouts; treat every package as remote.",
+  )
+  status_parser.add_argument(
+      "--disable", dest="disable", metavar="PACKAGE", default=[],
+      action="append",
+      help="Disable the given package(s) from the build. May be repeated.",
+  )
+  status_parser.add_argument(
+      "--force-rebuild", dest="force_rebuild", metavar="PACKAGE", default=[],
+      action="append",
+      help="Force a rebuild status for the given package(s). May be repeated.",
+  )
+  status_parser.add_argument(
+      "-u", "--fetch-repos", dest="fetchRepos", action="store_true", default=False,
+      help=("Fetch / clone reference repositories to populate the ref cache. "
+            "Without this flag, only already-cached refs are used; packages "
+            "whose refs are not cached are reported as hash_unknown."),
+  )
+  status_parser.add_argument(
+      "--remote-store", dest="remoteStore", metavar="STORE", default="",
+      help="Remote binary store URL. Used only when --check-store is given.",
+  )
+  status_parser.add_argument(
+      "--no-remote-store", dest="no_remote_store", action="store_true", default=False,
+      help="Disable any remote store (even if set in bits.rc).",
+  )
+  status_parser.add_argument(
+      "--check-store", dest="checkStore", action="store_true", default=False,
+      help=("Probe the remote store to detect tarballs not yet mirrored "
+            "locally. Implies a network round-trip per package."),
+  )
+  status_parser.add_argument(
+      "--json", dest="json_output", action="store_true", default=False,
+      help="Emit a machine-readable JSON report instead of the human-readable table.",
+  )
+
   # Apply bits.rc values as default overrides so that persistent settings written
   # by "bits init" (config mode) take effect on every subsequent invocation.
   # CLI flags still win: set_defaults only fills gaps not covered by the user.
@@ -784,7 +878,7 @@ def doParseArgs():
     # argument-level defaults (add_argument(..., default=...)).  We must call
     # set_defaults on every subparser individually so that bits.rc values win
     # over hardcoded argument defaults while still losing to explicit CLI flags.
-    for _sp in [build_parser, clean_parser, cleanup_parser, deps_parser, doctor_parser, init_parser, verify_parser]:
+    for _sp in [build_parser, clean_parser, cleanup_parser, deps_parser, doctor_parser, init_parser, verify_parser, status_parser]:
       _sp.set_defaults(**_rc_defaults)
 
   # Make sure old option ordering behavior is actually still working
@@ -861,6 +955,16 @@ def finaliseArgs(args, parser):
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
   if args.action in ["version", "architecture", "verify"]:
+    return args
+
+  # Minimal finalisation for status: normalise lists and expand referenceSources.
+  if args.action == "status":
+    if hasattr(args, "defaults"):
+      args.defaults = args.defaults.split("::")
+    args.noDevel       = normalise_multiple_options(args.noDevel)
+    args.disable       = normalise_multiple_options(args.disable)
+    args.force_rebuild = normalise_multiple_options(args.force_rebuild)
+    args.referenceSources = args.referenceSources % {"workDir": args.workDir}
     return args
 
   if hasattr(args, "defaults"):

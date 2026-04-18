@@ -286,18 +286,46 @@ several correctness gaps.  This milestone hardens it on all fronts.
   the runner orchestrator, and the `doDoctor` dispatch, plus preserve all existing
   recipe-check tests.
 
-#### N5. Developer workflow documentation and tooling
+#### N5. Developer workflow documentation and tooling ✅ IMPLEMENTED (`bits status`)
 
 The local-checkout shadowing capability is bits' most important differentiator for
 interactive development but is the least documented feature. Researchers moving from
 other build systems will not discover it without explicit guidance.
 
-**Actions:**
+**What was implemented — `bits status`:**
+
+`bits status` is a dry-run resolver that classifies every package in the dependency
+tree without building anything.  Given one or more package names it:
+
+1. Resolves the full dependency graph using the same `getPackageList` + topological sort
+   as `doBuild`.
+2. Detects development packages by scanning the current directory for subdirectories
+   matching package names (same logic as `doBuild`; `--no-local` and `--force-tracked`
+   are honoured).
+3. Computes build hashes from locally-cached git refs without any network access
+   (pass `--fetch-repos` to populate the cache on first run).
+4. Classifies each package:
+
+   | State | Condition |
+   |-------|-----------|
+   | `already_installed` | `.build-hash` matches expected hash (or CVMFS symlink present) |
+   | `from_store` | Matching tarball found in local `TARS/` symlink tree |
+   | `from_remote_store` | Tarball only in remote store (`--check-store`) |
+   | `local_checkout` | Matching directory in cwd; will rebuild |
+   | `local_checkout_unchanged` | Devel package, `devel_hash + deps_hash` unchanged; rebuild skipped |
+   | `build_from_source` | Nothing found; will compile from scratch |
+   | `hash_unknown` | Ref cache absent; re-run with `--fetch-repos` |
+
+5. Emits a coloured table (default) or machine-readable JSON (`--json`).
+
+Files added / modified: `bits_helpers/status.py` (new), `bits_helpers/args.py`
+(new `status` subparser), `bitsBuild` (dispatch), `tests/test_status.py` (35 tests),
+`REFERENCE.md` (§16 `bits status` entry).
+
+**Remaining actions (N5 not fully complete):**
 - Expand the "Develop and iterate on a single package" cookbook section with a
   realistic multi-package scenario (e.g. modifying O2Physics with a local O2 also in
   development).
-- Add `bits status` subcommand: list which packages are being taken from local
-  checkouts, which from the binary store, and which will be compiled from source.
 - Improve `bits init` to detect common checkout layouts and offer to configure the
   development environment interactively.
 
@@ -656,7 +684,7 @@ concretiser.
 | N2 | Sandbox as recommended CI default | Near | High | Low |
 | N3 | QEMU cross-compilation ✅ | Near | Medium | Low |
 | N4 | `bits doctor --runner` ✅ | Near | Medium | Low |
-| N5 | Developer workflow docs + `bits status` | Near | High | Low |
+| N5 | Developer workflow docs + `bits status` ✅ (partial) | Near | High | Low |
 | M1 | Version ranges on dependencies | Medium | High | Medium |
 | M2 | `prefer_system` standard library | Medium | Medium | Medium |
 | M3 | Reproducible build attestation (SLSA L2) | Medium | High | High |

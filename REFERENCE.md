@@ -32,6 +32,7 @@
     - [bits build](#bits-build)
     - [bits deps](#bits-deps)
     - [bits doctor](#bits-doctor)
+    - [bits status](#bits-status)
     - [bits verify](#bits-verify)
     - [bits init](#bits-init)
     - [bits clean / bits cleanup](#bits-clean)
@@ -1578,6 +1579,57 @@ bits doctor --runner --json \
 |-----|-------------|
 | `prerequisites_url` | URL shown when the C++ compiler or git is missing. Defaults to the ALICE prerequisite guide. |
 | `cvmfs_repos` | Comma-separated list of CVMFS paths checked in `--runner` mode (e.g. `/cvmfs/alice.cern.ch,/cvmfs/sft.cern.ch`). |
+
+---
+
+### bits status
+
+Show what `bits build` would do for each package in the dependency tree, without building anything. Each package is classified into one of the states below. Git refs are read from the local mirror cache; packages whose refs have not been cached yet are reported as `hash_unknown`. Pass `--fetch-repos` to populate the cache on first use.
+
+```bash
+bits status [options] PACKAGE [PACKAGE...]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--defaults PROFILE` | `release` | Defaults profile(s); use `::` to combine. |
+| `-a ARCH`, `--architecture ARCH` | detected | Target architecture. |
+| `-w DIR`, `--work-dir DIR` | `sw` | bits work directory to inspect. |
+| `-c DIR`, `--config DIR` | `alidist` | Recipe directory. |
+| `--reference-sources DIR` | `<workDir>/MIRROR` | Mirror directory for git ref cache. |
+| `--no-local PACKAGE` | _(none)_ | Exclude a package from local-checkout detection. May be repeated. |
+| `--force-tracked` | off | Ignore all local checkouts. |
+| `--disable PACKAGE` | _(none)_ | Exclude a package from the dependency tree. |
+| `--force-rebuild PACKAGE` | _(none)_ | Report the named package as needing a rebuild regardless of its hash. |
+| `-u`, `--fetch-repos` | off | Clone / fetch reference repos to populate the git ref cache before computing hashes. Requires network access. |
+| `--remote-store URL` | _(none)_ | Remote binary store URL. Only consulted when `--check-store` is given. |
+| `--check-store` | off | Probe the remote store to detect tarballs not mirrored locally. Adds a network round-trip per uncached package. |
+| `--json` | off | Emit a machine-readable JSON report. |
+
+**Package states:**
+
+| State | Meaning |
+|-------|---------|
+| `already_installed` | Hash matches the installed package; nothing to do. |
+| `from_store` | Matching tarball found in the local TARS store; will be unpacked. |
+| `from_remote_store` | Tarball only in remote store; will be downloaded then unpacked. Detected only with `--check-store`. |
+| `local_checkout` | A directory matching the package name exists in cwd; will be compiled from local sources. |
+| `local_checkout_unchanged` | Devel package whose content hash has not changed; rebuild would be skipped. |
+| `build_from_source` | No cached result found; will be compiled from scratch. |
+| `hash_unknown` | Git refs unavailable (mirror not yet populated); re-run with `--fetch-repos`. |
+
+**JSON output** (`--json`):
+
+```json
+{
+  "architecture": "slc9_x86-64",
+  "packages": [
+    { "package": "zlib", "version": "1.2.13", "hash": "abc...", "state": "already_installed" },
+    { "package": "boost", "version": "1.83.0", "hash": "def...", "state": "from_store" },
+    { "package": "ROOT",  "version": "6.32.06", "hash": "123...", "state": "build_from_source" }
+  ]
+}
+```
 
 ---
 
