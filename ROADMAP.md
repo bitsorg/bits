@@ -21,7 +21,7 @@ computing:
 | **lcgcmake** | LCG / CERN | CMake-driven | Manual pinning |
 | **bits** | HEP experiments / CVMFS | Recipe files + tarball store + CVMFS pipeline | Manual pinning (version ranges: roadmap) |
 
-### Honest strengths and weaknesses
+### Strengths and weaknesses
 
 #### Where bits leads
 
