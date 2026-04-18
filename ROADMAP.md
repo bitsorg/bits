@@ -1,7 +1,5 @@
 # bits — Roadmap
 
-## Positioning and Competitive Context
-
 bits is a purpose-built build and distribution system for large scientific software
 stacks. Understanding where it stands relative to alternatives is essential for
 prioritising future development.
@@ -23,7 +21,7 @@ computing:
 | **lcgcmake** | LCG / CERN | CMake-driven | Manual pinning |
 | **bits** | HEP experiments / CVMFS | Recipe files + tarball store + CVMFS pipeline | Manual pinning (version ranges: roadmap) |
 
-### Honest strengths and weaknesses
+### Strengths and weaknesses
 
 #### Where bits leads
 
@@ -137,7 +135,7 @@ There is no standard library of detection snippets and no automated fallback pol
 when detection fails. EasyBuild has similar weaknesses; Spack's external packages
 mechanism is more systematic.
 
-#### Honest overall characterisation
+#### Conclusion
 
 bits is the right tool for anyone deploying large C++/Fortran/CUDA scientific software
 stacks to CVMFS via GitLab CI, especially when interactive development with local
