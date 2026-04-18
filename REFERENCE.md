@@ -3153,6 +3153,7 @@ The manifest records every input and output that could affect reproducibility:
 | `outcome` | `"already_installed"`, `"from_store"`, or `"built_from_source"` |
 | `tarball` | Tarball filename (or `null`) |
 | `tarball_sha256` | `sha256:<hex>` digest of the tarball, if present |
+| `source_checksums` | List of `{url, checksum}` entries from the recipe's `sources:` list; `checksum` is `null` when none was declared |
 | `completed_at` | ISO-8601 UTC timestamp of package completion |
 
 ### Manifest location and naming
@@ -3180,7 +3181,7 @@ always see a consistent view.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "bits_version": "1.0.0",
   "bits_dist_hash": "a1b2c3d4e5...",
   "created_at": "2026-04-11T14:30:00Z",
@@ -3209,6 +3210,10 @@ always see a consistent view.
       "outcome": "from_store",
       "tarball": "zlib-1.2.11-3.slc7_x86-64.tar.gz",
       "tarball_sha256": "sha256:e3b0c44298fc1c14...",
+      "source_checksums": [
+        {"url": "https://zlib.net/zlib-1.2.11.tar.gz",
+         "checksum": "sha256:c3e5e9fdd5004dcb542feda5ee4f0ff0744628baf8ed2dd5d66f8ca1197cb1a1"}
+      ],
       "completed_at": "2026-04-11T14:31:05Z"
     },
     {
@@ -3216,10 +3221,11 @@ always see a consistent view.
       "version": "6.32.04",
       "revision": "2",
       "hash": "ef567890ef567890...",
-      "commit_hash": "feedcafe...",
+      "commit_hash": "feedcafe12345678...",
       "outcome": "built_from_source",
       "tarball": "ROOT-6.32.04-2.slc7_x86-64.tar.gz",
       "tarball_sha256": "sha256:f4ca408ad2b...",
+      "source_checksums": [],
       "completed_at": "2026-04-11T14:45:10Z"
     }
   ]

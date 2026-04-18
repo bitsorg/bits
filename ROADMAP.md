@@ -60,6 +60,16 @@ patching a central registry. The bits-providers registry already contains entrie
 similar "repos" concept but the activation is more manual and is not part of the
 default dependency-graph traversal.
 
+**Standard module file output.** Every bits-installed package produces a
+module-compatible environment description that is consumed by `bits q`, `bits enter`,
+and `bits print` for interactive environment management. Crucially, these module files
+are not bits-specific: once a stack is deployed on CVMFS they can be loaded directly
+by standard Environment Modules or Lmod outside of bits, with no bits installation
+required on the user's machine. A researcher who `module load ROOT` on an HPC cluster
+that mounts the relevant CVMFS repository gets a correctly configured environment
+built by bits. This is a genuine bridge to the HPC community that is currently
+underappreciated and underdocumented.
+
 **bits-console + GitLab CI pipeline integration.** The browser-based build console
 with role-based access control, community-scoped `ui-config.yaml` configuration, and
 a triggered build → ingest → publish pipeline is unique in this space. Spack and
@@ -308,20 +318,197 @@ store, generating a `ui-config.yaml` template, registering the first GitLab runn
 and performing a smoke-build of a simple package to validate the setup end-to-end.
 Output is a filled-in `ui-config.yaml` and a `INSTALL.txt`-style setup log.
 
-#### M5. Environment reproducibility snapshot
+#### M5. Manifest-driven CVMFS deployment verification
 
-Add `bits snapshot` to record the exact loaded environment (package versions,
-hashes, and paths) to a file that can be shared and re-instantiated:
+**CVMFS is the primary binary distribution channel for bits.**  Once a package is
+built and published to CVMFS via `bits publish`, every authorised user gains
+transparent access through the globally distributed SQUID proxy network already
+operated by CERN and partner sites.  No additional download infrastructure is
+needed: CVMFS handles caching, lazy fetching, and integrity verification at scale,
+and does so far more efficiently than any purpose-built binary store could for the
+O(10⁴)-user CERN audience.
+
+Introducing a parallel binary cache distribution channel (proxy servers, signed
+package registries, P2P stores) would reproduce a subset of CVMFS's capabilities
+at significant operational cost with no meaningful benefit for deployments that
+already sit inside the CERN network or WLCG.  The local tarball store that bits
+maintains in `$WORK_DIR` is appropriate for CI pipelines and individual developer
+machines, where it avoids recompilation within a single site — not for
+cross-institution software distribution.
+
+What the manifest *does* enable, and what is not yet implemented, is **deployment
+verification**: given a manifest produced at build time and a live CVMFS mount,
+confirm that every installed package matches the recorded `hash` and
+`tarball_sha256`, and that every source was built from the exact `commit_hash`
+declared in the manifest.
 
 ```bash
-bits snapshot --output my-analysis-env.json
-# later, on another machine:
-bits restore my-analysis-env.json
+# Verify the live CVMFS environment at /cvmfs/alice.cern.ch matches this manifest
+bits verify --from-manifest alice-o2-20260411.json --cvmfs-root /cvmfs/alice.cern.ch
 ```
 
-This is conceptually similar to a `conda env export` / `conda env create` workflow,
-targeted at physics analysis reproducibility rather than software stack maintenance.
-The snapshot format is a subset of the build manifest.
+This is valuable for:
+- physics analyses that must demonstrate reproducibility for a journal submission,
+- audit trails required by experiment computing boards,
+- catching silent divergence when a CVMFS repository is rolled back or hotpatched.
+
+The technical foundation — content-addressed hashes, manifest SHA-256 fields, and
+the `source_checksums` now embedded inline — is complete.  The remaining work is
+the `bits verify` command and the documentation that frames the manifest as the
+bits supply-chain audit record.
+
+#### M6. Personal analysis overlay via S3 tarball cache
+
+For individual analysts building a small number of packages on top of a shared
+experiment stack, the full CVMFS publication pipeline is too heavyweight: ingestion
+latency is measured in minutes, write access to the experiment's Stratum-0 is
+restricted, and the overhead is disproportionate for a handful of personal packages
+that may iterate daily.  Yet batch jobs running on WLCG worker nodes need those
+packages available before execution, with no build capability on the worker node.
+
+The solution is a two-layer model: the experiment stack is served from CVMFS as
+always, and the personal analysis overlay is distributed through an S3-compatible
+object store (CERN EOS via S3 API, MinIO, or any AWS-compatible endpoint) that the
+analyst already has write access to.
+
+**Workflow**
+
+```bash
+# After a local or CI build of the personal analysis packages:
+bits push --manifest \
+    s3://cern-eos-personal/pbuncic/analysis-v3.json
+
+# In the WLCG batch job prolog (HTCondor, ARC, DIRAC):
+bits fetch s3://cern-eos-personal/pbuncic/analysis-v3.json
+# Downloads only the personal overlay tarballs, verifies SHA-256 against the
+# manifest, unpacks into the local work directory.
+# Packages already present on CVMFS are skipped entirely.
+
+bits enter MyAnalysis   # environment is now complete
+```
+
+**What gets pushed and fetched**
+
+The manifest's `outcome` field distinguishes packages that were actually compiled
+locally (`built_from_source`) from those that were drawn from CVMFS or the shared
+store (`already_installed`, `from_store`).  `bits push` uploads only the former —
+typically 2–10 tarballs totalling tens to hundreds of MB — together with the
+manifest JSON.  `bits fetch` downloads and verifies them on the worker node, then
+layers them on top of the CVMFS mount using the same environment-variable mechanism
+as `bits enter`.
+
+**Architecture matching is mandatory**
+
+Binary tarballs are not portable: a package built on `slc9_x86-64` against a
+specific GCC and glibc version will not run on `slc9_aarch64` or on a node with a
+different OS baseline.  The manifest already records `architecture` at the top
+level.  `bits fetch` must verify that the manifest's architecture string matches the
+executing node before unpacking anything, and abort with a clear diagnostic if it
+does not:
+
+```
+ERROR: manifest architecture slc9_x86-64 does not match this node (slc9_aarch64).
+       Request worker nodes matching the build architecture in your job description.
+```
+
+The corollary is that job submission must constrain worker node selection to
+architectures that match the build.  In practice this means adding an architecture
+requirement to the batch job description:
+
+```
+# HTCondor ClassAd
+Requirements = (TARGET.OpSysAndVer == "CentOS9") && (TARGET.Arch == "X86_64")
+
+# DIRAC JDL
+SystemConfig = x86_64-slc9-gcc13-opt
+```
+
+For analysts who need to run on multiple architectures (e.g. `x86-64` for GRID,
+`aarch64` for ARM-based opportunistic resources), `bits push` can emit one manifest
+and tarball set per architecture if the user has built for multiple targets, and the
+job system selects the appropriate manifest via an environment variable or job
+parameter.  The N3 roadmap item (QEMU cross-compilation) is the enabling technology
+for building the `aarch64` overlay on an `x86-64` developer machine.
+
+**Why this does not compete with CVMFS**
+
+CVMFS serves the stable, shared, heavily-used experiment stack — software that
+thousands of analysts use simultaneously and that justifies the publication
+overhead.  The S3 overlay serves the fast-moving personal top layer: code that
+changes with every analysis iteration and that only a single user or small group
+needs.  The two coexist naturally because bits already models environments as
+layered package trees; no architectural change is required.  The S3 bucket is
+ephemeral and personal — it is not global distribution infrastructure — and access
+control is per-bucket, so analysts can share a bucket URL with collaborators or
+batch-system job descriptions without any CVMFS repository permissions.
+
+**Implementation**
+
+The tarball store already uses a content-addressed layout on the local filesystem.
+Adding an S3 backend is a contained change: a storage driver that reads and writes
+`s3://bucket/prefix/<hash>/<tarball>`, with the manifest URL passed as a job
+parameter.  The `tarball_sha256` field already embedded in the manifest provides
+end-to-end verification with no additional metadata.
+
+#### M7. ABI constraint exports (`abi_exports`)
+
+Borrowed from Conda's `run_exports` concept, this addresses a class of silent runtime
+failures that bits currently has no defence against. When a package is built against a
+specific version of a library with a non-stable ABI (OpenSSL, Python C API, MPI wire
+protocol, ROOT's ABI across major versions), any downstream package built against an
+incompatible version will fail at runtime with a hard-to-diagnose symbol or version
+mismatch.
+
+Allow a recipe to declare the ABI constraints it propagates to packages that depend
+on it:
+
+```yaml
+package: openssl
+version: "3.3.1"
+abi_exports:
+  - openssl>=3.0,<4
+```
+
+When package B lists `openssl` in its `requires:`, bits automatically adds
+`openssl>=3.0,<4` to B's effective constraint set. A binary tarball for B downloaded
+from the store is rejected if the installed OpenSSL does not satisfy the constraint,
+rather than loading silently and crashing at runtime.
+
+This is particularly important for the shared binary store model: pre-built tarballs
+are compiled against specific library versions on the build runner and must not be
+served to an environment with incompatible versions. ABI exports make this check
+automatic and recipe-driven rather than relying on recipe authors to get version pins
+right in every downstream recipe.
+
+The initial target set is small — the five or six packages in the HEP stack that are
+genuine ABI pinch-points: OpenSSL, Python (C extension API), ROOT (class dictionary),
+the active MPI implementation, and the C++ standard library version baked in by the
+compiler toolchain.
+
+#### M8. Shell-function environment activation (`bits activate`)
+
+`bits enter` launches a correctly configured subshell; switching environments requires
+exiting it. For users who switch frequently between two or more environments — a common
+pattern in analysis work — this is workable but friction-heavy.
+
+Add `bits activate` and `bits deactivate` as shell functions (sourced into the user's
+shell, not a subprocess) that modify `PATH`, `LD_LIBRARY_PATH`, and the other
+environment variables in place, analogously to `conda activate`. The implementation
+sets a `BITS_ACTIVE_ENV` variable so `bits deactivate` knows exactly which variables
+to unset or restore.
+
+```bash
+source $(bits shell-init)   # once, in .bashrc
+
+bits activate ROOT/6.32.0   # modifies current shell in place
+bits activate Geant4/11.2   # stacks on top
+bits deactivate             # restores previous state
+```
+
+For users on Lmod-enabled systems this is already available through the module files
+bits produces — `module load ROOT/6.32.0` does exactly this. `bits activate` provides
+the same behaviour for users who are not on Lmod systems, without requiring any new
+infrastructure beyond a thin shell wrapper around the existing module file generation.
 
 ---
 
@@ -412,11 +599,148 @@ concretiser.
 | M2 | `prefer_system` standard library | Medium | Medium | Medium |
 | M3 | Reproducible build attestation (SLSA L2) | Medium | High | High |
 | M4 | Community onboarding wizard | Medium | High | Medium |
-| M5 | `bits snapshot` / environment restore | Medium | Medium | Medium |
+| M5 | Manifest-driven CVMFS deployment verification (`bits verify`) | Medium | High | Low |
+| M6 | Personal analysis overlay via S3 tarball cache (`bits push/fetch`) | Medium | High | Medium |
+| M7 | ABI constraint exports (`abi_exports`) | Medium | High | Medium |
+| M8 | Shell-function activation (`bits activate`) | Medium | Medium | Low |
 | L1 | Federated multi-community store | Long | High | Very high |
 | L2 | Incremental / distributed builds | Long | Medium | Very high |
 | L3 | Web-based recipe editor | Long | Medium | High |
 | L4 | Constraint-aware defaults profiles | Long | High | High |
+
+---
+
+## Collaboration with EasyBuild
+
+EasyBuild and bits are not direct competitors. EasyBuild's primary constituency is
+HPC centre administrators at sites like JSC, CSCS, FZJ, and VSC — people who build
+software once for a shared cluster and care about toolchain hierarchies, Lmod module
+trees, and job scheduler integration. bits' primary constituency is experiment
+software coordinators who build stacks for deployment to CVMFS and need interactive
+developer workflows. The communities overlap at the intersection of HPC centres that
+run CERN experiments and, most concretely, in the **EESSI project** (European
+Environment for Scientific Software Installations), which uses EasyBuild to build
+software and distributes it on CVMFS — exactly the same deployment mechanism as bits.
+
+### Where bits and EasyBuild are already closer than they appear
+
+**Module files are a shared interface, not a gap.** Every bits-installed package
+produces a standard module-compatible environment description used by `bits q`,
+`bits enter`, and `bits print`. These files are not bits-specific: once a stack is
+deployed on CVMFS they can be loaded directly by Environment Modules or Lmod on any
+HPC cluster that mounts the repository, with no bits installation required. A user
+who runs `module load ROOT/6.32.0` on an EESSI-enabled cluster can be loading a
+bits-built package without knowing or caring. This is a genuine, working bridge to
+the EasyBuild/HPC community that should be documented explicitly and promoted as
+part of any collaboration discussion. The common assumption that bits requires a
+separate module system is incorrect.
+
+### What bits would gain from collaboration
+
+**A `prefer_system` standard library.** EasyBuild has years of accumulated knowledge
+about detecting and integrating vendor-provided system packages — MPI implementations
+(OpenMPI, MPICH, Intel MPI, Cray MPICH), BLAS/LAPACK (OpenBLAS, MKL, BLIS), CUDA,
+HDF5 — across dozens of HPC environments. bits' `prefer_system` detection is
+currently written per recipe by each recipe author. Harvesting EasyBuild's external
+package detection patterns into a shared snippet library would immediately make bits
+more useful on HPC clusters without any new compilation. This is the most immediately
+actionable technical benefit and maps to roadmap item M2.
+
+**EESSI as a binary source.** EESSI publishes a curated common software stack on
+CVMFS at `/cvmfs/software.eessi.io`. For packages that appear in both the EESSI stack
+and a bits community's recipe repository — ROOT, Geant4, Boost, compilers — bits could
+optionally treat the EESSI CVMFS installation as a `prefer_system` source. A bits
+build on an EESSI-enabled cluster would then download, not compile, the common
+infrastructure packages. This is particularly valuable for new communities onboarding
+to bits: instead of a multi-hour full compilation, their first build completes quickly
+by leaning on EESSI for the foundation.
+
+**HPC centre reach.** EasyBuild has deep institutional relationships at European HPC
+centres that are also natural users of CERN software. A bits deployment that integrates
+cleanly into an EasyBuild-managed environment — through the existing module file
+compatibility and improved `prefer_system` detection — opens a path to those users
+that bits cannot reach independently today.
+
+**Recipe knowledge base.** EasyBuild's ~3,000 easyconfigs are not directly usable as
+bits recipes (the toolchain model and format differ too much), but they are a
+high-quality reference for build flags, patch files, known version incompatibilities,
+and configure-time workarounds for the same packages bits recipes also cover. For
+packages maintained in both repositories, a lightweight cross-reference would save
+recipe authors significant time.
+
+### What EasyBuild would gain
+
+**CVMFS publishing pipeline.** EasyBuild builds software but has no integrated,
+automated path from a completed installation to a CVMFS stratum-0 transaction. EESSI
+has built this infrastructure independently; the bits `bits publish` +
+`bits-cvmfs-ingest` + `cvmfs-publish.sh` stack is a production-tested implementation
+of exactly this workflow. HPC centres or communities that want to publish their own
+CVMFS repositories — rather than depending solely on EESSI — could use bits' publishing
+tooling directly.
+
+**GitLab CI integration and bits-console.** HPC centres that operate GitLab (common
+at CERN and many European research institutions) and want a managed build-and-publish
+workflow could use bits-console as an orchestration frontend. A hybrid model where
+EasyBuild provides the recipe knowledge and build execution, and bits-console provides
+the pipeline management, role-based access control, and CVMFS publishing, is
+technically straightforward.
+
+**Developer workflow.** The local-checkout shadowing capability — where a developer's
+local package revision transparently overrides the recipe-repository version, with all
+downstream packages rebuilt consistently — has no equivalent in EasyBuild. Spack's
+development-mode workflow was evaluated in the CERN environment and found unworkable
+for stacks of O(100) interdependent packages. Contributing this concept to EasyBuild's
+development roadmap, even as documentation of the pattern, would benefit EasyBuild
+users.
+
+### Where collaboration is harder
+
+**Toolchain model.** EasyBuild's toolchain hierarchy (`foss`, `intel`, `gompi`,
+`GCCcore`, ...) is a structured, versioned graph of compiler and MPI combinations
+against which every package is built. bits' approach is simpler: a defaults profile
+applies version overrides to a package set. These philosophies are different enough
+that a common recipe format is not achievable. Collaboration at this level means bits
+adopting EasyBuild toolchain *naming conventions* for cross-referencing, not
+integrating the machinery.
+
+**Python package strategy.** EasyBuild compiles Python extensions from source against
+the toolchain's Python. bits uses pip with native wheels. Both approaches have merits
+and neither community is likely to change its strategy. The practical resolution is
+the one bits already applies: coarse-grained recipes that install a coherent set of
+Python packages via pip, rather than individual compiled recipes.
+
+**Community governance.** EasyBuild is governed by a consortium of HPC centres with a
+formal release process and a large reviewer pool. Any technical collaboration requires
+agreeing on whose decisions prevail when community priorities diverge. This is a
+social and governance question as much as a technical one.
+
+### Concrete near-term steps
+
+1. **Document module file compatibility explicitly.** Add a section to both the
+   `REFERENCE.md` and the bits-console `INSTALL.txt` explaining that bits-generated
+   module files work with standard Environment Modules / Lmod installations and are
+   deployed to CVMFS as a first-class output, not an implementation detail. This costs
+   nothing to implement and directly addresses the most common misconception about bits
+   in the HPC community.
+
+2. **EESSI `prefer_system` integration.** Add EESSI CVMFS paths to the `prefer_system`
+   search logic for packages that EESSI provides. This maps directly to roadmap item
+   M2 and requires agreement with the EESSI infrastructure team on a stable API for
+   querying available packages and their CVMFS paths.
+
+3. **`prefer_system` snippet library drawing on EasyBuild conventions.** Harvest
+   EasyBuild's external packages documentation and detection patterns. Invite EasyBuild
+   community members to contribute snippets. This is roadmap item M2 with an explicit
+   upstream attribution and collaboration channel.
+
+4. **Joint CVMFS publishing documentation.** Co-author a guide with the EESSI
+   infrastructure team on running `bits-cvmfs-ingest` and `cvmfs-publish.sh` for
+   communities that want their own CVMFS repository alongside or independently of
+   EESSI. Primarily documentation and relationship-building; no new engineering.
+
+5. **Cross-list packages.** For packages maintained in both repositories, establish a
+   lightweight process for sharing build knowledge — patch files, configure flags,
+   known version incompatibilities — without attempting to unify recipe formats.
 
 ---
 
