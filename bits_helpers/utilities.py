@@ -588,9 +588,9 @@ def readDefaults(configDir, defaults, error, architecture):
   defaultsBody = ""
 
   for xdefaults in defaults:
-    xDefaults = resolveDefaultsFilename(xdefaults,configDir)
+    xDefaults = resolveDefaultsFilename(xdefaults, configDir, failOnError=False)
     xMeta = {}
-    if exists(xDefaults):
+    if xDefaults is not None and exists(xDefaults):
       err, xMeta, xBody = parseRecipe(getRecipeReader(xDefaults))
       if xBody.strip() != "":
         defaultsBody += "\n" + xBody.strip()
