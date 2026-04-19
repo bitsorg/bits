@@ -79,8 +79,10 @@ def _generate_create_links_sh(spec, specs, args) -> str:
       )
     )
     lines.append("# -- %s --" % repo_type)
-    lines.append("rm -rf %s" % target_dir)
-    lines.append("mkdir -p %s" % target_dir)
+    # FIX: quote() prevents spaces, semicolons, or other shell metacharacters in
+    # workDir or package names from being interpreted when the generated script runs.
+    lines.append("rm -rf %s" % quote(target_dir))
+    lines.append("mkdir -p %s" % quote(target_dir))
     for pkg in [spec["package"]] + list(spec[requires_key]):
       dep_spec = specs[pkg]
       dep_arch = effective_arch(dep_spec, args.architecture)
@@ -89,7 +91,7 @@ def _generate_create_links_sh(spec, specs, args) -> str:
         .format(arch=dep_arch, short_hash=dep_spec["hash"][:2],
                 ver_rev=ver_rev(dep_spec), **dep_spec)
       )
-      lines.append('ln -nfs %s %s/' % (dep_tarball, target_dir))
+      lines.append('ln -nfs %s %s/' % (quote(dep_tarball), quote(target_dir)))
     lines.append("")
   return "\n".join(lines)
 
@@ -2275,8 +2277,11 @@ def doBuild(args, parser):
     makedirs(mfDir, exist_ok=True)
     _mf_max_local = getattr(args, "makeflowJobs", 4)
     _mf_local_flag = "--max-local {}".format(_mf_max_local) if _mf_max_local > 0 else ""
+    # FIX: quote(mfDir) prevents shell injection when workDir contains spaces,
+    # semicolons, or other shell metacharacters (shell=True is still needed for
+    # the cd+semicolon compound command pattern).
     mfCmd = "(cd {dir}; {mf} --clean; {mf} {local})".format(
-        dir=mfDir, mf=mFlow, local=_mf_local_flag)
+        dir=quote(mfDir), mf=mFlow, local=_mf_local_flag)
     makedirs(mfDir, exist_ok=True)
     jnj = ""
     try:

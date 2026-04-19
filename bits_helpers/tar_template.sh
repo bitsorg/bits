@@ -46,7 +46,7 @@ mkdir -p "${WORK_DIR}/TARS/${HASH_PATH}" \
 gzip=$(command -v pigz) || gzip=$(command -v gzip)
 
 tar -cC "${WORK_DIR}/INSTALLROOT/${PKGHASH}" . |
-  $gzip -c > "${WORK_DIR}/TARS/${HASH_PATH}/${PACKAGE_WITH_REV}.processing"
+  "$gzip" -c > "${WORK_DIR}/TARS/${HASH_PATH}/${PACKAGE_WITH_REV}.processing"  # T1 FIX: quote $gzip
 mv "${WORK_DIR}/TARS/${HASH_PATH}/${PACKAGE_WITH_REV}.processing" \
    "${WORK_DIR}/TARS/${HASH_PATH}/${PACKAGE_WITH_REV}"
 

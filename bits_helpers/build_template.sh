@@ -4,9 +4,11 @@ BITS_START_TIMESTAMP=$(date +%%s)
 unset DYLD_LIBRARY_PATH
 echo "bits: start building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP"
 get_file_from_configDir() {
-  local repo_dir=$(dirname $BITS_CONFIG_DIR)
-  for d in ${BITS_PATH//,/ } $(basename $BITS_CONFIG_DIR | sed 's|.bits$||') ; do
-    [ -f ${repo_dir}/${d}.bits/$1 ] && echo "${repo_dir}/${d}.bits/$1" && return 0
+  # B2 FIX: quote $BITS_CONFIG_DIR in dirname/basename and quote ${repo_dir}/${d}
+  # in the test so that paths with spaces are not word-split.
+  local repo_dir=$(dirname "$BITS_CONFIG_DIR")
+  for d in ${BITS_PATH//,/ } "$(basename "$BITS_CONFIG_DIR" | sed 's|\.bits$||')" ; do
+    [ -f "${repo_dir}/${d}.bits/$1" ] && echo "${repo_dir}/${d}.bits/$1" && return 0
   done
   return 1
 }
@@ -16,17 +18,22 @@ run_hooks() {
   %(BITS_HOOK_PARAMS)s
   export hooks_list
   export skip_list
-  eval "hooks_list=\"\${${hook_type}_HOOKS}\""
-  eval "skip_list=\"\${SKIP_${hook_type}_HOOKS}\""
+  # B3 FIX: replace eval with bash indirect expansion (${!var}) to avoid
+  # shell injection if hook_type ever contains unexpected characters.
+  local _hv="${hook_type}_HOOKS" _sv="SKIP_${hook_type}_HOOKS"
+  hooks_list="${!_hv}"
+  skip_list="${!_sv}"
   if [[ "$PKGREVISION" != local* ]]; then
     [ -n "$skip_list" ] && echo "bits: skipping hooks if enabled not allowed while uploading. Aborting." && exit 1
   fi
-  for hook in $(echo "$hooks_list" | tr -d ' ' | tr ',' '\n'); do
+  # B6 FIX: use 'while IFS= read -r' so hook names with glob chars don't expand.
+  while IFS= read -r hook; do
+    [[ -z "$hook" ]] && continue
     [[ ",$skip_list," == *",$hook,"* ]] && continue
     hook_script=$(get_file_from_configDir "hooks/$hook")
     echo "bits: running hook $hook ($hook_script)"
     bash -ex "$hook_script"
-  done
+  done < <(echo "$hooks_list" | tr -d ' ' | tr ',' '\n')
 }
 
 cleanup() {
@@ -215,18 +222,21 @@ else
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
   # files.
   rm -rf "$BUILDROOT/log"
-  mkdir -p $WORK_DIR/TMP/$PKGHASH
+  # B1 FIX: double-quote all path variables so that a WORK_DIR or INSTALLROOT
+  # containing spaces does not cause word-splitting — especially dangerous on
+  # 'rm -rf' lines which could otherwise delete multiple unintended paths.
+  mkdir -p "$WORK_DIR/TMP/$PKGHASH"
   tar -xzf "$CACHED_TARBALL" -C "$WORK_DIR/TMP/$PKGHASH"
-  mkdir -p $(dirname $INSTALLROOT)
-  rm -rf $INSTALLROOT
+  mkdir -p "$(dirname "$INSTALLROOT")"
+  rm -rf "$INSTALLROOT"
   mv "$WORK_DIR/TMP/$PKGHASH/$PKGPATH" "$INSTALLROOT"
-  pushd $WORK_DIR/INSTALLROOT/$PKGHASH
+  pushd "$WORK_DIR/INSTALLROOT/$PKGHASH"
   if [ -w "$INSTALLROOT" ]; then
-      WORK_DIR=$WORK_DIR /bin/bash -ex $INSTALLROOT/relocate-me.sh
+      WORK_DIR=$WORK_DIR /bin/bash -ex "$INSTALLROOT/relocate-me.sh"
   fi
   popd
-  find $INSTALLROOT -name "*.unrelocated" -delete
-  rm -rf $WORK_DIR/TMP/$PKGHASH
+  find "$INSTALLROOT" -name "*.unrelocated" -delete
+  rm -rf "$WORK_DIR/TMP/$PKGHASH"
 fi
 
 # Regenerate init.sh, in case the package build clobbered it. This
@@ -234,7 +244,7 @@ fi
 # packages into its installroot wholesale.
 # Notice how we only do it if $INSTALLROOT is writeable. If it is
 # not, we assume it points to a CVMFS store which should be left untouched.
-if [ -w $INSTALLROOT ]; then
+if [ -w "$INSTALLROOT" ]; then  # B5 FIX: quote $INSTALLROOT in -w test
 mkdir -p "$INSTALLROOT/etc/profile.d"
 rm -f "$INSTALLROOT/etc/profile.d/init.sh"
 cat <<\EOF > "$INSTALLROOT/etc/profile.d/init.sh"
@@ -340,7 +350,8 @@ if [[ $PKGNAME != defaults-* ]]; then
 fi
 
 # Archive creation
-HASHPREFIX=`echo $PKGHASH | cut -b1,2`
+# B7 FIX: replace backtick with $(...) and quote $PKGHASH; use -c (chars) consistently.
+HASHPREFIX=$(echo "$PKGHASH" | cut -c1,2)
 HASH_PATH=$EFFECTIVE_ARCHITECTURE/store/$HASHPREFIX/$PKGHASH
 mkdir -p "${WORK_DIR}/TARS/$HASH_PATH" \
          "${WORK_DIR}/TARS/$EFFECTIVE_ARCHITECTURE/$PKGNAME"
@@ -379,11 +390,12 @@ fi
 
 # Last package built gets a "latest" mark.
 # dirname of $PKGPATH = $EFFECTIVE_ARCHITECTURE[/$PKGFAMILY]/$PKGNAME
-ln -snf ${_VERREV} $(dirname $PKGPATH)/latest
+# B4 FIX: quote ${_VERREV} and $(dirname ...) so spaces in PKGPATH don't split.
+ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest"
 
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
-  ln -snf ${_VERREV} $(dirname $PKGPATH)/latest-$BUILD_FAMILY
+  ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest-${BUILD_FAMILY}"
 fi
 
 # When the package is definitely fully installed, install the file that marks

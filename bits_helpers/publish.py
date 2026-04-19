@@ -46,7 +46,13 @@ def _find_installroot(work_dir, architecture, package, version=None):
     Raises ``SystemExit`` when nothing is found.
     """
     base = join(abspath(work_dir), architecture)
-    pkg_base = join(base, package)
+    # FIX: normalise the joined path and verify it stays inside `base`.
+    # A package name like '../../etc' would otherwise make pkg_base point
+    # outside the work directory, allowing arbitrary directory traversal.
+    pkg_base = os.path.normpath(join(base, package))
+    if not pkg_base.startswith(base + os.sep):
+        error("Package name %r escapes the work directory — path traversal rejected", package)
+        sys.exit(1)
     if not exists(pkg_base):
         error("No installation found for %s under %s", package, base)
         sys.exit(1)
@@ -81,10 +87,17 @@ def _pkg_id(package, version_dir, architecture):
     """Return a filesystem-safe identifier for this package instance.
 
     Format: ``<pkg>-<ver_rev>-<arch>`` with slashes replaced by underscores.
+
+    All three components have '/' replaced so that the resulting ID is always a
+    single path segment — it can never escape ``spool/incoming/`` via traversal.
     """
+    # FIX: replace '/' in package just as we do for architecture and version_dir.
+    # Without this, a package name like '../../etc' would produce a pkg_id that
+    # traverses out of spool/incoming/ when used as a path component.
+    pkg_tag  = package.replace("/", "_")
     arch_tag = architecture.replace("/", "_").replace("-", "_")
     ver_tag  = version_dir.replace("/", "_")
-    return f"{package}-{ver_tag}-{arch_tag}"
+    return f"{pkg_tag}-{ver_tag}-{arch_tag}"
 
 
 def _spool_is_remote(spool):
@@ -119,6 +132,15 @@ def _write_sentinel(spool, pkg_id, cvmfs_target, rsync_opts=None):
     ingestion daemon can construct graft paths without additional out-of-band
     configuration.
     """
+    # FIX: the sentinel uses a line-oriented key=value format; a newline in
+    # either value would inject a spurious field that the ingestion daemon
+    # might misinterpret.  Reject before writing.
+    for _field, _val in (("pkg_id", pkg_id), ("cvmfs_target", cvmfs_target)):
+        if "\n" in _val or "\r" in _val:
+            raise ValueError(
+                f"Sentinel field '{_field}' contains a newline character which "
+                f"would corrupt the sentinel file: {_val!r}"
+            )
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".done", prefix=pkg_id, delete=False
     ) as fh:

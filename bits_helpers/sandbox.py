@@ -180,6 +180,15 @@ def make_sbpl_profile(allow_network: bool, builddir: str) -> str:
     :param builddir: absolute host path of the bits work directory;
                      the recipe is allowed to write anywhere beneath it
     """
+    # FIX: SBPL string literals are delimited by double-quotes, so a '"' in
+    # builddir would escape the literal and allow injection of arbitrary SBPL
+    # rules (e.g. lifting the write restriction to cover /etc).  Reject early.
+    if '"' in builddir:
+        raise ValueError(
+            f"workdir path contains '\"' which cannot be safely embedded in an "
+            f"SBPL sandbox profile: {builddir!r}. Use a path without double-quote "
+            f"characters."
+        )
     network_rule = "(allow network*)" if allow_network else ""
     content = _SBPL_TEMPLATE.format(
         builddir=builddir,
