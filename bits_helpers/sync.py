@@ -684,7 +684,7 @@ class CVMFSRemoteSync:
     # Exit without error in case we do not have any package published
     test -d "{remote_store}/{cvmfs_architecture}/Packages/{package}" || exit 0
     mkdir -p "{workDir}/{links_path}"
-    for install_path in $(find "{remote_store}/{cvmfs_architecture}/Packages/{package}" -type d -mindepth 1 -maxdepth 1); do
+    for install_path in $(find -mindepth 1 -maxdepth 1 "{remote_store}/{cvmfs_architecture}/Packages/{package}" -type d); do
       full_version="${{install_path##*/}}"
       tarball={package}-$full_version.{architecture}.tar.gz
       pkg_hash=$(cat "${{install_path}}/.build-hash" || jq -r '.package.hash' <${{install_path}}/.meta.json)
