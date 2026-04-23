@@ -24,7 +24,7 @@ Manifests are written to a dedicated subdirectory of the work directory::
 The ``bits-manifest-latest.json`` symlink is updated atomically after each
 incremental write.
 
-Schema (version 1)
+Schema (version 2)
 ------------------
 ::
 
@@ -59,6 +59,7 @@ Schema (version 1)
       "package":          str,
       "version":          str,
       "revision":         str,
+      "pkg_family":       str,              # aliBuild family subdir, e.g. "Pythia"; empty if none
       "hash":             str,              # content-addressable build hash
       "commit_hash":      str,              # source commit hash (or "0")
       "outcome":          "already_installed" | "from_store" | "built_from_source",
@@ -67,6 +68,18 @@ Schema (version 1)
       "source_checksums": [SourceEntry],    # per-source archive integrity anchors
       "completed_at":     ISO-8601
     }
+
+    When ``pkg_family`` is non-empty the on-disk install path includes the
+    family as an extra path component::
+
+        $WORK_DIR/<arch>/<pkg_family>/<package>/<version>-<revision>/
+
+    rather than the default::
+
+        $WORK_DIR/<arch>/<package>/<version>-<revision>/
+
+    The publish pipeline uses this field to reconstruct ``SOURCE_DIR``
+    correctly without having to scan the filesystem.
 
     SourceEntry::
     {
@@ -288,6 +301,11 @@ class BuildManifest:
             "package":          spec.get("package", ""),
             "version":          spec.get("version", ""),
             "revision":         spec.get("revision", ""),
+            # pkg_family is used by the publish pipeline to reconstruct the
+            # on-disk install path when aliBuild inserts a family subdirectory:
+            #   $WORK_DIR/<arch>/<pkg_family>/<package>/<version>-<revision>/
+            # Empty string means no family subdir (standard layout).
+            "pkg_family":       spec.get("pkg_family", ""),
             "hash":             spec.get("hash", ""),
             "commit_hash":      spec.get("commit_hash", ""),
             "outcome":          outcome,
