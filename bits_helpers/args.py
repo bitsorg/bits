@@ -15,6 +15,29 @@ import sys
 # Default workdir: fall back on "sw" if env is not set or empty
 DEFAULT_WORK_DIR = os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR") or "sw"
 
+
+def _host_online_cpus():
+  """Return the kernel's online-CPU range string for use with --cpuset-cpus.
+
+  Reads /sys/devices/system/cpu/online (e.g. "0-7" or "0-3,5-7"), which
+  reflects the actual hardware CPU set regardless of any cgroup CPU quota
+  that may be in effect for the calling process.  Falls back to
+  ``os.cpu_count()`` on platforms where sysfs is unavailable (macOS, WSL1).
+
+  This value is injected as ``--cpuset-cpus`` into every Docker build
+  container so that ``make -j``, makeflow, and similar tools always see the
+  full host core count rather than a potentially narrower cgroup quota
+  inherited from the GitLab runner process.
+
+  Callers can suppress the automatic injection by including their own
+  ``--cpuset-cpus`` flag in ``--docker-extra-args``.
+  """
+  try:
+    with open("/sys/devices/system/cpu/online") as f:
+      return f.read().strip()
+  except OSError:
+    return "0-%d" % ((os.cpu_count() or 1) - 1)
+
 # cd to this directory before start
 DEFAULT_CHDIR = os.environ.get("BITS_CHDIR") or "."
 
@@ -258,7 +281,11 @@ def doParseArgs():
   build_docker.add_argument("--docker-extra-args", metavar="ARGLIST", default="",
                             help=("Command-line arguments to pass to 'docker run'. "
                                   "Passed through verbatim -- separate multiple arguments "
-                                  "with spaces, and make sure quoting is correct! Implies --docker."))
+                                  "with spaces, and make sure quoting is correct! Implies --docker. "
+                                  "bits always appends --network=host and, unless already present, "
+                                  "--cpuset-cpus=<host-online-CPUs> so that make -j and makeflow "
+                                  "see the full host core count. Pass --cpuset-cpus=... explicitly "
+                                  "to override the automatic value."))
   build_docker.add_argument("--container-use-workdir", dest="containerUseWorkDir", action="store_true", default=False,
                             help="Use the host work directory inside container. "
                                  "By default it uses /container/bits/sw directory inside container.")
@@ -1074,6 +1101,15 @@ def finaliseArgs(args, parser):
 
     args.docker_extra_args = shlex.split(args.docker_extra_args)
     args.docker_extra_args.append("--network=host")
+    # Pin the build container to the full set of online host CPUs so that
+    # make -j and makeflow see the real core count rather than the cgroup
+    # quota inherited from the GitLab runner process.
+    # /sys/devices/system/cpu/online gives the kernel-reported online CPU
+    # list (e.g. "0-7") which reflects actual hardware, not the caller's
+    # cgroup CPU quota.  Only inject if the user hasn't already specified
+    # --cpuset-cpus in --docker-extra-args.
+    if not any(a.startswith("--cpuset-cpus") for a in args.docker_extra_args):
+      args.docker_extra_args.append("--cpuset-cpus=" + _host_online_cpus())
 
     if args.docker and args.architecture.startswith("osx"):
       parser.error("cannot use `-a %s` and --docker" % args.architecture)
