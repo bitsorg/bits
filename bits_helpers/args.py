@@ -676,6 +676,14 @@ def doParseArgs():
       help="Minimum free disk space in GiB expected in --work-dir.  "
            "A lower value triggers a WARN, not a FAIL.  Default: %(default)s.",
   )
+  doctor_runner.add_argument(
+      "--prepub-url", dest="prepubUrl", default=None, metavar="URL",
+      help=("When set, probe GET <URL>/api/v1/health to verify that the "
+            "cvmfs-prepub service is reachable and healthy.  "
+            "Required only for communities that use the cvmfs-prepub "
+            "direct-upload path (--prepub-url on bits publish).  "
+            "Example: https://prepub.example.org:8080"),
+  )
 
   # Options for the init subcommand
   init_parser.add_argument("pkgname", nargs="?", default="", metavar="PACKAGE",
@@ -748,8 +756,10 @@ def doParseArgs():
                               help="Version (and optional revision) to publish. Defaults to the latest build.")
   publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=True, metavar="PATH",
                               help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9).")
-  publish_parser.add_argument("--spool", dest="spool", required=True, metavar="[USER@HOST:]PATH",
-                              help="Ingestion spool root.  Either a local directory or a remote rsync target (user@host:/path).")
+  # --spool is required for the legacy rsync-to-spool path; omit it when using --prepub-url.
+  publish_parser.add_argument("--spool", dest="spool", default=None, metavar="[USER@HOST:]PATH",
+                              help=("Ingestion spool root.  Either a local directory or a remote rsync "
+                                    "target (user@host:/path).  Required unless --prepub-url is given."))
   publish_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
                               help="bits work directory containing the installed packages. Default: %(default)s.")
   publish_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
@@ -757,11 +767,42 @@ def doParseArgs():
   publish_parser.add_argument("--scratch-dir", dest="scratchDir", default=None, metavar="DIR",
                               help="Directory for the temporary CVMFS working copy. Defaults to a system temp dir.")
   publish_parser.add_argument("--rsync-opts", dest="rsyncOpts", default=None, metavar="OPTS",
-                              help="Extra options passed verbatim to rsync (e.g. '-e \"ssh -i key\"').")
+                              help="Extra options passed verbatim to rsync (e.g. '-e \"ssh -i key\"').  Legacy spool path only.")
   publish_parser.add_argument("--no-relocate", dest="noRelocate", action="store_true", default=False,
                               help=("Skip the relocation step. Use this when the package was built "
                                     "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
                                     "so all embedded paths are already correct."))
+
+  # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
+  _prepub = publish_parser.add_argument_group(
+      "cvmfs-prepub direct upload",
+      "Upload the package directly to a running cvmfs-prepub service over HTTPS, "
+      "bypassing the rsync-to-spool pipeline.  Requires cvmfs-prepub ≥ 0.1.0.",
+  )
+  _prepub.add_argument("--prepub-url", dest="prepubUrl", default=None, metavar="URL",
+                       help=("Base URL of the cvmfs-prepub API (no trailing slash), e.g. "
+                             "https://prepub.example.org:8080.  When set, --spool is not required."))
+  _prepub.add_argument("--prepub-token", dest="prepubToken", default=None, metavar="TOKEN",
+                       help=("Bearer token for the cvmfs-prepub API.  If omitted the value of the "
+                             "PREPUB_API_TOKEN environment variable is used."))
+  _prepub.add_argument("--prepub-repo", dest="prepubRepo", default=None, metavar="REPO",
+                       help=("CVMFS repository name to pass to the API, e.g. software.cern.ch.  "
+                             "Derived automatically from --cvmfs-target when not specified."))
+  _prepub.add_argument("--prepub-path", dest="prepubPath", default=None, metavar="SUBPATH",
+                       help=("Lease sub-path relative to the repository root, e.g. atlas/24.0 "
+                             "(no leading slash).  Derived automatically from --cvmfs-target "
+                             "when not specified."))
+  _prepub.add_argument("--prepub-webhook", dest="prepubWebhook", default=None, metavar="URL",
+                       help="Optional webhook URL that cvmfs-prepub POSTs to on job completion.")
+  _prepub.add_argument("--prepub-poll-interval", dest="prepubPollInterval", type=int,
+                       default=10, metavar="SEC",
+                       help="Seconds between status polls while waiting for the job.  Default: 10.")
+  _prepub.add_argument("--prepub-timeout", dest="prepubTimeout", type=int,
+                       default=1800, metavar="SEC",
+                       help="Total seconds to wait for the job to reach a terminal state.  Default: 1800.")
+  _prepub.add_argument("--prepub-no-verify-tls", dest="prepubNoVerifyTls", action="store_true",
+                       default=False,
+                       help="Disable TLS certificate verification (self-signed certs / dev mode only).")
 
   # Options for the cleanup subcommand
   cleanup_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,

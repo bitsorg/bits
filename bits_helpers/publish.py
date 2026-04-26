@@ -25,6 +25,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from os.path import abspath, basename, exists, join
 
@@ -225,16 +226,45 @@ def _stream_with_inotify(copy_dir, spool, pkg_id, rsync_opts=None):
 # ---------------------------------------------------------------------------
 
 def doPublish(args, parser):
-    """Orchestrate the build-host publishing pipeline."""
+    """Orchestrate the build-host publishing pipeline.
+
+    Two mutually exclusive delivery paths are supported:
+
+    Legacy spool path (bits-ingest + bits-cvmfs-publisher runners):
+        Requires ``--spool``.  Rsyncs the relocated tree to the spool's
+        ``incoming/<pkg_id>/`` directory and writes a ``.done`` sentinel.
+
+    cvmfs-prepub direct path:
+        Requires ``--prepub-url``.  Packages the relocated tree as a tar,
+        POSTs it to the cvmfs-prepub REST API, and polls until the job
+        reaches ``published``.
+    """
 
     architecture = getattr(args, "architecture", None) or detectArch()
     work_dir     = abspath(args.workDir)
     package      = args.package
     version      = getattr(args, "version", None)
     cvmfs_target = args.cvmfsTarget
-    spool        = args.spool
+    spool        = getattr(args, "spool", None)
     scratch_dir  = getattr(args, "scratchDir", None)
     rsync_opts   = getattr(args, "rsyncOpts", None)
+
+    prepub_url          = getattr(args, "prepubUrl", None)
+    prepub_token        = getattr(args, "prepubToken", None)
+    prepub_repo         = getattr(args, "prepubRepo", None)
+    prepub_path         = getattr(args, "prepubPath", None)
+    prepub_webhook      = getattr(args, "prepubWebhook", None)
+    prepub_poll_interval = getattr(args, "prepubPollInterval", 10)
+    prepub_timeout      = getattr(args, "prepubTimeout", 1800)
+    prepub_no_verify_tls = getattr(args, "prepubNoVerifyTls", False)
+
+    # ------------------------------------------------------------------
+    # Validate: exactly one of --spool / --prepub-url must be provided.
+    # ------------------------------------------------------------------
+    if prepub_url and spool:
+        parser.error("--prepub-url and --spool are mutually exclusive; use one or the other.")
+    if not prepub_url and not spool:
+        parser.error("one of --spool or --prepub-url is required.")
 
     # ------------------------------------------------------------------
     # 1. Locate immutable INSTALLROOT
@@ -247,7 +277,10 @@ def doPublish(args, parser):
     info("installroot : %s", installroot)
     info("pkg_id      : %s", pkg_id)
     info("cvmfs target: %s", cvmfs_target)
-    info("spool       : %s", spool)
+    if spool:
+        info("spool       : %s", spool)
+    else:
+        info("prepub url  : %s", prepub_url)
 
     no_relocate = getattr(args, "noRelocate", False)
     relocate_script = join(installroot, "relocate-me.sh")
@@ -280,18 +313,23 @@ def doPublish(args, parser):
     if no_relocate:
         # ------------------------------------------------------------------
         # 3–5. Skip relocation: package was built with --cvmfs-prefix so
-        #      all embedded paths are already correct for CVMFS.  Stream
-        #      the working copy to the spool in a single bulk rsync.
+        #      all embedded paths are already correct for CVMFS.
         # ------------------------------------------------------------------
         info("--no-relocate: skipping relocation (package built at final CVMFS path)")
-        info("Transferring tree to spool …")
-        _rsync_to_spool(copy_dir + "/", spool, pkg_id,
-                        extra_opts=rsync_opts, remove_source=False)
+        if spool:
+            info("Transferring tree to spool …")
+            _rsync_to_spool(copy_dir + "/", spool, pkg_id,
+                            extra_opts=rsync_opts, remove_source=False)
     else:
         # ------------------------------------------------------------------
-        # 3. Start inotifywait watcher (overlaps with relocation)
+        # 3. Relocate working copy to final CVMFS target path.
+        #
+        # For the spool path, start inotifywait before relocation so that
+        # modified files are streamed to the spool concurrently.  For the
+        # prepub path we skip inotify — the final tar is built after
+        # relocation completes, so there is nothing to stream incrementally.
         # ------------------------------------------------------------------
-        watcher = _stream_with_inotify(copy_dir, spool, pkg_id, rsync_opts)
+        watcher = _stream_with_inotify(copy_dir, spool, pkg_id, rsync_opts) if spool else None
 
         # ------------------------------------------------------------------
         # 4. Relocate working copy to final CVMFS target path
@@ -311,31 +349,103 @@ def doPublish(args, parser):
             sys.exit(result.returncode)
 
         # ------------------------------------------------------------------
-        # 5. Stop watcher; bulk-rsync if inotify was unavailable
+        # 5. Stop watcher (spool path) or skip (prepub path)
         # ------------------------------------------------------------------
-        if watcher:
-            import time
-            # Give the drain thread a moment to flush the last events.
-            time.sleep(1)
-            watcher.terminate()
-            watcher.wait()
-        else:
-            info("Transferring relocated tree to spool …")
-            _rsync_to_spool(copy_dir + "/", spool, pkg_id,
-                            extra_opts=rsync_opts, remove_source=False)
+        if spool:
+            if watcher:
+                import time
+                # Give the drain thread a moment to flush the last events.
+                time.sleep(1)
+                watcher.terminate()
+                watcher.wait()
+            else:
+                info("Transferring relocated tree to spool …")
+                _rsync_to_spool(copy_dir + "/", spool, pkg_id,
+                                extra_opts=rsync_opts, remove_source=False)
 
     # ------------------------------------------------------------------
-    # 6. Write sentinel
+    # 6a. Legacy spool path — write .done sentinel
     # ------------------------------------------------------------------
-    info("Writing sentinel %s.done …", pkg_id)
-    _write_sentinel(spool, pkg_id, cvmfs_target, rsync_opts=rsync_opts)
+    if spool:
+        info("Writing sentinel %s.done …", pkg_id)
+        _write_sentinel(spool, pkg_id, cvmfs_target, rsync_opts=rsync_opts)
+
+        # ------------------------------------------------------------------
+        # 7a. Cleanup working copy (spool path)
+        # ------------------------------------------------------------------
+        info("Cleaning up working copy …")
+        shutil.rmtree(copy_dir, ignore_errors=True)
+        if not scratch_dir:
+            shutil.rmtree(_tmpparent, ignore_errors=True)
+
+        info("Done — package %s queued for ingestion.", pkg_id)
+        return
 
     # ------------------------------------------------------------------
-    # 7. Cleanup working copy
+    # 6b. cvmfs-prepub direct path — package as tar, submit, poll
     # ------------------------------------------------------------------
-    info("Cleaning up working copy …")
-    shutil.rmtree(copy_dir, ignore_errors=True)
-    if not scratch_dir:
-        shutil.rmtree(_tmpparent, ignore_errors=True)
+    from bits_helpers.prepub import (
+        _cvmfs_repo_and_path,
+        poll_job,
+        resolve_token,
+        submit_job,
+    )
 
-    info("Done — package %s queued for ingestion.", pkg_id)
+    # Resolve repository name and sub-path.
+    if prepub_repo and prepub_path:
+        repo    = prepub_repo
+        subpath = prepub_path.strip("/")
+    elif prepub_repo or prepub_path:
+        parser.error(
+            "--prepub-repo and --prepub-path must both be supplied when either is given; "
+            "omit both to derive them automatically from --cvmfs-target."
+        )
+    else:
+        try:
+            repo, subpath = _cvmfs_repo_and_path(cvmfs_target)
+        except ValueError as exc:
+            parser.error(str(exc))
+
+    debug("prepub repo=%s  path=%s", repo, subpath)
+
+    # Build a .tar.gz of the (already relocated) working copy.
+    tar_fd, tar_path = tempfile.mkstemp(prefix=f"bits-prepub-{pkg_id}-", suffix=".tar.gz")
+    os.close(tar_fd)
+    try:
+        info("Packaging relocated tree as tar …")
+        with tarfile.open(tar_path, "w:gz") as tf:
+            tf.add(copy_dir, arcname=".")
+
+        # ------------------------------------------------------------------
+        # 7b. Cleanup working copy before upload (free disk space early).
+        # ------------------------------------------------------------------
+        info("Cleaning up working copy …")
+        shutil.rmtree(copy_dir, ignore_errors=True)
+        if not scratch_dir:
+            shutil.rmtree(_tmpparent, ignore_errors=True)
+
+        token = resolve_token(prepub_token)
+        job_id = submit_job(
+            prepub_url    = prepub_url,
+            token         = token,
+            repo          = repo,
+            path          = subpath,
+            tar_path      = tar_path,
+            webhook_url   = prepub_webhook,
+            no_verify_tls = prepub_no_verify_tls,
+        )
+
+        poll_job(
+            prepub_url    = prepub_url,
+            token         = token,
+            job_id        = job_id,
+            poll_interval = prepub_poll_interval,
+            timeout       = prepub_timeout,
+            no_verify_tls = prepub_no_verify_tls,
+        )
+    finally:
+        # Always remove the temporary tar, even on error.
+        try:
+            os.unlink(tar_path)
+        except OSError:
+            pass

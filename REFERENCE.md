@@ -3752,7 +3752,37 @@ updating the SQLite catalog.  Only (b) requires an exclusive transaction.
 By doing (a) ahead of time — in parallel, on separate hosts — the transaction
 window shrinks to seconds regardless of package size.
 
-**Pipeline stages and host responsibilities**
+**Two supported delivery paths**
+
+| Path | When to use | Runner requirement |
+|---|---|---|
+| **cvmfs-prepub** (recommended) | New deployments; single service handles ingest + publish | `bits-build` only |
+| **Legacy spool** (still supported) | Existing deployments already running `cvmfs-ingest` | `bits-build` + `bits-ingest` + `bits-cvmfs-publisher` |
+
+For new communities, use the cvmfs-prepub path.  Legacy spool deployments
+continue to work without change.
+
+---
+
+**cvmfs-prepub path — pipeline stages**
+
+The `cvmfs-prepub` service (from the `cvmfs-bits` repository) collapses the
+three-runner, three-stage legacy pipeline into a single REST API call on the
+build host.
+
+| Stage | Runs on | Tool |
+|---|---|---|
+| Build | Platform build host | `bits build` |
+| Copy + Relocate | Build host | `bits publish` (local operations only) |
+| Tar + Submit | Build host | `bits publish --prepub-url` → HTTP POST to `cvmfs-prepub` |
+| Ingest + Publish | cvmfs-prepub host | `cvmfs-prepub` (CAS pipeline + gateway transaction) |
+
+The build host only needs to reach the cvmfs-prepub HTTPS endpoint.
+No SSH keys for an ingestion spool are required.
+
+---
+
+**Legacy spool path — pipeline stages**
 
 | Stage | Runs on | Tool |
 |---|---|---|
@@ -3779,9 +3809,28 @@ relocation happens on a temporary copy that is discarded after transfer.
 ### bits publish
 
 `bits publish` is a `bits` sub-command that orchestrates the build-host side
-of the pipeline: copy, relocate, and stream to the ingestion spool.
+of the pipeline: copy, relocate, and deliver to either a cvmfs-prepub service
+or a legacy ingestion spool.  Exactly one of `--prepub-url` or `--spool` must
+be given; they are mutually exclusive.
 
 ```
+# cvmfs-prepub path (recommended):
+bits publish PACKAGE [VERSION]
+             --cvmfs-target PATH
+             --prepub-url URL
+             [--prepub-token TOKEN]
+             [--prepub-repo REPO]
+             [--prepub-path SUBPATH]
+             [--prepub-webhook URL]
+             [--prepub-poll-interval SEC]
+             [--prepub-timeout SEC]
+             [--prepub-no-verify-tls]
+             [--work-dir WORKDIR]
+             [--architecture ARCH]
+             [--scratch-dir DIR]
+             [--no-relocate]
+
+# Legacy spool path:
 bits publish PACKAGE [VERSION]
              --cvmfs-target PATH
              --spool [USER@HOST:]PATH
@@ -3792,39 +3841,61 @@ bits publish PACKAGE [VERSION]
              [--no-relocate]
 ```
 
-**Arguments**
+**Common arguments**
 
 | Argument / Flag | Required | Description |
 |---|---|---|
 | `PACKAGE` | yes | Package name, as used in the recipe (e.g. `absl`). |
 | `VERSION` | no | Version string (e.g. `20230802.1-1`). Defaults to the latest build found under `WORKDIR`. |
 | `--cvmfs-target PATH` | yes | Absolute path the package will occupy on CVMFS, e.g. `/cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9`. This path is passed to `relocate-me.sh` as the new install prefix, unless `--no-relocate` is given. |
-| `--spool` | yes | Ingestion spool root.  Either a local directory (`/var/spool/cvmfs-ingest`) or a remote rsync target (`user@host:/path`). |
 | `--work-dir WORKDIR` | no | bits work directory.  Default: `sw` (or `$BITS_WORK_DIR`). |
 | `--architecture ARCH` | no | Build architecture.  Default: auto-detected. |
 | `--scratch-dir DIR` | no | Directory for the temporary CVMFS working copy.  Default: system temp dir. |
+| `--no-relocate` | no | Skip `relocate-me.sh` and stream the tree as-is.  Use when the package was built with `--cvmfs-prefix` so paths already match the deployment target. |
+
+**cvmfs-prepub arguments** (use instead of `--spool`)
+
+| Argument / Flag | Required | Description |
+|---|---|---|
+| `--prepub-url URL` | yes* | Base URL of the cvmfs-prepub REST API (no trailing slash), e.g. `https://prepub.example.org:8080`.  *Mutually exclusive with `--spool`. |
+| `--prepub-token TOKEN` | no | Bearer token for the API.  Falls back to the `PREPUB_API_TOKEN` environment variable.  Omit in dev mode (no-auth server). |
+| `--prepub-repo REPO` | no | CVMFS repository name (e.g. `sft.cern.ch`).  Derived automatically from `--cvmfs-target` when not set. |
+| `--prepub-path SUBPATH` | no | Lease sub-path relative to the repo root (e.g. `lcg/releases/absl/20230802.1`).  Derived automatically from `--cvmfs-target` when not set. |
+| `--prepub-webhook URL` | no | URL that cvmfs-prepub POSTs to when the job reaches a terminal state. |
+| `--prepub-poll-interval SEC` | no | Seconds between status polls.  Default: 10. |
+| `--prepub-timeout SEC` | no | Total seconds to wait for the job to finish.  Default: 1800 (30 min). |
+| `--prepub-no-verify-tls` | no | Disable TLS certificate verification (self-signed certs / dev mode only). |
+
+**Legacy spool arguments** (use instead of `--prepub-url`)
+
+| Argument / Flag | Required | Description |
+|---|---|---|
+| `--spool` | yes* | Ingestion spool root.  Either a local directory (`/var/spool/cvmfs-ingest`) or a remote rsync target (`user@host:/path`).  *Mutually exclusive with `--prepub-url`. |
 | `--rsync-opts OPTS` | no | Extra options passed verbatim to every `rsync` invocation, e.g. `"-e 'ssh -i ~/.ssh/my_key'"`. |
-| `--no-relocate` | no | Skip the `relocate-me.sh` step and stream the installation tree to the spool as-is. Use this when the package was built with `--cvmfs-prefix` so its paths already match the deployment target. |
 
-**What it does**
+**What the cvmfs-prepub path does**
 
-1. Locates the package's immutable INSTALLROOT under `WORKDIR` (via the
-   `latest` symlink or by scanning for `VERSION`).
-2. `rsync -a`-copies the INSTALLROOT to a scratch working copy.  The
-   original is never touched again.
-3. Starts an `inotifywait` watcher on the working copy (when available) so
-   that files modified by relocation are queued for transfer immediately.
-4. Runs `relocate-me.sh` in the working copy with `INSTALL_BASE` set to
-   `--cvmfs-target`.  Relocation and transfer overlap in time.
+1. Locates the package's immutable INSTALLROOT under `WORKDIR`.
+2. `rsync -a`-copies the INSTALLROOT to a scratch working copy.
+3. Runs `relocate-me.sh` with `INSTALL_BASE` set to `--cvmfs-target` (unless `--no-relocate`).
+4. Creates a `.tar.gz` of the relocated working copy and removes the copy to free disk space.
+5. POSTs the tar to `<prepub-url>/api/v1/jobs` as `multipart/form-data` (with SHA-256 digest for server-side integrity checking).
+6. Polls `GET <prepub-url>/api/v1/jobs/<id>` every `--prepub-poll-interval` seconds until the job reaches `published`, `failed`, or `aborted`, or until `--prepub-timeout` is exceeded.
+7. Removes the temporary tar.
+
+**What the legacy spool path does**
+
+1. Locates the immutable INSTALLROOT.
+2. `rsync -a`-copies it to a scratch working copy.
+3. Starts an `inotifywait` watcher (when available) so files modified by relocation are queued for transfer immediately.
+4. Runs `relocate-me.sh`.
 5. Falls back to a single bulk rsync if `inotifywait` is unavailable.
-6. Writes a `<pkg-id>.done` sentinel to `<spool>/incoming/`.  The sentinel
-   carries the `pkg_id` and `cvmfs_target` so the ingestion daemon can
-   operate without additional configuration.
+6. Writes a `<pkg-id>.done` sentinel to `<spool>/incoming/`.
 7. Removes the scratch working copy.
 
 **pkg-id format**
 
-The package identifier used to name spool directories and manifests is:
+The package identifier used to name spool directories, tars, and manifests is:
 
 ```
 <package>-<version_dir>-<arch_with_slashes_replaced_by_underscores>
@@ -3832,9 +3903,16 @@ The package identifier used to name spool directories and manifests is:
 
 Example: `absl-20230802.1-1-x86_64_el9`
 
-**Example**
+**Examples**
 
 ```bash
+# cvmfs-prepub path — token from environment variable
+export PREPUB_API_TOKEN=my-bearer-token
+bits publish absl \
+  --cvmfs-target /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9 \
+  --prepub-url https://prepub.example.org:8080
+
+# Legacy spool path
 bits publish absl \
   --cvmfs-target /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9 \
   --spool ingestuser@ingest-host.example.com:/var/spool/cvmfs-ingest \
@@ -4090,7 +4168,31 @@ The `cvmfs-publish.yml` workflow accepts these inputs via `workflow_dispatch`
 | `cvmfs_target` | Final CVMFS install path. |
 | `rebuild` | Force rebuild (`true`/`false`). |
 
-Required repository **secrets**:
+Required repository **secrets** — cvmfs-prepub path:
+
+| Secret | Description |
+|---|---|
+| `PREPUB_API_TOKEN` | Bearer token for the cvmfs-prepub REST API.  Generate with `openssl rand -base64 32`; set the same value in the cvmfs-prepub server's `EnvironmentFile`. |
+
+Required repository **variables** — cvmfs-prepub path:
+
+| Variable | Default | Description |
+|---|---|---|
+| `PREPUB_URL` | — | Base URL of the cvmfs-prepub API (no trailing slash), e.g. `https://prepub.example.org:8080`. |
+
+**Self-hosted runner labels — cvmfs-prepub path** (only one runner type needed):
+
+| Label | Used by |
+|---|---|
+| `bits-build-<platform>` | Build + publish + poll job (e.g. `bits-build-x86_64-el9`) |
+
+The `bits-ingest` and `bits-cvmfs-publisher` runner types are **not required**
+for the cvmfs-prepub path.  Ingest and publish happen entirely inside the
+cvmfs-prepub service, which runs as a persistent systemd daemon outside CI.
+
+---
+
+Required repository **secrets** — legacy spool path:
 
 | Secret | Description |
 |---|---|
@@ -4100,7 +4202,7 @@ Required repository **secrets**:
 | `SPOOL_PATH` | Absolute spool root path on the ingestion host. |
 | `CVMFS_REPO` | CVMFS repository name. |
 
-Required repository **variables** (Settings → CI/CD → Variables):
+Required repository **variables** — legacy spool path:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -4109,7 +4211,7 @@ Required repository **variables** (Settings → CI/CD → Variables):
 | `CVMFS_HASH_ALGO` | `sha1` | `sha1` or `sha256`. |
 | `INGEST_CONCURRENCY` | `0` | Worker count (`0` = auto). |
 
-**Self-hosted runner labels** that must be registered:
+**Self-hosted runner labels — legacy spool path** (three runner types required):
 
 | Label | Used by |
 |---|---|
@@ -4159,21 +4261,43 @@ Instead of crafting raw API calls or navigating the GitLab web UI, operators and
 
 #### Architecture at a glance
 
+Two pipeline variants are supported and selected per-community via
+`publish_pipeline` in `ui-config.yaml`.
+
+**cvmfs-prepub path** — single stage, single runner (recommended for new deployments):
+
 ```
 bits-console (GitLab Pages SPA)
   │
-  ├── communities/<name>/ui-config.yaml   ← per-community settings
+  ├── communities/<name>/ui-config.yaml   ← publish_pipeline: .gitlab/cvmfs-prepub-publish.yml
+  │
+  └── triggers GitLab CI pipeline (.gitlab/cvmfs-prepub-publish.yml)
+        │
+        └── Stage 1: compile_and_publish  (bits-build runner only)
+              └── bits cleanup --disk-pressure-only  (pre-build guard)
+              └── bits build --docker [--cvmfs-prefix] <PACKAGE>
+              └── bits publish --prepub-url $PREPUB_URL [--no-relocate]
+                    └── HTTP POST tar → cvmfs-prepub service
+                    └── polls GET /api/v1/jobs/<id> until published
+```
+
+**Legacy spool path** — three stages, three runner types (existing deployments):
+
+```
+bits-console (GitLab Pages SPA)
+  │
+  ├── communities/<name>/ui-config.yaml   ← publish_pipeline: .gitlab/cvmfs-publish.yml
   │
   └── triggers GitLab CI pipeline (.gitlab/cvmfs-publish.yml)
         │
-        ├── Stage 1: bits build   (build runner, bits CLI, Docker)
-        │     └── bits cleanup --disk-pressure-only  (pre-build guard)
+        ├── Stage 1: bits build   (bits-build runner)
+        │     └── bits cleanup --disk-pressure-only
         │     └── bits build --docker [--cvmfs-prefix] <PACKAGE>
         │     └── bits publish [--no-relocate]  → rsync → spool
         │
-        ├── Stage 2: cvmfs-ingest  (ingestion host, bits-cvmfs-ingest daemon)
+        ├── Stage 2: cvmfs-ingest  (bits-ingest runner, bits-cvmfs-ingest daemon)
         │
-        └── Stage 3: cvmfs-publish.sh  (stratum-0, CVMFS transaction)
+        └── Stage 3: cvmfs-publish.sh  (bits-cvmfs-publisher runner, stratum-0 transaction)
 ```
 
 #### The community configuration file (`ui-config.yaml`)
@@ -4185,6 +4309,7 @@ Each community's behaviour is driven by `communities/<name>/ui-config.yaml`. The
 | `cvmfs_prefix` | _(required)_ | Production CVMFS install prefix (e.g. `/cvmfs/sft.cern.ch/lcg/releases`). Passed as `--cvmfs-prefix` to `bits build` and as `--cvmfs-target` base to `bits publish`. |
 | `cvmfs_user_prefix` | _(required)_ | Personal-area prefix for non-admin user builds. |
 | `cvmfs_repo` | _(required)_ | CVMFS repository name (e.g. `sft.cern.ch`). |
+| `publish_pipeline` | `.gitlab/cvmfs-publish.yml` | Pipeline file used for publish jobs.  Set to `.gitlab/cvmfs-prepub-publish.yml` to use the cvmfs-prepub direct-upload path (recommended for new communities). |
 | `platforms` | _(required)_ | Pipe-separated `<label>\|<docker-image>` pairs, one per line. The `<label>` becomes the runner tag (`bits-build-<label>`) and the platform selector in the UI. |
 | `build_parallelism_enabled` | `"false"` | Enable parallel dependency-graph builds. |
 | `build_parallelism_mode` | `"makeflow"` | `"makeflow"` (external Makeflow engine) or `"builders"` (built-in Python scheduler). |
@@ -4200,6 +4325,10 @@ When bits-console triggers a pipeline it passes the following variables to `cvmf
 
 | Variable | Description |
 |---|---|
+**Variables used by both pipeline variants:**
+
+| Variable | Description |
+|---|---|
 | `PACKAGE` | Package name to build and publish. |
 | `VERSION` | Version string (optional; defaults to latest). |
 | `PLATFORM` | Runner platform label (e.g. `x86_64-el9`). |
@@ -4212,7 +4341,24 @@ When bits-console triggers a pipeline it passes the following variables to `cvmf
 | `JOBS` | Compiler threads per package (`-j N`). `0` = auto-detect. |
 | `CACHE_MIN_FREE_GB` | Free-space threshold for the pre-build cleanup guard. |
 
-CI/CD project secrets (`SPOOL_SSH_KEY`, `SPOOL_USER`, `SPOOL_HOST`, `SPOOL_PATH`, `CVMFS_REPO`, etc.) are configured once in GitLab **Settings → CI/CD → Variables** and are never exposed to the browser.
+**Additional variables for the cvmfs-prepub pipeline** (set in project Settings → CI/CD → Variables):
+
+| Variable | Where to set | Description |
+|---|---|---|
+| `PREPUB_URL` | CI/CD Variable | Base URL of the cvmfs-prepub service, e.g. `https://prepub.example.org:8080`. |
+| `PREPUB_API_TOKEN` | CI/CD Secret (masked) | Bearer token matching the value in cvmfs-prepub's `EnvironmentFile`. |
+
+**Additional secrets for the legacy spool pipeline** (set in project Settings → CI/CD → Variables):
+
+| Secret | Description |
+|---|---|
+| `SPOOL_SSH_KEY` | SSH private key for rsync to the ingestion host. |
+| `SPOOL_USER` | SSH username on the ingestion host. |
+| `SPOOL_HOST` | Ingestion host address. |
+| `SPOOL_PATH` | Absolute spool root path on the ingestion host. |
+| `CVMFS_REPO` | CVMFS repository name. |
+
+CI/CD project secrets are configured once in GitLab **Settings → CI/CD → Variables** and are never exposed to the browser.
 
 #### Getting access and further documentation
 

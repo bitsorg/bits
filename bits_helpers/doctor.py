@@ -492,6 +492,44 @@ def _emit_check_store_json(checks: List[CheckResult], arch: str,
 # ── Runner check orchestration ─────────────────────────────────────────────────
 
 
+def _check_prepub_health(url: str, insecure: bool = False) -> Tuple[str, str]:
+    """Probe ``GET <url>/api/v1/health`` and verify the response contains ``"status":"ok"``.
+
+    A PASS means cvmfs-prepub is reachable and healthy.
+    A WARN means the endpoint was reachable but returned an unexpected status.
+    A FAIL means the endpoint was not reachable (connection refused, DNS, etc.).
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    health_url = url.rstrip("/") + "/api/v1/health"
+    ctx = None
+    if insecure:
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode    = ssl.CERT_NONE
+
+    try:
+        req  = urllib.request.Request(health_url, method="GET")
+        resp = urllib.request.urlopen(req, context=ctx, timeout=10)
+        body = resp.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return WARN, "health endpoint reachable but returned non-JSON: %s" % body[:120]
+        status = data.get("status", "")
+        if status == "ok":
+            version = data.get("version", "")
+            return PASS, "healthy%s  (%s)" % (("  v" + version) if version else "", health_url)
+        return WARN, "health endpoint returned status=%r (expected 'ok')  (%s)" % (status, health_url)
+    except urllib.error.URLError as exc:
+        return FAIL, "cannot reach %s: %s" % (health_url, exc.reason)
+    except Exception as exc:
+        return FAIL, "error checking %s: %s" % (health_url, exc)
+
+
 def _run_runner_checks(args) -> List[CheckResult]:
     """Run all environment checks and return a list of (name, status, detail)."""
     checks: List[CheckResult] = []
@@ -540,6 +578,12 @@ def _run_runner_checks(args) -> List[CheckResult]:
     insecure   = getattr(args, "insecure", False)
     store_status, store_detail = _check_store(store_url, insecure)
     checks.append(("remote store", store_status, store_detail))
+
+    # ── cvmfs-prepub service (optional) ──────────────────────────────────────
+    prepub_url = (getattr(args, "prepubUrl", "") or "").rstrip("/")
+    if prepub_url:
+        prepub_status, prepub_detail = _check_prepub_health(prepub_url, insecure)
+        checks.append(("cvmfs-prepub service", prepub_status, prepub_detail))
 
     return checks
 
