@@ -4,16 +4,51 @@ except ImportError:
     from hashlib import md5 as md5adder
 from os.path import abspath, join, exists, dirname, basename
 from os import rename, unlink
+import os
 import re
 from tempfile import mkdtemp
 from subprocess import getstatusoutput
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 import base64
-from time import time
+from time import time, sleep
 from types import SimpleNamespace
 from bits_helpers.log import error, warning, debug, info
+from bits_helpers.checksum import check_file
 import json
+
+
+# ---------------------------------------------------------------------------
+# Sentinel-file helpers for concurrent prefetch coordination
+# ---------------------------------------------------------------------------
+
+def _sentinel_path(path):
+    """Return the sentinel file path for *path* (appends '.downloading')."""
+    return path + ".downloading"
+
+
+def _acquire_download(path):
+    """Atomically create a sentinel for *path*.
+
+    Returns ``True`` if this caller successfully created the sentinel (i.e.
+    this caller owns the download) and ``False`` if another thread/process
+    already holds it.  The sentinel contains the current PID so stale files
+    from crashed processes can be identified at startup.
+    """
+    try:
+        fd = os.open(_sentinel_path(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+
+
+def _wait_for_sentinel(path):
+    """Block until no in-progress download sentinel exists for *path*."""
+    sentinel = _sentinel_path(path)
+    while os.path.exists(sentinel):
+        sleep(0.25)
 
 urlRe = re.compile(r".*:.*/.*")
 urlAuthRe = re.compile(r'^(http(s|)://)([^:]+:[^@]+)@(.+)$')
@@ -302,11 +337,43 @@ downloadHandlers = {
 }
 
 
-def download(source, dest, work_dir):
+def download(source, dest, work_dir, checksum=None, enforce_mode="off",
+             sync_helper=None):
+    """Download *source* into *dest*, optionally verifying its checksum.
+
+    Parameters
+    ----------
+    source:
+        URL to download.  Must be a clean URL with **no** embedded checksum
+        suffix (callers should call ``bits_helpers.checksum.parse_entry``
+        before passing the URL here).
+    dest:
+        Directory into which the downloaded file is placed.
+    work_dir:
+        Top-level work directory (used for the download cache).
+    checksum:
+        Expected checksum string in ``'algo:hexdigest'`` format, or ``None``
+        when the recipe entry carried no checksum declaration.
+    enforce_mode:
+        One of ``"off"`` (default), ``"warn"``, ``"enforce"``, ``"print"``.
+        Passed directly to ``bits_helpers.checksum.check_file``.
+    sync_helper:
+        Optional sync-backend instance (any class from ``bits_helpers.sync``).
+        When provided:
+
+        * A cache miss first attempts ``sync_helper.fetch_source()`` before
+          hitting the upstream URL, so the remote store acts as a mirror
+          that survives upstream disappearance.
+        * A successful upstream download is immediately archived via
+          ``sync_helper.upload_source()`` so future builds (on any machine
+          with the same remote store) can skip the upstream download.
+
+        Pass ``None`` (the default) to preserve the previous behaviour.
+    """
     noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
     isCmsdistGenerated = True if 'cmdist-generated=1' in source else False
     source = fixUrl(source)
-    checksum = getUrlChecksum(source)
+    url_checksum = getUrlChecksum(source)
 
     # Syntactic sugar to allow the following urls for tag collector:
     #
@@ -340,7 +407,7 @@ def download(source, dest, work_dir):
         raise MalformedUrl(source)
     downloadHandler = downloadHandlers[match.group(1)]
     filename = source.rsplit("/", 1)[1]
-    downloadDir = join(cacheDir, checksum[0:2], checksum)
+    downloadDir = join(cacheDir, url_checksum[0:2], url_checksum)
     try:
         makedirs(downloadDir)
     except OSError as e:
@@ -348,10 +415,33 @@ def download(source, dest, work_dir):
             raise e
 
     realFile = join(downloadDir, filename)
+    # If a background prefetch thread is currently downloading this file,
+    # wait for it to finish before inspecting the cache.
+    _wait_for_sentinel(realFile)
+    fetched_from_upstream = False
     if not exists(realFile):
-        debug ("Trying to fetch source file: %s", source)
-        downloadHandler(source, downloadDir, work_dir)
+        # Before hitting the upstream URL, check whether the remote store
+        # already has an archived copy of this source.  This makes rebuilds
+        # resilient to upstream URL disappearance.
+        if sync_helper is not None:
+            debug("Trying remote store for source file: %s", filename)
+            sync_helper.fetch_source(url_checksum, filename, downloadDir)
+
+        if not exists(realFile):
+            debug("Trying to fetch source file: %s", source)
+            downloadHandler(source, downloadDir, work_dir)
+            fetched_from_upstream = True
+
     if exists(realFile):
+        # Verify checksum against the cached copy (covers both fresh downloads
+        # and cache hits so a corrupted cache entry is caught on the next use).
+        check_file(realFile, filename, checksum, enforce_mode)
+        # Archive to the write store when the file came from the upstream URL
+        # (i.e. it was not already in the local cache or the remote store).
+        # This ensures every new download is preserved for future builds.
+        if fetched_from_upstream and sync_helper is not None:
+            debug("Archiving source file %s to remote store", filename)
+            sync_helper.upload_source(realFile, url_checksum, filename)
         executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
     else:
         raise OSError("Unable to download source {} in to {}".format(source, downloadDir))

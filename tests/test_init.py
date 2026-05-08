@@ -1,11 +1,19 @@
 from argparse import Namespace
+import configparser
+import os
 import os.path as path
+import tempfile
 import unittest
-from unittest.mock import call, patch  # In Python 3, mock is built-in
+from unittest.mock import call, patch, MagicMock  # In Python 3, mock is built-in
 from io import StringIO
 from collections import OrderedDict
 
-from bits_helpers.init import doInit, parsePackagesDefinition
+from bits_helpers.init import (
+    doInit,
+    doInitConfig,
+    parsePackagesDefinition,
+    _explicit_rc_keys,
+)
 
 
 def dummy_exists(x):
@@ -101,6 +109,340 @@ class InitTestCase(unittest.TestCase):
       doInit(args)
       self.assertEqual(mock_git.mock_calls, CLONE_EVERYTHING)
       mock_path.exists.assert_has_calls([call('.'), call('/sw/MIRROR'), call('/alidist'), call('./AliRoot')])
+
+
+def _cfg_args(**kwargs):
+    """Build a minimal Namespace for doInitConfig tests."""
+    defaults = dict(
+        pkgname="",
+        dryRun=False,
+        rcFile="bits.rc",
+        appendRc=False,
+        providers=None,
+        initRemoteStore=None,
+        initWriteStore=None,
+        organisation=None,
+        workDir="sw",
+        architecture="slc9_x86-64",
+        defaults=["release"],
+        configDir="alidist",
+        referenceSources="sw/MIRROR",
+        _init_explicit=set(),
+    )
+    defaults.update(kwargs)
+    return Namespace(**defaults)
+
+
+class ExplicitRcKeysTest(unittest.TestCase):
+    """Unit tests for the _explicit_rc_keys() helper."""
+
+    def test_long_flag_remote_store(self):
+        keys = _explicit_rc_keys({"remote_store"})
+        self.assertIn("remote_store", keys)
+
+    def test_long_flag_write_store(self):
+        keys = _explicit_rc_keys({"write_store"})
+        self.assertIn("write_store", keys)
+
+    def test_long_flag_providers(self):
+        keys = _explicit_rc_keys({"providers"})
+        self.assertIn("providers", keys)
+
+    def test_short_flag_work_dir(self):
+        keys = _explicit_rc_keys({"w"})
+        self.assertIn("work_dir", keys)
+
+    def test_short_flag_architecture(self):
+        keys = _explicit_rc_keys({"a"})
+        self.assertIn("architecture", keys)
+
+    def test_short_flag_config_dir(self):
+        keys = _explicit_rc_keys({"c"})
+        self.assertIn("config_dir", keys)
+
+    def test_unknown_flag_ignored(self):
+        keys = _explicit_rc_keys({"foo_bar", "x"})
+        self.assertEqual(keys, set())
+
+    def test_multiple_flags(self):
+        keys = _explicit_rc_keys({"remote_store", "write_store", "organisation"})
+        self.assertGreaterEqual(keys, {"remote_store", "write_store", "organisation"})
+
+
+class ConfigModeDispatchTest(unittest.TestCase):
+    """doInit() dispatches to doInitConfig when no PACKAGE is given."""
+
+    @patch("bits_helpers.init.doInitConfig")
+    def test_no_package_calls_config(self, mock_cfg):
+        """doInit with empty pkgname must delegate to doInitConfig."""
+        args = _cfg_args(pkgname="", _init_explicit=set())
+        doInit(args)
+        mock_cfg.assert_called_once_with(args)
+
+    @patch("bits_helpers.init.doInitConfig")
+    def test_with_package_does_not_call_config(self, mock_cfg):
+        """doInit with a PACKAGE name must NOT call doInitConfig."""
+        # We patch everything that the clone path needs so it doesn't blow up.
+        args = _cfg_args(
+            pkgname="AliRoot",
+            dist={"repo": "alisw/alidist", "ver": "master"},
+            dryRun=True,
+        )
+        try:
+            doInit(args)
+        except SystemExit:
+            pass
+        mock_cfg.assert_not_called()
+
+
+class ConfigModeWriteTest(unittest.TestCase):
+    """doInitConfig() writes the correct bits.rc content."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._rc = os.path.join(self._tmpdir, "bits.rc")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _read_rc(self):
+        cfg = configparser.ConfigParser()
+        cfg.read(self._rc)
+        return dict(cfg["bits"]) if "bits" in cfg else {}
+
+    def test_writes_remote_store(self):
+        args = _cfg_args(
+            initRemoteStore="https://store.example.com",
+            rcFile=self._rc,
+            _init_explicit={"remote_store"},
+        )
+        doInitConfig(args)
+        self.assertEqual(self._read_rc().get("remote_store"), "https://store.example.com")
+
+    def test_writes_write_store(self):
+        args = _cfg_args(
+            initWriteStore="b3://mybucket/store",
+            rcFile=self._rc,
+            _init_explicit={"write_store"},
+        )
+        doInitConfig(args)
+        self.assertEqual(self._read_rc().get("write_store"), "b3://mybucket/store")
+
+    def test_writes_providers(self):
+        args = _cfg_args(
+            providers="https://github.com/myorg/bits-providers",
+            rcFile=self._rc,
+            _init_explicit={"providers"},
+        )
+        doInitConfig(args)
+        self.assertEqual(self._read_rc().get("providers"),
+                         "https://github.com/myorg/bits-providers")
+
+    def test_writes_organisation(self):
+        args = _cfg_args(
+            organisation="MYORG",
+            rcFile=self._rc,
+            _init_explicit={"organisation"},
+        )
+        doInitConfig(args)
+        self.assertEqual(self._read_rc().get("organisation"), "MYORG")
+
+    def test_writes_work_dir_via_short_flag(self):
+        args = _cfg_args(
+            workDir="/opt/sw",
+            rcFile=self._rc,
+            _init_explicit={"w"},           # user passed -w
+        )
+        doInitConfig(args)
+        self.assertEqual(self._read_rc().get("work_dir"), "/opt/sw")
+
+    def test_writes_architecture_via_short_flag(self):
+        args = _cfg_args(
+            architecture="ubuntu2204_x86-64",
+            rcFile=self._rc,
+            _init_explicit={"a"},
+        )
+        doInitConfig(args)
+        self.assertEqual(self._read_rc().get("architecture"), "ubuntu2204_x86-64")
+
+    def test_writes_defaults_list_as_double_colon(self):
+        args = _cfg_args(
+            defaults=["release", "myproject"],
+            rcFile=self._rc,
+            _init_explicit={"defaults"},
+        )
+        doInitConfig(args)
+        self.assertEqual(self._read_rc().get("defaults"), "release::myproject")
+
+    def test_does_not_write_unspecified_keys(self):
+        """Only explicitly requested keys must appear in bits.rc."""
+        args = _cfg_args(
+            initRemoteStore="https://store.example.com",
+            workDir="/opt/sw",              # NOT in explicit flags
+            rcFile=self._rc,
+            _init_explicit={"remote_store"},
+        )
+        doInitConfig(args)
+        rc = self._read_rc()
+        self.assertIn("remote_store", rc)
+        self.assertNotIn("work_dir", rc)
+
+    def test_multiple_keys_in_one_pass(self):
+        args = _cfg_args(
+            initRemoteStore="https://store.example.com",
+            initWriteStore="b3://mybucket",
+            organisation="MYORG",
+            rcFile=self._rc,
+            _init_explicit={"remote_store", "write_store", "organisation"},
+        )
+        doInitConfig(args)
+        rc = self._read_rc()
+        self.assertEqual(rc["remote_store"], "https://store.example.com")
+        self.assertEqual(rc["write_store"], "b3://mybucket")
+        self.assertEqual(rc["organisation"], "MYORG")
+
+    def test_append_preserves_existing_keys(self):
+        """--append must keep existing bits.rc entries that are not overridden."""
+        # Write initial file with providers key
+        initial = configparser.ConfigParser()
+        initial.add_section("bits")
+        initial.set("bits", "providers", "https://github.com/org/providers")
+        with open(self._rc, "w") as fh:
+            initial.write(fh)
+
+        args = _cfg_args(
+            initRemoteStore="https://store.example.com",
+            rcFile=self._rc,
+            appendRc=True,
+            _init_explicit={"remote_store"},
+        )
+        doInitConfig(args)
+        rc = self._read_rc()
+        # New key written
+        self.assertEqual(rc["remote_store"], "https://store.example.com")
+        # Existing key preserved
+        self.assertEqual(rc["providers"], "https://github.com/org/providers")
+
+    def test_append_overwrites_changed_key(self):
+        """--append must update an existing key when the user re-specifies it."""
+        initial = configparser.ConfigParser()
+        initial.add_section("bits")
+        initial.set("bits", "remote_store", "https://old-store.example.com")
+        with open(self._rc, "w") as fh:
+            initial.write(fh)
+
+        args = _cfg_args(
+            initRemoteStore="https://new-store.example.com",
+            rcFile=self._rc,
+            appendRc=True,
+            _init_explicit={"remote_store"},
+        )
+        doInitConfig(args)
+        rc = self._read_rc()
+        self.assertEqual(rc["remote_store"], "https://new-store.example.com")
+
+    def test_no_flags_does_not_write_file(self):
+        """With no explicit flags doInitConfig must not create bits.rc."""
+        args = _cfg_args(rcFile=self._rc, _init_explicit=set())
+        doInitConfig(args)
+        self.assertFalse(os.path.exists(self._rc))
+
+    def test_dry_run_does_not_write_file(self):
+        """--dry-run must print the config without touching the file system."""
+        args = _cfg_args(
+            initRemoteStore="https://store.example.com",
+            rcFile=self._rc,
+            dryRun=True,
+            _init_explicit={"remote_store"},
+        )
+        with patch("bits_helpers.init.info") as mock_info:
+            doInitConfig(args)
+        self.assertFalse(os.path.exists(self._rc))
+        # info() should have been called with the INI text
+        self.assertTrue(mock_info.called)
+        printed = " ".join(str(a) for call in mock_info.call_args_list for a in call[0])
+        self.assertIn("remote_store", printed)
+
+    def test_fresh_write_overwrites_existing(self):
+        """Without --append, an existing bits.rc is replaced entirely."""
+        initial = configparser.ConfigParser()
+        initial.add_section("bits")
+        initial.set("bits", "providers", "https://old-providers")
+        with open(self._rc, "w") as fh:
+            initial.write(fh)
+
+        args = _cfg_args(
+            initWriteStore="b3://mybucket",
+            rcFile=self._rc,
+            appendRc=False,
+            _init_explicit={"write_store"},
+        )
+        doInitConfig(args)
+        rc = self._read_rc()
+        self.assertIn("write_store", rc)
+        self.assertNotIn("providers", rc)   # old key gone
+
+
+class BitsRcDefaultsAppliedTest(unittest.TestCase):
+    """Verify that bits.rc values become argparse defaults via set_defaults()."""
+
+    def _parse(self, argv, rc_content=""):
+        """Parse argv with a bits.rc in a temp dir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rc_path = os.path.join(tmpdir, "bits.rc")
+            if rc_content:
+                with open(rc_path, "w") as fh:
+                    fh.write(rc_content)
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                import sys
+                old_argv = sys.argv[:]
+                sys.argv = ["bits"] + argv
+                try:
+                    from bits_helpers.args import doParseArgs
+                    args, _ = doParseArgs()
+                    return args
+                finally:
+                    sys.argv = old_argv
+            finally:
+                os.chdir(old_cwd)
+
+    def test_remote_store_from_rc(self):
+        """bits.rc remote_store must set the default for 'bits build'."""
+        rc = "[bits]\nremote_store = https://rc-store.example.com\n"
+        with patch("bits_helpers.args.cleanup_git_log"):
+            args = self._parse(["build", "zlib", "--force-unknown-architecture"], rc)
+        self.assertEqual(args.remoteStore, "https://rc-store.example.com")
+
+    def test_cli_overrides_rc(self):
+        """An explicit CLI --remote-store must win over the bits.rc value."""
+        rc = "[bits]\nremote_store = https://rc-store.example.com\n"
+        with patch("bits_helpers.args.cleanup_git_log"):
+            args = self._parse(
+                ["build", "zlib",
+                 "--remote-store", "https://cli-store.example.com",
+                 "--force-unknown-architecture"],
+                rc,
+            )
+        self.assertEqual(args.remoteStore, "https://cli-store.example.com")
+
+    def test_no_rc_uses_hardcoded_default(self):
+        """Without bits.rc the original hardcoded default must be used.
+
+        Use an explicit architecture that is not in S3_SUPPORTED_ARCHS so that
+        finaliseArgs does not silently inject the CERN S3 URL, which would mask
+        a missing rc default and make the assertion architecture-dependent.
+        """
+        with patch("bits_helpers.args.cleanup_git_log"):
+            args = self._parse([
+                "build", "zlib",
+                "--architecture", "test_x86-64",
+                "--force-unknown-architecture",
+            ])
+        # The argparse hardcoded default for --remote-store is "".
+        self.assertEqual(args.remoteStore, "")
 
 
 if __name__ == '__main__':

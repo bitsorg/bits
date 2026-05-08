@@ -1,6 +1,7 @@
 import argparse
 from bits_helpers.utilities import detectArch, normalise_multiple_options
 from bits_helpers.workarea import cleanup_git_log
+import configparser
 import multiprocessing
 
 import re
@@ -8,7 +9,7 @@ import os
 import shlex
 
 import subprocess as commands
-from os.path import abspath, dirname, basename
+from os.path import abspath, dirname, basename, exists
 import sys
 
 # Default workdir: fall back on "sw" if env is not set or empty
@@ -16,6 +17,77 @@ DEFAULT_WORK_DIR = os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK
 
 # cd to this directory before start
 DEFAULT_CHDIR = os.environ.get("BITS_CHDIR") or "."
+
+# Search order for bits.rc config files (highest priority first).
+# Each entry is evaluated at import time so that ~ is expanded once.
+_BITS_RC_SEARCH_PATHS = [
+    "bits.rc",
+    ".bitsrc",
+    os.path.expanduser("~/.bitsrc"),
+]
+
+
+def _parse_provider_policy(value: str) -> dict:
+  """Parse a ``provider_policy`` string into a ``{provider_name: position}`` dict.
+
+  The format is a comma-separated list of ``name:position`` pairs where
+  *position* is either ``"prepend"`` or ``"append"``::
+
+      bits-providers:prepend, myorg-recipes:append
+
+  Provider names are lower-cased for consistent lookup.  Malformed entries
+  and unrecognised position values are skipped with a warning printed to
+  stderr.  Returns an empty dict for an empty or missing *value*.
+
+  This is the sole parsing point used by both the ``bits.rc`` key
+  ``provider_policy`` and the ``--provider-policy`` CLI flag so that
+  both inputs share identical validation logic.
+  """
+  from bits_helpers.log import warning as log_warning
+  result = {}
+  if not value:
+    return result
+  for token in value.split(","):
+    token = token.strip()
+    if not token:
+      continue
+    name, sep, pos = token.partition(":")
+    name = name.strip().lower()
+    pos  = pos.strip().lower()
+    if not name or not sep:
+      log_warning(
+        "provider_policy: ignoring malformed entry %r — expected name:position",
+        token,
+      )
+      continue
+    if pos not in ("prepend", "append"):
+      log_warning(
+        "provider_policy: ignoring entry %r — position must be 'prepend' or 'append'",
+        token,
+      )
+      continue
+    result[name] = pos
+  return result
+
+
+def _read_bits_rc() -> dict:
+  """Return settings from the first bits.rc / .bitsrc / ~/.bitsrc found.
+
+  Only the ``[bits]`` section is returned; all keys are lower-cased.
+  Returns an empty dict when no config file is present.
+
+  Example bits.rc::
+
+      [bits]
+      providers = https://github.com/org/bits-stdlib.git@stable
+      sw_dir    = /opt/sw
+  """
+  cfg = configparser.ConfigParser()
+  for path in _BITS_RC_SEARCH_PATHS:
+    if exists(path):
+      cfg.read(path)
+      break
+  return dict(cfg["bits"]) if "bits" in cfg else {}
 
 
 # This is syntactic sugar for the --dist option (which should really be called
@@ -52,6 +124,16 @@ def doParseArgs():
                                        description="Build a package.")
   clean_parser = subparsers.add_parser("clean", help="clean up build area",
                                        description="Clean up the build area.")
+  cleanup_parser = subparsers.add_parser(
+      "cleanup",
+      help="evict stale packages from a persistent workDir",
+      description=(
+          "Evict packages from the persistent build workDir whose sentinel files "
+          "have not been touched within the configured age window, and/or free space "
+          "when disk usage exceeds a threshold (least-recently-used first). "
+          "Safe to run concurrently with active build jobs."
+      ),
+  )
   deps_parser = subparsers.add_parser("deps", help="generate a dependency graph for a given package",
                                       description="Generate a dependency graph for a given package.")
   doctor_parser = subparsers.add_parser("doctor", help="verify status of your system",
@@ -60,6 +142,15 @@ def doParseArgs():
                                       description="Initialise development packages.")
   version_parser = subparsers.add_parser("version", help="display %(prog)s version",
                                          description="Display %(prog)s and architecture.")
+  publish_parser = subparsers.add_parser(
+      "publish",
+      help="copy, relocate, and stream a built package to a CVMFS ingestion spool",
+      description=(
+          "Copies the immutable installation from WORKDIR, relocates it to the "
+          "final CVMFS target path, and streams the result to an ingestion spool "
+          "for content-addressed pre-staging before the CVMFS transaction."
+      ),
+  )
 
   # Options for the analytics command
   # analytics_parser.add_argument("state", choices=["on", "off"], help="Whether to report analytics or not")
@@ -143,6 +234,15 @@ def doParseArgs():
   build_docker.add_argument("--container-use-workdir", dest="containerUseWorkDir", action="store_true", default=False,
                             help="Use the host work directory inside container. "
                                  "By default it uses /container/bits/sw directory inside container.")
+  build_docker.add_argument("--cvmfs-prefix", dest="cvmfsPrefix", default=None, metavar="PATH",
+                            help=("When set, bind-mount the host workDir at PATH inside the container "
+                                  "so that packages are compiled with PATH as their install prefix. "
+                                  "PATH should be the community's CVMFS releases path "
+                                  "(e.g. /cvmfs/sft.cern.ch/lcg/releases). "
+                                  "With this option the relocation step in 'bits publish' is not needed "
+                                  "because the embedded paths are already correct for CVMFS. "
+                                  "Implies --container-use-workdir behaviour for the CVMFS mount. "
+                                  "Use --no-relocate on 'bits publish' to skip relocation when publishing."))
   build_docker.add_argument("-v", dest="volumes", action="append", default=[],
                             help=("Additional volume to be mounted inside the Docker container, if one is used. "
                                   "May be specified multiple times. Passed verbatim to 'docker run'."))
@@ -170,6 +270,38 @@ def doParseArgs():
                                   "except ::rw is not recognised. Implies --no-system."))
   build_remote.add_argument("--insecure", dest="insecure", action="store_true",
                             help="Don't validate TLS certificates when connecting to an https:// remote store.")
+  build_remote.add_argument("--pipeline", dest="pipeline", action="store_true", default=False,
+                            help="""\
+                            (Requires --makeflow) Activates Options 1 and 4: split each package's Makeflow
+                            rules into three targets (.build, .tar, .upload) so tarball creation and remote
+                            upload run concurrently with downstream package builds. Silently ignored without
+                            --makeflow. Has no effect when --write-store is not set.
+                            """)
+  build_remote.add_argument("--prefetch-workers", dest="prefetchWorkers", type=int, default=0,
+                            metavar="N",
+                            help="""\
+                            Start N background threads that pre-download pre-built tarballs and source
+                            archives for all packages in the build graph before they are needed. A
+                            .downloading sentinel file coordinates with the build loop so no file is
+                            fetched twice. Default: 0 (disabled). Works in all build modes.
+                            """)
+  build_remote.add_argument("--parallel-sources", dest="parallelSources", type=int, default=1,
+                            metavar="N",
+                            help="""\
+                            Download up to N source URLs in parallel within a single package's sources:
+                            list. Default: 1 (sequential, preserving existing behaviour). Works in all
+                            build modes.
+                            """)
+  build_remote.add_argument("--makeflow-jobs", dest="makeflowJobs", type=int, default=4,
+                            metavar="N",
+                            help="""\
+                            (Requires --makeflow) Maximum number of build jobs Makeflow runs in parallel
+                            on the local machine (passed as --max-local N to makeflow). Each build job
+                            itself uses all available CPU cores (controlled by -j / --jobs), so running
+                            too many simultaneously causes CPU oversubscription and degrades performance.
+                            Default: 4. Set to 0 to let Makeflow use its own default (number of CPU
+                            cores, which typically causes severe oversubscription).
+                            """)
 
   build_dirs = build_parser.add_argument_group(title="Customise bits directories")
   build_dirs.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
@@ -196,6 +328,81 @@ def doParseArgs():
                             help="Always use system packages when compatible.")
   build_system.add_argument("--no-system", dest="noSystem", nargs="?", const="*", default=None, metavar="PACKAGES",
                             help="Never use system packages for the provided, command separated, PACKAGES, even if compatible.")
+
+  build_checksums = build_parser.add_argument_group(
+      title="Source and patch checksum verification",
+      description="Verify the integrity of downloaded source tarballs and patch files "
+                  "declared with an inline checksum suffix (e.g. "
+                  "\"https://example.com/foo.tar.gz,sha256:abc123...\"). "
+                  "These flags override the checksum_mode / write_checksums fields "
+                  "that can be set in a defaults-*.sh profile.")
+  build_checksums_mode = build_checksums.add_mutually_exclusive_group()
+  build_checksums_mode.add_argument(
+      "--check-checksums", dest="checkChecksums", action="store_true", default=False,
+      help="Verify checksums during download; warn on mismatch. "
+           "Missing declarations are silently ignored. "
+           "Overrides checksum_mode in the active defaults profile.")
+  build_checksums_mode.add_argument(
+      "--enforce-checksums", dest="enforceChecksums", action="store_true", default=False,
+      help="Verify checksums during download; abort on mismatch. "
+           "Also abort when a source or patch entry carries no checksum declaration. "
+           "Overrides checksum_mode in the active defaults profile.")
+  build_checksums_mode.add_argument(
+      "--print-checksums", dest="printChecksums", action="store_true", default=False,
+      help="Compute and print checksums for all sources and patches in "
+           "ready-to-paste YAML format after the build completes. "
+           "Works for already-compiled packages (reads from the download cache). "
+           "Overrides checksum_mode in the active defaults profile.")
+  build_checksums.add_argument(
+      "--write-checksums", dest="writeChecksums", action="store_true", default=False,
+      help="Write (or update) the checksums/<package>.checksum file in the "
+           "recipe directory after the build completes. Works for already-compiled "
+           "packages (reads from the download cache). Also records the pinned git "
+           "commit SHA for source: + tag: packages. Independent of the mode flags "
+           "above; overrides write_checksums in the active defaults profile.")
+
+  # Store-integrity flag
+  build_parser.add_argument(
+      "--store-integrity", dest="storeIntegrity", action="store_true", default=False,
+      help=(
+          "Enable local tarball integrity ledger.  After each upload the tarball's "
+          "SHA-256 is recorded in $WORK_DIR/STORE_CHECKSUMS/.  On every subsequent "
+          "recall the digest is recomputed and compared; a mismatch is a fatal error "
+          "that indicates the file may have been tampered with in the remote store.  "
+          "Disabled by default for backward compatibility.  "
+          "May also be enabled persistently with 'store_integrity = true' in bits.rc."
+      ),
+  )
+
+  # Provider-policy flag
+  build_parser.add_argument(
+      "--provider-policy", dest="providerPolicy", metavar="POLICY", default=None,
+      help=(
+          "Control where each repository-provider's checkout is inserted into "
+          "BITS_PATH.  Format: a comma-separated list of NAME:POSITION pairs, "
+          "where POSITION is either 'prepend' or 'append' (case-insensitive).  "
+          "Example: --provider-policy bits-providers:prepend,myorg:append  "
+          "By default every provider uses 'append' (safe mode) regardless of "
+          "what its recipe declares.  This flag (or the equivalent bits.rc key "
+          "'provider_policy') is the only way to grant a provider prepend "
+          "access."
+      ),
+  )
+
+  # From-manifest flag (build replay)
+  build_parser.add_argument(
+      "--from-manifest", dest="fromManifest", metavar="FILE", default=None,
+      help=(
+          "Replay a previous build from a manifest JSON file written by bits.  "
+          "The manifest records the requested packages, architecture, defaults, "
+          "providers, and per-package checksums.  When this flag is given the "
+          "PACKAGE positional argument is optional; if omitted, the packages "
+          "listed in the manifest's 'requested_packages' field are built.  "
+          "Each recalled tarball is verified against the manifest's "
+          "'tarball_sha256' to detect store tampering.  "
+          "Example: bits build --from-manifest bits-manifest-latest.json"
+      ),
+  )
 
   # Options for clean subcommand
   clean_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
@@ -366,16 +573,122 @@ def doParseArgs():
                          help=("The directory where reference git repositories will be cloned. "
                                "'%%(workDir)s' will be substituted by WORKDIR. Default '%(default)s'."))
 
+  # Options for creating / updating bits.rc (config mode: no PACKAGE given)
+  init_cfg = init_parser.add_argument_group(
+      title="Persistent configuration (bits.rc)",
+      description="These options write settings to bits.rc so you do not need to repeat them "
+                  "on every 'bits build' invocation. When no PACKAGE is given, 'bits init' "
+                  "writes the supplied options to bits.rc and exits.")
+  init_cfg.add_argument("--providers", dest="providers", default=None, metavar="URL",
+                        help="URL of the bits-providers repository (written as 'providers' in bits.rc). "
+                             "Equivalent to the BITS_PROVIDERS environment variable.")
+  init_cfg.add_argument("--remote-store", dest="initRemoteStore", default=None, metavar="URL",
+                        help="Binary store to fetch pre-built tarballs from (written as 'remote_store' "
+                             "in bits.rc). Accepts the same URL formats as 'bits build --remote-store'.")
+  init_cfg.add_argument("--write-store", dest="initWriteStore", default=None, metavar="URL",
+                        help="Binary store to upload newly-built tarballs to (written as 'write_store' "
+                             "in bits.rc). Accepts the same URL formats as 'bits build --write-store'.")
+  init_cfg.add_argument("--organisation", dest="organisation", default=None, metavar="NAME",
+                        help="Organisation name stored under the 'organisation' key in bits.rc. "
+                             "May be used by defaults profiles and recipe tooling.")
+  init_cfg.add_argument("--rc-file", dest="rcFile", default="bits.rc", metavar="FILE",
+                        help="Path of the bits.rc file to create or update. Default '%(default)s'.")
+  init_cfg.add_argument("--append", dest="appendRc", action="store_true", default=False,
+                        help="Merge the new settings into an existing bits.rc rather than "
+                             "overwriting it. Without this flag a fresh file is written.")
+
   # Options for the version subcommand
   version_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                               help=("Display the specified architecture next to the version number. Default is "
                                     "the current system architecture, which is '%(default)s'."))
 
+  # Options for the publish command
+  publish_parser.add_argument("package", metavar="PACKAGE",
+                              help="Name of the package to publish.")
+  publish_parser.add_argument("version", metavar="VERSION", nargs="?", default=None,
+                              help="Version (and optional revision) to publish. Defaults to the latest build.")
+  publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=True, metavar="PATH",
+                              help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9).")
+  publish_parser.add_argument("--spool", dest="spool", required=True, metavar="[USER@HOST:]PATH",
+                              help="Ingestion spool root.  Either a local directory or a remote rsync target (user@host:/path).")
+  publish_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
+                              help="bits work directory containing the installed packages. Default: %(default)s.")
+  publish_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
+                              help="Target architecture. Default: %(default)s.")
+  publish_parser.add_argument("--scratch-dir", dest="scratchDir", default=None, metavar="DIR",
+                              help="Directory for the temporary CVMFS working copy. Defaults to a system temp dir.")
+  publish_parser.add_argument("--rsync-opts", dest="rsyncOpts", default=None, metavar="OPTS",
+                              help="Extra options passed verbatim to rsync (e.g. '-e \"ssh -i key\"').")
+  publish_parser.add_argument("--no-relocate", dest="noRelocate", action="store_true", default=False,
+                              help=("Skip the relocation step. Use this when the package was built "
+                                    "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
+                                    "so all embedded paths are already correct."))
+
+  # Options for the cleanup subcommand
+  cleanup_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
+                              metavar="WORKDIR",
+                              help="Persistent bits work directory to clean. Default: %(default)s.")
+  cleanup_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH",
+                              default=detectedArch,
+                              help="Architecture sub-directory to scan. Default: %(default)s.")
+  cleanup_parser.add_argument("--max-age", dest="maxAgeDays", type=float, default=7.0, metavar="DAYS",
+                              help=("Evict packages whose sentinel has not been touched in more than "
+                                    "DAYS days. Default: %(default)s. Set to 0 to disable age-based "
+                                    "eviction (only disk-pressure mode runs)."))
+  cleanup_parser.add_argument("--min-free", dest="minFreeGb", type=float, default=None, metavar="GIB",
+                              help=("When free space on the workDir filesystem is below GIB gibibytes, "
+                                    "evict least-recently-used packages until the threshold is met. "
+                                    "Disabled by default; set a value to enable disk-pressure eviction."))
+  cleanup_parser.add_argument("--disk-pressure-only", dest="diskPressureOnly", action="store_true",
+                              default=False,
+                              help="Run only disk-pressure eviction; skip age-based eviction.")
+  cleanup_parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
+                              help="Print what would be evicted without actually removing anything.")
+
+  # Apply bits.rc values as default overrides so that persistent settings written
+  # by "bits init" (config mode) take effect on every subsequent invocation.
+  # CLI flags still win: set_defaults only fills gaps not covered by the user.
+  _rc_early = _read_bits_rc()
+  _rc_defaults: dict = {}
+  _RC_KEY_TO_DEST = [
+      # (bits.rc key,        argparse dest)
+      ("work_dir",           "workDir"),
+      ("architecture",       "architecture"),
+      ("defaults",           "defaults"),
+      ("config_dir",         "configDir"),
+      ("reference_sources",  "referenceSources"),
+      ("remote_store",       "remoteStore"),
+      ("write_store",        "writeStore"),
+      ("organisation",       "organisation"),
+      # provider_policy is handled separately in finaliseArgs (needs parsing),
+      # but listing it here causes the raw string to be set as a default so
+      # the CLI flag still wins via normal argparse precedence.
+      ("provider_policy",    "providerPolicy"),
+  ]
+  for _rc_key, _dest in _RC_KEY_TO_DEST:
+    if _rc_early.get(_rc_key):
+      _rc_defaults[_dest] = _rc_early[_rc_key]
+  if _rc_defaults:
+    # set_defaults on the *parent* parser is overridden by each subparser's own
+    # argument-level defaults (add_argument(..., default=...)).  We must call
+    # set_defaults on every subparser individually so that bits.rc values win
+    # over hardcoded argument defaults while still losing to explicit CLI flags.
+    for _sp in [build_parser, clean_parser, cleanup_parser, deps_parser, doctor_parser, init_parser]:
+      _sp.set_defaults(**_rc_defaults)
+
   # Make sure old option ordering behavior is actually still working
   prog = sys.argv[0]
   rest = sys.argv[1:]
+  _cleanup_invocation = "cleanup" in rest
   def optionOrder(x):
-    if x in ["--debug", "-d", "-n", "--dry-run"]:
+    # --debug/-d must come before any subcommand so the parent parser sees them.
+    # --dry-run/-n is also a top-level flag (for build), BUT the "cleanup"
+    # subparser has its OWN --dry-run/-n.  If we're in a cleanup invocation
+    # we must NOT hoist -n/-dry-run before "cleanup" or the parent parser will
+    # consume it and the cleanup subparser's default (False) will overwrite it.
+    if x in ["--debug", "-d"]:
+      return 0
+    if x in ["-n", "--dry-run"] and not _cleanup_invocation:
       return 0
 #   if x in ["build", "init", "clean", "analytics", "doctor", "deps"]:
     if x in ["build", "init", "clean", "doctor", "deps"]:
@@ -383,7 +696,22 @@ def doParseArgs():
     return 2
   rest.sort(key=optionOrder)
   sys.argv = [prog] + rest
+
+  # For "bits init" config mode: record which flags were explicit on the CLI so
+  # that doInitConfig() can write only the settings the user actually specified.
+  # We scan argv AFTER the sort so the subcommand is reliably at index 1.
+  _init_explicit_flags: set = set()
+  _argv_tail = sys.argv[2:]   # everything after the subcommand name
+  for _tok in _argv_tail:
+    if _tok.startswith("--"):
+      # normalise: "--remote-store" → "remote_store", "--work-dir=sw" → "work_dir"
+      _init_explicit_flags.add(_tok.lstrip("-").split("=")[0].replace("-", "_"))
+    elif _tok.startswith("-") and len(_tok) == 2:
+      # short flags: -w, -a, -C, -z
+      _init_explicit_flags.add(_tok[1:])
+
   args = finaliseArgs(parser.parse_args(), parser)
+  args._init_explicit = _init_explicit_flags
   return (args, parser)
 
 VALID_ARCHS_RE = "^slc[5-9]_(x86-64|ppc64|aarch64)$|^(ubuntu|ubt|osx|fedora)[0-9]*_(x86-64|arm64)$"
@@ -426,6 +754,67 @@ def finaliseArgs(args, parser):
 
   if hasattr(args, "defaults"):
     args.defaults = args.defaults.split("::")
+
+  # ── bits.rc / BITS_PROVIDERS ─────────────────────────────────────────────
+  # Read persistent configuration from the first bits.rc / .bitsrc /
+  # ~/.bitsrc found, then resolve ``bits_providers``.  Precedence:
+  #   1. BITS_PROVIDERS environment variable (explicit override)
+  #   2. ``providers`` key in the [bits] section of the config file
+  #   3. Built-in default: the official bitsorg/bits-providers repository
+  #
+  # The resolved value is stored on ``args`` and also written back to the
+  # environment so that child processes inherit it.
+  _BITS_PROVIDERS_DEFAULT = "https://github.com/bitsorg/bits-providers"
+  _rc = _read_bits_rc()
+  args.bits_providers = (
+    os.environ.get("BITS_PROVIDERS")
+    or _rc.get("providers")
+    or _BITS_PROVIDERS_DEFAULT
+  )
+  os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
+
+  # ── store_integrity ───────────────────────────────────────────────────────
+  # The flag is off by default.  It can be activated either by the CLI flag
+  # (--store-integrity) or by adding 'store_integrity = true' to bits.rc.
+  # The CLI flag always wins when present; the rc key serves as a persistent
+  # opt-in so the feature does not need to be spelled out on every invocation.
+  if not getattr(args, "storeIntegrity", False):
+    args.storeIntegrity = _rc.get("store_integrity", "").strip().lower() in ("1", "true", "yes")
+
+  # ── provider_policy ──────────────────────────────────────────────────────
+  # Resolve the effective provider-position policy from (highest priority):
+  #   1. --provider-policy CLI flag
+  #   2. provider_policy key in bits.rc / .bitsrc
+  # The raw string is parsed into {name: "prepend"|"append"} and stored on
+  # args so that build.py can pass it straight through to the provider loader.
+  _raw_policy = getattr(args, "providerPolicy", None) or _rc.get("provider_policy", "")
+  args.provider_policy = _parse_provider_policy(_raw_policy)
+
+  # ── from-manifest (build replay) ─────────────────────────────────────────
+  # When --from-manifest is given, the manifest's ``requested_packages`` list
+  # is used as the package list so the user does not have to repeat it on the
+  # command line.  An explicitly provided PACKAGE argument takes precedence
+  # (allows overriding a specific package while reusing the rest of the
+  # manifest's configuration).
+  from_manifest = getattr(args, "fromManifest", None)
+  if from_manifest and args.action == "build":
+    import json, os as _os
+    if not _os.path.isfile(from_manifest):
+      parser.error("--from-manifest: file not found: %s" % from_manifest)
+    try:
+      with open(from_manifest) as _fh:
+        _manifest_data = json.load(_fh)
+    except (ValueError, OSError) as _exc:
+      parser.error("--from-manifest: cannot read manifest: %s" % _exc)
+    # If no packages were given on the command line, fill them in from the
+    # manifest so the user can just say: bits build --from-manifest FILE
+    if not getattr(args, "pkgname", None):
+      args.pkgname = list(_manifest_data.get("requested_packages", []))
+      if not args.pkgname:
+        parser.error("--from-manifest: manifest has no 'requested_packages'")
+    # Store the loaded manifest data on args so doBuild can use it for
+    # version pinning and tarball verification.
+    args.fromManifestData = _manifest_data
 
   # --architecture can be specified in both clean and build.
   if args.action in ["build", "clean"] and not args.architecture:

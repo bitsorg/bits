@@ -146,11 +146,27 @@ def dummy_git(args, directory=".", check=True, prompt=True):
 TIMES_ASKED = {}
 
 
+def _mock_write_cm():
+    """Return a MagicMock usable as a write-mode context manager."""
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=StringIO())
+    cm.__exit__ = MagicMock(return_value=False)
+    return cm
+
+
 def dummy_open(x, mode="r", encoding=None, errors=None):
     if x.endswith("/fetch-log.txt") and mode == "w":
-        return MagicMock(__enter__=lambda _: StringIO())
+        return _mock_write_cm()
     if x.endswith("/bits_helpers/build_template.sh"):
         return DEFAULT  # actually open the real build_template.sh
+
+    # Write-mode guard: absorb any write to paths under the mock work directory
+    # (/sw/…) or to ledger/manifest files so that store-integrity or manifest
+    # code that fires during the test does not attempt real filesystem access.
+    if mode in ("w", "a", "wb", "ab"):
+        if x.startswith("/sw/") or "STORE_CHECKSUMS" in x or "bits-manifest" in x:
+            return _mock_write_cm()
+
     if mode == "r":
         try:
             threshold, result = {
@@ -162,6 +178,10 @@ def dummy_open(x, mode="r", encoding=None, errors=None):
                 f"/sw/{TEST_ARCHITECTURE}/ROOT/v6-08-30-local1/.build-hash": (1, StringIO(TEST_ROOT_BUILD_HASH))
             }[x]
         except KeyError:
+            # Store-integrity ledger reads: return an empty file so that
+            # verify_tarball_checksum treats the entry as absent (no ledger).
+            if "STORE_CHECKSUMS" in x:
+                raise OSError
             return DEFAULT
         if threshold > TIMES_ASKED.get(x, 0):
             result = None
@@ -188,6 +208,29 @@ def dummy_readlink(x):
         f"/sw/TARS/{TEST_ARCHITECTURE}/defaults-release/defaults-release-v1-1.{TEST_ARCHITECTURE}.tar.gz":
         f"../../{TEST_ARCHITECTURE}/store/{TEST_DEFAULT_RELEASE_BUILD_HASH[:2]}/{TEST_DEFAULT_RELEASE_BUILD_HASH}/defaults-release-v1-1.{TEST_ARCHITECTURE}.tar.gz"
     }[x]
+
+
+# Paths that os.path.isfile() should report as existing in the mock world.
+# These correspond to the symlink entries in dummy_readlink that have valid
+# (non-dangling) targets — i.e., every key in the dummy_readlink dict.
+_MOCK_EXISTING_FILES = frozenset({
+    f"/sw/TARS/{TEST_ARCHITECTURE}/defaults-release/defaults-release-v1-1.{TEST_ARCHITECTURE}.tar.gz",
+})
+
+# Save a reference to the real os.path.isfile *before* any test patch
+# replaces it.  dummy_isfile must not call os.path.isfile (which becomes
+# the mock during the test) or it will recurse infinitely.
+_real_isfile = os.path.isfile
+
+def dummy_isfile(x):
+    """Mock for os.path.isfile that returns True for paths known to the mock
+    world (the symlinks in dummy_readlink whose targets "exist"), and falls
+    back to the real os.path.isfile for everything else.  This is needed so
+    that the dangling-symlink guard added to the revision-scan loop in
+    build.py does not treat mock symlinks as dangling."""
+    if x in _MOCK_EXISTING_FILES:
+        return True
+    return _real_isfile(x)
 
 
 def dummy_exists(x):
@@ -221,6 +264,7 @@ class BuildTestCase(unittest.TestCase):
     @patch("bits_helpers.build.exists", new=MagicMock(side_effect=dummy_exists))
     @patch("bits_helpers.utilities.exists", new=MagicMock(side_effect=dummy_exists))
     @patch("os.path.exists", new=MagicMock(side_effect=dummy_exists))
+    @patch("os.path.isfile", new=MagicMock(side_effect=dummy_isfile))
     @patch("bits_helpers.build.dieOnError", new=MagicMock())
     @patch("bits_helpers.utilities.dieOnError", new=MagicMock())
     @patch("bits_helpers.utilities.warning")
@@ -255,6 +299,15 @@ class BuildTestCase(unittest.TestCase):
     @patch("bits_helpers.workarea.is_writeable", new=MagicMock(return_value=True))
     @patch("bits_helpers.build.basename", new=MagicMock(return_value="aliBuild"))
     @patch("bits_helpers.build.install_wrapper_script", new=MagicMock())
+    # Mock out the build manifest so it does not try to write real files into
+    # the mock work directory (/sw/).  The manifest's _save() calls builtins
+    # open() and os.replace() which are not intercepted by the bits_helpers.build
+    # open mock, so we replace the whole class with a MagicMock.
+    @patch("bits_helpers.manifest.BuildManifest", new=MagicMock())
+    # Absorb os.replace and os.symlink in the manifest module so that even if
+    # BuildManifest is somehow constructed it cannot touch the real filesystem.
+    @patch("bits_helpers.manifest.os.replace", new=MagicMock())
+    @patch("bits_helpers.manifest.os.symlink", new=MagicMock())
     def test_coverDoBuild(self, mock_debug, mock_listdir, mock_warning, mock_git_git) -> None:
         mock_git_git.side_effect = dummy_git
         mock_debug.side_effect = lambda *args: None
@@ -300,6 +353,10 @@ class BuildTestCase(unittest.TestCase):
             resources=None,
             resourceMonitoring=False,
             makeflow=False,
+            # Explicitly disable features whose mocking would require additional
+            # filesystem or network setup.
+            storeIntegrity=False,   # no ledger reads/writes
+            provider_policy={},     # no provider position overrides
         )
 
         def mkcall(args):

@@ -5,11 +5,13 @@ import os.path
 import shutil
 import tempfile
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-from bits_helpers.log import dieOnError, debug, error
+from bits_helpers.log import dieOnError, debug, error, warning
 from bits_helpers.download import download
 from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash, asList
+from bits_helpers.checksum import parse_entry, check_file as check_file_checksum
 
 FETCH_LOG_NAME = "fetch-log.txt"
 
@@ -130,8 +132,64 @@ def is_writeable(dirpath):
     return False
 
 
-def checkout_sources(spec, work_dir, reference_sources, containerised_build):
-  """Check out sources to be compiled, potentially from a given reference."""
+def _verify_commit_pin(scm, spec, source_dir: str, enforce_mode: str) -> None:
+  """Check that the checked-out HEAD matches the pinned commit SHA, if any.
+
+  The pin is stored in ``spec["pin_commit"]`` and comes from the recipe
+  repository's ``checksums/<pkgname>.checksum`` file (``tag:`` field).
+
+  Behaviour follows the standard enforcement modes:
+  - ``"off"``     — no check performed (pin is stored but ignored).
+  - ``"warn"``    — mismatch emits a warning; build continues.
+  - ``"enforce"`` — mismatch aborts the build.
+  - ``"print"``   — actual commit SHA is printed; no verification.
+  """
+  pin = spec.get("pin_commit")
+  package = spec.get("package", "?")
+
+  if enforce_mode == "print":
+    try:
+      actual = scm.checkedOutCommitName(source_dir).strip()
+      print("  %s (git): commit:%s" % (package, actual))
+    except Exception:  # noqa: BLE001
+      pass
+    return
+
+  if not pin or enforce_mode == "off":
+    return
+
+  try:
+    actual = scm.checkedOutCommitName(source_dir).strip().lower()
+  except Exception as exc:  # noqa: BLE001
+    warning("Could not read HEAD for %s: %s", package, exc)
+    return
+
+  if actual == pin.lower():
+    debug("Commit pin OK for %s: %s", package, actual[:10])
+    return
+
+  msg = ("Commit pin mismatch for %s: expected %s, got %s"
+         % (package, pin[:10], actual[:10]))
+  if enforce_mode == "enforce":
+    dieOnError(True, msg)
+  else:
+    warning("%s", msg)
+
+
+def checkout_sources(spec, work_dir, reference_sources, containerised_build,
+                     enforce_mode="off", sync_helper=None, parallel_sources=1):
+  """Check out sources to be compiled, potentially from a given reference.
+
+  ``sync_helper`` is an optional sync-backend instance (from
+  ``bits_helpers.sync``).  When provided it is forwarded to every
+  ``download()`` call so that source archives are fetched from / archived
+  to the remote store as described in ``bits_helpers.download.download``.
+
+  ``parallel_sources`` controls how many URLs in the ``sources:`` list are
+  downloaded concurrently.  The default (1) preserves the original sequential
+  behaviour.  Values >1 use a ``ThreadPoolExecutor`` and raise the first
+  exception encountered, preserving the same failure semantics.
+  """
   scm = spec["scm"]
 
   def scm_exec(command, directory=".", check=True):
@@ -153,15 +211,44 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build):
   if spec["commit_hash"] != spec["tag"]:
     symlink(spec["commit_hash"], os.path.join(source_parent_dir, spec["tag"].replace("/", "_")))
 
-  if "patches" in spec:
+  # External checksum store takes precedence over inline comma-suffix values.
+  _source_checksums = spec.get("source_checksums") or {}
+  _patch_checksums = spec.get("patch_checksums") or {}
+
+  if spec.get("patches"):
     os.makedirs(source_dir, exist_ok=True)
-    for patch in spec["patches"]:
-      shutil.copyfile(os.path.join(spec["pkgdir"], 'patches', patch),os.path.join(source_dir, patch))
-  if "sources" in spec:
-    for s in spec["sources"]:
-      download(s,source_dir, work_dir)
-  elif "source" not in spec:
-    # There are no sources, so just create an empty SOURCEDIR.
+    for patch_entry in spec["patches"]:
+      patch_name, inline_checksum = parse_entry(patch_entry)
+      patch_checksum = _patch_checksums.get(patch_name) or inline_checksum
+      dst = os.path.join(source_dir, patch_name)
+      shutil.copyfile(os.path.join(spec["pkgdir"], 'patches', patch_name), dst)
+      check_file_checksum(dst, patch_name, patch_checksum, enforce_mode)
+  if spec.get("sources"):
+    def _download_one(s):
+      url, inline_checksum = parse_entry(s)
+      src_checksum = _source_checksums.get(url) or inline_checksum
+      download(url, source_dir, work_dir, checksum=src_checksum,
+               enforce_mode=enforce_mode, sync_helper=sync_helper)
+
+    if parallel_sources <= 1 or len(spec["sources"]) <= 1:
+      # Sequential path: preserves original behaviour for the common case.
+      for s in spec["sources"]:
+        _download_one(s)
+    else:
+      # Parallel path: submit all source downloads and re-raise the first error.
+      with ThreadPoolExecutor(max_workers=parallel_sources) as pool:
+        futures = {pool.submit(_download_one, s): s for s in spec["sources"]}
+        first_exc = None
+        for fut in as_completed(futures):
+          exc = fut.exception()
+          if exc is not None and first_exc is None:
+            first_exc = exc
+        if first_exc is not None:
+          raise first_exc
+  elif not spec.get("source"):
+    # There are no sources (neither tarball URLs nor a git repo), so just
+    # create an empty SOURCEDIR.  Also handles the Makeflow serialisation path
+    # where source is always present in the JSON but may be an empty string.
     os.makedirs(source_dir, exist_ok=True)
   elif spec["is_devel_pkg"]:
     shutil.rmtree(source_dir, ignore_errors=True)
@@ -179,6 +266,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build):
       tag_ref = "refs/tags/{0}:refs/tags/{0}".format(spec["tag"])
       scm_exec(scm.fetchCmd(spec["source"], tag_ref), source_dir)
       scm_exec(scm.checkoutCmd(spec["tag"]), source_dir)
+    _verify_commit_pin(scm, spec, source_dir, enforce_mode)
   else:
     # Sources are a relative path or URL and don't exist locally yet, so clone
     # and checkout the git repo from there.
@@ -187,3 +275,4 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build):
                                 usePartialClone=True))
     scm_exec(scm.setWriteUrlCmd(spec.get("write_repo", spec["source"])), source_dir)
     scm_exec(scm.checkoutCmd(spec["tag"]), source_dir)
+    _verify_commit_pin(scm, spec, source_dir, enforce_mode)

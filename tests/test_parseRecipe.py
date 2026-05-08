@@ -99,7 +99,7 @@ class TestRecipes(unittest.TestCase):
 
   def test_parseDefaults(self) -> None:
     disable = ["bar"]
-    err, overrides, taps = parseDefaults(disable,
+    err, overrides, taps, _defaults_meta = parseDefaults(disable,
                                         lambda: ({ "disable": "foo",
                                                    "overrides": OrderedDict({"ROOT@master": {"requires": "GCC"}})},
                                                  ""),

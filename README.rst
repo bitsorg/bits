@@ -1,77 +1,176 @@
+Bits - Quick Start Guide
+========================
 
-bits
-========
+Bits is a build orchestration tool for complex software stacks. It
+fetches sources, resolves dependencies, and builds packages in a
+reproducible, parallel environment.
 
-Bits is a tool to build, install and package large software stacks. It originates from the aliBuild tool, originally developed to simplify building and installing ALICE / ALFA software and attempts to make it more general and usable for other communities that share similar problems and have overlapping dependencies. It is under active development and subject to rapid changes and should NOT be used in production environment where stability and backward compatibility is important.
+   Full documentation is available in `REFERENCE.md <REFERENCE.md>`__.
+   This guide covers only the essentials.
 
-Instant gratification with::
+--------------
 
- $ git clone git@github.com:bitsorg/bits.git; cd bits; export PATH=$PWD:$PATH; cd ..
- $ git clone git@github.com:bitsorg/alice.bits.git
- $ cd alice.bits
- $ git clone git@github.com:bitsorg/common.bits.git;
+Installation
+------------
 
-Review and customise bits.rc file (in particular, sw_dir location where all output will be stored)::
+.. code:: bash
 
- $ cat bits.rc
- [bits]
- organisation=ALICE
- [ALICE]
- pkg_prefix=VO_ALICE
- sw_dir=../sw
- repo_dir=.
- search_path=common
+   git clone https://github.com/bitsorg/bits.git
+   cd bits
+   export PATH=$PWD:$PATH          # add bits to your PATH
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -e .                # install Python dependencies
 
-Then::
+| **Requirements**: Python 3.8+, git, and `Environment
+  Modules <https://modules.sourceforge.net/>`__ (``modulecmd``).
+| On macOS: ``brew install modules``
+| On Debian/Ubuntu: ``apt-get install environment-modules``
+| On RHEL/CentOS: ``yum install environment-modules``
 
- $ bits build ROOT
- $ bits enter ROOT/latest
- $ root -b
+--------------
 
-Full documentation at:
+Quick Start (Building ROOT)
+---------------------------
 
-Pre-requisites
-==============
+.. code:: bash
 
-If you are using bits directly from git clone, you should make sure
-you have the dependencies installed. The easiest way to do this is to run::
+   # 1. Clone a recipe repository
+   git clone https://github.com/bitsorg/alice.bits.git
+   cd alice.bits
 
-    # Optional, make a venv so the dependencies are not installed globally
-    python -m venv .venv
-    source .venv/bin/activate
-    pip install -e .
+   # 2. Check that your system is ready
+   bits doctor ROOT
 
+   # 3. Build ROOT and all its dependencies
+   bits build ROOT
 
-Contributing
-============
+   # 4. Enter the built environment
+   bits enter ROOT/latest
 
+   # 5. Run the software
+   root -b
 
-If you want to contribute to bits, you can run the tests with::
+   # 6. Exit the environment
+   exit
 
-    # Optional, make a venv so the dependencies are not installed globally
-    python -m venv .venv
-    source .venv/bin/activate
+--------------
 
-    pip install -e .[test] # Only needed once
-    tox
+Basic Commands
+--------------
 
-The test suite only runs fully on a Linux system, but there is a reduced suite for macOS, runnable with::
++-----------------------------+-----------------------------------------+
+| Command                     | Description                             |
++=============================+=========================================+
+| ``bits build <pkg>``        | Build a package and its dependencies.   |
++-----------------------------+-----------------------------------------+
+| ``bits enter <pkg>/latest`` | Spawn a subshell with the package       |
+|                             | environment loaded.                     |
++-----------------------------+-----------------------------------------+
+| ``bits load <pkg>``         | Print commands to load a module (must   |
+|                             | be ``eval``\ 'd).                       |
++-----------------------------+-----------------------------------------+
+| ``bits q [regex]``          | List available modules.                 |
++-----------------------------+-----------------------------------------+
+| ``bits clean``              | Remove stale build artifacts.           |
++-----------------------------+-----------------------------------------+
+| ``bits doctor <pkg>``       | Verify system requirements.             |
++-----------------------------+-----------------------------------------+
 
-    tox -e darwin
+`Full command reference <REFERENCE.md#16-command-line-reference>`__
 
-You can also run only the unit tests (it's a lot faster than the full suite) with::
+--------------
 
-    pytest
+Configuration
+-------------
 
-To run the documentation locally, you can use::
+Create a ``bits.rc`` file (INI format) to set defaults:
 
-    # Optional, make a venv so the dependencies are not installed globally
-    python -m venv .venv
-    source .venv/bin/activate
+.. code:: ini
 
-    # Install dependencies for the docs, check pyproject.toml for more info
-    pip install -e .[docs]
+   [bits]
+   organisation = ALICE
 
-    # Run the docs
-    cd docs
-    mkdocs serve
+   [ALICE]
+   sw_dir       = /path/to/sw          # output directory
+   repo_dir     = /path/to/recipes     # recipe repository root
+   search_path  = common,extra         # additional recipe dirs (appended .bits)
+
+| Bits looks for ``bits.rc`` in: ``--config FILE`` → ``./bits.rc`` →
+  ``./.bitsrc`` → ``~/.bitsrc``.
+| `Configuration details <REFERENCE.md#4-configuration>`__
+
+--------------
+
+Writing a Recipe
+----------------
+
+`See complete recipe reference <REFERENCE.md#17-recipe-format-reference>`__
+
+--------------
+
+Cleaning Up
+-----------
+
+.. code:: bash
+
+   bits clean                # remove temporary build directories
+   bits clean --aggressive-cleanup   # also remove source mirrors and tarballs
+
+`Cleaning options <REFERENCE.md#7-cleaning-up>`__
+
+--------------
+
+Docker & Remote Builds
+----------------------
+
+.. code:: bash
+
+   # Build inside a Docker container for a specific Linux version
+   bits build --docker --architecture ubuntu2004_x86-64 ROOT
+
+   # Use a remote binary store (S3, HTTP, rsync) to share pre-built artifacts
+   bits build --remote-store s3://mybucket/builds ROOT
+
+`Docker support <REFERENCE.md#21-docker-support>`__ \| `Remote
+stores <REFERENCE.md#20-remote-binary-store-backends>`__
+
+--------------
+
+Development & Testing (Contributing)
+------------------------------------
+
+.. code:: bash
+
+   git clone https://github.com/bitsorg/bits.git
+   cd bits
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -e .[test]
+
+   # Run tests
+   tox                     # full suite on Linux
+   tox -e darwin           # reduced suite on macOS
+   pytest                  # fast unit tests only
+
+`Developer guide <REFERENCE.md#part-ii--developer-guide>`__
+
+--------------
+
+Next Steps
+----------
+
+- `Environment management (``bits enter``, ``load``,
+  ``unload``) <REFERENCE.md#6-managing-environments>`__
+- `Dependency graph visualisation <REFERENCE.md#bits-deps>`__
+- `Repository provider feature (dynamic recipe
+  repos) <REFERENCE.md#13-repository-provider-feature>`__
+- `Defaults profiles <REFERENCE.md#18-defaults-profiles>`__
+- `Design principles &
+  limitations <REFERENCE.md#22-design-principles--limitations>`__
+
+--------------
+
+**Note**: Bits is under active development. For the most up-to-date
+information, see the full `REFERENCE.md <REFERENCE.md>`__.
+

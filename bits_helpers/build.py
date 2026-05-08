@@ -5,9 +5,16 @@ from bits_helpers import __version__
 from bits_helpers.analytics import report_event
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
+from bits_helpers.repo_provider import fetch_repo_providers_iteratively, load_always_on_providers
+from bits_helpers.memory import effective_jobs
+from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
+                                    enforcement_mode as checksum_enforcement_mode,
+                                    write_checksums_enabled,
+                                    checksum_file as compute_checksum_file)
+from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksum_file
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
-from bits_helpers.utilities import resolve_store_path
+from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id, ver_rev
 from bits_helpers.utilities import parseDefaults, readDefaults
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
@@ -46,6 +53,100 @@ def writeAll(fn, txt) -> None:
   f = open(fn, "w")
   f.write(txt)
   f.close()
+
+
+def _generate_create_links_sh(spec, specs, args) -> str:
+  """Generate a self-contained shell script that recreates the dist symlink trees.
+
+  Used by the Makeflow .build rule (--pipeline --makeflow) so that dist-link
+  creation runs inside the build rule instead of requiring Python's ``specs``
+  dict later.  The generated script bakes in all dependency information at
+  Python build time.
+  """
+  from bits_helpers.utilities import effective_arch, ver_rev, resolve_links_path
+  lines = ["#!/usr/bin/env bash", "set -e", ""]
+  for repo_type, requires_key in [
+    ("dist",         "full_requires"),
+    ("dist-direct",  "requires"),
+    ("dist-runtime", "full_runtime_requires"),
+  ]:
+    target_dir = (
+      "{work_dir}/TARS/{arch}/{repo}/{package}/{package}-{ver_rev}"
+      .format(
+        work_dir=args.workDir, arch=args.architecture,
+        repo=repo_type, ver_rev=ver_rev(spec), **spec,
+      )
+    )
+    lines.append("# -- %s --" % repo_type)
+    lines.append("rm -rf %s" % target_dir)
+    lines.append("mkdir -p %s" % target_dir)
+    for pkg in [spec["package"]] + list(spec[requires_key]):
+      dep_spec = specs[pkg]
+      dep_arch = effective_arch(dep_spec, args.architecture)
+      dep_tarball = (
+        "../../../../../TARS/{arch}/store/{short_hash}/{hash}/{package}-{ver_rev}.{arch}.tar.gz"
+        .format(arch=dep_arch, short_hash=dep_spec["hash"][:2],
+                ver_rev=ver_rev(dep_spec), **dep_spec)
+      )
+      lines.append('ln -nfs %s %s/' % (dep_tarball, target_dir))
+    lines.append("")
+  return "\n".join(lines)
+
+
+def _prefetch_package(spec, sync_helper, work_dir, build_arch) -> None:
+  """Background task: prefetch the prebuilt tarball + all source archives.
+
+  Uses the sentinel-file mechanism (``<path>.downloading`` files; see
+  ``bits_helpers.download``) so that the main build loop and Makeflow shell
+  rules can detect in-progress downloads and wait for completion.
+
+  Sentinel for the tarball: ``<tar_hash_dir>.downloading``.
+  Sentinels for source archives: ``<source_file>.downloading`` (managed inside
+  ``download()`` via ``_acquire_download``/``_wait_for_sentinel``).
+
+  This function is designed to be run in a thread pool; any exception is
+  propagated to the executor framework.
+  """
+  from bits_helpers.download import _acquire_download, _wait_for_sentinel, download
+  from bits_helpers.checksum import parse_entry as _pe
+
+  arch = effective_arch(spec, build_arch)
+  tar_hash_dir = os.path.join(work_dir, resolve_store_path(arch, spec["hash"]))
+
+  # --- Tarball prefetch -------------------------------------------------------
+  if not spec.get("is_devel_pkg"):
+    # Try to atomically claim the tarball download slot.
+    # sentinel path: tar_hash_dir + ".downloading"
+    if _acquire_download(tar_hash_dir):
+      try:
+        os.makedirs(tar_hash_dir, exist_ok=True)
+        sync_helper.fetch_tarball(spec)
+      finally:
+        # Always remove the sentinel so the main loop is never left waiting.
+        sentinel = tar_hash_dir + ".downloading"
+        try:
+          os.unlink(sentinel)
+        except OSError:
+          pass
+    else:
+      # Another thread is already fetching this tarball; just wait.
+      _wait_for_sentinel(tar_hash_dir)
+
+  # --- Source archive prefetch ------------------------------------------------
+  # download() already uses _acquire_download/_wait_for_sentinel internally, so
+  # concurrent prefetch threads coordinate automatically.
+  source_parent = os.path.join(work_dir, "SOURCES", spec["package"], spec["version"])
+  checksums = spec.get("source_checksums") or {}
+  for s in spec.get("sources", []):
+    url, inline_checksum = _pe(s)
+    src_checksum = checksums.get(url) or inline_checksum
+    try:
+      download(url, source_parent, work_dir, checksum=src_checksum,
+               enforce_mode="off", sync_helper=sync_helper)
+    except Exception:
+      # Prefetch is best-effort: log the error but don't abort.
+      debug("Prefetch: error downloading %s for %s (will retry at build time)",
+            url, spec.get("package", "?"))
 
 
 def readHashFile(fn):
@@ -119,13 +220,25 @@ def update_git_repos(args, specs, buildOrder):
 # and its direct / indirect dependencies
 def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
   # At the point we call this function, spec has a single, definitive hash.
-  target_dir = "{work_dir}/TARS/{arch}/{repo}/{package}/{package}-{version}-{revision}" \
-    .format(work_dir=args.workDir, arch=args.architecture, repo=repoType, **spec)
+  # Use the caller's real architecture for the dist-link directory: dist links
+  # are per-build-platform even when the package itself is shared.
+  #
+  # ver_rev() is used here (and for each dependency below) so that packages
+  # with force_revision set in the defaults profile produce dist-tree directory
+  # names and tarball symlink targets that match the actual install paths.
+  target_dir = "{work_dir}/TARS/{arch}/{repo}/{package}/{package}-{ver_rev}" \
+    .format(work_dir=args.workDir, arch=args.architecture, repo=repoType,
+            ver_rev=ver_rev(spec), **spec)
   shutil.rmtree(target_dir.encode("utf-8"), ignore_errors=True)
   makedirs(target_dir, exist_ok=True)
   for pkg in [spec["package"]] + list(spec[requiresType]):
-    dep_tarball = "../../../../../TARS/{arch}/store/{short_hash}/{hash}/{package}-{version}-{revision}.{arch}.tar.gz" \
-      .format(arch=args.architecture, short_hash=specs[pkg]["hash"][:2], **specs[pkg])
+    dep_spec = specs[pkg]
+    dep_arch = effective_arch(dep_spec, args.architecture)
+    # ver_rev(dep_spec) accounts for each dependency's own force_revision
+    # setting, which may differ from the top-level package's setting.
+    dep_tarball = "../../../../../TARS/{arch}/store/{short_hash}/{hash}/{package}-{ver_rev}.{arch}.tar.gz" \
+      .format(arch=dep_arch, short_hash=dep_spec["hash"][:2],
+              ver_rev=ver_rev(dep_spec), **dep_spec)
     symlink(dep_tarball, target_dir)
 
 def storeHook(package, specs, defaults) -> bool:
@@ -219,6 +332,16 @@ def storeHashes(package, specs, considerRelocation):
   modifies_full_hash_dicts = ["env", "append_path", "prepend_path"]
   if not spec["is_devel_pkg"] and "track_env" in spec:
     modifies_full_hash_dicts.append("track_env")
+
+  # If this recipe was sourced from a repository provider, fold the provider's
+  # commit hash into every hash variant.  This ensures that upgrading a
+  # provider (which changes its commit hash) triggers a rebuild of every
+  # package whose recipe came from that provider, even if the recipe text
+  # itself did not change.
+  if "recipe_provider_hash" in spec:
+    h_all("recipe_provider:" + spec["recipe_provider_hash"])
+    debug("Folding provider hash %s into hash for %s",
+          spec["recipe_provider_hash"][:10], package)
 
   for key in modifies_full_hash_dicts:
     if key not in spec:
@@ -375,6 +498,28 @@ def better_tarball(spec, old, new):
   return old if hashes.index(old_hash) < hashes.index(new_hash) else new
 
 
+def _pkg_install_path(workDir, architecture, spec):
+  """Return the path ``<workDir>/<arch>[/<family>]/<pkg>/<ver>[-<rev>]``.
+
+  *architecture* should already be the *effective* architecture for *spec*
+  (i.e. the result of ``effective_arch(spec, build_arch)``).  Callers are
+  responsible for that substitution so that shared packages (``architecture:
+  shared``) install under ``sw/shared/…`` rather than the build platform.
+
+  When ``spec["pkg_family"]`` is also set the family directory is inserted
+  between the architecture and the package name.  When it is empty the legacy
+  two-level layout ``<arch>/<pkg>/<version>-<revision>`` is preserved.
+
+  Uses :func:`ver_rev` so that packages with ``force_revision: ""`` in their
+  defaults profile install under ``<version>/`` rather than
+  ``<version>-<revision>/``.
+  """
+  family = spec.get("pkg_family", "")
+  if family:
+    return join(workDir, architecture, family, spec["package"], ver_rev(spec))
+  return join(workDir, architecture, spec["package"], ver_rev(spec))
+
+
 def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
@@ -397,30 +542,64 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # unrelated components are activated.
   # These variables are also required during the build itself, so always
   # generate them.
-  lines.extend((
-    '[ -n "${{{bigpackage}_REVISION}}" ] || '
-    '. "$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}/etc/profile.d/init.sh'
-  ).format(
-    bigpackage=dep.upper().replace("-", "_"),
-    package=quote(specs[dep]["package"]),
-    version=quote(specs[dep]["version"]),
-    revision=quote(specs[dep]["revision"]),
-  ) for dep in spec.get("requires", ()))
+  def _arch_prefix_expr(dep_spec):
+    """Return the shell expression for the install-tree root of *dep_spec*.
+
+    Arch-specific packages use the runtime variable ``$BITS_ARCH_PREFIX`` so
+    that the same init.sh works when relocated (e.g. off CVMFS).
+    Shared packages (``architecture: shared``) always live under the literal
+    directory ``shared/``, so we embed that string directly.
+    """
+    if dep_spec.get("architecture") == SHARED_ARCH:
+      return '"$WORK_DIR/shared"'
+    return '"$WORK_DIR/$BITS_ARCH_PREFIX"'
+
+  def _dep_init_path(dep):
+    dep_spec = specs[dep]
+    family = dep_spec.get("pkg_family", "")
+    family_seg = (quote(family) + "/") if family else ""
+    arch_prefix = _arch_prefix_expr(dep_spec)
+    # ver_rev(dep_spec) is used instead of "{version}-{revision}" so that
+    # dependencies whose revision was forced or dropped via force_revision in
+    # defaults are sourced from the correct path in the generated init.sh.
+    # Using the raw revision string here would produce a trailing dash
+    # ("8.5.0-") when force_revision is set to "" (empty), breaking the
+    # environment for every downstream package.
+    return (
+      '[ -n "${{{bigpackage}_REVISION}}" ] || '
+      '. {arch_prefix}/{family}{package}/{ver_rev}/etc/profile.d/init.sh'
+    ).format(
+      bigpackage=pkg_to_shell_id(dep),
+      arch_prefix=arch_prefix,
+      family=family_seg,
+      package=quote(dep_spec["package"]),
+      ver_rev=quote(ver_rev(dep_spec)),
+    )
+  lines.extend(_dep_init_path(dep) for dep in spec.get("requires", ()))
 
   if post_build:
-    bigpackage = package.upper().replace("-", "_")
+    bigpackage = pkg_to_shell_id(package)
 
     # Set standard variables related to the package itself. These should only
     # be set once the build has actually completed.
+    self_family = spec.get("pkg_family", "")
+    self_family_seg = (quote(self_family) + "/") if self_family else ""
+    self_arch_prefix = _arch_prefix_expr(spec)
     lines.extend(line.format(
       bigpackage=bigpackage,
+      arch_prefix=self_arch_prefix,
+      family=self_family_seg,
       package=quote(spec["package"]),
       version=quote(spec["version"]),
+      # ver_rev() produces "version-revision" or just "version" when
+      # force_revision is set to "" via defaults; the ROOT export path must
+      # match the actual install directory produced by _pkg_install_path().
+      ver_rev=quote(ver_rev(spec)),
       revision=quote(spec["revision"]),
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}',
+      'export {bigpackage}_ROOT={arch_prefix}/{family}{package}/{ver_rev}',
       'export RECC_PREFIX_MAP="${bigpackage}_ROOT=/recc/{bigpackage}_ROOT:$RECC_PREFIX_MAP"',
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
@@ -697,6 +876,12 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
 
 
 def doFinalSync(spec, specs, args, syncHelper):
+  # When --pipeline --makeflow is active, the Makeflow .build rule runs
+  # create_links.sh (dist symlinks) and the .upload rule handles the upload.
+  # Nothing to do here in that mode.
+  if getattr(args, "pipeline", False) and args.makeflow:
+    return
+
   # We need to create 2 sets of links, once with the full requires,
   # once with only direct dependencies, since that's required to
   # register packages.
@@ -708,12 +893,212 @@ def doFinalSync(spec, specs, args, syncHelper):
   # produced in a previous run with a read-only remote store.
   if not spec["revision"].startswith("local"):
     syncHelper.upload_symlinks_and_tarball(spec)
+    # Record the tarball's SHA-256 in the local integrity ledger so that
+    # future recalls from the store can be verified against it.
+    # Only active when --store-integrity is set (or store_integrity = true
+    # in bits.rc); off by default for backward compatibility.
+    if getattr(args, "storeIntegrity", False):
+      from bits_helpers.store_integrity import record_tarball_checksum
+      record_tarball_checksum(spec, args.workDir, args.architecture)
+
+  # ── Manifest recording ─────────────────────────────────────────────────────
+  # Record the completed package in the incremental build manifest so that a
+  # partial build still yields a useful record.  The outcome is:
+  #   • "from_store"         — spec["cachedTarball"] was non-empty (we unpacked
+  #                            a tarball recalled from the remote store).
+  #   • "built_from_source"  — the build script ran; the tarball was produced
+  #                            locally and (for non-local revisions) uploaded.
+  if getattr(args, "manifest", None) is not None:
+    from bits_helpers.utilities import resolve_store_path, effective_arch, ver_rev
+    _cached = spec.get("cachedTarball", "")
+    _outcome = "from_store" if _cached else "built_from_source"
+    # Locate the local tarball for checksum recording.
+    _arch = effective_arch(spec, args.architecture)
+    _tarball_name = "{}-{}.{}.tar.gz".format(
+      spec["package"], ver_rev(spec), _arch)
+    _tarball_path = os.path.join(
+      args.workDir,
+      resolve_store_path(_arch, spec["hash"]),
+      _tarball_name,
+    )
+    args.manifest.add_package(spec, _outcome,
+                               _tarball_path if os.path.isfile(_tarball_path) else None)
+
+  # Touch the sentinel so the cleanup command counts this package as recently used.
+  try:
+    from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
+    from bits_helpers.utilities import ver_rev as _ver_rev
+    _touch_sentinel(args.workDir, args.architecture, spec["package"], _ver_rev(spec))
+  except Exception:
+    pass
+
+
+def _download_time_mode(mode: str) -> str:
+  """Return the enforcement mode to apply *during* source download.
+
+  ``warn`` and ``enforce`` are security gates — they must fire before the
+  compiler ever sees a source file, so they remain active during download.
+
+  ``print`` and ``off`` have no pre-build security purpose: ``print`` is
+  deferred to :func:`_run_post_build_checksum_phase` so that it covers
+  packages whose tarball was already cached (and whose sources were therefore
+  not re-downloaded this run).
+  """
+  return mode if mode in ("warn", "enforce") else "off"
+
+
+def _print_checksums_for_spec(spec, work_dir):
+  """Print computed checksums for all sources and patches of *spec*.
+
+  Reads from the download cache (``SOURCES/cache/``) so that this works even
+  when the package tarball was cached and ``checkout_sources()`` was not called
+  this run.  Missing cache entries are warned about but do not abort.
+  """
+  from bits_helpers.checksum import parse_entry as _pe, checksum_file as _cf
+  from bits_helpers.download import getUrlChecksum as _guc
+  from bits_helpers.utilities import short_commit_hash
+
+  pkgname = spec.get("package", "")
+  version = spec.get("version", "")
+  src_dir = join(work_dir, "SOURCES", pkgname, version, short_commit_hash(spec))
+
+  printed_header = [False]   # mutable cell so the nested helper can set it
+
+  def _header():
+    if not printed_header[0]:
+      print("# %s" % pkgname)
+      printed_header[0] = True
+
+  if "sources" in spec:
+    sources_printed = False
+    for s in spec["sources"]:
+      url, _ = _pe(s)
+      fname = url.rsplit("/", 1)[-1]
+      url_hash = _guc(url)
+      # Primary cache location written by download(); fall back to src_dir.
+      candidate = join(work_dir, "SOURCES", "cache", url_hash[:2], url_hash, fname)
+      if not exists(candidate):
+        candidate = join(work_dir, "TMP", url_hash, fname)   # legacy path
+      if not exists(candidate):
+        candidate = join(src_dir, fname)
+      if exists(candidate):
+        _header()
+        if not sources_printed:
+          print("sources:")
+          sources_printed = True
+        print("  %s: %s" % (url, _cf(candidate)))
+      else:
+        warning("--print-checksums: cannot find cached source for %s in %s",
+                pkgname, url)
+
+  if "patches" in spec:
+    patches_printed = False
+    for patch_entry in spec["patches"]:
+      patch_name, _ = _pe(patch_entry)
+      patch_path = join(spec.get("pkgdir", ""), "patches", patch_name)
+      if exists(patch_path):
+        _header()
+        if not patches_printed:
+          print("patches:")
+          patches_printed = True
+        print("  %s: %s" % (patch_name, _cf(patch_path)))
+
+  if printed_header[0]:
+    print()   # blank line between packages
+
+
+def _run_post_build_checksum_phase(specs, work_dir, do_print, do_write):
+  """Run print / write checksum operations for *all* packages in one pass.
+
+  Called after the main build loop so that:
+
+  * Output from ``--print-checksums`` appears as a single consolidated block
+    rather than being scattered through the build log.
+  * Both operations cover packages whose tarball was already cached (and whose
+    sources were therefore not re-downloaded this run), as long as the source
+    files are still present in ``SOURCES/cache/``.
+
+  ``warn`` / ``enforce`` verification is intentionally **not** handled here —
+  those modes are security gates that run during download via
+  :func:`_download_time_mode`.
+  """
+  if do_print:
+    banner("Checksums")
+  for spec in specs:
+    if do_print:
+      _print_checksums_for_spec(spec, work_dir)
+    if do_write:
+      _write_checksums_for_spec(spec, work_dir)
+
+
+def _write_checksums_for_spec(spec, work_dir):
+  """Compute and write the checksums/<pkg>.checksum file for *spec*.
+
+  Called when ``--write-checksums`` is active.  Computes the actual SHA-256 of
+  every downloaded source tarball and patch file, reads back the current HEAD
+  commit for ``source:`` + ``tag:`` packages, and writes the result to
+  ``<pkgdir>/checksums/<pkgname>.checksum``.
+
+  Silently skips entries whose files cannot be found (e.g. cached tarballs that
+  were not re-downloaded).
+  """
+  from bits_helpers.checksum_store import write_checksum_file as _write_ck
+  from bits_helpers.utilities import short_commit_hash
+
+  pkgdir = spec.get("pkgdir", "")
+  pkgname = spec.get("package", "")
+  if not pkgdir or not pkgname:
+    return
+
+  store = {"tag": None, "sources": {}, "patches": {}}
+
+  # --- sources (downloaded tarballs) ----------------------------------------
+  source_parent = join(work_dir, "SOURCES", pkgname, spec.get("version", ""))
+  src_dir = join(source_parent, short_commit_hash(spec))
+  if "sources" in spec:
+    from bits_helpers.checksum import parse_entry as _pe
+    from bits_helpers.download import getUrlChecksum as _guc
+    import hashlib
+    for s in spec["sources"]:
+      url, _ = _pe(s)
+      # download() stores files under a subdirectory keyed by md5(url)
+      url_hash = _guc(url)
+      from os.path import basename as _bn
+      fname = _bn(url)
+      candidate = join(work_dir, "TMP", url_hash, fname)
+      if not exists(candidate):
+        candidate = join(src_dir, fname)
+      if exists(candidate):
+        store["sources"][url] = compute_checksum_file(candidate)
+      else:
+        warning("--write-checksums: could not find downloaded file for %s", url)
+
+  # --- patches --------------------------------------------------------------
+  if "patches" in spec:
+    from bits_helpers.checksum import parse_entry as _pe
+    for patch_entry in spec["patches"]:
+      patch_name, _ = _pe(patch_entry)
+      patch_path = join(src_dir, patch_name)
+      if exists(patch_path):
+        store["patches"][patch_name] = compute_checksum_file(patch_path)
+
+  # --- git commit pin -------------------------------------------------------
+  if "source" in spec and "tag" in spec:
+    scm = spec.get("scm")
+    if scm is not None:
+      try:
+        store["tag"] = scm.checkedOutCommitName(src_dir).strip()
+      except Exception as exc:  # noqa: BLE001
+        warning("--write-checksums: could not read HEAD for %s: %s", pkgname, exc)
+
+  if store["tag"] or store["sources"] or store["patches"]:
+    path = _write_ck(pkgdir, pkgname, store)
+    info("Wrote checksum file: %s", path)
+  else:
+    debug("--write-checksums: nothing to record for %s", pkgname)
 
 
 def doBuild(args, parser):
-  syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
-                               args.workDir, getattr(args, "insecure", False))
-
   packages = args.pkgname
   specs = {}
   buildOrder = []
@@ -736,10 +1121,27 @@ def doBuild(args, parser):
     branch_stream = ""
 
   defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
-  (err, overrides, taps) = parseDefaults(args.disable,
+  (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
                                         defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)
   makedirs(join(workDir, "SPECS"), exist_ok=True)
+
+  # When any loaded defaults file sets ``qualify_arch: true`` the install tree
+  # is placed under a combined architecture string, e.g. "slc7_x86-64-dev-gcc13"
+  # instead of "slc7_x86-64".  This lets multiple defaults combinations coexist
+  # in the same work directory.  The original raw architecture is preserved so
+  # that it can be passed as $ARCHITECTURE to the build script (where it is
+  # used, for example, to detect macOS via ${ARCHITECTURE:0:3}).
+  raw_architecture = args.architecture
+  args.architecture = compute_combined_arch(defaultsMeta, args.defaults, raw_architecture)
+  if args.architecture != raw_architecture:
+    debug("qualify_arch active: using combined architecture %s (raw: %s)",
+          args.architecture, raw_architecture)
+
+  # syncHelper is constructed after defaults loading so that it receives the
+  # (potentially combined) architecture string.
+  syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
+                               args.workDir, getattr(args, "insecure", False))
 
   # If the bits workdir contains a .sl directory (or .git/sl for git repos
   # with Sapling enabled), we use Sapling as SCM. Otherwise, we default to git
@@ -768,6 +1170,72 @@ def doBuild(args, parser):
   extra_env = {"BITS_CONFIG_DIR": "/pkgdist.bits" if args.docker else os.path.abspath(args.configDir)}
   extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
 
+  # ── Repository-provider discovery ─────────────────────────────────────────
+  # Phase 1 – Always-on providers: recipes with ``always_load: true`` (and
+  # optionally the auto-synthesised ``bits-providers`` package built from
+  # $BITS_PROVIDERS / bits.rc).  These are cloned *before* the iterative scan
+  # so that the recipes they contain are visible to getPackageList right away.
+  always_on_dirs = load_always_on_providers(
+    config_dir        = args.configDir,
+    work_dir          = workDir,
+    reference_sources = args.referenceSources,
+    fetch_repos       = args.fetchRepos,
+    bits_providers    = getattr(args, "bits_providers", None),
+    taps              = taps,
+    provider_policy   = getattr(args, "provider_policy", {}),
+  )
+
+  # Phase 2 – Iterative scan: walk the top-level package list for any packages
+  # that carry ``provides_repository: true`` and clone them into the local REPOS
+  # cache, extending BITS_PATH.  A freshly-cloned provider may itself contain
+  # further providers, which are discovered and cloned on the next pass.
+  #
+  # The scan is also seeded with any top-level ``requires`` / ``build_requires``
+  # declared directly in the active defaults file(s).  This allows a defaults
+  # file to trigger provider loading with the ordinary ``requires`` field:
+  #
+  #   requires:
+  #     - my-org-recipes   # a recipe whose .sh declares provides_repository: true
+  #
+  # ``filterByArchitectureDefaults`` is intentionally skipped here: being
+  # conservative (pre-loading a provider on every architecture) is safe and
+  # avoids a chicken-and-egg where the provider's own recipes would be needed
+  # to evaluate the architecture condition.
+  defaults_provider_seed = (
+    list(defaultsMeta.get("requires", []))
+    + list(defaultsMeta.get("build_requires", []))
+  )
+
+  provider_dirs = fetch_repo_providers_iteratively(
+    packages          = packages + defaults_provider_seed,
+    config_dir        = args.configDir,
+    work_dir          = workDir,
+    reference_sources = args.referenceSources,
+    fetch_repos       = args.fetchRepos,
+    taps              = taps,
+    provider_policy   = getattr(args, "provider_policy", {}),
+  )
+  provider_dirs.update(always_on_dirs)
+
+  # ── Build manifest initialisation ─────────────────────────────────────────
+  # The manifest is always written; it records every package, provider, and
+  # checksum so the build can be reproduced later with --from-manifest.
+  from bits_helpers.manifest import BuildManifest
+  args.manifest = BuildManifest(
+    work_dir          = workDir,
+    requested_packages= packages,
+    architecture      = args.architecture,
+    defaults          = args.defaults,
+    config_dir        = args.configDir,
+    config_commit     = os.environ.get("BITS_DIST_HASH", ""),
+    # Use the last (top-level) requested package as the filename identifier.
+    # This mirrors how mainPackage = buildOrder[-1] is resolved later; using
+    # packages[-1] here avoids having to delay manifest creation until after
+    # the full dependency graph has been resolved.
+    target            = packages[-1] if packages else "",
+  )
+  args.manifest.add_providers(provider_dirs)
+
   with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist.bits:ro"] if args.docker else []) as getstatusoutput_docker:
     def performPreferCheckWithTempDir(pkg, cmd):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
@@ -779,7 +1247,7 @@ def doBuild(args, parser):
                      configDir               = args.configDir,
                      preferSystem            = args.preferSystem,
                      noSystem                = args.noSystem,
-                     architecture            = args.architecture,
+                     architecture            = raw_architecture,
                      disable                 = args.disable,
                      force_rebuild           = args.force_rebuild,
                      defaults                = args.defaults,
@@ -788,7 +1256,9 @@ def doBuild(args, parser):
                      performValidateDefaults = lambda spec: validateDefaults(spec, args.defaults),
                      overrides               = overrides,
                      taps                    = taps,
-                     log                     = debug)
+                     log                     = debug,
+                     provider_dirs          = provider_dirs,
+                     defaults_meta           = defaultsMeta)
 
   dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
              "Specified default `%s' is not compatible with the packages you want to build.\n"
@@ -1026,6 +1496,12 @@ def doBuild(args, parser):
   if args.dryRun:
     info("--dry-run / -n specified. Not building.")
     return
+
+  # Validate --pipeline: it requires --makeflow.
+  if getattr(args, "pipeline", False) and not args.makeflow:
+    warning("--pipeline requires --makeflow; disabling --pipeline for this run.")
+    args.pipeline = False
+
   # We now iterate on all the packages, making sure we build correctly every
   # single one of them. This is done this way so that the second time we run we
   # can check if the build was consistent and if it is, we bail out.
@@ -1039,6 +1515,11 @@ def doBuild(args, parser):
   ), args.architecture)
 
   buildList=[]
+  # Specs collected during the build loop for the post-build checksum phase.
+  # Every processed spec is appended here, including those whose tarball was
+  # already cached, so that --print-checksums / --write-checksums (and the
+  # equivalent defaults-profile fields) cover the full build closure.
+  specs_for_checksum_phase = []
   # If we are building only the dependencies, the last package in
   # the build order can be considered done.
   if args.onlyDeps and len(buildOrder) > 1:
@@ -1050,6 +1531,40 @@ def doBuild(args, parser):
     from bits_helpers.scheduler import Scheduler
     from bits_helpers.log import logger
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources)
+
+  # --- Stale sentinel cleanup -------------------------------------------------
+  # Remove any leftover *.downloading sentinels from a previous run that was
+  # killed before it could clean up.  This must happen BEFORE launching the
+  # prefetch pool so that no live sentinels are confused with stale ones.
+  # Use os.walk rather than glob(..., recursive=True) to avoid the mock in tests.
+  if os.path.isdir(workDir):
+    for _root, _dirs, _files in os.walk(workDir):
+      for _fname in _files:
+        if _fname.endswith(".downloading"):
+          _s = os.path.join(_root, _fname)
+          debug("Removing stale sentinel: %s", _s)
+          try:
+            os.unlink(_s)
+          except OSError:
+            pass
+
+  # --- Optional prefetch pool -------------------------------------------------
+  _prefetch_workers = getattr(args, "prefetchWorkers", 0)
+  _prefetch_executor = None
+  if _prefetch_workers > 0 and buildOrder and not isinstance(syncHelper,
+      __import__("bits_helpers.sync", fromlist=["NoRemoteSync"]).NoRemoteSync):
+    debug("Starting %d prefetch worker(s)", _prefetch_workers)
+    _prefetch_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=_prefetch_workers,
+        thread_name_prefix="bits-prefetch",
+    )
+    for _pkg in buildOrder:
+      _pspec = specs[_pkg]
+      _prefetch_executor.submit(_prefetch_package, _pspec, syncHelper, workDir, args.architecture)
+    # Do NOT call executor.shutdown() here — we let it run in the background
+    # and join lazily via a daemon-thread finaliser registered below.
+    import atexit
+    atexit.register(lambda ex=_prefetch_executor: ex.shutdown(wait=False, cancel_futures=True))
 
   while buildOrder:
     p = buildOrder.pop(0)
@@ -1063,9 +1578,26 @@ def doBuild(args, parser):
     debug("Calculating hash.")
     debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
     storeHook(p, specs, args.defaults[0])
-    storeHashes(p, specs, considerRelocation=args.architecture.startswith("osx"))
+    storeHashes(p, specs, considerRelocation=(
+      raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH
+    ))
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
+
+    # Warn if a package declares architecture: shared but has arch-specific
+    # deps — the shared label would be misleading in that case because its
+    # hash (and therefore install path) will differ across platforms.
+    if spec.get("architecture") == SHARED_ARCH:
+      arch_specific_deps = [
+        dep for dep in spec.get("requires", [])
+        if dep != "defaults-release" and specs[dep].get("architecture") != SHARED_ARCH
+      ]
+      if arch_specific_deps:
+        warning(
+          "Package %s declares 'architecture: shared' but depends on "
+          "arch-specific package(s): %s. Its hash may differ across platforms.",
+          spec["package"], ", ".join(arch_specific_deps),
+        )
 
     if spec["is_devel_pkg"] and getattr(syncHelper, "writeStore", None):
       warning("Disabling remote write store from now since %s is a development package.", spec["package"])
@@ -1097,32 +1629,58 @@ def doBuild(args, parser):
     # available.
     debug("Checking for packages already built.")
 
-    # Make sure this regex broadly matches the regex below that parses the
-    # symlink's target. Overly-broadly matching the version, for example, can
-    # lead to false positives that trigger a warning below.
-    links_regex = re.compile(r"{package}-{version}-(?:local)?[0-9]+\.{arch}\.tar\.gz".format(
-      package=re.escape(spec["package"]),
-      version=re.escape(spec["version"]),
-      arch=re.escape(args.architecture),
-    ))
-    symlink_dir = join(workDir, "TARS", args.architecture, spec["package"])
-    try:
-      packages = [join(symlink_dir, symlink_path)
-                  for symlink_path in os.listdir(symlink_dir)
-                  if links_regex.fullmatch(symlink_path)]
-    except OSError:
-      # If symlink_dir does not exist or cannot be accessed, return an empty
-      # list of packages.
-      packages = []
-    del links_regex, symlink_dir
+    # ---- force_revision bypass -----------------------------------------------
+    # When force_revision is provided in defaults-*.sh (per-package overrides:
+    # block or top-level global field), skip the symlink-scanning and revision
+    # counter logic entirely.  The content-addressed store still uses the
+    # package hash, so binary integrity is preserved regardless of the label.
+    #
+    # Risk: if force_revision is "" (empty), two incompatible builds of the
+    # same version will share the same install path (<pkg>/<version>/) and the
+    # convenience symlink will be silently overwritten by the later build.
+    # The hash-addressed store path is NOT affected.
+    if "force_revision" in spec:
+      forced = spec["force_revision"]   # "" → revision-less; "X" → literal
+      spec["revision"] = forced
+      if not forced:
+        warning(
+          "Package %s: force_revision is empty — install path will omit "
+          "the revision suffix (%s/%s). If two incompatible builds of "
+          "this version coexist the convenience symlink will be silently "
+          "overwritten.", spec["package"], spec["package"], spec["version"],
+        )
+      # Hash was already computed; align spec["hash"] to the remote store
+      # (forced revisions are never prefixed with "local").
+      spec["hash"] = spec["remote_revision_hash"]
+    else:
+      # Normal revision-counter logic: scan existing symlinks and find the
+      # next free (or already-matching) revision number.
+      #
+      # Make sure this regex broadly matches the regex below that parses the
+      # symlink's target. Overly-broadly matching the version, for example,
+      # can lead to false positives that trigger a warning below.
+      spec_arch = effective_arch(spec, args.architecture)
+      # The revision group is made optional ((?:-(?:local)?[0-9]+)?) so that
+      # symlinks created when force_revision="" (revision-less path) are also
+      # picked up by subsequent normal builds of the same version.
+      links_regex = re.compile(
+        r"{package}-{version}(?:-(?:local)?[0-9]+)?\.{arch}\.tar\.gz".format(
+          package=re.escape(spec["package"]),
+          version=re.escape(spec["version"]),
+          arch=re.escape(spec_arch),
+        ))
+      symlink_dir = join(workDir, "TARS", spec_arch, spec["package"])
+      try:
+        packages = [join(symlink_dir, symlink_path)
+                    for symlink_path in os.listdir(symlink_dir)
+                    if links_regex.fullmatch(symlink_path)]
+      except OSError:
+        # If symlink_dir does not exist or cannot be accessed, return an empty
+        # list of packages.
+        packages = []
+      del links_regex, symlink_dir
 
-    # In case there is no installed software, revision is 1
-    # If there is already an installed package:
-    # - Remove it if we do not know its hash
-    # - Use the latest number in the version, to decide its revision
-    debug("Packages already built using this version\n%s", "\n".join(packages))
-
-    # Calculate the build_family for the package
+    # Calculate the build_family for the package.
     #
     # If the package is a devel package, we need to associate it a devel
     # prefix, either via the -z option or using its checked out branch. This
@@ -1144,80 +1702,105 @@ def doBuild(args, parser):
     if spec["package"] == mainPackage:
       mainBuildFamily = spec["build_family"]
 
-    candidate = None
-    busyRevisions = set()
-    # We can tell that the remote store is read-only if it has an empty or
-    # no writeStore property. See below for explanation of why we need this.
-    revisionPrefix = "" if getattr(syncHelper, "writeStore", "") else "local"
-    for symlink_path in packages:
-      realPath = readlink(symlink_path)
-      matcher = "../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/{package}-{version}-((?:local)?[0-9]+).{arch}.tar.gz$" \
-        .format(arch=args.architecture, **spec)
-      match = re.match(matcher, realPath)
-      if not match:
-        warning("Symlink %s -> %s couldn't be parsed", symlink_path, realPath)
-        continue
-      rev_hash, revision = match.groups()
+    if "force_revision" not in spec:
+      # Normal revision-counter path: scan existing symlinks to find a reusable
+      # or the next free revision number.
+      # In case there is no installed software, revision is 1
+      # If there is already an installed package:
+      # - Remove it if we do not know its hash
+      # - Use the latest number in the version, to decide its revision
+      debug("Packages already built using this version\n%s", "\n".join(packages))
 
-      if not (("local" in revision and rev_hash in spec["local_hashes"]) or
-              ("local" not in revision and rev_hash in spec["remote_hashes"])):
-        # This tarball's hash doesn't match what we need. Remember that its
-        # revision number is taken, in case we assign our own later.
-        if revision.startswith(revisionPrefix) and revision[len(revisionPrefix):].isdigit():
-          # Strip revisionPrefix; the rest is an integer. Convert it to an int
-          # so we can get a sensible max() existing revision below.
-          busyRevisions.add(int(revision[len(revisionPrefix):]))
-        continue
+      candidate = None
+      busyRevisions = set()
+      # We can tell that the remote store is read-only if it has an empty or
+      # no writeStore property. See below for explanation of why we need this.
+      revisionPrefix = "" if getattr(syncHelper, "writeStore", "") else "local"
+      for symlink_path in packages:
+        # Skip dangling symlinks: a missing target means the tarball was deleted
+        # from the store (e.g. by a partial cleanup) and cannot be reused.
+        # readlink() succeeds even for dangling symlinks, so we must check
+        # existence explicitly.
+        if not os.path.isfile(symlink_path):
+          warning("Ignoring dangling symlink in tarball directory: %s", symlink_path)
+          continue
+        realPath = readlink(symlink_path)
+        # The revision group is optional ((?:-((?:local)?[0-9]+))?) to handle
+        # symlinks previously created with force_revision="" (revision-less).
+        matcher = (
+          r"../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/"
+          r"{package}-{version}(?:-((?:local)?[0-9]+))?\.{arch}\.tar\.gz$"
+        ).format(arch=spec_arch, **spec)
+        match = re.match(matcher, realPath)
+        if not match:
+          warning("Symlink %s -> %s couldn't be parsed", symlink_path, realPath)
+          continue
+        rev_hash, revision = match.groups()
+        if revision is None:
+          # Symlink points to a revision-less tarball (force_revision="").
+          # Treat it as a busy slot so we do not overwrite it inadvertently.
+          continue
 
-      # Don't re-use local revisions when we have a read-write store, so that
-      # packages we'll upload later don't depend on local revisions.
-      if getattr(syncHelper, "writeStore", False) and "local" in revision:
-        debug("Skipping revision %s because we want to upload later", revision)
-        continue
+        if not (("local" in revision and rev_hash in spec["local_hashes"]) or
+                ("local" not in revision and rev_hash in spec["remote_hashes"])):
+          # This tarball's hash doesn't match what we need. Remember that its
+          # revision number is taken, in case we assign our own later.
+          if revision.startswith(revisionPrefix) and revision[len(revisionPrefix):].isdigit():
+            # Strip revisionPrefix; the rest is an integer. Convert it to an int
+            # so we can get a sensible max() existing revision below.
+            busyRevisions.add(int(revision[len(revisionPrefix):]))
+          continue
 
-      # If we have an hash match, we use the old revision for the package
-      # and we do not need to build it. Because we prefer reusing remote
-      # revisions, only store a local revision if there is no other candidate
-      # for reuse yet.
-      candidate = better_tarball(spec, candidate, (revision, rev_hash, symlink_path))
+        # Don't re-use local revisions when we have a read-write store, so that
+        # packages we'll upload later don't depend on local revisions.
+        if getattr(syncHelper, "writeStore", False) and "local" in revision:
+          debug("Skipping revision %s because we want to upload later", revision)
+          continue
 
-    try:
-      revision, rev_hash, symlink_path = candidate
-    except TypeError:  # raised if candidate is still None
-      # If we can't reuse an existing revision, assign the next free revision
-      # to this package. If we're not uploading it, name it localN to avoid
-      # interference with the remote store -- in case this package is built
-      # somewhere else, the next revision N might be assigned there, and would
-      # conflict with our revision N.
-      # The code finding busyRevisions above already ensures that revision
-      # numbers start with revisionPrefix, and has left us plain ints.
-      spec["revision"] = revisionPrefix + str(
-        min(set(range(1, max(busyRevisions) + 2)) - busyRevisions)
-        if busyRevisions else 1)
-    else:
-      spec["revision"] = revision
-      # Remember what hash we're actually using.
-      spec["local_revision_hash" if revision.startswith("local")
-           else "remote_revision_hash"] = rev_hash
-      if spec["is_devel_pkg"] and "incremental_recipe" in spec:
-        spec["obsolete_tarball"] = symlink_path
+        # If we have an hash match, we use the old revision for the package
+        # and we do not need to build it. Because we prefer reusing remote
+        # revisions, only store a local revision if there is no other candidate
+        # for reuse yet.
+        candidate = better_tarball(spec, candidate, (revision, rev_hash, symlink_path))
+
+      try:
+        revision, rev_hash, symlink_path = candidate
+      except TypeError:  # raised if candidate is still None
+        # If we can't reuse an existing revision, assign the next free revision
+        # to this package. If we're not uploading it, name it localN to avoid
+        # interference with the remote store -- in case this package is built
+        # somewhere else, the next revision N might be assigned there, and would
+        # conflict with our revision N.
+        # The code finding busyRevisions above already ensures that revision
+        # numbers start with revisionPrefix, and has left us plain ints.
+        spec["revision"] = revisionPrefix + str(
+          min(set(range(1, max(busyRevisions) + 2)) - busyRevisions)
+          if busyRevisions else 1)
       else:
-        debug("Package %s with hash %s is already found in %s. Not building.",
-              p, rev_hash, symlink_path)
-        # Ignore errors here, because the path we're linking to might not
-        # exist (if this is the first run through the loop). On the second run
-        # through, the path should have been created by the build process.
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               "{wd}/{arch}/{package}/latest-{build_family}".format(wd=workDir, arch=args.architecture, **spec))
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               "{wd}/{arch}/{package}/latest".format(wd=workDir, arch=args.architecture, **spec))
+        spec["revision"] = revision
+        # Remember what hash we're actually using.
+        spec["local_revision_hash" if revision.startswith("local")
+             else "remote_revision_hash"] = rev_hash
+        if spec["is_devel_pkg"] and "incremental_recipe" in spec:
+          spec["obsolete_tarball"] = symlink_path
+        else:
+          debug("Package %s with hash %s is already found in %s. Not building.",
+                p, rev_hash, symlink_path)
+          # Ignore errors here, because the path we're linking to might not
+          # exist (if this is the first run through the loop). On the second run
+          # through, the path should have been created by the build process.
+          call_ignoring_oserrors(symlink, ver_rev(spec),
+                                 join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)),
+                                      "latest-{build_family}".format(**spec)))
+          call_ignoring_oserrors(symlink, ver_rev(spec),
+                                 join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)), "latest"))
 
-    # Now we know whether we're using a local or remote package, so we can set
-    # the proper hash and tarball directory.
-    if spec["revision"].startswith("local"):
-      spec["hash"] = spec["local_revision_hash"]
-    else:
-      spec["hash"] = spec["remote_revision_hash"]
+      # Now we know whether we're using a local or remote package, so we can
+      # set the proper hash and tarball directory.
+      if spec["revision"].startswith("local"):
+        spec["hash"] = spec["local_revision_hash"]
+      else:
+        spec["hash"] = spec["remote_revision_hash"]
 
     # We do not use the override for devel packages, because we
     # want to avoid having to rebuild things when the /tmp gets cleaned.
@@ -1241,12 +1824,13 @@ def doBuild(args, parser):
       if develPrefix:
         call_ignoring_oserrors(symlink, spec["hash"], join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + develPrefix))
       # Last package built gets a "latest" mark.
-      call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                             join(workDir, args.architecture, spec["package"], "latest"))
+      call_ignoring_oserrors(symlink, ver_rev(spec),
+                             join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)), "latest"))
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               join(workDir, args.architecture, spec["package"], "latest-" + spec["build_family"]))
+        call_ignoring_oserrors(symlink, ver_rev(spec),
+                               join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)),
+                                    "latest-" + spec["build_family"]))
 
     # Check if this development package needs to be rebuilt.
     if spec["is_devel_pkg"]:
@@ -1257,15 +1841,15 @@ def doBuild(args, parser):
 
     # Now that we have all the information about the package we want to build, let's
     # check if it wasn't built / unpacked already.
-    hashPath= "{}/{}/{}/{}-{}".format(workDir,
-                                  args.architecture,
-                                  spec["package"],
-                                  spec["version"],
-                                  spec["revision"])
+    hashPath = _pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)
     hashFile = hashPath + "/.build-hash"
-    # If the folder is a symlink, we consider it to be to CVMFS and
-    # take the hash for good.
-    if os.path.islink(hashPath):
+    # If the folder is a symlink that resolves to an existing directory,
+    # we consider it to be on CVMFS and take the hash for good.
+    # We must also check os.path.isdir() (which follows symlinks) so that
+    # dangling symlinks — e.g. created by a previous --makeflow run that
+    # wrote fetch_symlinks() entries before the actual tarball existed —
+    # are NOT mistaken for a successfully installed package.
+    if os.path.islink(hashPath) and os.path.isdir(hashPath):
       fileHash = spec["hash"]
     else:
       fileHash = readHashFile(hashFile)
@@ -1306,6 +1890,15 @@ def doBuild(args, parser):
           rmdir(join(workDir, "INSTALLROOT"))
         except Exception:
           pass
+      # Record in the build manifest that this package was already installed.
+      if getattr(args, "manifest", None) is not None:
+        args.manifest.add_package(spec, "already_installed")
+      # Touch the sentinel so the cleanup command knows this package was used.
+      try:
+        from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
+        _touch_sentinel(workDir, args.architecture, spec["package"], ver_rev(spec))
+      except Exception:
+        pass
       continue
 
     if fileHash != "0":
@@ -1315,18 +1908,30 @@ def doBuild(args, parser):
     # directory contains files with non-ASCII names, e.g. Golang/Boost.
     shutil.rmtree(dirname(hashFile).encode("utf-8"), True)
 
-    tar_hash_dir = os.path.join(workDir, resolve_store_path(args.architecture, spec["hash"]))
+    tar_hash_dir = os.path.join(workDir, resolve_store_path(effective_arch(spec, args.architecture), spec["hash"]))
     debug("Looking for cached tarball in %s", tar_hash_dir)
     spec["cachedTarball"] = ""
     if not spec["is_devel_pkg"]:
+      # If a prefetch worker is downloading this tarball, wait for it to finish
+      # before we try to use the result.  The sentinel (tar_hash_dir + ".downloading")
+      # is only created when a prefetch pool is active, so skip the check otherwise.
+      if _prefetch_workers > 0:
+        from bits_helpers.download import _wait_for_sentinel as _wfs
+        _wfs(tar_hash_dir)
       syncHelper.fetch_tarball(spec)
-      tarballs = glob(os.path.join(tar_hash_dir, "*gz"))
+      tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
+                  if os.path.isfile(t)]  # skip dangling symlinks
       spec["cachedTarball"] = tarballs[0] if len(tarballs) else ""
       debug("Found tarball in %s" % spec["cachedTarball"]
             if spec["cachedTarball"] else "No cache tarballs found")
+      # Verify the recalled tarball against the local integrity ledger.
+      # Only active when --store-integrity is set (or store_integrity = true
+      # in bits.rc); off by default for backward compatibility.
+      if spec["cachedTarball"] and getattr(args, "storeIntegrity", False):
+        from bits_helpers.store_integrity import verify_tarball_checksum
+        verify_tarball_checksum(spec, workDir, args.architecture, spec["cachedTarball"])
 
     # The actual build script.
-    debug("spec = %r", spec)
     
     fp = open(dirname(realpath(__file__))+'/build_template.sh')
     cmd_raw = fp.read()
@@ -1335,15 +1940,50 @@ def doBuild(args, parser):
     container_workDir = ""
     cachedTarball = spec["cachedTarball"]
     if args.docker:
-      container_workDir = "/container/bits/sw" if not args.containerUseWorkDir else workDir
-      if not args.containerUseWorkDir:
-        cachedTarball = re.sub("^" + workDir, container_workDir, cachedTarball)
+      cvmfs_prefix = getattr(args, "cvmfsPrefix", None)
+      if cvmfs_prefix:
+        # When --cvmfs-prefix is set, mount workDir at the CVMFS path inside
+        # the container.  The build system then compiles packages with their
+        # final CVMFS install prefix, eliminating the relocation step on publish.
+        container_workDir = cvmfs_prefix
+        # Adjust any cached tarball path the same way.
+        cachedTarball = re.sub("^" + re.escape(workDir), container_workDir, cachedTarball)
+      elif not args.containerUseWorkDir:
+        container_workDir = "/container/bits/sw"
+        cachedTarball = re.sub("^" + re.escape(workDir), container_workDir, cachedTarball)
+      else:
+        container_workDir = workDir
+
+    # Resolve the effective checksum mode for this package, taking into account
+    # CLI flags, per-recipe enforce_checksums, and the defaults-profile
+    # checksum_mode field (via defaultsMeta).
+    effective_checksum_mode = checksum_enforcement_mode(spec, args, defaultsMeta)
 
     if not cachedTarball:
-      checkout_sources(spec, workDir, args.referenceSources, args.docker)
+      # During download only apply warn/enforce — these are security gates that
+      # must fire before compilation.  print/write are deferred to the
+      # post-build phase so they work for already-cached packages too.
+      #
+      # In Makeflow mode we skip the sequential checkout here and instead
+      # generate a .checkout Makeflow rule per package so that all clones and
+      # archive downloads run in parallel as part of the DAG.
+      if not args.makeflow:
+        checkout_sources(spec, workDir, args.referenceSources, args.docker,
+                         enforce_mode=_download_time_mode(effective_checksum_mode),
+                         sync_helper=syncHelper,
+                         parallel_sources=getattr(args, "parallelSources", 1))
 
-    scriptDir = join(workDir, "SPECS", args.architecture, spec["package"],
-                     spec["version"] + "-" + spec["revision"])
+    # Collect every processed spec for the post-build checksum phase.
+    # This includes specs whose tarball was cached (cachedTarball != "").
+    specs_for_checksum_phase.append(spec)
+
+    family = spec.get("pkg_family", "")
+    # ver_rev(spec) is used so that the SPECS directory name matches the actual
+    # install path when force_revision is set (e.g. "" drops the revision suffix).
+    scriptDir = join(workDir, "SPECS", effective_arch(spec, args.architecture),
+                     *([family] if family else []),
+                     spec["package"],
+                     ver_rev(spec))
 
     init_workDir = container_workDir if args.docker else args.workDir
     makedirs(scriptDir, exist_ok=True)
@@ -1369,7 +2009,8 @@ def doBuild(args, parser):
     # actual build script
     bits_dir = dirname(dirname(realpath(__file__)))
     buildEnvironment = [
-      ("ARCHITECTURE", args.architecture),
+      ("ARCHITECTURE", raw_architecture),
+      ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
       ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
       ("CACHED_TARBALL", cachedTarball),
       ("CAN_DELETE", args.aggressiveCleanup and "1" or ""),
@@ -1381,7 +2022,8 @@ def doBuild(args, parser):
       ("GIT_COMMITTER_NAME", "unknown"),
       ("GIT_COMMITTER_EMAIL", "unknown"),
       ("INCREMENTAL_BUILD_HASH", spec.get("incremental_hash", "0")),
-      ("JOBS", str(args.jobs)),
+      ("JOBS", str(effective_jobs(args.jobs, spec))),
+      ("PKGFAMILY", spec.get("pkg_family", "")),
       ("PKGHASH", spec["hash"]),
       ("PKGNAME", spec["package"]),
       ("PKGDIR", spec["pkgdir"]),
@@ -1398,13 +2040,15 @@ def doBuild(args, parser):
     ]
     if "sources" in spec:
       for idx, src in enumerate(spec["sources"]):
-        buildEnvironment.append(("SOURCE%s" % idx, basename(src)))
+        url, _ = parse_checksum_entry(src)   # strip any ,algo:digest suffix
+        buildEnvironment.append(("SOURCE%s" % idx, basename(url)))
       buildEnvironment.append(("SOURCE_COUNT", str(len(spec["sources"]))))
     else:
       buildEnvironment.append(("SOURCE_COUNT", "0"))
     if "patches" in spec:
       for idx, src in enumerate(spec["patches"]):
-        buildEnvironment.append(("PATCH%s" % idx, basename(src)))
+        patch_name, _ = parse_checksum_entry(src)  # strip any ,algo:digest suffix
+        buildEnvironment.append(("PATCH%s" % idx, basename(patch_name)))
       buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
     else:
       buildEnvironment.append(("PATCH_COUNT", "0"))
@@ -1417,6 +2061,64 @@ def doBuild(args, parser):
 
     # Add the computed track_env environment
     buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
+
+    # -- Pipeline mode: prepare tar/upload commands and write helper scripts ----
+    # Requires --makeflow. Compatible with --docker because tar.sh, create_links.sh,
+    # and upload_command all run on the HOST after the container exits; they access
+    # the build output via args.workDir, which the container already volume-mounts.
+    _is_config_pkg = spec["package"].startswith("defaults-")
+    _use_pipeline = getattr(args, "pipeline", False) and args.makeflow and not _is_config_pkg
+    tar_command = None
+    upload_command = None
+    if _use_pipeline:
+      import stat as _stat
+      # Signal build_template.sh to skip tarball creation.
+      buildEnvironment.append(("SKIP_TARBALL", "1"))
+
+      # Write tar.sh from the installed template.
+      _tar_tpl_path = join(dirname(realpath(__file__)), "tar_template.sh")
+      with open(_tar_tpl_path) as _f:
+        _tar_tpl = _f.read()
+      writeAll(scriptDir + "/tar.sh", _tar_tpl)
+      os.chmod(scriptDir + "/tar.sh",
+               _stat.S_IRWXU | _stat.S_IRGRP | _stat.S_IXGRP | _stat.S_IROTH | _stat.S_IXOTH)
+
+      # Write create_links.sh (bakes in dependency symlink commands so the
+      # shell rule does not need Python's specs dict).
+      writeAll(scriptDir + "/create_links.sh",
+               _generate_create_links_sh(spec, specs, args))
+      os.chmod(scriptDir + "/create_links.sh",
+               _stat.S_IRWXU | _stat.S_IRGRP | _stat.S_IXGRP | _stat.S_IROTH | _stat.S_IXOTH)
+
+      # Build the tar command (env vars for tar_template.sh).
+      _tar_env = " ".join(
+        "{}={}".format(k, quote(v)) for k, v in [
+          ("WORK_DIR",               workDir),
+          ("PKGNAME",                spec["package"]),
+          ("PKGVERSION",             spec["version"]),
+          ("PKGREVISION",            spec["revision"]),
+          ("PKGHASH",                spec["hash"]),
+          ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
+          ("CACHED_TARBALL",         cachedTarball),
+        ]
+      )
+      tar_command = "env {} {} -e -x {}/tar.sh 2>&1".format(_tar_env, BASH, quote(scriptDir))
+
+      # Build the upload command (wrapped with the env vars that upload_cmd.py
+      # / the inline s3cmd script read from the environment).
+      _raw_upload = syncHelper.upload_shell_command(spec)
+      if _raw_upload:
+        _upload_env = " ".join(
+          "{}={}".format(k, quote(v)) for k, v in [
+            ("PKGNAME",                spec["package"]),
+            ("PKGVERSION",            spec["version"]),
+            ("PKGREVISION",           spec["revision"]),
+            ("PKGHASH",               spec["hash"]),
+            ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
+            ("BUILD_ARCH",            args.architecture),
+          ]
+        )
+        upload_command = "env {} {} 2>&1".format(_upload_env, _raw_upload)
 
     # In case the --docker options is passed, we setup a docker container which
     # will perform the actual build. Otherwise build as usual using bash.
@@ -1452,6 +2154,15 @@ def doBuild(args, parser):
       env_vars = " ".join(["{}={}".format(key, quote(val)) for key, val in buildEnvironment])
       build_command =  "env {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
 
+    # defaults-* packages are pure build-time configuration with no source to
+    # compile. In Makeflow mode, run them synchronously in the preparation phase
+    # instead of emitting Makeflow rules. This removes them from the DAG critical
+    # path and allows dependent packages to start without waiting for a Makeflow slot.
+    if args.makeflow and _is_config_pkg:
+      runBuildCommand(scheduler, p, specs, args, build_command,
+                      cachedTarball, scriptDir, workDir, syncHelper)
+      continue  # skip buildTargets.append and buildList.append
+
     buildTargets.append(p)
     if not args.makeflow:
       if args.builders == 1:
@@ -1460,8 +2171,63 @@ def doBuild(args, parser):
         build_deps = ["build:%s" % d for d in specs[p]["full_requires"] if d in buildTargets]
         scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
     else:
-      breq  = " ".join([str(element) + ".build" for element in spec["full_requires"] if element in buildTargets])
-      buildList.append((p,build_command,cachedTarball,breq))
+      breq = " ".join([str(element) + ".build" for element in spec["full_requires"] if element in buildTargets])
+      # In pipeline mode, append create_links.sh to the .build command so that
+      # dist symlinks are created inside the same rule (before .tar/.upload run).
+      _build_cmd = build_command
+      if _use_pipeline:
+        _build_cmd = "{} && {} -e -x {}/create_links.sh".format(
+            build_command, BASH, quote(scriptDir))
+
+      # --- Makeflow checkout rule -----------------------------------------
+      # When the package needs to be built from source (no cached tarball),
+      # generate a spec_checkout.json + checkout.sh in scriptDir and record
+      # the command so the Jinja template can emit a parallel .checkout rule.
+      # This moves all git clones / archive downloads out of the sequential
+      # Python preparation phase and into independent Makeflow tasks.
+      checkout_cmd = ""
+      if not cachedTarball:
+        _scm_type = "sapling" if isinstance(spec.get("scm"), Sapling) else "git"
+        _checkout_spec = {
+          "scm_type":         _scm_type,
+          "package":          spec["package"],
+          "version":          spec["version"],
+          "commit_hash":      spec.get("commit_hash", ""),
+          "tag":              spec.get("tag", spec["version"]),
+          "pkgdir":           spec.get("pkgdir", ""),
+          "source":           spec.get("source", ""),
+          "is_devel_pkg":     spec.get("is_devel_pkg", False),
+          "reference":        spec.get("reference", ""),
+          "write_repo":       spec.get("write_repo", ""),
+          "patches":          spec.get("patches", []),
+          "sources":          spec.get("sources", []),
+          "source_checksums": spec.get("source_checksums") or {},
+          "patch_checksums":  spec.get("patch_checksums") or {},
+        }
+        _checkout_json = join(scriptDir, "spec_checkout.json")
+        with open(_checkout_json, "w") as _fh:
+          json.dump(_checkout_spec, _fh)
+        _ref = quote(args.referenceSources) if args.referenceSources else "''"
+        _enforce = quote(_download_time_mode(effective_checksum_mode))
+        _psrc = str(getattr(args, "parallelSources", 1))
+        checkout_cmd = (
+          "PYTHONPATH={bits_dir} {py} -m bits_helpers.checkout_runner"
+          " --spec-json {json}"
+          " --work-dir {wd}"
+          " --reference-sources {ref}"
+          " --enforce-mode {enforce}"
+          " --parallel-sources {psrc}"
+        ).format(
+          bits_dir=quote(bits_dir),
+          py=quote(sys.executable),
+          json=quote(_checkout_json),
+          wd=quote(workDir),
+          ref=_ref,
+          enforce=_enforce,
+          psrc=_psrc,
+        )
+
+      buildList.append((p, _build_cmd, tar_command, upload_command, cachedTarball, breq, checkout_cmd))
 
   if (not args.makeflow) and (args.builders > 1) and buildTargets:
     scheduler.run()
@@ -1473,7 +2239,11 @@ def doBuild(args, parser):
     mFlow = "makeflow"
     mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
     mfFile = mfDir + "/Makeflow"
-    mfCmd = "(cd {}; {} --clean; {})".format(mfDir, mFlow,mFlow)  
+    makedirs(mfDir, exist_ok=True)
+    _mf_max_local = getattr(args, "makeflowJobs", 4)
+    _mf_local_flag = "--max-local {}".format(_mf_max_local) if _mf_max_local > 0 else ""
+    mfCmd = "(cd {dir}; {mf} --clean; {mf} {local})".format(
+        dir=mfDir, mf=mFlow, local=_mf_local_flag)
     makedirs(mfDir, exist_ok=True)
     jnj = ""
     try:
@@ -1488,7 +2258,7 @@ def doBuild(args, parser):
               .from_string(jnj)
               .render(specs=specs, args=args, ToDo=buildList)
               )
-    for (p, build_command, cachedTarball, breq) in buildList:
+    for (p, build_command, tar_command, upload_command, cachedTarball, breq, checkout_cmd) in buildList:
       spec = specs[p]
       print (
         ("Unpacking %s@%s" if cachedTarball else
@@ -1592,8 +2362,23 @@ def doBuild(args, parser):
     else:
       debug(child.stdout)
     dieOnError(err, buildErrMsg.strip())
-    for (p, _, _, _) in buildList:
+    for (p, _, _, _, _, _, _) in buildList:
       doFinalSync(specs[p], specs, args, syncHelper)
+
+  # ── Post-build checksum phase ──────────────────────────────────────────────
+  # Runs after all packages have been built (or confirmed up-to-date) so that
+  # output is consolidated and so that already-cached packages are covered.
+  # warn/enforce remain in checkout_sources (pre-build security gate);
+  # only print/write are handled here.
+  #
+  # The mode is resolved from the global config (CLI flags + defaults profile),
+  # not from the per-spec effective_checksum_mode of the last loop iteration.
+  _global_mode = checksum_enforcement_mode({}, args, defaultsMeta)
+  _do_print = (_global_mode == "print")
+  _do_write = write_checksums_enabled(args, defaultsMeta)
+  if (_do_print or _do_write) and specs_for_checksum_phase:
+    _run_post_build_checksum_phase(specs_for_checksum_phase, workDir,
+                                   do_print=_do_print, do_write=_do_write)
 
   if not args.onlyDeps:
       banner(f"Build of {mainPackage} successfully completed on `{socket.gethostname()}'.\n"
@@ -1615,5 +2400,11 @@ def doBuild(args, parser):
   if untrackedFilesDirectories:
     banner("Untracked files in the following directories resulted in a rebuild of "
            "the associated package and its dependencies:\n%s\n\nPlease commit or remove them to avoid useless rebuilds.", "\n".join(untrackedFilesDirectories))
+
+  # Finalise the build manifest.
+  if getattr(args, "manifest", None) is not None:
+    args.manifest.complete()
+    banner("Build manifest written to:\n  %s", args.manifest.path)
+
   debug("Everything done")
 

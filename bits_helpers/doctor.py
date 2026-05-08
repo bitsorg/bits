@@ -86,10 +86,13 @@ def doDoctor(args, parser):
   # that we do not get spurious messages on linux
   homebrew_replacement = ""
 
-  extra_env = {"BITS_CONFIG_DIR": "/alidist.bits" if args.docker else os.path.abspath(args.configDir)}
-  extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
+  # Build the shared environment once; used by both DockerRunner invocations.
+  _config_dir_abs = os.path.abspath(args.configDir)
+  extra_env = {"BITS_CONFIG_DIR": "/alidist.bits" if args.docker else _config_dir_abs}
+  extra_env.update(dict([e.partition("=")[::2] for e in args.environment]))
+  _docker_volumes = [f"{_config_dir_abs}:/alidist.bits:ro"] if args.docker else []
 
-  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/alidist.bits:ro"] if args.docker else []) as getstatusoutput_docker:
+  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=_docker_volumes) as getstatusoutput_docker:
     err, output = getstatusoutput_docker("type c++")
   if err:
     warning("Unable to find system compiler.\n"
@@ -121,35 +124,34 @@ def doDoctor(args, parser):
   if args.debug:
     logger.setLevel(logging.DEBUG)
 
-  specs = {}
   packages = []
   exitcode = 0
   for p in args.packages:
-    path = "{}/{}.sh".format(args.configDir, p.lower())
-    if not exists(path):
-      error("Cannot find recipe %s for package %s.", path, p)
+    recipe_path = "{}/{}.sh".format(args.configDir, p.lower())
+    if not exists(recipe_path):
+      error("Cannot find recipe %s for package %s.", recipe_path, p)
       exitcode = 1
       continue
     packages.append(p)
   systemInfo()
 
   specs = {}
-  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
-  (err, overrides, taps) = parseDefaults(args.disable, defaultsReader, info)
+  defaultsReader = lambda: readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+  (err, overrides, taps, _defaultsMeta) = parseDefaults(args.disable, defaultsReader, info)
   if err:
     error("%s", err)
     sys.exit(1)
 
   def performValidateDefaults(spec):
-    (ok,msg,valid) = validateDefaults(spec, args.defaults)
+    (ok, msg, valid) = validateDefaults(spec, args.defaults)
     if not ok:
       error("%s", msg)
-    return (ok,msg,valid)
+    return (ok, msg, valid)
 
   extra_env = {"BITS_CONFIG_DIR": "/alidist.bits" if args.docker else os.path.abspath(args.configDir)}
-  extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
+  extra_env.update(dict([e.partition("=")[::2] for e in args.environment]))
 
-  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/alidist.bits:ro"] if args.docker else []) as getstatusoutput_docker:
+  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=_docker_volumes) as getstatusoutput_docker:
     fromSystem, own, failed, validDefaults = \
       getPackageList(packages                = packages,
                      specs                   = specs,

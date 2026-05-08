@@ -31,6 +31,7 @@ GLOB_WITH_OBSOLETE_FILES = {
                  "sw/BUILD/fcdfc2e1c9f0433c60b3b000e0e2737d297a9b1c",
                  "sw/BUILD/somethingtodelete"],
   "sw/osx_x86-64/*/": ["sw/osx_x86-64/a/", "sw/osx_x86-64/b/"],
+  "sw/osx_x86-64/*/*/": [],   # grouped layout — no family-grouped packages in this test
   "sw/osx_x86-64/b/latest*": ["sw/osx_x86-64/b/latest",
                               "sw/osx_x86-64/b/latest-release",
                               "sw/osx_x86-64/b/latest-root6"],
@@ -39,8 +40,15 @@ GLOB_WITH_OBSOLETE_FILES = {
                         "sw/osx_x86-64/b/latest", "sw/osx_x86-64/b/v1",
                         "sw/osx_x86-64/b/v2", "sw/osx_x86-64/b/v3",
                         "sw/osx_x86-64/b/v4"],
+  "sw/osx_x86-64/*/*/*": [],  # grouped toDelete — none in this test
   "sw/slc7_x86-64/*/": [],
-  "sw/slc7_x86-64/*/*": []
+  "sw/slc7_x86-64/*/*/": [],
+  "sw/slc7_x86-64/*/*": [],
+  "sw/slc7_x86-64/*/*/*": [],
+  "sw/shared/*/": [],
+  "sw/shared/*/*/": [],
+  "sw/shared/*/*": [],
+  "sw/shared/*/*/*": []
 }
 
 READLINK_MOCKUP_DB = {
@@ -66,10 +74,12 @@ class CleanTestCase(unittest.TestCase):
                                     'sw/osx_x86-64/b/v1', 'sw/osx_x86-64/b/v3'])
         toDelete = decideClean(workDir="sw", architecture="osx_x86-64", aggressiveCleanup=True)
         self.assertEqual(toDelete, ['sw/TMP', 'sw/INSTALLROOT', 'sw/TARS/osx_x86-64/store',
+                                    'sw/TARS/shared/store',
                                     'sw/SOURCES', 'sw/BUILD/somethingtodelete',
                                     'sw/osx_x86-64/b/v1', 'sw/osx_x86-64/b/v3'])
         toDelete = decideClean(workDir="sw", architecture="slc7_x86-64", aggressiveCleanup=True)
         self.assertEqual(toDelete, ['sw/TMP', 'sw/INSTALLROOT', 'sw/TARS/slc7_x86-64/store',
+                                    'sw/TARS/shared/store',
                                     'sw/SOURCES', 'sw/BUILD/somethingtodelete'])
 
     @patch('bits_helpers.clean.glob')
@@ -86,6 +96,7 @@ class CleanTestCase(unittest.TestCase):
             "sw/TMP",
             "sw/INSTALLROOT",
             "sw/TARS/osx_x86-64/store",
+            "sw/TARS/shared/store",
             "sw/SOURCES",
             "sw/BUILD/somethingtodelete",
             "sw/osx_x86-64/b/v1",

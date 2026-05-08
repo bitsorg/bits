@@ -1,27 +1,33 @@
 #!/usr/bin/env python3
-import os
-import yaml
+# Standard library
+import fnmatch
+import hashlib
 import json
+import os
+import platform
+import re
+import sys
+from collections import OrderedDict
+from datetime import datetime
+from glob import glob
+from os.path import basename, exists, isdir, islink, join
+from shlex import quote
 from typing import Any, IO
 
+# Third-party
+import yaml
 
-from os.path import exists
-import hashlib
-from glob import glob
-from os.path import basename, join, isdir, islink
-import sys
-import os
-import re
-import platform
-
-from datetime import datetime
-from collections import OrderedDict
-from shlex import quote
+# Internal
+from bits_helpers.checksum_store import load_for_spec, merge_into_spec
+from bits_helpers.cmd import getoutput
+from bits_helpers.git import git
+from bits_helpers.log import banner, debug, dieOnError, error, warning
 
 from bits_helpers.cmd import getoutput
 from bits_helpers.git import git
 
 from bits_helpers.log import error, warning, dieOnError, debug, banner
+from bits_helpers.checksum_store import load_for_spec, merge_into_spec
 
 class SpecError(Exception):
   pass
@@ -47,7 +53,7 @@ def symlink(link_target, link_name):
   os.symlink(link_target, link_name)
 
 
-asList = lambda x : x if type(x) == list else [x]
+asList = lambda x: x if isinstance(x, list) else [x]
 
 
 def topological_sort(specs):
@@ -92,6 +98,114 @@ def topological_sort(specs):
     assert False, "Unreachable error: cycle detection failed"
 
 
+SHARED_ARCH = "shared"
+"""Sentinel value used in all paths for architecture-independent packages.
+
+When a recipe sets ``architecture: shared``, bits substitutes this string for
+the real build architecture in every path component (install dir, tarball name,
+TARS store, SPECS dir, ``$PKGPATH``).  The result is that the package is
+installed under ``sw/shared/<pkg>/<version>-<revision>/`` and its tarball is
+stored under ``TARS/shared/store/…``, making it reusable by any architecture
+without rebuilding.
+
+Recipes that do **not** define ``architecture: shared`` are completely unaffected
+— ``effective_arch()`` returns the real build architecture for them.
+"""
+
+
+def pkg_to_shell_id(name: str) -> str:
+  """Return a valid shell identifier derived from a package name.
+
+  Replaces every character that is not alphanumeric or underscore with
+  ``_``, then upper-cases the result.  This handles both the common
+  dash-separated convention and less common names that contain dots or
+  other punctuation::
+
+      pkg_to_shell_id("GCC-Toolchain")  -> "GCC_TOOLCHAIN"
+      pkg_to_shell_id("common.bits")    -> "COMMON_BITS"
+      pkg_to_shell_id("o2.framework")   -> "O2_FRAMEWORK"
+
+  The transformation is used wherever a package name must appear as part
+  of a shell variable name, e.g. ``${COMMON_BITS_ROOT}``.  Filesystem
+  paths (tarballs, install dirs, SPECS dirs) always use the original
+  package name unchanged.
+  """
+  import re
+  return re.sub(r'[^A-Za-z0-9_]', '_', name).upper()
+
+
+def effective_arch(spec: dict, build_arch: str) -> str:
+  """Return the architecture string to use in paths and tarball names.
+
+  If the recipe declares ``architecture: shared`` the function returns
+  :data:`SHARED_ARCH` (``"shared"``), so that the package is installed in a
+  location that every build platform can read.
+
+  For all other recipes (including those that omit the field entirely) the
+  function returns *build_arch* unchanged, preserving full backward
+  compatibility.
+  """
+  if spec.get("architecture") == SHARED_ARCH:
+    return SHARED_ARCH
+  return build_arch
+
+
+def compute_combined_arch(defaults_meta: dict, defaults_list: list, raw_arch: str) -> str:
+  """Return the effective architecture string for install paths.
+
+  When any loaded defaults file sets ``qualify_arch: true``, the install
+  directory is qualified with the defaults combination joined by ``-``::
+
+      <raw_arch>-<d1>-<d2>-...
+
+  The ``release`` component is omitted from the suffix because it is the
+  baseline and would add noise (``slc7_x86-64-release`` is less useful than
+  ``slc7_x86-64``).  If, after filtering, no qualifiers remain, *raw_arch*
+  is returned as-is.
+
+  When ``qualify_arch`` is absent or false in the merged defaults metadata the
+  function returns *raw_arch* unchanged, preserving full backward
+  compatibility.
+
+  Examples::
+
+      compute_combined_arch({}, ["release"], "slc7_x86-64")
+      # → "slc7_x86-64"  (no qualify_arch flag)
+
+      compute_combined_arch({"qualify_arch": True}, ["dev", "gcc13"], "slc7_x86-64")
+      # → "slc7_x86-64-dev-gcc13"
+
+      compute_combined_arch({"qualify_arch": True}, ["release"], "slc7_x86-64")
+      # → "slc7_x86-64"  (release-only, no suffix)
+  """
+  if not defaults_meta.get("qualify_arch", False):
+    return raw_arch
+  qualifiers = [d for d in defaults_list if d != "release"]
+  if not qualifiers:
+    return raw_arch
+  return raw_arch + "-" + "-".join(qualifiers)
+
+
+def ver_rev(spec):
+  """Return the version-revision directory segment for *spec*.
+
+  Normally this is ``<version>-<revision>`` (e.g. ``8.5.0-1``).
+
+  When a package has ``force_revision`` set via a ``defaults-*.sh``
+  ``overrides:`` entry or a top-level ``force_revision:`` in the defaults
+  file, the revision may be a fixed string *or* an empty string.  An empty
+  string means the revision suffix is dropped entirely, yielding just
+  ``<version>`` (e.g. ``CMSSW_13_0_0`` instead of ``CMSSW_13_0_0-1``).
+
+  Every place in the codebase that previously wrote
+  ``"{version}-{revision}".format(**spec)`` must call this helper instead so
+  that the forced/dropped revision is honoured consistently across the install
+  tree, tarballs, symlinks, init.sh, and dist trees.
+  """
+  rev = spec.get("revision", "")
+  return "{}-{}".format(spec["version"], rev) if rev else spec["version"]
+
+
 def resolve_store_path(architecture, spec_hash):
   """Return the path where a tarball with the given hash is to be stored.
 
@@ -113,21 +227,25 @@ def resolve_links_path(architecture, package):
 def short_commit_hash(spec):
   """Shorten the spec's commit hash to make it more human-readable.
 
-  This is complicated by the fact that the commit_hash property is not
-  necessarily a commit hash, but might be a tag name. If it is a tag name,
-  return it as-is, else assume it is actually a commit hash and shorten it.
+  The ``commit_hash`` property may hold a tag name rather than an actual git
+  hash.  When the tag and the commit hash are the same, the value is returned
+  as-is; otherwise only the first 10 characters (a typical git short-hash) are
+  returned.
   """
-  if spec["tag"] == spec["commit_hash"]:
-    return spec["commit_hash"]
-  return spec["commit_hash"][:10]
+  return (spec["commit_hash"]
+          if spec["tag"] == spec["commit_hash"]
+          else spec["commit_hash"][:10])
 
 
-# Date fields to substitute: they are zero-padded
+# Date fields available for tag/version substitution; zero-padded where needed.
+# NOTE: captured once at module import time — they do not update during the run.
 now = datetime.now()
-nowKwds = { "year": str(now.year),
-            "month": str(now.month).zfill(2),
-            "day": str(now.day).zfill(2),
-            "hour": str(now.hour).zfill(2) }
+nowKwds = {
+  "year":  str(now.year),
+  "month": str(now.month).zfill(2),
+  "day":   str(now.day).zfill(2),
+  "hour":  str(now.hour).zfill(2),
+}
 
 def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""):
   """Expand the data replacing the following keywords:
@@ -155,7 +273,7 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
   package = spec.get("package")
   all_vars = {
     "package": package,
-    "root_dir": "${%s_ROOT}" % package.upper().replace("-","_"),
+    "root_dir": "${%s_ROOT}" % pkg_to_shell_id(package),
     "commit_hash": commit_hash,
     "short_hash": commit_hash[0:10],
     "tag": tag,
@@ -222,7 +340,7 @@ def validateDefaults(finalPkgSpec, defaults):
   if "valid_defaults" not in finalPkgSpec:
     return (True, "", [])
   validDefaults = asList(finalPkgSpec["valid_defaults"])
-  nonStringDefaults = [x for x in validDefaults if not type(x) == str]
+  nonStringDefaults = [x for x in validDefaults if not isinstance(x, str)]
   if nonStringDefaults:
     return (False, "valid_defaults needs to be a string or a list of strings. Found %s." % nonStringDefaults, [])
   defaultsList = asList(defaults)
@@ -315,22 +433,30 @@ def detectArch():
   except Exception:
     return doDetectArch(hasOsRelease, osReleaseLines, ["unknown", "", ""], "", "")
 
+def _parse_req_matcher(r):
+  """Split a requirement string into ``(requirement_name, matcher)`` pair.
+
+  Requirement strings may be plain package names or ``name:matcher`` where
+  *matcher* is either an architecture regex or ``defaults=<regex>``.
+  """
+  return r.split(":", 1) if ":" in r else (r, ".*")
+
 def filterByArchitectureDefaults(arch, defaults, requires):
+  """Yield requirements from *requires* that are satisfied by *arch*/*defaults*."""
   for r in requires:
-    require, matcher = ":" in r and r.split(":", 1) or (r, ".*")
+    require, matcher = _parse_req_matcher(r)
     if matcher.startswith("defaults="):
-      wanted = matcher[len("defaults="):]
-      if re.match(wanted, defaults):
+      if re.match(matcher[len("defaults="):], defaults):
         yield require
-    if re.match(matcher, arch):
+    elif re.match(matcher, arch):
       yield require
 
 def disabledByArchitectureDefaults(arch, defaults, requires):
+  """Yield requirements from *requires* that are *not* satisfied by *arch*/*defaults*."""
   for r in requires:
-    require, matcher = ":" in r and r.split(":", 1) or (r, ".*")
+    require, matcher = _parse_req_matcher(r)
     if matcher.startswith("defaults="):
-      wanted = matcher[len("defaults="):]
-      if not re.match(wanted, defaults):
+      if not re.match(matcher[len("defaults="):], defaults):
         yield require
     elif not re.match(matcher, arch):
       yield require
@@ -375,6 +501,54 @@ def merge_dicts(dict1, dict2, skip_keys=None) -> OrderedDict:
             merged[key] = value
     
     return merged
+
+def resolve_pkg_family(defaults_meta: dict, package_name: str) -> str:
+  """Return the package family for *package_name* from the defaults metadata.
+
+  The ``package_family`` key in a defaults recipe is a mapping of the form::
+
+      package_family:
+        default: cms          # fallback when no pattern matches
+        lcg:
+          - ROOT
+          - SCRAMV1
+        cms:
+          - data-*
+          - coral
+
+  Pattern matching uses :func:`fnmatch.fnmatch` (case-sensitive, ``*`` and
+  ``?`` wildcards supported).  Families are tried in definition order; the
+  first match wins.  If no pattern matches, the ``default`` family is
+  returned.  If ``package_family`` is absent entirely, an empty string is
+  returned so that the install path collapses to the legacy layout
+  ``<arch>/<pkg>/<version>-<revision>``.
+
+  **Defaults packages** (``defaults-*``) are always excluded from family
+  assignment regardless of the ``package_family`` configuration, including the
+  ``default:`` fallback.  These pseudo-packages carry configuration rather than
+  installed software; assigning them to a family would corrupt their install
+  path and break the ``init.sh`` sourcing chain for every downstream package.
+  """
+  # Defaults packages are special pseudo-packages and must never receive a
+  # family.  The default: fallback in package_family would otherwise silently
+  # pull them in, causing their SPECS/ and install paths to include a family
+  # directory that nothing expects.
+  if package_name.startswith("defaults-"):
+    return ""
+  family_cfg = defaults_meta.get("package_family")
+  if not family_cfg or not isinstance(family_cfg, dict):
+    return ""
+  default_family = family_cfg.get("default", "")
+  for family, patterns in family_cfg.items():
+    if family == "default":
+      continue
+    if not isinstance(patterns, list):
+      continue
+    for pat in patterns:
+      if fnmatch.fnmatch(package_name, str(pat)):
+        return family
+  return default_family
+
 
 def readDefaults(configDir, defaults, error, architecture):
   defaultsMeta = {}
@@ -421,8 +595,9 @@ class FileReader:
   def __init__(self, url) -> None:
     self.url = url
   def __call__(self):
-    return open(self.url).read()
-
+    with open(self.url) as f:
+      return f.read()
+      
 # Read a recipe from a git repository using git show.
 class GitReader:
   def __init__(self, url, configDir) -> None:
@@ -514,9 +689,7 @@ def parseRecipe(reader, generatePackages=None, visited=None):
     err = str(e)
   except SpecError as e:
     err = "Malformed header for {}\n{}".format(reader.url, str(e))
-  except yaml.scanner.ScannerError as e:
-    err = "Unable to parse {}\n{}".format(reader.url, str(e))
-  except yaml.parser.ParserError as e:
+  except (yaml.scanner.ScannerError, yaml.parser.ParserError) as e:
     err = "Unable to parse {}\n{}".format(reader.url, str(e))
   except ValueError:
     err = "Unable to parse %s. Header missing." % reader.url
@@ -540,7 +713,7 @@ def asDict(overrides_array):
     if not overrides_array:
         return OrderedDict()
      
-    if type(overrides_array) == OrderedDict:
+    if isinstance(overrides_array, OrderedDict):
         return overrides_array
       
     # Start with an empty OrderedDict
@@ -579,8 +752,6 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
   # could disable alien for O2. For this reason we need to parse their
   # metadata early and extract the override and disable data.
 
-  # defaultsMeta["disable"] = asDict(defaultsMeta.get("disable", OrderedDict()))
-
   defaultsDisable = asList(defaultsMeta.get("disable", []))
    
   for x in defaultsDisable:
@@ -590,7 +761,7 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
   defaultsMeta["overrides"] = asDict(defaultsMeta.get("overrides", OrderedDict()))
 
   if type(defaultsMeta.get("overrides", OrderedDict())) != OrderedDict:
-    return ("overrides should be a dictionary", None, None)
+    return ("overrides should be a dictionary", None, None, {})
 
   overrides, taps = OrderedDict(), {}
   commonEnv = {"env": defaultsMeta["env"]} if "env" in defaultsMeta else {}
@@ -600,7 +771,7 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
     if "@" in k:
       taps[f] = "dist:"+k
     overrides[f] = dict(**(v or {}))
-  return (None, overrides, taps)
+  return (None, overrides, taps, defaultsMeta)
 
 def checkForFilename(taps, pkg, d, ext=".sh"):
   filename = taps.get(pkg, "{}/{}{}".format(d, pkg, ext))
@@ -627,10 +798,24 @@ def resolveLocalPath(configDir, s):
     return s
 
 def getConfigPaths(configDir):
+  """Return the ordered list of directories to search for recipe files.
+
+  Each entry in the ``BITS_PATH`` environment variable is interpreted as:
+
+  * An **absolute path** – used directly (no ``.bits`` suffix appended).
+    This is used by repository-provider checkouts, which are stored at
+    absolute paths under ``$BITS_WORK_DIR/REPOS/``.
+  * A **relative name** – resolved as ``<configDir>/<name>.bits`` (the
+    original behaviour for named recipe repositories).
+  """
   configPath = os.environ.get("BITS_PATH")
   pkgDirs = [configDir]
   if configPath:
-    for d in [join(configDir, "%s.bits" % r) for r in configPath.split(",") if r]:
+    for r in [x for x in configPath.split(",") if x]:
+      if os.path.isabs(r):
+        d = r          # provider checkout – absolute path used directly
+      else:
+        d = join(configDir, "%s.bits" % r)
       if exists(d):
         pkgDirs.append(d)
   return pkgDirs
@@ -640,38 +825,47 @@ def resolveFilename(taps, pkg, configDir, generatedPackages, ext=".sh"):
     if d in generatedPackages and pkg in generatedPackages[d]:
       meta = generatedPackages[d][pkg]
       return ("generate:{}@{}".format(pkg, meta["version"]), meta["pkgdir"])
-    filename = checkForFilename(taps, pkg, d, ext=".sh")
+    filename = checkForFilename(taps, pkg, d, ext=ext)
     if exists(filename):
       return (filename, d)
   dieOnError(True, "Package {} not found in {}".format(pkg, configDir))
 
 def resolveDefaultsFilename(defaults, configDir, failOnError=True):
-  configPath = os.environ.get("BITS_PATH")
-  cfgDir = configDir
-  pkgDirs = [cfgDir]
+  """Return the path of ``defaults-<defaults>.sh`` searched across all config paths.
 
-  if configPath:
-    for d in configPath.split(","):
-      pkgDirs.append(cfgDir + "/" + d + ".bits")
-
-  for d in pkgDirs:
-    filename = "{}/defaults-{}.sh".format(d, defaults)
-    if exists(filename):
-      return(filename)
+  Uses :func:`getConfigPaths` to build the search list so that BITS_PATH
+  provider checkouts are honoured consistently with :func:`resolveFilename`.
+  """
+  filename = None
+  for d in getConfigPaths(configDir):
+    candidate = "{}/defaults-{}.sh".format(d, defaults)
+    if exists(candidate):
+      return candidate
+    filename = candidate  # keep last candidate for the error message
 
   if failOnError:
-    error("Default `%s' does not exists.\n" % (filename or "<no defaults specified>"))
-
-  '''
-  error("Default `%s' does not exists. Viable options:\n%s" %
-          (defaults or "<no defaults specified>",
-           "\n".join("- " + basename(x).replace("defaults-", "").replace(".sh", "")
-                     for x in glob(join(configDir, "defaults-*.sh")))))
-  '''
+    error("Default `%s' does not exist.\n" % (defaults or "<no defaults specified>"))
 
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,
-                   performValidateDefaults, overrides, taps, log, force_rebuild=()):
+                   performValidateDefaults, overrides, taps, log, force_rebuild=(),
+                   provider_dirs=None, defaults_meta=None):
+  """Resolve the full set of packages required by *packages*.
+
+  *provider_dirs* is an optional ``dict`` returned by
+  ``repo_provider.fetch_repo_providers_iteratively``, mapping each provider
+  checkout directory to a ``(package_name, commit_hash)`` tuple.  When a
+  recipe is found inside one of these directories the corresponding spec
+  gains two extra keys:
+
+  ``spec["recipe_provider"]``
+      The name of the provider package whose checkout contains this recipe.
+
+  ``spec["recipe_provider_hash"]``
+      The git commit hash of that provider checkout.  ``storeHashes`` folds
+      this value into the package's content-addressable build hash so that
+      upgrading a provider triggers a rebuild of all packages sourced from it.
+  """
   systemPackages = set()
   ownPackages = set()
   failedRequirements = set()
@@ -681,6 +875,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   packages = packages[:]
   generatedPackages = getGeneratedPackages(configDir)
   validDefaults = []  # empty list: all OK; None: no valid default; non-empty list: list of valid ones
+  if provider_dirs is None:
+    provider_dirs = {}
   while packages:
     p = packages.pop(0)
     if p in specs:
@@ -717,6 +913,19 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                "{}.sh has different package field: {}".format(p, spec["package"]))
     spec["pkgdir"] = pkgdir
 
+    # Load the optional external checksum store (checksums/<pkg>.checksum)
+    # and merge source/patch checksums + commit pin into the spec.
+    merge_into_spec(spec, load_for_spec(spec))
+
+    # Track which repository provider supplied this recipe so that
+    # storeHashes can fold the provider's commit hash into the build hash.
+    if pkgdir in provider_dirs:
+      prov_name, prov_hash = provider_dirs[pkgdir]
+      spec["recipe_provider"] = prov_name
+      spec["recipe_provider_hash"] = prov_hash
+      log("Recipe for '%s' comes from provider '%s' @ %s",
+          p, prov_name, prov_hash[:10])
+
     if p == "defaults-release":
       # Re-rewrite the defaults' name to "defaults-release". Everything auto-
       # depends on "defaults-release", so we need something with that name.
@@ -728,6 +937,21 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         if line and not line.startswith("#"):
           warning("%s.sh contains a recipe, which will be ignored", pkg_filename)
       recipe = ""
+
+      # Strip top-level ``requires`` / ``build_requires`` from the defaults
+      # spec before the dependency-following step below.  These fields are
+      # consumed earlier, in the Phase 2 provider scan (before getPackageList
+      # is called), to seed ``fetch_repo_providers_iteratively``.  If they
+      # were left here, every package listed in defaults ``requires`` would
+      # auto-receive a ``defaults-release`` build dependency (line 1037), which
+      # creates an unresolvable cycle:
+      #
+      #   defaults-release → provider-pkg → defaults-release
+      #
+      # Clearing them here is safe: the provider repos they reference are
+      # already loaded and their recipes are on BITS_PATH.
+      spec.pop("requires", None)
+      spec.pop("build_requires", None)
 
     dieOnError(spec["package"] != p,
                "{} should be spelt {}.".format(p, spec["package"]))
@@ -742,6 +966,17 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         continue
       log("Overrides for package %s: %s", spec["package"], overrides[override])
       spec.update(overrides.get(override, {}) or {})
+
+    # Apply global force_revision from the top-level defaults field as a
+    # fallback.  Per-package overrides (set via spec.update() above) take
+    # precedence because they ran first.  A value of "" means "drop the
+    # revision suffix entirely"; None means "not set, do not apply".
+    if "force_revision" not in spec \
+            and defaults_meta is not None \
+            and "force_revision" in defaults_meta:
+      raw = defaults_meta.get("force_revision")
+      if raw is not None:
+        spec["force_revision"] = "" if raw == "" else str(raw)
 
     # If --always-prefer-system is passed or if prefer_system is set to true
     # inside the recipe, use the script specified in the prefer_system_check
@@ -870,6 +1105,10 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     spec["recipe"] = recipe.strip("\n")
     if spec["package"] in force_rebuild:
       spec["force_rebuild"] = True
+    # Resolve optional package family (e.g. "cms", "lcg") from defaults metadata.
+    # Falls back to "" when no package_family mapping is configured, preserving
+    # the legacy install layout <arch>/<pkg>/<version>-<revision>.
+    spec["pkg_family"] = resolve_pkg_family(defaults_meta or {}, spec["package"])
     specs[spec["package"]] = spec
     packages += spec["requires"]
   return (systemPackages, ownPackages, failedRequirements, validDefaults)
@@ -889,24 +1128,28 @@ def getGeneratedPackages(configDir):
   return all_pkgs
 
 
+def _coerce_to_list(val):
+  """Return *val* as a list.
+
+  If *val* is a comma-separated string (spaces stripped), split it.
+  If it is already a list, return it unchanged.
+  """
+  if isinstance(val, str):
+    return val.replace(" ", "").split(",")
+  return val
+
 def handleMergePolicy(override_spec, final_base):
   mergePolicy = override_spec.get("merge_policy", {})
-  remove_keys = mergePolicy.get("remove", [])
-  force_inherit = mergePolicy.get("inherit", [])
-  if isinstance(remove_keys, str):
-    remove_keys = remove_keys.replace(" ", "").split(",")
+  remove_keys  = _coerce_to_list(mergePolicy.get("remove", []))
+  force_inherit = _coerce_to_list(mergePolicy.get("inherit", []))
+  merge_keys   = _coerce_to_list(mergePolicy.get("merge", []))
   recipe_append = "recipe" not in remove_keys
   for k in remove_keys:
     if k in final_base:
       final_base.pop(k, None)
-  if isinstance(force_inherit, str):
-    force_inherit = force_inherit.replace(" ", "").split(",")
   for key in force_inherit:
     if key in final_base:
       override_spec[key] = final_base[key]
-  merge_keys = mergePolicy.get("merge", [])
-  if isinstance(merge_keys, str):
-    merge_keys = merge_keys.replace(" ", "").split(",")
   override_spec.pop("merge_policy", None)
   override_spec.pop("from", None)
   for key in merge_keys:
@@ -938,9 +1181,16 @@ def handleMergePolicy(override_spec, final_base):
 
 class Hasher:
   def __init__(self) -> None:
-    self.h = hashlib.sha1()
+    # usedforsecurity=False suppresses the FIPS rejection of SHA-1 on
+    # systems where SHA-1 is blocked for security use (Python ≥ 3.9 only).
+    # Fall back gracefully on Python 3.8 and earlier where the parameter
+    # does not exist.
+    try:
+      self.h = hashlib.sha1(usedforsecurity=False)
+    except TypeError:
+      self.h = hashlib.sha1()  # Python < 3.9
   def __call__(self, txt):
-    if not type(txt) == bytes:
+    if not isinstance(txt, bytes):
       txt = txt.encode('utf-8', 'ignore')
     self.h.update(txt)
   def hexdigest(self):

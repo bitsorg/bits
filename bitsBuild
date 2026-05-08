@@ -1,62 +1,78 @@
 #!/usr/bin/env python3
-import os
-import sys
+"""bits build driver.
+
+Entry point for all ``bits`` sub-commands (build, clean, deps, doctor, init,
+architecture, version, analytics).  ``bitsDeps`` and ``bitsDoctor`` are thin
+wrappers that exec this script with the matching sub-command prepended.
+"""
+# Standard library
 import atexit
 import logging
+import os
+import sys
 import traceback
-
 from os.path import exists, expanduser
+
+# Internal
 from bits_helpers import __version__
-from bits_helpers.analytics import decideAnalytics, askForAnalytics, report_screenview, report_exception, report_event
-from bits_helpers.analytics import enable_analytics, disable_analytics
+from bits_helpers.analytics import (askForAnalytics, decideAnalytics,
+                                     disable_analytics, enable_analytics,
+                                     report_event, report_exception,
+                                     report_screenview)
 from bits_helpers.args import doParseArgs
-from bits_helpers.init import doInit
-from bits_helpers.clean import doClean
-from bits_helpers.doctor import doDoctor
-from bits_helpers.deps import doDeps
-from bits_helpers.log import info, debug, logger, error
-from bits_helpers.utilities import detectArch
 from bits_helpers.build import doBuild
+from bits_helpers.clean import doClean
+from bits_helpers.cleanup import doCleanup
+from bits_helpers.deps import doDeps
+from bits_helpers.doctor import doDoctor
+from bits_helpers.init import doInit
+from bits_helpers.publish import doPublish
+from bits_helpers.log import debug, error, info, logger
+from bits_helpers.utilities import detectArch
+
+# Google Analytics property for bits usage reporting.
+_ANALYTICS_TRACKING_ID = "UA-77346950-1"
 
 
 def doMain(args, parser):
-  # We need to unset BASH_ENV because in certain environments (e.g.
-  # NERSC) this is used to source a (non -e safe) bashrc, effectively
-  # breaking aliBuild.
-  # We set all the locale related environment to C to make sure
-  # do not get fooled when parsing localized messages.
-  # We set BITS_ARCHITECTURE so that it's picked up by the external
-  # command which does the reporting.
-  if not "architecture" in args:
+  """Dispatch the requested sub-command after applying environment overrides.
+
+  Called once argument parsing is complete.  Sets locale/environment variables
+  that affect downstream shell commands, then delegates to the appropriate
+  ``do*`` function.
+  """
+  if not hasattr(args, "architecture"):
     args.architecture = detectArch()
-  ENVIRONMENT_OVERRIDES = {
-    "LANG": "C",
-    "LANGUAGE": "C",
-    "LC_ALL": "C",
-    "LC_COLLATE": "C",
-    "LC_CTYPE": "C",
-    "LC_MESSAGES": "C",
-    "LC_MONETARY": "C",
-    "LC_NUMERIC": "C",
-    "LC_TIME": "C",
-    "GREP_OPTIONS": "",
-    "BASH_ENV": "",
-    "BITS_ARCHITECTURE": args.architecture
-  }
-  os.environ.update(ENVIRONMENT_OVERRIDES)
+
+  # Force a predictable locale and clear variables that can interfere with
+  # shell command output parsing (e.g. localised error messages, BASH_ENV
+  # sourcing a non-errexit-safe bashrc at NERSC).
+  os.environ.update({
+    "LANG":             "C",
+    "LANGUAGE":         "C",
+    "LC_ALL":           "C",
+    "LC_COLLATE":       "C",
+    "LC_CTYPE":         "C",
+    "LC_MESSAGES":      "C",
+    "LC_MONETARY":      "C",
+    "LC_NUMERIC":       "C",
+    "LC_TIME":          "C",
+    "GREP_OPTIONS":     "",
+    "BASH_ENV":         "",
+    "BITS_ARCHITECTURE": args.architecture,
+  })
   report_screenview(args.action)
 
-  # Move to the specified working directory before doing anything else
-  if "chdir" in args:
+  # Move to the specified working directory before doing anything else.
+  if hasattr(args, "chdir"):
     try:
       os.chdir(os.path.expanduser(args.chdir))
-      debug("Current working directory is %s" % os.getcwd())
-    except Exception as e:
-      error("Cannot change to directory \"%s\"." % args.chdir)
-      error(e.message)
-      exit(1)
+      debug("Current working directory is %s", os.getcwd())
+    except OSError as e:
+      error("Cannot change to directory %r: %s", args.chdir, e)
+      sys.exit(1)
 
-  if args.action == "version" or args.action is None:
+  if args.action in ("version", None):
     print("bits version: {version} ({arch})".format(
       version=__version__ or "unknown", arch=args.architecture or "unknown"))
     sys.exit(0)
@@ -64,32 +80,37 @@ def doMain(args, parser):
   if args.action == "doctor":
     doDoctor(args, parser)
 
-  logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
-
   if args.action == "deps":
     sys.exit(0 if doDeps(args, parser) else 1)
 
   if args.action == "clean":
-    doClean(workDir=args.workDir, architecture=args.architecture, aggressiveCleanup=args.aggressiveCleanup, dryRun=args.dryRun)
-    exit(0)
+    doClean(workDir=args.workDir, architecture=args.architecture,
+            aggressiveCleanup=args.aggressiveCleanup, dryRun=args.dryRun)
+    sys.exit(0)
 
-  # Setup build environment.
+  if args.action == "cleanup":
+    doCleanup(args, parser)
+    sys.exit(0)
+
   if args.action == "init":
     doInit(args)
-    exit(0)
+    sys.exit(0)
 
   if args.action == "build":
     doBuild(args, parser)
+    sys.exit(0)
+
+  if args.action == "publish":
+    doPublish(args, parser)
     sys.exit(0)
 
 
 if __name__ == "__main__":
   args, parser = doParseArgs()
 
-  # This is valid for everything
   logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
 
-  os.environ["BITS_ANALYTICS_ID"] = "UA-77346950-1"
+  os.environ["BITS_ANALYTICS_ID"] = _ANALYTICS_TRACKING_ID
   os.environ["BITS_VERSION"] = __version__ or ""
 
   if args.action == "analytics":
@@ -97,45 +118,45 @@ if __name__ == "__main__":
       disable_analytics()
     else:
       enable_analytics()
-    exit(0)
-  elif args.action == "architecture":
+    sys.exit(0)
+
+  if args.action == "architecture":
     arch = detectArch()
     print(arch if arch else "<unknown>")
-    exit(0)
+    sys.exit(0)
 
+  # Analytics are currently disabled globally; the opt-in prompt below is
+  # preserved in case it is re-enabled in the future.
   os.environ["BITS_NO_ANALYTICS"] = "1"
-  '''
-  if not decideAnalytics(exists(expanduser("~/.config/bits/disable-analytics")),
-                         exists(expanduser("~/.config/bits/analytics-uuid")),
-                         sys.stdin.isatty(),
-                         askForAnalytics):
-    os.environ["BITS_NO_ANALYTICS"] = "1"
-  else:
-    os.environ["BITS_ANALYTICS_USER_UUID"] = open(expanduser("~/.config/bits/analytics-uuid")).read().strip()
-  '''
+
   try:
+    # The profiler is activated by passing --profile on the command line.
+    # cProfile and friends are imported here to keep startup fast in the
+    # common (non-profiling) case.
     useProfiler = "--profile" in sys.argv
     if useProfiler:
-      print("profiler started")
-      import cProfile, pstats
+      import cProfile
+      import pstats
       from io import StringIO
+      print("profiler started")
       pr = cProfile.Profile()
       pr.enable()
       def profiler():
         pr.disable()
         print("profiler stopped")
         s = StringIO()
-        sortby = 'time'
-        ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+        ps = pstats.Stats(pr, stream=s).sort_stats("time")
         ps.print_stats()
         print(s.getvalue())
       atexit.register(profiler)
+
     doMain(args, parser)
-  except KeyboardInterrupt as e:
-    info(str(e))
+
+  except KeyboardInterrupt:
+    info("Interrupted by user (Ctrl-C)")
     report_event("user", "ctrlc")
-    exit(1)
+    sys.exit(1)
   except Exception as e:
     traceback.print_exc()
     report_exception(e)
-    exit(1)
+    sys.exit(1)

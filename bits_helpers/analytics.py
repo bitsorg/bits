@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
+# Standard library
 import os
 import subprocess
 import sys
 from os.path import exists, expanduser
-from os import unlink
 
+# Internal
 from bits_helpers.cmd import getstatusoutput
-from bits_helpers.log import debug, banner
+from bits_helpers.log import banner, debug
 
 
 def generate_analytics_id():
+  """Generate and persist a unique analytics UUID via ``uuidgen``.
+
+  Returns ``True`` on success, ``False`` if ``uuidgen`` is unavailable (in
+  which case analytics are automatically disabled).
+  """
   os.makedirs(os.path.expanduser("~/.config/bits"), exist_ok=True)
   err, output = getstatusoutput("uuidgen >  ~/.config/bits/analytics-uuid")
   # If an error is found while generating the unique user ID, we disable
@@ -21,6 +27,11 @@ def generate_analytics_id():
   return True
 
 def askForAnalytics():
+  """Prompt the user interactively to opt in or out of analytics.
+
+  Returns ``True`` if the user accepts (and a UUID was generated successfully),
+  ``False`` otherwise.
+  """
   banner("In order to improve user experience, Bits would like to gather "
          "analytics about your builds.\nYou can find all the details at:\n\n"
          "  https://github.com/bitsorg/bits/blob/master/ANALYTICS.md\n")
@@ -43,6 +54,11 @@ def askForAnalytics():
 #   analytics. If no, remember the answer and disable it. If yes,
 #   generate a uuid with uuidgen and remember it.
 def decideAnalytics(hasDisableFile, hasUuid, isTty, questionCallback):
+  """Return ``True`` when analytics should be sent for this invocation.
+
+  Parameters are injected so that each decision branch can be unit-tested
+  without touching the file system or opening a tty.
+  """
   if hasDisableFile:
     debug("Analytics previously disabled.")
     return False
@@ -56,6 +72,10 @@ def decideAnalytics(hasDisableFile, hasUuid, isTty, questionCallback):
   return questionCallback()
 
 def report(eventType, **metadata):
+  """Fire-and-forget a Google Analytics hit via ``curl``.
+
+  Does nothing when ``BITS_NO_ANALYTICS`` is set in the environment.
+  """
   if "BITS_NO_ANALYTICS" in os.environ:
     return
   opts = {
@@ -107,14 +127,19 @@ def report_exception(e):
     exf = "1")
 
 def enable_analytics() -> None:
-  if exists(expanduser("~/.config/bits/disable-analytics")):
-    unlink(expanduser("~/.config/bits/disable-analytics"))
+  """Re-enable analytics: remove the disable flag and regenerate a UUID if needed."""
+  disable_flag = expanduser("~/.config/bits/disable-analytics")
+  if exists(disable_flag):
+    os.unlink(disable_flag)
   if not exists(expanduser("~/.config/bits/analytics-uuid")):
     generate_analytics_id()
 
-# We do it in getstatusoutput because python makedirs can actually fail
-# if one of the intermediate directories is not writeable.
 def disable_analytics():
+  """Persist the analytics opt-out and return ``False``.
+
+  Uses the shell rather than Python's ``os.makedirs`` because intermediate
+  directories may not be writeable in all environments.
+  """
   getstatusoutput("mkdir -p ~/.config/bits && touch ~/.config/bits/disable-analytics")
   return False
 

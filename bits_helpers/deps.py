@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-
-from bits_helpers.log import debug, error, info, dieOnError
-from bits_helpers.utilities import parseDefaults, readDefaults, getPackageList, validateDefaults
-from bits_helpers.cmd import DockerRunner, execute
-from tempfile import NamedTemporaryFile
-from bits_helpers.cmd import getstatusoutput
-
+# Standard library
 from os import remove, path
+from tempfile import NamedTemporaryFile
+
+# Internal
+from bits_helpers.cmd import DockerRunner, execute, getstatusoutput
+from bits_helpers.log import debug, dieOnError, error, info
+from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults
 
 def doDeps(args, parser):
 
@@ -18,7 +18,7 @@ def doDeps(args, parser):
   specs = {}
 
   defaultsReader = lambda: readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
-  (err, overrides, taps) = parseDefaults(args.disable, defaultsReader, debug)
+  (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable, defaultsReader, debug)
  
   def performCheck(pkg, cmd):
     return getstatusoutput(cmd)
@@ -37,7 +37,8 @@ def doDeps(args, parser):
                      performValidateDefaults = lambda spec: validateDefaults(spec, args.defaults),
                      overrides               = overrides,
                      taps                    = taps,
-                     log                     = debug)
+                     log                     = debug,
+                     defaults_meta           = defaultsMeta)
   
   dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
              "Specified default `%s' is not compatible with the packages you want to build.\n" % "::".join(args.defaults) +
@@ -79,7 +80,9 @@ def doDeps(args, parser):
     elif k == args.package:
       color = "gold"
     else:
-      assert color, "This should not happen (happened for %s)" % k
+      # A package that is not in any dependency set and is not the top-level
+      # target — this should never happen given the getPackageList results.
+      raise AssertionError("Unclassified package %r — this is a bug" % k)
 
     # Node definition
     dot += '"{}" [shape=box, style="rounded,filled", fontname="helvetica", fillcolor={}]\n'.format(k,color)
@@ -92,12 +95,15 @@ def doDeps(args, parser):
 
   dot += "}\n"
 
+  # Write the DOT source to either the user-supplied path or a temp file.
   if args.outdot:
-    fp = open(args.outdot, "w")
+    dot_path = args.outdot
+    with open(dot_path, "w") as fp:
+      fp.write(dot)
   else:
-    fp = NamedTemporaryFile(delete=False, mode="wt")
-  fp.write(dot)
-  fp.close()
+    with NamedTemporaryFile(delete=False, mode="wt", suffix=".dot") as fp:
+      fp.write(dot)
+      dot_path = fp.name
 
   # Check if we have dot in PATH
   try:
@@ -106,14 +112,14 @@ def doDeps(args, parser):
     dieOnError(True, "Could not find dot in PATH. Please install graphviz and add it to PATH.")
   try:
     if args.neat:
-      execute("tred {dotFile} > {dotFile}.0 && mv {dotFile}.0 {dotFile}".format(dotFile=fp.name))
-    execute(["dot", fp.name, "-Tpdf", "-o", args.outgraph])
+      execute("tred {f} > {f}.0 && mv {f}.0 {f}".format(f=dot_path))
+    execute(["dot", dot_path, "-Tpdf", "-o", args.outgraph])
   except Exception as e:
     error("Error generating dependencies with dot: %s: %s", type(e).__name__, e)
   else:
     info("Dependencies graph generated: %s" % args.outgraph)
-  if fp.name != args.outdot:
-    remove(fp.name)
+  if dot_path != args.outdot:
+    remove(dot_path)
   else:
     info("Intermediate dot file for Graphviz saved: %s" % args.outdot)
   return True
