@@ -30,14 +30,18 @@ from bits_helpers.manifest import BuildManifest, _git_remote_url, _now_iso
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_spec(pkg="MyPkg", version="1.0", revision="1",
-               pkg_hash="abcd1234" * 5, commit_hash="deadbeef" * 5):
-    return {
+               pkg_hash="abcd1234" * 5, commit_hash="deadbeef" * 5,
+               sources=None):
+    spec = {
         "package":     pkg,
         "version":     version,
         "revision":    revision,
         "hash":        pkg_hash,
         "commit_hash": commit_hash,
     }
+    if sources is not None:
+        spec["sources"] = sources
+    return spec
 
 
 def _write_file(path: str, content: bytes = b"fake tarball content") -> str:
@@ -454,6 +458,88 @@ class TestGitRemoteUrl(unittest.TestCase):
             )
             url = _git_remote_url(td)
             self.assertEqual(url, "https://example.com/test.git")
+
+
+# ── source_checksums ──────────────────────────────────────────────────────────
+
+class TestSourceChecksums(unittest.TestCase):
+    """Verify that source archive checksums are embedded in PackageEntry."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _load(self, m):
+        with open(m.path) as fh:
+            return json.load(fh)
+
+    def test_no_sources_gives_empty_list(self):
+        """A spec without a sources field must produce an empty source_checksums list."""
+        m = _make_manifest(self.tmp)
+        m.add_package(_make_spec(), "built_from_source")
+        pkg = self._load(m)["packages"][0]
+        self.assertEqual(pkg["source_checksums"], [])
+
+    def test_source_with_checksum_recorded(self):
+        """A sources entry with a declared checksum is split correctly."""
+        spec = _make_spec(sources=[
+            "https://example.com/libfoo-1.2.tar.gz,sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ])
+        m = _make_manifest(self.tmp)
+        m.add_package(spec, "built_from_source")
+        pkg = self._load(m)["packages"][0]
+        self.assertEqual(len(pkg["source_checksums"]), 1)
+        entry = pkg["source_checksums"][0]
+        self.assertEqual(entry["url"], "https://example.com/libfoo-1.2.tar.gz")
+        self.assertEqual(
+            entry["checksum"],
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )
+
+    def test_source_without_checksum_gives_null(self):
+        """A sources entry with no declared checksum must record checksum=null."""
+        spec = _make_spec(sources=["https://example.com/libbar-3.1.tar.xz"])
+        m = _make_manifest(self.tmp)
+        m.add_package(spec, "built_from_source")
+        pkg = self._load(m)["packages"][0]
+        entry = pkg["source_checksums"][0]
+        self.assertEqual(entry["url"], "https://example.com/libbar-3.1.tar.xz")
+        self.assertIsNone(entry["checksum"])
+
+    def test_multiple_sources_all_recorded(self):
+        """All entries in the sources list are captured in order."""
+        spec = _make_spec(sources=[
+            "https://example.com/main-1.0.tar.gz,sha256:aaaa" + "0" * 60,
+            "https://example.com/extra.tar.gz",
+            "fix-build.patch,sha256:bbbb" + "0" * 60,
+        ])
+        m = _make_manifest(self.tmp)
+        m.add_package(spec, "built_from_source")
+        pkg = self._load(m)["packages"][0]
+        sc = pkg["source_checksums"]
+        self.assertEqual(len(sc), 3)
+        self.assertIsNotNone(sc[0]["checksum"])
+        self.assertIsNone(sc[1]["checksum"])
+        self.assertIsNotNone(sc[2]["checksum"])
+
+    def test_url_with_comma_in_query_string(self):
+        """A URL containing a comma but no checksum suffix must not be mangled."""
+        url = "https://example.com/download?a=1,2&b=3"
+        spec = _make_spec(sources=[url])
+        m = _make_manifest(self.tmp)
+        m.add_package(spec, "built_from_source")
+        pkg = self._load(m)["packages"][0]
+        entry = pkg["source_checksums"][0]
+        self.assertEqual(entry["url"], url)
+        self.assertIsNone(entry["checksum"])
+
+    def test_schema_version_is_2(self):
+        """Schema version must reflect the source_checksums addition."""
+        m = _make_manifest(self.tmp)
+        data = self._load(m)
+        self.assertEqual(data["schema_version"], 2)
 
 
 if __name__ == "__main__":

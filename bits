@@ -212,8 +212,9 @@ function readBitsRc() {
     if [[ -z "$val" && -n "$organisation" ]]; then
       val="$(_rc_get "$organisation" "$key")"
     fi
-    [[ -n "$val" ]] && printf -v "$var" '%s' "$val"
+    [[ -n "$val" ]] && printf -v "$var" '%s' "$val" || true
   done
+  return 0
 }
 
 function configBits() {

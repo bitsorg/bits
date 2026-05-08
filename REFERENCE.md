@@ -29,6 +29,14 @@
 
 ### Part III — Reference Guide
 16. [Command-Line Reference](#16-command-line-reference)
+    - [bits build](#bits-build)
+    - [bits deps](#bits-deps)
+    - [bits doctor](#bits-doctor)
+    - [bits status](#bits-status)
+    - [bits verify](#bits-verify)
+    - [bits init](#bits-init)
+    - [bits clean / bits cleanup](#bits-clean)
+    - [bits publish](#bits-publish-1)
 17. [Recipe Format Reference](#17-recipe-format-reference)
 18. [Defaults Profiles](#18-defaults-profiles)
 19. [Architecture-Independent (Shared) Packages](#19-architecture-independent-shared-packages)
@@ -43,6 +51,19 @@
 22. [Docker Support](#22-docker-support)
     - [workDir mount point inside the container](#workdir-mount-point-inside-the-container)
     - [No-relocation builds with `--cvmfs-prefix`](#no-relocation-builds-with---cvmfs-prefix)
+22a. [Recipe Sandbox](#22a-recipe-sandbox)
+22b. [Cross-compilation via QEMU](#22b-cross-compilation-via-qemu)
+    - [How it works](#how-it-works)
+    - [Sandbox modes](#sandbox-modes)
+    - [Per-recipe network control](#per-recipe-network-control)
+    - [Docker-in-Docker (DinD)](#docker-in-docker-dind)
+22c. [bits verify — Deployment Verification](#22c-bits-verify--deployment-verification)
+    - [What is checked](#what-is-checked)
+    - [Search order](#search-order)
+    - [Output formats](#output-formats)
+    - [Exit codes](#exit-codes)
+    - [Status values](#status-values)
+    - [CLI reference](#cli-reference-verify)
 23. [Forcing or Dropping the Revision Suffix (`force_revision`)](#23-forcing-or-dropping-the-revision-suffix-force_revision)
 24. [Design Principles & Limitations](#24-design-principles--limitations)
 25. [Build Manifest](#25-build-manifest)
@@ -1452,6 +1473,9 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--docker-extra-args ARGS` | Extra arguments for `docker run`. |
 | `--cvmfs-prefix PATH` | Bind-mount the workDir at `PATH` inside the container instead of the default `/container/bits/sw`. When set, packages compile with their final CVMFS paths already embedded so that `bits publish --no-relocate` can skip the relocation step. Requires `--docker`; has no effect without it. |
 | `--container-use-workdir` | Mount the workDir at the same path inside the container (i.e. `container_workDir = workDir`). Useful when the host and container share the same filesystem namespace. Mutually exclusive with `--cvmfs-prefix`; if both are set `--cvmfs-prefix` takes precedence. |
+| `--docker-platform PLATFORM` | Docker `--platform` argument for cross-compilation (e.g. `linux/arm64`, `linux/amd64`, `linux/ppc64le`). When not set, bits derives the platform automatically from `--architecture`: if the target differs from the host the matching platform is injected so QEMU emulates the target inside the builder container. Pass `native` to suppress automatic injection. Requires QEMU binfmt handlers on the Docker host. See [§22b Cross-compilation via QEMU](#22b-cross-compilation-via-qemu). |
+| `--sandbox MODE` | Sandbox each recipe build script for extra isolation. `auto` (default): podman on Linux if available, `sandbox-exec` on macOS, nested podman inside Docker containers. `podman`: always use podman (requires `--docker` or `--sandbox-image`). `sandbox-exec`: macOS only. `off`: no sandboxing. See [§22a Recipe Sandbox](#22a-recipe-sandbox). |
+| `--sandbox-image IMAGE` | Container image for `--sandbox=podman` when not using `--docker`. Implies `--sandbox=podman`. Defaults to the `--docker` image when `--docker` is set. |
 | `--force` | Rebuild even if the package hash already exists. |
 | `--keep-tmp` | Keep temporary build directories after success. |
 | `--resource-monitoring` | Enable per-package CPU/memory monitoring. |
@@ -1491,13 +1515,196 @@ Colour coding in the generated graph: **gold** = requested top-level package; **
 
 ### bits doctor
 
-Check that the system satisfies all requirements for the requested packages.
+Check that the system satisfies all requirements for the requested packages, validate the full build-runner environment with `--runner`, or probe the remote binary store with `--check-store`.
 
 ```bash
-bits doctor [options] PACKAGE [PACKAGE ...]
+bits doctor [options] [PACKAGE ...]          # recipe system-requirement check
+bits doctor --runner [options]               # runner environment validation
+bits doctor --check-store PACKAGE ...        # pre-build store availability report
 ```
 
-Evaluates each package's `system_requirement` and `prefer_system` snippets and reports results with colour-coded pass/warn/fail output.
+**Recipe-check mode** (default) evaluates each package's `system_requirement` and `prefer_system` snippets in the dependency tree and reports which packages can be satisfied by the host and which will be built by bits. The `PACKAGE` positional argument is required in this mode.
+
+**`--runner` mode** skips the recipe scan and instead runs a structured checklist of the build-runner environment. Each check returns PASS / FAIL / WARN / SKIP. WARN is advisory; only FAIL affects the exit code.
+
+| Check performed | When included |
+|-----------------|---------------|
+| `git` on PATH | always |
+| C++ compiler (`c++`, `g++`, or `clang++`) | always |
+| Docker daemon reachable | `--docker` or `--runner` |
+| QEMU binfmt handler for the target architecture | when `--docker` is set |
+| podman availability and user-namespace support | always |
+| CVMFS repository path(s) accessible and non-empty | `--cvmfs-repos` / `bits.rc cvmfs_repos` |
+| Free disk space in `--work-dir` ≥ `--min-disk` GiB | always |
+| Remote store reachable and credentials present | when `--remote-store` is configured |
+
+**`--check-store` mode** runs the standard dependency-tree resolution (same as recipe-check mode), computes the expected tarball hash for each package bits would need to build, and probes the remote store to report which are pre-built. The report is informational: exit code is always 0. Use it to estimate how much of a build will compile vs. be downloaded.
+
+Hash computation notes:
+
+- For tagged releases (the common CI case) the hash is exact — the tag string deterministically identifies the commit.
+- For branch builds without `--fetch-repos`, the commit hash is approximated with "0". If the store probe shows FAIL for all packages in a branch build, re-run via `bits status --fetch-repos --check-store` for accurate hashes.
+- The store tarball path for an `https://` store follows the pattern: `{store}/TARS/{arch}/store/{hash[:2]}/{hash}/{pkg}-{ver}-{rev}.{arch}.tar.gz`.
+
+`--check-store` output example (text):
+```
+bits doctor --check-store  —  architecture: slc9_x86-64
+  Store: https://s3.cern.ch/swift/v1/alibuild-repo
+
+  package                              status  detail
+  ──────────────────────────────────────────────────────────────────────────────
+  zlib                                 PASS    available: zlib-1.3.1-1.slc9_x86-64.tar.gz (hash 3f2c8d...)
+  GSL                                  PASS    available: GSL-2.7.1-1.slc9_x86-64.tar.gz  (hash a1b2c3...)
+  ROOT                                 FAIL    not in store — will build from source: ROOT-6.32.00-1.slc9_x86-64.tar.gz
+
+  2 of 3 package(s) available in store; 1 will build from source.
+```
+
+`--check-store` JSON output (abbreviated):
+```json
+{
+  "mode": "check-store",
+  "architecture": "slc9_x86-64",
+  "store": "https://s3.cern.ch/swift/v1/alibuild-repo",
+  "packages": [
+    {"package": "zlib", "status": "PASS", "detail": "available: ..."},
+    {"package": "ROOT", "status": "FAIL", "detail": "not in store — will build from source: ..."}
+  ],
+  "summary": {"PASS": 2, "FAIL": 1, "WARN": 0, "SKIP": 0},
+  "notes": []
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--check-store` | off | Probe the remote store for each package bits would build. Requires `--remote-store`. Always exits 0. |
+| `--runner` | off | Validate the full build-runner environment instead of checking package recipes. |
+| `--json` | off | Emit a machine-readable JSON report (works with `--runner` and `--check-store`). |
+| `--cvmfs-repos PATH` | _(none)_ | CVMFS mount path to check (repeatable, `--runner` mode only). Can also be set as `cvmfs_repos = /cvmfs/a,/cvmfs/b` in `bits.rc`. |
+| `--min-disk GIB` | `10.0` | Minimum free disk in `--work-dir` (`--runner` mode). Lower triggers WARN, not FAIL. |
+| `-a ARCH`, `--architecture ARCH` | auto-detected | Target architecture. |
+| `--defaults PROFILE` | `release` | Defaults profile for dependency resolution. |
+| `-w DIR`, `--work-dir DIR` | `sw` | Work directory checked for disk space (`--runner`). |
+| `--docker` | off | Run recipe checks inside a Docker container (also enables docker-daemon and QEMU checks in `--runner`). |
+| `--remote-store URL` | _(none)_ | Remote binary store URL; checked for reachability in `--runner` mode and probed per-package in `--check-store` mode. |
+| `--insecure` | off | Skip TLS certificate validation when probing an `https://` store. |
+
+**Exit codes (recipe-check mode):** 0 = all requirements satisfied; 1 = missing system packages or compiler/git absent; 2 = no valid defaults combination; 3 = no valid defaults for the package set at all.
+
+**Exit codes (`--runner` mode):** 0 = all checks PASS or WARN; 1 = one or more checks FAIL.
+
+**Exit codes (`--check-store` mode):** always 0 (informational).
+
+**Example — pre-build system check:**
+```bash
+bits doctor O2Physics
+```
+
+**Example — store availability report before a long build:**
+```bash
+bits doctor --check-store \
+    --remote-store https://s3.cern.ch/swift/v1/alibuild-repo \
+    -a slc9_x86-64 -c lcg.bits ROOT
+```
+
+**Example — store report (JSON output):**
+```bash
+bits doctor --check-store --json \
+    --remote-store https://s3.cern.ch/swift/v1/alibuild-repo \
+    -a slc9_x86-64 -c lcg.bits ROOT Geant4
+```
+
+**Example — runner health check (human-readable):**
+```bash
+bits doctor --runner -a slc9_x86-64 \
+    --remote-store https://s3.cern.ch/swift/v1/alibuild-repo \
+    --cvmfs-repos /cvmfs/alice.cern.ch
+```
+
+**Example — runner health check (JSON, for bits-console):**
+```bash
+bits doctor --runner --json \
+    --cvmfs-repos /cvmfs/alice.cern.ch \
+    --remote-store https://s3.cern.ch/swift/v1/alibuild-repo
+```
+
+**bits.rc keys relevant to `bits doctor`:**
+
+| Key | Description |
+|-----|-------------|
+| `prerequisites_url` | URL shown when the C++ compiler or git is missing. Defaults to the ALICE prerequisite guide. |
+| `cvmfs_repos` | Comma-separated list of CVMFS paths checked in `--runner` mode (e.g. `/cvmfs/alice.cern.ch,/cvmfs/sft.cern.ch`). |
+
+---
+
+### bits status
+
+Show what `bits build` would do for each package in the dependency tree, without building anything. Each package is classified into one of the states below. Git refs are read from the local mirror cache; packages whose refs have not been cached yet are reported as `hash_unknown`. Pass `--fetch-repos` to populate the cache on first use.
+
+```bash
+bits status [options] PACKAGE [PACKAGE...]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--defaults PROFILE` | `release` | Defaults profile(s); use `::` to combine. |
+| `-a ARCH`, `--architecture ARCH` | detected | Target architecture. |
+| `-w DIR`, `--work-dir DIR` | `sw` | bits work directory to inspect. |
+| `-c DIR`, `--config DIR` | `alidist` | Recipe directory. |
+| `--reference-sources DIR` | `<workDir>/MIRROR` | Mirror directory for git ref cache. |
+| `--no-local PACKAGE` | _(none)_ | Exclude a package from local-checkout detection. May be repeated. |
+| `--force-tracked` | off | Ignore all local checkouts. |
+| `--disable PACKAGE` | _(none)_ | Exclude a package from the dependency tree. |
+| `--force-rebuild PACKAGE` | _(none)_ | Report the named package as needing a rebuild regardless of its hash. |
+| `-u`, `--fetch-repos` | off | Clone / fetch reference repos to populate the git ref cache before computing hashes. Requires network access. |
+| `--remote-store URL` | _(none)_ | Remote binary store URL. Only consulted when `--check-store` is given. |
+| `--check-store` | off | Probe the remote store to detect tarballs not mirrored locally. Adds a network round-trip per uncached package. |
+| `--json` | off | Emit a machine-readable JSON report. |
+
+**Package states:**
+
+| State | Meaning |
+|-------|---------|
+| `already_installed` | Hash matches the installed package; nothing to do. |
+| `from_store` | Matching tarball found in the local TARS store; will be unpacked. |
+| `from_remote_store` | Tarball only in remote store; will be downloaded then unpacked. Detected only with `--check-store`. |
+| `local_checkout` | A directory matching the package name exists in cwd; will be compiled from local sources. |
+| `local_checkout_unchanged` | Devel package whose content hash has not changed; rebuild would be skipped. |
+| `build_from_source` | No cached result found; will be compiled from scratch. |
+| `hash_unknown` | Git refs unavailable (mirror not yet populated); re-run with `--fetch-repos`. |
+
+**JSON output** (`--json`):
+
+```json
+{
+  "architecture": "slc9_x86-64",
+  "packages": [
+    { "package": "zlib", "version": "1.2.13", "hash": "abc...", "state": "already_installed" },
+    { "package": "boost", "version": "1.83.0", "hash": "def...", "state": "from_store" },
+    { "package": "ROOT",  "version": "6.32.06", "hash": "123...", "state": "build_from_source" }
+  ]
+}
+```
+
+---
+
+### bits verify
+
+Check that a live deployment matches the build manifest written by `bits build`. See [§22c bits verify — Deployment Verification](#22c-bits-verify--deployment-verification) for full details.
+
+```bash
+bits verify --from-manifest FILE [options]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--from-manifest FILE` | _(required)_ | Path to the bits build manifest JSON file. |
+| `--cvmfs-root PATH` | _(none)_ | CVMFS tarball store root to search first. |
+| `-w DIR`, `--work-dir DIR` | `sw` | Local bits work directory containing the `TARS/` store. |
+| `--no-providers` | off | Skip provider checkout commit verification. |
+| `--json` | off | Emit a machine-readable JSON report. |
+
+**Exit codes:** 0 = consistent; 1 = FAIL (hash/commit mismatch); 2 = MISS (tarball not found); 3 = manifest unreadable.
 
 ---
 
@@ -1828,6 +2035,23 @@ mem_utilisation: 0.80
 ```
 
 When `provides_repository: true` is set, the package's `source` URL must point to a git repository containing recipe files. It will be cloned before the main build and its directory added to `BITS_PATH`. Adding `always_load: true` causes the clone to happen unconditionally at startup (Phase 1) rather than only when the package appears in the dependency graph (Phase 2). See [§13](#13-repository-provider-feature) for full details.
+
+#### Build sandbox
+
+| Field | Description |
+|-------|-------------|
+| `sandbox_network` | Controls outgoing network access when the build script runs inside a sandbox. `on` (default) — network is **blocked**. `off` — network is **allowed** (useful for recipes that `pip install` or `gem install` at build time). Ignored when `--sandbox=off`. See [§22a Recipe Sandbox](#22a-recipe-sandbox). |
+
+Example:
+
+```yaml
+package: my-python-tool
+version: "1.0"
+tag: v1.0
+sandbox_network: off   # allow pip install during build
+---
+pip install -r requirements.txt
+```
 
 #### Checksum verification
 
@@ -2856,6 +3080,329 @@ bits publish ROOT \
 
 ---
 
+## 22a. Recipe Sandbox
+
+Bits can run each recipe build script inside an isolated sandbox to limit the damage a malicious or buggy recipe can do. The sandbox wraps the actual `bash build.sh` execution — it does not affect source downloads, tarball extraction, or publishing.
+
+### How it works
+
+| Platform | Default sandbox | Mechanism |
+|----------|-----------------|-----------|
+| Linux (local build) | podman if available, otherwise `off` | Rootless `podman run` with `--userns=keep-id` |
+| macOS (local build) | `sandbox-exec` if available, otherwise `off` | Built-in SBPL sandbox profile; no VM, no overhead |
+| Any platform, `--docker` active | Nested podman inside the container, if available | `podman run` launched from inside the Docker build container |
+
+The workDir is bind-mounted at the same absolute path inside the podman container so that all paths embedded in the build environment (`$WORK_DIR`, `$INSTALLROOT`, `$SOURCEDIR`, etc.) resolve correctly.
+
+### Sandbox modes
+
+Pass `--sandbox MODE` to `bits build`:
+
+| Mode | Behaviour |
+|------|-----------|
+| `auto` | (default) Pick the best available option — podman on Linux, `sandbox-exec` on macOS, nested podman when `--docker` is active. Falls back to `off` with a warning if nothing is available. |
+| `podman` | Always use podman. Requires the podman binary to be reachable and `podman info` to succeed. When used without `--docker`, also requires `--sandbox-image` to name the container image. |
+| `sandbox-exec` | macOS only. Fails with an error on Linux. |
+| `off` | No sandboxing. Recipe runs directly on the host (same as the behaviour before this feature was added). |
+
+```bash
+# Let bits choose (the default)
+bits build ROOT
+
+# Force podman with a specific image (no --docker required)
+bits build --sandbox=podman --sandbox-image alisw/slc9-builder:latest ROOT
+
+# Disable sandboxing explicitly
+bits build --sandbox=off ROOT
+```
+
+When `--docker` is used, `--sandbox-image` defaults to the same image as `--docker-image`, so no extra flag is needed:
+
+```bash
+# Docker build with nested podman sandbox — same image used for both layers
+bits build --docker --docker-image alisw/slc9-builder:latest ROOT
+```
+
+### Per-recipe network control
+
+By default the sandbox blocks all outgoing network access from the recipe script. Some recipes need to reach the internet during their build (for example, to run `pip install` or `gem install`). Use the `sandbox_network` recipe field to opt in:
+
+```yaml
+package: my-tool
+version: "1.0"
+sandbox_network: off   # allow outgoing network inside the sandbox
+---
+pip install -r requirements.txt
+make install
+```
+
+| `sandbox_network` value | Effect |
+|-------------------------|--------|
+| `on` | (default) Outgoing network is **blocked**. The restriction is active. |
+| `off` | Outgoing network is **allowed**. The restriction is lifted. |
+
+The field is silently ignored when `--sandbox=off`.
+
+### Docker-in-Docker (DinD)
+
+If `bits --docker` is invoked from inside an existing Docker container (for example, a GitLab CI job that itself runs inside Docker), adding a nested podman layer is still possible but requires the outer Docker container to have been started with:
+
+```
+--security-opt seccomp=unconfined
+```
+
+or an equivalent unprivileged user-namespace configuration. Without this, the kernel will reject the `clone(CLONE_NEWUSER)` call that podman uses for rootless containers.
+
+Bits detects this situation automatically (by checking for `/.dockerenv` and `/proc/1/cgroup`) and emits a warning at build time. If the outer container cannot be reconfigured, disable sandboxing for that job with `--sandbox=off`.
+
+---
+
+## 22b. Cross-compilation via QEMU
+
+Bits supports cross-compilation on any Docker-capable host by combining Docker's
+`--platform` flag with QEMU user-mode emulation.  When the target architecture
+differs from the host, Docker pulls the matching image variant (e.g. `arm64`)
+and uses QEMU to transparently execute the foreign ELF binaries — the build script
+sees a native `aarch64` environment without any changes to the recipe.
+
+### One-time host setup
+
+Register QEMU binfmt handlers on the Docker host (persists until reboot):
+
+```bash
+# Option A — via the multiarch helper image (recommended, requires docker)
+docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+# Option B — via the OS package manager (Debian / Ubuntu)
+apt-get install -y qemu-user-static binfmt-support
+update-binfmts --enable
+
+# Verify
+docker run --rm --platform linux/arm64 alpine uname -m   # should print: aarch64
+docker run --rm --platform linux/ppc64le alpine uname -m # should print: ppc64le
+```
+
+This is a one-time privileged operation on the runner host.  Subsequent containers
+do not need elevated privileges; the kernel handles the QEMU dispatch transparently.
+
+### Supported target platforms
+
+| bits `--architecture` substring | Docker `--platform` |
+|----------------------------------|---------------------|
+| `x86-64` / `x86_64` | `linux/amd64` |
+| `aarch64` / `arm64` | `linux/arm64` |
+| `ppc64le` | `linux/ppc64le` |
+| `s390x` | `linux/s390x` |
+| `riscv64` | `linux/riscv64` |
+
+### Automatic platform injection
+
+When `--docker` is active, bits derives the required `--platform` string from
+`--architecture` automatically and compares it to the detected host architecture.
+If they differ, `--platform` is injected into both `docker run` invocations (the
+long-running helper container used for pre-flight checks and the per-package build
+container).  **No extra flags are needed for the common case**:
+
+```bash
+# On an x86-64 host, build for aarch64 — platform injected automatically
+bits build MyAnalysis -a slc9_aarch64 --docker
+
+# Equivalent explicit form
+bits build MyAnalysis -a slc9_aarch64 --docker --docker-platform linux/arm64
+```
+
+Pass `--docker-platform native` to suppress automatic injection and always use the
+daemon-default image variant (useful on a native ARM runner running an x86-64 bits
+client, or for testing without QEMU overhead).
+
+### Builder image availability
+
+The target architecture must have a corresponding builder image variant published
+as a multi-arch manifest or a separate tag.  For the CERN experiment ecosystem, the
+relevant images are the `alisw/*-builder` series.  Confirm availability before
+scheduling cross-compilation CI jobs:
+
+```bash
+# Check whether the arm64 variant exists for the slc9 builder
+docker manifest inspect registry.cern.ch/alisw/slc9-builder:latest | \
+  grep -A2 '"platform"'
+```
+
+If only the `x86-64` variant exists, an ARM-native runner (available on CERN's
+infrastructure and cheaply on cloud spot markets) is the practical alternative for
+full-stack cross-compilation.
+
+### Architecture matching for batch jobs
+
+Tarballs built for one architecture will not run on another.  When using the
+S3-overlay workflow (personal analysis packages pushed to an S3 bucket and fetched
+by WLCG batch jobs), the batch job description must constrain worker node selection
+to match the build architecture:
+
+```
+# HTCondor
+Requirements = (TARGET.OpSysAndVer == "CentOS9") && (TARGET.Arch == "X86_64")
+
+# DIRAC JDL
+SystemConfig = x86_64-slc9-gcc13-opt
+```
+
+`bits fetch` verifies the manifest's `architecture` field against the executing
+node before unpacking anything and aborts with a clear diagnostic on mismatch.
+
+### Performance expectations
+
+QEMU user-mode emulation runs at roughly 20–50 % of native execution speed for
+compute-heavy C++ compilation.  This is acceptable for small analysis packages
+(seconds to minutes per package) but impractical for large stacks such as ROOT or
+Geant4 (builds would take 10–20 hours).  The recommended scope for QEMU
+cross-compilation is:
+
+- Personal analysis overlays (M6 workflow): a few packages, tens of MB of output.
+- Validation builds: confirming that a recipe compiles clean on a target
+  architecture before scheduling a native-runner CI job for the full stack.
+
+For full experiment stacks on non-x86-64 architectures, use a native runner of
+the target architecture.
+
+### Sandbox interaction
+
+Nested QEMU + rootless podman (the DinD sandbox scenario) requires
+`--security-opt seccomp=unconfined` on the outer `docker run` and may still fail
+on older kernels without unprivileged user-namespace support.  Bits emits a warning
+when cross-compilation is active and `--sandbox` is not `off`.  For cross-compilation
+builds, `--sandbox=off` is the recommended setting unless the runner is known to
+support nested namespaces under QEMU:
+
+```bash
+bits build MyAnalysis -a slc9_aarch64 --docker --sandbox=off
+```
+
+---
+
+## 22c. bits verify — Deployment Verification
+
+`bits verify` confirms that a live deployment — packages in a CVMFS mount or a
+local work directory — matches the build manifest written by `bits build`.  It
+is the primary tool for closing the loop between the build record and what is
+actually deployed on worker nodes.
+
+```
+bits verify --from-manifest bits-manifest-2026-01-15.json \
+            --cvmfs-root /cvmfs/alice.cern.ch \
+            --work-dir /opt/sw
+```
+
+### What is checked
+
+**Packages** — for each entry in `manifest.packages[]`:
+
+1. The tarball is located in the content-addressed store under `TARS/<arch>/store/<hash[:2]>/<hash>/<tarball>`.
+2. Its SHA-256 is recomputed and compared to `tarball_sha256` in the manifest.
+3. Packages with `outcome: already_installed` and no recorded tarball are silently marked **SKIP** — no output tarball is expected for them.
+
+**Providers** — for each entry in `manifest.providers[]`:
+
+1. If the `checkout_dir` does not exist on the current machine, the entry is **SKIP** (provider checkouts are usually only present on build hosts).
+2. Otherwise, `git rev-parse HEAD` is run in the checkout and the result is compared to the manifest's `commit` field.
+
+**Architecture** — the `architecture` field in the manifest is compared to the
+current host architecture (via `detectArch()`).  A mismatch is a **FAIL** and
+counts toward the exit code.
+
+### Search order
+
+Tarballs are searched in this order:
+
+1. `--cvmfs-root PATH` (if given) — typically the CVMFS mount point.
+2. `--work-dir DIR` (default: `sw`) — the local bits work directory.
+
+The first root where the content-addressed tarball file exists is used.  This
+allows verifying a deployment that spans both CVMFS (for the common stack) and
+a local overlay (for personal analysis packages).
+
+### Output formats
+
+**Human-readable (default)**
+
+```
+━━━ bits verify  —  bits-manifest-2026-01-15.json ━━━━━━━━━━━━━━━━━━━
+
+  File:       /builds/bits-manifest-2026-01-15.json
+  Schema:     v2
+  Created:    2026-01-15T08:42:11Z
+  Build:      success
+
+  Architecture: PASS  slc9_x86-64
+
+  Packages (4):
+        package                        version-revision   detail
+    --------------------------------------------------------------------------
+    PASS  ROOT                           6.32.02-1          sha256 OK
+    PASS  Geant4                         11.2.1-2           sha256 OK
+    SKIP  CMake                          3.28.0-0           already_installed — no output tarball expected
+    MISS  MyAnalysis                     1.0-3              tarball not found
+        searched: /cvmfs/alice.cern.ch/TARS/slc9_x86-64/store/ab/ab3f.../MyAnalysis-1.0-3.slc9_x86-64.tar.gz
+
+  Providers (1):
+        name                           detail
+    --------------------------------------------------------------------------
+    SKIP  alidist                        checkout not present locally
+
+  Summary: 2 PASS  0 FAIL  1 MISS  2 SKIP  (of 5 total)
+```
+
+ANSI colours are emitted when stdout is a TTY: green for PASS, red for FAIL,
+yellow for MISS, dark grey for SKIP.
+
+**JSON (`--json`)**
+
+```json
+{
+  "manifest_created_at": "2026-01-15T08:42:11Z",
+  "manifest_status": "success",
+  "schema_version": 2,
+  "architecture": { "manifest": "slc9_x86-64", "host": "slc9_x86-64", "status": "PASS" },
+  "packages": [
+    { "package": "ROOT", "version": "6.32.02", "revision": "1", "status": "PASS", "detail": "sha256 OK" },
+    ...
+  ],
+  "providers": [ ... ],
+  "summary": { "PASS": 2, "FAIL": 0, "MISS": 1, "SKIP": 2 },
+  "exit_code": 2
+}
+```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | All verifiable entries match — deployment is consistent with the manifest. |
+| 1 | One or more entries are **FAIL** (hash mismatch or provider commit mismatch). |
+| 2 | One or more entries are **MISS** (tarball not found; consistency unknown). If there are also FAILs, exit code 1 takes precedence. |
+| 3 | The manifest file cannot be read or is malformed. |
+
+### Status values
+
+| Status | Meaning |
+|--------|---------|
+| **PASS** | Entry verified successfully. |
+| **FAIL** | Checksum or commit mismatch — the deployed artifact differs from the build record. |
+| **MISS** | Tarball not found in any search root — cannot confirm consistency. |
+| **SKIP** | Entry not verifiable on this machine (already-installed packages, absent provider checkouts). |
+
+### CLI reference {#cli-reference-verify}
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from-manifest FILE` | _(required)_ | Path to the bits build manifest JSON file. |
+| `--cvmfs-root PATH` | _(none)_ | Root of a CVMFS tarball store to search first (e.g. `/cvmfs/alice.cern.ch`). |
+| `-w / --work-dir DIR` | `sw` | Local bits work directory containing the `TARS/` store. |
+| `--no-providers` | off | Skip verification of provider checkout commits. |
+| `--json` | off | Emit a machine-readable JSON report instead of the human-readable table. |
+
+---
+
 ## 23. Forcing or Dropping the Revision Suffix (`force_revision`)
 
 By default every installed package path and tarball filename includes a
@@ -3052,6 +3599,7 @@ The manifest records every input and output that could affect reproducibility:
 | `outcome` | `"already_installed"`, `"from_store"`, or `"built_from_source"` |
 | `tarball` | Tarball filename (or `null`) |
 | `tarball_sha256` | `sha256:<hex>` digest of the tarball, if present |
+| `source_checksums` | List of `{url, checksum}` entries from the recipe's `sources:` list; `checksum` is `null` when none was declared |
 | `completed_at` | ISO-8601 UTC timestamp of package completion |
 
 ### Manifest location and naming
@@ -3079,7 +3627,7 @@ always see a consistent view.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "bits_version": "1.0.0",
   "bits_dist_hash": "a1b2c3d4e5...",
   "created_at": "2026-04-11T14:30:00Z",
@@ -3108,6 +3656,10 @@ always see a consistent view.
       "outcome": "from_store",
       "tarball": "zlib-1.2.11-3.slc7_x86-64.tar.gz",
       "tarball_sha256": "sha256:e3b0c44298fc1c14...",
+      "source_checksums": [
+        {"url": "https://zlib.net/zlib-1.2.11.tar.gz",
+         "checksum": "sha256:c3e5e9fdd5004dcb542feda5ee4f0ff0744628baf8ed2dd5d66f8ca1197cb1a1"}
+      ],
       "completed_at": "2026-04-11T14:31:05Z"
     },
     {
@@ -3115,10 +3667,11 @@ always see a consistent view.
       "version": "6.32.04",
       "revision": "2",
       "hash": "ef567890ef567890...",
-      "commit_hash": "feedcafe...",
+      "commit_hash": "feedcafe12345678...",
       "outcome": "built_from_source",
       "tarball": "ROOT-6.32.04-2.slc7_x86-64.tar.gz",
       "tarball_sha256": "sha256:f4ca408ad2b...",
+      "source_checksums": [],
       "completed_at": "2026-04-11T14:45:10Z"
     }
   ]
@@ -3199,7 +3752,37 @@ updating the SQLite catalog.  Only (b) requires an exclusive transaction.
 By doing (a) ahead of time — in parallel, on separate hosts — the transaction
 window shrinks to seconds regardless of package size.
 
-**Pipeline stages and host responsibilities**
+**Two supported delivery paths**
+
+| Path | When to use | Runner requirement |
+|---|---|---|
+| **cvmfs-prepub** (recommended) | New deployments; single service handles ingest + publish | `bits-build` only |
+| **Legacy spool** (still supported) | Existing deployments already running `cvmfs-ingest` | `bits-build` + `bits-ingest` + `bits-cvmfs-publisher` |
+
+For new communities, use the cvmfs-prepub path.  Legacy spool deployments
+continue to work without change.
+
+---
+
+**cvmfs-prepub path — pipeline stages**
+
+The `cvmfs-prepub` service (from the `cvmfs-bits` repository) collapses the
+three-runner, three-stage legacy pipeline into a single REST API call on the
+build host.
+
+| Stage | Runs on | Tool |
+|---|---|---|
+| Build | Platform build host | `bits build` |
+| Copy + Relocate | Build host | `bits publish` (local operations only) |
+| Tar + Submit | Build host | `bits publish --prepub-url` → HTTP POST to `cvmfs-prepub` |
+| Ingest + Publish | cvmfs-prepub host | `cvmfs-prepub` (CAS pipeline + gateway transaction) |
+
+The build host only needs to reach the cvmfs-prepub HTTPS endpoint.
+No SSH keys for an ingestion spool are required.
+
+---
+
+**Legacy spool path — pipeline stages**
 
 | Stage | Runs on | Tool |
 |---|---|---|
@@ -3226,9 +3809,28 @@ relocation happens on a temporary copy that is discarded after transfer.
 ### bits publish
 
 `bits publish` is a `bits` sub-command that orchestrates the build-host side
-of the pipeline: copy, relocate, and stream to the ingestion spool.
+of the pipeline: copy, relocate, and deliver to either a cvmfs-prepub service
+or a legacy ingestion spool.  Exactly one of `--prepub-url` or `--spool` must
+be given; they are mutually exclusive.
 
 ```
+# cvmfs-prepub path (recommended):
+bits publish PACKAGE [VERSION]
+             --cvmfs-target PATH
+             --prepub-url URL
+             [--prepub-token TOKEN]
+             [--prepub-repo REPO]
+             [--prepub-path SUBPATH]
+             [--prepub-webhook URL]
+             [--prepub-poll-interval SEC]
+             [--prepub-timeout SEC]
+             [--prepub-no-verify-tls]
+             [--work-dir WORKDIR]
+             [--architecture ARCH]
+             [--scratch-dir DIR]
+             [--no-relocate]
+
+# Legacy spool path:
 bits publish PACKAGE [VERSION]
              --cvmfs-target PATH
              --spool [USER@HOST:]PATH
@@ -3239,39 +3841,61 @@ bits publish PACKAGE [VERSION]
              [--no-relocate]
 ```
 
-**Arguments**
+**Common arguments**
 
 | Argument / Flag | Required | Description |
 |---|---|---|
 | `PACKAGE` | yes | Package name, as used in the recipe (e.g. `absl`). |
 | `VERSION` | no | Version string (e.g. `20230802.1-1`). Defaults to the latest build found under `WORKDIR`. |
 | `--cvmfs-target PATH` | yes | Absolute path the package will occupy on CVMFS, e.g. `/cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9`. This path is passed to `relocate-me.sh` as the new install prefix, unless `--no-relocate` is given. |
-| `--spool` | yes | Ingestion spool root.  Either a local directory (`/var/spool/cvmfs-ingest`) or a remote rsync target (`user@host:/path`). |
 | `--work-dir WORKDIR` | no | bits work directory.  Default: `sw` (or `$BITS_WORK_DIR`). |
 | `--architecture ARCH` | no | Build architecture.  Default: auto-detected. |
 | `--scratch-dir DIR` | no | Directory for the temporary CVMFS working copy.  Default: system temp dir. |
+| `--no-relocate` | no | Skip `relocate-me.sh` and stream the tree as-is.  Use when the package was built with `--cvmfs-prefix` so paths already match the deployment target. |
+
+**cvmfs-prepub arguments** (use instead of `--spool`)
+
+| Argument / Flag | Required | Description |
+|---|---|---|
+| `--prepub-url URL` | yes* | Base URL of the cvmfs-prepub REST API (no trailing slash), e.g. `https://prepub.example.org:8080`.  *Mutually exclusive with `--spool`. |
+| `--prepub-token TOKEN` | no | Bearer token for the API.  Falls back to the `PREPUB_API_TOKEN` environment variable.  Omit in dev mode (no-auth server). |
+| `--prepub-repo REPO` | no | CVMFS repository name (e.g. `sft.cern.ch`).  Derived automatically from `--cvmfs-target` when not set. |
+| `--prepub-path SUBPATH` | no | Lease sub-path relative to the repo root (e.g. `lcg/releases/absl/20230802.1`).  Derived automatically from `--cvmfs-target` when not set. |
+| `--prepub-webhook URL` | no | URL that cvmfs-prepub POSTs to when the job reaches a terminal state. |
+| `--prepub-poll-interval SEC` | no | Seconds between status polls.  Default: 10. |
+| `--prepub-timeout SEC` | no | Total seconds to wait for the job to finish.  Default: 1800 (30 min). |
+| `--prepub-no-verify-tls` | no | Disable TLS certificate verification (self-signed certs / dev mode only). |
+
+**Legacy spool arguments** (use instead of `--prepub-url`)
+
+| Argument / Flag | Required | Description |
+|---|---|---|
+| `--spool` | yes* | Ingestion spool root.  Either a local directory (`/var/spool/cvmfs-ingest`) or a remote rsync target (`user@host:/path`).  *Mutually exclusive with `--prepub-url`. |
 | `--rsync-opts OPTS` | no | Extra options passed verbatim to every `rsync` invocation, e.g. `"-e 'ssh -i ~/.ssh/my_key'"`. |
-| `--no-relocate` | no | Skip the `relocate-me.sh` step and stream the installation tree to the spool as-is. Use this when the package was built with `--cvmfs-prefix` so its paths already match the deployment target. |
 
-**What it does**
+**What the cvmfs-prepub path does**
 
-1. Locates the package's immutable INSTALLROOT under `WORKDIR` (via the
-   `latest` symlink or by scanning for `VERSION`).
-2. `rsync -a`-copies the INSTALLROOT to a scratch working copy.  The
-   original is never touched again.
-3. Starts an `inotifywait` watcher on the working copy (when available) so
-   that files modified by relocation are queued for transfer immediately.
-4. Runs `relocate-me.sh` in the working copy with `INSTALL_BASE` set to
-   `--cvmfs-target`.  Relocation and transfer overlap in time.
+1. Locates the package's immutable INSTALLROOT under `WORKDIR`.
+2. `rsync -a`-copies the INSTALLROOT to a scratch working copy.
+3. Runs `relocate-me.sh` with `INSTALL_BASE` set to `--cvmfs-target` (unless `--no-relocate`).
+4. Creates a `.tar.gz` of the relocated working copy and removes the copy to free disk space.
+5. POSTs the tar to `<prepub-url>/api/v1/jobs` as `multipart/form-data` (with SHA-256 digest for server-side integrity checking).
+6. Polls `GET <prepub-url>/api/v1/jobs/<id>` every `--prepub-poll-interval` seconds until the job reaches `published`, `failed`, or `aborted`, or until `--prepub-timeout` is exceeded.
+7. Removes the temporary tar.
+
+**What the legacy spool path does**
+
+1. Locates the immutable INSTALLROOT.
+2. `rsync -a`-copies it to a scratch working copy.
+3. Starts an `inotifywait` watcher (when available) so files modified by relocation are queued for transfer immediately.
+4. Runs `relocate-me.sh`.
 5. Falls back to a single bulk rsync if `inotifywait` is unavailable.
-6. Writes a `<pkg-id>.done` sentinel to `<spool>/incoming/`.  The sentinel
-   carries the `pkg_id` and `cvmfs_target` so the ingestion daemon can
-   operate without additional configuration.
+6. Writes a `<pkg-id>.done` sentinel to `<spool>/incoming/`.
 7. Removes the scratch working copy.
 
 **pkg-id format**
 
-The package identifier used to name spool directories and manifests is:
+The package identifier used to name spool directories, tars, and manifests is:
 
 ```
 <package>-<version_dir>-<arch_with_slashes_replaced_by_underscores>
@@ -3279,9 +3903,16 @@ The package identifier used to name spool directories and manifests is:
 
 Example: `absl-20230802.1-1-x86_64_el9`
 
-**Example**
+**Examples**
 
 ```bash
+# cvmfs-prepub path — token from environment variable
+export PREPUB_API_TOKEN=my-bearer-token
+bits publish absl \
+  --cvmfs-target /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9 \
+  --prepub-url https://prepub.example.org:8080
+
+# Legacy spool path
 bits publish absl \
   --cvmfs-target /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9 \
   --spool ingestuser@ingest-host.example.com:/var/spool/cvmfs-ingest \
@@ -3537,7 +4168,31 @@ The `cvmfs-publish.yml` workflow accepts these inputs via `workflow_dispatch`
 | `cvmfs_target` | Final CVMFS install path. |
 | `rebuild` | Force rebuild (`true`/`false`). |
 
-Required repository **secrets**:
+Required repository **secrets** — cvmfs-prepub path:
+
+| Secret | Description |
+|---|---|
+| `PREPUB_API_TOKEN` | Bearer token for the cvmfs-prepub REST API.  Generate with `openssl rand -base64 32`; set the same value in the cvmfs-prepub server's `EnvironmentFile`. |
+
+Required repository **variables** — cvmfs-prepub path:
+
+| Variable | Default | Description |
+|---|---|---|
+| `PREPUB_URL` | — | Base URL of the cvmfs-prepub API (no trailing slash), e.g. `https://prepub.example.org:8080`. |
+
+**Self-hosted runner labels — cvmfs-prepub path** (only one runner type needed):
+
+| Label | Used by |
+|---|---|
+| `bits-build-<platform>` | Build + publish + poll job (e.g. `bits-build-x86_64-el9`) |
+
+The `bits-ingest` and `bits-cvmfs-publisher` runner types are **not required**
+for the cvmfs-prepub path.  Ingest and publish happen entirely inside the
+cvmfs-prepub service, which runs as a persistent systemd daemon outside CI.
+
+---
+
+Required repository **secrets** — legacy spool path:
 
 | Secret | Description |
 |---|---|
@@ -3547,7 +4202,7 @@ Required repository **secrets**:
 | `SPOOL_PATH` | Absolute spool root path on the ingestion host. |
 | `CVMFS_REPO` | CVMFS repository name. |
 
-Required repository **variables** (Settings → CI/CD → Variables):
+Required repository **variables** — legacy spool path:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -3556,7 +4211,7 @@ Required repository **variables** (Settings → CI/CD → Variables):
 | `CVMFS_HASH_ALGO` | `sha1` | `sha1` or `sha256`. |
 | `INGEST_CONCURRENCY` | `0` | Worker count (`0` = auto). |
 
-**Self-hosted runner labels** that must be registered:
+**Self-hosted runner labels — legacy spool path** (three runner types required):
 
 | Label | Used by |
 |---|---|
@@ -3606,21 +4261,43 @@ Instead of crafting raw API calls or navigating the GitLab web UI, operators and
 
 #### Architecture at a glance
 
+Two pipeline variants are supported and selected per-community via
+`publish_pipeline` in `ui-config.yaml`.
+
+**cvmfs-prepub path** — single stage, single runner (recommended for new deployments):
+
 ```
 bits-console (GitLab Pages SPA)
   │
-  ├── communities/<name>/ui-config.yaml   ← per-community settings
+  ├── communities/<name>/ui-config.yaml   ← publish_pipeline: .gitlab/cvmfs-prepub-publish.yml
+  │
+  └── triggers GitLab CI pipeline (.gitlab/cvmfs-prepub-publish.yml)
+        │
+        └── Stage 1: compile_and_publish  (bits-build runner only)
+              └── bits cleanup --disk-pressure-only  (pre-build guard)
+              └── bits build --docker [--cvmfs-prefix] <PACKAGE>
+              └── bits publish --prepub-url $PREPUB_URL [--no-relocate]
+                    └── HTTP POST tar → cvmfs-prepub service
+                    └── polls GET /api/v1/jobs/<id> until published
+```
+
+**Legacy spool path** — three stages, three runner types (existing deployments):
+
+```
+bits-console (GitLab Pages SPA)
+  │
+  ├── communities/<name>/ui-config.yaml   ← publish_pipeline: .gitlab/cvmfs-publish.yml
   │
   └── triggers GitLab CI pipeline (.gitlab/cvmfs-publish.yml)
         │
-        ├── Stage 1: bits build   (build runner, bits CLI, Docker)
-        │     └── bits cleanup --disk-pressure-only  (pre-build guard)
+        ├── Stage 1: bits build   (bits-build runner)
+        │     └── bits cleanup --disk-pressure-only
         │     └── bits build --docker [--cvmfs-prefix] <PACKAGE>
         │     └── bits publish [--no-relocate]  → rsync → spool
         │
-        ├── Stage 2: cvmfs-ingest  (ingestion host, bits-cvmfs-ingest daemon)
+        ├── Stage 2: cvmfs-ingest  (bits-ingest runner, bits-cvmfs-ingest daemon)
         │
-        └── Stage 3: cvmfs-publish.sh  (stratum-0, CVMFS transaction)
+        └── Stage 3: cvmfs-publish.sh  (bits-cvmfs-publisher runner, stratum-0 transaction)
 ```
 
 #### The community configuration file (`ui-config.yaml`)
@@ -3632,6 +4309,7 @@ Each community's behaviour is driven by `communities/<name>/ui-config.yaml`. The
 | `cvmfs_prefix` | _(required)_ | Production CVMFS install prefix (e.g. `/cvmfs/sft.cern.ch/lcg/releases`). Passed as `--cvmfs-prefix` to `bits build` and as `--cvmfs-target` base to `bits publish`. |
 | `cvmfs_user_prefix` | _(required)_ | Personal-area prefix for non-admin user builds. |
 | `cvmfs_repo` | _(required)_ | CVMFS repository name (e.g. `sft.cern.ch`). |
+| `publish_pipeline` | `.gitlab/cvmfs-publish.yml` | Pipeline file used for publish jobs.  Set to `.gitlab/cvmfs-prepub-publish.yml` to use the cvmfs-prepub direct-upload path (recommended for new communities). |
 | `platforms` | _(required)_ | Pipe-separated `<label>\|<docker-image>` pairs, one per line. The `<label>` becomes the runner tag (`bits-build-<label>`) and the platform selector in the UI. |
 | `build_parallelism_enabled` | `"false"` | Enable parallel dependency-graph builds. |
 | `build_parallelism_mode` | `"makeflow"` | `"makeflow"` (external Makeflow engine) or `"builders"` (built-in Python scheduler). |
@@ -3647,6 +4325,10 @@ When bits-console triggers a pipeline it passes the following variables to `cvmf
 
 | Variable | Description |
 |---|---|
+**Variables used by both pipeline variants:**
+
+| Variable | Description |
+|---|---|
 | `PACKAGE` | Package name to build and publish. |
 | `VERSION` | Version string (optional; defaults to latest). |
 | `PLATFORM` | Runner platform label (e.g. `x86_64-el9`). |
@@ -3659,7 +4341,24 @@ When bits-console triggers a pipeline it passes the following variables to `cvmf
 | `JOBS` | Compiler threads per package (`-j N`). `0` = auto-detect. |
 | `CACHE_MIN_FREE_GB` | Free-space threshold for the pre-build cleanup guard. |
 
-CI/CD project secrets (`SPOOL_SSH_KEY`, `SPOOL_USER`, `SPOOL_HOST`, `SPOOL_PATH`, `CVMFS_REPO`, etc.) are configured once in GitLab **Settings → CI/CD → Variables** and are never exposed to the browser.
+**Additional variables for the cvmfs-prepub pipeline** (set in project Settings → CI/CD → Variables):
+
+| Variable | Where to set | Description |
+|---|---|---|
+| `PREPUB_URL` | CI/CD Variable | Base URL of the cvmfs-prepub service, e.g. `https://prepub.example.org:8080`. |
+| `PREPUB_API_TOKEN` | CI/CD Secret (masked) | Bearer token matching the value in cvmfs-prepub's `EnvironmentFile`. |
+
+**Additional secrets for the legacy spool pipeline** (set in project Settings → CI/CD → Variables):
+
+| Secret | Description |
+|---|---|
+| `SPOOL_SSH_KEY` | SSH private key for rsync to the ingestion host. |
+| `SPOOL_USER` | SSH username on the ingestion host. |
+| `SPOOL_HOST` | Ingestion host address. |
+| `SPOOL_PATH` | Absolute spool root path on the ingestion host. |
+| `CVMFS_REPO` | CVMFS repository name. |
+
+CI/CD project secrets are configured once in GitLab **Settings → CI/CD → Variables** and are never exposed to the browser.
 
 #### Getting access and further documentation
 

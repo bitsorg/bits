@@ -15,6 +15,29 @@ import sys
 # Default workdir: fall back on "sw" if env is not set or empty
 DEFAULT_WORK_DIR = os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR") or "sw"
 
+
+def _host_online_cpus():
+  """Return the kernel's online-CPU range string for use with --cpuset-cpus.
+
+  Reads /sys/devices/system/cpu/online (e.g. "0-7" or "0-3,5-7"), which
+  reflects the actual hardware CPU set regardless of any cgroup CPU quota
+  that may be in effect for the calling process.  Falls back to
+  ``os.cpu_count()`` on platforms where sysfs is unavailable (macOS, WSL1).
+
+  This value is injected as ``--cpuset-cpus`` into every Docker build
+  container so that ``make -j``, makeflow, and similar tools always see the
+  full host core count rather than a potentially narrower cgroup quota
+  inherited from the GitLab runner process.
+
+  Callers can suppress the automatic injection by including their own
+  ``--cpuset-cpus`` flag in ``--docker-extra-args``.
+  """
+  try:
+    with open("/sys/devices/system/cpu/online") as f:
+      return f.read().strip()
+  except OSError:
+    return "0-%d" % ((os.cpu_count() or 1) - 1)
+
 # cd to this directory before start
 DEFAULT_CHDIR = os.environ.get("BITS_CHDIR") or "."
 
@@ -151,6 +174,34 @@ def doParseArgs():
           "for content-addressed pre-staging before the CVMFS transaction."
       ),
   )
+  status_parser = subparsers.add_parser(
+      "status",
+      help="show what bits build would do for each package (dry run)",
+      description=(
+          "Resolve the full dependency tree for the requested package(s) and "
+          "report what bits build would do for each package without actually "
+          "building anything.  Each package is classified as: already_installed, "
+          "from_store (local tarball), from_remote_store (remote tarball, requires "
+          "--check-store), local_checkout (development package, will rebuild), "
+          "local_checkout_unchanged (development package, nothing changed), "
+          "build_from_source (will compile), or hash_unknown (git refs not cached; "
+          "re-run with --fetch-repos to resolve)."
+      ),
+  )
+  verify_parser = subparsers.add_parser(
+      "verify",
+      help="verify a live deployment against a build manifest",
+      description=(
+          "Check that a live deployment is consistent with a bits build manifest.  "
+          "For each package in the manifest, the tarball is located under "
+          "--cvmfs-root and/or --work-dir, its SHA-256 is recomputed, and the "
+          "result is compared to the value recorded in the manifest.  "
+          "For each provider, the current HEAD commit of the local checkout is "
+          "compared to the commit recorded in the manifest.  "
+          "Exit 0 = clean, 1 = FAIL (mismatch), 2 = MISS (tarball not found), "
+          "3 = manifest unreadable."
+      ),
+  )
 
   # Options for the analytics command
   # analytics_parser.add_argument("state", choices=["on", "off"], help="Whether to report analytics or not")
@@ -230,7 +281,11 @@ def doParseArgs():
   build_docker.add_argument("--docker-extra-args", metavar="ARGLIST", default="",
                             help=("Command-line arguments to pass to 'docker run'. "
                                   "Passed through verbatim -- separate multiple arguments "
-                                  "with spaces, and make sure quoting is correct! Implies --docker."))
+                                  "with spaces, and make sure quoting is correct! Implies --docker. "
+                                  "bits always appends --network=host and, unless already present, "
+                                  "--cpuset-cpus=<host-online-CPUs> so that make -j and makeflow "
+                                  "see the full host core count. Pass --cpuset-cpus=... explicitly "
+                                  "to override the automatic value."))
   build_docker.add_argument("--container-use-workdir", dest="containerUseWorkDir", action="store_true", default=False,
                             help="Use the host work directory inside container. "
                                  "By default it uses /container/bits/sw directory inside container.")
@@ -243,9 +298,47 @@ def doParseArgs():
                                   "because the embedded paths are already correct for CVMFS. "
                                   "Implies --container-use-workdir behaviour for the CVMFS mount. "
                                   "Use --no-relocate on 'bits publish' to skip relocation when publishing."))
+  build_docker.add_argument("--docker-platform", dest="dockerPlatform", metavar="PLATFORM", default=None,
+                            help=("Docker --platform argument for cross-compilation "
+                                  "(e.g. linux/arm64, linux/amd64, linux/ppc64le). "
+                                  "When not set, bits derives the platform automatically from --architecture: "
+                                  "if the target architecture differs from the host, the matching platform is used "
+                                  "so that QEMU transparently emulates the target inside the builder container. "
+                                  "Pass 'native' to suppress automatic platform injection and always use "
+                                  "the daemon-default (host-native) image variant. "
+                                  "Requires QEMU binfmt handlers to be registered on the Docker host; "
+                                  "see the cross-compilation section in the reference manual."))
   build_docker.add_argument("-v", dest="volumes", action="append", default=[],
                             help=("Additional volume to be mounted inside the Docker container, if one is used. "
                                   "May be specified multiple times. Passed verbatim to 'docker run'."))
+
+  build_sandbox = build_parser.add_argument_group(title="Recipe sandbox", description="""\
+  Run each recipe build script inside an isolated sandbox to limit the impact
+  of malicious or buggy recipes.  On Linux, podman (rootless) is used; on
+  macOS, the built-in sandbox-exec is used (no VM, no overhead).
+  When --docker is active, a nested podman container is added inside the
+  builder container for an additional isolation layer.
+  """)
+  build_sandbox.add_argument(
+      "--sandbox", dest="sandbox", metavar="MODE", default="auto",
+      choices=["off", "auto", "podman", "sandbox-exec"],
+      help=(
+          "Recipe sandbox mode. "
+          "'auto' (default): use podman on Linux if available, "
+          "sandbox-exec on macOS, nested podman when --docker is active. "
+          "'podman': always use podman (requires --docker or --sandbox-image). "
+          "'sandbox-exec': macOS only. "
+          "'off': no sandboxing."
+      ),
+  )
+  build_sandbox.add_argument(
+      "--sandbox-image", dest="sandboxImage", metavar="IMAGE", default=None,
+      help=(
+          "Container image to use for --sandbox=podman when not using --docker. "
+          "Implies --sandbox=podman. "
+          "Defaults to the --docker image when --docker is set."
+      ),
+  )
 
   build_remote = build_parser.add_argument_group(title="Re-use prebuilt tarballs", description="""\
   Reusing prebuilt tarballs saves compilation time, as common packages need not
@@ -468,9 +561,10 @@ def doParseArgs():
                            help="Never use system packages for PACKAGES, even if compatible.")
 
   # Options for the doctor subcommand
-  doctor_parser.add_argument("packages", metavar="PACKAGE", nargs="+",
+  doctor_parser.add_argument("packages", metavar="PACKAGE", nargs="*", default=[],
                              help=("Check whether all system requirements of %(metavar)s are satisfied. "
-                                   "May be specified multiple times."))
+                                   "May be specified multiple times. "
+                                   "Optional when --runner is used."))
   doctor_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                              help=("Resolve requirements as if on the specified architecture. When used with "
                                    "--docker, use a Docker image for the specified architecture. Default is "
@@ -535,8 +629,61 @@ def doParseArgs():
   doctor_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,  # TODO: previous default was "workDir".
                            help=("The toplevel directory under which builds should be done and build results "
                                  "should be installed. Default '%(default)s'."))
-  doctor_dirs.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","alidist"), 
+  doctor_dirs.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","alidist"),
                            help="The directory containing build recipes. Default '%(default)s'.")
+
+  # Mode flags — apply to --runner, --check-store, and future modes
+  doctor_parser.add_argument(
+      "--json", dest="json_output", action="store_true", default=False,
+      help="Emit a machine-readable JSON report.  "
+           "Applies to --runner and --check-store modes.",
+  )
+  doctor_parser.add_argument(
+      "--check-store", dest="checkStore", action="store_true", default=False,
+      help=(
+          "After resolving the dependency tree, probe the remote store to report "
+          "which packages have a pre-built tarball and which will need compilation.  "
+          "Requires --remote-store (or a default store for the architecture).  "
+          "Makes one HTTP HEAD request per package.  "
+          "For branch builds, re-run with 'bits status --fetch-repos --check-store' "
+          "for exact hashes."
+      ),
+  )
+
+  doctor_runner = doctor_parser.add_argument_group(
+      title="Runner environment validation (--runner mode)",
+      description=(
+          "When --runner is given, bits doctor validates the full build-runner "
+          "environment — compiler, git, Docker daemon, podman/sandbox, QEMU binfmt "
+          "handlers, CVMFS mounts, disk space, and remote-store reachability — "
+          "instead of checking package system requirements.  "
+          "The PACKAGE positional argument is optional in this mode."
+      ),
+  )
+  doctor_runner.add_argument(
+      "--runner", dest="runner", action="store_true", default=False,
+      help="Validate the full build-runner environment.  "
+           "May be combined with --json for machine-readable output.",
+  )
+  doctor_runner.add_argument(
+      "--cvmfs-repos", dest="cvmfsRepos", metavar="PATH", action="append", default=[],
+      help=("CVMFS repository path to check (e.g. /cvmfs/alice.cern.ch).  "
+            "May be specified multiple times.  "
+            "Can also be set as 'cvmfs_repos' (comma-separated) in bits.rc."),
+  )
+  doctor_runner.add_argument(
+      "--min-disk", dest="minDisk", type=float, default=10.0, metavar="GIB",
+      help="Minimum free disk space in GiB expected in --work-dir.  "
+           "A lower value triggers a WARN, not a FAIL.  Default: %(default)s.",
+  )
+  doctor_runner.add_argument(
+      "--prepub-url", dest="prepubUrl", default=None, metavar="URL",
+      help=("When set, probe GET <URL>/api/v1/health to verify that the "
+            "cvmfs-prepub service is reachable and healthy.  "
+            "Required only for communities that use the cvmfs-prepub "
+            "direct-upload path (--prepub-url on bits publish).  "
+            "Example: https://prepub.example.org:8080"),
+  )
 
   # Options for the init subcommand
   init_parser.add_argument("pkgname", nargs="?", default="", metavar="PACKAGE",
@@ -609,8 +756,10 @@ def doParseArgs():
                               help="Version (and optional revision) to publish. Defaults to the latest build.")
   publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=True, metavar="PATH",
                               help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9).")
-  publish_parser.add_argument("--spool", dest="spool", required=True, metavar="[USER@HOST:]PATH",
-                              help="Ingestion spool root.  Either a local directory or a remote rsync target (user@host:/path).")
+  # --spool is required for the legacy rsync-to-spool path; omit it when using --prepub-url.
+  publish_parser.add_argument("--spool", dest="spool", default=None, metavar="[USER@HOST:]PATH",
+                              help=("Ingestion spool root.  Either a local directory or a remote rsync "
+                                    "target (user@host:/path).  Required unless --prepub-url is given."))
   publish_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
                               help="bits work directory containing the installed packages. Default: %(default)s.")
   publish_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
@@ -618,11 +767,42 @@ def doParseArgs():
   publish_parser.add_argument("--scratch-dir", dest="scratchDir", default=None, metavar="DIR",
                               help="Directory for the temporary CVMFS working copy. Defaults to a system temp dir.")
   publish_parser.add_argument("--rsync-opts", dest="rsyncOpts", default=None, metavar="OPTS",
-                              help="Extra options passed verbatim to rsync (e.g. '-e \"ssh -i key\"').")
+                              help="Extra options passed verbatim to rsync (e.g. '-e \"ssh -i key\"').  Legacy spool path only.")
   publish_parser.add_argument("--no-relocate", dest="noRelocate", action="store_true", default=False,
                               help=("Skip the relocation step. Use this when the package was built "
                                     "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
                                     "so all embedded paths are already correct."))
+
+  # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
+  _prepub = publish_parser.add_argument_group(
+      "cvmfs-prepub direct upload",
+      "Upload the package directly to a running cvmfs-prepub service over HTTPS, "
+      "bypassing the rsync-to-spool pipeline.  Requires cvmfs-prepub ≥ 0.1.0.",
+  )
+  _prepub.add_argument("--prepub-url", dest="prepubUrl", default=None, metavar="URL",
+                       help=("Base URL of the cvmfs-prepub API (no trailing slash), e.g. "
+                             "https://prepub.example.org:8080.  When set, --spool is not required."))
+  _prepub.add_argument("--prepub-token", dest="prepubToken", default=None, metavar="TOKEN",
+                       help=("Bearer token for the cvmfs-prepub API.  If omitted the value of the "
+                             "PREPUB_API_TOKEN environment variable is used."))
+  _prepub.add_argument("--prepub-repo", dest="prepubRepo", default=None, metavar="REPO",
+                       help=("CVMFS repository name to pass to the API, e.g. software.cern.ch.  "
+                             "Derived automatically from --cvmfs-target when not specified."))
+  _prepub.add_argument("--prepub-path", dest="prepubPath", default=None, metavar="SUBPATH",
+                       help=("Lease sub-path relative to the repository root, e.g. atlas/24.0 "
+                             "(no leading slash).  Derived automatically from --cvmfs-target "
+                             "when not specified."))
+  _prepub.add_argument("--prepub-webhook", dest="prepubWebhook", default=None, metavar="URL",
+                       help="Optional webhook URL that cvmfs-prepub POSTs to on job completion.")
+  _prepub.add_argument("--prepub-poll-interval", dest="prepubPollInterval", type=int,
+                       default=10, metavar="SEC",
+                       help="Seconds between status polls while waiting for the job.  Default: 10.")
+  _prepub.add_argument("--prepub-timeout", dest="prepubTimeout", type=int,
+                       default=1800, metavar="SEC",
+                       help="Total seconds to wait for the job to reach a terminal state.  Default: 1800.")
+  _prepub.add_argument("--prepub-no-verify-tls", dest="prepubNoVerifyTls", action="store_true",
+                       default=False,
+                       help="Disable TLS certificate verification (self-signed certs / dev mode only).")
 
   # Options for the cleanup subcommand
   cleanup_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
@@ -645,6 +825,111 @@ def doParseArgs():
   cleanup_parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
                               help="Print what would be evicted without actually removing anything.")
 
+  # Options for the verify subcommand
+  verify_parser.add_argument(
+      "--from-manifest", dest="fromManifest", required=True, metavar="FILE",
+      help="Path to the bits build manifest JSON file to verify against.",
+  )
+  verify_parser.add_argument(
+      "--cvmfs-root", dest="cvmfsRoot", metavar="PATH", default=None,
+      help=("Root of the CVMFS tarball store to search first "
+            "(e.g. /cvmfs/alice.cern.ch).  "
+            "Searched before --work-dir."),
+  )
+  verify_parser.add_argument(
+      "-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="DIR",
+      help=("Local bits work directory containing the TARS/ store.  "
+            "Default '%(default)s'."),
+  )
+  verify_parser.add_argument(
+      "--no-providers", dest="noProviders", action="store_true", default=False,
+      help="Skip verification of provider checkout commits.",
+  )
+  verify_parser.add_argument(
+      "--json", dest="json_output", action="store_true", default=False,
+      help="Emit a machine-readable JSON report instead of the human-readable table.",
+  )
+
+  # Options for the status subcommand
+  status_parser.add_argument(
+      "pkgname", metavar="PACKAGE", nargs="+",
+      help="One or more packages to resolve (including all dependencies).",
+  )
+  status_parser.add_argument(
+      "--defaults", dest="defaults", default="release", metavar="DEFAULT",
+      help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.",
+  )
+  status_parser.add_argument(
+      "-a", "--architecture", dest="architecture", metavar="ARCH",
+      default=detectedArch,
+      help=("Target architecture. Default is the current system architecture, "
+            "which is '%(default)s'."),
+  )
+  status_parser.add_argument(
+      "-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="DIR",
+      help=("The bits work directory to inspect. Default '%(default)s'."),
+  )
+  status_parser.add_argument(
+      "-c", "--config", dest="configDir",
+      default=os.environ.get("BITS_REPO_DIR", "alidist"),
+      help="The directory containing build recipes. Default '%(default)s'.",
+  )
+  status_parser.add_argument(
+      "-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
+      help=("Change to the specified directory before doing anything. "
+            "Default '%(default)s'."),
+  )
+  status_parser.add_argument(
+      "--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
+      default="%(workDir)s/MIRROR",
+      help=("Directory where reference git repos are cached. "
+            "'%%(workDir)s' will be substituted. Default '%(default)s'."),
+  )
+  status_parser.add_argument(
+      "--no-local", dest="noDevel", metavar="PACKAGE", default=[],
+      action="append",
+      help=("Do not treat the named package as a local checkout even if a "
+            "matching directory exists in the current directory. "
+            "May be repeated or comma-separated."),
+  )
+  status_parser.add_argument(
+      "--force-tracked", dest="forceTracked", default=False, action="store_true",
+      help="Ignore all local checkouts; treat every package as remote.",
+  )
+  status_parser.add_argument(
+      "--disable", dest="disable", metavar="PACKAGE", default=[],
+      action="append",
+      help="Disable the given package(s) from the build. May be repeated.",
+  )
+  status_parser.add_argument(
+      "--force-rebuild", dest="force_rebuild", metavar="PACKAGE", default=[],
+      action="append",
+      help="Force a rebuild status for the given package(s). May be repeated.",
+  )
+  status_parser.add_argument(
+      "-u", "--fetch-repos", dest="fetchRepos", action="store_true", default=False,
+      help=("Fetch / clone reference repositories to populate the ref cache. "
+            "Without this flag, only already-cached refs are used; packages "
+            "whose refs are not cached are reported as hash_unknown."),
+  )
+  status_parser.add_argument(
+      "--remote-store", dest="remoteStore", metavar="STORE", default="",
+      help="Remote binary store URL. Used only when --check-store is given.",
+  )
+  status_parser.add_argument(
+      "--no-remote-store", dest="no_remote_store", action="store_true", default=False,
+      help="Disable any remote store (even if set in bits.rc).",
+  )
+  status_parser.add_argument(
+      "--check-store", dest="checkStore", action="store_true", default=False,
+      help=("Probe the remote store to detect tarballs not yet mirrored "
+            "locally. Implies a network round-trip per package."),
+  )
+  status_parser.add_argument(
+      "--json", dest="json_output", action="store_true", default=False,
+      help="Emit a machine-readable JSON report instead of the human-readable table.",
+  )
+
   # Apply bits.rc values as default overrides so that persistent settings written
   # by "bits init" (config mode) take effect on every subsequent invocation.
   # CLI flags still win: set_defaults only fills gaps not covered by the user.
@@ -664,6 +949,8 @@ def doParseArgs():
       # but listing it here causes the raw string to be set as a default so
       # the CLI flag still wins via normal argparse precedence.
       ("provider_policy",    "providerPolicy"),
+      # prerequisites_url: community-specific URL shown when compiler/git absent.
+      ("prerequisites_url",  "prerequisitesUrl"),
   ]
   for _rc_key, _dest in _RC_KEY_TO_DEST:
     if _rc_early.get(_rc_key):
@@ -673,7 +960,7 @@ def doParseArgs():
     # argument-level defaults (add_argument(..., default=...)).  We must call
     # set_defaults on every subparser individually so that bits.rc values win
     # over hardcoded argument defaults while still losing to explicit CLI flags.
-    for _sp in [build_parser, clean_parser, cleanup_parser, deps_parser, doctor_parser, init_parser]:
+    for _sp in [build_parser, clean_parser, cleanup_parser, deps_parser, doctor_parser, init_parser, verify_parser, status_parser]:
       _sp.set_defaults(**_rc_defaults)
 
   # Make sure old option ordering behavior is actually still working
@@ -747,9 +1034,19 @@ S3_SUPPORTED_ARCHS = "slc7_x86-64", "slc8_x86-64", "ubuntu2004_x86-64", "ubuntu2
 
 def finaliseArgs(args, parser):
 
-  # Nothing to finalise for version or analytics
+  # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
-  if args.action in ["version", "architecture"]:
+  if args.action in ["version", "architecture", "verify"]:
+    return args
+
+  # Minimal finalisation for status: normalise lists and expand referenceSources.
+  if args.action == "status":
+    if hasattr(args, "defaults"):
+      args.defaults = args.defaults.split("::")
+    args.noDevel       = normalise_multiple_options(args.noDevel)
+    args.disable       = normalise_multiple_options(args.disable)
+    args.force_rebuild = normalise_multiple_options(args.force_rebuild)
+    args.referenceSources = args.referenceSources % {"workDir": args.workDir}
     return args
 
   if hasattr(args, "defaults"):
@@ -845,6 +1142,15 @@ def finaliseArgs(args, parser):
 
     args.docker_extra_args = shlex.split(args.docker_extra_args)
     args.docker_extra_args.append("--network=host")
+    # Pin the build container to the full set of online host CPUs so that
+    # make -j and makeflow see the real core count rather than the cgroup
+    # quota inherited from the GitLab runner process.
+    # /sys/devices/system/cpu/online gives the kernel-reported online CPU
+    # list (e.g. "0-7") which reflects actual hardware, not the caller's
+    # cgroup CPU quota.  Only inject if the user hasn't already specified
+    # --cpuset-cpus in --docker-extra-args.
+    if not any(a.startswith("--cpuset-cpus") for a in args.docker_extra_args):
+      args.docker_extra_args.append("--cpuset-cpus=" + _host_online_cpus())
 
     if args.docker and args.architecture.startswith("osx"):
       parser.error("cannot use `-a %s` and --docker" % args.architecture)
@@ -857,6 +1163,33 @@ def finaliseArgs(args, parser):
     # architecture we want to build for.
     if args.docker and not args.dockerImage:
       args.dockerImage = "registry.cern.ch/alisw/%s-builder" % args.architecture.split("_")[0]
+
+    # ── --docker-platform / cross-compilation ─────────────────────────────────
+    # Derive the Docker --platform value from --architecture when the user has
+    # not set it explicitly.  If the target architecture matches the host we
+    # leave it as None (no --platform flag → daemon uses native image variant,
+    # zero overhead).  If they differ we inject the matching platform string so
+    # that Docker pulls the correct image variant and QEMU transparently
+    # emulates the target ISA inside the builder container.
+    #
+    # The special sentinel value "native" lets users opt out of automatic
+    # injection even when cross-compiling (useful on native ARM runners that
+    # happen to run an x86-64 bits client, or for testing).
+    if args.docker:
+      if getattr(args, "dockerPlatform", None) == "native":
+        args.dockerPlatform = None
+      elif not getattr(args, "dockerPlatform", None):
+        from bits_helpers.utilities import docker_platform_for_arch, detectArch as _detectArch
+        target_plat = docker_platform_for_arch(args.architecture)
+        host_plat   = docker_platform_for_arch(_detectArch())
+        if target_plat and target_plat != host_plat:
+          args.dockerPlatform = target_plat
+        else:
+          args.dockerPlatform = None
+
+    # --sandbox-image implies --sandbox=podman
+    if getattr(args, "sandboxImage", None) and getattr(args, "sandbox", "auto") == "auto":
+      args.sandbox = "podman"
 
   if "annotate" in args:
     for comment_assignment in args.annotate:

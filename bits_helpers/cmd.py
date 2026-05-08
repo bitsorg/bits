@@ -84,12 +84,14 @@ class DockerRunner:
   instead.
   """
 
-  def __init__(self, docker_image, docker_run_args=(), extra_env={}, extra_volumes=[]) -> None:
+  def __init__(self, docker_image, docker_run_args=(), extra_env={}, extra_volumes=[],
+               platform=None) -> None:
     self._docker_image = docker_image
     self._docker_run_args = docker_run_args
     self._container = None
     self._extra_env = extra_env
     self._extra_volumes = extra_volumes
+    self._platform = platform  # e.g. "linux/arm64"; None means use daemon default
 
   def __enter__(self):
     if self._docker_image:
@@ -97,6 +99,8 @@ class DockerRunner:
       envOpts = [opt for k, v in self._extra_env.items() for opt in ("-e", f"{k}={v}")]
       volumes = [opt for v in self._extra_volumes for opt in ("-v", v)]
       cmd = ["docker", "run", "--detach"] + envOpts + volumes + ["--rm", "--entrypoint="]
+      if self._platform:
+        cmd += ["--platform", self._platform]
       cmd += self._docker_run_args
       cmd += [self._docker_image, "sleep", "inf"]
       self._container = getoutput(cmd).strip()

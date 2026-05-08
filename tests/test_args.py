@@ -3,7 +3,7 @@ from unittest import mock
 from unittest.mock import patch
 
 import bits_helpers.args
-from bits_helpers.args import doParseArgs, matchValidArch
+from bits_helpers.args import doParseArgs, matchValidArch, _host_online_cpus
 import sys
 import os
 import os.path
@@ -11,6 +11,10 @@ import re
 
 import unittest
 import shlex
+
+# Stable cpuset value injected by the mock in all docker-related tests.
+_MOCK_CPUSET = "0-3"
+_MOCK_CPUSET_ARG = "--cpuset-cpus=" + _MOCK_CPUSET
 
 BUILD_MISSING_PKG_ERROR = "the following arguments are required: PACKAGE"
 ANALYTICS_MISSING_STATE_ERROR = "the following arguments are required: state"
@@ -52,10 +56,10 @@ CORRECT_BEHAVIOR = [
   ((), "build --force-unknown-architecture zlib --no-remote-store --remote-store rsync://test.local/", [("noSystem", None), ("remoteStore", "")]),
   ((), "build zlib --architecture slc7_x86-64"                                         , [("noSystem", "*"), ("preferSystem", False), ("remoteStore", "https://s3.cern.ch/swift/v1/alibuild-repo")]),
   ((), "build zlib --architecture ubuntu1804_x86-64"                                   , [("noSystem", None), ("preferSystem", False), ("remoteStore", "")]),
-  ((), "build zlib -a slc7_x86-64"                                                     , [("docker", False), ("dockerImage", None), ("docker_extra_args", ["--network=host"])]),
+  ((), "build zlib -a slc7_x86-64"                                                     , [("docker", False), ("dockerImage", None), ("docker_extra_args", ["--network=host", _MOCK_CPUSET_ARG])]),
   ((), "build zlib -a slc7_x86-64 --docker-image registry.cern.ch/alisw/some-builder"  , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/some-builder")]),
   ((), "build zlib -a slc7_x86-64 --docker"                                            , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder")]),
-  ((), "build zlib -a slc7_x86-64 --docker-extra-args=--foo"                           , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder"), ("docker_extra_args", ["--foo", "--network=host"])]),
+  ((), "build zlib -a slc7_x86-64 --docker-extra-args=--foo"                           , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder"), ("docker_extra_args", ["--foo", "--network=host", _MOCK_CPUSET_ARG])]),
   ((), "build zlib --devel-prefix -a slc7_x86-64 --docker"                             , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder"), ("develPrefix", "%s-slc7_x86-64" % os.path.basename(os.getcwd()))]),
   ((), "build zlib --devel-prefix -a slc7_x86-64 --docker-image someimage"             , [("docker", True), ("dockerImage", "someimage"), ("develPrefix", "%s-slc7_x86-64" % os.path.basename(os.getcwd()))]),
   ((), "--debug build --force-unknown-architecture --defaults o2 O2"                   , [("debug", True), ("action",  "build"), ("defaults", ["o2"]), ("pkgname", ["O2"])]),
@@ -81,8 +85,9 @@ GETSTATUSOUTPUT_MOCKS = {
 
 class ArgsTestCase(unittest.TestCase):
   @mock.patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")   # for uname -m
+  @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
   @mock.patch('bits_helpers.args.commands')
-  def test_actionParsing(self, mock_commands):
+  def test_actionParsing(self, mock_commands, _mock_cpus):
     mock_commands.getstatusoutput.side_effect = lambda x : GETSTATUSOUTPUT_MOCKS[x]
     for (env, cmd, effects) in CORRECT_BEHAVIOR:
       (bits_helpers.args.DEFAULT_WORK_DIR,
@@ -114,6 +119,76 @@ class ArgsTestCase(unittest.TestCase):
       self.assertTrue(matchValidArch(arch))
     for arch in INVALID_ARCHS:
       self.assertFalse(matchValidArch(arch))
+
+
+class CpusetInjectionTestCase(unittest.TestCase):
+  """Tests for automatic --cpuset-cpus injection into docker_extra_args."""
+
+  def _parse(self, cmd, cpuset_return="0-7"):
+    """Helper: parse a build command with a mocked _host_online_cpus."""
+    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+         mock.patch("bits_helpers.args._host_online_cpus", return_value=cpuset_return), \
+         mock.patch("bits_helpers.args.commands") as mock_cmd, \
+         patch.object(sys, "argv", ["alibuild"] + shlex.split(cmd)):
+      mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
+      args, _ = doParseArgs()
+      return vars(args)
+
+  def test_cpuset_injected_by_default(self):
+    """--cpuset-cpus is added automatically when not specified by the user."""
+    args = self._parse("build zlib -a slc7_x86-64 --docker", cpuset_return="0-7")
+    self.assertIn("--cpuset-cpus=0-7", args["docker_extra_args"])
+
+  def test_cpuset_injected_once(self):
+    """--cpuset-cpus appears exactly once in docker_extra_args."""
+    args = self._parse("build zlib -a slc7_x86-64 --docker", cpuset_return="0-7")
+    cpuset_args = [a for a in args["docker_extra_args"] if a.startswith("--cpuset-cpus")]
+    self.assertEqual(len(cpuset_args), 1)
+
+  def test_user_cpuset_not_overridden(self):
+    """A user-supplied --cpuset-cpus is preserved; no automatic one is added."""
+    args = self._parse(
+      "build zlib -a slc7_x86-64 --docker --docker-extra-args=--cpuset-cpus=0-1",
+      cpuset_return="0-7",
+    )
+    cpuset_args = [a for a in args["docker_extra_args"] if a.startswith("--cpuset-cpus")]
+    self.assertEqual(len(cpuset_args), 1)
+    self.assertEqual(cpuset_args[0], "--cpuset-cpus=0-1")
+
+  def test_cpuset_reflects_host_online(self):
+    """The injected value matches whatever _host_online_cpus() returns."""
+    for cpuset in ("0-3", "0-7", "0-1,4-5"):
+      with self.subTest(cpuset=cpuset):
+        args = self._parse("build zlib -a slc7_x86-64 --docker", cpuset_return=cpuset)
+        self.assertIn(f"--cpuset-cpus={cpuset}", args["docker_extra_args"])
+
+  def test_network_host_still_present(self):
+    """--network=host is always present alongside --cpuset-cpus."""
+    args = self._parse("build zlib -a slc7_x86-64 --docker", cpuset_return="0-7")
+    self.assertIn("--network=host", args["docker_extra_args"])
+
+  def test_host_online_cpus_sysfs(self):
+    """_host_online_cpus() reads /sys/devices/system/cpu/online when available."""
+    mock_open = mock.mock_open(read_data="0-11\n")
+    with mock.patch("builtins.open", mock_open):
+      result = _host_online_cpus()
+    self.assertEqual(result, "0-11")
+    mock_open.assert_called_once_with("/sys/devices/system/cpu/online")
+
+  def test_host_online_cpus_fallback(self):
+    """_host_online_cpus() falls back to os.cpu_count() when sysfs is absent."""
+    with mock.patch("builtins.open", side_effect=OSError), \
+         mock.patch("os.cpu_count", return_value=4):
+      result = _host_online_cpus()
+    self.assertEqual(result, "0-3")
+
+  def test_host_online_cpus_fallback_single_cpu(self):
+    """_host_online_cpus() handles os.cpu_count() returning None gracefully."""
+    with mock.patch("builtins.open", side_effect=OSError), \
+         mock.patch("os.cpu_count", return_value=None):
+      result = _host_online_cpus()
+    self.assertEqual(result, "0-0")
+
 
 if __name__ == '__main__':
   unittest.main()

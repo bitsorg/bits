@@ -24,7 +24,7 @@ Manifests are written to a dedicated subdirectory of the work directory::
 The ``bits-manifest-latest.json`` symlink is updated atomically after each
 incremental write.
 
-Schema (version 1)
+Schema (version 2)
 ------------------
 ::
 
@@ -56,16 +56,43 @@ Schema (version 1)
 
     PackageEntry::
     {
-      "package":       str,
-      "version":       str,
-      "revision":      str,
-      "hash":          str,             # content-addressable build hash
-      "commit_hash":   str,             # source commit hash (or "0")
-      "outcome":       "already_installed" | "from_store" | "built_from_source",
-      "tarball":       str | null,      # tarball filename
-      "tarball_sha256": str | null,     # sha256:<hex> of the tarball, if present
-      "completed_at":  ISO-8601
+      "package":          str,
+      "version":          str,
+      "revision":         str,
+      "pkg_family":       str,              # aliBuild family subdir, e.g. "Pythia"; empty if none
+      "hash":             str,              # content-addressable build hash
+      "commit_hash":      str,              # source commit hash (or "0")
+      "outcome":          "already_installed" | "from_store" | "built_from_source",
+      "tarball":          str | null,       # tarball filename
+      "tarball_sha256":   str | null,       # sha256:<hex> of the tarball, if present
+      "source_checksums": [SourceEntry],    # per-source archive integrity anchors
+      "completed_at":     ISO-8601
     }
+
+    When ``pkg_family`` is non-empty the on-disk install path includes the
+    family as an extra path component::
+
+        $WORK_DIR/<arch>/<pkg_family>/<package>/<version>-<revision>/
+
+    rather than the default::
+
+        $WORK_DIR/<arch>/<package>/<version>-<revision>/
+
+    The publish pipeline uses this field to reconstruct ``SOURCE_DIR``
+    correctly without having to scan the filesystem.
+
+    SourceEntry::
+    {
+      "url":      str,          # source URL or local patch filename
+      "checksum": str | null    # declared checksum (algo:hex), or null if none
+    }
+
+    ``source_checksums`` contains one entry per item in the recipe's ``sources:``
+    list.  For git-sourced packages the list is empty (the ``commit_hash`` field
+    already pins the exact revision).  When a checksum was declared in the recipe
+    the field is populated immediately — no extra hashing is required at manifest
+    write time, and the value matches exactly what the checksum system already
+    verified during the build.
 
 Replay
 ------
@@ -127,6 +154,31 @@ def _tarball_sha256(tarball_path: str):
         return None
 
 
+def _source_entries(spec: dict) -> list:
+    """Parse ``spec['sources']`` and return ``[{url, checksum}]`` for each entry.
+
+    Uses ``parse_entry()`` from the checksum module to separate the URL from any
+    declared checksum suffix (``algo:hexdigest``).  The returned list is empty for
+    git-sourced packages — their integrity is already captured by ``commit_hash``.
+
+    No file I/O is performed: the checksum value is whatever was declared in the
+    recipe, exactly as the checksum system already verified (or would verify) at
+    download time.
+    """
+    try:
+        from bits_helpers.checksum import parse_entry
+    except ImportError:
+        return []
+    sources = spec.get("sources") or []
+    result = []
+    for raw in sources:
+        if not isinstance(raw, str):
+            continue
+        url, checksum = parse_entry(raw)
+        result.append({"url": url, "checksum": checksum})
+    return result
+
+
 # ── BuildManifest ─────────────────────────────────────────────────────────────
 
 class BuildManifest:
@@ -144,7 +196,7 @@ class BuildManifest:
         manifest.complete()   # or manifest.fail(package_name, reason)
     """
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
     _LATEST_SYMLINK = "bits-manifest-latest.json"
 
     def __init__(
@@ -246,15 +298,21 @@ class BuildManifest:
             compute ``tarball_sha256``.
         """
         entry = {
-            "package":        spec.get("package", ""),
-            "version":        spec.get("version", ""),
-            "revision":       spec.get("revision", ""),
-            "hash":           spec.get("hash", ""),
-            "commit_hash":    spec.get("commit_hash", ""),
-            "outcome":        outcome,
-            "tarball":        os.path.basename(tarball_path) if tarball_path else None,
-            "tarball_sha256": _tarball_sha256(tarball_path),
-            "completed_at":   _now_iso(),
+            "package":          spec.get("package", ""),
+            "version":          spec.get("version", ""),
+            "revision":         spec.get("revision", ""),
+            # pkg_family is used by the publish pipeline to reconstruct the
+            # on-disk install path when aliBuild inserts a family subdirectory:
+            #   $WORK_DIR/<arch>/<pkg_family>/<package>/<version>-<revision>/
+            # Empty string means no family subdir (standard layout).
+            "pkg_family":       spec.get("pkg_family", ""),
+            "hash":             spec.get("hash", ""),
+            "commit_hash":      spec.get("commit_hash", ""),
+            "outcome":          outcome,
+            "tarball":          os.path.basename(tarball_path) if tarball_path else None,
+            "tarball_sha256":   _tarball_sha256(tarball_path),
+            "source_checksums": _source_entries(spec),
+            "completed_at":     _now_iso(),
         }
         self._data["packages"].append(entry)
         self._data["updated_at"] = _now_iso()

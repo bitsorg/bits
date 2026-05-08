@@ -133,8 +133,9 @@ The pipeline enforces this independently of the UI. Even a manually crafted API 
 Clicking **Build → Production** queues a GitLab CI pipeline that:
 
 1. Runs `bits build --docker` on a registered build runner, with the workDir bind-mounted at the community's `cvmfs_prefix` path inside the container so binaries compile with their final deployment paths embedded.
-2. Runs `bits publish --no-relocate` to upload content-addressed tarballs to the shared binary store. No relocation step is needed because the paths were already correct at compile time.
-3. Ingests the tarballs via `bits-cvmfs-ingest`, opens a CVMFS transaction, and runs `cvmfs_server publish` on the stratum-0.
+2. Runs `bits publish --no-relocate` to stream the build to CVMFS. No relocation step is needed because the paths were already correct at compile time.
+3. **cvmfs-prepub path** (communities with `publish_pipeline: .gitlab/cvmfs-prepub-publish.yml`): the build host POSTs a tar directly to the `cvmfs-prepub` REST API; the service handles CAS ingestion and the CVMFS gateway transaction. No `bits-ingest` or `bits-cvmfs-publisher` runners are required.
+4. **Legacy spool path** (communities with `publish_pipeline: .gitlab/cvmfs-publish.yml`): ingests tarballs via `bits-cvmfs-ingest`, opens a CVMFS transaction, and runs `cvmfs_server publish` on the stratum-0 using dedicated `bits-ingest` and `bits-cvmfs-publisher` runners.
 
 The result is available experiment-wide on the **production CVMFS namespace** — to all developers' `bits enter` sessions, to batch grid jobs at WLCG sites, and to downstream CI pipelines. Stratum-1 replicas propagate the change automatically.
 

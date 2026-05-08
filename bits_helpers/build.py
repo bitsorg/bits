@@ -13,6 +13,7 @@ from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
                                     checksum_file as compute_checksum_file)
 from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksum_file
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
+from bits_helpers.sandbox import wrap_build_command
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
 from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id, ver_rev
 from bits_helpers.utilities import parseDefaults, readDefaults
@@ -78,8 +79,10 @@ def _generate_create_links_sh(spec, specs, args) -> str:
       )
     )
     lines.append("# -- %s --" % repo_type)
-    lines.append("rm -rf %s" % target_dir)
-    lines.append("mkdir -p %s" % target_dir)
+    # FIX: quote() prevents spaces, semicolons, or other shell metacharacters in
+    # workDir or package names from being interpreted when the generated script runs.
+    lines.append("rm -rf %s" % quote(target_dir))
+    lines.append("mkdir -p %s" % quote(target_dir))
     for pkg in [spec["package"]] + list(spec[requires_key]):
       dep_spec = specs[pkg]
       dep_arch = effective_arch(dep_spec, args.architecture)
@@ -88,7 +91,7 @@ def _generate_create_links_sh(spec, specs, args) -> str:
         .format(arch=dep_arch, short_hash=dep_spec["hash"][:2],
                 ver_rev=ver_rev(dep_spec), **dep_spec)
       )
-      lines.append('ln -nfs %s %s/' % (dep_tarball, target_dir))
+      lines.append('ln -nfs %s %s/' % (quote(dep_tarball), quote(target_dir)))
     lines.append("")
   return "\n".join(lines)
 
@@ -1236,7 +1239,9 @@ def doBuild(args, parser):
   )
   args.manifest.add_providers(provider_dirs)
 
-  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist.bits:ro"] if args.docker else []) as getstatusoutput_docker:
+  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env,
+                    extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist.bits:ro"] if args.docker else [],
+                    platform=getattr(args, "dockerPlatform", None)) as getstatusoutput_docker:
     def performPreferCheckWithTempDir(pkg, cmd):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
         return getstatusoutput_docker(cmd, cwd=temp_dir)
@@ -2123,14 +2128,17 @@ def doBuild(args, parser):
     # In case the --docker options is passed, we setup a docker container which
     # will perform the actual build. Otherwise build as usual using bash.
     if args.docker:
+      _docker_platform = getattr(args, "dockerPlatform", None)
       build_command = (
         "docker run --rm --entrypoint= --user $(id -u):$(id -g) "
+        "{platformArg}"
         "-v {workdir}:{container_workDir} -v{configDir}:/pkgdist.bits:ro "
         "-v {scriptDir}/build.sh:/build.sh:ro "
         "-v {bits_dir}:/bits "
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
         "-e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
       ).format(
+        platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
         image=quote(args.dockerImage),
         workdir=quote(abspath(args.workDir)),
         container_workDir=container_workDir,
@@ -2153,6 +2161,33 @@ def doBuild(args, parser):
       buildEnvironment = ([key, (val if isinstance(val, str) else "_".join(val))] for key, val in buildEnvironment)
       env_vars = " ".join(["{}={}".format(key, quote(val)) for key, val in buildEnvironment])
       build_command =  "env {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
+
+    # Warn when cross-compiling (QEMU) with sandboxing enabled: nested podman
+    # inside a QEMU-emulated container requires seccomp=unconfined on the outer
+    # docker run and may still fail on kernels without unprivileged userns.
+    # Recommend --sandbox=off for cross-compilation builds.
+    if getattr(args, "dockerPlatform", None) and getattr(args, "sandbox", "off") != "off":
+      from bits_helpers.log import warning as _warn
+      _warn(
+          "Cross-compilation (--docker-platform %s) with --sandbox=%s: "
+          "nested QEMU + podman may fail unless the outer container is run with "
+          "--security-opt seccomp=unconfined.  Pass --sandbox=off if builds fail.",
+          args.dockerPlatform, args.sandbox,
+      )
+
+    # Apply recipe sandbox (podman / sandbox-exec) if configured.
+    # sandbox=auto selects the best available mode; sandbox=off is a no-op.
+    # Per-recipe: sandbox_network: on (default) blocks outgoing network;
+    #             sandbox_network: off allows it.
+    build_command = wrap_build_command(
+        build_command,
+        spec,
+        args,
+        workdir=abspath(args.workDir),
+        docker_active=bool(getattr(args, "docker", False)),
+        container_workdir=container_workDir if getattr(args, "docker", False) else None,
+        docker_image=getattr(args, "dockerImage", None),
+    )
 
     # defaults-* packages are pure build-time configuration with no source to
     # compile. In Makeflow mode, run them synchronously in the preparation phase
@@ -2242,8 +2277,11 @@ def doBuild(args, parser):
     makedirs(mfDir, exist_ok=True)
     _mf_max_local = getattr(args, "makeflowJobs", 4)
     _mf_local_flag = "--max-local {}".format(_mf_max_local) if _mf_max_local > 0 else ""
+    # FIX: quote(mfDir) prevents shell injection when workDir contains spaces,
+    # semicolons, or other shell metacharacters (shell=True is still needed for
+    # the cd+semicolon compound command pattern).
     mfCmd = "(cd {dir}; {mf} --clean; {mf} {local})".format(
-        dir=mfDir, mf=mFlow, local=_mf_local_flag)
+        dir=quote(mfDir), mf=mFlow, local=_mf_local_flag)
     makedirs(mfDir, exist_ok=True)
     jnj = ""
     try:

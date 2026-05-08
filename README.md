@@ -31,7 +31,7 @@ On RHEL/CentOS: `yum install environment-modules`
 git clone https://github.com/bitsorg/alice.bits.git
 cd alice.bits
 
-# 2. Check that your system is ready
+# 2. Check system requirements for ROOT
 bits doctor ROOT
 
 # 3. Build ROOT and all its dependencies
@@ -59,7 +59,9 @@ exit
 | `bits q [regex]` | List available modules. |
 | `bits clean` | Remove stale build artifacts from a temporary build area. |
 | `bits cleanup` | Evict old or infrequently used packages from a persistent workDir. |
-| `bits doctor <pkg>` | Verify system requirements. |
+| `bits doctor <pkg> [<pkg>...]` | Check that the system satisfies all recipe requirements before building. |
+| `bits doctor --runner` | Validate the full build-runner environment (compiler, git, Docker, podman, CVMFS, disk, store). |
+| `bits verify --from-manifest FILE` | Confirm a live deployment matches the build manifest (SHA-256 and provider commits). |
 
 [Full command reference](REFERENCE.md#16-command-line-reference)
 
@@ -71,7 +73,10 @@ Create a `bits.rc` file (INI format) to set defaults:
 
 ```ini
 [bits]
-organisation = ALICE
+organisation     = ALICE
+remote_store     = https://s3.cern.ch/swift/v1/alibuild-repo
+prerequisites_url = https://alice-doc.github.io/alice-analysis-tutorial/building/
+cvmfs_repos      = /cvmfs/alice.cern.ch,/cvmfs/sft.cern.ch
 
 [ALICE]
 sw_dir       = /path/to/sw          # output directory
@@ -79,7 +84,19 @@ repo_dir     = /path/to/recipes     # recipe repository root
 search_path  = common,extra         # additional recipe dirs (appended .bits)
 ```
 
-Bits looks for `bits.rc` in: `--config FILE` → `./bits.rc` → `./.bitsrc` → `~/.bitsrc`.  
+Bits looks for `bits.rc` in: `--config FILE` → `./bits.rc` → `./.bitsrc` → `~/.bitsrc`.
+
+Useful `[bits]` keys:
+
+| Key | Description |
+|-----|-------------|
+| `remote_store` | Default binary store URL (same syntax as `--remote-store`). |
+| `write_store` | Default upload store URL. |
+| `prerequisites_url` | URL shown when `bits doctor` cannot find the C++ compiler or git. |
+| `cvmfs_repos` | Comma-separated CVMFS mount paths checked by `bits doctor --runner`. |
+| `provider_policy` | `name:prepend\|append` pairs controlling `BITS_PATH` insertion order. |
+| `store_integrity` | `true` to enable SHA-256 verification of every recalled tarball. |
+
 [Configuration details](REFERENCE.md#4-configuration)
 
 ---
@@ -127,13 +144,34 @@ bits cleanup -n                   # dry-run: show what would be removed
 # Build inside a Docker container for a specific Linux version
 bits build --docker --architecture ubuntu2004_x86-64 ROOT
 
+# Cross-compile for ARM64 on an x86-64 host (requires QEMU binfmt handlers)
+bits build --docker --architecture slc9_aarch64 MyAnalysis
+
 # Use a remote binary store (S3, HTTP, rsync) to share pre-built artifacts
 bits build --remote-store s3://mybucket/builds ROOT
 ```
 
 The `--cvmfs-prefix` flag (which embeds the final CVMFS deployment path at compile time so no relocation is needed at publish time) and `bits publish --no-relocate` are used by the **bits-console-triggered CI pipeline** on the build runners — they are not normally typed by end users. See [WORKFLOWS.md Phase 5](WORKFLOWS.md#phase-5--ci-build-and-cvmfs-publication-via-bits-console) for the user-facing workflow and [REFERENCE.md §22](REFERENCE.md#22-docker-support) for the flag reference.
 
-[Docker support](REFERENCE.md#22-docker-support) | [Remote stores](REFERENCE.md#21-remote-binary-store-backends)
+[Docker support](REFERENCE.md#22-docker-support) | [Cross-compilation via QEMU](REFERENCE.md#22b-cross-compilation-via-qemu) | [Remote stores](REFERENCE.md#21-remote-binary-store-backends)
+
+---
+
+## Validating Builds and Deployments
+
+```bash
+# Check runner environment before first use (compiler, git, Docker, podman, disk…)
+bits doctor --runner --cvmfs-repos /cvmfs/alice.cern.ch
+
+# Machine-readable runner report for CI / bits-console health panel
+bits doctor --runner --json
+
+# Verify that a live CVMFS deployment matches a recorded build manifest
+bits verify --from-manifest alice-o2-20260411.json \
+            --cvmfs-root /cvmfs/alice.cern.ch
+```
+
+[bits doctor reference](REFERENCE.md#bits-doctor) | [bits verify reference](REFERENCE.md#bits-verify) | [Deployment verification §22c](REFERENCE.md#22c-bits-verify--deployment-verification)
 
 ---
 
@@ -169,8 +207,11 @@ See **[WORKFLOWS.md](WORKFLOWS.md)** for the full phase-by-phase walkthrough and
 - [Development-to-deployment workflow & diagram](WORKFLOWS.md)
 - [Environment management (`bits enter`, `load`, `unload`)](REFERENCE.md#6-managing-environments)
 - [Dependency graph visualisation](REFERENCE.md#bits-deps)
+- [Runner environment validation (`bits doctor --runner`)](REFERENCE.md#bits-doctor)
+- [Deployment verification (`bits verify`)](REFERENCE.md#22c-bits-verify--deployment-verification)
 - [Repository provider feature (dynamic recipe repos)](REFERENCE.md#13-repository-provider-feature)
 - [Defaults profiles](REFERENCE.md#18-defaults-profiles)
+- [Cross-compilation via QEMU](REFERENCE.md#22b-cross-compilation-via-qemu)
 - [Design principles & limitations](REFERENCE.md#24-design-principles--limitations)
 - [CVMFS publishing pipeline & bits-console](REFERENCE.md#26-cvmfs-publishing-pipeline)
 
