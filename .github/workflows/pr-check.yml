@@ -87,16 +87,16 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
       - name: Fix macOS permissions
         run: |
-         # Reset permissions on /dev/null and temp directories
-         sudo chmod 666 /dev/null
-         # Clear any problematic temp directories
-         rm -rf .tox/darwin/tmp
-         rm -rf /var/folders/*/T/xcrun_db-*
-         # Ensure /tmp is writable
-         sudo chmod 1777 /tmp
-         # Set proper permissions for Xcode caches
-         sudo mkdir -p /Library/Caches/com.apple.dt.Xcode
-         sudo chmod -R 755 /Library/Caches/com.apple.dt.Xcode
+          # Reset permissions on /dev/null and temp directories
+          sudo chmod 666 /dev/null
+          # Clear any problematic temp directories
+          rm -rf .tox/darwin/tmp
+          rm -rf /var/folders/*/T/xcrun_db-*
+          # Ensure /tmp is writable
+          sudo chmod 1777 /tmp
+          # Set proper permissions for Xcode caches
+          sudo mkdir -p /Library/Caches/com.apple.dt.Xcode
+          sudo chmod -R 755 /Library/Caches/com.apple.dt.Xcode
           
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
