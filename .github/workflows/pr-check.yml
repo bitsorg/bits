@@ -91,6 +91,7 @@ jobs:
           sudo chmod 666 /dev/null
           # Clear any problematic temp directories
           rm -rf .tox/darwin/tmp
+          sudo chmod -R 777 /var/folders || true
           rm -rf /var/folders/*/T/xcrun_db-*
           # Ensure /tmp is writable
           sudo chmod 1777 /tmp
