@@ -38,6 +38,9 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Clean build cache
+        run: rm -rf .tox/darwin/tmp
+        
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
