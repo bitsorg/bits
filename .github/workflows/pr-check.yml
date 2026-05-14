@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-
+        
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -85,7 +85,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-
+      - name: Fix macOS permissions
+        run: |
+          # Reset permissions on /dev/null and temp directories
+          sudo chmod 666 /dev/null
+          # Clear any problematic temp directories
+          sudo rm -rf .tox/darwin/tmp
+          sudo chmod -R 777 /var/folders || true
+          sudo rm -rf /var/folders/*/T/xcrun_db-*
+          # Ensure /tmp is writable
+          sudo chmod -R 777 /tmp
+          # Set proper permissions for Xcode caches
+          sudo mkdir -p /Library/Caches/com.apple.dt.Xcode
+          sudo chmod -R 755 /Library/Caches/com.apple.dt.Xcode
+          # Clear Xcode build cache
+          sudo rm -rf ~/Library/Developer/Xcode/DerivedData/*
+          # Ensure xcrun can access required directories
+          sudo xcode-select --reset
+          
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
