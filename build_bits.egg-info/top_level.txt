@@ -1,0 +1,5 @@
+bits_helpers
+debian
+docs
+templates
+tests

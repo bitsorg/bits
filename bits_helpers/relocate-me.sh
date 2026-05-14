@@ -23,7 +23,12 @@ case "$PKGNAME" in
     if [ -f "$WORK_DIR/$PP/etc/profile.d/post-relocate.sh" ]
     then
       export PP
+      # MODULES_STAGING: when set by the caller (e.g. the CI pipeline), post-relocate.sh
+      # should write module files to this directory instead of the live CVMFS path.
+      # When unset (direct command-line use), post-relocate.sh falls back to its own
+      # default path — full backward compatibility is preserved.
+      export MODULES_STAGING
       bash -ex "$WORK_DIR/$PP/etc/profile.d/post-relocate.sh"
     fi
     ;;
-esac    
+esac

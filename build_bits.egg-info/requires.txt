@@ -1,0 +1,13 @@
+pyyaml
+requests
+distro
+jinja2
+boto3
+
+[docs]
+mkdocs
+mkdocs-material
+mkdocs-redirects
+
+[test]
+tox
