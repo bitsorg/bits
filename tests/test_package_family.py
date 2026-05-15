@@ -6,6 +6,7 @@ Covers:
   - spec["pkg_family"] set correctly by getPackageList()
   - _pkg_install_path(): path construction with and without family
   - generate_initdotsh(): init.sh paths use the dep's family segment
+  - storeHashes(): pkg_family is included in the hash
 """
 import os
 import sys
@@ -15,8 +16,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from bits_helpers.utilities import resolve_pkg_family, getPackageList
-from bits_helpers.build import _pkg_install_path, generate_initdotsh
+from bits_helpers.utilities import resolve_pkg_family, getPackageList, parseRecipe, resolve_tag
+from bits_helpers.build import _pkg_install_path, generate_initdotsh, storeHashes
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +261,88 @@ class TestGetPackageListPkgFamily(unittest.TestCase):
     def test_pkg_family_empty_when_defaults_meta_none(self):
         specs = self._call_getPackageList(None)
         self.assertEqual(specs["myapp"]["pkg_family"], "")
+
+
+# ---------------------------------------------------------------------------
+# storeHashes — pkg_family must contribute to the hash
+# ---------------------------------------------------------------------------
+
+_DEFAULTS_RECIPE = """\
+package: defaults-release
+version: v1
+---
+"""
+
+_PKG_RECIPE = """\
+package: mypkg
+version: v1.0
+source: https://example.com/mypkg
+tag: master
+requires:
+  - defaults-release
+---
+make install
+"""
+
+def _make_spec(recipe_text):
+    err, spec, recipe = parseRecipe(lambda: recipe_text)
+    assert err is None, err
+    spec["recipe"] = "" if spec["package"].startswith("defaults-") else recipe.strip("\n")
+    spec.setdefault("tag", spec["version"])
+    spec["tag"] = resolve_tag(spec)
+    spec["is_devel_pkg"] = False
+    return spec
+
+
+class TestPkgFamilyAffectsHash(unittest.TestCase):
+    """pkg_family must be part of the build hash.
+
+    A tarball built without a family uses a path of the form
+    ARCH/PKG/VER-REV, while one built with a family uses
+    ARCH/FAMILY/PKG/VER-REV.  They are not interchangeable, so their
+    hashes must differ to prevent bits from silently fetching a
+    wrong tarball that would fail relocation.
+    """
+
+    def _compute_hashes(self, pkg_family):
+        defaults = _make_spec(_DEFAULTS_RECIPE)
+        defaults["commit_hash"] = "0"
+        pkg = _make_spec(_PKG_RECIPE)
+        pkg["commit_hash"] = "aaaa1111"
+        pkg["scm_refs"] = {"refs/heads/master": "aaaa1111"}
+        pkg["pkg_family"] = pkg_family
+        specs = {
+            defaults["package"]: defaults,
+            pkg["package"]: pkg,
+        }
+        storeHashes("defaults-release", specs, considerRelocation=False)
+        defaults["hash"] = defaults["remote_revision_hash"]
+        storeHashes("mypkg", specs, considerRelocation=False)
+        return pkg["remote_revision_hash"], pkg["local_revision_hash"]
+
+    def test_no_family_vs_with_family_differ(self):
+        """A package with pkg_family must hash differently from the same
+        package without one, so they are never confused in the store."""
+        remote_no_family, local_no_family = self._compute_hashes("")
+        remote_with_family, local_with_family = self._compute_hashes("o2")
+        self.assertNotEqual(remote_no_family, remote_with_family,
+                            "remote hash must differ when pkg_family changes")
+        self.assertNotEqual(local_no_family, local_with_family,
+                            "local hash must differ when pkg_family changes")
+
+    def test_different_families_differ(self):
+        """Two different pkg_family values must produce distinct hashes."""
+        remote_o2, _ = self._compute_hashes("o2")
+        remote_cms, _ = self._compute_hashes("cms")
+        self.assertNotEqual(remote_o2, remote_cms,
+                            "different pkg_family values must produce different hashes")
+
+    def test_same_family_stable(self):
+        """Same pkg_family value must always produce the same hash."""
+        remote_a, local_a = self._compute_hashes("o2")
+        remote_b, local_b = self._compute_hashes("o2")
+        self.assertEqual(remote_a, remote_b, "remote hash must be stable for same pkg_family")
+        self.assertEqual(local_a, local_b, "local hash must be stable for same pkg_family")
 
 
 if __name__ == "__main__":

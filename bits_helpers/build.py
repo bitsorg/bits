@@ -295,6 +295,15 @@ def storeHashes(package, specs, considerRelocation):
   for key in ("recipe", "version", "package"):
     h_all(spec.get(key, "none"))
 
+  # pkg_family changes the installation path (ARCH/FAMILY/PKG/VER vs
+  # ARCH/PKG/VER), so tarballs built with different family settings are
+  # not interchangeable.  Include it in the hash so they get distinct
+  # identities and a family-tagged build never silently reuses a tarball
+  # that was uploaded without a family (which would break relocation).
+  # Empty string is used when no family is set, preserving backward
+  # compatibility with existing tarballs.
+  h_all(spec.get("pkg_family", ""))
+
   # commit_hash could be a commit hash (if we're not building a tag, but
   # instead e.g. a branch or particular commit specified by its hash), or it
   # could be a tag name (if we're building a tag). We want to calculate the
