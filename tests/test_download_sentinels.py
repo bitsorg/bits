@@ -202,8 +202,11 @@ class SentinelIntegrationTest(unittest.TestCase):
                 # Simulate completed download: write the file, remove sentinel.
                 with open(target, "w") as fh:
                     fh.write("data")
-                os.unlink(_sentinel_path(target))
+                # Record "done" before removing the sentinel so that any
+                # thread unblocked by the unlink is guaranteed to see "done"
+                # already in the list.
                 events.append("done")
+                os.unlink(_sentinel_path(target))
 
         def consumer():
             time.sleep(0.05)        # let downloader start first
