@@ -501,6 +501,84 @@ def load_always_on_providers(
   return provider_dirs
 
 
+# ── Backward-compat bootstrap ───────────────────────────────────────────────
+
+def bootstrap_default_config(args, work_dir: str) -> str | None:
+  """Bootstrap a default recipe repository when no config dir exists.
+
+  Called when ``bits build <PKG>`` is run in an empty directory (no
+  ``alidist/`` or custom config dir).  For backward compatibility with the
+  original ALICE workflow, bits automatically:
+
+  1. Fetches **bits-providers** (using the same URL already stored in
+     ``args.bits_providers``).
+  2. Looks for a ``default.bits.sh`` recipe inside the bits-providers checkout.
+  3. If found, clones the repository that recipe points to and returns its
+     local checkout path, which the caller assigns to ``args.configDir``.
+
+  Returns the cloned checkout directory on success, or ``None`` when the
+  bootstrap cannot proceed (no bits-providers URL, no ``default.bits.sh``,
+  or network/clone errors).  The caller decides whether to die or continue.
+  """
+  bits_providers_url = getattr(args, "bits_providers", None)
+  if not bits_providers_url:
+    return None
+
+  reference_sources = getattr(args, "referenceSources", "")
+  fetch_repos = getattr(args, "fetchRepos", True)
+
+  # ── 1. Clone / update bits-providers ──────────────────────────────────
+  url, tag = _parse_provider_url(bits_providers_url)
+  spec = _make_bits_providers_spec(url, tag)
+  try:
+    info("Bootstrapping: fetching bits-providers from %s …", url)
+    providers_checkout, _ = clone_or_update_provider(
+      spec, work_dir, reference_sources, fetch_repos,
+    )
+  except SystemExit:
+    warning("Bootstrap failed: could not clone bits-providers from %s", url)
+    return None
+
+  # ── 2. Look for default.bits.sh ────────────────────────────────────────
+  default_sh = join(providers_checkout, "default.bits.sh")
+  if not exists(default_sh):
+    debug("Bootstrap: no default.bits.sh in bits-providers — nothing to auto-configure")
+    return None
+
+  try:
+    err, default_spec, _ = parseRecipe(getRecipeReader(default_sh))
+  except Exception as exc:
+    warning("Bootstrap: could not parse default.bits.sh: %s", exc)
+    return None
+  if err or default_spec is None:
+    warning("Bootstrap: parse error in default.bits.sh: %s", err)
+    return None
+
+  default_source = default_spec.get("source", "")
+  if not default_source:
+    warning("Bootstrap: default.bits.sh has no 'source' URL")
+    return None
+
+  # ── 3. Clone the default config repository ─────────────────────────────
+  try:
+    info(
+      "Bootstrapping: cloning default recipe repository from %s …",
+      default_source,
+    )
+    checkout_dir, _ = clone_or_update_provider(
+      default_spec, work_dir, reference_sources, fetch_repos,
+    )
+  except SystemExit:
+    warning(
+      "Bootstrap failed: could not clone default config repository from %s",
+      default_source,
+    )
+    return None
+
+  info("Bootstrap complete: using recipe repository at %s", checkout_dir)
+  return checkout_dir
+
+
 # ── Iterative provider discovery ────────────────────────────────────────────
 
 def fetch_repo_providers_iteratively(

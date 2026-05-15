@@ -1120,6 +1120,15 @@ def doBuild(args, parser):
 
   buildTargets = " ".join(args.pkgname)
 
+  if not exists(args.configDir):
+    # Backward-compatibility bootstrap: when no recipe directory exists (e.g.
+    # the user ran "bits build ROOT" in a plain directory), attempt to auto-
+    # configure by fetching bits-providers and following the default.bits.sh
+    # pointer, which conventionally resolves to the primary ALICE recipe repo.
+    from bits_helpers.repo_provider import bootstrap_default_config
+    bootstrapped = bootstrap_default_config(args, workDir)
+    if bootstrapped:
+      args.configDir = bootstrapped
   dieOnError(not exists(args.configDir),
             'Cannot find recipes under directory "%s".\n'
             'Maybe you need to "cd" to the right directory or '

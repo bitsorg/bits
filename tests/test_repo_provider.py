@@ -22,6 +22,7 @@ from bits_helpers.repo_provider import (
     _add_to_bits_path,
     _provider_cache_root,
     _try_read_spec,
+    bootstrap_default_config,
     clone_or_update_provider,
     fetch_repo_providers_iteratively,
 )
@@ -645,7 +646,148 @@ class TestGetPackageListProviderDirs(unittest.TestCase):
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  6.  storeHashes – provider hash folded in                              ║
+# ║  6.  bootstrap_default_config                                           ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+class TestBootstrapDefaultConfig(unittest.TestCase):
+    """Unit tests for the backward-compat auto-bootstrap in bootstrap_default_config."""
+
+    # Minimal args mock
+    @staticmethod
+    def _make_args(bits_providers="https://github.com/bitsorg/bits-providers"):
+        args = MagicMock()
+        args.bits_providers = bits_providers
+        args.referenceSources = ""
+        args.fetchRepos = False
+        return args
+
+    # A minimal default.bits.sh recipe text
+    _DEFAULT_SH = dedent("""\
+        package: default.bits
+        version: "1"
+        tag: main
+        provides_repository: true
+        source: https://github.com/bitsorg/alice.bits
+        ---
+    """)
+
+    # A minimal common.bits.sh so that parseRecipe doesn't complain about requires
+    _BITS_PROVIDERS_SH = dedent("""\
+        package: bits-providers
+        version: "1"
+        source: https://github.com/bitsorg/bits-providers
+        tag: main
+        provides_repository: true
+        always_load: true
+        ---
+    """)
+
+    def _make_clone_side_effect(self, providers_checkout, config_checkout):
+        """Return a side_effect that alternates checkouts per call."""
+        calls = iter([
+            (providers_checkout, "abc123"),
+            (config_checkout,   "def456"),
+        ])
+        return lambda *a, **kw: next(calls)
+
+    @patch("bits_helpers.repo_provider.info")      # avoid LogFormatter double-format bug
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    @patch("bits_helpers.repo_provider.parseRecipe")
+    @patch("bits_helpers.repo_provider.getRecipeReader")
+    @patch("bits_helpers.repo_provider.exists")   # module-level name, not os.path.exists
+    def test_returns_config_checkout_when_default_sh_found(
+        self, mock_exists, mock_reader, mock_parse, mock_clone, _info,
+    ):
+        """Happy path: bits-providers has default.bits.sh → returns config checkout."""
+        providers_checkout = "/work/REPOS/bits-providers/abc1234567"
+        config_checkout    = "/work/REPOS/default.bits/def4567890"
+
+        # exists() returns True only for the default.bits.sh path
+        mock_exists.side_effect = lambda p: p.endswith("default.bits.sh")
+        mock_reader.return_value = "reader"
+        mock_parse.return_value = (
+            None,
+            OrderedDict({
+                "package": "default.bits",
+                "version": "1",
+                "tag": "main",
+                "provides_repository": True,
+                "source": "https://github.com/bitsorg/alice.bits",
+            }),
+            {},
+        )
+        mock_clone.side_effect = self._make_clone_side_effect(
+            providers_checkout, config_checkout,
+        )
+
+        result = bootstrap_default_config(self._make_args(), "/work")
+
+        self.assertEqual(result, config_checkout)
+        self.assertEqual(mock_clone.call_count, 2)
+
+    @patch("bits_helpers.repo_provider.info")      # avoid LogFormatter double-format bug
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    @patch("bits_helpers.repo_provider.exists", return_value=False)
+    def test_returns_none_when_no_default_sh(self, mock_exists, mock_clone, _info):
+        """When default.bits.sh is absent, returns None without cloning config."""
+        providers_checkout = "/work/REPOS/bits-providers/abc1234567"
+        mock_clone.return_value = (providers_checkout, "abc123")
+
+        result = bootstrap_default_config(self._make_args(), "/work")
+
+        self.assertIsNone(result)
+        # Only the bits-providers clone should have been attempted
+        self.assertEqual(mock_clone.call_count, 1)
+
+    def test_returns_none_when_no_bits_providers_url(self):
+        """When args.bits_providers is falsy, returns None immediately."""
+        args = self._make_args(bits_providers="")
+        result = bootstrap_default_config(args, "/work")
+        self.assertIsNone(result)
+
+    @patch("bits_helpers.repo_provider.warning")   # avoid LogFormatter double-format bug
+    @patch("bits_helpers.repo_provider.clone_or_update_provider",
+           side_effect=SystemExit(1))
+    def test_returns_none_when_bits_providers_clone_fails(self, mock_clone, _warn):
+        """A clone failure for bits-providers is caught and returns None."""
+        result = bootstrap_default_config(self._make_args(), "/work")
+        self.assertIsNone(result)
+
+    @patch("bits_helpers.repo_provider.warning")   # avoid LogFormatter double-format bug
+    @patch("bits_helpers.repo_provider.info")
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    @patch("bits_helpers.repo_provider.parseRecipe")
+    @patch("bits_helpers.repo_provider.getRecipeReader")
+    @patch("bits_helpers.repo_provider.exists")   # module-level name, not os.path.exists
+    def test_returns_none_when_config_clone_fails(
+        self, mock_exists, mock_reader, mock_parse, mock_clone, _info, _warn,
+    ):
+        """A clone failure for the default config repo is caught and returns None."""
+        providers_checkout = "/work/REPOS/bits-providers/abc1234567"
+        mock_exists.side_effect = lambda p: p.endswith("default.bits.sh")
+        mock_reader.return_value = "reader"
+        mock_parse.return_value = (
+            None,
+            OrderedDict({
+                "package": "default.bits",
+                "version": "1",
+                "tag": "main",
+                "provides_repository": True,
+                "source": "https://github.com/bitsorg/alice.bits",
+            }),
+            {},
+        )
+        # First call (bits-providers) succeeds; second (default config) fails
+        mock_clone.side_effect = [
+            (providers_checkout, "abc123"),
+            SystemExit(1),
+        ]
+        result = bootstrap_default_config(self._make_args(), "/work")
+        self.assertIsNone(result)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  7.  storeHashes – provider hash folded in                              ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 class TestStoreHashesProviderHash(unittest.TestCase):

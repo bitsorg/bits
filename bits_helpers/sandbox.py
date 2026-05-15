@@ -243,6 +243,15 @@ def wrap_build_command(
         The Docker image name.  Used as the nested podman image when no
         ``--sandbox-image`` was given.
     """
+    # defaults-* packages (defaults-release, defaults-user, …) are pure
+    # configuration packages with no compiled build script — they inject
+    # default values into the build system and never run inside a sandbox.
+    # Skip silently so the "sandbox=podman requires a container image" warning
+    # is not emitted for every defaults package in the dependency tree.
+    pkg_name = spec.get("package", "")
+    if pkg_name.startswith("defaults-"):
+        return build_command
+
     sandbox_network = spec.get("sandbox_network", "on")
     allow_network = (sandbox_network == "off")
 
