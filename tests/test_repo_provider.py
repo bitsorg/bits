@@ -24,6 +24,7 @@ from bits_helpers.repo_provider import (
     _try_read_spec,
     bootstrap_default_config,
     clone_or_update_provider,
+    cwd_is_recipe_dir,
     fetch_repo_providers_iteratively,
 )
 from bits_helpers.utilities import getConfigPaths, getPackageList
@@ -646,7 +647,60 @@ class TestGetPackageListProviderDirs(unittest.TestCase):
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  6.  bootstrap_default_config                                           ║
+# ║  6.  cwd_is_recipe_dir                                                  ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+class TestCwdIsRecipeDir(unittest.TestCase):
+    """Unit tests for the CWD recipe-directory detector."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_cwd = os.getcwd()
+        os.chdir(self.tmp)
+
+    def tearDown(self):
+        os.chdir(self._orig_cwd)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, content=""):
+        with open(os.path.join(self.tmp, name), "w") as fh:
+            fh.write(content)
+
+    def test_empty_directory_returns_false(self):
+        self.assertFalse(cwd_is_recipe_dir())
+
+    def test_only_package_recipes_without_defaults_returns_false(self):
+        """Random recipe files are not enough — defaults-release.sh is required."""
+        self._write("ROOT.sh", "package: ROOT\nversion: v6\n---\n: build\n")
+        self._write("zlib.sh", "package: zlib\nversion: v1\n---\n: build\n")
+        self.assertFalse(cwd_is_recipe_dir())
+
+    def test_defaults_release_sh_returns_true(self):
+        """Presence of defaults-release.sh is the definitive marker."""
+        self._write("defaults-release.sh", "package: defaults-release\nversion: v1\n---\n")
+        self.assertTrue(cwd_is_recipe_dir())
+
+    def test_defaults_release_sh_alongside_other_recipes_returns_true(self):
+        """A realistic recipe repo with multiple recipes plus defaults-release.sh."""
+        self._write("defaults-release.sh", "package: defaults-release\nversion: v1\n---\n")
+        self._write("ROOT.sh", "package: ROOT\nversion: v6\n---\n: build\n")
+        self._write("zlib.sh", "package: zlib\nversion: v1\n---\n: build\n")
+        self.assertTrue(cwd_is_recipe_dir())
+
+    def test_no_sh_files_returns_false(self):
+        self._write("README.md", "# hello\n")
+        self._write("build.py", "print('hi')\n")
+        self.assertFalse(cwd_is_recipe_dir())
+
+    def test_similarly_named_file_does_not_match(self):
+        """defaults-release-extra.sh or xdefaults-release.sh must not match."""
+        self._write("defaults-release-extra.sh", "package: x\nversion: v1\n---\n")
+        self._write("xdefaults-release.sh", "package: y\nversion: v1\n---\n")
+        self.assertFalse(cwd_is_recipe_dir())
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  7.  bootstrap_default_config                                           ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 class TestBootstrapDefaultConfig(unittest.TestCase):
@@ -654,9 +708,11 @@ class TestBootstrapDefaultConfig(unittest.TestCase):
 
     # Minimal args mock
     @staticmethod
-    def _make_args(bits_providers="https://github.com/bitsorg/bits-providers"):
+    def _make_args(bits_providers="https://github.com/bitsorg/bits-providers",
+                   organisation=None):
         args = MagicMock()
         args.bits_providers = bits_providers
+        args.organisation = organisation
         args.referenceSources = ""
         args.fetchRepos = False
         return args
@@ -784,6 +840,105 @@ class TestBootstrapDefaultConfig(unittest.TestCase):
         ]
         result = bootstrap_default_config(self._make_args(), "/work")
         self.assertIsNone(result)
+
+    # ── Organisation-aware lookup ──────────────────────────────────────────
+
+    @patch("bits_helpers.repo_provider.info")
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    @patch("bits_helpers.repo_provider.parseRecipe")
+    @patch("bits_helpers.repo_provider.getRecipeReader")
+    @patch("bits_helpers.repo_provider.exists")
+    def test_organisation_recipe_preferred_over_default(
+        self, mock_exists, mock_reader, mock_parse, mock_clone, _info,
+    ):
+        """Organisation stored uppercase (LHCB) → resolves to lhcb.bits.sh (lowercase)."""
+        providers_checkout = "/work/REPOS/bits-providers/abc1234567"
+        config_checkout    = "/work/REPOS/lhcb.bits/def4567890"
+
+        # Only lhcb.bits.sh (lowercase) exists — default.bits.sh is absent.
+        # args.organisation is uppercase "LHCB" as stored in bits.rc.
+        mock_exists.side_effect = lambda p: p.endswith("lhcb.bits.sh")
+        mock_reader.return_value = "reader"
+        mock_parse.return_value = (
+            None,
+            OrderedDict({
+                "package": "lhcb.bits",
+                "version": "1",
+                "tag": "main",
+                "provides_repository": True,
+                "source": "https://github.com/bitsorg/lhcb.bits",
+            }),
+            {},
+        )
+        mock_clone.side_effect = self._make_clone_side_effect(
+            providers_checkout, config_checkout,
+        )
+
+        # Pass uppercase "LHCB" — the same value bits.rc stores
+        result = bootstrap_default_config(
+            self._make_args(organisation="LHCB"), "/work",
+        )
+
+        self.assertEqual(result, config_checkout)
+        # Verify the reader was called with the lowercased lhcb path
+        reader_path = mock_reader.call_args[0][0]
+        self.assertIn("lhcb.bits.sh", reader_path)
+        self.assertNotIn("default.bits.sh", reader_path)
+
+    @patch("bits_helpers.repo_provider.info")
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    @patch("bits_helpers.repo_provider.parseRecipe")
+    @patch("bits_helpers.repo_provider.getRecipeReader")
+    @patch("bits_helpers.repo_provider.exists")
+    def test_organisation_falls_back_to_default_sh_when_org_sh_absent(
+        self, mock_exists, mock_reader, mock_parse, mock_clone, _info,
+    ):
+        """When <org>.bits.sh is absent, bootstrap falls back to default.bits.sh."""
+        providers_checkout = "/work/REPOS/bits-providers/abc1234567"
+        config_checkout    = "/work/REPOS/default.bits/def4567890"
+
+        # LHCB.bits.sh / lhcb.bits.sh absent, default.bits.sh present
+        mock_exists.side_effect = lambda p: p.endswith("default.bits.sh")
+        mock_reader.return_value = "reader"
+        mock_parse.return_value = (
+            None,
+            OrderedDict({
+                "package": "default.bits",
+                "version": "1",
+                "tag": "main",
+                "provides_repository": True,
+                "source": "https://github.com/bitsorg/alice.bits",
+            }),
+            {},
+        )
+        mock_clone.side_effect = self._make_clone_side_effect(
+            providers_checkout, config_checkout,
+        )
+
+        # Pass uppercase "LHCB" — fallback must still find default.bits.sh
+        result = bootstrap_default_config(
+            self._make_args(organisation="LHCB"), "/work",
+        )
+
+        self.assertEqual(result, config_checkout)
+        reader_path = mock_reader.call_args[0][0]
+        self.assertIn("default.bits.sh", reader_path)
+
+    @patch("bits_helpers.repo_provider.info")
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    @patch("bits_helpers.repo_provider.exists", return_value=False)
+    def test_organisation_returns_none_when_neither_sh_found(
+        self, _exists, mock_clone, _info,
+    ):
+        """When both <org>.bits.sh and default.bits.sh are absent, returns None."""
+        providers_checkout = "/work/REPOS/bits-providers/abc1234567"
+        mock_clone.return_value = (providers_checkout, "abc123")
+
+        result = bootstrap_default_config(
+            self._make_args(organisation="LHCB"), "/work",
+        )
+        self.assertIsNone(result)
+        self.assertEqual(mock_clone.call_count, 1)  # only bits-providers was cloned
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗

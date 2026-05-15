@@ -362,6 +362,12 @@ def doStatus(args, parser) -> None:
     work_dir = abspath(args.workDir)
     prunePaths(work_dir)
 
+    if not exists(args.configDir):
+      from bits_helpers.repo_provider import cwd_is_recipe_dir
+      _default_config_dir = os.environ.get("BITS_REPO_DIR", "alidist")
+      if args.configDir == _default_config_dir and cwd_is_recipe_dir():
+        debug("Recipe files detected in current directory; using '.' as config dir")
+        args.configDir = "."
     dieOnError(not exists(args.configDir),
                'Cannot find recipes under directory "%s".\n'
                'Maybe you need to "cd" to the right directory or '
