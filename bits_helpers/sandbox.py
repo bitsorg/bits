@@ -267,11 +267,24 @@ def wrap_build_command(
 
     image = getattr(opts, "sandboxImage", None) or docker_image
     if mode == "podman" and not image:
-        warning(
-            "sandbox=podman requires a container image (--docker or --sandbox-image). "
-            "Sandboxing disabled for package %s.",
-            spec.get("package", "?"),
-        )
+        # No container image available.  If the user explicitly requested podman
+        # (--sandbox=podman) this is a configuration mistake — warn loudly.
+        # If podman was chosen automatically (sandbox=auto, Linux host) there is
+        # simply no image to use; downgrade silently to "off" so that running
+        # "bits build PKG" locally doesn't flood the console with per-package
+        # warnings on every build invocation.
+        if requested == "podman":
+            warning(
+                "sandbox=podman requires a container image (--docker or "
+                "--sandbox-image). Sandboxing disabled for package %s.",
+                spec.get("package", "?"),
+            )
+        else:
+            debug(
+                "sandbox=auto: podman available but no image supplied; "
+                "sandboxing disabled for package %s.",
+                spec.get("package", "?"),
+            )
         return build_command
 
     # --- sandbox-exec (macOS) ---

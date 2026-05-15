@@ -235,11 +235,33 @@ class WrapPodmanLocalTests(unittest.TestCase):
         self.assertNotIn("--network=none", result)
         self.assertIn("podman run", result)
 
+    @patch("bits_helpers.sandbox.warning")
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
-    def test_no_image_returns_unchanged(self, _r):
-        """Without an image, sandbox falls back gracefully."""
+    def test_no_image_explicit_podman_warns(self, _r, mock_warn):
+        """--sandbox=podman with no image emits a warning and returns unchanged."""
         result = wrap_build_command(
             LOCAL_CMD, _spec(), _opts(sandbox="podman", sandbox_image=None),
+            workdir="/sw",
+        )
+        self.assertEqual(result, LOCAL_CMD)
+        self.assertTrue(mock_warn.called, "expected a warning for explicit podman + no image")
+
+    @patch("bits_helpers.sandbox.warning")
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
+    def test_no_image_auto_mode_silent(self, _r, mock_warn):
+        """sandbox=auto with no image falls back silently (no console warning)."""
+        result = wrap_build_command(
+            LOCAL_CMD, _spec(), _opts(sandbox="auto", sandbox_image=None),
+            workdir="/sw",
+        )
+        self.assertEqual(result, LOCAL_CMD)
+        self.assertFalse(mock_warn.called, "auto-detected podman with no image must not warn")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
+    def test_no_image_returns_unchanged(self, _r):
+        """Without an image, sandbox falls back gracefully (legacy compat check)."""
+        result = wrap_build_command(
+            LOCAL_CMD, _spec(), _opts(sandbox="auto", sandbox_image=None),
             workdir="/sw",
         )
         self.assertEqual(result, LOCAL_CMD)
