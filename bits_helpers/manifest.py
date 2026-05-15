@@ -56,17 +56,18 @@ Schema (version 2)
 
     PackageEntry::
     {
-      "package":          str,
-      "version":          str,
-      "revision":         str,
-      "pkg_family":       str,              # aliBuild family subdir, e.g. "Pythia"; empty if none
-      "hash":             str,              # content-addressable build hash
-      "commit_hash":      str,              # source commit hash (or "0")
-      "outcome":          "already_installed" | "from_store" | "built_from_source",
-      "tarball":          str | null,       # tarball filename
-      "tarball_sha256":   str | null,       # sha256:<hex> of the tarball, if present
-      "source_checksums": [SourceEntry],    # per-source archive integrity anchors
-      "completed_at":     ISO-8601
+      "package":                str,
+      "version":                str,
+      "revision":               str,
+      "pkg_family":             str,              # aliBuild family subdir, e.g. "Pythia"; empty if none
+      "effective_architecture": str,              # "shared" for noarch packages; build arch otherwise
+      "hash":                   str,              # content-addressable build hash
+      "commit_hash":            str,              # source commit hash (or "0")
+      "outcome":                "already_installed" | "from_store" | "built_from_source",
+      "tarball":                str | null,       # tarball filename
+      "tarball_sha256":         str | null,       # sha256:<hex> of the tarball, if present
+      "source_checksums":       [SourceEntry],    # per-source archive integrity anchors
+      "completed_at":           ISO-8601
     }
 
     When ``pkg_family`` is non-empty the on-disk install path includes the
@@ -283,6 +284,7 @@ class BuildManifest:
         spec: dict,
         outcome: str,
         tarball_path: str = None,
+        effective_architecture: str = "",
     ) -> None:
         """Record a completed package in the manifest.
 
@@ -296,23 +298,35 @@ class BuildManifest:
         tarball_path:
             Absolute path to the local tarball file, if one exists.  Used to
             compute ``tarball_sha256``.
+        effective_architecture:
+            The architecture string actually used in paths and tarball names
+            for this package.  ``"shared"`` for packages that declare
+            ``architecture: shared``; the real build arch otherwise.  Used by
+            the publish pipeline to locate the tarball and choose the correct
+            CVMFS path template.
         """
         entry = {
-            "package":          spec.get("package", ""),
-            "version":          spec.get("version", ""),
-            "revision":         spec.get("revision", ""),
+            "package":                spec.get("package", ""),
+            "version":                spec.get("version", ""),
+            "revision":               spec.get("revision", ""),
             # pkg_family is used by the publish pipeline to reconstruct the
             # on-disk install path when aliBuild inserts a family subdirectory:
             #   $WORK_DIR/<arch>/<pkg_family>/<package>/<version>-<revision>/
             # Empty string means no family subdir (standard layout).
-            "pkg_family":       spec.get("pkg_family", ""),
-            "hash":             spec.get("hash", ""),
-            "commit_hash":      spec.get("commit_hash", ""),
-            "outcome":          outcome,
-            "tarball":          os.path.basename(tarball_path) if tarball_path else None,
-            "tarball_sha256":   _tarball_sha256(tarball_path),
-            "source_checksums": _source_entries(spec),
-            "completed_at":     _now_iso(),
+            "pkg_family":             spec.get("pkg_family", ""),
+            # effective_architecture is "shared" for noarch packages (those
+            # that declare `architecture: shared` in their recipe), and the
+            # real build architecture for all other packages.  The publish
+            # pipeline uses this to locate the tarball under TARS/<eff_arch>/
+            # and to select the appropriate CVMFS path template.
+            "effective_architecture": effective_architecture,
+            "hash":                   spec.get("hash", ""),
+            "commit_hash":            spec.get("commit_hash", ""),
+            "outcome":                outcome,
+            "tarball":                os.path.basename(tarball_path) if tarball_path else None,
+            "tarball_sha256":         _tarball_sha256(tarball_path),
+            "source_checksums":       _source_entries(spec),
+            "completed_at":           _now_iso(),
         }
         self._data["packages"].append(entry)
         self._data["updated_at"] = _now_iso()

@@ -934,7 +934,8 @@ def doFinalSync(spec, specs, args, syncHelper):
       _tarball_name,
     )
     args.manifest.add_package(spec, _outcome,
-                               _tarball_path if os.path.isfile(_tarball_path) else None)
+                               _tarball_path if os.path.isfile(_tarball_path) else None,
+                               effective_architecture=_arch)
 
   # Touch the sentinel so the cleanup command counts this package as recently used.
   try:
@@ -1906,7 +1907,8 @@ def doBuild(args, parser):
           pass
       # Record in the build manifest that this package was already installed.
       if getattr(args, "manifest", None) is not None:
-        args.manifest.add_package(spec, "already_installed")
+        args.manifest.add_package(spec, "already_installed",
+                                  effective_architecture=effective_arch(spec, args.architecture))
       # Touch the sentinel so the cleanup command knows this package was used.
       try:
         from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
