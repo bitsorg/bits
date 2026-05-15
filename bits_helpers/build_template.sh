@@ -205,24 +205,24 @@ function Run() { # dummy function
 
 if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
   set -o pipefail;
-  {unset DYLD_LIBRARY_PATH;
-   set -x;
-   set -e;
-   source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
-   if [[ $(type -t Run) == function ]]; then Run "$@"; fi
-   }  2>&1 | tee "$BUILDROOT/log" || exit 1
-   [ $PIPESTATUS -eq 0 ] || exit $PIPESTATUS
+  { unset DYLD_LIBRARY_PATH
+    set -e
+    set -x
+    source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
+    if [[ $(type -t Run) == function ]]; then Run "$@"; fi
+  } 2>&1 | tee "$BUILDROOT/log"
+  [ $PIPESTATUS -eq 0 ] || exit $PIPESTATUS
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
     set -o pipefail
     (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log" || exit 1
 elif [[ "$CACHED_TARBALL" == "" ]]; then
    set -o pipefail;
-   {unset DYLD_LIBRARY_PATH;
-   set -x;
-   set -e;
-   source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
-   if [[ $(type -t Run) == function ]]; then Run "$@"; fi
-   }  2>&1 | tee "$BUILDROOT/log"
+   { unset DYLD_LIBRARY_PATH
+     set -e
+     set -x
+     source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
+     if [[ $(type -t Run) == function ]]; then Run "$@"; fi
+   } 2>&1 | tee "$BUILDROOT/log"
    [ $PIPESTATUS -eq 0 ] || exit $PIPESTATUS
 else
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
