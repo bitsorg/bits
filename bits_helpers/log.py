@@ -69,7 +69,7 @@ class ProgressPrint:
       return
     self.last_update = now
 
-    if logger.level <= logging.DEBUG or not sys.stdout.isatty():
+    if logger.isEnabledFor(logging.DEBUG) or not sys.stdout.isatty():
       debug(txt, *args)
       return
     if time.time() - self.lasttime < 0.5:

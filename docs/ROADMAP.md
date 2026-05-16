@@ -85,27 +85,6 @@ limitation. Spack's `clingo`-based concretiser and Conda's SAT solver both handl
 correctly. For large stacks with many independent release lines this is the most
 significant technical gap in bits today.
 
-**Package count comparisons are misleading — but ecosystem coverage is still limited.**
-Raw recipe counts favour systems that compile every Python package, Perl module, and R
-library individually. bits deliberately defers to native binary distribution
-mechanisms: a single recipe installs dozens of Python wheels through `pip`, preserving
-version coherence without recipe proliferation. Spack's ~8,000 packages and
-Conda-forge's ~25,000 are substantially inflated by individual scripting-language
-module recipes and by the Cartesian product of compiler × architecture × OS × variant
-combinations generating redundant entries. The directly comparable count — compiled,
-non-trivial C++/Fortran/CUDA packages — is much closer. That said, outside the CERN
-experiment portfolio, recipe coverage is sparse. Growing the shared recipe base is a
-prerequisite for broader adoption.
-
-**Binary stores exist but need wider adoption.** bits supports two complementary
-binary distribution modes: a local CI store (build once, reuse on subsequent jobs) and
-a shared community store (S3-compatible, pre-built tarballs downloadable by any user
-on a supported architecture). The technical foundation is complete. The gap is
-coverage — which architectures and stacks are pre-built — and discoverability. An end
-user who discovers bits and tries `bits build ROOT` on an unsupported architecture
-faces a full compilation that takes hours. This perception problem is addressable
-without new features.
-
 **Build isolation is opt-in, not the default.** The recipe sandbox (`--sandbox=auto`)
 uses rootless podman on Linux and `sandbox-exec` on macOS, but falls back silently to
 no isolation when podman is not installed. In contrast, Nix achieves true hermetic
@@ -123,62 +102,18 @@ from a single root derivation. For most HEP use cases — reproducible physics a
 on a shared CVMFS installation — bits' model is sufficient. For bit-for-bit
 reproducible builds independent of the host OS, Nix/Guix remain stronger.
 
-**`prefer_system` detection is artisanal.** Using a cluster's vendor-optimised MPI,
-BLAS, or CUDA requires a per-recipe detection script written by the recipe author.
-There is no standard library of detection snippets and no automated fallback policy
-when detection fails. EasyBuild has similar weaknesses; Spack's external packages
-mechanism is more systematic.
-
-**Cross-compilation is available but limited.** QEMU user-mode emulation via
-`--docker --architecture` allows cross-architecture builds on any x86-64 runner, but
-runs at 20–50 % of native speed. Full experiment stacks (ROOT, Geant4) require a
-native runner of the target architecture; QEMU is appropriate for personal overlays
-and validation builds only.
-
 #### Conclusion
 
 bits is the right tool for anyone deploying large C++/Fortran/CUDA scientific software
 stacks to CVMFS via GitLab CI, especially when interactive development with local
-package checkouts is part of the workflow. Within that scope it is mature, cohesive,
-and not well-matched by any alternative in the comparison set.
+package checkouts is part of the workflow. 
 
-Outside that scope — pure HPC without CVMFS, general open-source software distribution,
-or environments where end users install from binary packages without a build step —
-bits does not compete with Spack (larger ecosystem, better constraint resolution),
-Conda (binary-first, data science ecosystem), or Nix/Guix (hermetic reproducibility).
-The most meaningful comparison is with **EasyBuild**: similar audience, similar
-recipe-file model, similar absence of a constraint solver. bits has better CVMFS and
-GitLab tooling; EasyBuild has broader HPC cluster adoption and a larger community
-outside CERN.
-
-The primary growth lever is not adding features to match other systems but making the
-features that already work — binary stores, sandbox, developer workflow — visible,
-documented, and on by default.
-
-
----
 
 ## Roadmap
 
 The roadmap is organised into three horizons. Items within each horizon are ordered
 by priority (highest first). The primary target audience is CERN experiments and their
 O(10⁴) users, plus any project deploying software via CVMFS.
-
-### Recently completed
-
-- **N2 — Sandbox as recommended CI default.** bits-console now sets `--sandbox=podman`
-  for all registered build runners. Community `ui-config.yaml` files expose
-  `sandbox_mode` and `sandbox_required` fields. `bits doctor --runner` reports podman
-  availability and version.
-- **N3 — Cross-compilation via QEMU + Docker.** `--docker-platform` flag added;
-  platform derived automatically from `--architecture` when target differs from host.
-  QEMU binfmt setup documented in `INSTALL.txt §5`.
-- **N4 — `bits doctor` hardening.** `--runner` mode, `--json` output, `--cvmfs-repos`
-  and `--min-disk` flags, configurable `prerequisites_url`, and 37 new tests.
-- **M5 — `bits verify` deployment verification.** Checks live CVMFS mounts and local
-  workDirs against a build manifest; PASS/FAIL/MISS/SKIP exit codes; JSON output for
-  bits-console health panel.
-
 ---
 
 ### Near term — within 6 months
@@ -287,21 +222,7 @@ on a trusted runner. Introduce optional SLSA-level 2 provenance attestation:
 This is particularly important for software deployed to CVMFS and used in physics
 analyses: a supply-chain attack on the build infrastructure must be detectable.
 
-#### M4. Community onboarding wizard
-
-Reduce time-to-first-build for a new community. `bits init` already writes `bits.rc`;
-extend it into a guided setup flow that covers what `bits init` currently cannot:
-generating a `ui-config.yaml` template, registering the first GitLab runner against
-a bits-console instance, and performing a smoke-build to validate the end-to-end setup:
-
-```
-bits setup-community
-```
-
-Output is a filled-in `ui-config.yaml` and a setup log equivalent to `INSTALL.txt`.
-The goal is under two hours from zero to a working CI build for a new community.
-
-#### M5. Personal analysis overlay via S3 tarball cache
+#### M4. Personal analysis overlay via S3 tarball cache
 
 For individual analysts building a small number of packages on top of a shared
 experiment stack, the full CVMFS publication pipeline is too heavyweight: ingestion
@@ -330,7 +251,7 @@ unpacks them, then exits with a clear diagnostic if the manifest architecture do
 match the executing node. The tarball store already uses a content-addressed layout;
 adding an S3 driver is a contained change.
 
-#### M6. ABI constraint exports (`abi_exports`)
+#### M5. ABI constraint exports (`abi_exports`)
 
 When a package is built against a library with a non-stable ABI (OpenSSL, Python C
 API, MPI wire protocol, ROOT dictionary), any downstream package built against an
@@ -374,18 +295,7 @@ canonical resolution order for federated package lookups. The repository provide
 feature is a foundation: a community's `defaults` file can already reference another
 community's recipe repository.
 
-#### L2. Incremental and distributed builds
-
-Today, each package is an atomic unit: fully cached or fully rebuilt from source. For
-packages with very long build times (LLVM, Geant4), caching individual build *steps*
-(configure, compile, link) rather than the full package would dramatically reduce
-iteration time in development. This is architecturally complex because it requires
-tracking intermediate artefacts and invalidating them selectively on recipe changes.
-A pragmatic first step is **distributed compilation** via `distcc` or `icecc`: the
-existing `--docker` + `--makeflow` infrastructure already parallelises across packages;
-adding compiler distribution within a package addresses the complementary bottleneck.
-
-#### L3. Web-based recipe editor and validation
+#### L2. Web-based recipe editor and validation
 
 Lower the barrier to contributing new recipes by providing a browser-based editor
 integrated into bits-console that:
@@ -399,29 +309,6 @@ integrated into bits-console that:
 This brings the recipe authoring experience closer to what Spack's `spack create`
 and Conda-forge's staged-recipes automation provide, without requiring a local bits
 installation.
-
----
-
-## Summary table
-
-| ID | Item | Horizon | Impact | Effort |
-|----|------|---------|--------|--------|
-| ~~N2~~ | ~~Sandbox as recommended CI default~~ | ✅ done | High | Low |
-| ~~N3~~ | ~~QEMU cross-compilation~~ | ✅ done | Medium | Low |
-| ~~N4~~ | ~~`bits doctor --runner`~~ | ✅ done | Medium | Low |
-| ~~M5~~ | ~~`bits verify` deployment verification~~ | ✅ done | High | Low |
-| N1 | Binary store coverage expansion | Near | High | Medium |
-| N2 | Developer workflow documentation + `bits init` improvements | Near | High | Low |
-| M1 | Version ranges + defaults profile constraints | Medium | High | Medium |
-| M2 | `prefer_system` standard library | Medium | Medium | Medium |
-| M3 | Reproducible build attestation (SLSA L2) | Medium | High | High |
-| M4 | Community onboarding wizard | Medium | High | Medium |
-| M5 | Personal analysis overlay via S3 (`bits push/fetch`) | Medium | High | Medium |
-| M6 | ABI constraint exports (`abi_exports`) | Medium | High | Medium |
-| L1 | Federated multi-community store | Long | High | Very high |
-| L2 | Incremental / distributed builds | Long | Medium | Very high |
-| L3 | Web-based recipe editor | Long | Medium | High |
-
 ---
 
 ## What bits is not trying to become
@@ -437,6 +324,4 @@ To keep focus, it is worth being explicit about scope boundaries:
   recipe that installs a coherent set of analysis packages via pip).
 - **Not a build *tool*.** bits orchestrates *when* and *in what order* CMake, Meson,
   autotools, or other build systems run. It does not replace them.
-- **Not a job scheduler.** On HPC clusters, bits builds run as GitLab CI jobs or
-  interactively. Batch submission to SLURM/PBS is out of scope; the
-  `--makeflow` integration covers intra-build parallelism.
+

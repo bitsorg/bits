@@ -186,31 +186,56 @@ def effective_arch(spec: dict, build_arch: str) -> str:
 def compute_combined_arch(defaults_meta: dict, defaults_list: list, raw_arch: str) -> str:
   """Return the effective architecture string for install paths.
 
-  When any loaded defaults file sets ``qualify_arch: true``, the install
-  directory is qualified with the defaults combination joined by ``-``::
+  **Per-default ``append_arch`` (new mechanism)**
+
+  When one or more loaded defaults files set ``append_arch: <value>``, only
+  those explicit values are appended to *raw_arch*, regardless of the
+  ``qualify_arch`` flag::
+
+      # defaults-gcc13.sh has append_arch: gcc13
+      # defaults-release.sh has no append_arch
+      # result for --default release::gcc13:
+      compute_combined_arch({"_append_arch_qualifiers": ["gcc13"]},
+                            ["release", "gcc13"], "slc7_x86-64")
+      # → "slc7_x86-64-gcc13"
+
+  This lets recipe authors opt individual defaults files into architecture
+  qualification while keeping the others transparent.  The values from
+  ``append_arch`` are used verbatim and appended in the same order as the
+  defaults chain (``--default a::b::c``).
+
+  **Legacy ``qualify_arch`` (backward-compatible fallback)**
+
+  When no defaults file uses ``append_arch``, the old behaviour applies: if
+  any loaded defaults file sets ``qualify_arch: true``, the install directory
+  is qualified with every non-``release`` default name joined by ``-``::
 
       <raw_arch>-<d1>-<d2>-...
 
-  The ``release`` component is omitted from the suffix because it is the
-  baseline and would add noise (``slc7_x86-64-release`` is less useful than
-  ``slc7_x86-64``).  If, after filtering, no qualifiers remain, *raw_arch*
-  is returned as-is.
-
-  When ``qualify_arch`` is absent or false in the merged defaults metadata the
-  function returns *raw_arch* unchanged, preserving full backward
-  compatibility.
+  When ``qualify_arch`` is absent or false and no ``append_arch`` values were
+  collected, *raw_arch* is returned unchanged.
 
   Examples::
 
       compute_combined_arch({}, ["release"], "slc7_x86-64")
-      # → "slc7_x86-64"  (no qualify_arch flag)
+      # → "slc7_x86-64"  (neither mechanism active)
 
       compute_combined_arch({"qualify_arch": True}, ["dev", "gcc13"], "slc7_x86-64")
-      # → "slc7_x86-64-dev-gcc13"
+      # → "slc7_x86-64-dev-gcc13"  (legacy qualify_arch)
 
       compute_combined_arch({"qualify_arch": True}, ["release"], "slc7_x86-64")
-      # → "slc7_x86-64"  (release-only, no suffix)
+      # → "slc7_x86-64"  (legacy, release-only → no suffix)
+
+      compute_combined_arch({"_append_arch_qualifiers": ["gcc13"]},
+                            ["release", "gcc13"], "slc7_x86-64")
+      # → "slc7_x86-64-gcc13"  (per-default append_arch)
   """
+  # --- New mechanism: per-default append_arch values -------------------------
+  per_default = defaults_meta.get("_append_arch_qualifiers")
+  if per_default:
+    return raw_arch + "-" + "-".join(per_default)
+
+  # --- Legacy mechanism: global qualify_arch flag ----------------------------
   if not defaults_meta.get("qualify_arch", False):
     return raw_arch
   qualifiers = [d for d in defaults_list if d != "release"]
@@ -586,6 +611,7 @@ def resolve_pkg_family(defaults_meta: dict, package_name: str) -> str:
 def readDefaults(configDir, defaults, error, architecture):
   defaultsMeta = {}
   defaultsBody = ""
+  append_arch_qualifiers = []  # per-default append_arch values, in chain order
 
   for xdefaults in defaults:
     xDefaults = resolveDefaultsFilename(xdefaults, configDir, failOnError=False)
@@ -597,7 +623,17 @@ def readDefaults(configDir, defaults, error, architecture):
       if err:
         error(err)
         sys.exit(1)
+      # Collect append_arch value before merging (merge_dicts would flatten it
+      # into a single scalar and we need the ordered per-default list).
+      if "append_arch" in xMeta:
+        append_arch_qualifiers.append(xMeta["append_arch"])
       defaultsMeta = merge_dicts(defaultsMeta, xMeta)
+
+  # Store the collected per-default qualifiers so compute_combined_arch can
+  # use them instead of appending every default name to the architecture.
+  if append_arch_qualifiers:
+    defaultsMeta["_append_arch_qualifiers"] = append_arch_qualifiers
+
   debug("Merged Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
 
   return (defaultsMeta, defaultsBody)

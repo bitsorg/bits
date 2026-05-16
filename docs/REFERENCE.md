@@ -489,7 +489,7 @@ tox -e darwin  # reduced matrix for macOS
 | `test_git.py` | Git SCM wrapper |
 | `test_pkg_to_shell_id.py` | `pkg_to_shell_id` sanitisation (dots, dashes, `@`, `+`); `generate_initdotsh` export correctness for dot-in-package-name |
 | `test_provider_staleness.py` | Mirror always refreshed when cache exists; upstream tag advances detected; `fetch_repos=False` respected on first run |
-| `test_qualify_arch.py` | `compute_combined_arch`, `qualify_arch` end-to-end through `effective_arch`, install path, and `init.sh` generation |
+| `test_qualify_arch.py` | `compute_combined_arch`: legacy `qualify_arch` and new per-default `append_arch`; end-to-end through `effective_arch`, install path, and `init.sh` generation |
 | `test_repo_provider.py` | Repository provider: `getConfigPaths` absolute paths, `_add_to_bits_path`, `clone_or_update_provider` caching, iterative discovery, nested providers, hash propagation |
 | `test_sync.py` | Remote store backends (requires `botocore` for S3 tests) |
 
@@ -1414,7 +1414,8 @@ package_family:
 | `overrides` | Dict keyed by package name or regex. Each value is a YAML fragment merged into that package's spec after it is parsed. Keys are matched case-insensitively as `re.fullmatch` patterns, so regex metacharacters work. |
 | `valid_defaults` | Restricts which profiles this recipe is compatible with. Each component of the `::` list is checked independently; bits aborts if any component is absent from the list. |
 | `package_family` | Optional install grouping; see [Package families](#package-families) below. |
-| `qualify_arch` | Set to `true` to append the defaults combination to the install architecture string; see [Qualifying the install architecture](#qualifying-the-install-architecture) below. |
+| `qualify_arch` | Set to `true` to append **all** non-`release` default names to the install architecture string; see [Qualifying the install architecture](#qualifying-the-install-architecture) below. |
+| `append_arch` | String value appended to the install architecture string **only for this defaults file**. Unlike `qualify_arch`, which qualifies with every default name in the chain, `append_arch` lets each file opt in independently and choose the exact string to append; see [Selective qualification with append_arch](#selective-qualification-with-append_arch) below. |
 | `checksum_mode` | Base checksum verification policy for every build using this profile. Accepted values: `off` (default), `warn`, `enforce`, `print`. Equivalent to passing the corresponding `--*-checksums` flag on every invocation. CLI flags override this setting; see [Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles) below. |
 | `write_checksums` | Set to `true` to automatically write/update `checksums/<pkg>.checksum` files after every build. Equivalent to passing `--write-checksums` on every invocation. The CLI flag overrides this setting. |
 
@@ -1559,7 +1560,26 @@ An existing recipe repository with no `package_family` key will produce bit-for-
 
 By default all packages built with any set of defaults land under the same architecture directory (e.g. `sw/slc7_x86-64/`). If you maintain two profiles that are **incompatible with each other** — for example `gcc12` and `gcc13` — builds from one profile will silently overwrite the install tree of the other.
 
-Setting `qualify_arch: true` in a defaults file instructs bits to **append the defaults combination to the architecture string**, producing a unique install prefix per combination. For example:
+Bits provides two complementary mechanisms to add a qualifying suffix to the architecture string. Both produce a combined string of the form `<raw_arch>-<suffix>`, which is then used for the install tree, tarballs, and `init.sh` generation.
+
+#### How the combined architecture is used
+
+Whichever mechanism is active, the derived string is used consistently for:
+
+- **Install tree** — `sw/<combined_arch>/<package>/<version>-<revision>/`
+- **`BITS_ARCH_PREFIX` default** in every `init.sh` — so the environment resolves to the right prefix at runtime
+- **`$EFFECTIVE_ARCHITECTURE`** passed to the build script
+- **`TARS/<combined_arch>/`** symlink directories and store paths — ensuring tarballs from different defaults combinations do not collide
+
+The original platform architecture (`slc7_x86-64`) is still passed to the build script as **`$ARCHITECTURE`** (used for platform detection such as the macOS `${ARCHITECTURE:0:3}` check) and to system-package preference matching, so build scripts need no changes.
+
+Packages that declare `architecture: shared` (see [§20](#20-architecture-independent-shared-packages)) are **unaffected** by either mechanism: their effective architecture is always `shared` regardless of which defaults are active.
+
+---
+
+#### Global qualification with `qualify_arch`
+
+Setting `qualify_arch: true` in **any** defaults file instructs bits to append **every non-`release` default name** in the chain to the architecture string. For example:
 
 ```
 bits build --defaults dev::gcc13 MyPackage
@@ -1573,43 +1593,79 @@ sw/slc7_x86-64-dev-gcc13/
 
 instead of the plain `sw/slc7_x86-64/`. The `release` component is never appended (it is the implicit baseline); all other components are joined with `-` in the order they appear on the command line.
 
-#### How it works
-
-After merging all defaults files, bits calls `compute_combined_arch()` to derive the effective install prefix:
-
-```python
-compute_combined_arch(defaultsMeta, args.defaults, raw_arch)
-# e.g. ("slc7_x86-64", ["dev", "gcc13"]) → "slc7_x86-64-dev-gcc13"
-```
-
-This combined string is used for:
-
-- **Install tree** — `sw/<combined_arch>/<package>/<version>-<revision>/`
-- **`BITS_ARCH_PREFIX` default** in every `init.sh` — so the environment resolves to the right prefix at runtime
-- **`$EFFECTIVE_ARCHITECTURE`** passed to the build script
-- **`TARS/<combined_arch>/`** symlink directories and store paths — tarballs are keyed on the combined arch, ensuring they do not collide with tarballs from builds using a different defaults combination
-
-The original platform architecture (`slc7_x86-64`) is still passed to the build script as **`$ARCHITECTURE`** (used for platform detection such as the macOS `${ARCHITECTURE:0:3}` check) and to system-package preference matching, so build scripts need no changes.
-
-Packages that declare `architecture: shared` (see [§20](#20-architecture-independent-shared-packages)) are **unaffected** by `qualify_arch`: their effective architecture is always `shared` regardless of which defaults are active.
-
-#### Example defaults file
-
 ```yaml
+# defaults-gcc13.sh
 package: defaults-gcc13
 version: v1
-qualify_arch: true            # ← enables per-defaults isolation
+qualify_arch: true            # ← all non-release defaults are appended
 env:
   CC: gcc-13
   CXX: g++-13
 ```
+
+The trade-off is that **every** default in the chain contributes to the suffix. With a long chain like `--defaults release::base::gcc13::cuda`, the install tree becomes `slc7_x86-64-base-gcc13-cuda` — which may include components (like `base`) that do not actually affect binary compatibility.
+
+---
+
+#### Selective qualification with `append_arch`
+
+`append_arch` is a per-file alternative that gives each defaults file independent control over its contribution to the architecture suffix. Only files that declare `append_arch` add anything to the suffix; the rest are transparent.
+
+```yaml
+# defaults-gcc13.sh
+package: defaults-gcc13
+version: v1
+append_arch: gcc13            # ← only this file contributes "gcc13"
+env:
+  CC: gcc-13
+  CXX: g++-13
+```
+
+```yaml
+# defaults-release.sh
+package: defaults-release
+version: v1
+                              # ← no append_arch → contributes nothing
+```
+
+With `--defaults release::gcc13`, the effective architecture is:
+
+```
+sw/slc7_x86-64-gcc13/
+```
+
+`release` adds nothing because it has no `append_arch`. If `defaults-cuda.sh` also declares `append_arch: cuda`, then `--defaults release::gcc13::cuda` produces `slc7_x86-64-gcc13-cuda` — only the two files that opted in contribute, in chain order.
+
+The value of `append_arch` is used **verbatim** and need not match the filename. This lets you decouple the defaults filename from the suffix token:
+
+```yaml
+# defaults-gcc13-lto.sh
+package: defaults-gcc13-lto
+version: v1
+append_arch: gcc13-lto        # ← custom suffix, not derived from the filename
+```
+
+**Precedence:** when any defaults file in the chain uses `append_arch`, the `append_arch` mechanism takes full control — `qualify_arch` is ignored. This keeps the behaviour predictable when both fields appear in a mixed chain.
+
+---
+
+#### Comparison
+
+| | `qualify_arch` | `append_arch` |
+|---|---|---|
+| Granularity | Global — one file enables it for the whole chain | Per-file — each file opts in independently |
+| Suffix content | Every non-`release` default name | Only the explicit `append_arch` values |
+| Suffix token | Default filename | Arbitrary string set by the author |
+| Precedence | Fallback (used when no `append_arch` present) | Takes precedence when any file uses it |
+
+---
 
 #### Cleaning up
 
 The `bits clean` command accepts an explicit `-a`/`--architecture` flag. To clean a qualified-arch tree, pass the combined string:
 
 ```
-bits clean -a slc7_x86-64-dev-gcc13
+bits clean -a slc7_x86-64-gcc13
 ```
 
 

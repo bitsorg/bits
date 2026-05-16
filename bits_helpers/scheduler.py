@@ -141,7 +141,7 @@ class Scheduler:
     if taskType in ["build", "download", "fetch"]:
       try:
           self.jobs[taskId]["priority"] = 100000 - spec[1].requiredBy
-      except AttributeError:
+      except (AttributeError, IndexError):
           self.jobs[taskId]["priority"] = 1
     self.pendingJobs.append(taskId)
     self.finalJobDeps.append(taskId)

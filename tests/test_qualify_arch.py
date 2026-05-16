@@ -1,7 +1,9 @@
-"""Tests for the qualify_arch defaults-file field.
+"""Tests for the qualify_arch / append_arch defaults-file fields.
 
 Covers:
  - compute_combined_arch() helper: all branching paths
+   - Legacy qualify_arch behaviour (backward-compatible)
+   - New per-default append_arch behaviour
  - Integration with effective_arch(): shared packages are unaffected
  - _pkg_install_path() with a combined architecture string
  - generate_initdotsh() BITS_ARCH_PREFIX default uses combined arch
@@ -139,6 +141,117 @@ class TestComputeCombinedArch(unittest.TestCase):
         meta = {"qualify_arch": True}
         compute_combined_arch(meta, ["dev"], RAW_ARCH)
         self.assertEqual(meta, {"qualify_arch": True})
+
+
+# ---------------------------------------------------------------------------
+# Tests for the per-default append_arch mechanism
+# ---------------------------------------------------------------------------
+
+class TestAppendArch(unittest.TestCase):
+    """Per-default append_arch: only explicit values are added to the arch."""
+
+    # -- single default with append_arch --------------------------------------
+
+    def test_single_append_arch_uses_value_not_name(self):
+        """append_arch value is appended, not the default name."""
+        meta = {"_append_arch_qualifiers": ["gcc13"]}
+        self.assertEqual(
+            compute_combined_arch(meta, ["gcc13-defaults"], RAW_ARCH),
+            "slc7_x86-64-gcc13",
+        )
+
+    def test_append_arch_value_differs_from_default_name(self):
+        """The value in append_arch is used verbatim, even if different from
+        the default filename."""
+        meta = {"_append_arch_qualifiers": ["opt-lto"]}
+        self.assertEqual(
+            compute_combined_arch(meta, ["optimised"], RAW_ARCH),
+            "slc7_x86-64-opt-lto",
+        )
+
+    # -- chained defaults, selective opt-in -----------------------------------
+
+    def test_only_defaults_with_append_arch_contribute(self):
+        """Defaults without append_arch are transparent to the arch suffix."""
+        # defaults chain: release::gcc13::cuda
+        # only gcc13 and cuda have append_arch; release does not
+        meta = {"_append_arch_qualifiers": ["gcc13", "cuda"]}
+        self.assertEqual(
+            compute_combined_arch(meta, ["release", "gcc13", "cuda"], RAW_ARCH),
+            "slc7_x86-64-gcc13-cuda",
+        )
+
+    def test_single_opt_in_among_many(self):
+        """Only one default in a long chain opts in."""
+        meta = {"_append_arch_qualifiers": ["mpi"]}
+        self.assertEqual(
+            compute_combined_arch(meta, ["release", "gcc13", "mpi"], RAW_ARCH),
+            "slc7_x86-64-mpi",
+        )
+
+    def test_order_follows_chain_order(self):
+        """Qualifiers appear in the same order as the defaults chain."""
+        meta = {"_append_arch_qualifiers": ["aaa", "bbb", "ccc"]}
+        result = compute_combined_arch(meta, ["a", "b", "c"], RAW_ARCH)
+        self.assertEqual(result, "slc7_x86-64-aaa-bbb-ccc")
+
+    # -- no opt-in → raw arch -------------------------------------------------
+
+    def test_empty_qualifiers_list_returns_raw(self):
+        """_append_arch_qualifiers present but empty → raw arch (falsy guard)."""
+        meta = {"_append_arch_qualifiers": []}
+        self.assertEqual(
+            compute_combined_arch(meta, ["dev"], RAW_ARCH),
+            RAW_ARCH,
+        )
+
+    def test_absent_qualifiers_falls_through_to_qualify_arch(self):
+        """Without _append_arch_qualifiers the legacy qualify_arch path is used."""
+        meta = {"qualify_arch": True}
+        self.assertEqual(
+            compute_combined_arch(meta, ["dev", "gcc13"], RAW_ARCH),
+            "slc7_x86-64-dev-gcc13",
+        )
+
+    # -- append_arch takes precedence over qualify_arch -----------------------
+
+    def test_append_arch_takes_precedence_over_qualify_arch(self):
+        """When both are present append_arch values are used, not default names."""
+        meta = {
+            "qualify_arch": True,
+            "_append_arch_qualifiers": ["mpi"],
+        }
+        # qualify_arch would produce "slc7_x86-64-dev-mpi-defaults"
+        # append_arch should produce "slc7_x86-64-mpi" (value only)
+        result = compute_combined_arch(meta, ["dev", "mpi-defaults"], RAW_ARCH)
+        self.assertEqual(result, "slc7_x86-64-mpi")
+
+    # -- idempotency / no mutation --------------------------------------------
+
+    def test_does_not_mutate_meta(self):
+        meta = {"_append_arch_qualifiers": ["gcc13"]}
+        compute_combined_arch(meta, ["gcc13"], RAW_ARCH)
+        self.assertEqual(meta, {"_append_arch_qualifiers": ["gcc13"]})
+
+    def test_does_not_mutate_qualifiers_list(self):
+        qualifiers = ["gcc13", "cuda"]
+        meta = {"_append_arch_qualifiers": qualifiers}
+        compute_combined_arch(meta, ["gcc13", "cuda"], RAW_ARCH)
+        self.assertEqual(qualifiers, ["gcc13", "cuda"])
+
+    # -- interaction with effective_arch() ------------------------------------
+
+    def test_regular_pkg_uses_append_arch_combined(self):
+        meta = {"_append_arch_qualifiers": ["gcc13"]}
+        combined = compute_combined_arch(meta, ["gcc13"], RAW_ARCH)
+        spec = _spec("MyPkg")
+        self.assertEqual(effective_arch(spec, combined), "slc7_x86-64-gcc13")
+
+    def test_shared_pkg_ignores_append_arch_combined(self):
+        meta = {"_append_arch_qualifiers": ["gcc13"]}
+        combined = compute_combined_arch(meta, ["gcc13"], RAW_ARCH)
+        spec = _spec("SharedPkg", architecture=SHARED_ARCH)
+        self.assertEqual(effective_arch(spec, combined), SHARED_ARCH)
 
 
 # ---------------------------------------------------------------------------
