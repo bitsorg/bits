@@ -10,6 +10,7 @@ Covers:
 
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -447,6 +448,7 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
             "patch_checksums": {},
         }
 
+    @patch("bits_helpers.workarea._extract_source_archives", new=MagicMock())
     @patch("bits_helpers.workarea.symlink", new=MagicMock())
     @patch("bits_helpers.workarea.download")
     @patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0")
@@ -460,6 +462,7 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
                          parallel_sources=1)
         self.assertEqual(mock_download.call_count, len(self.SOURCES))
 
+    @patch("bits_helpers.workarea._extract_source_archives", new=MagicMock())
     @patch("bits_helpers.workarea.symlink", new=MagicMock())
     @patch("bits_helpers.workarea.download")
     @patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0")
@@ -473,6 +476,7 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
                          parallel_sources=4)
         self.assertEqual(mock_download.call_count, len(self.SOURCES))
 
+    @patch("bits_helpers.workarea._extract_source_archives", new=MagicMock())
     @patch("bits_helpers.workarea.symlink", new=MagicMock())
     @patch("bits_helpers.workarea.download")
     @patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0")
@@ -492,6 +496,7 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
             checkout_sources(spec, "/sw", "/sw/MIRROR", containerised_build=False,
                              parallel_sources=3)
 
+    @patch("bits_helpers.workarea._extract_source_archives", new=MagicMock())
     @patch("bits_helpers.workarea.symlink", new=MagicMock())
     @patch("bits_helpers.workarea.download")
     @patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0")
@@ -520,6 +525,7 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
         self.assertLess(elapsed, 0.40,
                         "Parallel downloads should not take longer than serial")
 
+    @patch("bits_helpers.workarea._extract_source_archives", new=MagicMock())
     @patch("bits_helpers.workarea.symlink", new=MagicMock())
     @patch("bits_helpers.workarea.download")
     @patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0")
@@ -532,6 +538,145 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
         checkout_sources(spec, "/sw", "/sw/MIRROR", containerised_build=False,
                          parallel_sources=4)
         mock_download.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 6. _extract_source_archives()
+# ---------------------------------------------------------------------------
+
+class ExtractSourceArchivesTest(unittest.TestCase):
+    """_extract_source_archives() unpacks archives found in source_dir."""
+
+    def setUp(self):
+        self.source_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.source_dir, ignore_errors=True)
+
+    # -- sentinel prevents re-extraction --------------------------------------
+
+    def test_sentinel_skips_extraction(self):
+        """If .bits_extracted exists, no subprocess call is made."""
+        from bits_helpers.workarea import _extract_source_archives
+        sentinel = os.path.join(self.source_dir, ".bits_extracted")
+        open(sentinel, "w").close()
+        # Place a fake tarball so we can verify it is not touched.
+        fake = os.path.join(self.source_dir, "pkg-1.0.tar.gz")
+        open(fake, "w").close()
+        with patch("bits_helpers.workarea.subprocess") as mock_sp:
+            _extract_source_archives(self.source_dir)
+            mock_sp.check_call.assert_not_called()
+
+    # -- tar archives ---------------------------------------------------------
+
+    def _make_tar(self, filename, strip_dir="pkg-1.0"):
+        """Create a small but valid tar archive with one file inside strip_dir/."""
+        import tarfile, io
+        archive_path = os.path.join(self.source_dir, filename)
+        with tarfile.open(archive_path, "w:gz") as tf:
+            content = b"hello\n"
+            info = tarfile.TarInfo(name=strip_dir + "/hello.txt")
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+        return archive_path
+
+    def test_tar_gz_extracted_with_strip(self):
+        """A .tar.gz archive is extracted and hello.txt lands in source_dir."""
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_tar("pkg-1.0.tar.gz")
+        _extract_source_archives(self.source_dir)
+        self.assertTrue(os.path.exists(os.path.join(self.source_dir, "hello.txt")))
+
+    def test_tgz_extracted(self):
+        """A .tgz archive (alias for .tar.gz) is also extracted."""
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_tar("pkg-1.0.tgz")
+        _extract_source_archives(self.source_dir)
+        self.assertTrue(os.path.exists(os.path.join(self.source_dir, "hello.txt")))
+
+    def test_tar_bz2_extracted(self):
+        """A .tar.bz2 archive is extracted."""
+        import tarfile, io
+        from bits_helpers.workarea import _extract_source_archives
+        archive_path = os.path.join(self.source_dir, "pkg-1.0.tar.bz2")
+        with tarfile.open(archive_path, "w:bz2") as tf:
+            content = b"hello\n"
+            info = tarfile.TarInfo(name="pkg-1.0/hello.txt")
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+        _extract_source_archives(self.source_dir)
+        self.assertTrue(os.path.exists(os.path.join(self.source_dir, "hello.txt")))
+
+    def test_sentinel_written_after_extraction(self):
+        """After extraction, .bits_extracted is created."""
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_tar("pkg-1.0.tar.gz")
+        _extract_source_archives(self.source_dir)
+        self.assertTrue(
+            os.path.exists(os.path.join(self.source_dir, ".bits_extracted"))
+        )
+
+    def test_no_archives_no_sentinel(self):
+        """If there are no archives, no sentinel is written."""
+        from bits_helpers.workarea import _extract_source_archives
+        open(os.path.join(self.source_dir, "README"), "w").close()
+        _extract_source_archives(self.source_dir)
+        self.assertFalse(
+            os.path.exists(os.path.join(self.source_dir, ".bits_extracted"))
+        )
+
+    def test_idempotent_second_call_skipped(self):
+        """A second call is a no-op when the sentinel already exists."""
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_tar("pkg-1.0.tar.gz")
+        _extract_source_archives(self.source_dir)
+        # Remove extracted file and call again — should not re-extract.
+        os.unlink(os.path.join(self.source_dir, "hello.txt"))
+        _extract_source_archives(self.source_dir)
+        self.assertFalse(
+            os.path.exists(os.path.join(self.source_dir, "hello.txt"))
+        )
+
+    # -- zip archives ---------------------------------------------------------
+
+    def _make_zip(self, filename, strip_dir="pkg-1.0"):
+        """Create a small but valid zip archive with one file inside strip_dir/."""
+        import zipfile
+        archive_path = os.path.join(self.source_dir, filename)
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            zf.writestr(strip_dir + "/", "")          # directory entry
+            zf.writestr(strip_dir + "/hello.txt", "hello\n")
+        return archive_path
+
+    def test_zip_extracted_with_strip(self):
+        """A .zip archive is extracted and hello.txt lands in source_dir."""
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_zip("pkg-1.0.zip")
+        _extract_source_archives(self.source_dir)
+        self.assertTrue(os.path.exists(os.path.join(self.source_dir, "hello.txt")))
+
+    # -- checkout_sources integration -----------------------------------------
+
+    def test_checkout_sources_calls_extract(self):
+        """checkout_sources() calls _extract_source_archives after downloading."""
+        from bits_helpers.workarea import checkout_sources
+        spec = {
+            "package": "mypkg",
+            "version": "1.0",
+            "commit_hash": "v1.0",
+            "tag": "v1.0",
+            "is_devel_pkg": False,
+            "sources": ["https://example.com/pkg-1.0.tar.gz"],
+            "scm": MagicMock(),
+            "source_checksums": {},
+            "patch_checksums": {},
+        }
+        with patch("bits_helpers.workarea.download"), \
+             patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0"), \
+             patch("os.makedirs"), \
+             patch("bits_helpers.workarea._extract_source_archives") as mock_extract:
+            checkout_sources(spec, "/sw", "/sw/MIRROR", containerised_build=False)
+            mock_extract.assert_called_once()
 
 
 if __name__ == "__main__":

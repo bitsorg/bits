@@ -3,7 +3,9 @@ import errno
 import os
 import os.path
 import shutil
+import subprocess
 import tempfile
+import zipfile
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -176,6 +178,67 @@ def _verify_commit_pin(scm, spec, source_dir: str, enforce_mode: str) -> None:
     warning("%s", msg)
 
 
+_TAR_EXTENSIONS = (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar.zst")
+_ZIP_EXTENSIONS = (".zip",)
+
+
+def _extract_zip_strip(archive_path, dest_dir):
+  """Extract a zip archive into dest_dir, stripping the first path component.
+
+  This mirrors the behaviour of ``tar --strip-components=1``: every member
+  whose path starts with a top-level directory has that directory removed
+  before extraction, so the archive contents land directly in dest_dir.
+  Members that sit at the archive root (no ``/`` in their name) are skipped,
+  since they are the top-level directory entries themselves.
+  """
+  with zipfile.ZipFile(archive_path) as zf:
+    for member in zf.infolist():
+      parts = member.filename.split("/", 1)
+      if len(parts) < 2 or not parts[1]:
+        continue
+      member.filename = parts[1]
+      zf.extract(member, dest_dir)
+
+
+def _extract_source_archives(source_dir):
+  """Extract any source archives found directly inside source_dir.
+
+  After ``download()`` places a release tarball (e.g. ``gsl-2.8.tar.gz``) in
+  ``source_dir``, the build recipe expects an *unpacked* source tree there —
+  not a bare archive file.  This function scans source_dir for known archive
+  types and extracts each one, stripping the top-level directory that release
+  tarballs almost universally contain (``--strip-components=1`` for tar,
+  equivalent logic for zip).
+
+  A ``.bits_extracted`` sentinel file is written after a successful run so
+  that repeated invocations (e.g. a resumed build) skip re-extraction and do
+  not clobber a partially-built tree.
+  """
+  sentinel = os.path.join(source_dir, ".bits_extracted")
+  if os.path.exists(sentinel):
+    return
+
+  extracted = False
+  for entry in sorted(os.listdir(source_dir)):
+    filepath = os.path.join(source_dir, entry)
+    if not os.path.isfile(filepath):
+      continue
+    lower = entry.lower()
+    if any(lower.endswith(ext) for ext in _TAR_EXTENSIONS):
+      debug("Extracting %s into %s", entry, source_dir)
+      subprocess.check_call(
+        ["tar", "xf", filepath, "--strip-components=1", "-C", source_dir]
+      )
+      extracted = True
+    elif any(lower.endswith(ext) for ext in _ZIP_EXTENSIONS):
+      debug("Extracting %s into %s", entry, source_dir)
+      _extract_zip_strip(filepath, source_dir)
+      extracted = True
+
+  if extracted:
+    open(sentinel, "w").close()
+
+
 def checkout_sources(spec, work_dir, reference_sources, containerised_build,
                      enforce_mode="off", sync_helper=None, parallel_sources=1):
   """Check out sources to be compiled, potentially from a given reference.
@@ -245,6 +308,9 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
             first_exc = exc
         if first_exc is not None:
           raise first_exc
+    # Unpack any downloaded archives so the build script sees an unpacked
+    # source tree at $SOURCEDIR rather than a bare archive file.
+    _extract_source_archives(source_dir)
   elif not spec.get("source"):
     # There are no sources (neither tarball URLs nor a git repo), so just
     # create an empty SOURCEDIR.  Also handles the Makeflow serialisation path
