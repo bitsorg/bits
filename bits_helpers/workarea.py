@@ -223,7 +223,7 @@ def _apply_patches(spec, source_dir):
     patch_name, _ = parse_entry(patch_entry)
     patch_path = os.path.join(source_dir, patch_name)
     debug("Applying patch %s in %s", patch_name, source_dir)
-    subprocess.check_call(["patch", "-p1", "--input", patch_path], cwd=source_dir)
+    subprocess.check_call(["patch", "-p1", "--batch", "--input", patch_path], cwd=source_dir)
 
   open(sentinel, "w").close()
 

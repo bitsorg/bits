@@ -173,11 +173,11 @@ class ApplyPatchesTest(unittest.TestCase):
 
     @patch("subprocess.check_call")
     def test_single_patch_invocation(self, mock_cc):
-        """A single patch must be applied with patch -p1 --input <path> in source_dir."""
+        """A single patch must be applied with patch -p1 --batch --input <path> in source_dir."""
         _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
         expected_patch_path = os.path.join(self.source_dir, "fix-a.patch")
         mock_cc.assert_called_once_with(
-            ["patch", "-p1", "--input", expected_patch_path],
+            ["patch", "-p1", "--batch", "--input", expected_patch_path],
             cwd=self.source_dir,
         )
 
@@ -192,8 +192,8 @@ class ApplyPatchesTest(unittest.TestCase):
         expected_b = os.path.join(self.source_dir, "fix-b.patch")
         self.assertEqual(mock_cc.call_count, 2)
         mock_cc.assert_has_calls([
-            call(["patch", "-p1", "--input", expected_a], cwd=self.source_dir),
-            call(["patch", "-p1", "--input", expected_b], cwd=self.source_dir),
+            call(["patch", "-p1", "--batch", "--input", expected_a], cwd=self.source_dir),
+            call(["patch", "-p1", "--batch", "--input", expected_b], cwd=self.source_dir),
         ])
 
     @patch("subprocess.check_call")
@@ -214,7 +214,7 @@ class ApplyPatchesTest(unittest.TestCase):
         )
         expected_path = os.path.join(self.source_dir, "fix-a.patch")
         mock_cc.assert_called_once_with(
-            ["patch", "-p1", "--input", expected_path],
+            ["patch", "-p1", "--batch", "--input", expected_path],
             cwd=self.source_dir,
         )
 
