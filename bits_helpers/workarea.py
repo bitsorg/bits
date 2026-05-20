@@ -200,6 +200,34 @@ def _extract_zip_strip(archive_path, dest_dir):
       zf.extract(member, dest_dir)
 
 
+def _apply_patches(spec, source_dir):
+  """Apply patches listed in spec['patches'] to source_dir using patch -p1.
+
+  Patch files are already present in source_dir (placed there by
+  checkout_sources before source extraction / git checkout).  This function
+  runs ``patch -p1`` for each one in declaration order.
+
+  A ``.bits_patched`` sentinel file is written after a successful run so that
+  repeated invocations (e.g. a resumed incremental build) skip re-application
+  and do not fail with "already applied" errors.
+  """
+  if not spec.get("patches"):
+    return
+
+  sentinel = os.path.join(source_dir, ".bits_patched")
+  if os.path.exists(sentinel):
+    return
+
+  _patch_checksums = spec.get("patch_checksums") or {}
+  for patch_entry in spec["patches"]:
+    patch_name, _ = parse_entry(patch_entry)
+    patch_path = os.path.join(source_dir, patch_name)
+    debug("Applying patch %s in %s", patch_name, source_dir)
+    subprocess.check_call(["patch", "-p1", "--input", patch_path], cwd=source_dir)
+
+  open(sentinel, "w").close()
+
+
 def _extract_source_archives(source_dir):
   """Extract any source archives found directly inside source_dir.
 
@@ -311,6 +339,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     # Unpack any downloaded archives so the build script sees an unpacked
     # source tree at $SOURCEDIR rather than a bare archive file.
     _extract_source_archives(source_dir)
+    _apply_patches(spec, source_dir)
   elif not spec.get("source"):
     # There are no sources (neither tarball URLs nor a git repo), so just
     # create an empty SOURCEDIR.  Also handles the Makeflow serialisation path
@@ -333,6 +362,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
       scm_exec(scm.fetchCmd(spec["source"], tag_ref), source_dir)
       scm_exec(scm.checkoutCmd(spec["tag"]), source_dir)
     _verify_commit_pin(scm, spec, source_dir, enforce_mode)
+    _apply_patches(spec, source_dir)
   else:
     # Sources are a relative path or URL and don't exist locally yet, so clone
     # and checkout the git repo from there.
@@ -342,3 +372,4 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     scm_exec(scm.setWriteUrlCmd(spec.get("write_repo", spec["source"])), source_dir)
     scm_exec(scm.checkoutCmd(spec["tag"]), source_dir)
     _verify_commit_pin(scm, spec, source_dir, enforce_mode)
+    _apply_patches(spec, source_dir)

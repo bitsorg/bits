@@ -1,9 +1,13 @@
 from os import getcwd
+import os
+import shutil
+import subprocess
+import tempfile
 import unittest
-from unittest.mock import patch, MagicMock  # In Python 3, mock is built-in
+from unittest.mock import call, patch, MagicMock  # In Python 3, mock is built-in
 from collections import OrderedDict
 
-from bits_helpers.workarea import updateReferenceRepoSpec
+from bits_helpers.workarea import updateReferenceRepoSpec, _apply_patches
 from bits_helpers.git import Git
 
 
@@ -118,6 +122,124 @@ class WorkareaTestCase(unittest.TestCase):
             "%s/sw/MIRROR/aliroot" % getcwd(), "--filter=blob:none",
         ], directory=".", check=False, prompt=True)
         self.assertEqual(spec.get("reference"), "%s/sw/MIRROR/aliroot" % getcwd())
+
+
+@patch("bits_helpers.workarea.debug", new=MagicMock())
+class ApplyPatchesTest(unittest.TestCase):
+    """Tests for _apply_patches() — automatic patch application in checkout_sources."""
+
+    def setUp(self):
+        self.source_dir = tempfile.mkdtemp()
+        # Place dummy patch files in the source dir (as bits does via shutil.copyfile)
+        for name in ("fix-a.patch", "fix-b.patch"):
+            open(os.path.join(self.source_dir, name), "w").close()
+
+    def tearDown(self):
+        shutil.rmtree(self.source_dir, ignore_errors=True)
+
+    def _spec(self, patches=None):
+        """Build a minimal spec dict."""
+        s = OrderedDict()
+        if patches is not None:
+            s["patches"] = patches
+        return s
+
+    # ------------------------------------------------------------------
+    # No-op cases
+    # ------------------------------------------------------------------
+
+    @patch("subprocess.check_call")
+    def test_no_patches_key_is_noop(self, mock_cc):
+        """spec without 'patches' key must not invoke patch(1) at all."""
+        _apply_patches(self._spec(), self.source_dir)
+        mock_cc.assert_not_called()
+
+    @patch("subprocess.check_call")
+    def test_empty_patches_list_is_noop(self, mock_cc):
+        """spec with patches:[] must not invoke patch(1) at all."""
+        _apply_patches(self._spec(patches=[]), self.source_dir)
+        mock_cc.assert_not_called()
+
+    @patch("subprocess.check_call")
+    def test_sentinel_skips_reapplication(self, mock_cc):
+        """If .bits_patched already exists, patches must not be reapplied."""
+        open(os.path.join(self.source_dir, ".bits_patched"), "w").close()
+        _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
+        mock_cc.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # Happy-path: correct invocations and sentinel creation
+    # ------------------------------------------------------------------
+
+    @patch("subprocess.check_call")
+    def test_single_patch_invocation(self, mock_cc):
+        """A single patch must be applied with patch -p1 --input <path> in source_dir."""
+        _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
+        expected_patch_path = os.path.join(self.source_dir, "fix-a.patch")
+        mock_cc.assert_called_once_with(
+            ["patch", "-p1", "--input", expected_patch_path],
+            cwd=self.source_dir,
+        )
+
+    @patch("subprocess.check_call")
+    def test_multiple_patches_applied_in_order(self, mock_cc):
+        """Multiple patches must be applied in declaration order."""
+        _apply_patches(
+            self._spec(patches=["fix-a.patch", "fix-b.patch"]),
+            self.source_dir,
+        )
+        expected_a = os.path.join(self.source_dir, "fix-a.patch")
+        expected_b = os.path.join(self.source_dir, "fix-b.patch")
+        self.assertEqual(mock_cc.call_count, 2)
+        mock_cc.assert_has_calls([
+            call(["patch", "-p1", "--input", expected_a], cwd=self.source_dir),
+            call(["patch", "-p1", "--input", expected_b], cwd=self.source_dir),
+        ])
+
+    @patch("subprocess.check_call")
+    def test_sentinel_written_on_success(self, mock_cc):
+        """After successful application .bits_patched sentinel must be created."""
+        sentinel = os.path.join(self.source_dir, ".bits_patched")
+        self.assertFalse(os.path.exists(sentinel))
+        _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
+        self.assertTrue(os.path.exists(sentinel),
+                        ".bits_patched sentinel must exist after successful patch application")
+
+    @patch("subprocess.check_call")
+    def test_inline_checksum_suffix_stripped(self, mock_cc):
+        """Patch entries may carry a ',algo:digest' suffix; only the filename is used."""
+        _apply_patches(
+            self._spec(patches=["fix-a.patch,sha256:deadbeef"]),
+            self.source_dir,
+        )
+        expected_path = os.path.join(self.source_dir, "fix-a.patch")
+        mock_cc.assert_called_once_with(
+            ["patch", "-p1", "--input", expected_path],
+            cwd=self.source_dir,
+        )
+
+    # ------------------------------------------------------------------
+    # Failure path: no sentinel on error
+    # ------------------------------------------------------------------
+
+    @patch("subprocess.check_call",
+           side_effect=subprocess.CalledProcessError(1, "patch"))
+    def test_patch_failure_propagates(self, mock_cc):
+        """A failing patch(1) call must propagate the exception."""
+        with self.assertRaises(subprocess.CalledProcessError):
+            _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
+
+    @patch("subprocess.check_call",
+           side_effect=subprocess.CalledProcessError(1, "patch"))
+    def test_no_sentinel_on_failure(self, mock_cc):
+        """If patch(1) fails, .bits_patched must NOT be created."""
+        sentinel = os.path.join(self.source_dir, ".bits_patched")
+        try:
+            _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
+        except subprocess.CalledProcessError:
+            pass
+        self.assertFalse(os.path.exists(sentinel),
+                         ".bits_patched must not exist after a failed patch application")
 
 
 if __name__ == '__main__':
