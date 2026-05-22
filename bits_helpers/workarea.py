@@ -4,6 +4,7 @@ import os
 import os.path
 import shutil
 import subprocess
+import tarfile as _tarfile_mod
 import tempfile
 import zipfile
 from collections import OrderedDict
@@ -182,21 +183,74 @@ _TAR_EXTENSIONS = (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".
 _ZIP_EXTENSIONS = (".zip",)
 
 
-def _extract_zip_strip(archive_path, dest_dir):
-  """Extract a zip archive into dest_dir, stripping the first path component.
+def _archive_prefix_depth(archive_path):
+  """Return the number of leading path components shared by all entries.
 
-  This mirrors the behaviour of ``tar --strip-components=1``: every member
-  whose path starts with a top-level directory has that directory removed
-  before extraction, so the archive contents land directly in dest_dir.
-  Members that sit at the archive root (no ``/`` in their name) are skipped,
-  since they are the top-level directory entries themselves.
+  Standard tarballs have one top-level directory (depth 1).  Occasionally a
+  tarball embeds a two-level prefix such as ``package/version/file`` (depth 2)
+  — the PHOTOS 215.4 tarball (``photos/215.4/…``) is one example.  Extracting
+  such an archive with ``--strip-components=1`` leaves the inner directory
+  (``215.4/``) in place, so subsequent ``patch -p1`` cannot find files it
+  expects at the source root.
+
+  This function inspects the archive member list and returns the count of
+  leading path components that are *identical across every member* so that
+  callers can pass the exact ``--strip-components`` value needed to land the
+  source files directly in the destination directory.
+
+  Returns 1 on any error or when the archive appears to be flat (no common
+  prefix), so existing behaviour is preserved for the common case.
+  """
+  lower = archive_path.lower()
+  try:
+    if any(lower.endswith(ext) for ext in _TAR_EXTENSIONS):
+      # Use tarfile module so we can filter by member type (files only,
+      # not directories) — tar -tf output does not reliably include
+      # trailing slashes on directory entries.
+      with _tarfile_mod.open(archive_path) as tf:
+        file_paths = [m.name for m in tf.getmembers() if m.isfile()]
+    elif lower.endswith(".zip"):
+      with zipfile.ZipFile(archive_path) as zf:
+        file_paths = [m.filename for m in zf.infolist()
+                      if not m.filename.endswith("/")]
+    else:
+      return 1
+
+    if not file_paths:
+      return 1
+
+    # Strip a leading "./" that some tarballs prepend
+    file_paths = [p[2:] if p.startswith("./") else p for p in file_paths]
+    file_paths = [p for p in file_paths if p]
+
+    split_paths = [p.split("/") for p in file_paths]
+    depth = 0
+    for i in range(min(len(p) for p in split_paths)):
+      first = split_paths[0][i]
+      if all(p[i] == first for p in split_paths):
+        depth += 1
+      else:
+        break
+    return max(depth, 1)
+  except Exception:
+    return 1
+
+
+def _extract_zip_strip(archive_path, dest_dir, strip=1):
+  """Extract a zip archive into dest_dir, stripping *strip* path components.
+
+  This mirrors the behaviour of ``tar --strip-components=N``: every member
+  whose path starts with at least *strip* directory components has those
+  components removed before extraction.  Members with fewer than *strip*
+  components (including the top-level directory entries themselves) are
+  skipped.
   """
   with zipfile.ZipFile(archive_path) as zf:
     for member in zf.infolist():
-      parts = member.filename.split("/", 1)
-      if len(parts) < 2 or not parts[1]:
+      parts = member.filename.split("/", strip)
+      if len(parts) <= strip or not parts[strip]:
         continue
-      member.filename = parts[1]
+      member.filename = parts[strip]
       zf.extract(member, dest_dir)
 
 
@@ -253,14 +307,19 @@ def _extract_source_archives(source_dir):
       continue
     lower = entry.lower()
     if any(lower.endswith(ext) for ext in _TAR_EXTENSIONS):
-      debug("Extracting %s into %s", entry, source_dir)
+      strip = _archive_prefix_depth(filepath)
+      if strip != 1:
+        debug("Extracting %s into %s (--strip-components=%d)", entry, source_dir, strip)
+      else:
+        debug("Extracting %s into %s", entry, source_dir)
       subprocess.check_call(
-        ["tar", "xf", filepath, "--strip-components=1", "-C", source_dir]
+        ["tar", "xf", filepath, "--strip-components=%d" % strip, "-C", source_dir]
       )
       extracted = True
     elif any(lower.endswith(ext) for ext in _ZIP_EXTENSIONS):
+      strip = _archive_prefix_depth(filepath)
       debug("Extracting %s into %s", entry, source_dir)
-      _extract_zip_strip(filepath, source_dir)
+      _extract_zip_strip(filepath, source_dir, strip=strip)
       extracted = True
 
   if extracted:
