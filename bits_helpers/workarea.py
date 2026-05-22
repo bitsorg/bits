@@ -219,9 +219,9 @@ def _archive_prefix_depth(archive_path):
     if not file_paths:
       return 1
 
-    # Strip a leading "./" that some tarballs prepend
-    file_paths = [p[2:] if p.startswith("./") else p for p in file_paths]
-    file_paths = [p for p in file_paths if p]
+    # Do NOT normalise away leading "./" — tar treats "." as a real path
+    # component when counting --strip-components, so "./pkg-1.0/file" has
+    # depth 2 (strips "." then "pkg-1.0"), while "pkg-1.0/file" has depth 1.
 
     split_paths = [p.split("/") for p in file_paths]
     depth = 0
