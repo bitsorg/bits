@@ -184,7 +184,25 @@ def _verify_commit_pin(scm, spec, source_dir: str, enforce_mode: str) -> None:
 _TAR_EXTENSIONS = (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar.zst")
 _ZIP_EXTENSIONS = (".zip",)
 
-_SOURCE_ARCH_RE = re.compile(r"^\(([^)]*)\)(.*)", re.DOTALL)
+def _split_arch_prefix(entry):
+  """Split ``(arch_pattern)url`` using balanced-parenthesis counting.
+
+  Returns ``(arch_pattern, url)`` when *entry* starts with ``(`` and the
+  matching closing ``)`` is found, otherwise returns ``None``.  This handles
+  patterns that themselves contain parentheses, such as regex lookaheads
+  like ``(?!osx)``, which the simpler ``[^)]*`` regex approach cannot.
+  """
+  if not entry.startswith("("):
+    return None
+  depth = 0
+  for i, c in enumerate(entry):
+    if c == "(":
+      depth += 1
+    elif c == ")":
+      depth -= 1
+      if depth == 0:
+        return entry[1:i], entry[i + 1:].lstrip()
+  return None
 
 
 def _resolve_source_entry(entry, architecture):
@@ -197,8 +215,8 @@ def _resolve_source_entry(entry, architecture):
       Include this source only when *architecture* matches *arch_pattern*.
       The pattern is tried as a regex first (anchored at the start, so
       ``(?!osx)`` excludes macOS and ``osx.*`` includes only macOS); if it
-      is not valid regex it is treated as a fnmatch glob (``*x86-64*linux*``
-      matches any x86-64 Linux architecture string).
+      is not valid regex it is treated as a fnmatch glob.  Patterns may
+      contain nested parentheses (e.g. regex lookaheads like ``(?!osx)``).
       The resolved entry is the ``url[,checksum]`` part with the prefix
       stripped.
 
@@ -213,10 +231,10 @@ def _resolve_source_entry(entry, architecture):
   Any other entry is returned unchanged with ``include=True``.
   """
   # --- Architecture-conditional prefix: (arch_glob_or_regex)url ---
-  m = _SOURCE_ARCH_RE.match(entry)
-  if m:
+  split = _split_arch_prefix(entry)
+  if split is not None:
     import fnmatch
-    arch_pat, rest = m.group(1), m.group(2).lstrip()
+    arch_pat, rest = split
     # Patterns may be either POSIX-extended regexes (e.g. "(?!osx)",
     # "slc[0-9].*") or simple glob wildcards (e.g. "*x86-64*linux*").
     # Try regex first; if the pattern is not valid regex, treat it as a
