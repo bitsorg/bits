@@ -397,6 +397,17 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
           raise first_exc
     # Unpack any downloaded archives so the build script sees an unpacked
     # source tree at $SOURCEDIR rather than a bare archive file.
+    # If patches are declared but not yet applied, discard any stale
+    # .bits_extracted sentinel so we re-extract with the correct
+    # --strip-components depth (handles retries after a prior run that used
+    # the old hardcoded --strip-components=1).
+    if spec.get("patches"):
+      patched_sentinel = os.path.join(source_dir, ".bits_patched")
+      extracted_sentinel = os.path.join(source_dir, ".bits_extracted")
+      if not os.path.exists(patched_sentinel) and os.path.exists(extracted_sentinel):
+        debug("Removing stale extraction sentinel for %s: patches not yet applied",
+              spec["package"])
+        os.unlink(extracted_sentinel)
     _extract_source_archives(source_dir)
     _apply_patches(spec, source_dir)
   elif not spec.get("source"):
