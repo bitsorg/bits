@@ -427,6 +427,11 @@ def _extract_source_archives(source_dir):
   import json
   sentinel = os.path.join(source_dir, ".bits_extracted")
 
+  # Guard against a caller that never created source_dir (e.g. empty
+  # active_sources that bypassed makedirs, or a future code path change).
+  if not os.path.isdir(source_dir):
+    return
+
   # Compute the strip depths we would use for every archive present now.
   # We do this before consulting the sentinel so we can compare.
   archives = []
@@ -541,6 +546,24 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
       except (KeyError, ValueError):
         pass  # leave the string as-is if substitution fails
       active_sources.append(resolved)
+
+    # Fail early with a clear message when no source entry matched the current
+    # architecture.  Without this check the build would silently continue with
+    # an empty source directory and fail deep inside Configure/Make with a
+    # confusing error unrelated to the real cause (pattern mismatch).
+    if not active_sources:
+      dieOnError(True,
+        "No source URL matched architecture %r for %s@%s.\n"
+        "  Defined source entries:\n%s" % (
+          _arch, spec["package"], spec["version"],
+          "".join("    %s\n" % s for s in spec["sources"])))
+
+    # Ensure source_dir exists before any download attempt.  download() only
+    # creates the destination directory on a successful download (mkdir -p is
+    # part of the cp command on line 452 of download.py); an empty
+    # active_sources list or a failed download would leave source_dir absent,
+    # causing _extract_source_archives to ENOENT on os.listdir.
+    os.makedirs(source_dir, exist_ok=True)
 
     def _download_one(s):
       url, inline_checksum = parse_entry(s)
