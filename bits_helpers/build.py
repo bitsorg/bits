@@ -1474,6 +1474,8 @@ def doBuild(args, parser):
       spec["source"] = resolve_spec_data(spec, spec["source"], args.defaults, branch_basename, branch_stream)
     if "sources" in spec:
       spec["sources"] = [resolve_spec_data(spec, src, args.defaults, branch_basename, branch_stream) for src in spec["sources"]]
+    if "patches" in spec:
+      spec["patches"] = [resolve_spec_data(spec, p, args.defaults, branch_basename, branch_stream) for p in spec["patches"]]
     if variables or spec.get("expand_recipe", False):
       spec["recipe"] = resolve_spec_data(spec, spec["recipe"], args.defaults, branch_basename, branch_stream)
 

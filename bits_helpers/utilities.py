@@ -812,6 +812,18 @@ def parseRecipe(reader, generatePackages=None, visited=None):
   try:
     d = reader()
     header,recipe = d.split("---", 1)
+    # YAML forbids '%' as the first character of a plain (unquoted) scalar because
+    # it is reserved for directives (e.g. %YAML, %TAG).  Recipe authors may want
+    # to write  "- %(name)s-%(version)s.patch"  in patches: (and similar lists)
+    # for the same variable substitution that sources: already supports.  Auto-
+    # quoting those list items here lets them write the bare %(…)s form without
+    # needing to remember YAML quoting rules.
+    header = re.sub(
+      r'^(\s*-\s+)(%[^\n\'"#\[\{].*)$',
+      lambda m: m.group(1) + '"' + m.group(2).replace('\\', '\\\\').replace('"', '\\"') + '"',
+      header,
+      flags=re.MULTILINE,
+    )
     spec = yamlLoad(header)
     if spec and "from" in spec:
       basename = os.path.basename(getattr(reader, "url", "") or "")
