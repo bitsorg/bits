@@ -308,6 +308,7 @@ nowKwds = {
 def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""):
   """Expand the data replacing the following keywords:
 
+  - %(name)s      — package name (alias for %(package)s, preferred in source URLs)
   - %(package)s
   - %(commit_hash)s
   - %(short_hash)s
@@ -330,6 +331,7 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
   tag = str(spec.get("tag", "tag_unknown"))
   package = spec.get("package")
   all_vars = {
+    "name": package,       # short alias used in source URLs: %(name)s-%(version)s.tar.gz
     "package": package,
     "root_dir": "${%s_ROOT}" % pkg_to_shell_id(package),
     "commit_hash": commit_hash,
