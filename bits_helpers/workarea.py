@@ -391,36 +391,59 @@ def _extract_source_archives(source_dir):
 
   A ``.bits_extracted`` sentinel file is written after a successful run so
   that repeated invocations (e.g. a resumed build) skip re-extraction and do
-  not clobber a partially-built tree.
+  not clobber a partially-built tree.  The sentinel records the strip depth
+  used for each archive so that a stale extraction (e.g. produced by older
+  bits code that hardcoded --strip-components=1) is detected and replaced
+  when the required depth has changed.
   """
+  import json
   sentinel = os.path.join(source_dir, ".bits_extracted")
-  if os.path.exists(sentinel):
-    return
 
-  extracted = False
+  # Compute the strip depths we would use for every archive present now.
+  # We do this before consulting the sentinel so we can compare.
+  archives = []
   for entry in sorted(os.listdir(source_dir)):
     filepath = os.path.join(source_dir, entry)
     if not os.path.isfile(filepath):
       continue
     lower = entry.lower()
+    if any(lower.endswith(ext) for ext in _TAR_EXTENSIONS) or \
+       any(lower.endswith(ext) for ext in _ZIP_EXTENSIONS):
+      archives.append((entry, filepath, _archive_prefix_depth(filepath)))
+
+  if not archives:
+    return  # nothing to extract
+
+  # Check whether a sentinel already exists and whether its recorded strips
+  # match what we would use today.  A mismatch means the previous extraction
+  # used a different (wrong) strip depth — invalidate the sentinel so we
+  # re-extract with the correct depth.
+  if os.path.exists(sentinel):
+    try:
+      recorded = json.loads(open(sentinel).read())
+      recorded_strips = recorded.get("strips", {})
+    except (OSError, ValueError, KeyError):
+      recorded_strips = {}
+    current_strips = {entry: strip for entry, _, strip in archives}
+    if recorded_strips == current_strips:
+      return  # sentinel is valid; skip re-extraction
+    debug("Stale extraction sentinel for %s (recorded strips %s, now %s): re-extracting",
+          source_dir, recorded_strips, current_strips)
+    os.unlink(sentinel)
+
+  for entry, filepath, strip in archives:
+    lower = entry.lower()
+    debug("Extracting %s into %s (--strip-components=%d)", entry, source_dir, strip)
     if any(lower.endswith(ext) for ext in _TAR_EXTENSIONS):
-      strip = _archive_prefix_depth(filepath)
-      if strip != 1:
-        debug("Extracting %s into %s (--strip-components=%d)", entry, source_dir, strip)
-      else:
-        debug("Extracting %s into %s", entry, source_dir)
       subprocess.check_call(
         ["tar", "xf", filepath, "--strip-components=%d" % strip, "-C", source_dir]
       )
-      extracted = True
-    elif any(lower.endswith(ext) for ext in _ZIP_EXTENSIONS):
-      strip = _archive_prefix_depth(filepath)
-      debug("Extracting %s into %s", entry, source_dir)
+    else:
       _extract_zip_strip(filepath, source_dir, strip=strip)
-      extracted = True
 
-  if extracted:
-    open(sentinel, "w").close()
+  strips_map = {entry: strip for entry, _, strip in archives}
+  with open(sentinel, "w") as fh:
+    json.dump({"strips": strips_map}, fh)
 
 
 def checkout_sources(spec, work_dir, reference_sources, containerised_build,
@@ -514,17 +537,9 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
           raise first_exc
     # Unpack any downloaded archives so the build script sees an unpacked
     # source tree at $SOURCEDIR rather than a bare archive file.
-    # If patches are declared but not yet applied, discard any stale
-    # .bits_extracted sentinel so we re-extract with the correct
-    # --strip-components depth (handles retries after a prior run that used
-    # the old hardcoded --strip-components=1).
-    if spec.get("patches"):
-      patched_sentinel = os.path.join(source_dir, ".bits_patched")
-      extracted_sentinel = os.path.join(source_dir, ".bits_extracted")
-      if not os.path.exists(patched_sentinel) and os.path.exists(extracted_sentinel):
-        debug("Removing stale extraction sentinel for %s: patches not yet applied",
-              spec["package"])
-        os.unlink(extracted_sentinel)
+    # _extract_source_archives() detects stale sentinels (wrong strip depth
+    # from older bits) by comparing recorded vs. current strip depths, so no
+    # manual sentinel removal is needed here for any package type.
     _extract_source_archives(source_dir)
     _apply_patches(spec, source_dir)
   elif not spec.get("source"):
