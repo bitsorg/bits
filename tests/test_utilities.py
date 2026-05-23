@@ -10,6 +10,7 @@ from bits_helpers.utilities import prunePaths
 from bits_helpers.utilities import resolve_version
 from bits_helpers.utilities import topological_sort
 from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
+from bits_helpers.utilities import _parse_req_matcher, _collect_version_pins
 import bits_helpers
 import bits_helpers.log
 import os
@@ -274,6 +275,10 @@ class TestUtilities(unittest.TestCase):
     self.assertEqual([], list(filterByArchitectureDefaults("osx_x86-64", "ali", [])))
     self.assertEqual(["GCC"], list(filterByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:slc6", "GCC:defaults=ali"])))
     self.assertEqual([], list(filterByArchitectureDefaults("osx_x86-64", "o2", ["AliRoot:slc6", "GCC:defaults=ali"])))
+    # Version-pinned entries: filter still yields the plain name
+    self.assertEqual(["root"], list(filterByArchitectureDefaults("slc8_x86-64", "release", ["root = 6.24.02"])))
+    self.assertEqual([], list(filterByArchitectureDefaults("osx_arm64", "release", ["root = 6.24.02:(?!osx)"])))
+    self.assertEqual(["root"], list(filterByArchitectureDefaults("slc8_x86-64", "release", ["root = 6.24.02:(?!osx)"])))
 
   def test_disabledByArchitecture(self) -> None:
     self.assertEqual([], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot"])))
@@ -284,6 +289,80 @@ class TestUtilities(unittest.TestCase):
     self.assertEqual([], list(disabledByArchitectureDefaults("osx_x86-64", "ali", [])))
     self.assertEqual(["AliRoot"], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:slc6", "GCC:defaults=ali"])))
     self.assertEqual(["AliRoot", "GCC"], list(disabledByArchitectureDefaults("osx_x86-64", "o2", ["AliRoot:slc6", "GCC:defaults=ali"])))
+    # Version-pinned entries are disabled according to the matcher, not the pin
+    self.assertEqual(["root"], list(disabledByArchitectureDefaults("osx_arm64", "release", ["root = 6.24.02:(?!osx)"])))
+
+  def test_parse_req_matcher(self) -> None:
+    """_parse_req_matcher should correctly parse all requirement syntax variants."""
+    # Plain name
+    self.assertEqual(("AliRoot", ".*", None), _parse_req_matcher("AliRoot"))
+    # Arch-conditional
+    self.assertEqual(("AliRoot", "(?!osx)", None), _parse_req_matcher("AliRoot:(?!osx)"))
+    # defaults= conditional
+    self.assertEqual(("GCC", "defaults=ali", None), _parse_req_matcher("GCC:defaults=ali"))
+    # Version pin, no matcher
+    self.assertEqual(("root", ".*", "6.24.02"), _parse_req_matcher("root = 6.24.02"))
+    self.assertEqual(("root", ".*", "6.24.02"), _parse_req_matcher("root=6.24.02"))
+    self.assertEqual(("root", ".*", "master"), _parse_req_matcher("root = master"))
+    # Version pin with spaces around =
+    self.assertEqual(("my-provider", ".*", "feature-xyz"), _parse_req_matcher("my-provider = feature-xyz"))
+    # Version pin + arch matcher
+    self.assertEqual(("root", "(?!osx)", "6.24.02"), _parse_req_matcher("root = 6.24.02:(?!osx)"))
+    # Version pin + defaults= matcher
+    self.assertEqual(("boost", "defaults=o2", "1.80.0"), _parse_req_matcher("boost = 1.80.0:defaults=o2"))
+
+  def test_collect_version_pins_basic(self) -> None:
+    """_collect_version_pins registers active pins and ignores inactive ones."""
+    pins = {}
+    _collect_version_pins("slc8_x86-64", "release",
+                          ["root = 6.24.02", "hepmc3", "boost = 1.82.0:(?!osx)"],
+                          "mypackage", pins, {})
+    self.assertEqual({"root": "6.24.02", "boost": "1.82.0"}, pins)
+
+  def test_collect_version_pins_arch_inactive(self) -> None:
+    """A pin whose matcher does not match the current arch is ignored."""
+    pins = {}
+    _collect_version_pins("osx_arm64", "release",
+                          ["boost = 1.82.0:(?!osx)"],
+                          "mypackage", pins, {})
+    self.assertEqual({}, pins)
+
+  def test_collect_version_pins_same_version_two_owners(self) -> None:
+    """Two packages pinning the same dep to the same version is not an error."""
+    pins = {"root": "6.24.02"}
+    # Should not raise
+    _collect_version_pins("slc8_x86-64", "release",
+                          ["root = 6.24.02"],
+                          "other-package", pins, {})
+    self.assertEqual({"root": "6.24.02"}, pins)
+
+  def test_collect_version_pins_conflict_raises(self) -> None:
+    """Two different version pins for the same dep must raise a fatal error."""
+    pins = {"root": "6.24.02"}
+    with self.assertRaises(SystemExit):
+      _collect_version_pins("slc8_x86-64", "release",
+                            ["root = 6.32.06"],
+                            "other-package", pins, {})
+
+  def test_collect_version_pins_already_resolved_same_version(self) -> None:
+    """A pin for an already-resolved dep at the same version is silently accepted."""
+    from collections import OrderedDict
+    specs = {"root": {"version": "6.24.02"}}
+    pins = {}
+    _collect_version_pins("slc8_x86-64", "release",
+                          ["root = 6.24.02"],
+                          "mypackage", pins, specs)
+    # No pin registered (already resolved correctly); no error raised
+    self.assertEqual({}, pins)
+
+  def test_collect_version_pins_already_resolved_conflict_raises(self) -> None:
+    """A pin for a dep resolved at a *different* version must raise a fatal error."""
+    specs = {"root": {"version": "6.32.06"}}
+    pins = {}
+    with self.assertRaises(SystemExit):
+      _collect_version_pins("slc8_x86-64", "release",
+                            ["root = 6.24.02"],
+                            "mypackage", pins, specs)
 
   def test_prunePaths(self) -> None:
     fake_env = {

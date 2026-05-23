@@ -492,17 +492,44 @@ def detectArch():
     return doDetectArch(hasOsRelease, osReleaseLines, ["unknown", "", ""], "", "")
 
 def _parse_req_matcher(r):
-  """Split a requirement string into ``(requirement_name, matcher)`` pair.
+  """Split a requirement string into ``(name, matcher, version_pin)`` triple.
 
-  Requirement strings may be plain package names or ``name:matcher`` where
-  *matcher* is either an architecture regex or ``defaults=<regex>``.
+  Supported syntaxes::
+
+      name                          plain dependency
+      name:matcher                  architecture/defaults-conditional dependency
+      name = version                dependency with explicit version pin
+      name = version:matcher        version pin + arch/defaults condition
+
+  *matcher* is an architecture regex or ``defaults=<regex>``, exactly as for
+  the two-field form.  *version_pin* is ``None`` when no ``= version`` clause
+  is present.
+
+  The ``=`` must appear **before** the ``:`` (if any) so that version strings
+  containing ``:`` are not ambiguous with matchers.  In practice version
+  strings do not contain ``:``, so this is not a real constraint.
   """
-  return r.split(":", 1) if ":" in r else (r, ".*")
+  # Locate = and : positions.  Only treat = as a version separator when it
+  # appears before the first : (or when there is no :).
+  eq_pos = r.find("=")
+  colon_pos = r.find(":")
+  if eq_pos != -1 and (colon_pos == -1 or eq_pos < colon_pos):
+    name = r[:eq_pos].strip()
+    rest = r[eq_pos + 1:].strip()
+    if ":" in rest:
+      pin, matcher = rest.split(":", 1)
+      return name, matcher, pin.strip()
+    return name, ".*", rest
+  if ":" in r:
+    name, matcher = r.split(":", 1)
+    return name, matcher, None
+  return r, ".*", None
+
 
 def filterByArchitectureDefaults(arch, defaults, requires):
   """Yield requirements from *requires* that are satisfied by *arch*/*defaults*."""
   for r in requires:
-    require, matcher = _parse_req_matcher(r)
+    require, matcher, _pin = _parse_req_matcher(r)
     if matcher.startswith("defaults="):
       if re.match(matcher[len("defaults="):], defaults):
         yield require
@@ -512,12 +539,60 @@ def filterByArchitectureDefaults(arch, defaults, requires):
 def disabledByArchitectureDefaults(arch, defaults, requires):
   """Yield requirements from *requires* that are *not* satisfied by *arch*/*defaults*."""
   for r in requires:
-    require, matcher = _parse_req_matcher(r)
+    require, matcher, _pin = _parse_req_matcher(r)
     if matcher.startswith("defaults="):
       if not re.match(matcher[len("defaults="):], defaults):
         yield require
     elif not re.match(matcher, arch):
       yield require
+
+
+def _collect_version_pins(arch, defaults, raw_requires, owner, version_pins, specs):
+  """Extract version pins from *raw_requires* and merge into *version_pins*.
+
+  Called while processing *owner*'s spec (before the requires list has been
+  reduced to plain names).  Any ``name = version`` clause that is active for
+  the current *arch*/*defaults* pair is registered in *version_pins*.
+
+  Raises a :exc:`SystemExit` (via :func:`dieOnError`) when:
+
+  * Two different packages pin the same dependency to **different** versions.
+  * A version pin is declared for a dependency that was already resolved with
+    a different version (i.e. ``name in specs`` with a conflicting version).
+    This happens when the pinned package appeared in the build queue before the
+    package that declares the pin, making the pin arrive too late.
+  """
+  for r in raw_requires:
+    name, matcher, pin = _parse_req_matcher(r)
+    if pin is None:
+      continue
+    # Check whether this entry is active for the current architecture/defaults.
+    if matcher.startswith("defaults="):
+      active = bool(re.match(matcher[len("defaults="):], defaults))
+    else:
+      active = bool(re.match(matcher, arch))
+    if not active:
+      continue
+    if name in version_pins:
+      if version_pins[name] != pin:
+        dieOnError(True,
+          "Conflicting version pin for '%s': '%s' (from an earlier spec) vs "
+          "'%s' (from '%s'). Only one version pin per dependency is allowed."
+          % (name, version_pins[name], pin, owner))
+      # Same pin value from multiple packages — harmless, nothing to do.
+      continue
+    if name in specs:
+      actual = specs[name].get("version", "")
+      if actual != pin:
+        dieOnError(True,
+          "Version pin '%s = %s' declared by '%s' cannot be applied: '%s' was "
+          "already resolved with version '%s'. Move the pinning package earlier "
+          "in the build list, or remove the conflicting pin."
+          % (name, pin, owner, name, actual))
+      # Already resolved with the same version — no action needed.
+      continue
+    version_pins[name] = pin
+    debug("Version pin registered: %s = %s  (from %s)", name, pin, owner)
 
 def merge_dicts(dict1, dict2, skip_keys=None) -> OrderedDict:
     """
@@ -947,6 +1022,13 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   if provider_dirs is None:
     provider_dirs = {}
   _disable_set = set(disable)
+  # version_pins accumulates ``name -> version`` entries declared via the
+  # ``name = version`` syntax in any spec's requires / build_requires lists.
+  # Pins are applied to the dependency spec just before it is stored in
+  # *specs*, overriding the version stated in the recipe and any defaults-file
+  # override.  Conflicts (two different pins for the same name, or a pin that
+  # arrives after the dependency was already resolved) are fatal errors.
+  _version_pins = {}
   while packages:
     p = packages.pop(0)
     if p in specs:
@@ -1167,6 +1249,16 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         if not validDefaults:
           validDefaults = None  # no valid default works for all current packages
 
+    # Collect version pins declared by this spec's requires / build_requires
+    # *before* the lists are reduced to plain package names by the filter step
+    # below.  We pass the raw YAML lists so that _collect_version_pins can see
+    # the full "name = version[:matcher]" strings.
+    _collect_version_pins(
+      architecture, defaults,
+      list(spec.get("requires", [])) + list(spec.get("build_requires", [])),
+      spec["package"], _version_pins, specs,
+    )
+
     # For the moment we treat build_requires just as requires.
     fn = lambda what: disabledByArchitectureDefaults(architecture, defaults, spec.get(what, []))
     spec["disabled"] += [x for x in fn("requires")]
@@ -1182,6 +1274,18 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     dieOnError(not isinstance(spec["version"], str),
                "In recipe \"%s\": version must be a string" % p)
     spec["tag"] = spec.get("tag", spec["version"])
+    # Apply any version pin registered for this package.  The pin is set by a
+    # dependent that declared "- depname = version" in its requires list.  We
+    # apply it here — after recipe defaults and defaults-*.sh overrides — so
+    # that the pin takes the highest precedence.  Both "version" and "tag" are
+    # updated so that tarball URLs (%(version)s) and git checkouts (tag) both
+    # see the pinned value.
+    if spec["package"] in _version_pins:
+      _pin = _version_pins[spec["package"]]
+      debug("Applying version pin to %s: %s -> %s", spec["package"],
+            spec.get("version"), _pin)
+      spec["version"] = _pin
+      spec["tag"] = _pin
     spec["version"] = spec["version"].replace("/", "_")
     spec["recipe"] = recipe.strip("\n")
     if spec["package"] in force_rebuild:
