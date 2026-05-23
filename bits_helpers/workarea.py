@@ -13,7 +13,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-from bits_helpers.log import dieOnError, debug, error, warning
+from bits_helpers.log import dieOnError, debug, error, warning, ProgressPrint
 from bits_helpers.download import download
 from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash, asList
 from bits_helpers.checksum import parse_entry, check_file as check_file_checksum
@@ -329,14 +329,34 @@ def _apply_patches(spec, source_dir):
   if os.path.exists(sentinel):
     return
 
+  import logging
   _patch_checksums = spec.get("patch_checksums") or {}
+  pkg_label = "%s@%s" % (spec.get("package", "?"), spec.get("version", "?"))
+  progress = ProgressPrint("Patching %s" % pkg_label)
+  # Emit the header immediately so the package name is visible before any
+  # output from patch(1) — important when a failure dumps verbose text.
+  progress("Patching %s", pkg_label)
   for patch_entry in spec["patches"]:
     patch_name, _ = parse_entry(patch_entry)
     patch_path = os.path.join(source_dir, patch_name)
     debug("Applying patch %s in %s", patch_name, source_dir)
+    # In non-debug mode suppress patch(1) stdout/stderr so it doesn't leak
+    # into the progress display; capture it so we can include it in the error
+    # message on failure.
+    capture = not logging.getLogger().isEnabledFor(logging.DEBUG)
+    pipe = subprocess.PIPE if capture else None
     try:
-      subprocess.check_call(["patch", "-p1", "--batch", "--input", patch_path], cwd=source_dir)
-    except subprocess.CalledProcessError:
+      result = subprocess.run(
+        ["patch", "-p1", "--batch", "--input", patch_path],
+        cwd=source_dir,
+        stdout=pipe, stderr=subprocess.STDOUT if capture else None,
+        check=True,
+      )
+      if capture:
+        debug("patch output for %s:\n%s", patch_name,
+              result.stdout.decode(errors="replace"))
+    except subprocess.CalledProcessError as exc:
+      patch_out = exc.output.decode(errors="replace") if exc.output else ""
       # Collect any .rej files left behind by patch so the developer can see
       # exactly which hunks failed without having to dig into the build tree.
       rej_files = sorted(glob(os.path.join(source_dir, "**", "*.rej"), recursive=True))
@@ -347,12 +367,15 @@ def _apply_patches(spec, source_dir):
             rejects += "\n--- %s ---\n%s" % (os.path.relpath(rej, source_dir), fh.read())
         except OSError:
           rejects += "\n--- %s --- (could not read)\n" % os.path.relpath(rej, source_dir)
-      dieOnError(True, "Patch %s failed to apply for %s.%s" % (
+      progress.end("failed", error=True)
+      dieOnError(True, "Patch %s failed to apply for %s.%s%s" % (
         patch_name, spec.get("package", "?"),
+        ("\n" + patch_out.strip()) if patch_out.strip() else "",
         rejects if rejects else "\n(no .rej files found — check patch format/strip level)",
       ))
       return  # sentinel must not be written on failure (also guards mocked dieOnError in tests)
 
+  progress.end("done")
   open(sentinel, "w").close()
 
 

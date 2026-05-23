@@ -2011,10 +2011,14 @@ def doBuild(args, parser):
       # generate a .checkout Makeflow rule per package so that all clones and
       # archive downloads run in parallel as part of the DAG.
       if not args.makeflow:
-        checkout_sources(spec, workDir, args.referenceSources, args.docker,
-                         enforce_mode=_download_time_mode(effective_checksum_mode),
-                         sync_helper=syncHelper,
-                         parallel_sources=getattr(args, "parallelSources", 1))
+        try:
+          checkout_sources(spec, workDir, args.referenceSources, args.docker,
+                           enforce_mode=_download_time_mode(effective_checksum_mode),
+                           sync_helper=syncHelper,
+                           parallel_sources=getattr(args, "parallelSources", 1))
+        except OSError as e:
+          dieOnError(True, "Failed to fetch sources for %s@%s: %s" % (
+            spec.get("package", "?"), spec.get("version", "?"), e))
 
     # Collect every processed spec for the post-build checksum phase.
     # This includes specs whose tarball was cached (cachedTarball != "").
