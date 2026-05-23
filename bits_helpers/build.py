@@ -2015,7 +2015,8 @@ def doBuild(args, parser):
           checkout_sources(spec, workDir, args.referenceSources, args.docker,
                            enforce_mode=_download_time_mode(effective_checksum_mode),
                            sync_helper=syncHelper,
-                           parallel_sources=getattr(args, "parallelSources", 1))
+                           parallel_sources=getattr(args, "parallelSources", 1),
+                           architecture=raw_architecture)
         except OSError as e:
           dieOnError(True, "Failed to fetch sources for %s@%s: %s" % (
             spec.get("package", "?"), spec.get("version", "?"), e))

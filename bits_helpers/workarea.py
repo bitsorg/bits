@@ -480,8 +480,15 @@ def _extract_source_archives(source_dir):
 
 
 def checkout_sources(spec, work_dir, reference_sources, containerised_build,
-                     enforce_mode="off", sync_helper=None, parallel_sources=1):
+                     enforce_mode="off", sync_helper=None, parallel_sources=1,
+                     architecture=None):
   """Check out sources to be compiled, potentially from a given reference.
+
+  ``architecture`` is the raw (pre-combined) architecture string used to
+  filter arch-conditional ``sources:`` entries.  When ``None`` the value is
+  read from the ``ARCHITECTURE`` environment variable (which is only set
+  inside the build shell script, *not* in the Python process).  Callers
+  should always pass the value explicitly.
 
   ``sync_helper`` is an optional sync-backend instance (from
   ``bits_helpers.sync``).  When provided it is forwarded to every
@@ -528,9 +535,10 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
       check_file_checksum(dst, patch_name, patch_checksum, enforce_mode)
   if spec.get("sources"):
     # Resolve arch-conditional / bash-evaluated source entries before
-    # downloading.  ARCHITECTURE comes from the build environment; fall back
-    # to "" when running outside a full build (e.g. tests).
-    _arch = os.environ.get("ARCHITECTURE", "")
+    # downloading.  ``architecture`` is passed in by the caller (build.py
+    # knows raw_architecture); fall back to the env var for backwards
+    # compatibility with tests and external callers, then to "".
+    _arch = architecture or os.environ.get("ARCHITECTURE", "")
     _fmt = {"name": spec["package"], "version": spec["version"]}
     active_sources = []
     for s in spec["sources"]:
