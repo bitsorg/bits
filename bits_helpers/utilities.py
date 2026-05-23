@@ -946,9 +946,17 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   validDefaults = []  # empty list: all OK; None: no valid default; non-empty list: list of valid ones
   if provider_dirs is None:
     provider_dirs = {}
+  _disable_set = set(disable)
   while packages:
     p = packages.pop(0)
     if p in specs:
+      continue
+    # A package already known to be disabled (prefer_system or system_requirement
+    # passed on a prior iteration) should not be re-processed.  Without this
+    # guard the package is re-evaluated once per occurrence in the queue —
+    # i.e. once per dependent — and disable.append() fires each time, producing
+    # hundreds of duplicate --disable=GCC-Toolchain entries in the argument log.
+    if p in _disable_set:
       continue
     skip = False
     for d in defaults:
@@ -1095,7 +1103,9 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
           # No replacement spec name given. Fall back to old system package
           # behaviour and just disable the package.
           systemPackages.add(spec["package"])
-          disable.append(spec["package"])
+          if spec["package"] not in _disable_set:
+            disable.append(spec["package"])
+            _disable_set.add(spec["package"])
         elif match:
           # The check printed the name of a replacement; use it.
           key = match.group("key").strip()
@@ -1141,7 +1151,9 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         failedRequirements.update([spec["package"]])
         spec["version"] = "failed"
       else:
-        disable.append(spec["package"])
+        if spec["package"] not in _disable_set:
+          disable.append(spec["package"])
+          _disable_set.add(spec["package"])
 
     spec["disabled"] = list(disable)
     if spec["package"] in disable:

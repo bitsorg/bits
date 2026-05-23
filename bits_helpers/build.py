@@ -796,13 +796,18 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
           cli_args.append(f"--{k}")
       elif isinstance(v, list):
         if v:  # Only show non-empty lists
-          # For lists, use multiple --flag value or --flag=val1,val2
+          # For lists, use multiple --flag=val entries; deduplicate while
+          # preserving first-seen order (duplicates can arise from the
+          # prefer_system / system_requirement resolution loop).
+          seen = set()
           for item in v:
-            cli_args.append(f"--{k}={quote(str(item))}")
+            if item not in seen:
+              seen.add(item)
+              cli_args.append(f"--{k}={quote(str(item))}")
       else:
         # Quote if needed
         cli_args.append(f"--{k}={quote(str(v))}")
-    
+
     args_str = " ".join(cli_args)
 
     buildErrMsg += f"\n{bold}Environment:{reset}\n"
@@ -2393,8 +2398,11 @@ def doBuild(args, parser):
               cli_args.append(f"--{k}")
           elif isinstance(v, list):
             if v:  # Only show non-empty lists
+              seen = set()
               for item in v:
-                cli_args.append(f"--{k}={quote(str(item))}")
+                if item not in seen:
+                  seen.add(item)
+                  cli_args.append(f"--{k}={quote(str(item))}")
           else:
             # Quote if needed
             cli_args.append(f"--{k}={quote(str(v))}")

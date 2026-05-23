@@ -225,7 +225,12 @@ def _archive_prefix_depth(archive_path):
 
     split_paths = [p.split("/") for p in file_paths]
     depth = 0
-    for i in range(min(len(p) for p in split_paths)):
+    # Stop one component before the end: the last component is the filename
+    # and must never be counted as a common prefix level.  Without this guard,
+    # a single-file archive (or any archive where all files share a full path)
+    # would yield depth == full path length instead of the directory depth.
+    min_len = min(len(p) for p in split_paths)
+    for i in range(min_len - 1):
       first = split_paths[0][i]
       if all(p[i] == first for p in split_paths):
         depth += 1
