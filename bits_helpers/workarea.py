@@ -2,6 +2,7 @@ import codecs
 import errno
 import os
 import os.path
+import re
 import shutil
 import subprocess
 import tarfile as _tarfile_mod
@@ -181,6 +182,56 @@ def _verify_commit_pin(scm, spec, source_dir: str, enforce_mode: str) -> None:
 
 _TAR_EXTENSIONS = (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar.zst")
 _ZIP_EXTENSIONS = (".zip",)
+
+_SOURCE_ARCH_RE = re.compile(r"^\(([^)]*)\)(.*)", re.DOTALL)
+
+
+def _resolve_source_entry(entry, architecture):
+  """Resolve a source entry, returning ``(resolved_entry, include)`` pair.
+
+  Two optional syntaxes are supported, mirroring the ``name:arch_regex``
+  convention already used in ``requires`` / ``build_requires``:
+
+  ``(arch_regex)url[,checksum]``
+      Include this source only when *architecture* matches *arch_regex*.
+      Uses ``re.match`` (anchored at the start), so ``(?!osx)`` excludes
+      macOS builds while ``osx.*`` includes only macOS builds.
+      The resolved entry is the ``url[,checksum]`` part with the prefix
+      stripped.
+
+  ``$(bash_expression)``
+      Evaluate *bash_expression* in a bash subshell with ``ARCHITECTURE``
+      set.  The expression's stdout (stripped) is used as the URL.  Useful
+      when the URL must be constructed from the architecture string itself
+      (e.g. for arch-specific pre-built binary tarballs).
+      The entry always matches; skip the arch-filter prefix to suppress the
+      source on unsupported architectures.
+
+  Any other entry is returned unchanged with ``include=True``.
+  """
+  # --- Architecture-conditional prefix: (arch_regex)url ---
+  m = _SOURCE_ARCH_RE.match(entry)
+  if m:
+    arch_re, rest = m.group(1), m.group(2).lstrip()
+    include = bool(re.match(arch_re, architecture))
+    return rest, include
+
+  # --- Inline bash evaluation: $(bash_expr) ---
+  if entry.startswith("$(") and entry.endswith(")"):
+    expr = entry[2:-1]
+    env = dict(os.environ)
+    env["ARCHITECTURE"] = architecture
+    try:
+      result = subprocess.check_output(
+        ["bash", "-c", "echo " + expr], env=env, text=True
+      ).strip()
+    except subprocess.CalledProcessError as exc:
+      raise OSError(
+        "Failed to evaluate source expression %r: %s" % (entry, exc)
+      )
+    return result, True
+
+  return entry, True
 
 
 def _archive_prefix_depth(archive_path):
@@ -379,20 +430,40 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
       shutil.copyfile(os.path.join(spec["pkgdir"], 'patches', patch_name), dst)
       check_file_checksum(dst, patch_name, patch_checksum, enforce_mode)
   if spec.get("sources"):
+    # Resolve arch-conditional / bash-evaluated source entries before
+    # downloading.  ARCHITECTURE comes from the build environment; fall back
+    # to "" when running outside a full build (e.g. tests).
+    _arch = os.environ.get("ARCHITECTURE", "")
+    _fmt = {"name": spec["package"], "version": spec["version"]}
+    active_sources = []
+    for s in spec["sources"]:
+      resolved, include = _resolve_source_entry(s, _arch)
+      if not include:
+        debug("Skipping source %r: architecture %r does not match", s, _arch)
+        continue
+      # Substitute %(name)s and %(version)s in the resolved URL so recipes
+      # can write concise entries like:
+      #   https://example.com/%(name)s-%(version)s.tar.gz
+      try:
+        resolved = resolved % _fmt
+      except (KeyError, ValueError):
+        pass  # leave the string as-is if substitution fails
+      active_sources.append(resolved)
+
     def _download_one(s):
       url, inline_checksum = parse_entry(s)
       src_checksum = _source_checksums.get(url) or inline_checksum
       download(url, source_dir, work_dir, checksum=src_checksum,
                enforce_mode=enforce_mode, sync_helper=sync_helper)
 
-    if parallel_sources <= 1 or len(spec["sources"]) <= 1:
+    if parallel_sources <= 1 or len(active_sources) <= 1:
       # Sequential path: preserves original behaviour for the common case.
-      for s in spec["sources"]:
+      for s in active_sources:
         _download_one(s)
     else:
       # Parallel path: submit all source downloads and re-raise the first error.
       with ThreadPoolExecutor(max_workers=parallel_sources) as pool:
-        futures = {pool.submit(_download_one, s): s for s in spec["sources"]}
+        futures = {pool.submit(_download_one, s): s for s in active_sources}
         first_exc = None
         for fut in as_completed(futures):
           exc = fut.exception()
