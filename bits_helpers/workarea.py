@@ -8,6 +8,7 @@ import subprocess
 import tarfile as _tarfile_mod
 import tempfile
 import zipfile
+from glob import glob
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -333,7 +334,24 @@ def _apply_patches(spec, source_dir):
     patch_name, _ = parse_entry(patch_entry)
     patch_path = os.path.join(source_dir, patch_name)
     debug("Applying patch %s in %s", patch_name, source_dir)
-    subprocess.check_call(["patch", "-p1", "--batch", "--input", patch_path], cwd=source_dir)
+    try:
+      subprocess.check_call(["patch", "-p1", "--batch", "--input", patch_path], cwd=source_dir)
+    except subprocess.CalledProcessError:
+      # Collect any .rej files left behind by patch so the developer can see
+      # exactly which hunks failed without having to dig into the build tree.
+      rej_files = sorted(glob(os.path.join(source_dir, "**", "*.rej"), recursive=True))
+      rejects = ""
+      for rej in rej_files:
+        try:
+          with open(rej) as fh:
+            rejects += "\n--- %s ---\n%s" % (os.path.relpath(rej, source_dir), fh.read())
+        except OSError:
+          rejects += "\n--- %s --- (could not read)\n" % os.path.relpath(rej, source_dir)
+      dieOnError(True, "Patch %s failed to apply for %s.%s" % (
+        patch_name, spec.get("package", "?"),
+        rejects if rejects else "\n(no .rej files found — check patch format/strip level)",
+      ))
+      return  # sentinel must not be written on failure (also guards mocked dieOnError in tests)
 
   open(sentinel, "w").close()
 

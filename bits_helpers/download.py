@@ -405,7 +405,14 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
     match = urlTypeRe.match(source)
     if not urlTypeRe.match(source):
         raise MalformedUrl(source)
-    downloadHandler = downloadHandlers[match.group(1)]
+    protocol = match.group(1)
+    if protocol not in downloadHandlers:
+      from bits_helpers.log import dieOnError as _dieOnError
+      _dieOnError(True,
+        "Unsupported protocol %r in source URL.\n"
+        "  Supported protocols: %s\n"
+        "  URL: %s" % (protocol, ", ".join(sorted(downloadHandlers)), source))
+    downloadHandler = downloadHandlers[protocol]
     filename = source.rsplit("/", 1)[1]
     downloadDir = join(cacheDir, url_checksum[0:2], url_checksum)
     try:

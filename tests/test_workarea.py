@@ -222,22 +222,24 @@ class ApplyPatchesTest(unittest.TestCase):
     # Failure path: no sentinel on error
     # ------------------------------------------------------------------
 
+    @patch("bits_helpers.workarea.dieOnError")
     @patch("subprocess.check_call",
            side_effect=subprocess.CalledProcessError(1, "patch"))
-    def test_patch_failure_propagates(self, mock_cc):
-        """A failing patch(1) call must propagate the exception."""
-        with self.assertRaises(subprocess.CalledProcessError):
-            _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
+    def test_patch_failure_calls_dieOnError(self, mock_cc, mock_die):
+        """A failing patch(1) call must invoke dieOnError with a descriptive message."""
+        _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
+        mock_die.assert_called_once()
+        args = mock_die.call_args[0]
+        self.assertTrue(args[0], "dieOnError must be called with truthy error flag")
+        self.assertIn("fix-a.patch", args[1], "error message must name the failing patch file")
 
+    @patch("bits_helpers.workarea.dieOnError")
     @patch("subprocess.check_call",
            side_effect=subprocess.CalledProcessError(1, "patch"))
-    def test_no_sentinel_on_failure(self, mock_cc):
+    def test_no_sentinel_on_failure(self, mock_cc, mock_die):
         """If patch(1) fails, .bits_patched must NOT be created."""
         sentinel = os.path.join(self.source_dir, ".bits_patched")
-        try:
-            _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
-        except subprocess.CalledProcessError:
-            pass
+        _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
         self.assertFalse(os.path.exists(sentinel),
                          ".bits_patched must not exist after a failed patch application")
 

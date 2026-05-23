@@ -62,14 +62,17 @@ class TestYamlLoadIncludes(unittest.TestCase):
         self.assertEqual(data["root"]["nested"]["x"], 42)
 
     def test_missing_include_raises(self):
-        # Include a missing yaml file raises FileNotFoundError
+        # A missing !include file must raise a yaml.YAMLError (ConstructorError)
+        # with the filename in the message, rather than a raw FileNotFoundError.
+        import yaml
         main = self._write("main.yaml", """
             missing: !include nofile.yaml
             """)
 
-        with self.assertRaises(FileNotFoundError):
+        with self.assertRaises(yaml.YAMLError) as ctx:
             with open(main) as f:
                 yamlLoad(f)
+        self.assertIn("nofile.yaml", str(ctx.exception))
 
     def test_relative_path_resolution(self):
         # !include paths should be resolved relative to the parent file.

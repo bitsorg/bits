@@ -358,7 +358,15 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
   # "final" will have the value "bar" (first expanded to "%(foo_key)s" and
   # then to value of "foo_key" i.e. "bar")
   while re.search(r"\%\([a-zA-Z][a-zA-Z0-9_]*\)s", data):
-    data = data % all_vars
+    try:
+      data = data % all_vars
+    except KeyError as e:
+      dieOnError(True,
+        "Unknown variable %s referenced in recipe for '%s'.\n"
+        "  Offending value: %r\n"
+        "  Available variables: %s" % (
+          e, package or "?", data, ", ".join(sorted(all_vars))))
+      return data  # guard for mocked dieOnError in tests
   return data
 
 def resolve_version(spec, defaults, branch_basename, branch_stream):
@@ -371,7 +379,13 @@ def resolve_tag(spec):
   - %(day)s
   - %(hour)s
   """
-  return spec["tag"] % {**nowKwds, **spec}
+  try:
+    return spec["tag"] % {**nowKwds, **spec}
+  except KeyError as e:
+    dieOnError(True,
+      "Unknown variable %s in tag field of recipe for '%s': %r" % (
+        e, spec.get("package", "?"), spec.get("tag", "")))
+    return spec.get("tag", "")  # guard for mocked dieOnError in tests
 
 
 def normalise_multiple_options(option, sep=","):
@@ -776,13 +790,31 @@ def yamlLoad(s):
     """Include file referenced at node."""
     filename = os.path.abspath(os.path.join(loader._root, loader.construct_scalar(node)))
     extension = os.path.splitext(filename)[1].lstrip('.')
-    with open(filename) as f:
-      if extension in ('yaml', 'yml'):
-        return yaml.load(f, YamlSafeOrderedLoader)
-      elif extension in ('json', ):
-        return json.load(f)
-      else:
-        return ''.join(f.readlines())
+    try:
+      with open(filename) as f:
+        if extension in ('yaml', 'yml'):
+          try:
+            return yaml.load(f, YamlSafeOrderedLoader)
+          except (yaml.scanner.ScannerError, yaml.parser.ParserError) as e:
+            raise yaml.constructor.ConstructorError(
+              None, None,
+              "!include: failed to parse YAML file %r: %s" % (filename, e),
+              node.start_mark)
+        elif extension in ('json', ):
+          try:
+            return json.load(f)
+          except ValueError as e:
+            raise yaml.constructor.ConstructorError(
+              None, None,
+              "!include: failed to parse JSON file %r: %s" % (filename, e),
+              node.start_mark)
+        else:
+          return ''.join(f.readlines())
+    except OSError as e:
+      raise yaml.constructor.ConstructorError(
+        None, None,
+        "!include: cannot open file %r: %s" % (filename, e),
+        node.start_mark)
 
   def construct_mapping(loader, node):
     loader.flatten_mapping(node)
@@ -847,7 +879,7 @@ def parseRecipe(reader, generatePackages=None, visited=None):
     err = str(e)
   except SpecError as e:
     err = "Malformed header for {}\n{}".format(reader.url, str(e))
-  except (yaml.scanner.ScannerError, yaml.parser.ParserError) as e:
+  except yaml.YAMLError as e:
     err = "Unable to parse {}\n{}".format(reader.url, str(e))
   except ValueError:
     err = "Unable to parse %s. Header missing." % reader.url
@@ -1318,9 +1350,18 @@ def getGeneratedPackages(configDir):
   for pkgdir in pkgDirs:
     dir_pkgs = {}
     for vp in [x.split(os.sep)[-2] for x in glob(join(pkgdir, "*", "packages.py"))]:
+      packages_py = join(pkgdir, vp, "packages.py")
       sys.path.insert(0, join(pkgdir, vp))
-      pkg = __import__("packages")
-      pkg.getPackages(dir_pkgs, pkgdir)
+      try:
+        pkg = __import__("packages")
+      except (ImportError, SyntaxError) as e:
+        sys.path.pop(0)
+        dieOnError(True, "Failed to import generated-packages script %r: %s" % (packages_py, e))
+        continue
+      try:
+        pkg.getPackages(dir_pkgs, pkgdir)
+      except Exception as e:
+        dieOnError(True, "Error running getPackages() in %r: %s" % (packages_py, e))
       sys.modules.pop("packages")
       sys.path.pop(0)
     all_pkgs[pkgdir] = dir_pkgs
