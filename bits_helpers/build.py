@@ -670,10 +670,13 @@ def create_provenance_info(package, specs, args):
     return {
       "name": spec["package"],
       "tag": spec.get("tag"),
-      "source": spec.get("source"),
+      "sources": spec.get("sources") or [spec.get("source")],
+      "patches": spec.get("patches") or [],
       "version": spec["version"],
       "revision": spec["revision"],
       "hash": spec["hash"],
+      "variables": spec.get("variables", {}),
+      "family": spec.get("pkg_family", "")
     }
 
   def dependency_list(key):
