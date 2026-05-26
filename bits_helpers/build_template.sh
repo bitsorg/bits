@@ -134,6 +134,18 @@ export RECC_PREFIX_MAP=$BUILDDIR=/recc/BUILDDIR-$PKGNAME:$INSTALLROOT=/recc/INST
 # No point in mixing packages
 export RECC_ACTION_SALT="$PKGNAME"
 
+# Safety guards: validate WORK_DIR and PKGHASH before any destructive rm
+# operation.  An empty WORK_DIR would expand "$WORK_DIR/INSTALLROOT/$PKGHASH"
+# to "/INSTALLROOT/..." (catastrophic); an empty PKGHASH would wipe the entire
+# INSTALLROOT tree.  BUILDROOT inherits the same risk.
+if [[ -z "${WORK_DIR}" || ! "${WORK_DIR}" = /* ]]; then
+  echo "ERROR: WORK_DIR is empty or not an absolute path ('${WORK_DIR:-}') — aborting." >&2
+  exit 1
+fi
+if [[ -z "${PKGHASH}" ]]; then
+  echo "ERROR: PKGHASH is empty — refusing to rm -fr '$WORK_DIR/INSTALLROOT/'" >&2
+  exit 1
+fi
 rm -fr "$WORK_DIR/INSTALLROOT/$PKGHASH"
 # We remove the build directory only if we are not in incremental mode.
 if [[ "$INCREMENTAL_BUILD_HASH" == 0 ]] && ! rm -rf "$BUILDROOT"; then

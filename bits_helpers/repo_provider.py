@@ -302,6 +302,12 @@ def clone_or_update_provider(
         or tag  # fall-back: tag is already a raw commit hash
     )
     short_hash = commit_hash[:10] if len(commit_hash) > 10 else commit_hash
+    # Safety: an empty hash would collapse checkout_dir to cache_root itself,
+    # causing shutil.rmtree to wipe the entire package cache on the next step.
+    dieOnError(not short_hash,
+               "commit_hash resolved to empty string for provider '%s' tag '%s' — "
+               "refusing to construct checkout_dir to prevent clobbering the "
+               "package cache." % (package, tag))
     checkout_dir = join(cache_root, short_hash)
 
     # ── 3. Cache-hit check ───────────────────────────────────────────────
@@ -317,6 +323,13 @@ def clone_or_update_provider(
 
     # ── 4. Clone + checkout ──────────────────────────────────────────────
     banner("Fetching repository provider '%s' @ %s", package, tag)
+    # Safety: refuse to clone over an existing git repository — this would
+    # destroy a different provider's checkout if two packages ever resolved to
+    # the same (or an empty) hash subdirectory.
+    dieOnError(exists(join(checkout_dir, ".git")),
+               "checkout_dir '%s' already contains a .git repository; refusing "
+               "to clone provider '%s' over it to prevent clobbering an existing "
+               "checkout." % (checkout_dir, package))
     shutil.rmtree(checkout_dir, ignore_errors=True)
 
     err, out = scm.exec(

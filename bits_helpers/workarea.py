@@ -627,6 +627,19 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
   else:
     # Sources are a relative path or URL and don't exist locally yet, so clone
     # and checkout the git repo from there.
+    # Safety: verify source_dir is inside work_dir before any destructive
+    # operation — an empty or malformed commit hash could otherwise cause
+    # source_dir to collapse to a parent directory.
+    _safe_work_dir = os.path.abspath(work_dir) + os.sep
+    _safe_source_dir = os.path.abspath(source_dir)
+    dieOnError(not _safe_source_dir.startswith(_safe_work_dir),
+               "source_dir '%s' is outside work_dir '%s' — refusing to remove "
+               "it to prevent accidental data loss." % (source_dir, work_dir))
+    # Safety: refuse to clone over an existing git repository.
+    dieOnError(os.path.exists(os.path.join(source_dir, ".git")),
+               "source_dir '%s' already contains a .git repository; refusing to "
+               "clone '%s' over it to prevent clobbering an existing checkout."
+               % (source_dir, spec.get("source", "?")))
     shutil.rmtree(source_dir, ignore_errors=True)
     scm_exec(scm.cloneSourceCmd(spec["source"], source_dir, spec.get("reference"),
                                 usePartialClone=True))
