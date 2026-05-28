@@ -280,7 +280,40 @@ nowKwds = {
   "hour":  str(now.hour).zfill(2),
 }
 
-def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""):
+_INCLUDE_RE = re.compile(r"\%\(##INCLUDE:([^)]+)\)s")
+
+def _expand_includes(text_or_reader, configDir=""):
+  if callable(text_or_reader):
+    url = getattr(text_or_reader, "url", None)
+    if url:
+      configDir = os.path.dirname(os.path.dirname(os.path.abspath(url)))
+    text = text_or_reader()
+  else:
+    text = text_or_reader
+
+  def _find(raw):
+    if os.path.isabs(raw):
+      return raw
+    for d in getConfigPaths(configDir):
+      candidate = os.path.join(d, raw)
+      if os.path.exists(candidate):
+        return candidate
+    raise KeyError("%(##INCLUDE:{})s — not found in any configured recipe directory".format(raw))
+
+  def _read(m):
+    raw = m.group(1).strip()
+    try:
+      path = _find(raw)
+      with open(path) as f:
+        return f.read()
+    except OSError as e:
+      raise KeyError("%(##INCLUDE:{})s — cannot read file: {}".format(raw, e)) from None
+
+  while _INCLUDE_RE.search(text):
+    text = _INCLUDE_RE.sub(_read, text)
+  return text
+
+def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream="", default_vars=None, configDir=None):
   """Expand the data replacing the following keywords:
 
   - %(package)s
@@ -322,6 +355,9 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
   }
   for k, v in spec.get("variables",{}).items():
     all_vars[k] = v
+  if default_vars is not None:
+    for k, v in default_vars.items():
+      all_vars[k] = v
 
   # Support for indirect variable expansion e.g. with
   # variables:
@@ -330,8 +366,12 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
   #   final: %%(%(v1)s_key)s
   # "final" will have the value "bar" (first expanded to "%(foo_key)s" and
   # then to value of "foo_key" i.e. "bar")
-  while re.search(r"\%\([a-zA-Z][a-zA-Z0-9_]*\)s", data):
-    data = data % all_vars
+  data = _expand_includes(data, configDir)
+  while re.search(r"\%\([a-zA-Z][a-zA-Z0-9_-]*\)s", data):
+    try:
+      data = data % all_vars
+    except KeyError as e:
+      raise KeyError("variable %({})s used but not defined".format(e.args[0])) from None
   return data
 
 def resolve_version(spec, defaults, branch_basename, branch_stream):
@@ -693,11 +733,12 @@ def yamlDump(s):
   YamlOrderedDumper.add_representer(OrderedDict, represent_ordereddict)
   return yaml.dump(s, Dumper=YamlOrderedDumper)
 
+
 def parseRecipe(reader, generatePackages=None, visited=None):
   assert(reader.__call__)
   err, spec, recipe = (None, None, None)
   try:
-    d = reader()
+    d = _expand_includes(reader)
     header,recipe = d.split("---", 1)
     spec = yamlLoad(header)
     if spec and "from" in spec:

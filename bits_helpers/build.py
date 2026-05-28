@@ -1449,8 +1449,9 @@ def doBuild(args, parser):
       spec["source"] = resolve_spec_data(spec, spec["source"], args.defaults, branch_basename, branch_stream)
     if "sources" in spec:
       spec["sources"] = [resolve_spec_data(spec, src, args.defaults, branch_basename, branch_stream) for src in spec["sources"]]
-    if variables or spec.get("expand_recipe", False):
-      spec["recipe"] = resolve_spec_data(spec, spec["recipe"], args.defaults, branch_basename, branch_stream)
+    default_vars = defaultsMeta.get("variables")
+    if variables or default_vars or spec.get("expand_recipe", False):
+      spec["recipe"] = resolve_spec_data(spec, spec["recipe"], args.defaults, branch_basename, branch_stream, default_vars)
 
     if spec["is_devel_pkg"] and "develPrefix" in args and args.develPrefix != "ali-master":
       spec["version"] = args.develPrefix
