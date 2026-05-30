@@ -162,16 +162,19 @@ class ResolveSandboxModeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve_sandbox_mode("sandbox-exec", False)
 
-    # auto, no docker, Linux
+    # auto, no docker, Linux: sandboxing is off and podman is NOT probed.
+    # podman is only used inside --docker or when explicitly requested.
     @patch("sys.platform", "linux")
     @patch("bits_helpers.sandbox.podman_available", return_value=True)
-    def test_auto_linux_podman_available(self, _p):
-        self.assertEqual("podman", resolve_sandbox_mode("auto", False))
+    def test_auto_linux_no_docker_is_off(self, _p):
+        self.assertEqual("off", resolve_sandbox_mode("auto", False))
+        _p.assert_not_called()
 
     @patch("sys.platform", "linux")
     @patch("bits_helpers.sandbox.podman_available", return_value=False)
-    def test_auto_linux_no_podman(self, _p):
+    def test_auto_linux_no_docker_off_without_probe(self, _p):
         self.assertEqual("off", resolve_sandbox_mode("auto", False))
+        _p.assert_not_called()
 
     # auto, no docker, macOS
     @patch("sys.platform", "darwin")

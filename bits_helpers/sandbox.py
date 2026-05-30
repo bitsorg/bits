@@ -144,8 +144,14 @@ def resolve_sandbox_mode(requested: str, docker_active: bool) -> str:
     if sys.platform == "darwin":
         return "sandbox-exec" if sandbox_exec_available() else "off"
 
-    # Linux, no docker
-    return "podman" if podman_available() else "off"
+    # Linux, no outer Docker: do NOT use — or even probe — podman here.  Recipe
+    # sandboxing with podman is only meaningful when a container image is
+    # available, i.e. inside --docker (the nested-podman branch above) or when
+    # the user explicitly asks for it via --sandbox=podman / --sandbox-image
+    # (handled by the requested == "podman" branch). Returning "off" here keeps
+    # an ordinary `bits build` from invoking `podman info` and from depending on
+    # a working rootless-podman setup.
+    return "off"
 
 
 # ---------------------------------------------------------------------------

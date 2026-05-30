@@ -314,18 +314,20 @@ def doParseArgs():
 
   build_sandbox = build_parser.add_argument_group(title="Recipe sandbox", description="""\
   Run each recipe build script inside an isolated sandbox to limit the impact
-  of malicious or buggy recipes.  On Linux, podman (rootless) is used; on
-  macOS, the built-in sandbox-exec is used (no VM, no overhead).
-  When --docker is active, a nested podman container is added inside the
-  builder container for an additional isolation layer.
+  of malicious or buggy recipes.  On macOS, the built-in sandbox-exec is used
+  (no VM, no overhead).  On Linux, podman (rootless) is used only when --docker
+  is active (a nested podman container inside the builder image) or when
+  requested explicitly with --sandbox=podman; a plain local Linux build is not
+  sandboxed and never invokes podman.
   """)
   build_sandbox.add_argument(
       "--sandbox", dest="sandbox", metavar="MODE", default="auto",
       choices=["off", "auto", "podman", "sandbox-exec"],
       help=(
           "Recipe sandbox mode. "
-          "'auto' (default): use podman on Linux if available, "
-          "sandbox-exec on macOS, nested podman when --docker is active. "
+          "'auto' (default): sandbox-exec on macOS, nested podman when --docker "
+          "is active, and 'off' on a local Linux build (podman is not used or "
+          "even probed there). "
           "'podman': always use podman (requires --docker or --sandbox-image). "
           "'sandbox-exec': macOS only. "
           "'off': no sandboxing."

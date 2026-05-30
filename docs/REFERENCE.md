@@ -2319,9 +2319,11 @@ Bits can run each recipe build script inside an isolated sandbox to limit the da
 
 | Platform | Default sandbox | Mechanism |
 |----------|-----------------|-----------|
-| Linux (local build) | podman if available, otherwise `off` | Rootless `podman run` with `--userns=keep-id` |
+| Linux (local build, no `--docker`) | `off` | podman is **not** used (or even probed) for plain local builds |
 | macOS (local build) | `sandbox-exec` if available, otherwise `off` | Built-in SBPL sandbox profile; no VM, no overhead |
 | Any platform, `--docker` active | Nested podman inside the container, if available | `podman run` launched from inside the Docker build container |
+
+> **Note.** On a local Linux build without `--docker`, `--sandbox=auto` resolves to `off` and bits never invokes `podman` (not even `podman info`). podman-based recipe isolation on Linux is only engaged when the build runs inside `--docker`, or when it is requested explicitly with `--sandbox=podman` / `--sandbox-image`.
 
 The workDir is bind-mounted at the same absolute path inside the podman container so that all paths embedded in the build environment (`$WORK_DIR`, `$INSTALLROOT`, `$SOURCEDIR`, etc.) resolve correctly.
 
@@ -2331,7 +2333,7 @@ Pass `--sandbox MODE` to `bits build`:
 
 | Mode | Behaviour |
 |------|-----------|
-| `auto` | (default) Pick the best available option — podman on Linux, `sandbox-exec` on macOS, nested podman when `--docker` is active. Falls back to `off` with a warning if nothing is available. |
+| `auto` | (default) Pick the best available option: `sandbox-exec` on macOS, nested podman when `--docker` is active, and `off` on a local Linux build (no `--docker`). On local Linux, podman is neither used nor probed — request it explicitly with `--sandbox=podman` if you want it. |
 | `podman` | Always use podman. Requires the podman binary to be reachable and `podman info` to succeed. When used without `--docker`, also requires `--sandbox-image` to name the container image. |
 | `sandbox-exec` | macOS only. Fails with an error on Linux. |
 | `off` | No sandboxing. Recipe runs directly on the host (same as the behaviour before this feature was added). |
