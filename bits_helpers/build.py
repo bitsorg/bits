@@ -908,6 +908,31 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   doFinalSync(spec, specs, args, syncHelper)
 
 
+def _doCheckout(spec, workDir, referenceSources, docker, enforce_mode,
+                syncHelper, parallel_sources, architecture):
+  """Scheduler "download" task: fetch a package's sources.
+
+  Used by the --builders path so that source clones/archive downloads run as
+  scheduler tasks (capped by --parallel-downloads) overlapping compilation,
+  instead of being executed serially in the preparation loop before any build
+  starts.  Mirrors the work the Makeflow path does in its parallel .checkout
+  rules (bits_helpers.checkout_runner).
+
+  Returns an empty string on success or an error message on failure, matching
+  the scheduler convention (a falsy result means the task succeeded).
+  """
+  try:
+    checkout_sources(spec, workDir, referenceSources, docker,
+                     enforce_mode=enforce_mode,
+                     sync_helper=syncHelper,
+                     parallel_sources=parallel_sources,
+                     architecture=architecture)
+  except OSError as e:
+    return "Failed to fetch sources for %s@%s: %s" % (
+      spec.get("package", "?"), spec.get("version", "?"), e)
+  return ""
+
+
 def doFinalSync(spec, specs, args, syncHelper):
   # When --pipeline --makeflow is active, the Makeflow .build rule runs
   # create_links.sh (dist symlinks) and the .upload rule handles the upload.
@@ -1588,7 +1613,8 @@ def doBuild(args, parser):
   if (args.builders > 1) and buildOrder:
     from bits_helpers.scheduler import Scheduler
     from bits_helpers.log import logger
-    scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources)
+    scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
+                          parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)))
 
   # --- Stale sentinel cleanup -------------------------------------------------
   # Remove any leftover *.downloading sentinels from a previous run that was
@@ -1607,7 +1633,12 @@ def doBuild(args, parser):
             pass
 
   # --- Optional prefetch pool -------------------------------------------------
-  _prefetch_workers = getattr(args, "prefetchWorkers", 0)
+  # Default (-1) means "auto": scale with the number of builders so that, on the
+  # serial preparation loop, downloads overlap instead of blocking — capped at 4
+  # to avoid hammering the store.  0 explicitly disables prefetch; N>0 forces N.
+  _prefetch_workers = getattr(args, "prefetchWorkers", -1)
+  if _prefetch_workers < 0:
+    _prefetch_workers = min(max(int(getattr(args, "builders", 1)), 1), 4)
   _prefetch_executor = None
   if _prefetch_workers > 0 and buildOrder and not isinstance(syncHelper,
       __import__("bits_helpers.sync", fromlist=["NoRemoteSync"]).NoRemoteSync):
@@ -2026,7 +2057,13 @@ def doBuild(args, parser):
       # In Makeflow mode we skip the sequential checkout here and instead
       # generate a .checkout Makeflow rule per package so that all clones and
       # archive downloads run in parallel as part of the DAG.
-      if not args.makeflow:
+      #
+      # In --builders mode (args.builders > 1) we likewise defer the checkout:
+      # it is registered below as a scheduler "download" task (fetch:<pkg>) that
+      # the build task depends on, so source downloads overlap compilation
+      # instead of running serially here before any build starts.  Only the
+      # single-builder path still checks out inline.
+      if not args.makeflow and args.builders == 1:
         try:
           checkout_sources(spec, workDir, args.referenceSources, args.docker,
                            enforce_mode=_download_time_mode(effective_checksum_mode),
@@ -2263,6 +2300,19 @@ def doBuild(args, parser):
         runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper)
       else:
         build_deps = ["build:%s" % d for d in specs[p]["full_requires"] if d in buildTargets]
+        # When the package must be built from source, register its checkout as a
+        # scheduler "download" task (capped by --parallel-downloads) and make the
+        # build wait on it.  The scheduler then compiles ready packages while
+        # other packages' sources are still downloading, removing the up-front
+        # serial download loop.  Packages restored from a cached tarball need no
+        # source download, so they get no fetch task.
+        if not cachedTarball:
+          fetch_id = "fetch:%s" % p
+          scheduler.parallel(fetch_id, [], "download", _doCheckout, spec, workDir,
+                             args.referenceSources, args.docker,
+                             _download_time_mode(effective_checksum_mode), syncHelper,
+                             getattr(args, "parallelSources", 1), raw_architecture)
+          build_deps = build_deps + [fetch_id]
         scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
     else:
       breq = " ".join([str(element) + ".build" for element in spec["full_requires"] if element in buildTargets])

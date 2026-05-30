@@ -370,13 +370,22 @@ def doParseArgs():
                             upload run concurrently with downstream package builds. Silently ignored without
                             --makeflow. Has no effect when --write-store is not set.
                             """)
-  build_remote.add_argument("--prefetch-workers", dest="prefetchWorkers", type=int, default=0,
+  build_remote.add_argument("--prefetch-workers", dest="prefetchWorkers", type=int, default=-1,
                             metavar="N",
                             help="""\
                             Start N background threads that pre-download pre-built tarballs and source
-                            archives for all packages in the build graph before they are needed. A
+                            archives for all packages in the build graph before they are needed, so that
+                            downloads overlap the (serial) preparation loop instead of blocking it. A
                             .downloading sentinel file coordinates with the build loop so no file is
-                            fetched twice. Default: 0 (disabled). Works in all build modes.
+                            fetched twice. Default: -1 (auto = min(builders, 4)); 0 disables prefetch.
+                            Works in all build modes.
+                            """)
+  build_remote.add_argument("--parallel-downloads", dest="parallelDownloads", type=int, default=2,
+                            metavar="N",
+                            help="""\
+                            Maximum number of package downloads the build scheduler runs concurrently
+                            (the scheduler's "download" task cap, separate from the --builders compile
+                            cap). Default: 2. Works with --builders > 1.
                             """)
   build_remote.add_argument("--parallel-sources", dest="parallelSources", type=int, default=1,
                             metavar="N",

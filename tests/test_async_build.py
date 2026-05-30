@@ -353,10 +353,12 @@ class NewCLIFlagsTest(unittest.TestCase):
             args, _ = doParseArgs()
 
         self.assertFalse(args.pipeline, "--pipeline must default to False")
-        self.assertEqual(args.prefetchWorkers, 0,
-                         "--prefetch-workers must default to 0")
+        self.assertEqual(args.prefetchWorkers, -1,
+                         "--prefetch-workers must default to -1 (auto)")
         self.assertEqual(args.parallelSources, 1,
                          "--parallel-sources must default to 1")
+        self.assertEqual(args.parallelDownloads, 2,
+                         "--parallel-downloads must default to 2")
 
     @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")
@@ -556,13 +558,20 @@ class ExtractSourceArchivesTest(unittest.TestCase):
     # -- sentinel prevents re-extraction --------------------------------------
 
     def test_sentinel_skips_extraction(self):
-        """If .bits_extracted exists, no subprocess call is made."""
-        from bits_helpers.workarea import _extract_source_archives
-        sentinel = os.path.join(self.source_dir, ".bits_extracted")
-        open(sentinel, "w").close()
+        """A valid .bits_extracted sentinel skips re-extraction (no subprocess)."""
+        import json
+        from bits_helpers.workarea import (_extract_source_archives,
+                                           _archive_prefix_depth)
         # Place a fake tarball so we can verify it is not touched.
         fake = os.path.join(self.source_dir, "pkg-1.0.tar.gz")
         open(fake, "w").close()
+        # The sentinel records the strip depth used for each archive. Extraction
+        # is skipped only when the recorded depths match what we'd compute now;
+        # an empty/legacy sentinel is treated as stale and triggers re-extraction.
+        # Write a valid sentinel matching the current strip depth.
+        sentinel = os.path.join(self.source_dir, ".bits_extracted")
+        with open(sentinel, "w") as fh:
+            json.dump({"strips": {"pkg-1.0.tar.gz": _archive_prefix_depth(fake)}}, fh)
         with patch("bits_helpers.workarea.subprocess") as mock_sp:
             _extract_source_archives(self.source_dir)
             mock_sp.check_call.assert_not_called()
