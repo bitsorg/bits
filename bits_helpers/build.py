@@ -647,9 +647,25 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # First convert all values to list, so that we can use .setdefault().insert() below.
     prepend_path = {key: [resolve_spec_data(spec, dir, "") for dir in asList(value)]
                     for key, value in spec.get("prepend_path", {}).items()}
-    # By default we add the .../bin directory to PATH and .../lib to LD_LIBRARY_PATH.
-    # Prepend to these paths, so that our packages win against system ones.
-    for key, value in (("PATH", "bin"), ("LD_LIBRARY_PATH", "lib"),  ("LD_LIBRARY_PATH", "lib64")):
+    # By default we add the .../bin directory to PATH, .../lib to LD_LIBRARY_PATH
+    # and .../lib*/pkgconfig to PKG_CONFIG_PATH.  Prepend to these paths, so that
+    # our packages win against system ones.
+    #
+    # PKG_CONFIG_PATH is added generically here so that the *build-time*
+    # environment mirrors what each package's runtime modulefile exposes via the
+    # ModuleRecipe `--pkgconfig` flag: a downstream recipe's ./configure or cmake
+    # then finds every dependency's .pc files without the recipe having to declare
+    # `prepend_path: { PKG_CONFIG_PATH: ... }` by hand.  Each entry is guarded by a
+    # directory-existence test below, so adding it for every dependency is safe
+    # (it is a no-op for packages that ship no pkgconfig directory).
+    #
+    # CMAKE_PREFIX_PATH is deliberately NOT added here: CMake recipes pass it on
+    # the cmake command line as a `;`-separated -D argument (built by CMakeRecipe's
+    # _SetBuildEnvBase), whereas an environment variable would need `:` separators
+    # on Unix.  Mixing the two on the same name corrupts the list, so build-time
+    # CMAKE_PREFIX_PATH stays owned by CMakeRecipe.
+    for key, value in (("PATH", "bin"), ("LD_LIBRARY_PATH", "lib"), ("LD_LIBRARY_PATH", "lib64"),
+                       ("PKG_CONFIG_PATH", "lib/pkgconfig"), ("PKG_CONFIG_PATH", "lib64/pkgconfig")):
       prepend_path.setdefault(key, []).insert(0, f"${bigpackage}_ROOT/{value}")
     lines.extend('[ ! -d "{value}" ] || export {key}="{value}${{{key}+:${key}}}"'
                  .format(key=key, value=dir)
