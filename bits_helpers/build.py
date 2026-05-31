@@ -44,6 +44,7 @@ import socket
 import os
 import re
 import shutil
+import shlex
 import sys
 import time
 import subprocess
@@ -737,10 +738,41 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       (spec["package"],
       args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
     )
-  if args.resourceMonitoring:
-    err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=progress)
-  else:
-    err = execute(build_command, printer=progress)
+  # Optional nice-ladder: claim a priority slot for this concurrent build so CPU
+  # contention degrades gracefully (lead build at full speed, others backed off).
+  # No-op unless --build-nice is set (nice_ladder stays None).
+  #   * Native builds: wrap in `nice -n N /bin/sh -c <cmd>` so the whole build
+  #     process tree inherits the niceness.  Robust for compound commands and
+  #     thread-safe (no preexec_fn fork hazard in the scheduler's workers).
+  #   * Docker/podman builds: each builder is a separate container (cgroup), so
+  #     niceness inside one cannot rank it against the others — the host ranks
+  #     the *containers* by cgroup CPU weight.  Inject `--cpu-shares=W` (the
+  #     container-level equivalent, derived from the same ladder) into `… run`.
+  nice_ladder = getattr(scheduler, "nice_ladder", None) if scheduler is not None else None
+  nice_token = None
+  if nice_ladder is not None:
+    nice_token, nice_level = nice_ladder.acquire()
+    if nice_level:  # nice 0 / default shares need no change
+      if getattr(args, "docker", False):
+        from bits_helpers.nice_ladder import cpu_shares_for_nice
+        shares = cpu_shares_for_nice(nice_level)
+        build_command, _subbed = re.subn(
+            r'\b(docker|podman)\s+run\s',
+            r'\1 run --cpu-shares=%d ' % shares,
+            build_command, count=1)
+        if not _subbed:
+          debug("build-nice: could not inject --cpu-shares (no 'docker/podman run' "
+                "in command); container build runs unthrottled this slot.")
+      else:
+        build_command = "nice -n %d /bin/sh -c %s" % (nice_level, shlex.quote(build_command))
+  try:
+    if args.resourceMonitoring:
+      err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=progress)
+    else:
+      err = execute(build_command, printer=progress)
+  finally:
+    if nice_ladder is not None:
+      nice_ladder.release(nice_token)
   if args.builders==1:
     progress.end("failed" if err else "done", err)
   report_event("BuildError" if err else "BuildSuccess", spec["package"], " ".join((
@@ -1642,6 +1674,16 @@ def doBuild(args, parser):
 
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
                           parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)))
+
+    # Optional: stagger concurrent build jobs across OS 'nice' levels so CPU
+    # contention degrades gracefully (lead build at nice 0, others niced down).
+    # Opt-in via --build-nice so it can be A/B tested against the default.
+    scheduler.nice_ladder = None
+    if getattr(args, "buildNice", False):
+      from bits_helpers.nice_ladder import NiceLadder
+      scheduler.nice_ladder = NiceLadder(args.builders, step=getattr(args, "buildNiceStep", 5))
+      info("Build nice-ladder enabled: %d slots, step %d (lead build at nice 0).",
+           args.builders, getattr(args, "buildNiceStep", 5))
 
   # --- Stale sentinel cleanup -------------------------------------------------
   # Remove any leftover *.downloading sentinels from a previous run that was

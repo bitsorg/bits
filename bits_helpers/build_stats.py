@@ -60,6 +60,10 @@ def machine_resources() -> dict:
 
     ``cpu`` is ``ncpu * 100`` to match the monitor's summed-percent scale;
     ``rss`` is total physical memory in bytes (0 if psutil is unavailable).
+
+    Host-based on purpose: in the production model one build job owns the whole
+    machine and (under ``--docker``) pins every per-package container to the full
+    host, so the ResourceManager budgets against the host.
     """
     cpu = (multiprocessing.cpu_count() or 1) * 100
     rss = 0

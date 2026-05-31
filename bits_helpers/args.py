@@ -229,6 +229,18 @@ def doParseArgs():
   build_parser.add_argument("--builders", dest="builders", type=int, default=1,
                             help=("The number of independent packages to build in parallel. "
                                   "Default is: %(default)d."))
+  build_parser.add_argument("--build-nice", dest="buildNice", action="store_true",
+                            help=("Run concurrent --builders jobs at staggered priority so CPU "
+                                  "contention degrades gracefully: at any moment one build runs at top "
+                                  "priority (full speed) and the others are progressively backed off, with "
+                                  "the freed top slot taken over as builds finish. Native builds use OS "
+                                  "'nice'; --docker/podman builds use the equivalent 'docker run "
+                                  "--cpu-shares' on each build container. Memory is still capped separately "
+                                  "(mem_per_job). Only affects --builders > 1. Off by default."))
+  build_parser.add_argument("--build-nice-step", dest="buildNiceStep", type=int, default=5, metavar="N",
+                            help=("Nice increment between concurrent build slots when --build-nice is set "
+                                  "(slot k -> nice min(k*N, 19)). N=1 gives a gentle 0,1,2,3 ladder; larger "
+                                  "values separate slots more aggressively. Default: %(default)d."))
   build_parser.add_argument("--resource-monitoring", dest="resourceMonitoring", action="store_true",
                             help="Enable resource monitoring for each built package.")
   build_parser.add_argument("--resources", dest="resources", default=None,
