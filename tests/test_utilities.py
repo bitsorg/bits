@@ -7,7 +7,7 @@ from bits_helpers.utilities import doDetectArch, filterByArchitectureDefaults, d
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import asList
 from bits_helpers.utilities import prunePaths
-from bits_helpers.utilities import resolve_version
+from bits_helpers.utilities import resolve_version, resolve_spec_data
 from bits_helpers.utilities import topological_sort
 from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
 from bits_helpers.utilities import _parse_req_matcher, _collect_version_pins
@@ -475,6 +475,49 @@ class TestTopologicalSort(unittest.TestCase):
         }))
         self.assertEqual({"A", "B", "C"}, set(result))
         self.assertEqual(3, len(result))
+
+
+class TestResolveSpecDataVariables(unittest.TestCase):
+    """Defaults-profile variables + soft expansion (PR #97, softer variant)."""
+
+    def _spec(self, variables=None):
+        return {"package": "foo", "commit_hash": "abc1234567", "tag": "v1",
+                "version": "1.0", "variables": variables or {}}
+
+    def test_default_var_available(self):
+        out = resolve_spec_data(self._spec(), "%(base)s/x", ["release"],
+                                default_vars={"base": "http://h"}, strict=False)
+        self.assertEqual(out, "http://h/x")
+
+    def test_recipe_var_overrides_default(self):
+        out = resolve_spec_data(self._spec({"v": "recipe"}), "%(v)s", ["release"],
+                                default_vars={"v": "defaults"}, strict=True)
+        self.assertEqual(out, "recipe")
+
+    def test_soft_leaves_unknown_and_shell_percent_untouched(self):
+        # %(base)s/%(name)s substitute; %(unknown)s, %%, and ${X%suffix} stay put,
+        # and nothing raises (the soft path never does raw %-formatting).
+        data = "u=%(base)s/%(name)s pct=100%% keep=${X%suffix} miss=%(unknown)s"
+        out = resolve_spec_data(self._spec(), data, ["release"],
+                                default_vars={"base": "http://h"}, strict=False)
+        self.assertEqual(out, "u=http://h/foo pct=100%% keep=${X%suffix} miss=%(unknown)s")
+
+    def test_soft_indirect_nesting(self):
+        out = resolve_spec_data(self._spec(), "%(%(v1)s_key)s", ["release"],
+                                default_vars={"v1": "foo", "foo_key": "bar"}, strict=False)
+        self.assertEqual(out, "bar")
+
+    def test_strict_unknown_is_fatal(self):
+        with patch("bits_helpers.utilities.dieOnError") as die:
+            resolve_spec_data(self._spec(), "%(nope)s", ["release"], strict=True)
+        self.assertTrue(die.called)
+        self.assertIs(die.call_args[0][0], True)  # dieOnError(True, ...)
+
+    def test_strict_indirect_double_percent_still_works(self):
+        spec = self._spec({"v1": "foo", "foo_key": "bar"})
+        out = resolve_spec_data(spec, "%%(%(v1)s_key)s", ["release"], strict=True)
+        self.assertEqual(out, "bar")
+
 
 if __name__ == '__main__':
     unittest.main()

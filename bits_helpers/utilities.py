@@ -305,7 +305,8 @@ nowKwds = {
   "hour":  str(now.hour).zfill(2),
 }
 
-def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""):
+def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream="",
+                      default_vars=None, strict=True):
   """Expand the data replacing the following keywords:
 
   - %(name)s      — package name (alias for %(package)s, preferred in source URLs)
@@ -347,26 +348,49 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
     "os_name": os.name,
     **nowKwds,
   }
+  # default_vars come from the active --defaults profile's `variables:` block and
+  # are shared across recipes.  Apply them BEFORE the recipe's own `variables:`
+  # so a recipe-local definition overrides a profile-wide one of the same name.
+  for k, v in (default_vars or {}).items():
+    all_vars[k] = v
   for k, v in spec.get("variables",{}).items():
     all_vars[k] = v
 
-  # Support for indirect variable expansion e.g. with
-  # variables:
-  #   v1: foo
-  #   foo_key: bar
-  #   final: %%(%(v1)s_key)s
-  # "final" will have the value "bar" (first expanded to "%(foo_key)s" and
-  # then to value of "foo_key" i.e. "bar")
-  while re.search(r"\%\([a-zA-Z][a-zA-Z0-9_]*\)s", data):
-    try:
-      data = data % all_vars
-    except KeyError as e:
-      dieOnError(True,
-        "Unknown variable %s referenced in recipe for '%s'.\n"
-        "  Offending value: %r\n"
-        "  Available variables: %s" % (
-          e, package or "?", data, ", ".join(sorted(all_vars))))
-      return data  # guard for mocked dieOnError in tests
+  if strict:
+    # Opted-in expansion — version/tag/source/patches, or a recipe that sets
+    # `variables:` / `expand_recipe: true`.  An unknown %(x)s is almost certainly
+    # a typo, so it is fatal.  Uses %-formatting so the documented indirect form
+    # `%%(%(v1)s_key)s` keeps working (%% collapses to % between passes).
+    #   variables:
+    #     v1: foo
+    #     foo_key: bar
+    #     final: %%(%(v1)s_key)s   # -> %(foo_key)s -> bar
+    while re.search(r"\%\([a-zA-Z][a-zA-Z0-9_]*\)s", data):
+      try:
+        data = data % all_vars
+      except KeyError as e:
+        dieOnError(True,
+          "Unknown variable %s referenced in recipe for '%s'.\n"
+          "  Offending value: %r\n"
+          "  Available variables: %s" % (
+            e, package or "?", data, ", ".join(sorted(all_vars))))
+        return data  # guard for mocked dieOnError in tests
+    return data
+
+  # Soft expansion — the recipe did NOT opt in and is only being expanded because
+  # the defaults profile defines `variables:`.  Substitute only the variables we
+  # actually know, leaving any other %(...)s — and bare `%` (shell parameter
+  # expansion like ${v%suffix}, printf %d, etc.) — untouched, so incidental
+  # occurrences in a recipe body are neither clobbered nor turned into a fatal
+  # error.  Loops to support indirect %(%(v1)s_key)s nesting; the prev!=data
+  # guard terminates once no further known substitutions are possible.
+  _var_re = re.compile(r"\%\(([a-zA-Z][a-zA-Z0-9_]*)\)s")
+  def _sub_known(m):
+    return str(all_vars[m.group(1)]) if m.group(1) in all_vars else m.group(0)
+  prev = None
+  while prev != data and _var_re.search(data):
+    prev = data
+    data = _var_re.sub(_sub_known, data)
   return data
 
 def resolve_version(spec, defaults, branch_basename, branch_stream):

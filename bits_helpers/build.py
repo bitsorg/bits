@@ -1549,8 +1549,19 @@ def doBuild(args, parser):
       spec["sources"] = [resolve_spec_data(spec, src, args.defaults, branch_basename, branch_stream) for src in spec["sources"]]
     if "patches" in spec:
       spec["patches"] = [resolve_spec_data(spec, p, args.defaults, branch_basename, branch_stream) for p in spec["patches"]]
-    if variables or spec.get("expand_recipe", False):
-      spec["recipe"] = resolve_spec_data(spec, spec["recipe"], args.defaults, branch_basename, branch_stream)
+    # Variables defined in the active --defaults profile's `variables:` block are
+    # available to every recipe body.  When a recipe does not itself opt into
+    # expansion (no `variables:` / `expand_recipe: true`) we expand it in SOFT
+    # mode: only known variables are substituted and any other %(...)s / bare %
+    # is left untouched, so profile-wide variables never clobber or break a
+    # recipe that happens to contain a literal %(...)s or shell `%`.
+    default_vars = defaultsMeta.get("variables") or None
+    recipe_opts_in = bool(variables or spec.get("expand_recipe", False))
+    if recipe_opts_in or default_vars:
+      spec["recipe"] = resolve_spec_data(spec, spec["recipe"], args.defaults,
+                                         branch_basename, branch_stream,
+                                         default_vars=default_vars,
+                                         strict=recipe_opts_in)
 
     if spec["is_devel_pkg"] and "develPrefix" in args and args.develPrefix != "ali-master":
       spec["version"] = args.develPrefix
