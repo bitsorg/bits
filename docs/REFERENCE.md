@@ -566,7 +566,9 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
-| `--builders N` | Packages to build simultaneously using the built-in Python scheduler. Default: 1 (serial). Mutually exclusive with `--makeflow`; if both are given, `--makeflow` takes precedence. |
+| `--builders N` | Packages to build simultaneously using the built-in Python scheduler. Default: 1 (serial). Mutually exclusive with `--makeflow`; if both are given, `--makeflow` takes precedence. With N>1, each build's `$JOBS` is divided across the builders (the CPU/load budget, see [Memory- and load-aware parallelism](#memory-aware-parallelism)) so the concurrent jobs together do not oversubscribe the machine. |
+| `--build-nice` | Stagger the concurrent `--builders` jobs across OS scheduling priority so CPU contention degrades gracefully: at any moment one build runs at top priority (full speed) and the others are progressively backed off, with the freed top slot taken over as builds finish. Native builds are wrapped in `nice -n N`; `--docker`/podman builds get `docker run --cpu-shares=W` (each builder is a separate container/cgroup, so the host ranks the build *containers* by cgroup CPU weight). Memory is still capped separately via `mem_per_job`. Opt-in, off by default; only affects `--builders > 1`. |
+| `--build-nice-step N` | Nice increment between concurrent build slots when `--build-nice` is set: slot *k* → nice `min(k×N, 19)`. `N=1` gives a gentle `0,1,2,3` ladder; larger values separate the slots more aggressively. Default: 5. |
 | `--makeflow` | Generate a [Makeflow](https://ccl.cse.nd.edu/software/makeflow/) workflow file from the dependency graph and execute it with the `makeflow` binary (must be installed separately from CCTools). Bits collects all pending builds, writes `sw/BUILD/<hash>/makeflow/Makeflow`, then runs `makeflow` to execute the graph in parallel. Mutually exclusive with `--builders N`. |
 | `--pipeline` | Split each Makeflow rule into `.build`, `.tar`, and `.upload` stages so that tarball creation and upload can overlap with downstream builds. Requires `--makeflow`; silently ignored otherwise. |
 | `--prefetch-workers N` | Spawn *N* background threads to fetch remote tarballs and source archives ahead of the main build loop. Default: 0 (disabled). No effect without `--remote-store`. |
@@ -1188,10 +1190,19 @@ done
 
 #### Memory-aware parallelism
 
+`$JOBS` for each package build is computed by `effective_jobs(requested, spec, builders)` and bounds two axes so that concurrent `--builders` jobs never oversubscribe the machine:
+
+- **CPU / load (all packages).** `$JOBS` is capped at `requested ÷ builders`, so the collective `-j` of all builders stays within the single-builder budget. This applies whether or not the recipe sets `mem_per_job`.
+- **Memory (packages that set `mem_per_job`).** The available memory is split across the concurrent builders and divided by the per-job footprint.
+
+The result is `min(requested, requested ÷ builders, floor((available ÷ builders) × utilisation ÷ mem_per_job))`, floored at 1. With `--builders 1` the CPU cap is a no-op and behaviour is unchanged.
+
 | Field | Description |
 |-------|-------------|
-| `mem_per_job` | Expected peak RSS per parallel compilation process. Accepts a plain integer (MiB) or a string with a unit suffix: `512`, `"1500"`, `"1.5 GiB"`, `"2 GB"`. When set, bits samples available system memory at the start of the package's build and lowers `$JOBS` to `min(requested, floor(available × utilisation / mem_per_job))`. Omitting the field leaves `$JOBS` unchanged. |
+| `mem_per_job` | Expected peak RSS per parallel compilation process. Accepts a plain integer (MiB) or a string with a unit suffix: `512`, `"1500"`, `"1.5 GiB"`, `"2 GB"`. When set, bits samples available system memory at the start of the package's build and applies the memory term above. Omitting the field leaves only the CPU/`builders` cap in effect. |
 | `mem_utilisation` | Fraction of available memory bits may commit, in the range `0.0`–`1.0`. Default: `0.9`. Only used when `mem_per_job` is also set. |
+
+See also `--build-nice` ([§5 build options](#5-building-packages)) for staggering the *priority* of concurrent builders on top of these caps.
 
 Examples:
 
@@ -1865,7 +1876,7 @@ These variables are set automatically inside each package's Bash build script by
 | `$BUILD_FAMILY` | Full `build_family` string, which may include the defaults combination used. |
 | `$ARCHITECTURE` | Real build-host architecture string (e.g. `ubuntu2204_x86-64`). |
 | `$EFFECTIVE_ARCHITECTURE` | `shared` for shared packages; equal to `$ARCHITECTURE` otherwise. |
-| `$JOBS` | Parallel compilation jobs. Pass to `make -j$JOBS`, `cmake --build --parallel $JOBS`, etc. Reduced by `mem_per_job` if available memory is tight. |
+| `$JOBS` | Parallel compilation jobs. Pass to `make -j$JOBS`, `cmake --build --parallel $JOBS`, etc. Already divided across `--builders` and reduced by `mem_per_job` when memory is tight (see [Memory- and load-aware parallelism](#memory-aware-parallelism)). |
 | `$COMMIT_HASH` | Git commit SHA checked out for the `source:` field. |
 | `$BITS_SCRIPT_DIR` | Absolute path to the bits installation directory. |
 | `$INCREMENTAL_BUILD_HASH` | Non-zero when an incremental recipe is in use (development mode). |
