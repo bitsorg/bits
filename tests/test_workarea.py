@@ -148,41 +148,46 @@ class ApplyPatchesTest(unittest.TestCase):
     # No-op cases
     # ------------------------------------------------------------------
 
-    @patch("subprocess.check_call")
-    def test_no_patches_key_is_noop(self, mock_cc):
+    @staticmethod
+    def _patch_cmd(call_obj):
+        """Return the command list (first positional arg) of a subprocess.run call."""
+        return call_obj[0][0]
+
+    @patch("subprocess.run")
+    def test_no_patches_key_is_noop(self, mock_run):
         """spec without 'patches' key must not invoke patch(1) at all."""
         _apply_patches(self._spec(), self.source_dir)
-        mock_cc.assert_not_called()
+        mock_run.assert_not_called()
 
-    @patch("subprocess.check_call")
-    def test_empty_patches_list_is_noop(self, mock_cc):
+    @patch("subprocess.run")
+    def test_empty_patches_list_is_noop(self, mock_run):
         """spec with patches:[] must not invoke patch(1) at all."""
         _apply_patches(self._spec(patches=[]), self.source_dir)
-        mock_cc.assert_not_called()
+        mock_run.assert_not_called()
 
-    @patch("subprocess.check_call")
-    def test_sentinel_skips_reapplication(self, mock_cc):
+    @patch("subprocess.run")
+    def test_sentinel_skips_reapplication(self, mock_run):
         """If .bits_patched already exists, patches must not be reapplied."""
         open(os.path.join(self.source_dir, ".bits_patched"), "w").close()
         _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
-        mock_cc.assert_not_called()
+        mock_run.assert_not_called()
 
     # ------------------------------------------------------------------
     # Happy-path: correct invocations and sentinel creation
     # ------------------------------------------------------------------
 
-    @patch("subprocess.check_call")
-    def test_single_patch_invocation(self, mock_cc):
+    @patch("subprocess.run")
+    def test_single_patch_invocation(self, mock_run):
         """A single patch must be applied with patch -p1 --batch --input <path> in source_dir."""
         _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
         expected_patch_path = os.path.join(self.source_dir, "fix-a.patch")
-        mock_cc.assert_called_once_with(
-            ["patch", "-p1", "--batch", "--input", expected_patch_path],
-            cwd=self.source_dir,
-        )
+        mock_run.assert_called_once()
+        self.assertEqual(self._patch_cmd(mock_run.call_args),
+                         ["patch", "-p1", "--batch", "--input", expected_patch_path])
+        self.assertEqual(mock_run.call_args[1].get("cwd"), self.source_dir)
 
-    @patch("subprocess.check_call")
-    def test_multiple_patches_applied_in_order(self, mock_cc):
+    @patch("subprocess.run")
+    def test_multiple_patches_applied_in_order(self, mock_run):
         """Multiple patches must be applied in declaration order."""
         _apply_patches(
             self._spec(patches=["fix-a.patch", "fix-b.patch"]),
@@ -190,14 +195,16 @@ class ApplyPatchesTest(unittest.TestCase):
         )
         expected_a = os.path.join(self.source_dir, "fix-a.patch")
         expected_b = os.path.join(self.source_dir, "fix-b.patch")
-        self.assertEqual(mock_cc.call_count, 2)
-        mock_cc.assert_has_calls([
-            call(["patch", "-p1", "--batch", "--input", expected_a], cwd=self.source_dir),
-            call(["patch", "-p1", "--batch", "--input", expected_b], cwd=self.source_dir),
-        ])
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertEqual(self._patch_cmd(mock_run.call_args_list[0]),
+                         ["patch", "-p1", "--batch", "--input", expected_a])
+        self.assertEqual(self._patch_cmd(mock_run.call_args_list[1]),
+                         ["patch", "-p1", "--batch", "--input", expected_b])
+        self.assertEqual(mock_run.call_args_list[0][1].get("cwd"), self.source_dir)
+        self.assertEqual(mock_run.call_args_list[1][1].get("cwd"), self.source_dir)
 
-    @patch("subprocess.check_call")
-    def test_sentinel_written_on_success(self, mock_cc):
+    @patch("subprocess.run")
+    def test_sentinel_written_on_success(self, mock_run):
         """After successful application .bits_patched sentinel must be created."""
         sentinel = os.path.join(self.source_dir, ".bits_patched")
         self.assertFalse(os.path.exists(sentinel))
@@ -205,27 +212,27 @@ class ApplyPatchesTest(unittest.TestCase):
         self.assertTrue(os.path.exists(sentinel),
                         ".bits_patched sentinel must exist after successful patch application")
 
-    @patch("subprocess.check_call")
-    def test_inline_checksum_suffix_stripped(self, mock_cc):
+    @patch("subprocess.run")
+    def test_inline_checksum_suffix_stripped(self, mock_run):
         """Patch entries may carry a ',algo:digest' suffix; only the filename is used."""
         _apply_patches(
             self._spec(patches=["fix-a.patch,sha256:deadbeef"]),
             self.source_dir,
         )
         expected_path = os.path.join(self.source_dir, "fix-a.patch")
-        mock_cc.assert_called_once_with(
-            ["patch", "-p1", "--batch", "--input", expected_path],
-            cwd=self.source_dir,
-        )
+        mock_run.assert_called_once()
+        self.assertEqual(self._patch_cmd(mock_run.call_args),
+                         ["patch", "-p1", "--batch", "--input", expected_path])
+        self.assertEqual(mock_run.call_args[1].get("cwd"), self.source_dir)
 
     # ------------------------------------------------------------------
     # Failure path: no sentinel on error
     # ------------------------------------------------------------------
 
     @patch("bits_helpers.workarea.dieOnError")
-    @patch("subprocess.check_call",
+    @patch("subprocess.run",
            side_effect=subprocess.CalledProcessError(1, "patch"))
-    def test_patch_failure_calls_dieOnError(self, mock_cc, mock_die):
+    def test_patch_failure_calls_dieOnError(self, mock_run, mock_die):
         """A failing patch(1) call must invoke dieOnError with a descriptive message."""
         _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
         mock_die.assert_called_once()
@@ -234,9 +241,9 @@ class ApplyPatchesTest(unittest.TestCase):
         self.assertIn("fix-a.patch", args[1], "error message must name the failing patch file")
 
     @patch("bits_helpers.workarea.dieOnError")
-    @patch("subprocess.check_call",
+    @patch("subprocess.run",
            side_effect=subprocess.CalledProcessError(1, "patch"))
-    def test_no_sentinel_on_failure(self, mock_cc, mock_die):
+    def test_no_sentinel_on_failure(self, mock_run, mock_die):
         """If patch(1) fails, .bits_patched must NOT be created."""
         sentinel = os.path.join(self.source_dir, ".bits_patched")
         _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
