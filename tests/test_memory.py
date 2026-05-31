@@ -279,6 +279,47 @@ class TestEffectiveJobs(unittest.TestCase):
             jobs = effective_jobs(1, spec)
         self.assertEqual(jobs, 1)
 
+    # ── builders-aware CPU/load budget (P1) ──────────────────────────────────
+
+    def test_builders_divide_cpu_no_hint(self):
+        # 32 jobs across 4 builders, no mem_per_job → 32 // 4 = 8
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(32, spec, builders=4), 8)
+
+    def test_builders_default_one_unchanged(self):
+        # builders defaults to 1 → behaviour identical to the old signature
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(32, spec), 32)
+        self.assertEqual(effective_jobs(32, spec, builders=1), 32)
+
+    def test_builders_cpu_floor_at_one(self):
+        # more builders than jobs → never below 1
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(2, spec, builders=4), 1)
+
+    def test_builders_divide_memory_budget(self):
+        # avail RAM is split across builders before the per-job division:
+        # cpu_cap = 32 // 4 = 8; memory_cap = floor((16384/4)*0.9/1024) = 3
+        spec = {"package": "root", "mem_per_job": 1024}
+        with _avail(16384):
+            jobs = effective_jobs(32, spec, builders=4)
+        self.assertEqual(jobs, 3)
+
+    def test_builders_cpu_cap_dominates_when_ram_ample(self):
+        # tiny footprint + lots of RAM → CPU share is the binding constraint
+        # cpu_cap = 32 // 2 = 16; memory_cap = floor((65536/2)*0.9/256) = 115
+        spec = {"package": "boost", "mem_per_job": 256}
+        with _avail(65536):
+            jobs = effective_jobs(32, spec, builders=2)
+        self.assertEqual(jobs, 16)
+
+    def test_builders_no_hint_detection_irrelevant(self):
+        # without mem_per_job the memory probe is never consulted
+        spec = {"package": "zlib"}
+        with _avail(0):
+            jobs = effective_jobs(16, spec, builders=4)
+        self.assertEqual(jobs, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

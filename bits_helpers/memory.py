@@ -149,14 +149,25 @@ def _available_darwin() -> int:
 
 # ── Main public function ──────────────────────────────────────────────────────
 
-def effective_jobs(requested: int, spec: dict) -> int:
+def effective_jobs(requested: int, spec: dict, builders: int = 1) -> int:
     """Return the number of parallel jobs to use for *spec*.
 
-    If the recipe does not specify ``mem_per_job`` the *requested* value is
-    returned unchanged.  Otherwise the available memory is sampled and the
-    return value is::
+    The return value bounds two independent oversubscription axes so that the
+    *whole run* stays within one machine's worth of threads and RAM no matter
+    how many packages build concurrently (``--builders``):
 
-        min(requested, floor(available_mib * utilisation / mem_per_job))
+    * **CPU / load.**  ``requested`` is divided by the number of concurrent
+      builders, so the collective ``-j`` of all builders never exceeds the
+      single-builder budget.  This applies to *every* recipe, capped or not.
+
+    * **Memory.**  When the recipe declares ``mem_per_job`` the available
+      memory — itself split across the concurrent builders to avoid the
+      sampling race where several heavy builds start together and each reads
+      the full free RAM — is divided by the per-job footprint.
+
+    The result is::
+
+        min(requested, requested // builders, memory_cap_per_builder)
 
     Always returns at least 1 so the build is never completely stalled.
 
@@ -166,16 +177,23 @@ def effective_jobs(requested: int, spec: dict) -> int:
         The ``-j N`` value (or CPU count) chosen by the user / scheduler.
     spec:
         The package spec dict as returned by ``getPackageList``.
+    builders:
+        The number of packages building in parallel (``--builders``).  The CPU
+        and memory budgets are split across this many concurrent builders.
+        Defaults to 1 (single-builder behaviour, unchanged).
     """
+    builders = max(1, int(builders))
+    cpu_cap = max(1, requested // builders)         # global CPU/load budget
+
     raw = spec.get("mem_per_job")
     if raw is None:
-        return requested                            # no hint → unchanged
+        return min(requested, cpu_cap)              # no mem hint → CPU cap only
 
     try:
         mem_per_job = parse_memory(raw)
     except ValueError as exc:
         warning("Ignoring invalid mem_per_job for %r: %s", spec.get("package", "?"), exc)
-        return requested
+        return min(requested, cpu_cap)
 
     utilisation = float(spec.get("mem_utilisation", 0.9))
     if not (0.0 < utilisation <= 1.0):
@@ -188,16 +206,18 @@ def effective_jobs(requested: int, spec: dict) -> int:
 
     avail = available_memory_mib()
     if avail <= 0:
-        return requested                            # detection failed → unchanged
+        return min(requested, cpu_cap)              # detection failed → CPU cap only
 
-    memory_cap = max(1, int(avail * utilisation / mem_per_job))
-    jobs = min(requested, memory_cap)
+    # Split the RAM budget across the concurrent builders so that builds
+    # starting in the same scheduling tick do not each claim the whole machine.
+    memory_cap = max(1, int((avail / builders) * utilisation / mem_per_job))
+    jobs = min(requested, cpu_cap, memory_cap)
 
     if jobs < requested:
         debug(
             "Package %r: capping $JOBS %d → %d "
-            "(%d MiB available, %d MiB/job, %.0f%% utilisation)",
+            "(%d MiB available, %d builders, %d MiB/job, %.0f%% utilisation)",
             spec.get("package", "?"), requested, jobs,
-            avail, mem_per_job, utilisation * 100,
+            avail, builders, mem_per_job, utilisation * 100,
         )
     return jobs

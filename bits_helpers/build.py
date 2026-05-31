@@ -1609,10 +1609,37 @@ def doBuild(args, parser):
     mainPackage = buildOrder.pop()
     warning("Not rebuilding %s because --only-deps option provided.", mainPackage)
 
+  # Records {package: scriptDir} for packages whose build we resource-monitor,
+  # so we can distil per-package CPU/RAM stats at the end of the run (P3).
+  monitoredDirs = {}
+
   scheduler = None
   if (args.builders > 1) and buildOrder:
     from bits_helpers.scheduler import Scheduler
     from bits_helpers.log import logger
+
+    # --- Self-tuning resource stats (P3) --------------------------------------
+    # When building many packages in parallel, hand the scheduler per-package
+    # CPU/RAM estimates so its ResourceManager only admits a new build when the
+    # machine still has budget — preventing N heavy builds from starting at once
+    # and thrashing the node.  We auto-load the stats file a previous run left
+    # behind (re-stamped for this machine), and auto-enable monitoring so the
+    # current run refreshes it.  Explicit --resources / --resource-monitoring
+    # flags always take precedence.
+    if not args.resources:
+      from bits_helpers.build_stats import autoload_stats_path
+      _auto_stats = autoload_stats_path(workDir)
+      if _auto_stats:
+        args.resources = _auto_stats
+        info("Auto-loaded build resource stats from a previous run: %s", _auto_stats)
+    if not args.resourceMonitoring:
+      try:
+        import psutil  # noqa: F401  (availability probe only)
+        args.resourceMonitoring = True
+        debug("Enabled resource monitoring (--builders > 1) to record build stats")
+      except Exception:  # pylint: disable=broad-except
+        debug("psutil unavailable; resource monitoring stays off")
+
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
                           parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)))
 
@@ -2088,6 +2115,10 @@ def doBuild(args, parser):
 
     init_workDir = container_workDir if args.docker else args.workDir
     makedirs(scriptDir, exist_ok=True)
+    # Remember where the resource monitor will write this package's trace so we
+    # can aggregate build stats once the run finishes (P3).
+    if args.resourceMonitoring:
+      monitoredDirs[p] = scriptDir
     writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
     hook_params_locals = "\n  ".join(
       'export %s="%s"' % (k, v) for k, v in spec.get("hook_params", {}).items()
@@ -2123,7 +2154,7 @@ def doBuild(args, parser):
       ("GIT_COMMITTER_NAME", "unknown"),
       ("GIT_COMMITTER_EMAIL", "unknown"),
       ("INCREMENTAL_BUILD_HASH", spec.get("incremental_hash", "0")),
-      ("JOBS", str(effective_jobs(args.jobs, spec))),
+      ("JOBS", str(effective_jobs(args.jobs, spec, builders=args.builders))),
       ("PKGFAMILY", spec.get("pkg_family", "")),
       ("PKGHASH", spec["hash"]),
       ("PKGNAME", spec["package"]),
@@ -2375,6 +2406,14 @@ def doBuild(args, parser):
 
   if (not args.makeflow) and (args.builders > 1) and buildTargets:
     scheduler.run()
+    # Refresh the self-tuning resource-stats file from this run's monitor traces
+    # so the next --builders invocation can schedule with up-to-date estimates (P3).
+    if args.resourceMonitoring and monitoredDirs:
+      try:
+        from bits_helpers.build_stats import aggregate_and_write
+        aggregate_and_write(workDir, monitoredDirs)
+      except Exception as exc:  # pylint: disable=broad-except
+        warning("Could not update build resource stats: %s", exc)
     for (action, error) in scheduler.errors.items():
       info("* The action \"{}\" was not completed successfully because {}".format(action, error))
     if scheduler.brokenJobs:
