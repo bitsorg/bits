@@ -365,30 +365,43 @@ def _patchset_fingerprint(spec, patches_dir):
 
 
 def _wipe_source_if_patchset_changed(spec, source_dir):
-  """Remove source_dir if it was previously patched with a *different* patch set.
+  """Remove source_dir unless it can be guaranteed pristine-then-correctly-patched.
 
-  _apply_patches skips re-patching whenever the ``.bits_patched`` sentinel is
-  present, and the source dir is shared across builds of the same version.  So
-  once a tree is patched, editing a patch file would otherwise never take effect
-  (the new patches cannot be cleanly applied on top of the already-patched tree).
-  Wiping forces a fresh extraction + re-patch.  The sentinel now records the
-  patch-set fingerprint; a legacy/empty sentinel (no fingerprint) is treated as
-  changed so existing trees self-heal on the next build.
+  Patches must always be applied to a freshly-extracted tree.  The source dir is
+  shared across builds of the same version, _apply_patches skips re-patching when
+  the ``.bits_patched`` sentinel is present, and _extract_source_archives skips
+  re-extraction when ``.bits_extracted`` is present.  Wipe (forcing a clean
+  re-extract + re-apply) when either:
+
+    * ``.bits_patched`` records a DIFFERENT patch-set fingerprint than the current
+      patches — i.e. a patch file was edited (a legacy/empty sentinel has no
+      fingerprint and counts as different, so old trees self-heal); or
+    * there is NO ``.bits_patched`` sentinel but the tree was already extracted
+      (``.bits_extracted`` present).  That means a previous patch run did not
+      complete (``.bits_patched`` is only written on full success), leaving a
+      partially/already-patched tree.  Re-running ``patch`` on it yields
+      "Reversed (or previously applied) patch detected" and corruption, so the
+      tree must be re-extracted clean first.
   """
   import json
-  sentinel = os.path.join(source_dir, ".bits_patched")
-  if not os.path.exists(sentinel):
-    return
+  patched = os.path.join(source_dir, ".bits_patched")
+  extracted = os.path.join(source_dir, ".bits_extracted")
   current = _patchset_fingerprint(spec, os.path.join(spec["pkgdir"], "patches"))
-  try:
-    recorded = json.loads(open(sentinel).read()).get("patchset")
-  except Exception:
-    recorded = None   # legacy empty sentinel, or unreadable → treat as changed
-  if recorded == current:
-    return
-  debug("Patch set for %s changed (recorded %r, now %r); wiping %s to re-extract "
-        "and re-patch from pristine sources.",
-        spec.get("package", "?"), recorded, current, source_dir)
+  if os.path.exists(patched):
+    try:
+      recorded = json.loads(open(patched).read()).get("patchset")
+    except Exception:
+      recorded = None   # legacy empty sentinel, or unreadable → treat as changed
+    if recorded == current:
+      return            # already patched with the same patch set: reuse as-is
+    reason = "patch set changed (recorded %r, now %r)" % (recorded, current)
+  elif os.path.exists(extracted):
+    reason = ("source was extracted but not successfully patched "
+              "(no .bits_patched); a previous patch run likely failed partway")
+  else:
+    return              # pristine / not yet extracted: nothing to wipe
+  debug("Wiping %s for %s to re-extract and re-patch from pristine sources: %s",
+        source_dir, spec.get("package", "?"), reason)
   shutil.rmtree(source_dir, ignore_errors=True)
 
 
