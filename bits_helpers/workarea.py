@@ -339,6 +339,59 @@ def _extract_zip_strip(archive_path, dest_dir, strip=1):
       zf.extract(member, dest_dir)
 
 
+def _patchset_fingerprint(spec, patches_dir):
+  """Return a stable hex digest of the recipe's patch set (each patch's name and
+  full content, in declaration order), or None when the package has no patches.
+  Patch files are read from *patches_dir*.
+
+  Used to detect when a previously-patched source tree must be re-extracted
+  because the patch *content* changed — bits keys the source directory by
+  package version/commit, not by patch content, so without this an edited patch
+  would silently have no effect on rebuild (see _wipe_source_if_patchset_changed).
+  """
+  patches = spec.get("patches")
+  if not patches:
+    return None
+  import hashlib
+  h = hashlib.sha256()
+  for patch_entry in patches:
+    patch_name, _ = parse_entry(patch_entry)
+    h.update(patch_name.encode("utf-8", "replace"))
+    h.update(b"\0")
+    with open(os.path.join(patches_dir, patch_name), "rb") as fh:
+      h.update(fh.read())
+    h.update(b"\0")
+  return h.hexdigest()
+
+
+def _wipe_source_if_patchset_changed(spec, source_dir):
+  """Remove source_dir if it was previously patched with a *different* patch set.
+
+  _apply_patches skips re-patching whenever the ``.bits_patched`` sentinel is
+  present, and the source dir is shared across builds of the same version.  So
+  once a tree is patched, editing a patch file would otherwise never take effect
+  (the new patches cannot be cleanly applied on top of the already-patched tree).
+  Wiping forces a fresh extraction + re-patch.  The sentinel now records the
+  patch-set fingerprint; a legacy/empty sentinel (no fingerprint) is treated as
+  changed so existing trees self-heal on the next build.
+  """
+  import json
+  sentinel = os.path.join(source_dir, ".bits_patched")
+  if not os.path.exists(sentinel):
+    return
+  current = _patchset_fingerprint(spec, os.path.join(spec["pkgdir"], "patches"))
+  try:
+    recorded = json.loads(open(sentinel).read()).get("patchset")
+  except Exception:
+    recorded = None   # legacy empty sentinel, or unreadable → treat as changed
+  if recorded == current:
+    return
+  debug("Patch set for %s changed (recorded %r, now %r); wiping %s to re-extract "
+        "and re-patch from pristine sources.",
+        spec.get("package", "?"), recorded, current, source_dir)
+  shutil.rmtree(source_dir, ignore_errors=True)
+
+
 def _apply_patches(spec, source_dir):
   """Apply patches listed in spec['patches'] to source_dir using patch -p1.
 
@@ -404,7 +457,11 @@ def _apply_patches(spec, source_dir):
       return  # sentinel must not be written on failure (also guards mocked dieOnError in tests)
 
   progress.end("done")
-  open(sentinel, "w").close()
+  # Record the patch-set fingerprint so a later build can detect a changed patch
+  # set and re-extract (see _wipe_source_if_patchset_changed).
+  import json
+  with open(sentinel, "w") as _sf:
+    json.dump({"patchset": _patchset_fingerprint(spec, source_dir)}, _sf)
 
 
 def _extract_source_archives(source_dir):
@@ -517,6 +574,12 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
   # hash, not the full one.
   source_dir = os.path.join(source_parent_dir, short_commit_hash(spec))
   os.makedirs(source_parent_dir, exist_ok=True)
+
+  # For tarball sources, if this shared source tree was already patched with a
+  # different patch set, wipe it so it is re-extracted and re-patched cleanly.
+  # (Scoped to tarball sources; git checkouts handle their own working tree.)
+  if spec.get("sources") and spec.get("patches") and os.path.isdir(source_dir):
+    _wipe_source_if_patchset_changed(spec, source_dir)
 
   if spec["commit_hash"] != spec["tag"]:
     symlink(spec["commit_hash"], os.path.join(source_parent_dir, spec["tag"].replace("/", "_")))
