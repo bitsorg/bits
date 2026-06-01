@@ -155,14 +155,15 @@ class TestReniceWatchdogDocker(unittest.TestCase):
     # a long g++ back-end (cc1plus), a fresh one, and a non-compiler shell.
     PS_OUTPUT = "  17 900 cc1plus\n   42  30 cc1plus\n   1 905 sh\n  18 902 make\n"
 
-    def _watchdog(self):
+    def _watchdog(self, ps_output=None):
         self.calls = []
+        out = self.PS_OUTPUT if ps_output is None else ps_output
 
         def fake_exec(cmd):
             self.calls.append(cmd)
             if "ps" in cmd:
-                return 0, self.PS_OUTPUT
-            return 0, ""   # renice (or anything else) succeeds
+                return 0, out, ""
+            return 0, "", ""   # renice (or anything else) succeeds
 
         return ReniceWatchdog(boost_after=600, interval=100,
                               docker_boost_nice=-10, docker_exec=fake_exec)
@@ -199,6 +200,22 @@ class TestReniceWatchdogDocker(unittest.TestCase):
         w._handled.add(("c1", 17))
         pids = {pid for (_, _, pid, _, _) in w._docker_proc_candidates()}
         self.assertNotIn(17, pids)
+
+    def test_missing_ps_disables_docker_path_with_warning(self):
+        logs = []
+        # ps not installed in the image: docker exec returns 126/127.
+        w = ReniceWatchdog(boost_after=600, interval=100, docker_boost_nice=-10,
+                           log=lambda fmt, *a: logs.append(fmt % a if a else fmt),
+                           docker_exec=lambda cmd: (127, "", 'exec: "ps": executable file not found'))
+        w.register_container("c1", "docker")
+        for v in w._containers.values():
+            v["start"] -= 1000
+        self.assertEqual(w._docker_proc_candidates(), [])
+        self.assertTrue(w._docker_disabled)                 # disabled after detection
+        self.assertTrue(any("procps" in l for l in logs))   # warned about procps
+        # subsequent scans short-circuit and do not exec again
+        self.calls_before = None
+        self.assertEqual(w._docker_proc_candidates(), [])
 
 
 if __name__ == "__main__":

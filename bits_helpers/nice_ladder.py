@@ -37,18 +37,20 @@ except Exception:  # psutil is an optional dependency
 
 
 def _run_docker_exec(cmd):
-    """Run a ``docker/podman`` command, returning ``(returncode, stdout)``.
+    """Run a ``docker/podman`` command, returning ``(returncode, stdout, stderr)``.
 
     Best-effort: a container that has already finished (``--rm``) is gone, so
     the command fails harmlessly and we return a non-zero code with no output.
     """
     try:
         p = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30
         )
-        return p.returncode, p.stdout.decode("utf-8", "replace")
+        return (p.returncode,
+                p.stdout.decode("utf-8", "replace"),
+                p.stderr.decode("utf-8", "replace"))
     except Exception:
-        return 1, ""
+        return 1, "", ""
 
 
 # Heavy CPU-bound build steps whose long-running instances are worth boosting.
@@ -168,6 +170,8 @@ class ReniceWatchdog:
         self._lock = threading.Lock()
         self._containers = {}        # name -> {"start": t, "bin": docker_bin}
         self._docker_exec = docker_exec or _run_docker_exec
+        self._docker_disabled = False  # set if `ps` is missing in the build image
+        self._warned_ps = False
 
     def register_container(self, name, docker_bin="docker"):
         """Register a named build container so a straggler can be boosted."""
@@ -237,15 +241,22 @@ class ReniceWatchdog:
         return ok
 
     def _list_container_procs(self, name, docker_bin):
-        """Return ``[(pid, etimes, comm), ...]`` for processes inside *name*.
+        """Return ``(procs, ps_missing)`` for processes inside *name*.
 
-        Uses ``docker exec ... ps`` (run as root so it sees every process).
-        Returns ``[]`` if the container is gone or ``ps`` is unavailable.
+        *procs* is ``[(pid, etimes, comm), ...]`` (empty if the container is
+        gone).  *ps_missing* is True when the failure was ``ps`` not being
+        installed in the image (as opposed to the container having exited),
+        detected from a 126/127 exit or a "not found" message.  Uses
+        ``docker exec ... ps`` run as root so it sees every process.
         """
-        rc, out = self._docker_exec([docker_bin, "exec", "--user", "0", name,
-                                     "ps", "-eo", "pid=,etimes=,comm="])
+        rc, out, err = self._docker_exec([docker_bin, "exec", "--user", "0", name,
+                                          "ps", "-eo", "pid=,etimes=,comm="])
         if rc != 0:
-            return []
+            blob = (err or "").lower()
+            ps_missing = (rc in (126, 127)
+                          or "not found" in blob
+                          or "executable file not found" in blob)
+            return [], ps_missing
         procs = []
         for line in out.splitlines():
             parts = line.split(None, 2)
@@ -256,12 +267,18 @@ class ReniceWatchdog:
             except ValueError:
                 continue
             procs.append((pid, etimes, parts[2].strip()))
-        return procs
+        return procs, False
 
     def _docker_proc_candidates(self):
         """Return ``[(name, docker_bin, pid, etimes, comm), ...]`` for heavy
         compile processes inside registered containers that have been running
-        longer than ``boost_after`` and have not been handled yet."""
+        longer than ``boost_after`` and have not been handled yet.
+
+        If ``ps`` is missing from the build image the docker path is disabled
+        after a single warning (renicing inside the container is impossible
+        without it)."""
+        if self._docker_disabled:
+            return []
         now = time.time()
         out = []
         with self._lock:
@@ -270,7 +287,17 @@ class ReniceWatchdog:
             # Cheap container-age gate so we do not exec into young builds.
             if now - info["start"] < self.boost_after:
                 continue
-            for pid, etimes, comm in self._list_container_procs(name, info["bin"]):
+            procs, ps_missing = self._list_container_procs(name, info["bin"])
+            if ps_missing:
+                self._docker_disabled = True
+                if not self._warned_ps:
+                    self._warned_ps = True
+                    self._log("renice-watchdog: 'ps' is not available in the build image, so "
+                              "in-container compile processes cannot be found; straggler "
+                              "renicing is disabled. Install the 'procps' package in the build "
+                              "image to enable it.")
+                return []
+            for pid, etimes, comm in procs:
                 if etimes < self.boost_after:
                     continue
                 if not any(h in comm for h in _COMPILER_HINTS):
@@ -283,9 +310,9 @@ class ReniceWatchdog:
     def _renice_in_container(self, name, docker_bin, pid):
         """Renice *pid* inside *name* to ``docker_boost_nice`` (run as root so
         it can raise priority).  Returns True on success."""
-        rc, _ = self._docker_exec([docker_bin, "exec", "--user", "0", name,
-                                   "renice", "-n", str(self.docker_boost_nice),
-                                   "-p", str(pid)])
+        rc, _, _ = self._docker_exec([docker_bin, "exec", "--user", "0", name,
+                                      "renice", "-n", str(self.docker_boost_nice),
+                                      "-p", str(pid)])
         return rc == 0
 
     def _run(self):
