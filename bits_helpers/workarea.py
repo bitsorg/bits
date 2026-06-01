@@ -477,7 +477,7 @@ def _apply_patches(spec, source_dir):
     json.dump({"patchset": _patchset_fingerprint(spec, source_dir)}, _sf)
 
 
-def _extract_source_archives(source_dir):
+def _extract_source_archives(source_dir, expected_names=None):
   """Extract any source archives found directly inside source_dir.
 
   After ``download()`` places a release tarball (e.g. ``gsl-2.8.tar.gz``) in
@@ -486,6 +486,15 @@ def _extract_source_archives(source_dir):
   types and extracts each one, stripping the top-level directory that release
   tarballs almost universally contain (``--strip-components=1`` for tar,
   equivalent logic for zip).
+
+  When *expected_names* is given (the set of basenames bits downloaded for the
+  current spec) extraction is restricted to those files.  This keeps a stale
+  archive left over from a previous recipe revision — e.g. ``foo-1.1.tar.gz``
+  lingering in a version directory after the ``sources:`` URL was bumped to
+  ``foo-1.1.atlas1.tar.gz`` — from being picked up and aborting the build.  The
+  source directory is keyed by version and shared across rebuilds, so such
+  leftovers are common.  ``expected_names=None`` preserves the legacy "extract
+  everything" behaviour for callers that do not know the download set.
 
   A ``.bits_extracted`` sentinel file is written after a successful run so
   that repeated invocations (e.g. a resumed build) skip re-extraction and do
@@ -504,10 +513,15 @@ def _extract_source_archives(source_dir):
 
   # Compute the strip depths we would use for every archive present now.
   # We do this before consulting the sentinel so we can compare.
+  expected = set(expected_names) if expected_names is not None else None
   archives = []
   for entry in sorted(os.listdir(source_dir)):
     filepath = os.path.join(source_dir, entry)
     if not os.path.isfile(filepath):
+      continue
+    if expected is not None and entry not in expected:
+      debug("Skipping %s: not among the sources downloaded for this spec (%s)",
+            entry, ", ".join(sorted(expected)) or "<none>")
       continue
     lower = entry.lower()
     if any(lower.endswith(ext) for ext in _TAR_EXTENSIONS) or \
@@ -685,8 +699,12 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     # source tree at $SOURCEDIR rather than a bare archive file.
     # _extract_source_archives() detects stale sentinels (wrong strip depth
     # from older bits) by comparing recorded vs. current strip depths, so no
-    # manual sentinel removal is needed here for any package type.
-    _extract_source_archives(source_dir)
+    # manual sentinel removal is needed here for any package type.  We restrict
+    # it to the basenames we actually downloaded for this spec so a stale
+    # archive from a previous recipe revision sharing the version directory is
+    # ignored rather than aborting the build.
+    _expected_archives = {parse_entry(s)[0].rsplit("/", 1)[-1] for s in active_sources}
+    _extract_source_archives(source_dir, expected_names=_expected_archives)
     _apply_patches(spec, source_dir)
   elif not spec.get("source"):
     # There are no sources (neither tarball URLs nor a git repo), so just

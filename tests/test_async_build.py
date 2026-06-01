@@ -603,6 +603,25 @@ class ExtractSourceArchivesTest(unittest.TestCase):
         _extract_source_archives(self.source_dir)
         self.assertTrue(os.path.exists(os.path.join(self.source_dir, "hello.txt")))
 
+    def test_expected_names_ignores_stale_archive(self):
+        """A stale archive (not in expected_names) is skipped, not extracted.
+
+        Regression: a leftover ``pkg-1.1.tar.gz`` from a previous recipe revision
+        sharing the version directory must not be extracted (and must not abort
+        the build when it is a corrupt/HTML download), while the current
+        ``pkg-1.1.atlas1.tar.gz`` is unpacked normally.
+        """
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_tar("pkg-1.1.atlas1.tar.gz")          # current, valid
+        stale = os.path.join(self.source_dir, "pkg-1.1.tar.gz")
+        with open(stale, "w") as fh:                     # corrupt leftover
+            fh.write("<html>404 Not Found</html>\n")
+        # Must not raise despite the corrupt stale file ...
+        _extract_source_archives(self.source_dir,
+                                 expected_names={"pkg-1.1.atlas1.tar.gz"})
+        # ... and the valid archive's contents are present.
+        self.assertTrue(os.path.exists(os.path.join(self.source_dir, "hello.txt")))
+
     def test_tar_bz2_extracted(self):
         """A .tar.bz2 archive is extracted."""
         import tarfile, io
