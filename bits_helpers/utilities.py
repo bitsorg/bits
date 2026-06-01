@@ -581,28 +581,71 @@ def _defaults_active(matcher, defaults):
   defs = defaults if isinstance(defaults, (list, tuple)) else [defaults]
   return any(re.match(rx, d) for d in defs)
 
-def filterByArchitectureDefaults(arch, defaults, requires):
+
+# A variable-reference matcher is spelled "(?NAME)" -- an identifier in the same
+# parenthesised form as a regex group, but one that is NOT a legal regex (e.g.
+# "(?cuda)" raises re.error: "unknown extension ?c").  This lets a recipe gate a
+# dependency on a defaults *variable* rather than on the architecture string:
+#   - "cuda:(?cuda)"      # require cuda only when variable `cuda` is truthy
+# It is deliberately distinct from arch regexes such as "(?!osx)" (a valid
+# negative-lookahead, kept as an arch match) -- we only treat "(?NAME)" as a
+# variable reference when it fails to compile as a regex, so real regexes
+# (including inline-flag groups like "(?i)") are never misinterpreted.
+_VAR_MATCHER_RE = re.compile(r"\(\?([A-Za-z_][A-Za-z0-9_]*)\)\Z")
+
+
+def _var_matcher_name(matcher):
+  """Return the variable NAME if *matcher* is a "(?NAME)" variable reference,
+  else None (in which case it is an arch regex / defaults= matcher)."""
+  m = _VAR_MATCHER_RE.match(matcher or "")
+  if not m:
+    return None
+  try:
+    re.compile(matcher)
+  except re.error:
+    return m.group(1)   # not a valid regex -> it's a variable reference
+  return None            # valid regex (e.g. "(?i)") -> treat as arch match
+
+
+def _var_truthy(default_vars, name):
+  """True when defaults variable *name* is defined and not a false-ish string."""
+  v = (default_vars or {}).get(name)
+  return v is not None and str(v).strip().lower() not in ("", "0", "false", "off", "no")
+
+
+def _matcher_active(matcher, arch, defaults, default_vars=None):
+  """Whether a require *matcher* is active for the current build.
+
+  Three matcher kinds are supported:
+    * ``defaults=<regex>``  -> active when the regex matches an active profile;
+    * ``(?VAR)``            -> active when defaults variable VAR is truthy;
+    * anything else         -> a regex matched against the architecture string.
+  """
+  if matcher.startswith("defaults="):
+    return _defaults_active(matcher, defaults)
+  var = _var_matcher_name(matcher)
+  if var is not None:
+    return _var_truthy(default_vars, var)
+  return bool(re.match(matcher, arch))
+
+
+def filterByArchitectureDefaults(arch, defaults, requires, default_vars=None):
   """Yield requirements from *requires* that are satisfied by *arch*/*defaults*."""
   for r in requires:
     require, matcher, _pin = _parse_req_matcher(r)
-    if matcher.startswith("defaults="):
-      if _defaults_active(matcher, defaults):
-        yield require
-    elif re.match(matcher, arch):
+    if _matcher_active(matcher, arch, defaults, default_vars):
       yield require
 
-def disabledByArchitectureDefaults(arch, defaults, requires):
+def disabledByArchitectureDefaults(arch, defaults, requires, default_vars=None):
   """Yield requirements from *requires* that are *not* satisfied by *arch*/*defaults*."""
   for r in requires:
     require, matcher, _pin = _parse_req_matcher(r)
-    if matcher.startswith("defaults="):
-      if not _defaults_active(matcher, defaults):
-        yield require
-    elif not re.match(matcher, arch):
+    if not _matcher_active(matcher, arch, defaults, default_vars):
       yield require
 
 
-def _collect_version_pins(arch, defaults, raw_requires, owner, version_pins, specs):
+def _collect_version_pins(arch, defaults, raw_requires, owner, version_pins, specs,
+                          default_vars=None):
   """Extract version pins from *raw_requires* and merge into *version_pins*.
 
   Called while processing *owner*'s spec (before the requires list has been
@@ -622,11 +665,7 @@ def _collect_version_pins(arch, defaults, raw_requires, owner, version_pins, spe
     if pin is None:
       continue
     # Check whether this entry is active for the current architecture/defaults.
-    if matcher.startswith("defaults="):
-      active = bool(re.match(matcher[len("defaults="):], defaults))
-    else:
-      active = bool(re.match(matcher, arch))
-    if not active:
+    if not _matcher_active(matcher, arch, defaults, default_vars):
       continue
     if name in version_pins:
       if version_pins[name] != pin:
@@ -1338,17 +1377,21 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # *before* the lists are reduced to plain package names by the filter step
     # below.  We pass the raw YAML lists so that _collect_version_pins can see
     # the full "name = version[:matcher]" strings.
+    # Variables declared in the active --defaults profile(s) (`variables:` block)
+    # gate "(?VAR)" conditional requires, e.g. "- cuda:(?cuda)".
+    _default_vars = (defaults_meta or {}).get("variables")
     _collect_version_pins(
       architecture, defaults,
       list(spec.get("requires", [])) + list(spec.get("build_requires", [])),
       spec["package"], _version_pins, specs,
+      default_vars=_default_vars,
     )
 
     # For the moment we treat build_requires just as requires.
-    fn = lambda what: disabledByArchitectureDefaults(architecture, defaults, spec.get(what, []))
+    fn = lambda what: disabledByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars)
     spec["disabled"] += [x for x in fn("requires")]
     spec["disabled"] += [x for x in fn("build_requires")]
-    fn = lambda what: filterByArchitectureDefaults(architecture, defaults, spec.get(what, []))
+    fn = lambda what: filterByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars)
     spec["requires"] = [x for x in fn("requires") if x not in disable]
     spec["build_requires"] = [x for x in fn("build_requires") if x not in disable]
     if spec["package"] != "defaults-release":

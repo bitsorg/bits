@@ -292,6 +292,26 @@ class TestUtilities(unittest.TestCase):
     # Version-pinned entries are disabled according to the matcher, not the pin
     self.assertEqual(["root"], list(disabledByArchitectureDefaults("osx_arm64", "release", ["root = 6.24.02:(?!osx)"])))
 
+  def test_variable_conditional_requires(self) -> None:
+    """`dep:(?VAR)` is active iff defaults variable VAR is truthy."""
+    arch = "ubuntu2510_x86-64-gcc15-dbg"
+    # Active when the variable is truthy ...
+    self.assertEqual(["cuda"], list(filterByArchitectureDefaults(
+        arch, ["dev4", "cuda"], ["cuda:(?cuda)"], {"cuda": "true"})))
+    self.assertEqual([], list(disabledByArchitectureDefaults(
+        arch, ["dev4", "cuda"], ["cuda:(?cuda)"], {"cuda": "true"})))
+    # ... and disabled when unset or false-ish ...
+    for vars_ in (None, {}, {"cuda": "false"}, {"cuda": "off"}, {"cuda": "0"}, {"cuda": ""}):
+      self.assertEqual([], list(filterByArchitectureDefaults(
+          arch, ["dev4"], ["cuda:(?cuda)"], vars_)), vars_)
+      self.assertEqual(["cuda"], list(disabledByArchitectureDefaults(
+          arch, ["dev4"], ["cuda:(?cuda)"], vars_)), vars_)
+    # A variable matcher must not be confused with a real arch regex like (?!osx)
+    self.assertEqual([], list(filterByArchitectureDefaults(
+        "osx_arm64", ["dev4"], ["GCC:(?!osx)"], {"cuda": "true"})))
+    self.assertEqual(["GCC"], list(filterByArchitectureDefaults(
+        arch, ["dev4"], ["GCC:(?!osx)"], {"cuda": "true"})))
+
   def test_parse_req_matcher(self) -> None:
     """_parse_req_matcher should correctly parse all requirement syntax variants."""
     # Plain name
