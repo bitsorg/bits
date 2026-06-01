@@ -737,7 +737,10 @@ _ERROR_PATTERNS = re.compile(
     r"ModuleNotFoundError|ImportError:|"
     r"\*\*\* \[.*\] Error [0-9]|"      # make: *** [target] Error N
     r"make(\[[0-9]+\])?: \*\*\*|"      # make: *** / make[1]: ***
-    r"recipe for target"
+    r"recipe for target|"
+    r"Could NOT find|"                # cmake find_package failure reason
+    r"missing: |"                     # cmake "(missing: VAR ...)" detail
+    r"Configuring incomplete"         # cmake configure summary
     r")"
 )
 
