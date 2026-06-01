@@ -223,10 +223,11 @@ if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
     source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
     if [[ $(type -t Run) == function ]]; then Run "$@"; fi
   } 2>&1 | tee "$BUILDROOT/log"
-  [ $PIPESTATUS -eq 0 ] || exit $PIPESTATUS
+  rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # read PIPESTATUS[0] BEFORE any command clobbers it
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
     set -o pipefail
-    (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log" || exit 1
+    (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log"
+    rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # propagate the real recipe exit code (was masked to 1)
 elif [[ "$CACHED_TARBALL" == "" ]]; then
    set -o pipefail;
    { unset DYLD_LIBRARY_PATH
@@ -235,7 +236,7 @@ elif [[ "$CACHED_TARBALL" == "" ]]; then
      source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
      if [[ $(type -t Run) == function ]]; then Run "$@"; fi
    } 2>&1 | tee "$BUILDROOT/log"
-   [ $PIPESTATUS -eq 0 ] || exit $PIPESTATUS
+   rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # read PIPESTATUS[0] BEFORE any command clobbers it
 else
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
   # files.
