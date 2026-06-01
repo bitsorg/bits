@@ -229,7 +229,9 @@ def doParseArgs():
   build_parser.add_argument("--builders", dest="builders", type=int, default=1,
                             help=("The number of independent packages to build in parallel. "
                                   "Default is: %(default)d."))
-  build_parser.add_argument("--build-nice", dest="buildNice", action=argparse.BooleanOptionalAction, default=True,
+  # --build-nice / --no-build-nice as a pair of store_true/store_false on the
+  # same dest (argparse.BooleanOptionalAction is only available on Python 3.9+).
+  build_parser.add_argument("--build-nice", dest="buildNice", action="store_true", default=True,
                             help=("Run concurrent --builders jobs at staggered priority so CPU "
                                   "contention degrades gracefully: at any moment one build runs at top "
                                   "priority (full speed) and the others are progressively backed off, with "
@@ -238,6 +240,8 @@ def doParseArgs():
                                   "--cpu-shares' on each build container. Memory is still capped separately "
                                   "(mem_per_job). Only affects --builders > 1. On by default; pass "
                                   "--no-build-nice to disable."))
+  build_parser.add_argument("--no-build-nice", dest="buildNice", action="store_false",
+                            help="Disable the --build-nice priority ladder (see --build-nice).")
   build_parser.add_argument("--build-nice-step", dest="buildNiceStep", type=int, default=5, metavar="N",
                             help=("Nice increment between concurrent build slots when --build-nice is set "
                                   "(slot k -> nice min(k*N, 19)). N=1 gives a gentle 0,1,2,3 ladder; larger "
