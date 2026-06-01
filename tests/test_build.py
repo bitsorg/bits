@@ -241,7 +241,7 @@ def dummy_exists(x):
     # Return False for any sapling-related paths
     if ".sl" in path_str or path_str.endswith("/sl"):
         return False
-    return {
+    known = {
         "/alidist": True,
         "/alidist/.git": True,
         "/sw": True,
@@ -249,7 +249,17 @@ def dummy_exists(x):
         "/sw/MIRROR/root": True,
         "/sw/MIRROR/root/.git": True,
         "/sw/MIRROR/zlib": False,
-    }.get(path_str, DEFAULT)
+    }
+    if path_str in known:
+        return known[path_str]
+    # In a clean build the per-package source checkout has no pre-existing
+    # ".git" (so the clone-guard must not fire) and there is no in-progress
+    # download ".downloading" sentinel (so the prefetch wait returns at once).
+    # The broad DEFAULT (truthy) fallback would otherwise report both as
+    # present and make those guards misbehave.
+    if path_str.endswith(".git") or path_str.endswith(".downloading"):
+        return False
+    return DEFAULT
 
 
 # A few errors we should handle, together with the expected result
