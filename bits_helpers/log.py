@@ -18,8 +18,14 @@ class LogFormatter(logging.Formatter):
                           logging.CRITICAL: "\033[1;37;41m",
                           logging.SUCCESS:  "\033[1;32m" } if sys.stdout.isatty() else {}
   def format(self, record):
-    record.msg = record.msg % record.args
-    record.args = None  # prevent double-format if a second handler calls getMessage()
+    # Only apply %-formatting when there are args. A pre-formatted message
+    # (e.g. built with str.format) can contain literal '%' characters -- such
+    # as an embedded traceback -- and "msg % ()" would then raise
+    # "not enough arguments for format string". Guarding on record.args keeps
+    # those messages intact instead of crashing the log handler.
+    if record.args:
+      record.msg = record.msg % record.args
+      record.args = None  # prevent double-format if a second handler calls getMessage()
     if record.levelno == logging.BANNER and sys.stdout.isatty():
       lines = record.msg.split("\n")
       return "\n\033[1;34m==>\033[m \033[1m%s\033[m" % lines[0] + \

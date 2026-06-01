@@ -131,6 +131,8 @@ import json
 import os
 import re
 import subprocess
+import tempfile
+import threading
 from datetime import datetime, timezone
 
 try:
@@ -267,6 +269,9 @@ class BuildManifest:
             else "bits-manifest-{}.json".format(timestamp)
         )
         self._path = os.path.join(self._manifest_dir, _name)
+        # Serialises concurrent add_package()/_save() calls from --builders
+        # worker threads so they neither corrupt _data nor race os.replace().
+        self._lock = threading.Lock()
         self._data = {
             "schema_version":     self.SCHEMA_VERSION,
             "bits_version":       __version__ or "unknown",
@@ -305,19 +310,20 @@ class BuildManifest:
         This is the dict returned by both ``load_always_on_providers()`` and
         ``fetch_repo_providers_iteratively()``.  Call once after merging both.
         """
-        for checkout_dir, (name, commit) in provider_dirs.items():
-            abs_dir = os.path.abspath(checkout_dir)
-            entry = {
-                "name":         name,
-                "checkout_dir": abs_dir,
-                "commit":       commit,
-                "remote_url":   _git_remote_url(abs_dir),
-            }
-            self._data["providers"].append(entry)
-            debug("manifest: recorded provider %s @ %s", name, commit[:10])
-        if provider_dirs:
-            self._data["updated_at"] = _now_iso()
-            self._save()
+        with self._lock:
+            for checkout_dir, (name, commit) in provider_dirs.items():
+                abs_dir = os.path.abspath(checkout_dir)
+                entry = {
+                    "name":         name,
+                    "checkout_dir": abs_dir,
+                    "commit":       commit,
+                    "remote_url":   _git_remote_url(abs_dir),
+                }
+                self._data["providers"].append(entry)
+                debug("manifest: recorded provider %s @ %s", name, commit[:10])
+            if provider_dirs:
+                self._data["updated_at"] = _now_iso()
+                self._save()
 
     # ── Package recording ─────────────────────────────────────────────────────
 
@@ -374,18 +380,20 @@ class BuildManifest:
             "variables":              dict(spec.get("variables") or {}),
             "completed_at":           _now_iso(),
         }
-        self._data["packages"].append(entry)
-        self._data["updated_at"] = _now_iso()
-        self._save()
+        with self._lock:
+            self._data["packages"].append(entry)
+            self._data["updated_at"] = _now_iso()
+            self._save()
         debug("manifest: %s recorded as %s", spec.get("package", "?"), outcome)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def complete(self) -> None:
         """Mark the manifest as successfully completed and write a final save."""
-        self._data["status"] = "complete"
-        self._data["updated_at"] = _now_iso()
-        self._save()
+        with self._lock:
+            self._data["status"] = "complete"
+            self._data["updated_at"] = _now_iso()
+            self._save()
         debug("manifest: complete — %s", self._path)
 
     def fail(self, package_name: str = "", reason: str = "") -> None:
@@ -394,13 +402,14 @@ class BuildManifest:
         The manifest still contains all packages recorded up to this point,
         so partial builds are preserved for inspection.
         """
-        self._data["status"] = "failed"
-        self._data["updated_at"] = _now_iso()
-        if package_name:
-            self._data["failed_package"] = package_name
-        if reason:
-            self._data["failure_reason"] = reason
-        self._save()
+        with self._lock:
+            self._data["status"] = "failed"
+            self._data["updated_at"] = _now_iso()
+            if package_name:
+                self._data["failed_package"] = package_name
+            if reason:
+                self._data["failure_reason"] = reason
+            self._save()
         debug("manifest: failed at package %s", package_name or "(unknown)")
 
     # ── Serialisation ─────────────────────────────────────────────────────────
@@ -419,12 +428,25 @@ class BuildManifest:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _save(self) -> None:
-        """Atomically write the JSON manifest and update the ``latest`` symlink."""
-        tmp = self._path + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump(self._data, fh, indent=2)
-            fh.write("\n")
-        os.replace(tmp, self._path)
+        """Atomically write the JSON manifest and update the ``latest`` symlink.
+
+        Uses a unique temp file (not a fixed ``<path>.tmp``) so that concurrent
+        --builders workers cannot race on a shared temp name -- previously two
+        simultaneous saves could leave one ``os.replace`` with a missing temp
+        (FileNotFoundError), failing an otherwise-successful package.
+        """
+        fd, tmp = tempfile.mkstemp(dir=self._manifest_dir, prefix=".manifest-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(self._data, fh, indent=2)
+                fh.write("\n")
+            os.replace(tmp, self._path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
         # Update the ``bits-manifest-latest.json`` symlink atomically.
         # The symlink lives alongside the timestamped files inside MANIFESTS/.
