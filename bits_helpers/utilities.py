@@ -566,12 +566,27 @@ def _parse_req_matcher(r):
   return r, ".*", None
 
 
+def _defaults_active(matcher, defaults):
+  """Return True if a ``defaults=<regex>`` *matcher* matches the active defaults.
+
+  ``defaults`` is what bits threads through from ``args.defaults``, which is a
+  *list* of profile names (``--defaults dev4::cuda`` -> ``["dev4", "cuda"]``);
+  older callers/tests may pass a bare string.  The conditional is active when the
+  regex matches ANY active profile, so a recipe can require a dependency only
+  under a given profile, e.g. ``- "cuda:defaults=cuda"`` (enabled by
+  defaults-cuda.sh).  Matching per-element also makes this safe: the previous
+  code passed the whole list to ``re.match`` and would raise TypeError.
+  """
+  rx = matcher[len("defaults="):]
+  defs = defaults if isinstance(defaults, (list, tuple)) else [defaults]
+  return any(re.match(rx, d) for d in defs)
+
 def filterByArchitectureDefaults(arch, defaults, requires):
   """Yield requirements from *requires* that are satisfied by *arch*/*defaults*."""
   for r in requires:
     require, matcher, _pin = _parse_req_matcher(r)
     if matcher.startswith("defaults="):
-      if re.match(matcher[len("defaults="):], defaults):
+      if _defaults_active(matcher, defaults):
         yield require
     elif re.match(matcher, arch):
       yield require
@@ -581,7 +596,7 @@ def disabledByArchitectureDefaults(arch, defaults, requires):
   for r in requires:
     require, matcher, _pin = _parse_req_matcher(r)
     if matcher.startswith("defaults="):
-      if not re.match(matcher[len("defaults="):], defaults):
+      if not _defaults_active(matcher, defaults):
         yield require
     elif not re.match(matcher, arch):
       yield require
