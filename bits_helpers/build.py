@@ -718,6 +718,64 @@ def create_provenance_info(package, specs, args):
   })
 
 
+# High-signal patterns that usually pinpoint the proximate cause of a build
+# failure. Used to surface a short excerpt in the failure message so users do
+# not have to open and grep the full (often huge) log by hand.
+_ERROR_PATTERNS = re.compile(
+    r"(?i)("
+    r"error:|"                        # gcc/clang "error:" and "CMake Error:"
+    r"fatal error:|"                  # missing headers etc.
+    r"configure: error:|"             # autotools
+    r"CMake Error|"                   # cmake (non-colon form)
+    r"undefined reference|"           # link errors
+    r"collect2: error|"               # linker driver
+    r"ld: (error|cannot|symbol)|"     # linker (avoid matching e.g. "build:")
+    r"No such file or directory|"
+    r"command not found|"
+    r"Permission denied|"
+    r"Traceback \(most recent call last\)|"
+    r"ModuleNotFoundError|ImportError:|"
+    r"\*\*\* \[.*\] Error [0-9]|"      # make: *** [target] Error N
+    r"make(\[[0-9]+\])?: \*\*\*|"      # make: *** / make[1]: ***
+    r"recipe for target"
+    r")"
+)
+
+
+def _extract_error_excerpt(log_path, max_match=15, tail=12, scan_limit=20000):
+  """Return a short, high-signal excerpt from a build log to speed up triage.
+
+  Collects the last `max_match` lines matching known error patterns (scanning
+  only the final `scan_limit` lines, since the proximate cause is near the end)
+  plus the final `tail` lines (the actual failure point). Best-effort only:
+  returns "" if the log is missing/empty/unreadable and never raises.
+  """
+  try:
+    with open(log_path, "r", errors="replace") as f:
+      lines = f.readlines()
+  except (OSError, IOError):
+    return ""
+  if not lines:
+    return ""
+  window = lines[-scan_limit:]
+  matched = []
+  for ln in window:
+    if _ERROR_PATTERNS.search(ln):
+      s = ln.rstrip("\n")
+      if not matched or matched[-1] != s:  # drop consecutive duplicates
+        matched.append(s)
+  matched = matched[-max_match:]
+  tail_lines = [ln.rstrip("\n") for ln in lines[-tail:]]
+  out = []
+  if matched:
+    out.append("  Matched error lines (last %d):" % len(matched))
+    out.extend("    " + m for m in matched)
+  if tail_lines:
+    out.append("  Last %d lines of log:" % len(tail_lines))
+    out.extend("    " + t for t in tail_lines)
+  return "\n".join(out)
+
+
 def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper):
   spec = specs[p]
   debug("Build command: %s", build_command)
@@ -792,6 +850,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   # Determine paths
   devSuffix = "-" + args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else ""
   log_path = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/log"
+  log_abs_path = log_path  # keep the absolute path; log_path may become relative below
   build_dir = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/{spec['package']}"
 
   # Use relative paths if we're inside the work directory
@@ -817,6 +876,13 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
 
   buildErrMsg += f"{bold}Build Directory:{reset}\n"
   buildErrMsg += f"  {build_dir}\n"
+
+  # Surface the proximate error so the user does not have to open the full log.
+  if err:
+    excerpt = _extract_error_excerpt(log_abs_path)
+    if excerpt:
+      buildErrMsg += f"\n{bold}Error excerpt:{reset}\n"
+      buildErrMsg += excerpt + "\n"
 
   updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
   if spec["is_devel_pkg"]:
