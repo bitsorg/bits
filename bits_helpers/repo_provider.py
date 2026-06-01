@@ -51,6 +51,7 @@ import os
 import shutil
 from collections import OrderedDict
 from os.path import join, exists, abspath
+from typing import Optional
 
 from bits_helpers.log import debug, info, warning, banner, dieOnError
 from bits_helpers.git import Git
@@ -533,7 +534,7 @@ def cwd_is_recipe_dir() -> bool:
 
 # ── Backward-compat bootstrap ───────────────────────────────────────────────
 
-def bootstrap_default_config(args, work_dir: str) -> str | None:
+def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
   """Bootstrap a default recipe repository when no config dir exists.
 
   Called when ``bits build <PKG>`` is run without a pre-existing recipe
