@@ -88,13 +88,16 @@ Without `shell-helper`, use `eval` manually: `eval "$(bits load ROOT/latest)"`.
 
 ### Override a package version without editing the recipe
 
-Defaults profiles can pin package versions globally without modifying recipe files:
+Defaults profiles can pin package versions globally without modifying recipe files. The `overrides:` block is a per-package patch merged into the spec after the recipe is parsed, so it can set `version`, `tag`, `source`, or any other field — and it takes precedence over the recipe's own values:
 
 ```yaml
 # In defaults-myproject.sh
 overrides:
-  ROOT:
-    version: "6-30-06"
+  root:
+    version: "6.32.02"
+    tag: "v6-32-02"        # tarball URL %(version)s and the git tag both follow
+  boost:
+    version: "1.85.0"
 ```
 
 Then build with:
@@ -103,7 +106,50 @@ Then build with:
 bits build --defaults release::myproject MyStack
 ```
 
-This is useful for shared recipes where different projects need different versions, or for emergency pinning when a new version breaks downstream packages.
+Keys are matched case-insensitively as `re.fullmatch` regexes, so `root` and `ROOT` both work and patterns such as `clhep|geant4` are valid. This is the recommended way to pin versions: useful for shared recipes where different projects need different versions, or for emergency pinning when a new version breaks downstream packages.
+
+### Pin a dependency's version from within a recipe
+
+A recipe can pin the version of one of its dependencies directly in the `requires` / `build_requires` list using the `name = version` form. The pin updates both `version` and `tag` of the named dependency:
+
+```yaml
+package: myanalysis
+version: "1.0"
+requires:
+  - root = 6.32.02            # pin root for this whole build
+  - boost = 1.85.0:slc7.*     # pin only on slc7 architectures
+  - vdt = v0.4.4:defaults=dev4   # pin only under --defaults dev4
+  - fmt                       # plain dependency, no pin
+build_requires:
+  - cmake
+---
+```
+
+The optional `:matcher` suffix is the same architecture / `defaults=` condition used for conditional dependencies, so a pin can be made arch- or profile-specific. Only **one** version pin per dependency is allowed across the whole graph — two recipes pinning the same package to different versions is a fatal error. For most cases prefer the defaults `overrides:` block above; the in-recipe pin is handy when the constraint logically belongs to the consuming package.
+
+### Pin the repository-provider (recipe-repo) version
+
+A [repository provider](REFERENCE.md#13-repository-provider-feature) such as `lcg.bits` pulls an entire recipe repository from git. Which snapshot it pulls is controlled by the provider recipe's `tag:` field — a branch, tag, or commit hash:
+
+```yaml
+# bits-providers/lcg.bits.sh
+package: lcg.bits
+version: "1"
+tag: "LCG_106"              # branch, tag, or commit; defaults to the repo's main branch
+provides_repository: true
+source: https://github.com/bitsorg/lcg.bits
+---
+```
+
+To choose the snapshot at invocation time without editing the recipe, append `@<tag>` to the bits-providers URL:
+
+```bash
+export BITS_PROVIDERS="https://github.com/bitsorg/bits-providers@LCG_106"
+# or per-invocation:
+bits build --providers https://github.com/bitsorg/bits-providers@LCG_106 LCG
+```
+
+The provider's commit hash is folded into every dependent package's build hash, so changing the provider version triggers a rebuild of everything sourced from it. Note that provider repositories are cloned *before* defaults `overrides:` are applied, so an `overrides:` entry does **not** change which provider snapshot is fetched — use the `tag:` field or the `@<tag>` URL suffix instead.
 
 ### Use a private recipe repository alongside the defaults
 

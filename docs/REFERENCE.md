@@ -1164,6 +1164,17 @@ done
 | `build_requires` | Build-time-only dependencies (e.g. `cmake`, `ninja`). |
 | `runtime_requires` | Runtime-only dependencies. |
 
+Each entry in `requires` / `build_requires` is a string in one of these forms:
+
+| Form | Meaning |
+|------|---------|
+| `name` | Plain dependency. |
+| `name:matcher` | Conditional dependency. `matcher` is an architecture regex (`re.match`-ed against the arch, e.g. `(?!osx)` for non-osx, `.*osx.*` for osx-only) or `defaults=<regex>` (matched against the active defaults). |
+| `name = version` | Pin the dependency to `version` (sets both its `version` and `tag`). |
+| `name = version:matcher` | Version pin that applies only when `matcher` is satisfied. |
+
+Only one version pin per dependency is allowed across the whole graph; conflicting pins (or a pin that arrives after the dependency was already resolved) abort the build. Prefer the defaults `overrides:` block (see [Configuration files](#configuration-files)) for version pinning; the in-recipe `= version` form is for constraints that belong to the consuming package.
+
 #### Environment exported by this package
 
 | Field | Description |
@@ -1185,8 +1196,11 @@ done
 | Field | Description |
 |-------|-------------|
 | `provides_repository` | Set to `true` to mark this recipe as a repository provider. |
+| `tag` | The git ref of the provider repository to clone — a branch, tag, or commit hash. Selects which snapshot of the recipe repository is pulled (falls back to `version`, then the repo's default branch). The resolved commit hash is folded into every dependent's build hash. |
 | `always_load` | Set to `true` (alongside `provides_repository: true`) to clone this provider unconditionally at startup, before any dependency-graph traversal. Recipes in the provider's repository are then visible to all packages without requiring an explicit dependency. |
 | `repository_position` | `append` (default) or `prepend` — where to insert the cloned directory in `BITS_PATH`. |
+
+The bits-providers repository URL itself accepts an `@<tag>` suffix (`BITS_PROVIDERS` / `--providers`, default branch otherwise), e.g. `https://github.com/bitsorg/bits-providers@LCG_106`. Because providers are cloned before defaults `overrides:` are applied, an `overrides:` entry cannot change which provider snapshot is fetched — use the provider recipe's `tag:` field or the `@<tag>` URL suffix.
 
 #### Memory-aware parallelism
 
