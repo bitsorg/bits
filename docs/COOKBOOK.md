@@ -403,6 +403,46 @@ PostInstall() {
 
 Call `defaults_PostInstall` at the end of any `PostInstall()` override to ensure the modulefile is still generated correctly.
 
+### Error handling in recipes — how failures are detected
+
+bits runs every recipe body under `set -e` **and** `set -o pipefail`, captures the recipe's real exit code, and tees all output to the per-package `log`. When a build fails, the `BUILD FAILED` message now includes an **Error excerpt** — the matched high-signal error lines plus the tail of the log — so you usually do not need to open the log by hand. Re-run with `--debug` (and optionally `--keep-tmp`) to keep the build tree for manual iteration.
+
+Because failure detection relies on a command exiting non-zero, two authoring pitfalls can let a real error slip through. Both are recipe bugs, not framework bugs.
+
+**Pitfall 1 — a non-final `&&`/`||` chain hides its own failure.** `set -e` does *not* abort when the failing command is on the left of an `&&`/`||` list (only the command after the final operator is checked). So if such a chain is **not** the last statement in a function, a failure in it is silently swallowed and execution continues:
+
+```bash
+# BAD: if wget/tar/cmake fails, set -e is suppressed (left of &&) and
+#      `make` still runs — on missing or half-prepared inputs.
+Make() {
+  wget "$url" && tar xf "$tarball" && cmake "$SOURCEDIR" && cp -r extra .
+  make -j"$JOBS"
+  make install
+}
+
+# GOOD: separate statements so set -e fires on the first failure.
+Make() {
+  wget "$url"
+  tar xf "$tarball"
+  cmake "$SOURCEDIR"
+  cp -r extra .
+  make -j"$JOBS"
+  make install
+}
+```
+
+**Pitfall 2 — `pipefail` turns a legitimately non-zero pipeline element into a build failure.** A common idiom such as `grep -rl PATTERN . | xargs sed ...` aborts the whole build when `grep` finds no match (exit 1) — even though "no match" is fine. Guard the element whose non-zero exit is acceptable:
+
+```bash
+# BAD: aborts if grep matches nothing.
+grep -rl g77 . | xargs --no-run-if-empty sed -i 's/\bg77\b/gfortran/g'
+
+# GOOD: tolerate the empty-match case.
+{ grep -rl g77 . || true; } | xargs --no-run-if-empty sed -i 's/\bg77\b/gfortran/g'
+```
+
+**Known limitation — errors that exit 0 are not intercepted.** bits can only detect a failure that produces a non-zero exit code. A third-party `configure` or `make` that prints errors but still returns 0 (e.g. a broken shell test inside a vendored `configure`) will not be caught automatically. Inspect the **Error excerpt** in the failure message or the full `log`; if a package "succeeds" but is incomplete, search its log for `error:` / `command not found` and fix the upstream script or add a `MakeInstall()`/`PostInstall()` sanity check that fails loudly.
+
 ---
 
 *Back to [User Guide](USERGUIDE.md) · [Reference Manual](REFERENCE.md)*
