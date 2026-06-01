@@ -1752,15 +1752,23 @@ def doBuild(args, parser):
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
                           parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)))
 
-    # Optional: stagger concurrent build jobs across OS 'nice' levels so CPU
-    # contention degrades gracefully (lead build at nice 0, others niced down).
-    # Opt-in via --build-nice so it can be A/B tested against the default.
+    # Stagger concurrent build jobs across OS 'nice' levels so CPU contention
+    # degrades gracefully (lead build at nice 0, others niced down).  On by
+    # default for --builders > 1; disable with --no-build-nice.
     scheduler.nice_ladder = None
-    if getattr(args, "buildNice", False):
-      from bits_helpers.nice_ladder import NiceLadder
+    scheduler.renice_watchdog = None
+    if getattr(args, "buildNice", True):
+      from bits_helpers.nice_ladder import NiceLadder, ReniceWatchdog
       scheduler.nice_ladder = NiceLadder(args.builders, step=getattr(args, "buildNiceStep", 5))
-      info("Build nice-ladder enabled: %d slots, step %d (lead build at nice 0).",
-           args.builders, getattr(args, "buildNiceStep", 5))
+      info("Build nice-ladder enabled: %d slots, step %d (lead build at nice 0). "
+           "Disable with --no-build-nice.", args.builders, getattr(args, "buildNiceStep", 5))
+      # Native builds only: a build niced down by the ladder can become the
+      # last straggler and crawl; a watchdog renices the longest such build
+      # back up, one at a time.  Docker builds use cgroup cpu-shares instead,
+      # so the process-level watchdog cannot reach them.
+      _boost_after = getattr(args, "buildNiceBoostAfter", 600)
+      if _boost_after and not getattr(args, "docker", False):
+        scheduler.renice_watchdog = ReniceWatchdog(boost_after=_boost_after, log=info).start()
 
   # --- Stale sentinel cleanup -------------------------------------------------
   # Remove any leftover *.downloading sentinels from a previous run that was
@@ -2524,7 +2532,12 @@ def doBuild(args, parser):
       buildList.append((p, _build_cmd, tar_command, upload_command, cachedTarball, breq, checkout_cmd))
 
   if (not args.makeflow) and (args.builders > 1) and buildTargets:
-    scheduler.run()
+    try:
+      scheduler.run()
+    finally:
+      # Always stop the straggler-renice watchdog, even if run() raised.
+      if getattr(scheduler, "renice_watchdog", None) is not None:
+        scheduler.renice_watchdog.stop()
     # Refresh the self-tuning resource-stats file from this run's monitor traces
     # so the next --builders invocation can schedule with up-to-date estimates (P3).
     if args.resourceMonitoring and monitoredDirs:

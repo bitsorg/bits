@@ -1,10 +1,18 @@
 """Tests for bits_helpers/nice_ladder.py (optional --build-nice scheduling)."""
 
+import os
 import re
 import shlex
+import subprocess
+import time
 import unittest
 
-from bits_helpers.nice_ladder import NiceLadder, cpu_shares_for_nice
+from bits_helpers.nice_ladder import NiceLadder, cpu_shares_for_nice, ReniceWatchdog
+
+try:
+    import psutil
+except Exception:  # pragma: no cover
+    psutil = None
 
 
 class TestNiceLadder(unittest.TestCase):
@@ -101,6 +109,42 @@ class TestCpuShares(unittest.TestCase):
                          r'\1 run --cpu-shares=%d ' % 110, cmd, count=1)
         self.assertEqual(n, 1)
         self.assertTrue(out.startswith("podman run --cpu-shares=110 --rm"))
+
+
+@unittest.skipIf(psutil is None, "psutil not available")
+class TestReniceWatchdog(unittest.TestCase):
+
+    def _spawn(self, nice_value):
+        p = subprocess.Popen(["sleep", "30"], preexec_fn=lambda: os.nice(nice_value))
+        self.addCleanup(p.terminate)
+        return p
+
+    def test_detects_niced_straggler_and_ignores_lead(self):
+        niced = self._spawn(10)
+        lead = self._spawn(0)
+        w = ReniceWatchdog(boost_after=1, interval=100, target_nice=0)
+        time.sleep(1.3)  # exceed boost_after
+        pids = {p.pid for (p, _, _) in w._candidates()}
+        self.assertIn(niced.pid, pids)       # backed-off build is a candidate
+        self.assertNotIn(lead.pid, pids)     # nice-0 lead is never boosted
+
+    def test_below_threshold_is_not_a_candidate(self):
+        niced = self._spawn(10)
+        w = ReniceWatchdog(boost_after=3600, interval=100, target_nice=0)
+        time.sleep(0.3)
+        pids = {p.pid for (p, _, _) in w._candidates()}
+        self.assertNotIn(niced.pid, pids)    # too young to boost yet
+
+    def test_boost_is_graceful(self):
+        # Boosting must never raise: returns False where raising priority is
+        # not permitted (unprivileged), True where it is (root/CAP_SYS_NICE).
+        niced = self._spawn(10)
+        w = ReniceWatchdog(boost_after=1, target_nice=0)
+        time.sleep(1.3)
+        result = w._boost(psutil.Process(niced.pid))
+        self.assertIn(result, (True, False))
+        if result:
+            self.assertLessEqual(psutil.Process(niced.pid).nice(), 0)
 
 
 if __name__ == "__main__":
