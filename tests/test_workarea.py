@@ -7,8 +7,28 @@ import unittest
 from unittest.mock import call, patch, MagicMock  # In Python 3, mock is built-in
 from collections import OrderedDict
 
-from bits_helpers.workarea import updateReferenceRepoSpec, _apply_patches
+from bits_helpers.workarea import updateReferenceRepoSpec, _apply_patches, _extract_source_archives
 from bits_helpers.git import Git
+
+
+class ExtractSourceArchivesTest(unittest.TestCase):
+    """A corrupt/wrong-format source archive must fail cleanly (SystemExit via
+    dieOnError), not crash the whole run with a CalledProcessError traceback."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_corrupt_tarball_fails_cleanly(self):
+        # A file named like a tarball but containing non-archive bytes (e.g. a
+        # 404 HTML page saved as the tarball).
+        bogus = os.path.join(self.tmp, "pkg-1.0.tar.gz")
+        with open(bogus, "w") as fh:
+            fh.write("<html>404 Not Found</html>\n")
+        with self.assertRaises(SystemExit):
+            _extract_source_archives(self.tmp)
 
 
 MOCK_SPEC = OrderedDict((

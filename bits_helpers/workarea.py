@@ -537,12 +537,23 @@ def _extract_source_archives(source_dir):
   for entry, filepath, strip in archives:
     lower = entry.lower()
     debug("Extracting %s into %s (--strip-components=%d)", entry, source_dir, strip)
-    if any(lower.endswith(ext) for ext in _TAR_EXTENSIONS):
-      subprocess.check_call(
-        ["tar", "xf", filepath, "--strip-components=%d" % strip, "-C", source_dir]
-      )
-    else:
-      _extract_zip_strip(filepath, source_dir, strip=strip)
+    try:
+      if any(lower.endswith(ext) for ext in _TAR_EXTENSIONS):
+        subprocess.check_call(
+          ["tar", "xf", filepath, "--strip-components=%d" % strip, "-C", source_dir]
+        )
+      else:
+        _extract_zip_strip(filepath, source_dir, strip=strip)
+    except (subprocess.CalledProcessError, zipfile.BadZipFile, OSError) as exc:
+      # A corrupt or wrong-format archive must fail this package cleanly rather
+      # than crash the whole run with a traceback. The most common cause is a
+      # download that returned an error/HTML page instead of the tarball (a
+      # dead or mistyped source URL), or a truncated download.
+      dieOnError(True,
+                 "Failed to unpack source archive '%s' (%s). It is not a valid "
+                 "archive -- the download may be corrupt or the source URL may "
+                 "have returned an error page. Remove %s and re-run, and verify "
+                 "the package's sources: URL." % (entry, exc, filepath))
 
   strips_map = {entry: strip for entry, _, strip in archives}
   with open(sentinel, "w") as fh:
