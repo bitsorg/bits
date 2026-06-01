@@ -36,18 +36,29 @@ except Exception:  # psutil is an optional dependency
     psutil = None
 
 
-def _run_docker_update(cmd):
-    """Run a ``docker/podman update`` command, returning True on success.
+def _run_docker_exec(cmd):
+    """Run a ``docker/podman`` command, returning ``(returncode, stdout)``.
 
     Best-effort: a container that has already finished (``--rm``) is gone, so
-    the update fails harmlessly and we just return False.
+    the command fails harmlessly and we return a non-zero code with no output.
     """
     try:
-        return subprocess.run(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30
-        ).returncode == 0
+        p = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30
+        )
+        return p.returncode, p.stdout.decode("utf-8", "replace")
     except Exception:
-        return False
+        return 1, ""
+
+
+# Heavy CPU-bound build steps whose long-running instances are worth boosting.
+# These are the GCC/Clang/Fortran back-ends (and the linker) that actually do
+# the work; the front-end drivers (gcc/g++/gfortran) are short-lived.
+_COMPILER_HINTS = (
+    "cc1plus", "cc1", "f951", "lto1", "lto-wrapper",
+    "g++", "gcc", "gfortran", "clang", "clang++", "rustc", "ld", "ld.gold",
+    "ld.lld", "collect2", "as",
+)
 
 
 def cpu_shares_for_nice(nice_level, base=1024):
@@ -134,29 +145,29 @@ class ReniceWatchdog:
     that is not permitted the watchdog logs a single warning and then stays
     quiet; it never raises.
 
-    Docker/podman builds run in a separate container (not a child of this
-    process), so they cannot be reniced here.  Instead bits names each build
-    container and registers it via :meth:`register_container`; the watchdog
-    then restores a straggler container's cgroup CPU weight to full with
-    ``docker update --cpu-shares=1024 <name>`` -- the container-level
-    equivalent of renicing to 0.
+    Docker/podman builds run in a separate container with an isolated PID
+    namespace, so the host cannot see or renice the compiler processes inside.
+    Instead bits names each build container and registers it via
+    :meth:`register_container`; the watchdog peeks inside the named container
+    (``docker exec ... ps``) for a long-running compile and renices that
+    process to a higher priority with ``docker exec --user 0 ... renice`` (run
+    as root inside the container, so it can raise priority freely).
     """
 
-    DEFAULT_SHARES = 1024  # docker default cpu-shares == full weight
-
-    def __init__(self, boost_after=600, interval=30, target_nice=0, log=None,
-                 docker_update=None):
+    def __init__(self, boost_after=600, interval=30, target_nice=0,
+                 docker_boost_nice=-10, log=None, docker_exec=None):
         self.boost_after = max(1, int(boost_after))
         self.interval = max(1, int(interval))
         self.target_nice = int(target_nice)
+        self.docker_boost_nice = int(docker_boost_nice)
         self._log = log or (lambda *a, **k: None)
         self._stop = threading.Event()
         self._thread = None
-        self._handled = set()        # pids / container names already handled
+        self._handled = set()        # native pids / (container, pid) already handled
         self._warned_eperm = False
         self._lock = threading.Lock()
         self._containers = {}        # name -> {"start": t, "bin": docker_bin}
-        self._docker_update = docker_update or _run_docker_update
+        self._docker_exec = docker_exec or _run_docker_exec
 
     def register_container(self, name, docker_bin="docker"):
         """Register a named build container so a straggler can be boosted."""
@@ -225,26 +236,57 @@ class ReniceWatchdog:
                 continue
         return ok
 
-    def _docker_candidates(self):
-        """Return ``[(name, elapsed, docker_bin), ...]`` for registered build
-        containers older than ``boost_after`` and not yet handled."""
+    def _list_container_procs(self, name, docker_bin):
+        """Return ``[(pid, etimes, comm), ...]`` for processes inside *name*.
+
+        Uses ``docker exec ... ps`` (run as root so it sees every process).
+        Returns ``[]`` if the container is gone or ``ps`` is unavailable.
+        """
+        rc, out = self._docker_exec([docker_bin, "exec", "--user", "0", name,
+                                     "ps", "-eo", "pid=,etimes=,comm="])
+        if rc != 0:
+            return []
+        procs = []
+        for line in out.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+            try:
+                pid, etimes = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+            procs.append((pid, etimes, parts[2].strip()))
+        return procs
+
+    def _docker_proc_candidates(self):
+        """Return ``[(name, docker_bin, pid, etimes, comm), ...]`` for heavy
+        compile processes inside registered containers that have been running
+        longer than ``boost_after`` and have not been handled yet."""
         now = time.time()
         out = []
         with self._lock:
             items = list(self._containers.items())
         for name, info in items:
-            if name in self._handled:
+            # Cheap container-age gate so we do not exec into young builds.
+            if now - info["start"] < self.boost_after:
                 continue
-            elapsed = now - info["start"]
-            if elapsed < self.boost_after:
-                continue
-            out.append((name, elapsed, info["bin"]))
+            for pid, etimes, comm in self._list_container_procs(name, info["bin"]):
+                if etimes < self.boost_after:
+                    continue
+                if not any(h in comm for h in _COMPILER_HINTS):
+                    continue
+                if (name, pid) in self._handled:
+                    continue
+                out.append((name, info["bin"], pid, etimes, comm))
         return out
 
-    def _boost_container(self, name, docker_bin):
-        """Restore *name*'s cgroup CPU weight to full. Returns True on success."""
-        return self._docker_update([docker_bin, "update", "--cpu-shares",
-                                    str(self.DEFAULT_SHARES), name])
+    def _renice_in_container(self, name, docker_bin, pid):
+        """Renice *pid* inside *name* to ``docker_boost_nice`` (run as root so
+        it can raise priority).  Returns True on success."""
+        rc, _ = self._docker_exec([docker_bin, "exec", "--user", "0", name,
+                                   "renice", "-n", str(self.docker_boost_nice),
+                                   "-p", str(pid)])
+        return rc == 0
 
     def _run(self):
         while not self._stop.wait(self.interval):
@@ -268,12 +310,14 @@ class ReniceWatchdog:
                               "(needs root / CAP_SYS_NICE); straggler boosting disabled")
                 continue
 
-            # Docker (container) stragglers: restore full cpu-shares.
-            dcands = self._docker_candidates()
-            if dcands:
-                dcands.sort(key=lambda t: t[1], reverse=True)
-                name, elapsed, dbin = dcands[0]
-                self._handled.add(name)  # boost once
-                if self._boost_container(name, dbin):
-                    self._log("renice-watchdog: boosted long-running build container %r to "
-                              "full cpu-shares after %d min", name, int(elapsed // 60))
+            # Docker stragglers: renice the long-running compile *inside* the
+            # named container (one per interval), via `docker exec ... renice`.
+            dproc = self._docker_proc_candidates()
+            if dproc:
+                dproc.sort(key=lambda t: t[3], reverse=True)  # longest etimes first
+                name, dbin, pid, etimes, comm = dproc[0]
+                self._handled.add((name, pid))  # boost once
+                if self._renice_in_container(name, dbin, pid):
+                    self._log("renice-watchdog: boosted in-container compile %s (pid %d in %r) "
+                              "to nice %d after %d min", comm, pid, name,
+                              self.docker_boost_nice, int(etimes // 60))

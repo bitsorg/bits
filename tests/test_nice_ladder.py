@@ -148,39 +148,57 @@ class TestReniceWatchdog(unittest.TestCase):
 
 
 class TestReniceWatchdogDocker(unittest.TestCase):
-    """Docker container straggler boosting (no real docker needed: the
-    `docker update` call is injected)."""
+    """In-container straggler boosting via `docker exec renice` (no real docker
+    needed: the docker_exec callable is injected)."""
+
+    # A fake `ps -eo pid=,etimes=,comm=` listing inside a build container:
+    # a long g++ back-end (cc1plus), a fresh one, and a non-compiler shell.
+    PS_OUTPUT = "  17 900 cc1plus\n   42  30 cc1plus\n   1 905 sh\n  18 902 make\n"
 
     def _watchdog(self):
         self.calls = []
-        return ReniceWatchdog(
-            boost_after=1, interval=100, target_nice=0,
-            docker_update=lambda cmd: (self.calls.append(cmd) or True),
-        )
 
-    def test_registered_container_becomes_candidate_after_threshold(self):
+        def fake_exec(cmd):
+            self.calls.append(cmd)
+            if "ps" in cmd:
+                return 0, self.PS_OUTPUT
+            return 0, ""   # renice (or anything else) succeeds
+
+        return ReniceWatchdog(boost_after=600, interval=100,
+                              docker_boost_nice=-10, docker_exec=fake_exec)
+
+    def test_proc_candidate_is_long_compiler_only(self):
         w = self._watchdog()
         w.register_container("bits-build-root-abcd", "docker")
-        self.assertFalse(w._docker_candidates())          # too young
+        # Container younger than boost_after -> no exec, no candidates.
+        self.assertEqual(w._docker_proc_candidates(), [])
+        # Age the container past the threshold.
         for v in w._containers.values():
-            v["start"] -= 5                                # age it past boost_after
-        names = {n for (n, _, _) in w._docker_candidates()}
-        self.assertEqual(names, {"bits-build-root-abcd"})
+            v["start"] -= 1000
+        cands = w._docker_proc_candidates()
+        pids = {pid for (_, _, pid, _, _) in cands}
+        # Only the long-running compiler (pid 17, etimes 900) qualifies:
+        # pid 42 too young, sh/make are not compilers.
+        self.assertEqual(pids, {17})
 
-    def test_boost_container_issues_docker_update_to_full_shares(self):
+    def test_run_issues_docker_exec_renice_to_boost_nice(self):
         w = self._watchdog()
-        ok = w._boost_container("bits-build-acts-1234", "podman")
+        w.register_container("bits-build-acts-1234", "podman")
+        ok = w._renice_in_container("bits-build-acts-1234", "podman", 17)
         self.assertTrue(ok)
-        self.assertEqual(self.calls,
-                         [["podman", "update", "--cpu-shares", "1024", "bits-build-acts-1234"]])
+        self.assertIn(
+            ["podman", "exec", "--user", "0", "bits-build-acts-1234",
+             "renice", "-n", "-10", "-p", "17"],
+            self.calls)
 
-    def test_handled_container_not_recandidated(self):
+    def test_handled_proc_not_recandidated(self):
         w = self._watchdog()
         w.register_container("c1", "docker")
         for v in w._containers.values():
-            v["start"] -= 5
-        w._handled.add("c1")
-        self.assertNotIn("c1", {n for (n, _, _) in w._docker_candidates()})
+            v["start"] -= 1000
+        w._handled.add(("c1", 17))
+        pids = {pid for (_, _, pid, _, _) in w._docker_proc_candidates()}
+        self.assertNotIn(17, pids)
 
 
 if __name__ == "__main__":
