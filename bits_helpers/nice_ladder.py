@@ -26,6 +26,7 @@ longest-running niced-down build back toward nice 0 -- one at a time.
 """
 
 import os
+import subprocess
 import threading
 import time
 
@@ -33,6 +34,20 @@ try:
     import psutil
 except Exception:  # psutil is an optional dependency
     psutil = None
+
+
+def _run_docker_update(cmd):
+    """Run a ``docker/podman update`` command, returning True on success.
+
+    Best-effort: a container that has already finished (``--rm``) is gone, so
+    the update fails harmlessly and we just return False.
+    """
+    try:
+        return subprocess.run(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30
+        ).returncode == 0
+    except Exception:
+        return False
 
 
 def cpu_shares_for_nice(nice_level, base=1024):
@@ -114,29 +129,45 @@ class ReniceWatchdog:
     Only one build is boosted per interval, so the worst stragglers are
     restored to full speed first.
 
-    Raising a process's priority (lowering its nice value) requires privilege
-    on Linux (root / CAP_SYS_NICE, or a raised RLIMIT_NICE).  When that is not
-    permitted the watchdog logs a single warning and then stays quiet; it never
-    raises.  Docker/podman builds run in a separate container (not a child of
-    this process) and are governed by their cgroup ``--cpu-shares`` instead, so
-    this watchdog is started only for native builds.
+    Raising a native process's priority (lowering its nice value) requires
+    privilege on Linux (root / CAP_SYS_NICE, or a raised RLIMIT_NICE).  When
+    that is not permitted the watchdog logs a single warning and then stays
+    quiet; it never raises.
+
+    Docker/podman builds run in a separate container (not a child of this
+    process), so they cannot be reniced here.  Instead bits names each build
+    container and registers it via :meth:`register_container`; the watchdog
+    then restores a straggler container's cgroup CPU weight to full with
+    ``docker update --cpu-shares=1024 <name>`` -- the container-level
+    equivalent of renicing to 0.
     """
 
-    def __init__(self, boost_after=600, interval=30, target_nice=0, log=None):
+    DEFAULT_SHARES = 1024  # docker default cpu-shares == full weight
+
+    def __init__(self, boost_after=600, interval=30, target_nice=0, log=None,
+                 docker_update=None):
         self.boost_after = max(1, int(boost_after))
         self.interval = max(1, int(interval))
         self.target_nice = int(target_nice)
         self._log = log or (lambda *a, **k: None)
         self._stop = threading.Event()
         self._thread = None
-        self._handled = set()        # pids already boosted or denied
+        self._handled = set()        # pids / container names already handled
         self._warned_eperm = False
+        self._lock = threading.Lock()
+        self._containers = {}        # name -> {"start": t, "bin": docker_bin}
+        self._docker_update = docker_update or _run_docker_update
+
+    def register_container(self, name, docker_bin="docker"):
+        """Register a named build container so a straggler can be boosted."""
+        with self._lock:
+            self._containers[name] = {"start": time.time(), "bin": docker_bin}
 
     def start(self):
-        """Launch the watchdog thread (no-op if psutil is unavailable)."""
+        """Launch the watchdog thread."""
         if psutil is None:
-            self._log("renice-watchdog: psutil unavailable; straggler boosting disabled")
-            return self
+            self._log("renice-watchdog: psutil unavailable; native straggler boosting "
+                      "disabled (docker container boosting still active)")
         self._thread = threading.Thread(target=self._run, name="renice-watchdog", daemon=True)
         self._thread.start()
         return self
@@ -194,24 +225,55 @@ class ReniceWatchdog:
                 continue
         return ok
 
+    def _docker_candidates(self):
+        """Return ``[(name, elapsed, docker_bin), ...]`` for registered build
+        containers older than ``boost_after`` and not yet handled."""
+        now = time.time()
+        out = []
+        with self._lock:
+            items = list(self._containers.items())
+        for name, info in items:
+            if name in self._handled:
+                continue
+            elapsed = now - info["start"]
+            if elapsed < self.boost_after:
+                continue
+            out.append((name, elapsed, info["bin"]))
+        return out
+
+    def _boost_container(self, name, docker_bin):
+        """Restore *name*'s cgroup CPU weight to full. Returns True on success."""
+        return self._docker_update([docker_bin, "update", "--cpu-shares",
+                                    str(self.DEFAULT_SHARES), name])
+
     def _run(self):
         while not self._stop.wait(self.interval):
+            # Native (process) stragglers: renice the subtree toward nice 0.
             cands = self._candidates()
-            if not cands:
+            if cands:
+                cands.sort(key=lambda t: t[1], reverse=True)  # longest-running first
+                proc, elapsed, nice = cands[0]
+                try:
+                    pname = proc.name()
+                except Exception:
+                    pname = "pid %d" % proc.pid
+                self._handled.add(proc.pid)  # don't retry this pid either way
+                if self._boost(proc):
+                    self._log("renice-watchdog: boosted long-running build (pid %d, %s) from "
+                              "nice %d to %d after %d min", proc.pid, pname, nice,
+                              self.target_nice, int(elapsed // 60))
+                elif not self._warned_eperm:
+                    self._warned_eperm = True
+                    self._log("renice-watchdog: not permitted to raise build priority "
+                              "(needs root / CAP_SYS_NICE); straggler boosting disabled")
                 continue
-            # Longest-running straggler first; boost exactly one per interval.
-            cands.sort(key=lambda t: t[1], reverse=True)
-            proc, elapsed, nice = cands[0]
-            try:
-                name = proc.name()
-            except Exception:
-                name = "pid %d" % proc.pid
-            self._handled.add(proc.pid)  # don't retry this pid either way
-            if self._boost(proc):
-                self._log("renice-watchdog: boosted long-running build (pid %d, %s) from "
-                          "nice %d to %d after %d min", proc.pid, name, nice,
-                          self.target_nice, int(elapsed // 60))
-            elif not self._warned_eperm:
-                self._warned_eperm = True
-                self._log("renice-watchdog: not permitted to raise build priority "
-                          "(needs root / CAP_SYS_NICE); straggler boosting disabled")
+
+            # Docker (container) stragglers: restore full cpu-shares.
+            dcands = self._docker_candidates()
+            if dcands:
+                dcands.sort(key=lambda t: t[1], reverse=True)
+                name, elapsed, dbin = dcands[0]
+                self._handled.add(name)  # boost once
+                if self._boost_container(name, dbin):
+                    self._log("renice-watchdog: boosted long-running build container %r to "
+                              "full cpu-shares after %d min", name, int(elapsed // 60))

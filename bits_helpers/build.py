@@ -814,12 +814,20 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       if getattr(args, "docker", False):
         from bits_helpers.nice_ladder import cpu_shares_for_nice
         shares = cpu_shares_for_nice(nice_level)
+        # Name the build container (unique per build) so the straggler watchdog
+        # can later restore its cpu-shares via `docker update <name>`.
+        cname = "bits-build-%s-%s" % (re.sub(r'[^a-zA-Z0-9_.-]', '-', p), os.urandom(4).hex())
         build_command, _subbed = re.subn(
             r'\b(docker|podman)\s+run\s',
-            r'\1 run --cpu-shares=%d ' % shares,
+            r'\1 run --cpu-shares=%d --name %s ' % (shares, cname),
             build_command, count=1)
-        if not _subbed:
-          debug("build-nice: could not inject --cpu-shares (no 'docker/podman run' "
+        if _subbed:
+          _wd = getattr(scheduler, "renice_watchdog", None) if scheduler is not None else None
+          if _wd is not None:
+            _dbin = "podman" if build_command.lstrip().startswith("podman") else "docker"
+            _wd.register_container(cname, _dbin)
+        else:
+          debug("build-nice: could not inject --cpu-shares/--name (no 'docker/podman run' "
                 "in command); container build runs unthrottled this slot.")
       else:
         build_command = "nice -n %d /bin/sh -c %s" % (nice_level, shlex.quote(build_command))
@@ -1762,12 +1770,13 @@ def doBuild(args, parser):
       scheduler.nice_ladder = NiceLadder(args.builders, step=getattr(args, "buildNiceStep", 5))
       info("Build nice-ladder enabled: %d slots, step %d (lead build at nice 0). "
            "Disable with --no-build-nice.", args.builders, getattr(args, "buildNiceStep", 5))
-      # Native builds only: a build niced down by the ladder can become the
-      # last straggler and crawl; a watchdog renices the longest such build
-      # back up, one at a time.  Docker builds use cgroup cpu-shares instead,
-      # so the process-level watchdog cannot reach them.
+      # A build backed off by the ladder can become the last straggler and
+      # crawl; a watchdog boosts the longest such build back to full speed, one
+      # at a time.  Native builds are reniced toward 0; docker builds (each in
+      # its own named container) get their cgroup cpu-shares restored via
+      # `docker update`.
       _boost_after = getattr(args, "buildNiceBoostAfter", 600)
-      if _boost_after and not getattr(args, "docker", False):
+      if _boost_after:
         scheduler.renice_watchdog = ReniceWatchdog(boost_after=_boost_after, log=info).start()
 
   # --- Stale sentinel cleanup -------------------------------------------------

@@ -147,5 +147,41 @@ class TestReniceWatchdog(unittest.TestCase):
             self.assertLessEqual(psutil.Process(niced.pid).nice(), 0)
 
 
+class TestReniceWatchdogDocker(unittest.TestCase):
+    """Docker container straggler boosting (no real docker needed: the
+    `docker update` call is injected)."""
+
+    def _watchdog(self):
+        self.calls = []
+        return ReniceWatchdog(
+            boost_after=1, interval=100, target_nice=0,
+            docker_update=lambda cmd: (self.calls.append(cmd) or True),
+        )
+
+    def test_registered_container_becomes_candidate_after_threshold(self):
+        w = self._watchdog()
+        w.register_container("bits-build-root-abcd", "docker")
+        self.assertFalse(w._docker_candidates())          # too young
+        for v in w._containers.values():
+            v["start"] -= 5                                # age it past boost_after
+        names = {n for (n, _, _) in w._docker_candidates()}
+        self.assertEqual(names, {"bits-build-root-abcd"})
+
+    def test_boost_container_issues_docker_update_to_full_shares(self):
+        w = self._watchdog()
+        ok = w._boost_container("bits-build-acts-1234", "podman")
+        self.assertTrue(ok)
+        self.assertEqual(self.calls,
+                         [["podman", "update", "--cpu-shares", "1024", "bits-build-acts-1234"]])
+
+    def test_handled_container_not_recandidated(self):
+        w = self._watchdog()
+        w.register_container("c1", "docker")
+        for v in w._containers.values():
+            v["start"] -= 5
+        w._handled.add("c1")
+        self.assertNotIn("c1", {n for (n, _, _) in w._docker_candidates()})
+
+
 if __name__ == "__main__":
     unittest.main()
