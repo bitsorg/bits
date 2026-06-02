@@ -156,6 +156,25 @@ class PublishNoRelocateTest(unittest.TestCase):
         self.assertEqual(args.scratchDir, "/tmp/bits-scratch")
 
 
+class AutoResourcesFlagTest(unittest.TestCase):
+    """--auto-resources opts in to the measurement-driven --builders scheduler."""
+
+    def test_off_by_default(self):
+        args = _parse(["build", "-a", _ARCH, "--builders", "8", "LCG"])
+        self.assertFalse(getattr(args, "autoResources", False))
+
+    def test_enabled_with_flag(self):
+        args = _parse(["build", "-a", _ARCH, "--builders", "8",
+                       "--auto-resources", "LCG"])
+        self.assertTrue(args.autoResources)
+
+    def test_independent_of_explicit_resource_flags(self):
+        # The explicit knobs keep their own defaults and are unaffected.
+        args = _parse(["build", "-a", _ARCH, "--builders", "8", "LCG"])
+        self.assertIsNone(args.resources)
+        self.assertFalse(args.resourceMonitoring)
+
+
 class BackwardCompatBuildTest(unittest.TestCase):
     """Existing build argument combinations are completely unaffected."""
 

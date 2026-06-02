@@ -257,6 +257,13 @@ def doParseArgs():
                             help="Enable resource monitoring for each built package.")
   build_parser.add_argument("--resources", dest="resources", default=None,
                             help="JSON files containing resources utilization of packages.")
+  build_parser.add_argument("--auto-resources", dest="autoResources", action="store_true",
+                            help=("Opt in to the self-tuning resource scheduler for --builders > 1: "
+                                  "auto-load the build-stats file a previous run left behind and use it "
+                                  "to gate how many build jobs start concurrently, and auto-enable "
+                                  "resource monitoring to refresh it. Off by default; concurrency is then "
+                                  "bounded only by --builders. Explicit --resources / --resource-monitoring "
+                                  "still work without this flag."))
   build_parser.add_argument("-u", "--fetch-repos", dest="fetchRepos", action="store_true",
                             help=("Fetch updates to repositories in MIRRORDIR. Required but nonexistent "
                                   "repositories are always cloned, even if this option is not given."))

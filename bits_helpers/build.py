@@ -1744,21 +1744,26 @@ def doBuild(args, parser):
     # machine still has budget — preventing N heavy builds from starting at once
     # and thrashing the node.  We auto-load the stats file a previous run left
     # behind (re-stamped for this machine), and auto-enable monitoring so the
-    # current run refreshes it.  Explicit --resources / --resource-monitoring
-    # flags always take precedence.
-    if not args.resources:
-      from bits_helpers.build_stats import autoload_stats_path
-      _auto_stats = autoload_stats_path(workDir)
-      if _auto_stats:
-        args.resources = _auto_stats
-        info("Auto-loaded build resource stats from a previous run: %s", _auto_stats)
-    if not args.resourceMonitoring:
-      try:
-        import psutil  # noqa: F401  (availability probe only)
-        args.resourceMonitoring = True
-        debug("Enabled resource monitoring (--builders > 1) to record build stats")
-      except Exception:  # pylint: disable=broad-except
-        debug("psutil unavailable; resource monitoring stays off")
+    # current run refreshes it.
+    #
+    # This measurement-driven gating is OPT-IN (--auto-resources), off by
+    # default: without it, concurrency is bounded purely by --builders, which is
+    # more predictable.  Explicit --resources / --resource-monitoring still take
+    # precedence and work regardless of the flag.
+    if getattr(args, "autoResources", False):
+      if not args.resources:
+        from bits_helpers.build_stats import autoload_stats_path
+        _auto_stats = autoload_stats_path(workDir)
+        if _auto_stats:
+          args.resources = _auto_stats
+          info("Auto-loaded build resource stats from a previous run: %s", _auto_stats)
+      if not args.resourceMonitoring:
+        try:
+          import psutil  # noqa: F401  (availability probe only)
+          args.resourceMonitoring = True
+          debug("Enabled resource monitoring (--builders > 1) to record build stats")
+        except Exception:  # pylint: disable=broad-except
+          debug("psutil unavailable; resource monitoring stays off")
 
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
                           parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)))
