@@ -709,3 +709,43 @@ class ExtractSourceArchivesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# write_failure_summary()  (--builders concise failure report)
+# ---------------------------------------------------------------------------
+class WriteFailureSummaryTest(unittest.TestCase):
+    """write_failure_summary() distils a readable per-run failure report."""
+
+    class _Sched:
+        def __init__(self, fails, errors):
+            self.buildFailures = fails
+            self.errors = errors
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_summary_lists_direct_and_cascaded(self):
+        from bits_helpers.build import write_failure_summary
+        sched = self._Sched(
+            fails=[{"package": "motif@2.3.8", "log": "/sw/BUILD/motif-latest/log",
+                    "excerpt": "  Matched error lines (last 1):\n    err: boom"}],
+            errors={"build:motif": "BUILD FAILED",
+                    "build:foo": "The following dependencies could not complete:\nbuild:motif"})
+        path = write_failure_summary(self.dir, sched)
+        self.assertTrue(path and os.path.exists(path))
+        text = open(path).read()
+        self.assertIn("FAILED: motif@2.3.8", text)
+        self.assertIn("err: boom", text)                       # excerpt included
+        self.assertIn("1 package(s) failed", text)
+        self.assertIn("Skipped", text)
+        self.assertIn("foo", text)                             # cascaded dependent
+        self.assertNotIn("motif", text.split("Skipped")[1])    # not double-counted
+
+    def test_no_failures_writes_nothing(self):
+        from bits_helpers.build import write_failure_summary
+        self.assertIsNone(write_failure_summary(self.dir, self._Sched([], {})))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "build-summary.log")))

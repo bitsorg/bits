@@ -779,6 +779,57 @@ def _extract_error_excerpt(log_path, max_match=15, tail=12, scan_limit=20000):
   return "\n".join(out)
 
 
+def write_failure_summary(work_dir, scheduler):
+  """Write a concise per-run failure summary for a --builders build.
+
+  The full per-package error messages collected by the scheduler are verbose
+  (log paths, environment, next-steps, ...), so a whole-stack failure produces
+  an unreadable wall of text.  This distils, into ``<work_dir>/build-summary.log``:
+    * each package that *directly* failed to build, with its log path and the
+      proximate error excerpt (the matched error lines);
+    * the count of packages skipped only because a dependency failed.
+  Returns the path written, or None if there were no failures.
+  """
+  fails = getattr(scheduler, "buildFailures", None) or []
+  direct_names = {f["package"].split("@", 1)[0] for f in fails}
+  cascaded = []
+  for action, msg in getattr(scheduler, "errors", {}).items():
+    if "could not complete" in str(msg):
+      pkg = str(action).split(":", 1)[-1]
+      if pkg not in direct_names:
+        cascaded.append(pkg)
+  if not fails and not cascaded:
+    return None
+  path = os.path.join(work_dir, "build-summary.log")
+  try:
+    with open(path, "w") as fh:
+      fh.write("BUILD FAILURE SUMMARY\n=====================\n\n")
+      fh.write("%d package(s) failed to build; %d skipped because a dependency failed.\n\n"
+               % (len(fails), len(cascaded)))
+      if fails:
+        fh.write("Failed to build:\n")
+        for f in sorted(fails, key=lambda x: x["package"].lower()):
+          fh.write("  - %s\n" % f["package"])
+        fh.write("\n")
+      for f in sorted(fails, key=lambda x: x["package"].lower()):
+        fh.write("-" * 72 + "\n")
+        fh.write("FAILED: %s\n" % f["package"])
+        fh.write("  log: %s\n" % f.get("log", "?"))
+        if f.get("excerpt"):
+          fh.write("\n")
+          for line in f["excerpt"].splitlines():
+            fh.write("  " + line + "\n")
+        fh.write("\n")
+      if cascaded:
+        fh.write("-" * 72 + "\n")
+        fh.write("Skipped (a dependency failed to build), %d package(s):\n  %s\n"
+                 % (len(cascaded), ", ".join(sorted(cascaded))))
+  except OSError as exc:
+    warning("Could not write failure summary %s: %s", path, exc)
+    return None
+  return path
+
+
 def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper):
   spec = specs[p]
   debug("Build command: %s", build_command)
@@ -889,8 +940,9 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   buildErrMsg += f"  {build_dir}\n"
 
   # Surface the proximate error so the user does not have to open the full log.
+  excerpt = ""
   if err:
-    excerpt = _extract_error_excerpt(log_abs_path)
+    excerpt = _extract_error_excerpt(log_abs_path) or ""
     if excerpt:
       buildErrMsg += f"\n{bold}Error excerpt:{reset}\n"
       buildErrMsg += excerpt + "\n"
@@ -970,6 +1022,15 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   buildErrMsg += f"  • Please upload the full log to CERNBox/Dropbox if you intend to request support.\n"
 
   if err and args.builders>1:
+    # Record a concise entry for the end-of-run failure summary (write_failure_summary).
+    fails = getattr(scheduler, "buildFailures", None)
+    if fails is not None:
+      try:
+        with scheduler.buildFailuresLock:
+          fails.append({"package": "%s@%s" % (spec["package"], spec["version"]),
+                        "log": log_path, "excerpt": excerpt})
+      except Exception:  # pylint: disable=broad-except
+        pass
     return buildErrMsg.strip()
   else:
     dieOnError(err, buildErrMsg.strip())
@@ -1768,16 +1829,24 @@ def doBuild(args, parser):
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
                           parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)))
 
-    # Stagger concurrent build jobs across OS 'nice' levels so CPU contention
-    # degrades gracefully (lead build at nice 0, others niced down).  On by
-    # default for --builders > 1; disable with --no-build-nice.
+    # Collect concise per-package failures during the run so we can write a
+    # readable summary at the end (write_failure_summary), instead of leaving the
+    # user to scroll the full verbose error dump.
+    import threading as _threading
+    scheduler.buildFailures = []
+    scheduler.buildFailuresLock = _threading.Lock()
+
+    # Optionally stagger concurrent build jobs across OS 'nice' levels so CPU
+    # contention degrades gracefully (lead build at nice 0, others niced down).
+    # OPT-IN (--build-nice), off by default: the default --builders path does no
+    # command wrapping and starts no renice-watchdog thread.
     scheduler.nice_ladder = None
     scheduler.renice_watchdog = None
-    if getattr(args, "buildNice", True):
+    if getattr(args, "buildNice", False):
       from bits_helpers.nice_ladder import NiceLadder, ReniceWatchdog
       scheduler.nice_ladder = NiceLadder(args.builders, step=getattr(args, "buildNiceStep", 5))
-      info("Build nice-ladder enabled: %d slots, step %d (lead build at nice 0). "
-           "Disable with --no-build-nice.", args.builders, getattr(args, "buildNiceStep", 5))
+      info("Build nice-ladder enabled (--build-nice): %d slots, step %d (lead build at nice 0).",
+           args.builders, getattr(args, "buildNiceStep", 5))
       # A build backed off by the ladder can become the last straggler and
       # crawl; a watchdog boosts the longest such build back to full speed, one
       # at a time.  Native builds are reniced toward 0; docker builds (each in
@@ -2565,6 +2634,11 @@ def doBuild(args, parser):
         warning("Could not update build resource stats: %s", exc)
     for (action, error) in scheduler.errors.items():
       info("* The action \"{}\" was not completed successfully because {}".format(action, error))
+    # Write a concise failure summary (one entry per directly-failed package with
+    # its error excerpt, plus the count of dependency-skipped packages).
+    _summary_path = write_failure_summary(workDir, scheduler)
+    if _summary_path:
+      info("Build failure summary written to %s", _summary_path)
     if scheduler.brokenJobs:
       dieOnError(True, "Please fix the above errors.")
   elif args.makeflow and buildTargets:

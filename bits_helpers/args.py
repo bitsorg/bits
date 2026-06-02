@@ -231,17 +231,18 @@ def doParseArgs():
                                   "Default is: %(default)d."))
   # --build-nice / --no-build-nice as a pair of store_true/store_false on the
   # same dest (argparse.BooleanOptionalAction is only available on Python 3.9+).
-  build_parser.add_argument("--build-nice", dest="buildNice", action="store_true", default=True,
-                            help=("Run concurrent --builders jobs at staggered priority so CPU "
-                                  "contention degrades gracefully: at any moment one build runs at top "
-                                  "priority (full speed) and the others are progressively backed off, with "
-                                  "the freed top slot taken over as builds finish. Native builds use OS "
-                                  "'nice'; --docker/podman builds use the equivalent 'docker run "
-                                  "--cpu-shares' on each build container. Memory is still capped separately "
-                                  "(mem_per_job). Only affects --builders > 1. On by default; pass "
-                                  "--no-build-nice to disable."))
+  # OFF by default: the priority ladder (and its renice watchdog) is opt-in, so
+  # the default --builders path is the plain scheduler with no command wrapping
+  # or background threads. Enable with --build-nice.
+  build_parser.add_argument("--build-nice", dest="buildNice", action="store_true", default=False,
+                            help=("Opt in to staggering concurrent --builders jobs across OS 'nice' "
+                                  "levels so CPU contention degrades gracefully: one build runs at top "
+                                  "priority and the others are progressively backed off, with a watchdog "
+                                  "boosting long-running stragglers. Native builds use 'nice'; "
+                                  "--docker/podman builds use 'docker run --cpu-shares'. Off by default; "
+                                  "only affects --builders > 1. Memory is capped separately (mem_per_job)."))
   build_parser.add_argument("--no-build-nice", dest="buildNice", action="store_false",
-                            help="Disable the --build-nice priority ladder (see --build-nice).")
+                            help="Explicitly disable the --build-nice priority ladder (this is the default).")
   build_parser.add_argument("--build-nice-step", dest="buildNiceStep", type=int, default=5, metavar="N",
                             help=("Nice increment between concurrent build slots when --build-nice is set "
                                   "(slot k -> nice min(k*N, 19)). N=1 gives a gentle 0,1,2,3 ladder; larger "
