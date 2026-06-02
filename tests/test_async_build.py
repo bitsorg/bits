@@ -735,7 +735,7 @@ class WriteFailureSummaryTest(unittest.TestCase):
                     "excerpt": "  Matched error lines (last 1):\n    err: boom"}],
             errors={"build:motif": "BUILD FAILED",
                     "build:foo": "The following dependencies could not complete:\nbuild:motif"})
-        path = write_failure_summary(self.dir, sched)
+        path, full = write_failure_summary(self.dir, sched)
         self.assertTrue(path and os.path.exists(path))
         text = open(path).read()
         self.assertIn("FAILED: motif@2.3.8", text)
@@ -744,8 +744,11 @@ class WriteFailureSummaryTest(unittest.TestCase):
         self.assertIn("Skipped", text)
         self.assertIn("foo", text)                             # cascaded dependent
         self.assertNotIn("motif", text.split("Skipped")[1])    # not double-counted
+        # the combined full error log is also written
+        self.assertTrue(full and os.path.exists(full))
+        self.assertIn("build:motif", open(full).read())
 
     def test_no_failures_writes_nothing(self):
         from bits_helpers.build import write_failure_summary
-        self.assertIsNone(write_failure_summary(self.dir, self._Sched([], {})))
+        self.assertEqual(write_failure_summary(self.dir, self._Sched([], {})), (None, None))
         self.assertFalse(os.path.exists(os.path.join(self.dir, "build-summary.log")))

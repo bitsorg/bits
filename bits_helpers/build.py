@@ -788,18 +788,33 @@ def write_failure_summary(work_dir, scheduler):
     * each package that *directly* failed to build, with its log path and the
       proximate error excerpt (the matched error lines);
     * the count of packages skipped only because a dependency failed.
-  Returns the path written, or None if there were no failures.
+  Also writes the full, verbose per-action errors to
+  ``<work_dir>/build-errors-full.log`` so there is a single combined log to
+  consult (the concise summary points at the individual per-package logs).
+
+  Returns ``(summary_path, full_path)`` (either element may be None), or
+  ``(None, None)`` if there were no failures.
   """
   fails = getattr(scheduler, "buildFailures", None) or []
+  errors = getattr(scheduler, "errors", {}) or {}
   direct_names = {f["package"].split("@", 1)[0] for f in fails}
   cascaded = []
-  for action, msg in getattr(scheduler, "errors", {}).items():
+  for action, msg in errors.items():
     if "could not complete" in str(msg):
       pkg = str(action).split(":", 1)[-1]
       if pkg not in direct_names:
         cascaded.append(pkg)
   if not fails and not cascaded:
-    return None
+    return (None, None)
+  _ansi = re.compile(r"\033\[[0-9;]*m")
+  full_path = os.path.join(work_dir, "build-errors-full.log")
+  try:
+    with open(full_path, "w") as fh:
+      for action, msg in errors.items():
+        fh.write("* %s\n%s\n\n" % (action, _ansi.sub("", str(msg))))
+  except OSError as exc:
+    warning("Could not write full error log %s: %s", full_path, exc)
+    full_path = None
   path = os.path.join(work_dir, "build-summary.log")
   try:
     with open(path, "w") as fh:
@@ -826,8 +841,8 @@ def write_failure_summary(work_dir, scheduler):
                  % (len(cascaded), ", ".join(sorted(cascaded))))
   except OSError as exc:
     warning("Could not write failure summary %s: %s", path, exc)
-    return None
-  return path
+    return (None, full_path)
+  return (path, full_path)
 
 
 def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper):
@@ -2634,11 +2649,18 @@ def doBuild(args, parser):
         warning("Could not update build resource stats: %s", exc)
     for (action, error) in scheduler.errors.items():
       info("* The action \"{}\" was not completed successfully because {}".format(action, error))
-    # Write a concise failure summary (one entry per directly-failed package with
-    # its error excerpt, plus the count of dependency-skipped packages).
-    _summary_path = write_failure_summary(workDir, scheduler)
-    if _summary_path:
-      info("Build failure summary written to %s", _summary_path)
+    # Write a concise failure summary plus a combined full error log, and tell
+    # the user where to find them and the individual per-package logs.
+    _summary_path, _full_path = write_failure_summary(workDir, scheduler)
+    if _summary_path or _full_path:
+      info("=" * 70)
+      info("Build finished with errors. Where to look:")
+      if _summary_path:
+        info("  Summary (start here):   %s", _summary_path)
+      if _full_path:
+        info("  Full error log:         %s", _full_path)
+      info("  Per-package build logs: %s/BUILD/<package>-latest/log", workDir)
+      info("=" * 70)
     if scheduler.brokenJobs:
       dieOnError(True, "Please fix the above errors.")
   elif args.makeflow and buildTargets:
