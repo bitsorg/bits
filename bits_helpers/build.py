@@ -1768,16 +1768,17 @@ def doBuild(args, parser):
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
                           parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)))
 
-    # Stagger concurrent build jobs across OS 'nice' levels so CPU contention
-    # degrades gracefully (lead build at nice 0, others niced down).  On by
-    # default for --builders > 1; disable with --no-build-nice.
+    # Optionally stagger concurrent build jobs across OS 'nice' levels so CPU
+    # contention degrades gracefully (lead build at nice 0, others niced down).
+    # OPT-IN (--build-nice), off by default: the default --builders path does no
+    # command wrapping and starts no renice-watchdog thread.
     scheduler.nice_ladder = None
     scheduler.renice_watchdog = None
-    if getattr(args, "buildNice", True):
+    if getattr(args, "buildNice", False):
       from bits_helpers.nice_ladder import NiceLadder, ReniceWatchdog
       scheduler.nice_ladder = NiceLadder(args.builders, step=getattr(args, "buildNiceStep", 5))
-      info("Build nice-ladder enabled: %d slots, step %d (lead build at nice 0). "
-           "Disable with --no-build-nice.", args.builders, getattr(args, "buildNiceStep", 5))
+      info("Build nice-ladder enabled (--build-nice): %d slots, step %d (lead build at nice 0).",
+           args.builders, getattr(args, "buildNiceStep", 5))
       # A build backed off by the ladder can become the last straggler and
       # crawl; a watchdog boosts the longest such build back to full speed, one
       # at a time.  Native builds are reniced toward 0; docker builds (each in
