@@ -150,11 +150,14 @@ class TestComputeCombinedArch(unittest.TestCase):
 class TestAppendArch(unittest.TestCase):
     """Per-default append_arch: only explicit values are added to the arch."""
 
+    # The append_arch value is appended VERBATIM -- no separator is assumed, so
+    # the value carries its own ('-gcc13', '_gcc15') or none at all ('dbg').
+
     # -- single default with append_arch --------------------------------------
 
     def test_single_append_arch_uses_value_not_name(self):
         """append_arch value is appended, not the default name."""
-        meta = {"_append_arch_qualifiers": ["gcc13"]}
+        meta = {"_append_arch_qualifiers": ["-gcc13"]}
         self.assertEqual(
             compute_combined_arch(meta, ["gcc13-defaults"], RAW_ARCH),
             "slc7_x86-64-gcc13",
@@ -163,7 +166,7 @@ class TestAppendArch(unittest.TestCase):
     def test_append_arch_value_differs_from_default_name(self):
         """The value in append_arch is used verbatim, even if different from
         the default filename."""
-        meta = {"_append_arch_qualifiers": ["opt-lto"]}
+        meta = {"_append_arch_qualifiers": ["-opt-lto"]}
         self.assertEqual(
             compute_combined_arch(meta, ["optimised"], RAW_ARCH),
             "slc7_x86-64-opt-lto",
@@ -175,7 +178,7 @@ class TestAppendArch(unittest.TestCase):
         """Defaults without append_arch are transparent to the arch suffix."""
         # defaults chain: release::gcc13::cuda
         # only gcc13 and cuda have append_arch; release does not
-        meta = {"_append_arch_qualifiers": ["gcc13", "cuda"]}
+        meta = {"_append_arch_qualifiers": ["-gcc13", "-cuda"]}
         self.assertEqual(
             compute_combined_arch(meta, ["release", "gcc13", "cuda"], RAW_ARCH),
             "slc7_x86-64-gcc13-cuda",
@@ -183,7 +186,7 @@ class TestAppendArch(unittest.TestCase):
 
     def test_single_opt_in_among_many(self):
         """Only one default in a long chain opts in."""
-        meta = {"_append_arch_qualifiers": ["mpi"]}
+        meta = {"_append_arch_qualifiers": ["-mpi"]}
         self.assertEqual(
             compute_combined_arch(meta, ["release", "gcc13", "mpi"], RAW_ARCH),
             "slc7_x86-64-mpi",
@@ -191,9 +194,43 @@ class TestAppendArch(unittest.TestCase):
 
     def test_order_follows_chain_order(self):
         """Qualifiers appear in the same order as the defaults chain."""
-        meta = {"_append_arch_qualifiers": ["aaa", "bbb", "ccc"]}
+        meta = {"_append_arch_qualifiers": ["-aaa", "-bbb", "-ccc"]}
         result = compute_combined_arch(meta, ["a", "b", "c"], RAW_ARCH)
         self.assertEqual(result, "slc7_x86-64-aaa-bbb-ccc")
+
+    # -- separator lives in the value, never assumed --------------------------
+
+    def test_value_with_leading_dash_is_verbatim(self):
+        """A value carrying its own '-' is appended as-is."""
+        meta = {"_append_arch_qualifiers": ["-gcc15-dbg"]}
+        self.assertEqual(
+            compute_combined_arch(meta, ["gcc15"], RAW_ARCH),
+            "slc7_x86-64-gcc15-dbg",
+        )
+
+    def test_value_with_leading_underscore_is_verbatim(self):
+        """The joiner is not assumed to be '-': '_gcc15' yields an '_' separator."""
+        meta = {"_append_arch_qualifiers": ["_gcc15"]}
+        self.assertEqual(
+            compute_combined_arch(meta, ["gcc15"], RAW_ARCH),
+            "slc7_x86-64_gcc15",
+        )
+
+    def test_bare_value_is_glued_without_separator(self):
+        """No separator is injected: a bare value is concatenated directly."""
+        meta = {"_append_arch_qualifiers": ["dbg"]}
+        self.assertEqual(
+            compute_combined_arch(meta, ["dbg"], RAW_ARCH),
+            "slc7_x86-64dbg",
+        )
+
+    def test_mixed_separators_concatenate(self):
+        """Each value contributes exactly what it carries -- '-', '_', or none."""
+        meta = {"_append_arch_qualifiers": ["-dev", "_gcc15", "cuda"]}
+        self.assertEqual(
+            compute_combined_arch(meta, ["a", "b", "c"], RAW_ARCH),
+            "slc7_x86-64-dev_gcc15cuda",
+        )
 
     # -- no opt-in → raw arch -------------------------------------------------
 
@@ -219,7 +256,7 @@ class TestAppendArch(unittest.TestCase):
         """When both are present append_arch values are used, not default names."""
         meta = {
             "qualify_arch": True,
-            "_append_arch_qualifiers": ["mpi"],
+            "_append_arch_qualifiers": ["-mpi"],
         }
         # qualify_arch would produce "slc7_x86-64-dev-mpi-defaults"
         # append_arch should produce "slc7_x86-64-mpi" (value only)
@@ -242,13 +279,13 @@ class TestAppendArch(unittest.TestCase):
     # -- interaction with effective_arch() ------------------------------------
 
     def test_regular_pkg_uses_append_arch_combined(self):
-        meta = {"_append_arch_qualifiers": ["gcc13"]}
+        meta = {"_append_arch_qualifiers": ["-gcc13"]}
         combined = compute_combined_arch(meta, ["gcc13"], RAW_ARCH)
         spec = _spec("MyPkg")
         self.assertEqual(effective_arch(spec, combined), "slc7_x86-64-gcc13")
 
     def test_shared_pkg_ignores_append_arch_combined(self):
-        meta = {"_append_arch_qualifiers": ["gcc13"]}
+        meta = {"_append_arch_qualifiers": ["-gcc13"]}
         combined = compute_combined_arch(meta, ["gcc13"], RAW_ARCH)
         spec = _spec("SharedPkg", architecture=SHARED_ARCH)
         self.assertEqual(effective_arch(spec, combined), SHARED_ARCH)

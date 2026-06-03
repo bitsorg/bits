@@ -192,17 +192,23 @@ def compute_combined_arch(defaults_meta: dict, defaults_list: list, raw_arch: st
   those explicit values are appended to *raw_arch*, regardless of the
   ``qualify_arch`` flag::
 
-      # defaults-gcc13.sh has append_arch: gcc13
+      # defaults-gcc13.sh has append_arch: -gcc13
       # defaults-release.sh has no append_arch
       # result for --default release::gcc13:
-      compute_combined_arch({"_append_arch_qualifiers": ["gcc13"]},
+      compute_combined_arch({"_append_arch_qualifiers": ["-gcc13"]},
                             ["release", "gcc13"], "slc7_x86-64")
       # → "slc7_x86-64-gcc13"
 
   This lets recipe authors opt individual defaults files into architecture
   qualification while keeping the others transparent.  The values from
-  ``append_arch`` are used verbatim and appended in the same order as the
-  defaults chain (``--default a::b::c``).
+  ``append_arch`` are appended **verbatim**, in the same order as the defaults
+  chain (``--default a::b::c``); no separator is assumed.  Each value must
+  carry its own separator if one is wanted (and may also be glued on with
+  none)::
+
+      append_arch: -gcc15-dbg # -> "<raw>-gcc15-dbg"
+      append_arch: _gcc15     # -> "<raw>_gcc15"
+      append_arch: dbg        # -> "<raw>dbg"      (no separator, glued on)
 
   **Legacy ``qualify_arch`` (backward-compatible fallback)**
 
@@ -226,14 +232,16 @@ def compute_combined_arch(defaults_meta: dict, defaults_list: list, raw_arch: st
       compute_combined_arch({"qualify_arch": True}, ["release"], "slc7_x86-64")
       # → "slc7_x86-64"  (legacy, release-only → no suffix)
 
-      compute_combined_arch({"_append_arch_qualifiers": ["gcc13"]},
+      compute_combined_arch({"_append_arch_qualifiers": ["-gcc13"]},
                             ["release", "gcc13"], "slc7_x86-64")
-      # → "slc7_x86-64-gcc13"  (per-default append_arch)
+      # → "slc7_x86-64-gcc13"  (per-default append_arch, separator in value)
   """
   # --- New mechanism: per-default append_arch values -------------------------
   per_default = defaults_meta.get("_append_arch_qualifiers")
   if per_default:
-    return raw_arch + "-" + "-".join(per_default)
+    # Append each value verbatim: the separator (if any) lives in the value, so
+    # callers can join with "-", "_", or nothing at all.
+    return raw_arch + "".join(q for q in per_default if q)
 
   # --- Legacy mechanism: global qualify_arch flag ----------------------------
   if not defaults_meta.get("qualify_arch", False):
