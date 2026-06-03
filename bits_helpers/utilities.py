@@ -878,6 +878,16 @@ def readDefaults(configDir, defaults, error, architecture):
       # into a single scalar and we need the ordered per-default list).
       if "append_arch" in xMeta:
         append_arch_qualifiers.append(xMeta["append_arch"])
+      # Normalise this profile's overrides to dict-form *before* the chain merge
+      # so that defaults chained as a::b::c deep-merge: the union of all entries,
+      # last profile wins on a per-package key. Without this, merge_dicts sees a
+      # list-form block ("- pkg = ver") and a dict-form block ("pkg:\n  ...") as
+      # incompatible types and the later one REPLACES the earlier wholesale,
+      # silently dropping the other profile's pins. asDict turns both shapes into
+      # an OrderedDict, which merge_dicts then merges recursively (key-by-key,
+      # last wins).
+      if "overrides" in xMeta:
+        xMeta["overrides"] = asDict(xMeta["overrides"])
       defaultsMeta = merge_dicts(defaultsMeta, xMeta)
 
   # Store the collected per-default qualifiers so compute_combined_arch can

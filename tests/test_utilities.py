@@ -11,8 +11,9 @@ from bits_helpers.utilities import resolve_version, resolve_spec_data
 from bits_helpers.utilities import topological_sort
 from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
 from bits_helpers.utilities import _parse_req_matcher, _collect_version_pins
-from bits_helpers.utilities import asDict
+from bits_helpers.utilities import asDict, merge_dicts
 from bits_helpers.utilities import _version_compare, _parse_patch_entry, filterPatches, _matcher_active
+from collections import OrderedDict
 import bits_helpers
 import bits_helpers.log
 import os
@@ -564,6 +565,62 @@ class AsDictTest(unittest.TestCase):
     def test_empty_is_empty(self):
         self.assertEqual(asDict([]), {})
         self.assertEqual(asDict(None), {})
+
+
+class DefaultsChainMergeTest(unittest.TestCase):
+    """Chained defaults (a::b::c) deep-merge overrides: union of entries, last
+    wins per key, regardless of list-form vs dict-form per profile."""
+
+    @staticmethod
+    def _merge_chain(*profiles):
+        # Mirror readDefaults: normalise each profile's overrides to dict-form
+        # BEFORE merging, so list-form and dict-form blocks interoperate.
+        merged = OrderedDict()
+        for p in profiles:
+            p = OrderedDict(p)
+            if "overrides" in p:
+                p["overrides"] = asDict(p["overrides"])
+            merged = merge_dicts(merged, p)
+        return merged["overrides"]
+
+    def test_dict_then_list_both_survive(self):
+        # gcc15 (dict-form toolchain pin) :: key4hep (list-form acts pin):
+        # both pins must survive -- the regression that silently dropped the
+        # GCC-Toolchain pin (falling back to the gcc14 recipe default).
+        ov = self._merge_chain(
+            {"overrides": [{"GCC-Toolchain": {"source": "x", "tag": "v15.2.0-alice1"}}]},
+            {"overrides": ["acts = 44.4.0", "k4actstracking = v00-02"]},
+        )
+        self.assertEqual(ov["GCC-Toolchain"]["tag"], "v15.2.0-alice1")
+        self.assertEqual(dict(ov["acts"]), {"version": "44.4.0", "tag": "44.4.0"})
+        self.assertEqual(dict(ov["k4actstracking"]), {"version": "v00-02", "tag": "v00-02"})
+
+    def test_list_then_dict_both_survive(self):
+        # Order-independent: the same chain with the forms swapped.
+        ov = self._merge_chain(
+            {"overrides": ["acts = 44.4.0"]},
+            {"overrides": [{"GCC-Toolchain": {"tag": "v15.2.0-alice1"}}]},
+        )
+        self.assertIn("acts", ov)
+        self.assertEqual(ov["GCC-Toolchain"]["tag"], "v15.2.0-alice1")
+
+    def test_same_key_last_wins(self):
+        # A later profile overriding the same package replaces its value.
+        ov = self._merge_chain(
+            {"overrides": ["acts = 26.0.0"]},
+            {"overrides": ["acts = 44.4.0"]},
+        )
+        self.assertEqual(ov["acts"]["version"], "44.4.0")
+
+    def test_same_key_deep_merge_keeps_other_fields(self):
+        # Same package across profiles: fields merge key-by-key, last wins per
+        # field, other fields preserved.
+        ov = self._merge_chain(
+            {"overrides": [{"ROOT": {"tag": "v6-36-04", "source": "orig"}}]},
+            {"overrides": [{"ROOT": {"tag": "v6-40-00"}}]},
+        )
+        self.assertEqual(ov["ROOT"]["tag"], "v6-40-00")   # last wins
+        self.assertEqual(ov["ROOT"]["source"], "orig")    # untouched field kept
 
 
 class VersionMatcherTest(unittest.TestCase):
