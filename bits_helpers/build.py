@@ -2188,9 +2188,25 @@ def doBuild(args, parser):
     # Check if this development package needs to be rebuilt.
     if spec["is_devel_pkg"]:
       debug("Checking if devel package %s needs rebuild", spec["package"])
-      if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"]:
+      # The source is unchanged only if devel_hash+deps_hash still matches the
+      # sentinel.  But the install directory is named after ver_rev(spec), and
+      # the *revision* can change without a source change (e.g. the dependency
+      # hash shifted, so a new localN was assigned in the revision scan above).
+      # When that happens the new revision's directory was never populated, yet
+      # every consumer's init.sh sources this dependency at the new ver_rev --
+      # so skipping the rebuild would leave them pointing at a missing
+      # .../<pkg>/<ver_rev>/etc/profile.d/init.sh.  Only skip when that
+      # directory actually exists.
+      devel_install_dir = _pkg_install_path(
+        workDir, effective_arch(spec, args.architecture), spec)
+      if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"] \
+         and os.path.isdir(devel_install_dir):
         info("Development package %s does not need rebuild", spec["package"])
         continue
+      if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"]:
+        debug("Devel package %s source unchanged but install dir %s is missing "
+              "(revision changed to %s); rebuilding to populate it.",
+              spec["package"], devel_install_dir, ver_rev(spec))
 
     # Now that we have all the information about the package we want to build, let's
     # check if it wasn't built / unpacked already.
