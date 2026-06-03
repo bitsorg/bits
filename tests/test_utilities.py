@@ -12,6 +12,7 @@ from bits_helpers.utilities import topological_sort
 from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
 from bits_helpers.utilities import _parse_req_matcher, _collect_version_pins
 from bits_helpers.utilities import asDict
+from bits_helpers.utilities import _version_compare, _parse_patch_entry, filterPatches, _matcher_active
 import bits_helpers
 import bits_helpers.log
 import os
@@ -563,6 +564,62 @@ class AsDictTest(unittest.TestCase):
     def test_empty_is_empty(self):
         self.assertEqual(asDict([]), {})
         self.assertEqual(asDict(None), {})
+
+
+class VersionMatcherTest(unittest.TestCase):
+    """version<op> matchers, &&/|| combinators, and conditional patches."""
+
+    ARCH = "ubuntu2510_x86-64-gcc15-dbg"
+
+    def _m(self, matcher, version=None, default_vars=None):
+        return _matcher_active(matcher, self.ARCH, ["dev4"], default_vars, version)
+
+    def test_natural_version_compare(self):
+        self.assertEqual(_version_compare("v40r2", "v40r4"), -1)
+        self.assertEqual(_version_compare("v40r10", "v40r2"), 1)   # numeric, not lexical
+        self.assertEqual(_version_compare("01.07", "01.10"), -1)
+        self.assertEqual(_version_compare("v40r2", "v40r2"), 0)
+
+    def test_version_operators(self):
+        self.assertTrue(self._m("version=v40r2", "v40r2"))
+        self.assertFalse(self._m("version=v40r2", "v40r4"))
+        self.assertTrue(self._m("version!=v40r2", "v40r4"))
+        self.assertTrue(self._m("version<v40r4", "v40r2"))
+        self.assertFalse(self._m("version<v40r4", "v40r4"))
+        self.assertTrue(self._m("version<=v40r4", "v40r4"))
+        self.assertTrue(self._m("version>=v40r3", "v40r4"))
+        self.assertFalse(self._m("version>v40r4", "v40r4"))
+
+    def test_version_no_version_is_inactive(self):
+        self.assertFalse(self._m("version=v40r2", None))
+
+    def test_and_or_combinators(self):
+        self.assertTrue(self._m("version>=v40r2 && version<v41r0", "v40r4"))
+        self.assertFalse(self._m("version>=v40r2 && version<v40r4", "v40r4"))
+        self.assertTrue(self._m("version<v40r0 || version>=v40r4", "v40r4"))
+        # && binds tighter than ||
+        self.assertTrue(self._m("(?!osx) && version>=v40r3 || version<v40r0", "v40r4"))
+
+    def test_single_pipe_is_regex_alternation(self):
+        # a lone | inside an arch regex is ordinary alternation, not OR
+        self.assertTrue(self._m(".*gcc15.*|.*osx.*"))
+        self.assertFalse(self._m(".*osx.*|.*arm64.*"))
+
+    def test_parse_patch_entry(self):
+        self.assertEqual(_parse_patch_entry("p.patch"), ("p.patch", None, ""))
+        self.assertEqual(_parse_patch_entry("p.patch:version=v40r2"),
+                         ("p.patch", "version=v40r2", ""))
+        self.assertEqual(_parse_patch_entry("p.patch,sha256:abc"),
+                         ("p.patch", None, ",sha256:abc"))
+        self.assertEqual(_parse_patch_entry("p.patch:(?cuda),md5:x"),
+                         ("p.patch", "(?cuda)", ",md5:x"))
+
+    def test_filter_patches_strips_matcher_and_drops_inactive(self):
+        pl = ["a.patch:version=v40r2", "b.patch", "c.patch:version>=v40r4,sha256:zz"]
+        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r2"),
+                         ["a.patch", "b.patch"])
+        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r4"),
+                         ["b.patch", "c.patch,sha256:zz"])
 
 
 if __name__ == '__main__':

@@ -1128,7 +1128,7 @@ A recipe file consists of a YAML block, a `---` separator, and a Bash script:
 | `source` | Git or Sapling repository URL. The repository is cloned / updated into `$SOURCEDIR`. |
 | `tag` | Tag, branch, or commit to check out. Supports date substitutions (`%(year)s`, `%(month)s`, `%(day)s`, `%(hour)s`). |
 | `sources` | List of source archive URLs (or local `file://` paths) to download before the build. Each file is placed in `$SOURCEDIR` and exposed as `$SOURCE0`, `$SOURCE1`, … Each entry may optionally carry an inline checksum (see [Checksum verification](#checksum-verification) below). |
-| `patches` | List of patch file names to apply, relative to the `patches/` directory inside the recipe repository. Patch files are copied to `$SOURCEDIR` and exposed as `$PATCH0`, `$PATCH1`, … before the recipe body runs. Each entry may optionally carry an inline checksum. |
+| `patches` | List of patch file names to apply, relative to the `patches/` directory inside the recipe repository. Patch files are copied to `$SOURCEDIR` and exposed as `$PATCH0`, `$PATCH1`, … before the recipe body runs. Each entry may optionally carry an inline checksum and/or a conditional matcher — see [Conditional patches](#conditional-patches). |
 | `auto_patch` | Whether bits applies the `patches:` automatically. Default `true` (unchanged behaviour). Set to `false` to take over patching in the recipe body: bits still stages the patch files in `$SOURCEDIR` and exports `$PATCH0..$PATCH_COUNT`, but runs no `patch(1)` and writes no `.bits_patched` sentinel, so the recipe owns ordering, strip level and idempotency. Can also be forced off for **every** package with the global `--no-auto-patch` flag or `auto_patch: false` in the active `defaults-*` file. See [Controlling patch application](#controlling-patch-application). |
 
 **Source archives detail.** When `sources:` is specified, bits downloads each archive to `$SOURCEDIR` using the file's basename as the local filename. Archives are not automatically unpacked — the recipe is responsible for extraction. The variable `$SOURCE_COUNT` holds the total count so scripts can handle a variable-length list:
@@ -1208,6 +1208,43 @@ function Configure() {
 
 The build hash already includes every patch's content, so toggling `auto_patch` (or
 editing the recipe body that now applies them) triggers a rebuild as expected.
+
+##### Conditional patches
+
+A `patches:` entry may carry a `:matcher` suffix that gates whether the patch is
+applied for a given build. This is the same matcher syntax used by conditional
+`requires:`, plus a version comparison, and it is most useful when a patch only
+applies to a particular upstream version:
+
+```yaml
+version: "v40r4"
+patches:
+  # only applied (and only hashed) when the resolved version is v40r2
+  - "gaudi-GaudiToolbox.cmake.patch:version=v40r2"
+  # always applied
+  - gaudi-merge_confdb2_parts.patch
+```
+
+The matcher is evaluated against the **resolved** version (after defaults
+`overrides:` and `requires:` pins), so the same recipe patches correctly whether
+the version comes from the recipe, an override, or a pin. Inactive patches are
+dropped *before* hashing, checkout and application, so they never affect the
+build hash.
+
+Matcher atoms:
+
+- `version<op><value>` — `op` is one of `=`, `==`, `!=`, `<`, `<=`, `>`, `>=`;
+  versions compare in **natural order** (`sort -V` semantics, so `v40r10 > v40r2`).
+- `(?!osx)` / arch regex — matched against the architecture string (as in `requires:`).
+- `defaults=<regex>` — active when the regex matches an active defaults profile.
+- `(?VAR)` — active when the defaults variable `VAR` is truthy.
+
+Atoms combine with `&&` (all) and `||` (any); `||` has the lower precedence, e.g.
+`version>=v40r2 && version<v41r0` or `(?cuda) || version<v40r0`. A single `|`
+inside an arch regex stays ordinary alternation — only the doubled `||` combines.
+If a patch carries both a matcher and an inline checksum, write them as
+`name:matcher,algo:digest` (the checksum comes last). The same matcher grammar
+is also accepted on `requires:`/`build_requires:` entries.
 
 #### Dependencies
 

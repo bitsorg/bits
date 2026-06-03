@@ -613,20 +613,76 @@ def _var_truthy(default_vars, name):
   return v is not None and str(v).strip().lower() not in ("", "0", "false", "off", "no")
 
 
-def _matcher_active(matcher, arch, defaults, default_vars=None):
-  """Whether a require *matcher* is active for the current build.
+def _loose_version_key(v):
+  """A natural-order sort key for version strings, à la ``sort -V``.
 
-  Three matcher kinds are supported:
-    * ``defaults=<regex>``  -> active when the regex matches an active profile;
-    * ``(?VAR)``            -> active when defaults variable VAR is truthy;
-    * anything else         -> a regex matched against the architecture string.
+  Splits the string into runs of digits and non-digits; digit runs compare
+  numerically (so v40r2 < v40r10) and non-digit runs lexicographically. Each
+  element is a (type, value) tuple so int and str runs never compare directly.
+  Handles the schemes bits sees: v40r2, v01-19-06, 01.07, 1.2.3, 0.1.0pre17.
   """
+  return [(0, int(p)) if p.isdigit() else (1, p)
+          for p in re.findall(r"\d+|\D+", str(v))]
+
+
+def _version_compare(a, b):
+  """Return -1/0/1 comparing version strings *a* and *b* in natural order."""
+  ka, kb = _loose_version_key(a), _loose_version_key(b)
+  return (ka > kb) - (ka < kb)
+
+
+# version<op><value>: e.g. "version=v40r2", "version<v40r4", "version>=v40r2".
+_VERSION_OP_RE = re.compile(r"version\s*(>=|<=|==|!=|=|>|<)\s*(.+)\Z", re.DOTALL)
+_VERSION_OPS = {
+    "=":  lambda c: c == 0, "==": lambda c: c == 0, "!=": lambda c: c != 0,
+    "<":  lambda c: c < 0,  "<=": lambda c: c <= 0,
+    ">":  lambda c: c > 0,  ">=": lambda c: c >= 0,
+}
+
+
+def _matcher_atom_active(matcher, arch, defaults, default_vars=None, version=None):
+  """Evaluate a single (non-compound) matcher atom. See _matcher_active."""
   if matcher.startswith("defaults="):
     return _defaults_active(matcher, defaults)
+  vm = _VERSION_OP_RE.match(matcher)
+  if vm:
+    return version is not None and _VERSION_OPS[vm.group(1)](_version_compare(version, vm.group(2).strip()))
   var = _var_matcher_name(matcher)
   if var is not None:
     return _var_truthy(default_vars, var)
   return bool(re.match(matcher, arch))
+
+
+def _matcher_active(matcher, arch, defaults, default_vars=None, version=None):
+  """Whether a *matcher* is active for the current build.
+
+  Atoms:
+    * ``defaults=<regex>``       -> active when the regex matches an active profile;
+    * ``version<op><value>``     -> active when the package version satisfies the
+                                    comparison (op is one of = == != < <= > >=),
+                                    e.g. ``foo.patch:version=v40r2`` or
+                                    ``foo.patch:version<v40r4``. Versions compare
+                                    in natural order (sort -V semantics);
+    * ``(?VAR)``                 -> active when defaults variable VAR is truthy;
+    * anything else              -> a regex matched against the architecture string.
+
+  Atoms may be combined with ``&&`` (all) and ``||`` (any); ``||`` has the lower
+  precedence, e.g. ``(?!osx) && version>=v40r2 || (?cuda)`` is
+  ``((?!osx) AND version>=v40r2) OR (?cuda)``. (Note: a single ``|`` inside an
+  arch regex is still ordinary alternation — only the doubled ``||`` combines.)
+
+  *version* is the resolved package version (after overrides / pins); it is only
+  consulted by the ``version`` kind and may be ``None`` for callers that never
+  use it (e.g. requires filtering).
+  """
+  matcher = matcher.strip()
+  if "||" in matcher:
+    parts = [p for p in (s.strip() for s in matcher.split("||")) if p]
+    return any(_matcher_active(p, arch, defaults, default_vars, version) for p in parts)
+  if "&&" in matcher:
+    parts = [p for p in (s.strip() for s in matcher.split("&&")) if p]
+    return all(_matcher_active(p, arch, defaults, default_vars, version) for p in parts)
+  return _matcher_atom_active(matcher, arch, defaults, default_vars, version)
 
 
 def filterByArchitectureDefaults(arch, defaults, requires, default_vars=None):
@@ -642,6 +698,32 @@ def disabledByArchitectureDefaults(arch, defaults, requires, default_vars=None):
     require, matcher, _pin = _parse_req_matcher(r)
     if not _matcher_active(matcher, arch, defaults, default_vars):
       yield require
+
+
+def _parse_patch_entry(entry):
+  """Split a ``patches:`` entry into ``(name, matcher_or_None, checksum_suffix)``.
+
+  Entry form: ``name[:matcher][,algo:digest]``. The optional inline checksum
+  (which itself contains ``:``) is separated first on the first ``,``; a ``:``
+  in the remaining head then introduces a conditional matcher, e.g.
+  ``foo.patch:version<v40r4`` or ``foo.patch:(?cuda),sha256:abc``.
+  """
+  head, sep, tail = entry.partition(",")
+  checksum = (sep + tail) if sep else ""
+  name, csep, matcher = head.partition(":")
+  return name.strip(), (matcher.strip() if csep else None), checksum
+
+
+def filterPatches(patches, arch, defaults, default_vars, version):
+  """Return the ``patches:`` entries active for this build, with any ``:matcher``
+  stripped so downstream (checksum lookup, copy to $SOURCEDIR, ``patch``) sees a
+  plain ``name[,algo:digest]``. Entries without a matcher are always kept."""
+  out = []
+  for entry in patches or []:
+    name, matcher, checksum = _parse_patch_entry(entry)
+    if matcher is None or _matcher_active(matcher, arch, defaults, default_vars, version=version):
+      out.append(name + checksum)
+  return out
 
 
 def _collect_version_pins(arch, defaults, raw_requires, owner, version_pins, specs,
@@ -1436,6 +1518,13 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
       spec["version"] = _pin
       spec["tag"] = _pin
     spec["version"] = spec["version"].replace("/", "_")
+    # Resolve version-/arch-/defaults-conditional patches now that the version is
+    # final (after overrides + pins). filterPatches drops inactive entries and
+    # strips the :matcher, so the hash, checkout copy, $PATCHn env and patch
+    # application all see the same plain name[,checksum] list.
+    if "patches" in spec:
+      spec["patches"] = filterPatches(spec.get("patches"), architecture, defaults,
+                                      _default_vars, spec["version"])
     spec["recipe"] = recipe.strip("\n")
     if spec["package"] in force_rebuild:
       spec["force_rebuild"] = True
