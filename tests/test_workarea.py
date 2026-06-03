@@ -157,11 +157,13 @@ class ApplyPatchesTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.source_dir, ignore_errors=True)
 
-    def _spec(self, patches=None):
+    def _spec(self, patches=None, auto_patch=None):
         """Build a minimal spec dict."""
         s = OrderedDict()
         if patches is not None:
             s["patches"] = patches
+        if auto_patch is not None:
+            s["auto_patch"] = auto_patch
         return s
 
     # ------------------------------------------------------------------
@@ -191,6 +193,26 @@ class ApplyPatchesTest(unittest.TestCase):
         open(os.path.join(self.source_dir, ".bits_patched"), "w").close()
         _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
         mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_auto_patch_false_skips_application(self, mock_run):
+        """auto_patch=False must not invoke patch(1) (recipe applies its own)."""
+        _apply_patches(self._spec(patches=["fix-a.patch", "fix-b.patch"], auto_patch=False),
+                       self.source_dir)
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_auto_patch_false_writes_no_sentinel(self, mock_run):
+        """When auto-patching is off, the .bits_patched sentinel must NOT be written
+        (the recipe owns idempotency)."""
+        _apply_patches(self._spec(patches=["fix-a.patch"], auto_patch=False), self.source_dir)
+        self.assertFalse(os.path.exists(os.path.join(self.source_dir, ".bits_patched")))
+
+    @patch("subprocess.run")
+    def test_auto_patch_true_default_still_applies(self, mock_run):
+        """auto_patch=True (and the absent-key default) must apply patches as before."""
+        _apply_patches(self._spec(patches=["fix-a.patch"], auto_patch=True), self.source_dir)
+        mock_run.assert_called_once()
 
     # ------------------------------------------------------------------
     # Happy-path: correct invocations and sentinel creation

@@ -58,6 +58,51 @@ apt-get install environment-modules
 yum install environment-modules
 ```
 
+### Installing the build toolchain and system packages
+
+bits builds almost everything it needs from source, but it still relies on a host
+toolchain to bootstrap (a working C/C++/Fortran compiler, the autotools/CMake build
+tools, `git`, `patch`, `make`, and the usual archive utilities). Install these once
+before your first build:
+
+```bash
+# Debian / Ubuntu
+sudo apt install \
+  build-essential gfortran git patch make cmake autoconf automake libtool m4 \
+  pkg-config curl wget tar gzip bzip2 xz-utils unzip \
+  python3 python3-pip python3-venv environment-modules
+
+# RHEL / AlmaLinux / Rocky (enable CRB/EPEL for some packages)
+sudo dnf groupinstall "Development Tools"
+sudo dnf install \
+  gcc-gfortran git patch make cmake autoconf automake libtool m4 \
+  pkgconfig curl wget tar gzip bzip2 xz unzip \
+  python3 python3-pip environment-modules
+
+# macOS (Xcode command-line tools provide the compiler / git / make)
+xcode-select --install
+brew install cmake autoconf automake libtool pkg-config gnu-tar wget modules
+```
+
+**Per-recipe system packages.** A few recipes deliberately use a library or tool from
+the system instead of building it (these are declared as `system_requirement` recipes,
+e.g. `readline`, `elfutils`/`libdw`, `perf`). When such a package is missing, bits stops
+early with an explicit install hint rather than failing mid-build. You don't need to
+install them all up front — build what you need and follow the hint, or check ahead of
+time with:
+
+```bash
+bits doctor <package>     # reports any missing system requirements for that package
+```
+
+Common ones on Debian / Ubuntu (RHEL/AlmaLinux equivalents in parentheses):
+
+```bash
+sudo apt install libreadline-dev       # readline           (readline-devel)
+sudo apt install libdw-dev libelf-dev  # elfutils / libdw    (elfutils-devel)  e.g. heaptrack
+sudo apt install linux-perf            # perf                (perf)            e.g. adaptyst
+```
+
 ### Installing Bits
 
 ```bash

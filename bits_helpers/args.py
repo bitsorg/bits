@@ -229,6 +229,12 @@ def doParseArgs():
   build_parser.add_argument("--builders", dest="builders", type=int, default=1,
                             help=("The number of independent packages to build in parallel. "
                                   "Default is: %(default)d."))
+  build_parser.add_argument("--no-auto-patch", dest="autoPatch", action="store_false", default=True,
+                            help=("Do not apply recipe patches: automatically. Patch files are "
+                                  "still staged in $SOURCEDIR and exported as $PATCH0..$PATCH_COUNT, "
+                                  "but each recipe must apply its own patches (e.g. via the "
+                                  "bits_apply_patches helper). Default: patches are auto-applied. "
+                                  "A recipe can opt out individually with `auto_patch: false`."))
   # --build-nice / --no-build-nice as a pair of store_true/store_false on the
   # same dest (argparse.BooleanOptionalAction is only available on Python 3.9+).
   # OFF by default: the priority ladder (and its renice watchdog) is opt-in, so

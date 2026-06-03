@@ -419,6 +419,18 @@ def _apply_patches(spec, source_dir):
   if not spec.get("patches"):
     return
 
+  # Opt-out: when auto-patching is disabled (recipe header `auto_patch: false`,
+  # the global --no-auto-patch flag, or `auto_patch: false` in the active
+  # defaults), bits stages the patch files in $SOURCEDIR and exports
+  # $PATCH0..$PATCH_COUNT but does NOT apply them — the recipe body applies them
+  # itself (e.g. via the bits_apply_patches helper). No sentinel is written, so
+  # the recipe owns idempotency. Default (key absent) is True: unchanged.
+  if not spec.get("auto_patch", True):
+    debug("Auto-patching disabled for %s; %d patch file(s) staged in %s for the "
+          "recipe to apply", spec.get("package", "?"),
+          len(spec.get("patches") or []), source_dir)
+    return
+
   sentinel = os.path.join(source_dir, ".bits_patched")
   if os.path.exists(sentinel):
     return

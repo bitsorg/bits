@@ -566,6 +566,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
+| `--no-auto-patch` | Do not apply recipe `patches:` automatically for any package in this build. The patch files are still staged in `$SOURCEDIR` and exported as `$PATCH0..$PATCH_COUNT`, but each recipe must apply its own patches (e.g. via the `bits_apply_patches` helper). Default: patches are auto-applied. A single recipe can opt out with `auto_patch: false` in its header; a defaults profile can opt out with `auto_patch: false`. See [Controlling patch application](#controlling-patch-application). |
 | `--builders N` | Packages to build simultaneously using the built-in Python scheduler. Default: 1 (serial). Mutually exclusive with `--makeflow`; if both are given, `--makeflow` takes precedence. With N>1, each build's `$JOBS` is divided across the builders (the CPU/load budget, see [Memory- and load-aware parallelism](#memory-aware-parallelism)) so the concurrent jobs together do not oversubscribe the machine. |
 | `--build-nice` / `--no-build-nice` | Stagger the concurrent `--builders` jobs across OS scheduling priority so CPU contention degrades gracefully: at any moment one build runs at top priority (full speed) and the others are progressively backed off, with the freed top slot taken over as builds finish. Native builds are wrapped in `nice -n N`; `--docker`/podman builds get `docker run --cpu-shares=W` (each builder is a separate container/cgroup, so the host ranks the build *containers* by cgroup CPU weight). Memory is still capped separately via `mem_per_job`. **On by default** for `--builders > 1`; pass `--no-build-nice` to disable. |
 | `--build-nice-step N` | Nice increment between concurrent build slots when `--build-nice` is set: slot *k* → nice `min(k×N, 19)`. `N=1` gives a gentle `0,1,2,3` ladder; larger values separate the slots more aggressively. Default: 5. |
@@ -1128,6 +1129,7 @@ A recipe file consists of a YAML block, a `---` separator, and a Bash script:
 | `tag` | Tag, branch, or commit to check out. Supports date substitutions (`%(year)s`, `%(month)s`, `%(day)s`, `%(hour)s`). |
 | `sources` | List of source archive URLs (or local `file://` paths) to download before the build. Each file is placed in `$SOURCEDIR` and exposed as `$SOURCE0`, `$SOURCE1`, … Each entry may optionally carry an inline checksum (see [Checksum verification](#checksum-verification) below). |
 | `patches` | List of patch file names to apply, relative to the `patches/` directory inside the recipe repository. Patch files are copied to `$SOURCEDIR` and exposed as `$PATCH0`, `$PATCH1`, … before the recipe body runs. Each entry may optionally carry an inline checksum. |
+| `auto_patch` | Whether bits applies the `patches:` automatically. Default `true` (unchanged behaviour). Set to `false` to take over patching in the recipe body: bits still stages the patch files in `$SOURCEDIR` and exports `$PATCH0..$PATCH_COUNT`, but runs no `patch(1)` and writes no `.bits_patched` sentinel, so the recipe owns ordering, strip level and idempotency. Can also be forced off for **every** package with the global `--no-auto-patch` flag or `auto_patch: false` in the active `defaults-*` file. See [Controlling patch application](#controlling-patch-application). |
 
 **Source archives detail.** When `sources:` is specified, bits downloads each archive to `$SOURCEDIR` using the file's basename as the local filename. Archives are not automatically unpacked — the recipe is responsible for extraction. The variable `$SOURCE_COUNT` holds the total count so scripts can handle a variable-length list:
 
@@ -1158,6 +1160,54 @@ for i in $(seq 0 $(( PATCH_COUNT - 1 ))); do
   eval pf="\$PATCH$i"; patch -p1 < "$SOURCEDIR/$pf"
 done
 ```
+
+##### Controlling patch application
+
+By default bits applies the `patches:` list automatically (with `patch -p1`) before
+the recipe body runs, and writes a `.bits_patched` sentinel so incremental rebuilds
+don't double-apply. Sometimes a recipe needs to patch differently — a non-default
+strip level, a patch that must be applied *after* an in-tree code generation step, or
+a source tree that has to be rearranged first. For those cases you can turn the
+automatic application **off** and do it yourself; the patch files are still staged in
+`$SOURCEDIR` and named by `$PATCH0..$PATCH_COUNT` either way.
+
+Three ways to disable automatic application, from most to least targeted:
+
+- **Per recipe** — add `auto_patch: false` to the recipe header. Only that package is
+  affected; everything else still auto-patches. This is almost always the right choice.
+- **Whole build, command line** — pass `--no-auto-patch` to `bits build`. No package is
+  auto-patched for that invocation.
+- **Whole build, defaults profile** — add `auto_patch: false` to a `defaults-*.sh`
+  file. Every build using that profile skips automatic patching.
+
+A global switch (CLI flag or defaults) wins over the per-recipe field, and **every
+patched recipe** is then responsible for applying its own patches or it will build
+against unpatched sources.
+
+When you take over, use the `bits_apply_patches` shell helper (available in every
+recipe body) instead of hand-rolling the loop — it applies `$PATCH0..$PATCH_COUNT` in
+order and is idempotent across incremental rebuilds:
+
+```yaml
+package: mylib
+version: "1.0"
+sources:
+  - https://example.com/mylib-1.0.tar.gz
+patches:
+  - fix-include-order.patch
+auto_patch: false        # bits stages the patches; we apply them ourselves
+---
+#!/bin/bash -e
+function Configure() {
+  cd "$SOURCEDIR"
+  bits_apply_patches          # apply all staged patches with patch -p1
+  # bits_apply_patches 0      # ...or a different strip level
+  ./configure --prefix="$INSTALLROOT"
+}
+```
+
+The build hash already includes every patch's content, so toggling `auto_patch` (or
+editing the recipe body that now applies them) triggers a rebuild as expected.
 
 #### Dependencies
 

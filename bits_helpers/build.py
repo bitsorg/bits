@@ -1536,10 +1536,19 @@ def doBuild(args, parser):
   
   banner("Configured directory:\n%s", os.path.abspath(args.configDir))
   banner("Package Recipe will be searched in the following order \n%s", os.environ.get("BITS_PATH"))
+  # Resolve the effective auto-patch flag for every package. Default behaviour is
+  # unchanged: patches are applied automatically. A recipe opts out individually
+  # with `auto_patch: false` in its header (already in spec via YAML); the global
+  # --no-auto-patch CLI flag or `auto_patch: false` in the active defaults force
+  # it off for every package. When off, bits still stages the patch files in
+  # $SOURCEDIR and exports $PATCH0..$PATCH_COUNT, but the recipe applies them.
+  _global_auto_patch = (bool(getattr(args, "autoPatch", True))
+                        and bool(defaultsMeta.get("auto_patch", True)))
   for x in specs.values():
     x["requires"] = [r for r in x["requires"] if r not in args.disable]
     x["build_requires"] = [r for r in x["build_requires"] if r not in args.disable]
     x["runtime_requires"] = [r for r in x["runtime_requires"] if r not in args.disable]
+    x["auto_patch"] = _global_auto_patch and bool(x.get("auto_patch", True))
 
   if systemPackages:
     banner("bits can take the following packages from the system and will not build them:\n  %s",
@@ -2603,6 +2612,7 @@ def doBuild(args, parser):
           "reference":        spec.get("reference", ""),
           "write_repo":       spec.get("write_repo", ""),
           "patches":          spec.get("patches", []),
+          "auto_patch":       spec.get("auto_patch", True),
           "sources":          spec.get("sources", []),
           "source_checksums": spec.get("source_checksums") or {},
           "patch_checksums":  spec.get("patch_checksums") or {},

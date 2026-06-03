@@ -58,6 +58,28 @@ cpath=$(which gcc)
 
 function hash() { true; }
 
+# bits_apply_patches [strip] : apply the patch files bits staged in $SOURCEDIR
+# ($PATCH0 .. up to $PATCH_COUNT) in declaration order, with `patch -p<strip>`
+# (default strip level 1). Use this from recipes built with `auto_patch: false`
+# (or under --no-auto-patch), where bits stages the patches but does not apply
+# them. A .bits_applied_patches sentinel makes repeated calls / incremental
+# rebuilds a no-op, mirroring bits' own idempotency.
+bits_apply_patches() {
+  local _strip="${1:-1}" _i _vn _pf
+  local _sentinel="$SOURCEDIR/.bits_applied_patches"
+  [ -f "$_sentinel" ] && return 0
+  [ "${PATCH_COUNT:-0}" -gt 0 ] || return 0
+  ( cd "$SOURCEDIR" || exit 1
+    for ((_i=0; _i<${PATCH_COUNT:-0}; _i++)); do
+      _vn="PATCH${_i}"; _pf="${!_vn}"
+      [ -n "$_pf" ] || continue
+      echo "bits: applying patch $_pf (-p${_strip})"
+      patch -p"${_strip}" --batch --input "$SOURCEDIR/$_pf"
+    done
+  ) || return $?
+  : > "$_sentinel"
+}
+
 export WORK_DIR="${WORK_DIR_OVERRIDE:-%(workDir)s}"
 export BITS_CONFIG_DIR="${BITS_CONFIG_DIR_OVERRIDE:-%(configDir)s}"
 
