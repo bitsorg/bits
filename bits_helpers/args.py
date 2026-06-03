@@ -1,5 +1,8 @@
 import argparse
 from bits_helpers.utilities import detectArch, normalise_multiple_options
+from bits_helpers.utilities import (arch_distro_token, arch_machine_token,
+                                    normalise_arch_key, detectArchComponents,
+                                    apply_arch_template, readDefaults)
 from bits_helpers.workarea import cleanup_git_log
 import configparser
 import multiprocessing
@@ -1053,7 +1056,50 @@ def doParseArgs():
 VALID_ARCHS_RE = "^slc[5-9]_(x86-64|ppc64|aarch64)$|^(ubuntu|ubt|osx|fedora)[0-9]*_(x86-64|arm64)$"
 
 def matchValidArch(architecture):
-  return bool(re.match(VALID_ARCHS_RE, architecture))
+  # Recognise an architecture by content rather than by a fixed string layout,
+  # so custom `architecture:` templates (ubuntu2510_x86_64, x86_64-ubuntu2510,
+  # ...) build without --force-unknown-architecture. We still enforce the same
+  # distro/CPU *combinations* the old regex did (e.g. osx pairs only with
+  # x86-64/arm64, not ppc64), just independently of order and of the
+  # x86-64/x86_64 separator.
+  distro = arch_distro_token(architecture)
+  machine = arch_machine_token(architecture)
+  if not distro or not machine:
+    return False
+  machine = machine.replace("_", "-")           # canonical dashed form
+  family = re.match(r"[a-z]+", distro).group(0)  # strip trailing version digits
+  if family == "slc":
+    return machine in ("x86-64", "ppc64", "ppc64le", "aarch64")
+  if family in ("ubuntu", "ubt", "osx", "fedora"):
+    return machine in ("x86-64", "arm64")
+  # Other recognised distros (alma, centos, rocky, rhel, el, debian): accept the
+  # common server CPUs.
+  return machine in ("x86-64", "arm64", "aarch64", "ppc64", "ppc64le")
+
+
+def _architecture_given_on_cmdline(argv):
+  """True iff -a/--architecture was passed explicitly (so a defaults
+  `architecture:` template must be ignored)."""
+  for tok in argv:
+    if tok in ("-a", "--architecture") or tok.startswith("--architecture="):
+      return True
+    # bundled short form: -aVALUE (but not a long option)
+    if len(tok) > 2 and tok[0] == "-" and tok[1] == "a" and not tok.startswith("--"):
+      return True
+  return False
+
+
+def _defaults_architecture_template(args):
+  """Return the `architecture:` template string from the merged defaults chain,
+  or None. Read defensively: a malformed/unreadable defaults set must not break
+  argument parsing (the build flow re-reads and reports defaults errors)."""
+  try:
+    meta, _ = readDefaults(args.configDir, args.defaults,
+                           lambda *a, **k: None, args.architecture)
+    val = meta.get("architecture")
+    return val if isinstance(val, str) and val.strip() else None
+  except Exception:
+    return None
 
 ARCHITECTURE_TABLE = """\
 On Linux, x86-64:
@@ -1080,6 +1126,9 @@ On Mac, 1-2 latest supported OSX versions:
 
 # When updating this variable, also update docs/docs/user.md!
 S3_SUPPORTED_ARCHS = "slc7_x86-64", "slc8_x86-64", "ubuntu2004_x86-64", "ubuntu2204_x86-64", "ubuntu2404_x86-64", "slc9_x86-64", "slc9_aarch64"
+# Match S3 support by (distro, machine) rather than exact string, so an
+# equivalent layout (e.g. ubuntu2404_x86_64) still resolves to the same entry.
+_S3_SUPPORTED_ARCH_KEYS = {normalise_arch_key(a) for a in S3_SUPPORTED_ARCHS}
 
 def finaliseArgs(args, parser):
 
@@ -1162,6 +1211,21 @@ def finaliseArgs(args, parser):
     # version pinning and tarball verification.
     args.fromManifestData = _manifest_data
 
+  # ── architecture template (defaults-release.sh) ──────────────────────────
+  # Precedence: an explicit --architecture wins and any template is ignored.
+  # Otherwise, if a defaults file in the chain defines `architecture:` -- a
+  # literal string or a %(os)s / %(machine)s / %(_machine)s template -- the
+  # architecture is recomputed from it against the locally detected platform.
+  # With neither, the auto-detected string already in args.architecture stands.
+  if args.action in ["build", "clean"] and getattr(args, "architecture", None) \
+     and hasattr(args, "defaults") and not _architecture_given_on_cmdline(sys.argv):
+    tmpl = _defaults_architecture_template(args)
+    if tmpl:
+      try:
+        args.architecture = apply_arch_template(tmpl, detectArchComponents())
+      except ValueError as exc:
+        parser.error(str(exc))
+
   # --architecture can be specified in both clean and build.
   if args.action in ["build", "clean"] and not args.architecture:
     parser.error("Cannot determine architecture. Please pass it explicitly.\n\n"
@@ -1211,7 +1275,12 @@ def finaliseArgs(args, parser):
     # in docker the docker image is given by the first part of the
     # architecture we want to build for.
     if args.docker and not args.dockerImage:
-      args.dockerImage = "registry.cern.ch/alisw/%s-builder" % args.architecture.split("_")[0]
+      # Derive the builder image from the distro token wherever it sits in the
+      # architecture string (pattern, not positional split), so reordered or
+      # underscore-machine layouts still resolve. Fall back to the legacy
+      # first-underscore field if no known distro token is recognised.
+      distro_token = arch_distro_token(args.architecture) or args.architecture.split("_")[0]
+      args.dockerImage = "registry.cern.ch/alisw/%s-builder" % distro_token
 
     # ── --docker-platform / cross-compilation ─────────────────────────────────
     # Derive the Docker --platform value from --architecture when the user has
@@ -1254,7 +1323,7 @@ def finaliseArgs(args, parser):
   if args.action in ("build", "doctor"):
 
     # On selected platforms, caching is active by default
-    if args.architecture in S3_SUPPORTED_ARCHS and not args.preferSystem and not args.no_remote_store:
+    if normalise_arch_key(args.architecture) in _S3_SUPPORTED_ARCH_KEYS and not args.preferSystem and not args.no_remote_store:
       args.noSystem = "*"
       if not args.remoteStore:
         args.remoteStore = "https://s3.cern.ch/swift/v1/alibuild-repo"

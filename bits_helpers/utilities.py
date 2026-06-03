@@ -451,50 +451,113 @@ def validateDefaults(finalPkgSpec, defaults):
                    "\n".join([" - " + x for x in validDefaults])), validDefaults)
 
 
-def doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor):
+# Built-in architecture layout, used when no `architecture:` template is set in
+# the defaults.  Expressed with the same %(...)s substitution syntax bits uses
+# elsewhere (sources, tags).  Available keys: see arch_components().
+DEFAULT_ARCH_TEMPLATE = "%(os)s_%(machine)s"
+
+
+def arch_components(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor):
+  """Return the substitution dict from which the architecture string is built.
+
+  Keys:
+    os        -- distro+version token, e.g. "ubuntu2510" (or "osx")
+    machine   -- bits-canonical dashed CPU form, e.g. "x86-64" (or "arm64")
+    _machine  -- uname/underscore CPU form, e.g. "x86_64"
+
+  doDetectArch() assembles the default layout via DEFAULT_ARCH_TEMPLATE; a
+  defaults file may instead supply its own `architecture:` template referencing
+  these keys (e.g. "%(os)s_%(_machine)s" for ubuntu2510_x86_64, or
+  "%(_machine)s-%(os)s" for x86_64-ubuntu2510).
+  """
   if platformSystem == "Darwin":
     processor = platformProcessor
     if not processor:
-      if platform.machine() == "x86_64":
-        processor = "x86-64"
-      else:
-        processor = "arm64"
-    return "osx_%s" % processor.replace("_", "-")
-  distribution, version, flavour = platformTuple
-  distribution = distribution.lower()
-  # If platform.dist does not return something sensible,
-  # let's try with /etc/os-release
-  if distribution not in ["ubuntu", "red hat enterprise linux", "redhat", "centos", "almalinux", "rocky linux"] and hasOsRelease:
-    for x in osReleaseLines:
-      key, is_prop, val = x.partition("=")
-      if not is_prop:
-        continue
-      val = val.strip("\n \"")
-      if key == "ID":
-        distribution = val.lower()
-      if key == "VERSION_ID":
-        version = val
+      processor = "x86-64" if platform.machine() == "x86_64" else "arm64"
+    os_token = "osx"
+  else:
+    distribution, version, flavour = platformTuple
+    distribution = distribution.lower()
+    # If platform.dist does not return something sensible,
+    # let's try with /etc/os-release
+    if distribution not in ["ubuntu", "red hat enterprise linux", "redhat", "centos", "almalinux", "rocky linux"] and hasOsRelease:
+      for x in osReleaseLines:
+        key, is_prop, val = x.partition("=")
+        if not is_prop:
+          continue
+        val = val.strip("\n \"")
+        if key == "ID":
+          distribution = val.lower()
+        if key == "VERSION_ID":
+          version = val
 
-  if distribution == "ubuntu":
-    major, _, minor = version.partition(".")
-    version = major + minor
-  elif distribution == "debian":
-    # http://askubuntu.com/questions/445487/which-ubuntu-version-is-equivalent-to-debian-squeeze
-    debian_ubuntu = {"7": "1204", "8": "1404", "9": "1604", "10": "1804", "11": "2004"}
-    if version in debian_ubuntu:
-      distribution = "ubuntu"
-      version = debian_ubuntu[version]
-  elif distribution in ["redhat", "red hat enterprise linux", "centos", "almalinux", "rocky linux"]:
-    distribution = "slc"
+    if distribution == "ubuntu":
+      major, _, minor = version.partition(".")
+      version = major + minor
+    elif distribution == "debian":
+      # http://askubuntu.com/questions/445487/which-ubuntu-version-is-equivalent-to-debian-squeeze
+      debian_ubuntu = {"7": "1204", "8": "1404", "9": "1604", "10": "1804", "11": "2004"}
+      if version in debian_ubuntu:
+        distribution = "ubuntu"
+        version = debian_ubuntu[version]
+    elif distribution in ["redhat", "red hat enterprise linux", "centos", "almalinux", "rocky linux"]:
+      distribution = "slc"
 
-  processor = platformProcessor
-  if not processor:
-    # Sometimes platform.processor returns an empty string
-    processor = getoutput(("uname", "-m")).strip()
+    processor = platformProcessor
+    if not processor:
+      # Sometimes platform.processor returns an empty string
+      processor = getoutput(("uname", "-m")).strip()
 
-  return "{distro}{version}_{machine}".format(
-    distro=distribution, version=version.split(".")[0],
-    machine=processor.replace("_", "-"))
+    os_token = "{distro}{version}".format(distro=distribution, version=version.split(".")[0])
+
+  return {
+    "os": os_token,
+    "machine": processor.replace("_", "-"),
+    "_machine": processor.replace("-", "_"),
+  }
+
+
+def apply_arch_template(template, components):
+  """Render an architecture *template* (``%(os)s``/``%(machine)s``/...) against
+  *components*.  A literal string with no placeholders is returned unchanged."""
+  try:
+    return template % components
+  except (KeyError, ValueError) as exc:
+    raise ValueError("invalid architecture template %r: %s" % (template, exc))
+
+
+def doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor):
+  return apply_arch_template(
+    DEFAULT_ARCH_TEMPLATE,
+    arch_components(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor))
+
+
+# ── architecture token matching (order- and separator-independent) ──────────
+# Used so that custom layouts (ubuntu2510_x86_64, x86_64-ubuntu2510, ...) are
+# recognised without --force-unknown-architecture, and so docker-image / S3
+# lookups match by content rather than by string position.
+_ARCH_DISTRO_RE = re.compile(
+  r"(slc[0-9]+|ubuntu[0-9]*|ubt[0-9]*|osx|fedora[0-9]*|alma(?:linux)?[0-9]*"
+  r"|centos[0-9]*|rocky[0-9]*|rhel[0-9]*|el[0-9]+|debian[0-9]*)")
+_ARCH_MACHINE_RE = re.compile(r"(x86[-_]64|aarch64|arm64|ppc64le|ppc64)")
+
+
+def arch_distro_token(architecture):
+  """Return the distro token (e.g. 'ubuntu2510') found anywhere in *architecture*."""
+  m = _ARCH_DISTRO_RE.search(architecture or "")
+  return m.group(0) if m else None
+
+
+def arch_machine_token(architecture):
+  """Return the CPU token (e.g. 'x86-64'/'x86_64') found anywhere in *architecture*."""
+  m = _ARCH_MACHINE_RE.search(architecture or "")
+  return m.group(0) if m else None
+
+
+def normalise_arch_key(architecture):
+  """(distro, dashed-machine) key for order/separator-independent comparison."""
+  mac = arch_machine_token(architecture)
+  return (arch_distro_token(architecture), mac.replace("_", "-") if mac else None)
 
 # Try to guess a good platform. This does not try to cover all the
 # possibly compatible linux distributions, but tries to get right the
@@ -530,6 +593,31 @@ def detectArch():
     return doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor)
   except Exception:
     return doDetectArch(hasOsRelease, osReleaseLines, ["unknown", "", ""], "", "")
+
+
+def detectArchComponents():
+  """Like detectArch(), but returns the {os, machine, _machine} substitution
+  dict (see arch_components) so a defaults `architecture:` template can be
+  rendered against the locally detected platform."""
+  try:
+    with open("/etc/os-release") as osr:
+      osReleaseLines = osr.readlines()
+    hasOsRelease = True
+  except OSError:
+    osReleaseLines = []
+    hasOsRelease = False
+  if platform.system() == "Darwin":
+    machine = "x86-64" if platform.machine() == "x86_64" else platform.machine()
+    return {"os": "osx", "machine": machine.replace("_", "-"), "_machine": machine.replace("-", "_")}
+  try:
+    import distro
+    platformProcessor = platform.processor()
+    if not platformProcessor or " " in platformProcessor:
+      platformProcessor = platform.machine()
+    return arch_components(hasOsRelease, osReleaseLines, distro.linux_distribution(),
+                           platform.system(), platformProcessor)
+  except Exception:
+    return arch_components(hasOsRelease, osReleaseLines, ["unknown", "", ""], "", "")
 
 def _parse_req_matcher(r):
   """Split a requirement string into ``(name, matcher, version_pin)`` triple.

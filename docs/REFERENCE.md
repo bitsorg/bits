@@ -59,6 +59,36 @@ bits  (Bash)
                  └─ ...
 ```
 
+### Architecture string and the `architecture:` template
+
+The architecture string (e.g. `ubuntu2510_x86-64`) names install dirs, tarballs,
+store paths and Docker images. By default it is auto-detected by `doDetectArch`
+as `%(os)s_%(machine)s`. A defaults file (typically `defaults-release.sh`) may
+override the *layout* with an `architecture:` field — either a literal string or
+a template using these `%(...)s` keys (same substitution syntax as recipe
+sources):
+
+| key          | example     | notes                                  |
+| ------------ | ----------- | -------------------------------------- |
+| `%(os)s`     | `ubuntu2510`| distro + version (or `osx`)            |
+| `%(machine)s`| `x86-64`    | bits-canonical dashed CPU form         |
+| `%(_machine)s`| `x86_64`   | uname/underscore CPU form              |
+
+```yaml
+# defaults-release.sh
+architecture: %(os)s_%(_machine)s     # -> ubuntu2510_x86_64
+# architecture: %(_machine)s-%(os)s   # -> x86_64-ubuntu2510
+# architecture: ubuntu2510_x86-64     # literal, no substitution
+```
+
+Precedence: an explicit `--architecture` on the command line always wins and the
+template is ignored; otherwise the template (if any) is rendered against the
+detected platform; with neither, the auto-detected default stands. Architecture
+recognition (`matchValidArch`), the Docker builder-image name and the S3 cache
+lookup all match by content — the distro and CPU tokens — independently of order
+and of the `x86-64`/`x86_64` separator, so custom layouts work without
+`--force-unknown-architecture`.
+
 ### Build pipeline (inside `doBuild`)
 
 ```
@@ -563,7 +593,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | Option | Description |
 |--------|-------------|
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
-| `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected. |
+| `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [§9](#9-architecture-overview)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
 | `--no-auto-patch` | Do not apply recipe `patches:` automatically for any package in this build. The patch files are still staged in `$SOURCEDIR` and exported as `$PATCH0..$PATCH_COUNT`, but each recipe must apply its own patches (e.g. via the `bits_apply_patches` helper). Default: patches are auto-applied. A single recipe can opt out with `auto_patch: false` in its header; a defaults profile can opt out with `auto_patch: false`. See [Controlling patch application](#controlling-patch-application). |

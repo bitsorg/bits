@@ -623,6 +623,82 @@ class DefaultsChainMergeTest(unittest.TestCase):
         self.assertEqual(ov["ROOT"]["source"], "orig")    # untouched field kept
 
 
+class ArchTemplateTest(unittest.TestCase):
+    """Configurable architecture layout: components, templates, and the
+    order/separator-independent matching used for validation, docker, S3."""
+
+    UBUNTU = ("ubuntu", "25.10", "")
+
+    def _comp(self, processor="x86_64"):
+        from bits_helpers.utilities import arch_components
+        return arch_components(True, [], self.UBUNTU, "Linux", processor)
+
+    def test_components(self):
+        c = self._comp()
+        self.assertEqual(c, {"os": "ubuntu2510", "machine": "x86-64", "_machine": "x86_64"})
+
+    def test_default_layout_unchanged(self):
+        # The built-in template must reproduce today's string byte-for-byte.
+        from bits_helpers.utilities import doDetectArch, DEFAULT_ARCH_TEMPLATE, apply_arch_template
+        self.assertEqual(DEFAULT_ARCH_TEMPLATE, "%(os)s_%(machine)s")
+        self.assertEqual(doDetectArch(True, [], self.UBUNTU, "Linux", "x86_64"), "ubuntu2510_x86-64")
+        self.assertEqual(apply_arch_template(DEFAULT_ARCH_TEMPLATE, self._comp()), "ubuntu2510_x86-64")
+
+    def test_three_layouts(self):
+        from bits_helpers.utilities import apply_arch_template
+        c = self._comp()
+        self.assertEqual(apply_arch_template("%(os)s_%(machine)s", c), "ubuntu2510_x86-64")
+        self.assertEqual(apply_arch_template("%(os)s_%(_machine)s", c), "ubuntu2510_x86_64")
+        self.assertEqual(apply_arch_template("%(_machine)s-%(os)s", c), "x86_64-ubuntu2510")
+
+    def test_literal_template_passthrough(self):
+        from bits_helpers.utilities import apply_arch_template
+        self.assertEqual(apply_arch_template("ubuntu2510_x86-64", self._comp()), "ubuntu2510_x86-64")
+
+    def test_bad_template_raises(self):
+        from bits_helpers.utilities import apply_arch_template
+        with self.assertRaises(ValueError):
+            apply_arch_template("%(nope)s", self._comp())
+
+    def test_osx_components(self):
+        from bits_helpers.utilities import arch_components
+        c = arch_components(False, [], ("", "", ""), "Darwin", "arm64")
+        self.assertEqual(c["os"], "osx")
+        self.assertEqual(c["machine"], "arm64")
+
+    def test_tokens(self):
+        from bits_helpers.utilities import arch_distro_token, arch_machine_token
+        self.assertEqual(arch_distro_token("x86_64-ubuntu2510"), "ubuntu2510")
+        self.assertEqual(arch_distro_token("slc9_aarch64"), "slc9")
+        self.assertEqual(arch_machine_token("ubuntu2510_x86_64"), "x86_64")
+        self.assertEqual(arch_machine_token("ubuntu2510_x86-64"), "x86-64")
+        self.assertIsNone(arch_distro_token("garbage123"))
+
+    def test_normalise_arch_key_equivalence(self):
+        from bits_helpers.utilities import normalise_arch_key
+        # underscore and dash machine forms collapse to the same key
+        self.assertEqual(normalise_arch_key("ubuntu2404_x86_64"),
+                         normalise_arch_key("ubuntu2404_x86-64"))
+        # order does not matter for the (distro, machine) key
+        self.assertEqual(normalise_arch_key("x86_64-ubuntu2404"),
+                         normalise_arch_key("ubuntu2404_x86-64"))
+
+    def test_matchValidArch_layouts(self):
+        from bits_helpers.args import matchValidArch
+        for a in ("ubuntu2510_x86-64", "ubuntu2510_x86_64", "x86_64-ubuntu2510",
+                  "slc9_aarch64", "osx_arm64"):
+            self.assertTrue(matchValidArch(a), a)
+        self.assertFalse(matchValidArch("garbage123"))
+
+    def test_cmdline_detection(self):
+        from bits_helpers.args import _architecture_given_on_cmdline as g
+        self.assertTrue(g(["bits", "build", "-a", "x", "pkg"]))
+        self.assertTrue(g(["bits", "build", "--architecture", "x"]))
+        self.assertTrue(g(["bits", "build", "--architecture=x"]))
+        self.assertTrue(g(["bits", "build", "-ax86_64-ubuntu2510"]))
+        self.assertFalse(g(["bits", "build", "pkg"]))
+
+
 class VersionMatcherTest(unittest.TestCase):
     """version<op> matchers, &&/|| combinators, and conditional patches."""
 
