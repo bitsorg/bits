@@ -986,13 +986,34 @@ def asDict(overrides_array):
       
     # Start with an empty OrderedDict
     result = OrderedDict()
-    
+
+    def _string_override(s):
+        """Support the "name = value" version-pin shorthand in overrides:, the
+        same syntax used for requires: pins. Returns {name: {version, tag}} so
+        that tarball URLs (%(version)s) and git checkouts (tag) both use the
+        pinned value, or None when the string is not a "name = value" pin."""
+        name, sep, value = s.partition("=")
+        name, value = name.strip(), value.strip()
+        if not (sep and name and value):
+            return None
+        return OrderedDict([(name, OrderedDict([("version", value), ("tag", value)]))])
+
     for item in overrides_array:
-        if isinstance(item, list):
+        if isinstance(item, str):
+            # e.g. "acts = 44.4.0" — previously silently ignored, which made a
+            # list-of-strings overrides: block a no-op.
+            d = _string_override(item)
+            if d is not None:
+                result = merge_dicts(result, d)
+        elif isinstance(item, list):
             # Handle nested lists - recursively process each element
             for subitem in item:
                 if isinstance(subitem, dict):
                     result = merge_dicts(result, subitem)
+                elif isinstance(subitem, str):
+                    d = _string_override(subitem)
+                    if d is not None:
+                        result = merge_dicts(result, d)
         elif isinstance(item, dict):
             result = merge_dicts(result, item)
 

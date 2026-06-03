@@ -11,6 +11,7 @@ from bits_helpers.utilities import resolve_version, resolve_spec_data
 from bits_helpers.utilities import topological_sort
 from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
 from bits_helpers.utilities import _parse_req_matcher, _collect_version_pins
+from bits_helpers.utilities import asDict
 import bits_helpers
 import bits_helpers.log
 import os
@@ -537,6 +538,31 @@ class TestResolveSpecDataVariables(unittest.TestCase):
         spec = self._spec({"v1": "foo", "foo_key": "bar"})
         out = resolve_spec_data(spec, "%%(%(v1)s_key)s", ["release"], strict=True)
         self.assertEqual(out, "bar")
+
+
+class AsDictTest(unittest.TestCase):
+    """overrides: collapsing, including the 'name = value' pin shorthand."""
+
+    def test_string_pin_shorthand(self):
+        # A list of "name = value" strings (same syntax as requires: pins) must
+        # produce per-package {version, tag} overrides, not be silently dropped.
+        out = asDict(["acts = 44.4.0", "k4actstracking = v00-02"])
+        self.assertEqual(dict(out["acts"]), {"version": "44.4.0", "tag": "44.4.0"})
+        self.assertEqual(dict(out["k4actstracking"]), {"version": "v00-02", "tag": "v00-02"})
+
+    def test_dict_form_preserved(self):
+        out = asDict([{"GCC-Toolchain": {"source": "x", "tag": "v1"}}])
+        self.assertEqual(dict(out["GCC-Toolchain"]), {"source": "x", "tag": "v1"})
+
+    def test_mixed_and_malformed(self):
+        # bare names (no '=') are ignored; valid pins still applied.
+        out = asDict(["justaname", "a = 1"])
+        self.assertNotIn("justaname", out)
+        self.assertEqual(dict(out["a"]), {"version": "1", "tag": "1"})
+
+    def test_empty_is_empty(self):
+        self.assertEqual(asDict([]), {})
+        self.assertEqual(asDict(None), {})
 
 
 if __name__ == '__main__':
