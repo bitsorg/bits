@@ -54,12 +54,21 @@ def logged_scm(scm, package, referenceSources,
       with codecs.open(os.path.join(referenceSources, FETCH_LOG_NAME),
                        "a", encoding="utf-8", errors="replace") as logf:
         logf.write("%s command for package %r failed.\n"
-                   "Command: %s %s\nIn directory: %s\nExit code: %d\n" %
-                   (scm.name, package, scm.name.lower(), " ".join(command), directory, err))
+                   "Command: %s %s\nIn directory: %s\nExit code: %d\n"
+                   "Output:\n%s\n" %
+                   (scm.name, package, scm.name.lower(), " ".join(command),
+                    directory, err, (output or "").strip() or "(no output)"))
     except OSError as exc:
       error("Could not write error log from SCM command:", exc_info=exc)
-  dieOnError(err, "Error during %s %s for reference repo for %s." %
-             (scm.name.lower(), command[0], package))
+  # Surface git's own message inline so the failure is diagnosable without
+  # re-running at --debug (the full text is in fetch-log.txt). The captured
+  # output already includes stderr (getstatusoutput merges it).
+  _excerpt = " ".join((output or "").split())
+  if len(_excerpt) > 300:
+    _excerpt = "…" + _excerpt[-300:]
+  dieOnError(err, "Error during %s %s for reference repo for %s.%s" %
+             (scm.name.lower(), command[0], package,
+              ("\n  git: " + _excerpt) if _excerpt else ""))
   debug("Done %s %s for repository for %s", scm.name.lower(), command[0], package)
   return output
 
