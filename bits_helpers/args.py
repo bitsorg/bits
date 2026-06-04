@@ -416,15 +416,17 @@ def doParseArgs():
       ),
   )
   build_sandbox.add_argument(
-      "--sandbox-network", dest="sandboxNetwork", metavar="MODE", default="on",
+      "--sandbox-network", dest="sandboxNetwork", metavar="MODE", default=None,
       choices=["on", "off"],
       help=(
           "Global default for build-time network access inside the sandbox: "
-          "'on' (default) blocks outgoing network, 'off' allows it. A recipe's "
-          "own `sandbox_network:` field always overrides this. Has no effect "
-          "where sandboxing is off (e.g. a plain local Linux build). May also "
-          "be set persistently with 'sandbox_network = off' in bits.rc — useful "
-          "for stacks with many recipes that pip-install at build time."
+          "'on' blocks outgoing network, 'off' allows it. A recipe's own "
+          "`sandbox_network:` field always overrides this. Has no effect where "
+          "sandboxing is off (e.g. a plain local Linux build). When not given "
+          "on the command line, the value falls back to `sandbox_network:` in "
+          "the active defaults (e.g. defaults-release.sh), then to 'on'. "
+          "Setting it once in defaults is the recommended way to enable network "
+          "for a stack with many recipes that pip-install at build time."
       ),
   )
 
@@ -1052,9 +1054,6 @@ def doParseArgs():
       ("provider_policy",    "providerPolicy"),
       # prerequisites_url: community-specific URL shown when compiler/git absent.
       ("prerequisites_url",  "prerequisitesUrl"),
-      # sandbox_network: global default for build-time network in the sandbox
-      # ("on" blocks, "off" allows); a recipe's own field still overrides.
-      ("sandbox_network",    "sandboxNetwork"),
   ]
   for _rc_key, _dest in _RC_KEY_TO_DEST:
     if _rc_early.get(_rc_key):

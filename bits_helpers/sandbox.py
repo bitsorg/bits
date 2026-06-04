@@ -302,10 +302,11 @@ def wrap_build_command(
     #   on  -> restriction on  -> network BLOCKED (allow_network False)
     #   off -> restriction off -> network ALLOWED (allow_network True)
     # Precedence: a recipe's own `sandbox_network:` field wins; otherwise fall
-    # back to the global default from --sandbox-network / bits.rc (opts.
-    # sandboxNetwork), which itself defaults to "on". This lets a stack with
-    # many pip-installing recipes flip the default once instead of annotating
-    # every recipe.
+    # back to the global default in opts.sandboxNetwork, which build.py resolves
+    # from --sandbox-network or the active defaults `sandbox_network:` (see
+    # defaults-release.sh), defaulting to "on". This lets a stack with many
+    # pip-installing recipes flip the default once instead of annotating every
+    # recipe.
     global_default = getattr(opts, "sandboxNetwork", "on") or "on"
     sandbox_network = spec.get("sandbox_network", global_default)
     # YAML's SafeLoader parses bare on/off/yes/no as booleans, so a recipe line

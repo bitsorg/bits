@@ -1451,6 +1451,19 @@ def doBuild(args, parser):
       args.remoteStore = "cvmfs://" + _cvmfs["cvmfs_dir"]
       info("Reusing deployed components: --remote-store %s", args.remoteStore)
 
+  # Global build-time network policy for the recipe sandbox. Precedence:
+  #   explicit --sandbox-network  >  defaults `sandbox_network:`  >  "on".
+  # A recipe's own sandbox_network field still overrides this per package
+  # (handled in sandbox.wrap_build_command). YAML parses bare on/off as bools,
+  # so normalise to the "on"/"off" strings the sandbox layer expects.
+  if getattr(args, "sandboxNetwork", None) is None:
+    _dn = defaultsMeta.get("sandbox_network", "on")
+    if isinstance(_dn, bool):
+      _dn = "on" if _dn else "off"
+    args.sandboxNetwork = str(_dn).strip().lower()
+    if args.sandboxNetwork == "off":
+      info("Build-time sandbox network allowed by default (defaults sandbox_network: off)")
+
   # syncHelper is constructed after defaults loading so that it receives the
   # (potentially combined) architecture string.
   syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
