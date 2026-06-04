@@ -413,6 +413,22 @@ class MakeSbplProfileTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_canonical_temp_dirs_writable(self):
+        # Regression: macOS resolves /tmp -> /private/tmp and
+        # /var/folders -> /private/var/folders, and SBPL subpath matching uses
+        # the resolved path. Without the /private/... rules the compiler's own
+        # $TMPDIR temp files are denied ("C compiler cannot create executables").
+        path = make_sbpl_profile(allow_network=False, builddir="/sw")
+        try:
+            with open(path) as fh:
+                content = fh.read()
+            for sub in ('(subpath "/private/tmp")',
+                        '(subpath "/private/var/folders")',
+                        '(subpath "/private/var/tmp")'):
+                self.assertIn(sub, content)
+        finally:
+            os.unlink(path)
+
     def test_standard_char_devices_writable(self):
         # Regression: /dev/null is outside every allowed write subpath, so
         # without an explicit allow the default-deny breaks `> /dev/null` and

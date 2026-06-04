@@ -164,9 +164,20 @@ _SBPL_TEMPLATE = """\
 (allow process*)
 (allow signal)
 (allow file-read*)
-(allow file-write* (subpath "{builddir}"))
+{builddir_rules}
+; Temp dirs. On macOS /tmp and /var are symlinks to /private/tmp and
+; /private/var, and SBPL subpath matching resolves symlinks, so the kernel
+; sees the canonical /private/... paths. Allow both the symlink names (in case
+; a path is matched pre-resolution) and the canonical targets — otherwise the
+; compiler's own temp files ($TMPDIR=/var/folders/.../T -> /private/var/...)
+; are denied and clang reports "unable to make temporary file" /
+; "C compiler cannot create executables".
 (allow file-write* (subpath "/tmp"))
 (allow file-write* (subpath "/var/folders"))
+(allow file-write* (subpath "/var/tmp"))
+(allow file-write* (subpath "/private/tmp"))
+(allow file-write* (subpath "/private/var/folders"))
+(allow file-write* (subpath "/private/var/tmp"))
 ; Standard character devices. /dev is outside every allowed write subpath, so
 ; without these the default (deny) breaks `> /dev/null`, process substitution
 ; (/dev/fd), ptys, entropy, etc. — i.e. essentially every autotools configure.
@@ -201,18 +212,32 @@ def make_sbpl_profile(allow_network: bool, builddir: str) -> str:
     :param builddir: absolute host path of the bits work directory;
                      the recipe is allowed to write anywhere beneath it
     """
-    # FIX: SBPL string literals are delimited by double-quotes, so a '"' in
+    # Allow writes under the build dir AND its symlink-resolved real path.
+    # SBPL subpath matching resolves symlinks, so if the work dir lives under a
+    # symlinked prefix (e.g. /var -> /private/var) only the canonical path
+    # actually matches; include both so either form works.
+    builddirs = [builddir]
+    real = os.path.realpath(builddir)
+    if real != builddir:
+        builddirs.append(real)
+
+    # FIX: SBPL string literals are delimited by double-quotes, so a '"' in a
     # builddir would escape the literal and allow injection of arbitrary SBPL
     # rules (e.g. lifting the write restriction to cover /etc).  Reject early.
-    if '"' in builddir:
-        raise ValueError(
-            f"workdir path contains '\"' which cannot be safely embedded in an "
-            f"SBPL sandbox profile: {builddir!r}. Use a path without double-quote "
-            f"characters."
-        )
+    for d in builddirs:
+        if '"' in d:
+            raise ValueError(
+                f"workdir path contains '\"' which cannot be safely embedded in an "
+                f"SBPL sandbox profile: {d!r}. Use a path without double-quote "
+                f"characters."
+            )
+    builddir_rules = "\n".join(
+        '(allow file-write* (subpath "%s"))' % d for d in builddirs
+    )
+
     network_rule = "(allow network*)" if allow_network else ""
     content = _SBPL_TEMPLATE.format(
-        builddir=builddir,
+        builddir_rules=builddir_rules,
         network_rule=network_rule,
     )
     fd, path = tempfile.mkstemp(suffix=".sb", prefix="bits-sandbox-")
