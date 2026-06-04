@@ -216,6 +216,14 @@ def doParseArgs():
   build_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
                             help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
 
+  build_parser.add_argument("--flavour", "--flavor", dest="flavours", action="append",
+                            default=[], metavar="NAME[=VALUE]",
+                            help=("Set a build-wide flavour variable (repeatable, comma-separated). "
+                                  "NAME -> true, NAME=VALUE -> VALUE, !NAME -> false. Flavours gate "
+                                  "conditional requires/sources/patches via (?NAME) and are exported "
+                                  "into the build environment; they override a defaults `variables:` "
+                                  "entry of the same name."))
+
   build_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                             help=("Build as if on the specified architecture. When used with --docker, build "
                                   "inside a Docker image for the specified architecture. Default is the current "
@@ -1135,6 +1143,30 @@ S3_SUPPORTED_ARCHS = "slc7_x86-64", "slc8_x86-64", "ubuntu2004_x86-64", "ubuntu2
 # equivalent layout (e.g. ubuntu2404_x86_64) still resolves to the same entry.
 _S3_SUPPORTED_ARCH_KEYS = {normalise_arch_key(a) for a in S3_SUPPORTED_ARCHS}
 
+def _parse_flavours(raw):
+  """Parse repeated/comma-separated --flavour values into an ordered dict.
+
+  NAME -> "true"; NAME=VALUE -> "VALUE"; !NAME -> "false". Whitespace is
+  trimmed; empty tokens are ignored; later entries win on a repeated name.
+  """
+  result = {}
+  for chunk in (raw or []):
+    for tok in str(chunk).split(","):
+      tok = tok.strip()
+      if not tok:
+        continue
+      if tok.startswith("!"):
+        name, value = tok[1:].strip(), "false"
+      elif "=" in tok:
+        name, _, value = tok.partition("=")
+        name, value = name.strip(), value.strip()
+      else:
+        name, value = tok, "true"
+      if name:
+        result[name] = value
+  return result
+
+
 def finaliseArgs(args, parser):
 
   # Nothing to finalise for version, architecture, or verify
@@ -1154,6 +1186,10 @@ def finaliseArgs(args, parser):
 
   if hasattr(args, "defaults"):
     args.defaults = args.defaults.split("::")
+
+  # Resolve --flavour into an ordered {name: value} dict (see _parse_flavours).
+  if hasattr(args, "flavours"):
+    args.flavours = _parse_flavours(args.flavours)
 
   # ── bits.rc / BITS_PROVIDERS ─────────────────────────────────────────────
   # Read persistent configuration from the first bits.rc / .bitsrc /

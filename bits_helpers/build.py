@@ -1402,7 +1402,21 @@ def doBuild(args, parser):
   if branch_stream == branch_basename:
     branch_stream = ""
 
-  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+  def defaultsReader():
+    meta, body = readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+    # --flavour variables feed both the (?NAME) conditional matchers (via the
+    # `variables:` map) and the build environment + package hash (via the `env:`
+    # map, which becomes the defaults-release env every package depends on). CLI
+    # flavours override a defaults entry of the same name.
+    flavours = getattr(args, "flavours", None)
+    if flavours:
+      from collections import OrderedDict as _OD
+      meta.setdefault("variables", _OD())
+      meta.setdefault("env", _OD())
+      for _k, _v in flavours.items():
+        meta["variables"][_k] = _v
+        meta["env"][_k] = _v
+    return meta, body
   (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
                                         defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)

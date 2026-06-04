@@ -593,6 +593,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | Option | Description |
 |--------|-------------|
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
+| `--flavour NAME[=VALUE]` | Set a build-wide flavour variable (repeatable, comma-separated). `NAME`→`true`, `NAME=VALUE`→`VALUE`, `!NAME`→`false`. Gates `(?NAME)` conditional requires/sources/patches and is exported into the build environment; overrides a defaults `variables:` entry of the same name. See [Flavours](#flavours). |
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [§9](#9-architecture-overview)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
@@ -1268,7 +1269,8 @@ Matcher atoms:
   versions compare in **natural order** (`sort -V` semantics, so `v40r10 > v40r2`).
 - `(?!osx)` / arch regex — matched against the architecture string (as in `requires:`).
 - `defaults=<regex>` — active when the regex matches an active defaults profile.
-- `(?VAR)` — active when the defaults variable `VAR` is truthy.
+- `(?VAR)` — active when the variable `VAR` is truthy (a defaults `variables:`
+  entry, or a `--flavour` — see [Flavours](#flavours)).
 
 Atoms combine with `&&` (all) and `||` (any); `||` has the lower precedence, e.g.
 `version>=v40r2 && version<v41r0` or `(?cuda) || version<v40r0`. A single `|`
@@ -1276,6 +1278,28 @@ inside an arch regex stays ordinary alternation — only the doubled `||` combin
 If a patch carries both a matcher and an inline checksum, write them as
 `name:matcher,algo:digest` (the checksum comes last). The same matcher grammar
 is also accepted on `requires:`/`build_requires:` entries.
+
+##### Flavours
+
+Flavour variables let a single build be tuned without editing defaults files.
+They feed the `(?NAME)` matcher above and are also exported into the build
+environment, so a recipe body can read them:
+
+```bash
+bits build --defaults gcc15::dev4 --flavour cuda --flavour onnx=cpu key4hep
+```
+
+Grammar (repeatable, comma-separated): `NAME` → `true`, `NAME=VALUE` → `VALUE`,
+`!NAME` → `false`. A value is *truthy* unless it is empty, `0`, `false`, `off`,
+or `no`. Each flavour is merged into the defaults' `variables:` map (so `(?NAME)`
+sees it) **and** the `env:` map (so it is exported as `$NAME` in every recipe's
+build and contributes to the package hash). A `--flavour` overrides a defaults
+`variables:`/`env:` entry of the same name.
+
+Because flavours enter the shared `defaults-release` environment, they are
+**global** to the build (they gate dependencies anywhere in the DAG, not just on
+the named package) and changing one re-hashes the affected packages, triggering
+a rebuild — the same as changing a defaults `env:` value.
 
 #### Dependencies
 

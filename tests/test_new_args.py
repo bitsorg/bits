@@ -11,7 +11,8 @@ import types
 import unittest
 from unittest.mock import patch
 
-from bits_helpers.args import doParseArgs
+from bits_helpers.args import doParseArgs, _parse_flavours
+from bits_helpers.utilities import filterByArchitectureDefaults
 
 # Shared architecture that passes validation checks.
 _ARCH = "slc7_x86-64"
@@ -205,6 +206,43 @@ class AutoResourcesFlagTest(unittest.TestCase):
         with patch.dict(sys.modules, {"psutil": None}):
             args = _parse(["build", "-a", _ARCH, "--resource-monitoring", "LCG"])
         self.assertFalse(args.resourceMonitoring)
+
+
+class FlavourFlagTest(unittest.TestCase):
+    """--flavour parsing and how flavours gate (?NAME) conditional requires."""
+
+    def test_parse_forms(self):
+        # bare -> true, !name -> false, name=value -> value
+        self.assertEqual(_parse_flavours(["cuda", "!debug", "onnx=cpu"]),
+                         {"cuda": "true", "debug": "false", "onnx": "cpu"})
+
+    def test_parse_comma_and_precedence(self):
+        # comma-separated within one token; later entry wins on a repeated name
+        self.assertEqual(_parse_flavours(["cuda,onnx=cpu", "onnx=gpu"]),
+                         {"cuda": "true", "onnx": "gpu"})
+
+    def test_parse_trims_and_skips_empty(self):
+        self.assertEqual(_parse_flavours([" cuda , ", "a = b", ""]),
+                         {"cuda": "true", "a": "b"})
+
+    def test_cli_end_to_end(self):
+        args = _parse(["build", "-a", _ARCH, "--flavour", "cuda",
+                       "--flavour", "onnx=cpu,debug=off", "key4hep"])
+        self.assertEqual(args.flavours, {"cuda": "true", "onnx": "cpu", "debug": "off"})
+
+    def test_default_empty(self):
+        args = _parse(["build", "-a", _ARCH, "key4hep"])
+        self.assertEqual(args.flavours, {})
+
+    def test_flavour_gates_conditional_require(self):
+        # A flavour in the vars dict activates "(?cuda)"; absent/falsey excludes it.
+        reqs = ["ROOT", "cudnn:(?cuda)"]
+        on = list(filterByArchitectureDefaults(_ARCH, ["dev"], reqs, _parse_flavours(["cuda"])))
+        self.assertIn("cudnn", on)
+        off = list(filterByArchitectureDefaults(_ARCH, ["dev"], reqs, _parse_flavours(["!cuda"])))
+        self.assertNotIn("cudnn", off)
+        none = list(filterByArchitectureDefaults(_ARCH, ["dev"], reqs, {}))
+        self.assertNotIn("cudnn", none)
 
 
 class BackwardCompatBuildTest(unittest.TestCase):
