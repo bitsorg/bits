@@ -24,16 +24,23 @@ from bits_helpers.sandbox import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _opts(sandbox="auto", sandbox_image=None):
+def _opts(sandbox="auto", sandbox_image=None, sandbox_network="on"):
     """Return a minimal argparse-like namespace."""
     ns = types.SimpleNamespace()
     ns.sandbox = sandbox
     ns.sandboxImage = sandbox_image
+    ns.sandboxNetwork = sandbox_network
     return ns
 
 
-def _spec(pkg="TestPkg", sandbox_network="on"):
-    return {"package": pkg, "sandbox_network": sandbox_network}
+_UNSET = object()
+
+
+def _spec(pkg="TestPkg", sandbox_network=_UNSET):
+    spec = {"package": pkg}
+    if sandbox_network is not _UNSET:
+        spec["sandbox_network"] = sandbox_network
+    return spec
 
 
 LOCAL_CMD = "env FOO=bar bash -e -x /sw/slc8_x86-64/TestPkg/build.sh 2>&1"
@@ -384,6 +391,57 @@ class WrapSandboxExecTests(unittest.TestCase):
             workdir="/sw",
         )
         mock_profile.assert_called_once_with(True, "/sw")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_yaml_boolean_off_enables_network(self, mock_profile, _r):
+        # Regression: YAML SafeLoader parses bare `sandbox_network: off` as the
+        # Python bool False (not the string "off"). It must still enable network.
+        wrap_build_command(
+            LOCAL_CMD, _spec(sandbox_network=False), _opts(sandbox="sandbox-exec"),
+            workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(True, "/sw")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_yaml_boolean_on_blocks_network(self, mock_profile, _r):
+        # `sandbox_network: on` -> Python bool True -> network blocked.
+        wrap_build_command(
+            LOCAL_CMD, _spec(sandbox_network=True), _opts(sandbox="sandbox-exec"),
+            workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(False, "/sw")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_global_default_off_allows_when_recipe_silent(self, mock_profile, _r):
+        # No per-recipe field -> fall back to global --sandbox-network/bits.rc.
+        wrap_build_command(
+            LOCAL_CMD, _spec(), _opts(sandbox="sandbox-exec", sandbox_network="off"),
+            workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(True, "/sw")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_recipe_field_overrides_global_default(self, mock_profile, _r):
+        # Global default off, but recipe explicitly asks for network blocked.
+        wrap_build_command(
+            LOCAL_CMD, _spec(sandbox_network="on"),
+            _opts(sandbox="sandbox-exec", sandbox_network="off"),
+            workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(False, "/sw")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_global_default_on_blocks_when_recipe_silent(self, mock_profile, _r):
+        wrap_build_command(
+            LOCAL_CMD, _spec(), _opts(sandbox="sandbox-exec", sandbox_network="on"),
+            workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(False, "/sw")
 
 
 # ---------------------------------------------------------------------------

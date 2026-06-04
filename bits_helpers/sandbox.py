@@ -298,8 +298,25 @@ def wrap_build_command(
     if pkg_name.startswith("defaults-"):
         return build_command
 
-    sandbox_network = spec.get("sandbox_network", "on")
-    allow_network = (sandbox_network == "off")
+    # Semantics: sandbox_network is "is the network *restriction* on?".
+    #   on  -> restriction on  -> network BLOCKED (allow_network False)
+    #   off -> restriction off -> network ALLOWED (allow_network True)
+    # Precedence: a recipe's own `sandbox_network:` field wins; otherwise fall
+    # back to the global default from --sandbox-network / bits.rc (opts.
+    # sandboxNetwork), which itself defaults to "on". This lets a stack with
+    # many pip-installing recipes flip the default once instead of annotating
+    # every recipe.
+    global_default = getattr(opts, "sandboxNetwork", "on") or "on"
+    sandbox_network = spec.get("sandbox_network", global_default)
+    # YAML's SafeLoader parses bare on/off/yes/no as booleans, so a recipe line
+    # `sandbox_network: off` arrives here as Python False (not the string
+    # "off"). Normalise both forms so quoted and unquoted recipes behave the
+    # same and nobody silently keeps the network blocked by forgetting quotes.
+    if isinstance(sandbox_network, bool):
+        allow_network = (sandbox_network is False)
+    else:
+        allow_network = (str(sandbox_network).strip().lower()
+                         in ("off", "false", "no", "0"))
 
     requested = getattr(opts, "sandbox", "auto")
     mode = resolve_sandbox_mode(requested, docker_active)
