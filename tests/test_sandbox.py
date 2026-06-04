@@ -413,6 +413,25 @@ class MakeSbplProfileTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_standard_char_devices_writable(self):
+        # Regression: /dev/null is outside every allowed write subpath, so
+        # without an explicit allow the default-deny breaks `> /dev/null` and
+        # thus essentially every autotools configure on macOS.
+        path = make_sbpl_profile(allow_network=False, builddir="/sw")
+        try:
+            with open(path) as fh:
+                content = fh.read()
+            for dev in ('"/dev/null"', '"/dev/zero"', '"/dev/urandom"',
+                        '"/dev/tty"', '"/dev/ptmx"'):
+                self.assertIn(dev, content)
+            self.assertIn('(subpath "/dev/fd")', content)
+            # Raw disk devices must stay denied: no rule should reference them
+            # as a quoted SBPL pattern (the explanatory comment may mention them).
+            self.assertNotIn('"/dev/disk', content)
+            self.assertNotIn('"/dev/rdisk', content)
+        finally:
+            os.unlink(path)
+
 
 if __name__ == "__main__":
     unittest.main()

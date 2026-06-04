@@ -167,6 +167,21 @@ _SBPL_TEMPLATE = """\
 (allow file-write* (subpath "{builddir}"))
 (allow file-write* (subpath "/tmp"))
 (allow file-write* (subpath "/var/folders"))
+; Standard character devices. /dev is outside every allowed write subpath, so
+; without these the default (deny) breaks `> /dev/null`, process substitution
+; (/dev/fd), ptys, entropy, etc. — i.e. essentially every autotools configure.
+; Raw block/disk devices (/dev/disk*, /dev/rdisk*) are deliberately NOT listed
+; so a buggy or malicious recipe still cannot scribble over the raw disk.
+(allow file-write*
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/random")
+  (literal "/dev/urandom")
+  (literal "/dev/tty")
+  (literal "/dev/dtracehelper")
+  (literal "/dev/ptmx")
+  (subpath "/dev/fd")
+  (regex #"^/dev/ttys[0-9]+$"))
 (allow sysctl*)
 (allow mach*)
 (allow ipc*)
