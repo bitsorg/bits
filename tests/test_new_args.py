@@ -7,6 +7,7 @@ Covers:
   - Backward compatibility: omitting new flags leaves existing defaults unchanged
 """
 import sys
+import types
 import unittest
 from unittest.mock import patch
 
@@ -173,9 +174,13 @@ class AutoResourcesFlagTest(unittest.TestCase):
         args = _parse(["build", "-a", _ARCH, "--builders", "8", "LCG"])
         self.assertIsNone(args.resources)
 
+    # finaliseArgs downgrades resourceMonitoring to False when psutil is not
+    # importable, so the "enabled" cases stub psutil into sys.modules to stay
+    # deterministic on hosts that don't have it installed.
     def test_resource_monitoring_on_by_default_parallel(self):
         # --builders > 1 enables per-package resource monitoring by default.
-        args = _parse(["build", "-a", _ARCH, "--builders", "8", "LCG"])
+        with patch.dict(sys.modules, {"psutil": types.ModuleType("psutil")}):
+            args = _parse(["build", "-a", _ARCH, "--builders", "8", "LCG"])
         self.assertTrue(args.resourceMonitoring)
 
     def test_resource_monitoring_off_by_default_serial(self):
@@ -191,8 +196,15 @@ class AutoResourcesFlagTest(unittest.TestCase):
 
     def test_resource_monitoring_explicit_opt_in_serial(self):
         # --resource-monitoring forces it on even for a serial build.
-        args = _parse(["build", "-a", _ARCH, "--resource-monitoring", "LCG"])
+        with patch.dict(sys.modules, {"psutil": types.ModuleType("psutil")}):
+            args = _parse(["build", "-a", _ARCH, "--resource-monitoring", "LCG"])
         self.assertTrue(args.resourceMonitoring)
+
+    def test_resource_monitoring_downgraded_without_psutil(self):
+        # Without psutil, even an explicit request is downgraded to False.
+        with patch.dict(sys.modules, {"psutil": None}):
+            args = _parse(["build", "-a", _ARCH, "--resource-monitoring", "LCG"])
+        self.assertFalse(args.resourceMonitoring)
 
 
 class BackwardCompatBuildTest(unittest.TestCase):
