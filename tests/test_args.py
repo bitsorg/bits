@@ -62,10 +62,10 @@ CORRECT_BEHAVIOR = [
   ((), "build zlib -a slc7_x86-64 --docker-extra-args=--foo"                           , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder"), ("docker_extra_args", ["--foo", "--network=host", _MOCK_CPUSET_ARG])]),
   ((), "build zlib --devel-prefix -a slc7_x86-64 --docker"                             , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder"), ("develPrefix", "%s-slc7_x86-64" % os.path.basename(os.getcwd()))]),
   ((), "build zlib --devel-prefix -a slc7_x86-64 --docker-image someimage"             , [("docker", True), ("dockerImage", "someimage"), ("develPrefix", "%s-slc7_x86-64" % os.path.basename(os.getcwd()))]),
-  ((), "--debug build --force-unknown-architecture --defaults o2 O2"                   , [("debug", True), ("action",  "build"), ("defaults", ["o2"]), ("pkgname", ["O2"])]),
-  ((), "build --force-unknown-architecture --debug --defaults o2 O2"                   , [("debug", True), ("action",  "build"), ("force_rebuild", []), ("defaults", ["o2"]), ("pkgname", ["O2"])]),
-  ((), "build --force-unknown-architecture --force-rebuild O2 --force-rebuild O2Physics --defaults o2 O2Physics", [("action", "build"), ("force_rebuild", ["O2", "O2Physics"]), ("defaults", ["o2"]), ("pkgname", ["O2Physics"])]),
-  ((), "build --force-unknown-architecture --force-rebuild O2,O2Physics --defaults o2 O2Physics", [("action", "build"), ("force_rebuild", ["O2", "O2Physics"]), ("defaults", ["o2"]), ("pkgname", ["O2Physics"])]),
+  ((), "--debug build --force-unknown-architecture --defaults o2 O2"                   , [("debug", True), ("action",  "build"), ("defaults", ["release", "o2"]), ("pkgname", ["O2"])]),
+  ((), "build --force-unknown-architecture --debug --defaults o2 O2"                   , [("debug", True), ("action",  "build"), ("force_rebuild", []), ("defaults", ["release", "o2"]), ("pkgname", ["O2"])]),
+  ((), "build --force-unknown-architecture --force-rebuild O2 --force-rebuild O2Physics --defaults o2 O2Physics", [("action", "build"), ("force_rebuild", ["O2", "O2Physics"]), ("defaults", ["release", "o2"]), ("pkgname", ["O2Physics"])]),
+  ((), "build --force-unknown-architecture --force-rebuild O2,O2Physics --defaults o2 O2Physics", [("action", "build"), ("force_rebuild", ["O2", "O2Physics"]), ("defaults", ["release", "o2"]), ("pkgname", ["O2Physics"])]),
   ((), "init -z test zlib"                                                             , [("configDir", "test/alidist")]),
   ((), "build --force-unknown-architecture -z test zlib"                               , [("configDir", "alidist")]),
   # ((), "analytics off"                                                                 , [("state", "off")]),
@@ -188,6 +188,22 @@ class CpusetInjectionTestCase(unittest.TestCase):
          mock.patch("os.cpu_count", return_value=None):
       result = _host_online_cpus()
     self.assertEqual(result, "0-0")
+
+
+class ReleaseBaseTestCase(unittest.TestCase):
+  """`release` is the implicit base of every defaults chain."""
+
+  def test_release_prepended_when_absent(self):
+    from bits_helpers.args import _with_release_base
+    self.assertEqual(_with_release_base(["dev4"]), ["release", "dev4"])
+    self.assertEqual(_with_release_base(["o2"]), ["release", "o2"])
+
+  def test_release_not_duplicated(self):
+    from bits_helpers.args import _with_release_base
+    self.assertEqual(_with_release_base(["release"]), ["release"])
+    self.assertEqual(_with_release_base(["release", "dev4"]), ["release", "dev4"])
+    # An explicitly-positioned release is respected as written.
+    self.assertEqual(_with_release_base(["dev4", "release"]), ["dev4", "release"])
 
 
 if __name__ == '__main__':

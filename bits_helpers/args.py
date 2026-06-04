@@ -1205,6 +1205,26 @@ def _parse_flavours(raw):
   return result
 
 
+def _with_release_base(defaults):
+  """Ensure "release" is the base of the defaults chain.
+
+  ``--defaults`` defaults to ``"release"``, so ``release`` is the conceptual
+  base of every build. Selecting another profile (e.g. ``--defaults dev4``)
+  should *overlay* it on top of release — i.e. behave like ``release::dev4`` —
+  rather than replacing it, so stack-wide globals (compiler flags, sandbox
+  policy, MACOSX_DEPLOYMENT_TARGET, …) can live once in ``defaults-release``.
+
+  ``release`` is prepended only when not already present anywhere in the chain
+  (an explicit ``release::x`` or ``x::release`` is respected as written).
+  ``readDefaults`` silently skips a missing ``defaults-release`` file, so stacks
+  that do not ship one are unaffected.
+  """
+  defaults = list(defaults)
+  if "release" not in defaults:
+    defaults = ["release"] + defaults
+  return defaults
+
+
 def finaliseArgs(args, parser):
 
   # Nothing to finalise for version, architecture, or verify
@@ -1215,7 +1235,7 @@ def finaliseArgs(args, parser):
   # Minimal finalisation for status: normalise lists and expand referenceSources.
   if args.action == "status":
     if hasattr(args, "defaults"):
-      args.defaults = args.defaults.split("::")
+      args.defaults = _with_release_base(args.defaults.split("::"))
     args.noDevel       = normalise_multiple_options(args.noDevel)
     args.disable       = normalise_multiple_options(args.disable)
     args.force_rebuild = normalise_multiple_options(args.force_rebuild)
@@ -1223,7 +1243,7 @@ def finaliseArgs(args, parser):
     return args
 
   if hasattr(args, "defaults"):
-    args.defaults = args.defaults.split("::")
+    args.defaults = _with_release_base(args.defaults.split("::"))
 
   # Resolve --flavour into an ordered {name: value} dict (see _parse_flavours).
   if hasattr(args, "flavours"):
