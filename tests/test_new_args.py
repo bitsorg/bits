@@ -169,10 +169,30 @@ class AutoResourcesFlagTest(unittest.TestCase):
         self.assertTrue(args.autoResources)
 
     def test_independent_of_explicit_resource_flags(self):
-        # The explicit knobs keep their own defaults and are unaffected.
+        # --resources keeps its own default (None) and is unaffected.
         args = _parse(["build", "-a", _ARCH, "--builders", "8", "LCG"])
         self.assertIsNone(args.resources)
+
+    def test_resource_monitoring_on_by_default_parallel(self):
+        # --builders > 1 enables per-package resource monitoring by default.
+        args = _parse(["build", "-a", _ARCH, "--builders", "8", "LCG"])
+        self.assertTrue(args.resourceMonitoring)
+
+    def test_resource_monitoring_off_by_default_serial(self):
+        # Serial builds (--builders 1, the default) leave monitoring off.
+        args = _parse(["build", "-a", _ARCH, "LCG"])
         self.assertFalse(args.resourceMonitoring)
+
+    def test_resource_monitoring_explicit_opt_out(self):
+        # --no-resource-monitoring disables it even in parallel mode.
+        args = _parse(["build", "-a", _ARCH, "--builders", "8",
+                       "--no-resource-monitoring", "LCG"])
+        self.assertFalse(args.resourceMonitoring)
+
+    def test_resource_monitoring_explicit_opt_in_serial(self):
+        # --resource-monitoring forces it on even for a serial build.
+        args = _parse(["build", "-a", _ARCH, "--resource-monitoring", "LCG"])
+        self.assertTrue(args.resourceMonitoring)
 
 
 class BackwardCompatBuildTest(unittest.TestCase):

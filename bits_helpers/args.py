@@ -263,8 +263,13 @@ def doParseArgs():
                                   "priority, one straggler at a time, so a long low-priority compile does not "
                                   "drag out the end of the build. Requires privilege to raise priority "
                                   "(root / CAP_SYS_NICE); a no-op otherwise. 0 disables. Default: %(default)d."))
-  build_parser.add_argument("--resource-monitoring", dest="resourceMonitoring", action="store_true",
-                            help="Enable resource monitoring for each built package.")
+  build_parser.add_argument("--resource-monitoring", dest="resourceMonitoring",
+                            action="store_const", const=True, default=None,
+                            help=("Enable per-package resource monitoring. Defaults to ON in "
+                                  "parallel mode (--builders > 1)."))
+  build_parser.add_argument("--no-resource-monitoring", dest="resourceMonitoring",
+                            action="store_const", const=False,
+                            help="Disable per-package resource monitoring even when --builders > 1.")
   build_parser.add_argument("--resources", dest="resources", default=None,
                             help="JSON files containing resources utilization of packages.")
   build_parser.add_argument("--auto-resources", dest="autoResources", action="store_true",
@@ -1352,6 +1357,11 @@ def finaliseArgs(args, parser):
   if args.action == "init":
     args.configDir = args.configDir % {"prefix": args.develPrefix + "/"}
   elif args.action == "build":
+    # Resource monitoring defaults ON in parallel mode (--builders > 1) and OFF
+    # for serial builds, unless the user passed --resource-monitoring /
+    # --no-resource-monitoring explicitly (in which case it is True/False here).
+    if args.resourceMonitoring is None:
+      args.resourceMonitoring = getattr(args, "builders", 1) > 1
     if args.resourceMonitoring:
       try:
         import psutil

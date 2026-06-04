@@ -629,7 +629,8 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--sandbox-image IMAGE` | Container image for `--sandbox=podman` when not using `--docker`. |
 | `--force` | Rebuild even if the package hash already exists. |
 | `--keep-tmp` | Keep temporary build directories after success. |
-| `--resource-monitoring` | Enable per-package CPU/memory monitoring. |
+| `--resource-monitoring` | Enable per-package CPU/memory monitoring. **Default: on when `--builders` > 1**, off for serial builds. |
+| `--no-resource-monitoring` | Disable per-package monitoring even when `--builders` > 1. |
 | `--resources FILE` | JSON resource-utilisation file for scheduling. |
 | `--check-checksums` | Warn on source/patch checksum mismatch; continue the build. |
 | `--enforce-checksums` | Abort on source/patch checksum mismatch or missing checksum. |

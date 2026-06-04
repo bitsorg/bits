@@ -830,6 +830,8 @@ def write_failure_summary(work_dir, scheduler):
         fh.write("-" * 72 + "\n")
         fh.write("FAILED: %s\n" % f["package"])
         fh.write("  log: %s\n" % f.get("log", "?"))
+        if f.get("install_root"):
+          fh.write("  install root: %s\n" % f["install_root"])
         if f.get("excerpt"):
           fh.write("\n")
           for line in f["excerpt"].splitlines():
@@ -929,12 +931,23 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   log_path = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/log"
   log_abs_path = log_path  # keep the absolute path; log_path may become relative below
   build_dir = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/{spec['package']}"
+  # Staging install prefix ($INSTALLROOT in the recipe): where the package's
+  # files are installed before being tarred. Useful for inspecting a partial
+  # install after a failure.
+  try:
+    install_root = _pkg_install_path(
+      join(buildWorkDir, "INSTALLROOT", spec["hash"]),
+      effective_arch(spec, args.architecture), spec)
+  except Exception:  # pylint: disable=broad-except
+    install_root = None
 
   # Use relative paths if we're inside the work directory
   try:
     from os.path import relpath
     log_path = relpath(log_path, os.getcwd())
     build_dir = relpath(build_dir, os.getcwd())
+    if install_root:
+      install_root = relpath(install_root, os.getcwd())
   except (ValueError, OSError):
     pass  # Keep absolute paths if relpath fails
 
@@ -953,6 +966,10 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
 
   buildErrMsg += f"{bold}Build Directory:{reset}\n"
   buildErrMsg += f"  {build_dir}\n"
+
+  if install_root:
+    buildErrMsg += f"{bold}Install Root:{reset}\n"
+    buildErrMsg += f"  {install_root}\n"
 
   # Surface the proximate error so the user does not have to open the full log.
   excerpt = ""
@@ -1043,7 +1060,8 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       try:
         with scheduler.buildFailuresLock:
           fails.append({"package": "%s@%s" % (spec["package"], spec["version"]),
-                        "log": log_path, "excerpt": excerpt})
+                        "log": log_path, "install_root": install_root,
+                        "excerpt": excerpt})
       except Exception:  # pylint: disable=broad-except
         pass
     return buildErrMsg.strip()
