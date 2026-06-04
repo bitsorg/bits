@@ -53,6 +53,13 @@ class TraceMetricsTest(unittest.TestCase):
         self.assertAlmostEqual(m["avg_cpu"], 200.0, places=1)
         self.assertEqual(m["duration"], 10)
 
+    def test_mem_per_thread(self):
+        # 4 GiB across 8 threads -> 0.5 GiB/thread (worst-case per sample)
+        samples = [{"time": t, "cpu": 800, "rss": 4 * GB, "num_threads": 8}
+                   for t in range(0, 5)]
+        m = stats.trace_metrics(self._trace(samples))
+        self.assertEqual(m["mem_per_thread"], GB // 2)
+
     def test_empty_or_bad(self):
         self.assertIsNone(stats.trace_metrics(self._trace([])))
         bad = os.path.join(self.d, "bad.json"); open(bad, "w").write("not json")
@@ -118,6 +125,7 @@ class CollectAndRenderTest(unittest.TestCase):
         gaudi = [m for m in metrics if m["package"] == "Gaudi"][0]
         self.assertIsNotNone(gaudi["avg_cpu"])     # came from the trace
         self.assertEqual(gaudi["peak_threads"], 3)
+        self.assertEqual(gaudi["mem_per_thread"], GB // 3)   # 1 GiB / 3 threads
         root = [m for m in metrics if m["package"] == "ROOT"][0]
         self.assertIsNone(root["avg_cpu"])         # no trace
 
@@ -127,6 +135,7 @@ class CollectAndRenderTest(unittest.TestCase):
         self.assertIn("Build resource summary", out)
         self.assertIn("Top", out)
         self.assertIn("Gaudi", out)
+        self.assertIn("MEM/THR", out)  # memory-per-thread column present
         self.assertIn("j$JOBS", out)   # under-threaded flag for Gaudi
 
     def test_missing_stats_returns_empty(self):

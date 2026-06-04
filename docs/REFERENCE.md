@@ -884,7 +884,10 @@ bits stats [options]
 
 The report leads with a headline (machine size, serial build time, peak memory,
 longest build), then a top-N table (time / peak RSS / peak & average CPU /
-threads), then **flags** that each point at a concrete fix:
+threads / memory-per-thread), then **flags** that each point at a concrete fix.
+`MEM/THR` is the worst-case peak RSS ÷ thread count: when it is high, the
+recipe's `-j` parallelism multiplies it into a large footprint, so cap `JOBS`
+or set `mem_per_job`. The flags:
 
 - **Under-threaded heavy build** — a long build using few cores on average →
   the recipe probably isn't running parallel make; add `${JOBS:+-j$JOBS}`.

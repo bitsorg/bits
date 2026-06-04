@@ -83,6 +83,7 @@ def trace_metrics(path):
     weighted_cpu = 0.0         # Σ cpu*dt        (for time-weighted average)
     total_dt = 0.0
     peak_cpu = peak_rss = peak_threads = 0
+    mem_per_thread = 0         # worst-case rss / threads across samples
     for s in samples:
         t = int(s.get("time", prev_t))
         dt = max(t - prev_t, 0) or 1   # default 1s cadence if timestamps repeat
@@ -92,13 +93,16 @@ def trace_metrics(path):
         cpu_seconds += c * dt / 100.0
         total_dt += dt
         peak_cpu = max(peak_cpu, c)
-        peak_rss = max(peak_rss, int(s.get("rss", 0)))
-        peak_threads = max(peak_threads, int(s.get("num_threads", 0)))
+        rss = int(s.get("rss", 0))
+        peak_rss = max(peak_rss, rss)
+        th = int(s.get("num_threads", 0))
+        peak_threads = max(peak_threads, th)
+        mem_per_thread = max(mem_per_thread, rss / max(th, 1))
     avg_cpu = (weighted_cpu / total_dt) if total_dt else 0
     return {
         "avg_cpu": avg_cpu, "peak_cpu": peak_cpu, "peak_rss": peak_rss,
-        "peak_threads": peak_threads, "cpu_seconds": cpu_seconds,
-        "duration": prev_t,
+        "peak_threads": peak_threads, "mem_per_thread": int(mem_per_thread),
+        "cpu_seconds": cpu_seconds, "duration": prev_t,
     }
 
 
@@ -122,6 +126,7 @@ def collect(work_dir):
             "peak_cpu": int(peak.get("cpu", 0)),
             "time": int(peak.get("time", 0)),
             "avg_cpu": None, "cpu_seconds": None, "peak_threads": None,
+            "mem_per_thread": None,
         }
         tr = find_trace(work_dir, pkg)
         if tr:
@@ -130,6 +135,7 @@ def collect(work_dir):
                 m["avg_cpu"] = tm["avg_cpu"]
                 m["cpu_seconds"] = tm["cpu_seconds"]
                 m["peak_threads"] = tm["peak_threads"]
+                m["mem_per_thread"] = tm["mem_per_thread"]
                 # Trace peaks are at least as accurate as the aggregated ones.
                 m["peak_rss"] = max(m["peak_rss"], tm["peak_rss"])
                 m["peak_cpu"] = max(m["peak_cpu"], tm["peak_cpu"])
@@ -222,6 +228,7 @@ def render_text(resources, metrics, top, sort_key):
     rows = []
     for m in ordered:
         avg = "%.1f" % cores(m["avg_cpu"]) if m["avg_cpu"] is not None else "-"
+        mpt = human_bytes(m["mem_per_thread"]) if m["mem_per_thread"] is not None else "-"
         rows.append([
             m["package"],
             human_time(m["time"]),
@@ -229,10 +236,12 @@ def render_text(resources, metrics, top, sort_key):
             "%.1f" % cores(m["peak_cpu"]),
             avg,
             m["peak_threads"] if m["peak_threads"] is not None else "-",
+            mpt,
         ])
     lines.append("Top %d packages by %s:" % (len(rows), sort_key))
-    lines.append(_table(rows, ["PACKAGE", "TIME", "PEAK RSS", "PEAK CPU", "AVG CPU", "THREADS"],
-                        ["l", "r", "r", "r", "r", "r"]))
+    lines.append(_table(rows,
+                        ["PACKAGE", "TIME", "PEAK RSS", "PEAK CPU", "AVG CPU", "THREADS", "MEM/THR"],
+                        ["l", "r", "r", "r", "r", "r", "r"]))
     lines.append("")
 
     findings = flags(resources, metrics)
@@ -259,6 +268,8 @@ def render_package(work_dir, package):
     lines.append("Average CPU  : %.1f cores" % cores(tm["avg_cpu"]))
     lines.append("CPU work     : %.2f core-minutes" % (tm["cpu_seconds"] / 60.0))
     lines.append("Peak threads : %d" % tm["peak_threads"])
+    lines.append("Mem/thread   : %s (peak RSS / threads; cap JOBS or set "
+                 "mem_per_job if high)" % human_bytes(tm["mem_per_thread"]))
     lines.append("Trace        : %s" % tr)
     return "\n".join(lines)
 
