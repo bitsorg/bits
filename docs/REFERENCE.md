@@ -863,6 +863,36 @@ bits verify --from-manifest FILE [options]
 
 ---
 
+### bits stats
+
+Summarise the resource data recorded when a build ran with `--resource-monitoring`
+(on by default for `--builders > 1`). Reads `<work-dir>/bits_build_stats.json`
+(per-package peaks) and the per-package traces under `SPECS/` (for average CPU
+and thread counts).
+
+```bash
+bits stats [options]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-w DIR`, `--work-dir DIR` | `sw` | Build work area to read stats from. |
+| `--package NAME` | _(none)_ | Show the resource timeline detail for one package instead of the summary. |
+| `--top N` | `10` | Number of packages in the table. |
+| `--sort time\|rss\|cpu` | `time` | Sort the table by wall time, peak memory, or peak CPU. |
+| `--json` | off | Emit machine-readable JSON instead of the text report. |
+
+The report leads with a headline (machine size, serial build time, peak memory,
+longest build), then a top-N table (time / peak RSS / peak & average CPU /
+threads), then **flags** that each point at a concrete fix:
+
+- **Under-threaded heavy build** — a long build using few cores on average →
+  the recipe probably isn't running parallel make; add `${JOBS:+-j$JOBS}`.
+- **OOM risk** — a package whose peak RSS is a large fraction of RAM → set
+  `mem_per_job` on the recipe so the `--builders` scheduler reserves for it.
+
+---
+
 ### bits init
 
 `bits init` has two distinct modes selected by whether a PACKAGE name is given.

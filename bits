@@ -269,7 +269,7 @@ set -- "${new_args[@]}"
 for arg in "$@"
 do
   case $arg in
-    analytics|architecture|build|clean|cleanup|deps|doctor|init|version|-debug|-d)
+    analytics|architecture|build|clean|cleanup|deps|doctor|init|stats|version|-debug|-d)
          mkdir -p "$BITS_WORK_DIR" || echo "Cannot create directory: $BITS_WORK_DIR"
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?

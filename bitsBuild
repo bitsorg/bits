@@ -29,6 +29,7 @@ from bits_helpers.init import doInit
 from bits_helpers.publish import doPublish
 from bits_helpers.verify import doVerify
 from bits_helpers.status import doStatus
+from bits_helpers.stats import doStats
 from bits_helpers.log import debug, error, info, logger
 from bits_helpers.utilities import detectArch
 
@@ -113,6 +114,10 @@ def doMain(args, parser):
 
   if args.action == "status":
     doStatus(args, parser)
+    sys.exit(0)
+
+  if args.action == "stats":
+    doStats(args, parser)
     sys.exit(0)
 
 

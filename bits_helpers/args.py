@@ -205,6 +205,26 @@ def doParseArgs():
           "3 = manifest unreadable."
       ),
   )
+  stats_parser = subparsers.add_parser(
+      "stats",
+      help="show a human-readable resource report from a monitored build",
+      description=(
+          "Summarise the resource usage recorded when a build ran with "
+          "--resource-monitoring. Reads <work-dir>/bits_build_stats.json and the "
+          "per-package traces under SPECS/, leads with the heaviest/slowest "
+          "packages, and flags likely memory or parallelism problems."
+      ),
+  )
+  stats_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
+                            help="Build work area to read stats from (default: %(default)s).")
+  stats_parser.add_argument("--package", dest="package", metavar="NAME", default=None,
+                            help="Show the resource timeline detail for a single package.")
+  stats_parser.add_argument("--top", dest="top", type=int, default=10, metavar="N",
+                            help="Show the top N packages in the table (default: %(default)s).")
+  stats_parser.add_argument("--sort", dest="sort", choices=["time", "rss", "cpu"],
+                            default="time", help="Sort the table by this metric (default: %(default)s).")
+  stats_parser.add_argument("--json", dest="json", action="store_true",
+                            help="Emit machine-readable JSON instead of the text report.")
 
   # Options for the analytics command
   # analytics_parser.add_argument("state", choices=["on", "off"], help="Whether to report analytics or not")
@@ -1171,7 +1191,7 @@ def finaliseArgs(args, parser):
 
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
-  if args.action in ["version", "architecture", "verify"]:
+  if args.action in ["version", "architecture", "verify", "stats"]:
     return args
 
   # Minimal finalisation for status: normalise lists and expand referenceSources.
