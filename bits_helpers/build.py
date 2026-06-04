@@ -295,6 +295,8 @@ def storeHashes(package, specs, considerRelocation):
 
   for key in ("recipe", "version", "package"):
     h_all(spec.get(key, "none"))
+  if "force_revision" in spec:
+    h_all("force_revision:" + str(spec["force_revision"]))
 
   # pkg_family changes the installation path (ARCH/FAMILY/PKG/VER vs
   # ARCH/PKG/VER), so tarballs built with different family settings are
