@@ -2859,9 +2859,24 @@ def doBuild(args, parser):
                                    do_print=_do_print, do_write=_do_write)
 
   if not args.onlyDeps:
+      # Resolve the main package's install root (sw/<arch>/<pkg>/<ver-rev>) so
+      # the success summary points at the package directory, not just the arch
+      # root -- mirroring the Install Root shown on failure.
+      _install_root_line = ""
+      _main_spec = specs.get(mainPackage)
+      if _main_spec is not None:
+        try:
+          _install_root_line = "\nThe %s install root is:\n\n  %s\n" % (
+            mainPackage,
+            abspath(_pkg_install_path(args.workDir,
+                                      effective_arch(_main_spec, args.architecture),
+                                      _main_spec)))
+        except Exception:  # pylint: disable=broad-except
+          _install_root_line = ""
       banner(f"Build of {mainPackage} successfully completed on `{socket.gethostname()}'.\n"
              "Your software installation is at:"
-             f"\n\n  {abspath(join(args.workDir, args.architecture))}\n\n"
+             f"\n\n  {abspath(join(args.workDir, args.architecture))}\n"
+             f"{_install_root_line}\n"
              "You can use this package by loading the environment:"
              f"\n\n  bits enter {mainPackage}/latest-{mainBuildFamily}",
              )
