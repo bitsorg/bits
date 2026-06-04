@@ -89,6 +89,31 @@ lookup all match by content — the distro and CPU tokens — independently of o
 and of the `x86-64`/`x86_64` separator, so custom layouts work without
 `--force-unknown-architecture`.
 
+### CVMFS layout
+
+A defaults profile (typically `defaults-release.sh`) may declare where a build's
+packages and modulefiles live on CVMFS, so the build / publish / reuse paths are
+derived from one place instead of repeated CLI flags. Three optional, templated
+fields (templates may use `%(architecture)s`, the effective combined arch):
+
+```yaml
+cvmfs_dir:   /cvmfs/sft.cern.ch/lcg/releases   # CVMFS root
+install_dir: %(architecture)s/Packages         # relative to cvmfs_dir
+module_dir:  %(architecture)s/modules          # relative to cvmfs_dir
+```
+
+bits resolves these to `install_path` / `module_path` and uses them to default:
+
+- **docker build:** `--cvmfs-prefix` ← `<cvmfs_dir>/<install_dir>`, so packages
+  compile at their final CVMFS prefix and relocation on publish is a no-op
+  (explicit `--cvmfs-prefix` still wins);
+- **reuse:** with `--reuse-cvmfs`, `--remote-store` ← `cvmfs://<cvmfs_dir>`, so
+  already-deployed components are reused via the `CVMFSRemoteSync` store (which
+  matches a deployed package's recorded `.build-hash`/`.meta.json` against the
+  hash bits computes — reuse happens only on a hash match).
+
+Builds that don't set any of these fields are unaffected.
+
 ### Build pipeline (inside `doBuild`)
 
 ```
@@ -594,6 +619,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 |--------|-------------|
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `--flavour NAME[=VALUE]` | Set a build-wide flavour variable (repeatable, comma-separated). `NAME`→`true`, `NAME=VALUE`→`VALUE`, `!NAME`→`false`. Gates `(?NAME)` conditional requires/sources/patches and is exported into the build environment; overrides a defaults `variables:` entry of the same name. See [Flavours](#flavours). |
+| `--reuse-cvmfs` | Reuse already-deployed components from the defaults `cvmfs_dir:` area: sets `--remote-store cvmfs://<cvmfs_dir>` when no store is given. See [CVMFS layout](#cvmfs-layout). |
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [§9](#9-architecture-overview)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |

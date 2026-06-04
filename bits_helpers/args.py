@@ -434,6 +434,10 @@ def doParseArgs():
                             is set to the same value). Implies --no-system. May be set to a default store on some
                             architectures; use --no-remote-store to disable it in that case.
                             """)
+  build_remote.add_argument("--reuse-cvmfs", dest="reuseCvmfs", action="store_true",
+                            help=("Reuse already-deployed components from the CVMFS area declared by the "
+                                  "defaults `cvmfs_dir:` field. Sets --remote-store to cvmfs://<cvmfs_dir> "
+                                  "when no remote store is given."))
   build_remote.add_argument("--write-store", dest="writeStore", metavar="STORE", default="",
                             help=("Where to upload newly built packages. Same syntax as --remote-store, "
                                   "except ::rw is not recognised. Implies --no-system."))
