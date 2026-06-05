@@ -125,6 +125,20 @@ def _available_linux() -> int:
 
 
 def _available_darwin() -> int:
+    """macOS estimate of memory available to a new workload, in MiB.
+
+    Mirrors the Linux ``MemAvailable`` semantics: file-backed cache, purgeable
+    and speculative pages are *reclaimable* and therefore count as available.
+    macOS keeps "Pages free" tiny (most idle RAM is reclaimable cache), so the
+    old ``free + inactive`` sum drastically underreported available memory and
+    throttled heavy builds (e.g. ROOT to ``-j2`` on a machine that runs
+    ``-j10`` fine).
+
+    Primary estimate ≈ physical − (anonymous + wired + compressed), i.e.
+    Activity Monitor's "physical − Memory Used": everything except app memory,
+    wired memory and the compressor is reclaimable.  Falls back to the sum of
+    the explicitly-reclaimable buckets when the needed fields are unavailable.
+    """
     out = subprocess.check_output(["vm_stat"], text=True)
     pages = {}
     for line in out.splitlines():
@@ -143,9 +157,26 @@ def _available_darwin() -> int:
         )
     except Exception:  # pylint: disable=broad-except
         pass
-    free     = pages.get("Pages free", 0)
-    inactive = pages.get("Pages inactive", 0)
-    return (free + inactive) * page_bytes // (1024 * 1024)
+
+    # Primary: physical RAM minus the genuinely-unavailable (non-reclaimable)
+    # buckets. File cache, purgeable and speculative pages are NOT subtracted
+    # because the kernel reclaims them under memory pressure.
+    anon     = pages.get("Anonymous pages")
+    wired    = pages.get("Pages wired down")
+    compress = pages.get("Pages occupied by compressor")
+    try:
+        physical = int(subprocess.check_output(
+            ["sysctl", "-n", "hw.memsize"], text=True).strip())
+    except Exception:  # pylint: disable=broad-except
+        physical = 0
+    if physical and None not in (anon, wired, compress):
+        used = (anon + wired + compress) * page_bytes
+        return max(0, physical - used) // (1024 * 1024)
+
+    # Fallback (older vm_stat / missing fields): sum the reclaimable buckets.
+    reclaimable = sum(pages.get(k, 0) for k in (
+        "Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"))
+    return reclaimable * page_bytes // (1024 * 1024)
 
 
 # ── Main public function ──────────────────────────────────────────────────────

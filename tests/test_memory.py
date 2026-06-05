@@ -140,12 +140,34 @@ class TestAvailableMemoryMib(unittest.TestCase):
 
     @patch("subprocess.check_output")
     @patch("platform.system", return_value="Darwin")
-    def test_darwin_sums_free_and_inactive(self, _mock_sys, mock_sub):
-        # First call → vm_stat, second call → sysctl hw.pagesize
-        mock_sub.side_effect = [_VM_STAT_OUTPUT, "4096\n"]
-        mib = available_memory_mib()
-        # (512000 + 512000) * 4096 / 1024**2 = 4000 MiB
-        self.assertEqual(mib, 4000)
+    def test_darwin_physical_minus_used(self, _mock_sys, mock_sub):
+        # Reclaimable-inclusive: available = physical - (anon + wired + compress).
+        # calls: vm_stat, sysctl hw.pagesize, sysctl hw.memsize
+        full = dedent("""\
+            Mach Virtual Memory Statistics: (page size of 4096 bytes)
+            Pages free:                           100000.
+            Pages active:                        1000000.
+            Pages inactive:                       400000.
+            Pages speculative:                     50000.
+            Pages wired down:                     256000.
+            Pages purgeable:                       20000.
+            Anonymous pages:                      512000.
+            File-backed pages:                    900000.
+            Pages occupied by compressor:         256000.
+        """)
+        # physical 8388608000 B; used=(512000+256000+256000)*4096=4194304000 B
+        # available = 8388608000 - 4194304000 = 4000 MiB
+        mock_sub.side_effect = [full, "4096\n", "8388608000\n"]
+        self.assertEqual(available_memory_mib(), 4000)
+
+    @patch("subprocess.check_output")
+    @patch("platform.system", return_value="Darwin")
+    def test_darwin_fallback_reclaimable_buckets(self, _mock_sys, mock_sub):
+        # Old/partial vm_stat without anon/compressor → sum reclaimable buckets:
+        # free+inactive+speculative+purgeable = 512000+512000+64000+0 = 1088000.
+        mock_sub.side_effect = [_VM_STAT_OUTPUT, "4096\n", "8388608000\n"]
+        # 1088000 * 4096 / 1024**2 = 4250 MiB
+        self.assertEqual(available_memory_mib(), 4250)
 
     @patch("platform.system", return_value="Windows")
     def test_unknown_platform_returns_zero(self, _mock_sys):
