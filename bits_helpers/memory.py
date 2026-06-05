@@ -32,6 +32,7 @@ Examples
     # zlib — tiny; omit the field entirely and $JOBS is used as-is
 """
 
+import math
 import platform
 import re
 import subprocess
@@ -149,7 +150,8 @@ def _available_darwin() -> int:
 
 # ── Main public function ──────────────────────────────────────────────────────
 
-def effective_jobs(requested: int, spec: dict, builders: int = 1) -> int:
+def effective_jobs(requested: int, spec: dict, builders: int = 1,
+                   oversubscribe: float = 1.0) -> int:
     """Return the number of parallel jobs to use for *spec*.
 
     The return value bounds two independent oversubscription axes so that the
@@ -157,17 +159,27 @@ def effective_jobs(requested: int, spec: dict, builders: int = 1) -> int:
     how many packages build concurrently (``--builders``):
 
     * **CPU / load.**  ``requested`` is divided by the number of concurrent
-      builders, so the collective ``-j`` of all builders never exceeds the
-      single-builder budget.  This applies to *every* recipe, capped or not.
+      builders, so the collective ``-j`` of all builders stays near the
+      single-builder budget.  An *oversubscribe* factor (>= 1.0) multiplies the
+      per-builder share before the split so that idle builder slots — a deep
+      dependency tree rarely keeps all ``--builders`` busy at once — do not
+      leave cores unused.  The per-package value is still clamped to
+      ``requested`` (``min`` below), so a single-builder build is unaffected and
+      no one ``make`` ever runs more than one machine's worth of threads; the
+      mild overshoot when several builders *are* busy is absorbed by the OS
+      scheduler and the nice ladder.  This applies to *every* recipe.
 
     * **Memory.**  When the recipe declares ``mem_per_job`` the available
-      memory — itself split across the concurrent builders to avoid the
-      sampling race where several heavy builds start together and each reads
-      the full free RAM — is divided by the per-job footprint.
+      memory — split across the ``--builders`` *maximum* (NOT scaled by
+      *oversubscribe*) to avoid the sampling race where several heavy builds
+      start together and each reads the full free RAM — is divided by the
+      per-job footprint.  Memory stays conservative on purpose: CPU
+      oversubscription degrades gracefully, memory oversubscription means
+      OOM/swap, so the memory cap remains authoritative.
 
     The result is::
 
-        min(requested, requested // builders, memory_cap_per_builder)
+        min(requested, ceil(requested * oversubscribe / builders), memory_cap)
 
     Always returns at least 1 so the build is never completely stalled.
 
@@ -181,9 +193,22 @@ def effective_jobs(requested: int, spec: dict, builders: int = 1) -> int:
         The number of packages building in parallel (``--builders``).  The CPU
         and memory budgets are split across this many concurrent builders.
         Defaults to 1 (single-builder behaviour, unchanged).
+    oversubscribe:
+        Factor (>= 1.0) applied to the per-builder CPU share only.  1.0 (the
+        default) keeps the previous behaviour exactly.  Has no effect on the
+        memory cap, nor on single-builder builds (the ``min(requested, …)``
+        clamp absorbs it).
     """
     builders = max(1, int(builders))
-    cpu_cap = max(1, requested // builders)         # global CPU/load budget
+    try:
+        oversubscribe = float(oversubscribe)
+    except (TypeError, ValueError):
+        oversubscribe = 1.0
+    oversubscribe = max(1.0, oversubscribe)
+    # CPU/load budget: per-builder share, optionally oversubscribed, ceil'd so
+    # the integer split does not waste the remainder. Clamped to `requested`
+    # below so a lone build never exceeds one machine's worth of threads.
+    cpu_cap = max(1, math.ceil(requested * oversubscribe / builders))
 
     raw = spec.get("mem_per_job")
     if raw is None:

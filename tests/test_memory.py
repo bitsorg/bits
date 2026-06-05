@@ -320,6 +320,40 @@ class TestEffectiveJobs(unittest.TestCase):
             jobs = effective_jobs(16, spec, builders=4)
         self.assertEqual(jobs, 4)
 
+    # ── oversubscribe factor ─────────────────────────────────────────────────
+
+    def test_oversubscribe_default_is_noop(self):
+        # factor 1.0 (default) is identical to the plain builder split.
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(12, spec, builders=4), 3)
+        self.assertEqual(effective_jobs(12, spec, builders=4, oversubscribe=1.0), 3)
+
+    def test_oversubscribe_raises_per_builder_share(self):
+        # 12 jobs, 4 builders, factor 1.5 → ceil(12*1.5/4) = ceil(4.5) = 5.
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(12, spec, builders=4, oversubscribe=1.5), 5)
+        # 2 builders → ceil(18/2) = 9.
+        self.assertEqual(effective_jobs(12, spec, builders=2, oversubscribe=1.5), 9)
+
+    def test_oversubscribe_clamped_to_requested(self):
+        # single builder (or factor large enough) never exceeds -j itself.
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(12, spec, builders=1, oversubscribe=1.5), 12)
+        self.assertEqual(effective_jobs(12, spec, builders=2, oversubscribe=4.0), 12)
+
+    def test_oversubscribe_below_one_ignored(self):
+        # factors < 1.0 are floored to 1.0 (never *under*-subscribe the split).
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(12, spec, builders=4, oversubscribe=0.5), 3)
+
+    def test_oversubscribe_does_not_scale_memory_cap(self):
+        # The memory cap must stay on the *max* builders, unscaled by the factor:
+        # cpu_cap = ceil(32*1.5/4) = 12, but memory_cap = floor((16384/4)*0.9/1024) = 3.
+        spec = {"package": "root", "mem_per_job": 1024}
+        with _avail(16384):
+            jobs = effective_jobs(32, spec, builders=4, oversubscribe=1.5)
+        self.assertEqual(jobs, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

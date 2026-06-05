@@ -260,6 +260,16 @@ def doParseArgs():
   build_parser.add_argument("--builders", dest="builders", type=int, default=1,
                             help=("The number of independent packages to build in parallel. "
                                   "Default is: %(default)d."))
+  build_parser.add_argument("--oversubscribe", dest="oversubscribe", type=float, default=None,
+                            metavar="FACTOR",
+                            help=("CPU oversubscription factor (>= 1.0) for the per-builder "
+                                  "-j share. A deep dependency tree rarely keeps all --builders "
+                                  "busy, so each package's -j = ceil(jobs * FACTOR / builders), "
+                                  "still clamped to -j and to the (unscaled) memory cap. >1.0 "
+                                  "fills idle cores at the cost of mild overshoot when all "
+                                  "builders are busy (absorbed by the OS scheduler / nice ladder). "
+                                  "When unset, falls back to `build_oversubscribe:` in the active "
+                                  "defaults, then 1.0 (no oversubscription)."))
   build_parser.add_argument("--no-auto-patch", dest="autoPatch", action="store_false", default=True,
                             help=("Do not apply recipe patches: automatically. Patch files are "
                                   "still staged in $SOURCEDIR and exported as $PATCH0..$PATCH_COUNT, "

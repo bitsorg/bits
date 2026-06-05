@@ -1464,6 +1464,17 @@ def doBuild(args, parser):
     if args.sandboxNetwork == "off":
       info("Build-time sandbox network allowed by default (defaults sandbox_network: off)")
 
+  # CPU oversubscription factor for the per-builder -j share. Precedence:
+  #   explicit --oversubscribe  >  defaults `build_oversubscribe:`  >  1.0.
+  # Memory budgeting is unaffected (see effective_jobs).
+  if getattr(args, "oversubscribe", None) is None:
+    try:
+      args.oversubscribe = float(defaultsMeta.get("build_oversubscribe", 1.0))
+    except (TypeError, ValueError):
+      args.oversubscribe = 1.0
+    if args.oversubscribe > 1.0:
+      info("CPU oversubscription factor %.2f (defaults build_oversubscribe)", args.oversubscribe)
+
   # syncHelper is constructed after defaults loading so that it receives the
   # (potentially combined) architecture string.
   syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
@@ -2469,7 +2480,8 @@ def doBuild(args, parser):
       ("GIT_COMMITTER_NAME", "unknown"),
       ("GIT_COMMITTER_EMAIL", "unknown"),
       ("INCREMENTAL_BUILD_HASH", spec.get("incremental_hash", "0")),
-      ("JOBS", str(effective_jobs(args.jobs, spec, builders=args.builders))),
+      ("JOBS", str(effective_jobs(args.jobs, spec, builders=args.builders,
+                                  oversubscribe=getattr(args, "oversubscribe", 1.0) or 1.0))),
       ("PKGFAMILY", spec.get("pkg_family", "")),
       ("PKGHASH", spec["hash"]),
       ("PKGNAME", spec["package"]),
