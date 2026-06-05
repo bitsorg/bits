@@ -1451,29 +1451,40 @@ def doBuild(args, parser):
       args.remoteStore = "cvmfs://" + _cvmfs["cvmfs_dir"]
       info("Reusing deployed components: --remote-store %s", args.remoteStore)
 
+  # Build-host policy knobs live under a single `system:` entry in defaults.
+  # These control *how* the build runs (network, CPU) — not *what* it produces —
+  # so, unlike `env:`, they are NOT folded into any package hash and changing
+  # them never triggers a rebuild. For backward compatibility a bare top-level
+  # key is still honoured (system: wins).
+  _system = defaultsMeta.get("system", {}) or {}
+  def _system_opt(key, top_default):
+    if key in _system:
+      return _system[key]
+    return defaultsMeta.get(key, top_default)
+
   # Global build-time network policy for the recipe sandbox. Precedence:
-  #   explicit --sandbox-network  >  defaults `sandbox_network:`  >  "on".
+  #   explicit --sandbox-network  >  defaults system.sandbox_network  >  "on".
   # A recipe's own sandbox_network field still overrides this per package
   # (handled in sandbox.wrap_build_command). YAML parses bare on/off as bools,
   # so normalise to the "on"/"off" strings the sandbox layer expects.
   if getattr(args, "sandboxNetwork", None) is None:
-    _dn = defaultsMeta.get("sandbox_network", "on")
+    _dn = _system_opt("sandbox_network", "on")
     if isinstance(_dn, bool):
       _dn = "on" if _dn else "off"
     args.sandboxNetwork = str(_dn).strip().lower()
     if args.sandboxNetwork == "off":
-      info("Build-time sandbox network allowed by default (defaults sandbox_network: off)")
+      info("Build-time sandbox network allowed by default (defaults system.sandbox_network: off)")
 
   # CPU oversubscription factor for the per-builder -j share. Precedence:
-  #   explicit --oversubscribe  >  defaults `build_oversubscribe:`  >  1.0.
+  #   explicit --oversubscribe  >  defaults system.build_oversubscribe  >  1.0.
   # Memory budgeting is unaffected (see effective_jobs).
   if getattr(args, "oversubscribe", None) is None:
     try:
-      args.oversubscribe = float(defaultsMeta.get("build_oversubscribe", 1.0))
+      args.oversubscribe = float(_system_opt("build_oversubscribe", 1.0))
     except (TypeError, ValueError):
       args.oversubscribe = 1.0
     if args.oversubscribe > 1.0:
-      info("CPU oversubscription factor %.2f (defaults build_oversubscribe)", args.oversubscribe)
+      info("CPU oversubscription factor %.2f (defaults system.build_oversubscribe)", args.oversubscribe)
 
   # syncHelper is constructed after defaults loading so that it receives the
   # (potentially combined) architecture string.
