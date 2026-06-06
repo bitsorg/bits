@@ -635,15 +635,13 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # We only put the values in double-quotes, so that they can refer to other
     # shell variables or do command substitution (e.g. $(brew --prefix ...)).
     lines.extend('export {}="{}"'.format(key, resolve_spec_data(spec, value, ""))
-                 for key, value in spec.get("env", {}).items()
-                 if key != "DYLD_LIBRARY_PATH")
+                 for key, value in spec.get("env", {}).items())
 
     # Append paths to variables, if requested using append_path.
     # Again, only put values in double quotes so that they can refer to other variables.
     lines.extend('export {key}="${key}:{value}"'
                  .format(key=key, value=":".join(asList(value)))
-                 for key, value in spec.get("append_path", {}).items()
-                 if key != "DYLD_LIBRARY_PATH")
+                 for key, value in spec.get("append_path", {}).items())
 
     # First convert all values to list, so that we can use .setdefault().insert() below.
     prepend_path = {key: [resolve_spec_data(spec, dir, "") for dir in asList(value)]
@@ -665,13 +663,20 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # _SetBuildEnvBase), whereas an environment variable would need `:` separators
     # on Unix.  Mixing the two on the same name corrupts the list, so build-time
     # CMAKE_PREFIX_PATH stays owned by CMakeRecipe.
-    for key, value in (("PATH", "bin"), ("LD_LIBRARY_PATH", "lib"), ("LD_LIBRARY_PATH", "lib64"),
+    # DYLD_LIBRARY_PATH mirrors LD_LIBRARY_PATH so that build-time tools on macOS
+    # find their dependencies' shared libraries (dyld ignores LD_LIBRARY_PATH).
+    # Without it a tool that links another package's dylib but lost its rpath
+    # at install (e.g. protoc -> Abseil) aborts at startup. It is inert on Linux.
+    # The build environment must therefore NOT unset DYLD_LIBRARY_PATH after
+    # sourcing this init.sh (see build_template.sh).
+    for key, value in (("PATH", "bin"),
+                       ("LD_LIBRARY_PATH", "lib"), ("LD_LIBRARY_PATH", "lib64"),
+                       ("DYLD_LIBRARY_PATH", "lib"), ("DYLD_LIBRARY_PATH", "lib64"),
                        ("PKG_CONFIG_PATH", "lib/pkgconfig"), ("PKG_CONFIG_PATH", "lib64/pkgconfig")):
       prepend_path.setdefault(key, []).insert(0, f"${bigpackage}_ROOT/{value}")
     lines.extend('[ ! -d "{value}" ] || export {key}="{value}${{{key}+:${key}}}"'
                  .format(key=key, value=dir)
                  for key, value in prepend_path.items()
-                 if key != "DYLD_LIBRARY_PATH"
                  for dir in value)
 
   # Return string without a trailing newline, since we expect call sites to

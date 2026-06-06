@@ -203,11 +203,6 @@ cat << EOF > "$BUILDDIR/.envrc"
 # Source the build environment which was used for this package
 WORK_DIR=\${WORK_DIR:-$WORK_DIR} source "\${WORK_DIR:-$WORK_DIR}/${INSTALLROOT#$WORK_DIR/}/etc/profile.d/init.sh"
 source_up
-# On mac we build with the proper installation relative RPATH,
-# so this is not actually used and it's actually harmful since
-# startup time is reduced a lot by the extra overhead from the
-# dynamic loader
-unset DYLD_LIBRARY_PATH
 EOF
 
 cd "$BUILDROOT"
@@ -239,8 +234,10 @@ function Run() { # dummy function
 
 if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
   set -o pipefail;
-  { unset DYLD_LIBRARY_PATH
-    set -e
+  # Keep DYLD_LIBRARY_PATH (set from dependencies by init.sh above) so build-time
+  # tools on macOS find their dependencies' dylibs, mirroring LD_LIBRARY_PATH on
+  # Linux. Inherited contamination was already cleared before init.sh ran.
+  { set -e
     set -x
     source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
     if [[ $(type -t Run) == function ]]; then Run "$@"; fi
@@ -252,8 +249,8 @@ elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDD
     rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # propagate the real recipe exit code (was masked to 1)
 elif [[ "$CACHED_TARBALL" == "" ]]; then
    set -o pipefail;
-   { unset DYLD_LIBRARY_PATH
-     set -e
+   # Keep DYLD_LIBRARY_PATH (from dependencies via init.sh) — see note above.
+   { set -e
      set -x
      source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
      if [[ $(type -t Run) == function ]]; then Run "$@"; fi
