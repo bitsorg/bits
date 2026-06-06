@@ -727,6 +727,18 @@ class VersionMatcherTest(unittest.TestCase):
         self.assertEqual(_version_compare("01.07", "01.10"), -1)
         self.assertEqual(_version_compare("v40r2", "v40r2"), 0)
 
+    def test_separator_dash_dot_underscore_equivalent(self):
+        # '-', '.', '_' are equivalent separators: dash- and dot-form tags
+        # compare equal, and ordering is numeric across separators (the old
+        # code ranked v6-40-00 below v6.36.99 because '-' < '.').
+        self.assertEqual(_version_compare("v6-40-00", "v6.40.00"), 0)
+        self.assertEqual(_version_compare("v6_40_00", "v6.40.00"), 0)
+        self.assertEqual(_version_compare("v6-40-00", "v6.36.99"), 1)
+        self.assertEqual(_version_compare("v6-38-00", "v6.40.00"), -1)
+        # dash-form tag in a version>= matcher now gates correctly
+        self.assertTrue(self._m("version>=v6.40.00", "v6-40-00"))
+        self.assertFalse(self._m("version>=v6.40.00", "v6-38-00"))
+
     def test_version_operators(self):
         self.assertTrue(self._m("version=v40r2", "v40r2"))
         self.assertFalse(self._m("version=v40r2", "v40r4"))

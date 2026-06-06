@@ -716,9 +716,23 @@ def _loose_version_key(v):
   numerically (so v40r2 < v40r10) and non-digit runs lexicographically. Each
   element is a (type, value) tuple so int and str runs never compare directly.
   Handles the schemes bits sees: v40r2, v01-19-06, 01.07, 1.2.3, 0.1.0pre17.
+
+  Separator characters ``-``, ``.`` and ``_`` are treated as equivalent and do
+  not themselves contribute to the ordering, so dash- and dot-form tags compare
+  equal (``v6-40-00`` == ``v6.40.00``). Without this, the raw separator runs
+  sort lexicographically ('-' 0x2d < '.' 0x2e), which made ``v6-40-00`` rank
+  below ``v6.36.99`` and silently broke ``version>=`` gating for ROOT-style
+  dash tags.
   """
-  return [(0, int(p)) if p.isdigit() else (1, p)
-          for p in re.findall(r"\d+|\D+", str(v))]
+  key = []
+  for p in re.findall(r"\d+|\D+", str(v)):
+    if p.isdigit():
+      key.append((0, int(p)))
+    else:
+      s = re.sub(r"[-._]+", "", p)   # drop separators; keep alpha (v, r, pre…)
+      if s:
+        key.append((1, s))
+  return key
 
 
 def _version_compare(a, b):
