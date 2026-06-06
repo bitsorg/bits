@@ -1522,6 +1522,12 @@ def doBuild(args, parser):
 
   extra_env = {"BITS_CONFIG_DIR": "/pkgdist.bits" if args.docker else os.path.abspath(args.configDir)}
   extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
+  # --brew lets prefer_system_check scripts run `brew install <formula>` when a
+  # Homebrew-sourced system package is missing (macOS dev platform). The checks
+  # run unsandboxed during resolution and read this from the environment; the
+  # sandboxed build phase only symlinks the (now-present) Homebrew prefix.
+  if getattr(args, "brew", False):
+    extra_env["BITS_BREW"] = "1"
 
   # ── Repository-provider discovery ─────────────────────────────────────────
   # Phase 1 – Always-on providers: recipes with ``always_load: true`` (and

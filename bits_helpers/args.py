@@ -534,6 +534,16 @@ def doParseArgs():
                             help="Always use system packages when compatible.")
   build_system.add_argument("--no-system", dest="noSystem", nargs="?", const="*", default=None, metavar="PACKAGES",
                             help="Never use system packages for the provided, command separated, PACKAGES, even if compatible.")
+  build_parser.add_argument(
+      "--brew", dest="brew", action="store_true", default=False,
+      help=(
+          "macOS only: allow recipes that source a system package from Homebrew "
+          "to run 'brew install <formula>' automatically when the formula is "
+          "missing. Without --brew, such recipes fail with a message telling you "
+          "which formula to 'brew install'. Exported to recipe checks as "
+          "BITS_BREW=1."
+      ),
+  )
 
   build_checksums = build_parser.add_argument_group(
       title="Source and patch checksum verification",
