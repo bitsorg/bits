@@ -40,13 +40,16 @@ def _as_list(value):
 def collect_homebrew(configDir, architecture):
   """Return (formulae, taps) declared by recipes in configDir for architecture.
 
-  A recipe contributes its `homebrew_formula` when either it declares no
-  `prefer_system` (author opted in unconditionally) or its `prefer_system`
-  regex matches `architecture` (so a Linux-only recipe is never emitted into a
-  macOS Brewfile, and vice versa).
+  The Brewfile is a macOS artifact (Homebrew is the macOS system layer here), so
+  for a non-osx architecture there is nothing to emit. On osx, a recipe
+  contributes its `homebrew_formula` when it declares no `prefer_system` (author
+  opted in unconditionally) or its `prefer_system` regex matches `architecture`
+  (so a Linux-only declaration is never emitted into a macOS Brewfile).
   """
   import re
   formulae, taps = set(), set()
+  if not str(architecture).startswith("osx"):
+    return formulae, taps
   for path in sorted(glob.glob(os.path.join(configDir, "*.sh"))):
     err, spec, _ = parseRecipe(FileReader(path))
     if err or not spec:

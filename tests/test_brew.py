@@ -71,12 +71,12 @@ class TestBrew(unittest.TestCase):
         formulae, _ = collect_homebrew(self.tmp, "osx_arm64")
         self.assertNotIn("linonly", formulae)
 
-    def test_collect_linux(self):
-        # readline (prefer_system ".*") matches everything; png/linonly do not.
-        formulae, _ = collect_homebrew(self.tmp, "slc9_x86-64")
-        self.assertIn("readline", formulae)
-        self.assertNotIn("libpng", formulae)
-        self.assertIn("linonly", formulae)
+    def test_collect_linux_is_empty(self):
+        # The Brewfile is a macOS artifact; a non-osx target yields nothing,
+        # even for recipes whose prefer_system is ".*".
+        formulae, taps = collect_homebrew(self.tmp, "slc9_x86-64")
+        self.assertEqual(formulae, set())
+        self.assertEqual(taps, set())
 
     def test_render_is_sorted_and_deterministic(self):
         out = render_brewfile({"readline", "libpng"}, {"example/tap"}, "osx_arm64")
