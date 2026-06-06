@@ -1454,11 +1454,20 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
 
     # If an override fully matches a package, we apply it. This means
     # you can have multiple overrides being applied for a given package.
+    # An override key may carry an optional ":matcher" suffix (same syntax as
+    # requires/patches: arch regex, defaults=, version<op>, (?VAR), &&/||) to
+    # gate it, e.g. "ROOT:osx" applies only on macOS architectures. Package
+    # names never contain ":", so splitting on the first ":" is unambiguous.
+    _ovr_vars = (defaults_meta or {}).get("variables")
     for override in overrides:
       # We downcase the regex in parseDefaults(), so downcase the package name
       # as well. FIXME: This is probably a bad idea; we should use
       # re.IGNORECASE instead or just match case-sensitively.
-      if not re.fullmatch(override, p.lower()):
+      pkg_re, sep, matcher = override.partition(":")
+      if not re.fullmatch(pkg_re, p.lower()):
+        continue
+      if sep and not _matcher_active(matcher, architecture, defaults, _ovr_vars,
+                                     spec.get("version")):
         continue
       log("Overrides for package %s: %s", spec["package"], overrides[override])
       spec.update(overrides.get(override, {}) or {})

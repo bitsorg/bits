@@ -480,7 +480,7 @@ class TestDefaultsRequiresNoCycle(unittest.TestCase):
     def _write_recipe(self, name: str, yaml_header: str) -> str:
         return _write_sh(self.config_dir, name, yaml_header)
 
-    def _call_getPackageList(self, packages, overrides=None):
+    def _call_getPackageList(self, packages, overrides=None, architecture="slc7_x86-64"):
         """Thin wrapper around getPackageList using the test config dir."""
         from bits_helpers.utilities import getPackageList
         from bits_helpers.cmd import getstatusoutput
@@ -492,7 +492,7 @@ class TestDefaultsRequiresNoCycle(unittest.TestCase):
             configDir             = self.config_dir,
             preferSystem          = False,
             noSystem              = None,
-            architecture          = "slc7_x86-64",
+            architecture          = architecture,
             disable               = [],
             defaults              = ["release"],
             performPreferCheck    = lambda pkg, cmd: (1, ""),
@@ -545,6 +545,26 @@ class TestDefaultsRequiresNoCycle(unittest.TestCase):
         # my-provider must NOT appear in specs — it's only loaded as a provider,
         # not built as a regular package
         self.assertNotIn("my-provider", specs)
+
+    def test_arch_gated_override(self):
+        """An override key may carry a ':matcher' suffix; it applies only when
+        the matcher is active for the architecture (e.g. 'root:osx' => macOS)."""
+        self._write_recipe("defaults-release", "package: defaults-release\nversion: '1'\n")
+        self._write_recipe("root", "package: root\nversion: v6.38.00\ntag: v6-38-00\n")
+        # parseDefaults lowercases override keys, so pass the lowercased form.
+        ovr = {"defaults-release": {},
+               "root:osx": {"version": "v6.40.00", "tag": "v6-40-00"}}
+
+        specs_osx, _ = self._call_getPackageList(
+            ["root"], overrides=ovr, architecture="osx_arm64")
+        self.assertEqual(specs_osx["root"]["version"], "v6.40.00",
+                         "osx: ':osx' override should apply")
+        self.assertEqual(specs_osx["root"]["tag"], "v6-40-00")
+
+        specs_lin, _ = self._call_getPackageList(
+            ["root"], overrides=ovr, architecture="slc7_x86-64")
+        self.assertEqual(specs_lin["root"]["version"], "v6.38.00",
+                         "linux: ':osx' override must be skipped, recipe default kept")
 
     def test_defaults_build_requires_does_not_cause_cycle(self):
         """Same as above but using build_requires in the defaults file."""
