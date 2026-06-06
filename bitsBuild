@@ -24,6 +24,7 @@ from bits_helpers.build import doBuild
 from bits_helpers.clean import doClean
 from bits_helpers.cleanup import doCleanup
 from bits_helpers.deps import doDeps
+from bits_helpers.brew import doBrew
 from bits_helpers.doctor import doDoctor
 from bits_helpers.init import doInit
 from bits_helpers.publish import doPublish
@@ -85,6 +86,9 @@ def doMain(args, parser):
 
   if args.action == "deps":
     sys.exit(0 if doDeps(args, parser) else 1)
+
+  if args.action == "brew":
+    sys.exit(0 if doBrew(args, parser) else 1)
 
   if args.action == "clean":
     doClean(workDir=args.workDir, architecture=args.architecture,

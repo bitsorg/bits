@@ -164,6 +164,12 @@ def doParseArgs():
                                       description="Generate a dependency graph for a given package.")
   doctor_parser = subparsers.add_parser("doctor", help="verify status of your system",
                                         description="Verify the status of your system.")
+  brew_parser = subparsers.add_parser("brew", help="generate a Homebrew Brewfile from recipes (macOS)",
+                                      description="Scan recipes for Homebrew-sourced system packages "
+                                                  "(homebrew_formula:) and write a Brewfile listing the "
+                                                  "formulae the stack expects. Run 'brew bundle' against "
+                                                  "it to install them, or build with --brew to install on "
+                                                  "demand.")
   init_parser = subparsers.add_parser("init", help="initialise local packages",
                                       description="Initialise development packages.")
   version_parser = subparsers.add_parser("version", help="display %(prog)s version",
@@ -807,6 +813,24 @@ def doParseArgs():
             "direct-upload path (--prepub-url on bits publish).  "
             "Example: https://prepub.example.org:8080"),
   )
+
+  # Options for the brew subcommand
+  brew_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
+                           help=("Generate the Brewfile for the specified architecture. Only recipes whose "
+                                 "prefer_system matches this architecture are included. Default '%(default)s'."))
+  brew_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
+                           help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  brew_parser.add_argument("-o", "--output", dest="output", metavar="FILE", default="Brewfile",
+                           help=("Write the Brewfile to %(metavar)s. Use '-' for stdout. "
+                                 "Default '%(default)s'."))
+  brew_parser.add_argument("--check", dest="check", action="store_true", default=False,
+                           help=("Do not write; exit non-zero if FILE is missing or differs from what "
+                                 "would be generated (for CI / pre-commit)."))
+  brew_parser.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR", "alidist"),
+                           help="The directory containing build recipes. Default '%(default)s'.")
+  brew_parser.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
+                           help=("Change to the specified directory before doing anything. "
+                                 "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
 
   # Options for the init subcommand
   init_parser.add_argument("pkgname", nargs="?", default="", metavar="PACKAGE",

@@ -278,6 +278,45 @@ def _check_xquartz() -> Tuple[str, str]:
                   "  Install with: brew install --cask xquartz")
 
 
+def _find_brewfile(args) -> str:
+    """Return the first existing Brewfile path among conventional locations."""
+    candidates = []
+    cfg = getattr(args, "configDir", "") or ""
+    for base in (".", cfg, os.path.join(cfg, "..", "stacks.bits")):
+        candidates.append(os.path.join(base, "Brewfile"))
+        candidates.append(os.path.join(base, "macos", "Brewfile"))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
+def _check_brewfile(args) -> Tuple[str, str]:
+    """macOS: verify the generated Brewfile's formulae are installed.
+
+    SKIP on non-Darwin or when no Brewfile is found.  Runs `brew bundle check`
+    so the report mirrors what `bits build --brew` (or a fresh-Mac onboarding
+    `brew bundle`) would need.  Missing Homebrew is a WARN, not a FAIL — a stack
+    may not use any Homebrew-sourced packages.
+    """
+    if sys.platform != "darwin":
+        return SKIP, "not macOS"
+    brewfile = _find_brewfile(args)
+    if not brewfile:
+        return SKIP, "no Brewfile found"
+    if getstatusoutput("command -v brew")[0]:
+        return WARN, ("Homebrew not installed but a Brewfile is present (%s).\n"
+                      "  Install Homebrew (https://brew.sh), then: "
+                      "brew bundle --file %s" % (brewfile, brewfile))
+    err, out = getstatusoutput("brew bundle check --file %s" % brewfile)
+    if err:
+        return WARN, ("Brewfile not fully satisfied (%s):\n  %s\n"
+                      "  Install the missing formulae with: brew bundle --file %s\n"
+                      "  or build with --brew to install on demand."
+                      % (brewfile, out.strip()[:300], brewfile))
+    return PASS, "Brewfile satisfied (%s)" % brewfile
+
+
 def _check_cvmfs_repo(repo_path: str) -> Tuple[str, str]:
     """PASS if *repo_path* exists and contains at least one entry."""
     if not os.path.isdir(repo_path):
@@ -603,6 +642,10 @@ def _run_runner_checks(args) -> List[CheckResult]:
     xq_status, xq_detail = _check_xquartz()
     if xq_status != SKIP:
         checks.append(("XQuartz (X11/GL)", xq_status, xq_detail))
+
+    brewfile_status, brewfile_detail = _check_brewfile(args)
+    if brewfile_status != SKIP:
+        checks.append(("Homebrew Brewfile", brewfile_status, brewfile_detail))
 
     # ── CVMFS repos ──────────────────────────────────────────────────────────
     cvmfs_repos = list(getattr(args, "cvmfsRepos", None) or [])
