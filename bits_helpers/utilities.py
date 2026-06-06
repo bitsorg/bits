@@ -781,18 +781,22 @@ def _matcher_active(matcher, arch, defaults, default_vars=None, version=None):
   return _matcher_atom_active(matcher, arch, defaults, default_vars, version)
 
 
-def filterByArchitectureDefaults(arch, defaults, requires, default_vars=None):
-  """Yield requirements from *requires* that are satisfied by *arch*/*defaults*."""
+def filterByArchitectureDefaults(arch, defaults, requires, default_vars=None, version=None):
+  """Yield requirements from *requires* that are satisfied by *arch*/*defaults*.
+
+  *version* is the depending package's own resolved version; pass it so a
+  requirement can be gated on it, e.g. ``- "curl:version>=v6.40.00"``.
+  """
   for r in requires:
     require, matcher, _pin = _parse_req_matcher(r)
-    if _matcher_active(matcher, arch, defaults, default_vars):
+    if _matcher_active(matcher, arch, defaults, default_vars, version):
       yield require
 
-def disabledByArchitectureDefaults(arch, defaults, requires, default_vars=None):
+def disabledByArchitectureDefaults(arch, defaults, requires, default_vars=None, version=None):
   """Yield requirements from *requires* that are *not* satisfied by *arch*/*defaults*."""
   for r in requires:
     require, matcher, _pin = _parse_req_matcher(r)
-    if not _matcher_active(matcher, arch, defaults, default_vars):
+    if not _matcher_active(matcher, arch, defaults, default_vars, version):
       yield require
 
 
@@ -823,7 +827,7 @@ def filterPatches(patches, arch, defaults, default_vars, version):
 
 
 def _collect_version_pins(arch, defaults, raw_requires, owner, version_pins, specs,
-                          default_vars=None):
+                          default_vars=None, version=None):
   """Extract version pins from *raw_requires* and merge into *version_pins*.
 
   Called while processing *owner*'s spec (before the requires list has been
@@ -843,7 +847,7 @@ def _collect_version_pins(arch, defaults, raw_requires, owner, version_pins, spe
     if pin is None:
       continue
     # Check whether this entry is active for the current architecture/defaults.
-    if not _matcher_active(matcher, arch, defaults, default_vars):
+    if not _matcher_active(matcher, arch, defaults, default_vars, version):
       continue
     if name in version_pins:
       if version_pins[name] != pin:
@@ -1589,18 +1593,23 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # Variables declared in the active --defaults profile(s) (`variables:` block)
     # gate "(?VAR)" conditional requires, e.g. "- cuda:(?cuda)".
     _default_vars = (defaults_meta or {}).get("variables")
+    # The depending package's own version, so a requirement can be gated on it
+    # via "name:version>=X" (matched in sort -V order). Use the recipe/defaults
+    # value resolved so far (dependent-declared pins are applied later and do
+    # not affect a package's own requires gating).
+    _own_version = spec.get("version")
     _collect_version_pins(
       architecture, defaults,
       list(spec.get("requires", [])) + list(spec.get("build_requires", [])),
       spec["package"], _version_pins, specs,
-      default_vars=_default_vars,
+      default_vars=_default_vars, version=_own_version,
     )
 
     # For the moment we treat build_requires just as requires.
-    fn = lambda what: disabledByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars)
+    fn = lambda what: disabledByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars, _own_version)
     spec["disabled"] += [x for x in fn("requires")]
     spec["disabled"] += [x for x in fn("build_requires")]
-    fn = lambda what: filterByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars)
+    fn = lambda what: filterByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars, _own_version)
     spec["requires"] = [x for x in fn("requires") if x not in disable]
     spec["build_requires"] = [x for x in fn("build_requires") if x not in disable]
     if spec["package"] != "defaults-release":

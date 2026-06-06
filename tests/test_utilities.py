@@ -282,6 +282,20 @@ class TestUtilities(unittest.TestCase):
     self.assertEqual(["root"], list(filterByArchitectureDefaults("slc8_x86-64", "release", ["root = 6.24.02"])))
     self.assertEqual([], list(filterByArchitectureDefaults("osx_arm64", "release", ["root = 6.24.02:(?!osx)"])))
     self.assertEqual(["root"], list(filterByArchitectureDefaults("slc8_x86-64", "release", ["root = 6.24.02:(?!osx)"])))
+    # Version-gated requires keyed on the depending package's own version:
+    # the 5th positional arg is the owner version (sort -V comparison).
+    reqs = ["CMake", "curl:version>=v6.40.00"]
+    self.assertEqual(["CMake", "curl"],
+                     list(filterByArchitectureDefaults("osx_arm64", "release", reqs, None, "v6.40.00")))
+    self.assertEqual(["CMake"],
+                     list(filterByArchitectureDefaults("osx_arm64", "release", reqs, None, "v6.38.00")))
+    self.assertEqual(["CMake", "curl"],
+                     list(filterByArchitectureDefaults("osx_arm64", "release", reqs, None, "v6.42.00")))
+    # Combined arch + version atom: curl only on non-osx AND >= 6.40.
+    reqs2 = ["curl:(?!osx) && version>=v6.40.00"]
+    self.assertEqual(["curl"], list(filterByArchitectureDefaults("slc9_x86-64", "release", reqs2, None, "v6.40.00")))
+    self.assertEqual([], list(filterByArchitectureDefaults("osx_arm64", "release", reqs2, None, "v6.40.00")))
+    self.assertEqual([], list(filterByArchitectureDefaults("slc9_x86-64", "release", reqs2, None, "v6.38.00")))
 
   def test_disabledByArchitecture(self) -> None:
     self.assertEqual([], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot"])))
