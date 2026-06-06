@@ -1563,6 +1563,15 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
             # The version is required for all specs. What we put there will
             # influence the package's hash, so allow the user to override it.
             replacement.setdefault("version", requested_version)
+            # Carry over structural keys set on the original spec earlier in
+            # getPackageList that build.py needs and that are NOT recomputed for
+            # the replacement. pkgdir (the recipe directory, used for PKGDIR) is
+            # mandatory — without it doBuild raises KeyError: 'pkgdir' when it
+            # builds the replacement (e.g. a HomebrewRecipe shim).
+            for _carry in ("pkgdir", "recipe_provider", "recipe_provider_hash",
+                           "force_revision"):
+              if _carry in spec and _carry not in replacement:
+                replacement[_carry] = spec[_carry]
             spec = replacement
             # Allows generalising the version based on the actual key provided
             spec["version"] = spec["version"].replace("%(key)s", key)

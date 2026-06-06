@@ -163,6 +163,10 @@ class ReplacementTestCase(unittest.TestCase):
         self.assertIn("with-replacement-recipe", specs)
         self.assertIn("recipe", specs["with-replacement-recipe"])
         self.assertEqual("true", specs["with-replacement-recipe"]["recipe"])
+        # The replacement must carry pkgdir from the original spec, otherwise
+        # doBuild raises KeyError: 'pkgdir' when building it (e.g. a Homebrew
+        # shim selected on macOS).
+        self.assertIn("pkgdir", specs["with-replacement-recipe"])
         # If the replacement spec has a recipe, report to the user that we're
         # compiling the package.
         self.assertNotIn("with-replacement-recipe", systemPkgs)
