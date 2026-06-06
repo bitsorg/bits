@@ -663,15 +663,15 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # _SetBuildEnvBase), whereas an environment variable would need `:` separators
     # on Unix.  Mixing the two on the same name corrupts the list, so build-time
     # CMAKE_PREFIX_PATH stays owned by CMakeRecipe.
-    # DYLD_LIBRARY_PATH mirrors LD_LIBRARY_PATH so that build-time tools on macOS
-    # find their dependencies' shared libraries (dyld ignores LD_LIBRARY_PATH).
-    # Without it a tool that links another package's dylib but lost its rpath
-    # at install (e.g. protoc -> Abseil) aborts at startup. It is inert on Linux.
-    # The build environment must therefore NOT unset DYLD_LIBRARY_PATH after
-    # sourcing this init.sh (see build_template.sh).
+    # The dynamic-loader search path is platform-specific: macOS dyld uses
+    # DYLD_LIBRARY_PATH (and ignores LD_LIBRARY_PATH), Linux uses LD_LIBRARY_PATH.
+    # Emit only the relevant one so build-time tools find their dependencies'
+    # shared libraries — on macOS this is what lets e.g. protoc -> Abseil work
+    # after the install-time rpath is stripped. The build environment must NOT
+    # unset this variable after sourcing init.sh (see build_template.sh).
+    _lib_path_var = "DYLD_LIBRARY_PATH" if architecture.startswith("osx") else "LD_LIBRARY_PATH"
     for key, value in (("PATH", "bin"),
-                       ("LD_LIBRARY_PATH", "lib"), ("LD_LIBRARY_PATH", "lib64"),
-                       ("DYLD_LIBRARY_PATH", "lib"), ("DYLD_LIBRARY_PATH", "lib64"),
+                       (_lib_path_var, "lib"), (_lib_path_var, "lib64"),
                        ("PKG_CONFIG_PATH", "lib/pkgconfig"), ("PKG_CONFIG_PATH", "lib64/pkgconfig")):
       prepend_path.setdefault(key, []).insert(0, f"${bigpackage}_ROOT/{value}")
     lines.extend('[ ! -d "{value}" ] || export {key}="{value}${{{key}+:${key}}}"'
