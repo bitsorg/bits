@@ -15,8 +15,8 @@ Install it in one shot with `brew bundle --file Brewfile`, or let
 `bits build --brew` install formulae on demand during resolution.
 
 The Brewfile is a *derived* artifact: the recipes are the source of truth. Keep
-it in the stack config repo (e.g. stacks.bits/macos/Brewfile) and regenerate +
-commit whenever a recipe's Homebrew declaration changes. `--check` (CI / pre-
+it next to them in the recipe repo (e.g. lcg.bits/macos/Brewfile) and regenerate
++ commit whenever a recipe's Homebrew declaration changes. `--check` (CI / pre-
 commit) fails if the committed file is stale.
 """
 
@@ -97,6 +97,11 @@ def doBrew(args, parser):
 
   if not os.path.isdir(args.configDir):
     parser.error("config directory not found: %s" % args.configDir)
+
+  # The Brewfile is a derived artifact of the recipes, so by default it lives
+  # next to them at <configDir>/macos/Brewfile (e.g. lcg.bits/macos/Brewfile).
+  if args.output is None:
+    args.output = os.path.join(args.configDir, "macos", "Brewfile")
 
   formulae, taps = collect_homebrew(args.configDir, args.architecture)
   content = render_brewfile(formulae, taps, args.architecture)

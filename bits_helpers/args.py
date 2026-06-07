@@ -820,9 +820,10 @@ def doParseArgs():
                                  "prefer_system matches this architecture are included. Default '%(default)s'."))
   brew_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
                            help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
-  brew_parser.add_argument("-o", "--output", dest="output", metavar="FILE", default="Brewfile",
+  brew_parser.add_argument("-o", "--output", dest="output", metavar="FILE", default=None,
                            help=("Write the Brewfile to %(metavar)s. Use '-' for stdout. "
-                                 "Default '%(default)s'."))
+                                 "Default: <CONFIGDIR>/macos/Brewfile (next to the recipes, "
+                                 "which are the source of truth)."))
   brew_parser.add_argument("--check", dest="check", action="store_true", default=False,
                            help=("Do not write; exit non-zero if FILE is missing or differs from what "
                                  "would be generated (for CI / pre-commit)."))

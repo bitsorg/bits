@@ -282,9 +282,11 @@ def _find_brewfile(args) -> str:
     """Return the first existing Brewfile path among conventional locations."""
     candidates = []
     cfg = getattr(args, "configDir", "") or ""
-    for base in (".", cfg, os.path.join(cfg, "..", "stacks.bits")):
-        candidates.append(os.path.join(base, "Brewfile"))
+    # The canonical location is <configDir>/macos/Brewfile (next to the recipes);
+    # check it first, then fall back to legacy locations for back-compat.
+    for base in (cfg, ".", os.path.join(cfg, "..", "stacks.bits")):
         candidates.append(os.path.join(base, "macos", "Brewfile"))
+        candidates.append(os.path.join(base, "Brewfile"))
     for path in candidates:
         if os.path.isfile(path):
             return path
