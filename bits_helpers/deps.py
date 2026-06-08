@@ -6,7 +6,7 @@ from tempfile import NamedTemporaryFile
 # Internal
 from bits_helpers.cmd import DockerRunner, execute, getstatusoutput
 from bits_helpers.log import debug, dieOnError, error, info
-from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults
+from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults, resolve_variables
 
 def doDeps(args, parser):
 
@@ -17,7 +17,13 @@ def doDeps(args, parser):
   # Resolve all the package parsing boilerplate
   specs = {}
 
-  defaultsReader = lambda: readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+  def defaultsReader():
+    # `bits deps` has no --flavour input, but still resolve `variables:` so any
+    # gated entries (and the predefined arch vars) are materialised into a flat
+    # map for the (?NAME) matchers rather than leaking raw {value, when} dicts.
+    meta, body = readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+    meta["variables"] = resolve_variables(meta.get("variables"), {}, args.architecture, args.defaults)
+    return meta, body
   (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable, defaultsReader, debug)
  
   def performCheck(pkg, cmd):

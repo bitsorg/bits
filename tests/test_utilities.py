@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from bits_helpers.utilities import doDetectArch, filterByArchitectureDefaults, disabledByArchitectureDefaults
+from bits_helpers.utilities import resolve_variables, predefined_arch_vars
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import asList
 from bits_helpers.utilities import prunePaths
@@ -328,6 +329,54 @@ class TestUtilities(unittest.TestCase):
         "osx_arm64", ["dev4"], ["GCC:(?!osx)"], {"cuda": "true"})))
     self.assertEqual(["GCC"], list(filterByArchitectureDefaults(
         arch, ["dev4"], ["GCC:(?!osx)"], {"cuda": "true"})))
+
+  def test_predefined_arch_vars(self) -> None:
+    """Only the truthy platform variables are exposed, so (?osx) is false off mac."""
+    self.assertEqual({"osx": "true", "arm64": "true", "aarch64": "true"},
+                     predefined_arch_vars("osx_arm64"))
+    v = predefined_arch_vars("ubuntu2510_x86-64-gcc15")
+    self.assertEqual("true", v.get("linux"))
+    self.assertEqual("true", v.get("x86_64"))
+    self.assertNotIn("osx", v)
+    self.assertNotIn("arm64", v)
+
+  def test_resolve_variables(self) -> None:
+    """Gated `variables:` entries resolve against flavours / predefined / earlier vars."""
+    linux = "ubuntu2510_x86-64-gcc15"
+    osx = "osx_arm64"
+    # Plain entries pass through; predefined arch vars are seeded.
+    r = resolve_variables({"cxxstd": "20"}, {}, linux, ["dev4"])
+    self.assertEqual("20", r["cxxstd"])
+    self.assertEqual("true", r["linux"])
+    self.assertNotIn("osx", r)
+    # Gated on a CLI flavour: defined only when the flavour is set.
+    vblock = {"heavygen": {"value": "yes", "when": "(?openloops)"}}
+    self.assertNotIn("heavygen", resolve_variables(vblock, {}, linux, ["dev4"]))
+    self.assertEqual("yes", resolve_variables(
+        vblock, {"openloops": "true"}, linux, ["dev4"])["heavygen"])
+    # Gated on flavour AND not-osx (arch regex): off on mac even with the flavour.
+    g = {"heavygen": {"value": True, "when": "(?openloops) && (?!osx)"}}
+    self.assertIn("heavygen", resolve_variables(g, {"openloops": "1"}, linux, ["dev4"]))
+    self.assertNotIn("heavygen", resolve_variables(g, {"openloops": "1"}, osx, ["dev4"]))
+    # Gated on a predefined arch var directly: (?osx) true on mac only.
+    o = {"macflag": {"value": True, "when": "(?osx)"}}
+    self.assertIn("macflag", resolve_variables(o, {}, osx, ["dev4"]))
+    self.assertNotIn("macflag", resolve_variables(o, {}, linux, ["dev4"]))
+    # Chained: a later entry gated on an earlier (previously defined) variable.
+    chain = OrderedDict([
+        ("base", {"value": True, "when": "(?openloops)"}),
+        ("derived", {"value": True, "when": "(?base)"}),
+    ])
+    self.assertIn("derived", resolve_variables(chain, {"openloops": "1"}, linux, ["dev4"]))
+    self.assertNotIn("derived", resolve_variables(chain, {}, linux, ["dev4"]))
+    # A CLI flavour overrides a defaults entry of the same name.
+    self.assertEqual("cli", resolve_variables(
+        {"x": "file"}, {"x": "cli"}, linux, ["dev4"])["x"])
+    # The resolved variables then drive package gating end to end.
+    rv = resolve_variables({"heavygen": {"value": True, "when": "(?openloops) && (?!osx)"}},
+                           {"openloops": "1"}, linux, ["dev4"])
+    self.assertEqual(["herwig3"], list(filterByArchitectureDefaults(
+        linux, ["dev4"], ["herwig3:(?heavygen)"], rv)))
 
   def test_parse_req_matcher(self) -> None:
     """_parse_req_matcher should correctly parse all requirement syntax variants."""

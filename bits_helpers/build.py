@@ -16,7 +16,7 @@ from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script
 from bits_helpers.sandbox import wrap_build_command
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
 from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id, ver_rev
-from bits_helpers.utilities import parseDefaults, readDefaults
+from bits_helpers.utilities import parseDefaults, readDefaults, resolve_variables
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
 from bits_helpers.utilities import Hasher
@@ -1409,17 +1409,22 @@ def doBuild(args, parser):
 
   def defaultsReader():
     meta, body = readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
-    # --flavour variables feed both the (?NAME) conditional matchers (via the
-    # `variables:` map) and the build environment + package hash (via the `env:`
-    # map, which becomes the defaults-release env every package depends on). CLI
-    # flavours override a defaults entry of the same name.
-    flavours = getattr(args, "flavours", None)
+    # Resolve the `variables:` block into a flat map. Entries may be gated
+    # (`name: {value: V, when: MATCHER}`) on CLI flavours, the predefined
+    # architecture variables (osx/linux/arm64/...), or earlier entries; the CLI
+    # --flavour values are folded in as inputs. The resulting map feeds the
+    # (?NAME) conditional matchers that gate package requires and %(NAME)s recipe
+    # templating. CLI flavours override a defaults entry of the same name.
+    flavours = getattr(args, "flavours", None) or {}
+    meta["variables"] = resolve_variables(
+        meta.get("variables"), flavours, args.architecture, args.defaults)
+    # Flavours are ALSO exported into the build environment + package hash (via
+    # the `env:` map, which becomes the defaults-release env every package
+    # depends on), exactly as before.
     if flavours:
       from collections import OrderedDict as _OD
-      meta.setdefault("variables", _OD())
       meta.setdefault("env", _OD())
       for _k, _v in flavours.items():
-        meta["variables"][_k] = _v
         meta["env"][_k] = _v
     return meta, body
   (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,

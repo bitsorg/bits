@@ -795,6 +795,58 @@ def _matcher_active(matcher, arch, defaults, default_vars=None, version=None):
   return _matcher_atom_active(matcher, arch, defaults, default_vars, version)
 
 
+def predefined_arch_vars(architecture):
+  """Predefined, architecture-derived boolean variables (truthy ones only).
+
+  These let a recipe or a defaults ``variables:`` gate test the platform with
+  the same ``(?NAME)`` spelling used for flavours, e.g. a package requirement
+  ``pkg:(?osx)`` or a variable gated ``when: "(?openloops) && (?!osx)"``. Only
+  the *true* members are returned (an unset variable is already falsy via
+  :func:`_var_truthy`, so ``(?osx)`` is correctly false off macOS). On
+  ``osx_arm64`` this is ``{'osx': 'true', 'arm64': 'true', 'aarch64': 'true'}``.
+  """
+  a = str(architecture or "")
+  is_osx = a.startswith("osx")
+  is_arm = ("arm64" in a) or ("aarch64" in a)
+  is_x86 = ("x86-64" in a) or ("x86_64" in a)
+  cand = {"osx": is_osx, "linux": not is_osx,
+          "arm64": is_arm, "aarch64": is_arm, "x86_64": is_x86}
+  return {k: "true" for k, v in cand.items() if v}
+
+
+def resolve_variables(variables, flavours, architecture, defaults):
+  """Resolve a defaults ``variables:`` block into a flat ``{name: value}`` dict.
+
+  Entries may be plain (``name: value`` -- always defined) or *gated*
+  (``name: {value: V, when: MATCHER}`` -- defined to ``V`` only when ``MATCHER``
+  is active for this build). ``MATCHER`` uses the requires-matcher grammar
+  (``(?flavour)``, an architecture regex such as ``osx`` / ``(?!osx)``,
+  ``defaults=<regex>``, combined with ``&&`` / ``||``) and is evaluated against
+  the variables resolved *so far*, so a gate may reference CLI flavours, the
+  predefined architecture variables, and any earlier entry ("a previously
+  defined variable"). A gated entry with no explicit ``value`` defaults to
+  ``True`` when active.
+
+  Precedence (low -> high): predefined arch vars < CLI flavours < defaults-file
+  entries, except that a CLI flavour always wins over a defaults entry of the
+  same name (an explicit override) while remaining visible to every gate.
+  """
+  flavours = flavours or {}
+  resolved = OrderedDict()
+  resolved.update(predefined_arch_vars(architecture))
+  resolved.update(flavours)                        # visible to the gates below
+  for name, entry in (variables or {}).items():
+    if name in flavours:
+      continue                                     # CLI flavour overrides defaults
+    if isinstance(entry, dict) and "when" in entry:
+      if _matcher_active(str(entry["when"]), architecture, defaults, resolved):
+        resolved[name] = entry.get("value", True)
+      # inactive -> leave undefined (falsy)
+    else:
+      resolved[name] = entry
+  return resolved
+
+
 def filterByArchitectureDefaults(arch, defaults, requires, default_vars=None, version=None):
   """Yield requirements from *requires* that are satisfied by *arch*/*defaults*.
 
