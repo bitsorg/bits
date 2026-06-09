@@ -65,3 +65,45 @@ class KnownGoodHashesTestCase(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NormalizeRecipeForHashTestCase(unittest.TestCase):
+    """normalize_recipe_for_hash strips comments/blank lines for hashing only."""
+
+    def _n(self, s):
+        from bits_helpers.build import normalize_recipe_for_hash
+        return normalize_recipe_for_hash(s)
+
+    def test_drops_full_line_comments_and_blanks(self):
+        self.assertEqual(self._n("# a\nmake\n\n  # b\n  ./x\n"), "make\n  ./x")
+
+    def test_keeps_inline_hash_and_code(self):
+        # A '#' after code is not a full-line comment; the line is kept verbatim.
+        self.assertEqual(self._n('echo "a # b"\n'), 'echo "a # b"')
+
+    def test_comment_only_edits_produce_identical_normalization(self):
+        a = "# explain the thing in one way\nConfigure() { cmake .; }\n"
+        b = "# totally different wording here\n\nConfigure() { cmake .; }\n"
+        self.assertEqual(self._n(a), self._n(b))
+
+    def test_preserves_hash_lines_inside_heredoc(self):
+        r = ("cat > f <<'EOF'\n"
+             "#%Module1.0\n"
+             "# not a comment, this is data\n"
+             "EOF\n"
+             "# this one is a real comment\n"
+             "make\n")
+        out = self._n(r)
+        self.assertIn("#%Module1.0", out)
+        self.assertIn("# not a comment, this is data", out)
+        self.assertNotIn("# this one is a real comment", out)
+
+    def test_handles_dash_heredoc_terminator(self):
+        r = "cat <<-END\n#data\n\tEND\n#comment\ndone\n"
+        out = self._n(r)
+        self.assertIn("#data", out)
+        self.assertNotIn("#comment", out)
+        self.assertIn("done", out)
+
+    def test_non_string_passthrough(self):
+        self.assertEqual(self._n(None), None)

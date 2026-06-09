@@ -271,6 +271,40 @@ def storeHook(package, specs, defaults) -> bool:
 
     return bool(spec["hook"])
 
+_HEREDOC_START = re.compile(r"<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def normalize_recipe_for_hash(recipe):
+  """Return a copy of a recipe body for HASHING ONLY, with full-line comments
+  and blank lines removed so comment/whitespace edits do not change the build
+  hash (and thus do not force a rebuild). The executed recipe is untouched.
+
+  Lines inside a here-document are preserved verbatim -- a leading '#' there is
+  data, not a comment. The here-doc scan is deliberately conservative: it only
+  ever protects MORE text, so the worst case is a recipe that keeps hashing its
+  comments (the old behaviour), never two distinct recipes hashing alike.
+  """
+  if not isinstance(recipe, str):
+    return recipe
+  out, pending, active = [], [], None
+  for line in recipe.split("\n"):
+    if active is not None:          # inside a here-doc body: keep verbatim
+      out.append(line)
+      if line.strip() == active:    # terminator (tabs allowed for <<-)
+        active = pending.pop(0) if pending else None
+      continue
+    delims = [m.group(2) for m in _HEREDOC_START.finditer(line)]
+    if delims:                      # this line opens one or more here-docs
+      out.append(line)
+      active, pending = delims[0], delims[1:]
+      continue
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):  # blank or whole-line comment
+      continue
+    out.append(line)
+  return "\n".join(out)
+
+
 def storeHashes(package, specs, considerRelocation):
   """Calculate various hashes for package, and store them in specs[package].
 
@@ -294,7 +328,12 @@ def storeHashes(package, specs, considerRelocation):
     h_all(str(time.time()))
 
   for key in ("recipe", "version", "package"):
-    h_all(spec.get(key, "none"))
+    val = spec.get(key, "none")
+    # Hash the recipe with full-line comments / blank lines removed so that
+    # documentation-only edits do not change the hash and force a rebuild.
+    if key == "recipe":
+      val = normalize_recipe_for_hash(val)
+    h_all(val)
 
   # pkg_family changes the installation path (ARCH/FAMILY/PKG/VER vs
   # ARCH/PKG/VER), so tarballs built with different family settings are
