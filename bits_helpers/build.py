@@ -1493,8 +1493,6 @@ def doBuild(args, parser):
       args.oversubscribe = float(_system_opt("build_oversubscribe", 1.0))
     except (TypeError, ValueError):
       args.oversubscribe = 1.0
-    if args.oversubscribe > 1.0:
-      info("CPU oversubscription factor %.2f (defaults system.build_oversubscribe)", args.oversubscribe)
 
   # syncHelper is constructed after defaults loading so that it receives the
   # (potentially combined) architecture string.
