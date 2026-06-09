@@ -1982,9 +1982,21 @@ def doBuild(args, parser):
   # Remove any leftover *.downloading sentinels from a previous run that was
   # killed before it could clean up.  This must happen BEFORE launching the
   # prefetch pool so that no live sentinels are confused with stale ones.
+  #
+  # Sentinels are only ever created in two places (see _prefetch_package /
+  # bits_helpers.download): source archives under SOURCES/, and prebuilt
+  # tarballs under TARS/<arch>/store/ (resolve_store_path).  Walking the WHOLE
+  # workDir here would also descend INSTALLROOT and BUILD -- the entire installed
+  # stack, tens of thousands of files -- adding a long, pointless stat() storm
+  # before the first build (very noticeable on macOS).  Scope the walk to just
+  # those two subtrees.
   # Use os.walk rather than glob(..., recursive=True) to avoid the mock in tests.
-  if os.path.isdir(workDir):
-    for _root, _dirs, _files in os.walk(workDir):
+  _sentinel_roots = [os.path.join(workDir, "SOURCES")]
+  _sentinel_roots += glob(os.path.join(workDir, "TARS", "*", "store"))
+  for _scan_root in _sentinel_roots:
+    if not os.path.isdir(_scan_root):
+      continue
+    for _root, _dirs, _files in os.walk(_scan_root):
       for _fname in _files:
         if _fname.endswith(".downloading"):
           _s = os.path.join(_root, _fname)
