@@ -29,8 +29,8 @@ Usage: $0 \\
     ${EM}help${EZ}
       This help screen.
 
-    ${EM}enter${EZ} [${ET}--shellrc${EZ}] [${ET}--dev${EZ}] MODULE1[,MODULE2...]
-      Enters a new shell with the given modules loaded.
+    ${EM}enter${EZ} [${ET}-q${EZ}] [${ET}--shellrc${EZ}] [${ET}--dev${EZ}] MODULE1[,MODULE2...]
+      Enters a new shell with the given modules loaded (${ET}-q${EZ} silences the module-load messages).
       Return to the clean environment by exiting the shell with ${ET}exit${EZ}.
       Inside the environment you can use the native ${ET}modulecmd${EZ}.
       By default you enter the same shell type you are in. Override with environment variable ${ET}MODULES_SHELL${EZ}.
@@ -39,9 +39,9 @@ Usage: $0 \\
       If you want to add environment variables for development use ${ET}--dev${EZ}
       Alternatively you can use the ${EM}load${EZ} command in the current shell.
 
-    ${EM}setenv${EZ} MODULE1[,MODULE2...] ${ET}-c${EZ} cmdInEnvironment [PARAM1 [PARAM2...]]
+    ${EM}setenv${EZ} [${ET}-q${EZ}] MODULE1[,MODULE2...] ${ET}-c${EZ} cmdInEnvironment [PARAM1 [PARAM2...]]
       Executes the given command with environment defined by the given modules.
-      Everything after ${ET}-c${EZ} is executed as-is.
+      Everything after ${ET}-c${EZ} is executed as-is.  Use ${ET}-q${EZ} to silence the module-load messages.
       Exit code is preserved.
       Example: $ET$0 setenv AliRoot/v5-08-02-1 -c aliroot -b$EZ
 
@@ -496,33 +496,37 @@ WORK_DIR=$(cd "$WORK_DIR"; pwd)
 # verbatim and never second-guess it below.
 _bt_mark startup            # script start → here (configBits, option/work-dir parsing)
 _ARCH_GIVEN=; [[ -n "$ARCHITECTURE" ]] && _ARCH_GIVEN=1
-[[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("bitsBuild" architecture 2> /dev/null || true)"
-[[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
-_bt_mark archdetect         # cost of the bitsBuild architecture python spawn
-# --defaults can qualify the architecture (e.g. osx_arm64 -> osx_arm64_gcc15), so
-# the auto-detected base arch may have no install tree here. When -a was not
-# given and the detected arch is absent/unknown, prefer an arch actually present
-# in the work dir: guess it if there is exactly one, or warn and list them when
-# there are several (rather than silently picking the wrong one).
-if [[ -z "$_ARCH_GIVEN" ]] && \
-   { [[ -z "$ARCHITECTURE" || "$ARCHITECTURE" == "<unknown>" ]] || [[ ! -d "$WORK_DIR/$ARCHITECTURE" ]]; }; then
-  # A real, module-serving architecture has a $WORK_DIR/MODULES/<arch> tree.
-  # Enumerate those rather than scanning sw/ directly, which also contains
-  # non-arch dirs (e.g. wrapper-scripts) that must not be offered as choices.
-  # `ls -1t` lists newest-first by mtime, so when several are present we pick
-  # the most recently modified (built) one; override with an explicit -a.
+# Architecture autodetection (when -a not given). MODULES-first: for q/load/enter
+# the installed module trees are the source of truth, so choose from them
+# directly and skip the bitsBuild (python) host-arch spawn entirely in the common
+# single-arch case. A real arch has a $WORK_DIR/MODULES/<arch> dir; sw/ also holds
+# non-arch dirs (wrapper-scripts) which are excluded by going via MODULES. Fall
+# back to python only to disambiguate several installed arches (prefer the host's)
+# or when nothing is installed yet (e.g. a first build).
+if [[ -z "$_ARCH_GIVEN" ]]; then
   _present=()
   for _a in $(ls -1t "$WORK_DIR/MODULES" 2> /dev/null); do
     [[ -d "$WORK_DIR/MODULES/$_a" ]] && _present+=("$_a")
   done
-  if [[ ${#_present[@]} -ge 1 ]]; then
-    ARCHITECTURE="${_present[0]}"
-    if [[ ${#_present[@]} -gt 1 ]]; then
+  if [[ ${#_present[@]} -eq 1 ]]; then
+    ARCHITECTURE="${_present[0]}"            # sole installed arch — no python spawn
+  elif [[ ${#_present[@]} -gt 1 ]]; then
+    # Several present: prefer the host's native arch if installed, else newest.
+    _host="$("bitsBuild" architecture 2> /dev/null || "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
+    ARCHITECTURE=
+    for _a in "${_present[@]}"; do [[ "$_a" == "$_host" ]] && { ARCHITECTURE="$_a"; break; }; done
+    if [[ -z "$ARCHITECTURE" ]]; then
+      ARCHITECTURE="${_present[0]}"          # ls -1t → most recently built
       printf "${EY}NOTE: several architectures present; selected most recent: %s${EZ}\n" "$ARCHITECTURE" >&2
       printf "${EY}      (override with  bits -a <arch> %s)${EZ}\n" "${ACTION:-q}" >&2
     fi
+  else
+    # Nothing installed yet → host arch from python (e.g. for a first build).
+    ARCHITECTURE="$("bitsBuild" architecture 2> /dev/null || true)"
+    [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
   fi
 fi
+_bt_mark archdetect         # arch autodetect (python spawn only when needed)
 [[ -z "$ARCHITECTURE" ]] && { printHelp "Cannot autodetect architecture"; false; }
 
 # Look for modulecmd (v3) or modulecmd-compat (>= v4)
@@ -539,6 +543,10 @@ fi
 export MODULEPATH="$WORK_DIR/MODULES/$ARCHITECTURE${MODULEPATH:+":$MODULEPATH"}"
 MODULEPATH=$(echo "$MODULEPATH" | sed -e 's/::*/:/g; s/^://; s/:$//')
 IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
+# -q (which unsets VERBOSE) silences environment-modules' "Loading <pkg>" /
+# "Loading requirement:" progress lines so setenv/printenv/load/enter output can
+# be captured/parsed cleanly. Honoured by environment-modules >= 4.
+[[ -z "${VERBOSE:-}" ]] && export MODULES_VERBOSITY=silent
 case "$ACTION" in
   enter)
     [[ $BITSLVL == 1 ]] || \
