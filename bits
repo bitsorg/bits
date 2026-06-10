@@ -160,6 +160,23 @@ EOF
   fi
 }
 
+function listAvailableModules() {
+  # Emit <pkg>/<version> for every installed package that ships a modulefile,
+  # read straight from the install tree (the source of truth) via the same fast
+  # path collectModules uses. This is what `bits q` lists: it avoids rebuilding
+  # the MODULES cache (rm -rf + re-cp of every modulefile) and spawning
+  # `modulecmd avail` just to enumerate — the two costs that make `q` slow on a
+  # real filesystem. Output is unsorted; callers pipe through sort.
+  local base="${WORK_DIR}/${ARCHITECTURE}" P pkgver pkgname
+  [[ -d "$base" ]] || return 0
+  while read -r P; do
+    [[ -n "$P" ]] || continue
+    pkgver=${P##*/}
+    pkgname=${P%/*}; pkgname=${pkgname##*/}
+    [[ -e "$P/etc/modulefiles/$pkgname" ]] && printf '%s/%s\n' "$pkgname" "$pkgver"
+  done < <(_listPkgVersions "$base")
+}
+
 function normModules() {
   # Avoid interpolating $BITS_PKG_PREFIX into a sed expression: if the
   # prefix contains sed metacharacters or the delimiter it can inject
@@ -533,7 +550,6 @@ case "$ACTION" in
   ;;
   q|query)
     [[ -z "${ARGS[0]}" ]] && SEARCH_CMD=cat || SEARCH_CMD=( grep -iE "${ARGS[0]}" )
-    collectModules
     # Native module names are <pkg>/<version>. With a display prefix set (e.g.
     # via the aliBuild wrapper) reformat to <PREFIX>@<pkg>::<version>; with no
     # prefix, pass the native form through unchanged.
@@ -542,9 +558,9 @@ case "$ACTION" in
     else
       _fmt=( cat )
     fi
-    $MODULECMD bash -t avail 2>&1 | grep -E '^[^/]+/[^/]+$' | grep -vE ':$' | \
-      "${SEARCH_CMD[@]}" | "${_fmt[@]}"
-    exit ${PIPESTATUS[3]}  # SEARCH grep
+    # List straight from the install tree (no MODULES rebuild, no modulecmd).
+    listAvailableModules | LC_ALL=C sort | "${SEARCH_CMD[@]}" | "${_fmt[@]}"
+    exit ${PIPESTATUS[2]}  # SEARCH grep
   ;;
   avail)
     collectModules

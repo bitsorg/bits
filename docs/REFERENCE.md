@@ -1108,7 +1108,7 @@ bits list          # show currently loaded modules
 bits avail         # raw modulecmd avail output
 ```
 
-`bits q` lists modules in the native `PKG/VERSION` form. When a display prefix is set in the environment (`BITS_PKG_PREFIX`, e.g. via the `aliBuild` wrapper) the output is reformatted to `PREFIX@PKG::VERSION` (so `aliBuild q` prints `VO_ALICE@zstd::1.5.7-local1`). The optional `REGEXP` is a case-insensitive extended regular expression. The modules directory is refreshed before listing. `bits avail` delegates directly to `modulecmd bash avail`.
+`bits q` lists modules in the native `PKG/VERSION` form. When a display prefix is set in the environment (`BITS_PKG_PREFIX`, e.g. via the `aliBuild` wrapper) the output is reformatted to `PREFIX@PKG::VERSION` (so `aliBuild q` prints `VO_ALICE@zstd::1.5.7-local1`). The optional `REGEXP` is a case-insensitive extended regular expression. `bits q` reads the installed modulefiles straight from the work tree (reusing the fast CVMFS catalog path where applicable) — it does **not** rebuild the MODULES cache or spawn `modulecmd`, so it stays fast even with hundreds of packages. `bits avail` delegates directly to `modulecmd bash avail` (and does refresh the cache).
 
 **Fast listing on CVMFS.** Enumerating the install tree per file is expensive on
 CVMFS (every directory test is a FUSE lookup). When the tree is served from
