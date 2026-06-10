@@ -884,8 +884,9 @@ def doParseArgs():
                         help="Binary store to upload newly-built tarballs to (written as 'write_store' "
                              "in bits.rc). Accepts the same URL formats as 'bits build --write-store'.")
   init_cfg.add_argument("--organisation", dest="organisation", default=None, metavar="NAME",
-                        help="Organisation name stored under the 'organisation' key in bits.rc. "
-                             "May be used by defaults profiles and recipe tooling.")
+                        help="Organisation name selecting the registry/provider 'home' repo, also "
+                             "stored under the 'organisation' key in bits.rc. Defaults to the "
+                             "BITS_ORGANISATION environment variable (set by the aliBuild wrapper).")
   init_cfg.add_argument("--rc-file", dest="rcFile", default="bits.rc", metavar="FILE",
                         help="Path of the bits.rc file to create or update. Default '%(default)s'.")
   init_cfg.add_argument("--append", dest="appendRc", action="store_true", default=False,
@@ -1103,6 +1104,12 @@ def doParseArgs():
   for _rc_key, _dest in _RC_KEY_TO_DEST:
     if _rc_early.get(_rc_key):
       _rc_defaults[_dest] = _rc_early[_rc_key]
+  # organisation may also arrive via the environment (the aliBuild wrapper
+  # exports BITS_ORGANISATION). Honour it when bits.rc doesn't set it, so the
+  # registry/provider "home" is selected for build/etc., not just init. An
+  # explicit --organisation on the CLI still wins via normal argparse order.
+  if not _rc_defaults.get("organisation") and os.environ.get("BITS_ORGANISATION"):
+    _rc_defaults["organisation"] = os.environ["BITS_ORGANISATION"]
   if _rc_defaults:
     # set_defaults on the *parent* parser is overridden by each subparser's own
     # argument-level defaults (add_argument(..., default=...)).  We must call

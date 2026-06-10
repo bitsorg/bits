@@ -275,7 +275,7 @@ A **repository provider** is a recipe that, instead of describing a software pac
 
 ### Why it exists
 
-Normally the set of recipe repositories (`*.bits` directories) is fixed at startup via `BITS_PATH` / `search_path`. The repository provider feature lets a recipe itself pull in an additional recipe repository from git, enabling modular recipe sets and nested providers.
+Normally the set of recipe repositories (`*.bits` directories) is fixed at startup via the `BITS_PATH` environment variable. The repository provider feature lets a recipe itself pull in an additional recipe repository from git, enabling modular recipe sets and nested providers.
 
 ### Defining a repository provider
 
@@ -972,7 +972,7 @@ bits init --rc-file ~/.bitsrc --remote-store https://store.example.com/store
 | `--remote-store URL` | `remote_store` | Binary store to fetch pre-built tarballs from. |
 | `--write-store URL` | `write_store` | Binary store to upload newly-built tarballs to. |
 | `--providers URL` | `providers` | URL of the bits-providers repository (overrides `BITS_PROVIDERS`). |
-| `--organisation NAME` | `organisation` | Organisation tag used by defaults profiles and recipe tooling. |
+| `--organisation NAME` | `organisation` | Organisation selecting the registry/provider "home" repo. Also settable via the `BITS_ORGANISATION` environment variable (the `aliBuild` wrapper sets it). |
 | `-w DIR`, `--work-dir DIR` | `work_dir` | Default work/output directory (overrides `BITS_WORK_DIR`). |
 | `-a ARCH`, `--architecture ARCH` | `architecture` | Default target architecture. |
 | `--defaults PROFILE` | `defaults` | Default profile(s), `::` separated. |
@@ -992,6 +992,8 @@ write_store  = b3://mybucket/store
 work_dir     = /opt/sw
 organisation = MYORG
 ```
+
+> **Format note.** `bits.rc` keeps a single `[bits]` section with the canonical keys above. The old per-organisation `[NAME]` sections and the keys `sw_dir`, `repo_dir`, `search_path`, `pkg_prefix`, and `branding` are no longer accepted: `bits` detects such a file, prints the required renames (`sw_dir`→`work_dir`, `repo_dir`→`config_dir`, and so on), and exits. Display prefix and branding (`BITS_PKG_PREFIX`, `BITS_BRANDING`) and recipe search order (`BITS_PATH` / repository providers) are environment/provider concerns rather than `bits.rc` keys; the `aliBuild` wrapper sets the ALICE branding env vars automatically.
 
 ---
 
@@ -1096,7 +1098,7 @@ bits list          # show currently loaded modules
 bits avail         # raw modulecmd avail output
 ```
 
-`bits q` lists modules in `BITS_PKG_PREFIX@PKG::VERSION` format. The optional `REGEXP` is a case-insensitive extended regular expression. The modules directory is refreshed before listing. `bits avail` delegates directly to `modulecmd bash avail`.
+`bits q` lists modules in the native `PKG/VERSION` form. When a display prefix is set in the environment (`BITS_PKG_PREFIX`, e.g. via the `aliBuild` wrapper) the output is reformatted to `PREFIX@PKG::VERSION` (so `aliBuild q` prints `VO_ALICE@zstd::1.5.7-local1`). The optional `REGEXP` is a case-insensitive extended regular expression. The modules directory is refreshed before listing. `bits avail` delegates directly to `modulecmd bash avail`.
 
 **Fast listing on CVMFS.** Enumerating the install tree per file is expensive on
 CVMFS (every directory test is a FUSE lookup). When the tree is served from
@@ -2245,9 +2247,9 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `BITS_BRANDING` | `bits` | Tool branding string used in log output. |
-| `BITS_ORGANISATION` | `ALICE` | Organisation name used in config lookup. |
-| `BITS_PKG_PREFIX` | `VO_ALICE` | Package-name prefix shown by `bits q`. |
+| `BITS_BRANDING` | _(empty)_ | Cosmetic program-name branding; set by the `aliBuild` wrapper. |
+| `BITS_ORGANISATION` | _(empty)_ | Organisation selecting the registry/provider "home" repo. Empty by default; the `aliBuild` wrapper sets `ALICE`, or use `--organisation` / `bits.rc`. |
+| `BITS_PKG_PREFIX` | _(empty)_ | Display prefix for `bits q`. Empty prints native `PKG/VERSION`; when set (e.g. `VO_ALICE` via `aliBuild`) output becomes `PREFIX@PKG::VERSION`. |
 | `BITS_REPO_DIR` | `alidist` | Root directory for recipe repositories. |
 | `BITS_WORK_DIR` | `sw` | Output and work directory. |
 | `BITS_PATH` | _(empty)_ | Comma-separated list of additional recipe search directories. Absolute paths are used directly; relative names have `.bits` appended and are resolved under `BITS_REPO_DIR`. |
