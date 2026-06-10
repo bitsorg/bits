@@ -4,6 +4,11 @@ BITSDIR="$(dirname "$0")"
 
 ARGV=("$@"); ARGC=$#   # ARGC must be a plain integer, not an array
 
+# Optional phase timing for diagnosing slow load/enter: set BITS_TIMING=1 to
+# print the wall time of each phase to stderr. Uses bash EPOCHREALTIME (>=5),
+# else GNU date; no overhead when unset.
+[[ -n "${BITS_TIMING:-}" ]] && _BT_PREV="${EPOCHREALTIME/,/.}" && _BT_PREV="${_BT_PREV:-$(date +%s.%N 2>/dev/null || echo 0)}"
+
 function printHelp() {
 cat >&2 <<EoF
 $PROG -- load environment for bits packages through modulefiles
@@ -238,6 +243,15 @@ function existModules() {
 function stripDyld() {
   TO_STRIP=$( (typeset | grep ^DYLD | cut -d= -f1 | grep '_modshare$' | xargs echo ) 2> /dev/null )
   [ ! "X$TO_STRIP" = X ] && echo unset $TO_STRIP && echo ';'
+}
+
+function _bt_mark() {
+  # Print elapsed wall time since the previous mark (only when BITS_TIMING set).
+  [[ -n "${BITS_TIMING:-}" ]] || return 0
+  local now="${EPOCHREALTIME/,/.}"; now="${now:-$(date +%s.%N 2>/dev/null || echo 0)}"
+  [[ -n "${_BT_PREV:-}" ]] && \
+    awk -v a="$_BT_PREV" -v b="$now" -v l="$1" 'BEGIN{printf "[timing] %-14s %7.3fs\n", l, b-a}' >&2
+  _BT_PREV="$now"
 }
 
 function readBitsRc() {
@@ -517,8 +531,11 @@ case "$ACTION" in
     [[ $BITSLVL == 1 ]] || \
       { printf "${ER}ERROR: already in an bits environment${EZ}\n" >&2; exit 1; }
     MODULES=$(normModules "${ARGS[@]}")
+    _bt_mark preamble
     collectModules
+    _bt_mark collectModules
     existModules $MODULES
+    _bt_mark existModules
     PS1DEV=
     if [[ $DEVOPT == 1 ]];then
       PS1DEV=" (dev)"
@@ -534,6 +551,7 @@ case "$ACTION" in
     else
       eval $($MODULECMD bash add $MODULES 2> >(grep -v "$IGNORE_ERR" >&2))
     fi
+    _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
     detectShell
     if [[ ! -z "$CLEAN_ENV" ]]; then
@@ -555,7 +573,8 @@ case "$ACTION" in
   printenv|load|unload)
     [[ $ACTION == printenv ]] && ACTION=load
     MODULES=$(normModules "${ARGS[@]}")
-    [[ $ACTION == load ]] && { collectModules; existModules $MODULES; }
+    _bt_mark preamble
+    [[ $ACTION == load ]] && { collectModules; _bt_mark collectModules; existModules $MODULES; _bt_mark existModules; }
     [[ $VERBOSE == 1 ]] && printf "${ET}Use ${EM}bits list${ET} to list loaded modules.${EZ}\n" >&2
     if [[ $DEVOPT == 1 ]];then
       echo "Warning: Development mode for '$ACTION' is not supported via bits. Please remove '--dev' or run manually shown below" >&2
@@ -570,6 +589,7 @@ case "$ACTION" in
     fi
     detectShell
     $MODULECMD $MODULES_SHELL $ACTION $MODULES 2> >(grep -v "$IGNORE_ERR" >&2)
+    _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && ( eval $($MODULECMD $MODULES_SHELL $ACTION $MODULES 2> /dev/null) &> /dev/null; stripDyld )
     exit 0
   ;;
