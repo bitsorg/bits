@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from bits_helpers import build_stats as bs
 from bits_helpers.resource_manager import ResourceManager
@@ -91,6 +92,69 @@ class TestBuildStats(unittest.TestCase):
         self.assertTrue(admitted)             # at least one fits an idle machine
         for name in admitted:
             self.assertTrue(name.startswith("build:"))
+
+
+class TestTuningReport(unittest.TestCase):
+    """tuning_report(): CPU-utilisation estimate + knob recommendation."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    @staticmethod
+    def _ramp(cpu, n):
+        # n one-second samples each reporting `cpu` (summed-percent) → core-secs
+        # = (cpu/100) * n, duration = n.
+        return [{"rss": 10, "cpu": cpu, "time": t} for t in range(1, n + 1)]
+
+    @patch("bits_helpers.build_stats.multiprocessing.cpu_count", return_value=4)
+    def test_high_util_no_headroom(self, _cc):
+        sd = _write_trace(self.dir, "root", self._ramp(400, 10))   # 4 cores * 10s
+        rep = bs.tuning_report({"root": sd}, wall_seconds=10, builders=2,
+                               jobs=4, oversubscribe=1.0)
+        self.assertFalse(rep["headroom"])
+        self.assertAlmostEqual(rep["cpu_utilisation"], 1.0, places=2)
+        self.assertIn("good", rep["recommendation"].lower())
+
+    @patch("bits_helpers.build_stats.multiprocessing.cpu_count", return_value=4)
+    def test_low_util_busy_slots_suggests_oversubscribe(self, _cc):
+        # Two packages run almost the whole wall (slots full) but each uses ~1
+        # core → cores idle → suggest higher --oversubscribe.
+        a = _write_trace(self.dir, "a", self._ramp(100, 95))
+        b = _write_trace(self.dir, "b", self._ramp(100, 95))
+        rep = bs.tuning_report({"a": a, "b": b}, wall_seconds=100, builders=2,
+                               jobs=8, oversubscribe=1.25)
+        self.assertTrue(rep["headroom"])
+        self.assertGreaterEqual(rep["avg_concurrency"], 1.6)
+        self.assertIn("oversubscribe", rep["recommendation"])
+        self.assertGreater(rep["suggested"]["oversubscribe"], 1.25)
+        self.assertEqual(rep["suggested"]["builders"], 2)
+
+    @patch("bits_helpers.build_stats.multiprocessing.cpu_count", return_value=4)
+    def test_low_util_empty_slots_suggests_more_builders(self, _cc):
+        # One short package on a 4-builder run → slots mostly empty → DAG-bound
+        # → suggest more --builders.
+        sd = _write_trace(self.dir, "solo", self._ramp(200, 40))
+        rep = bs.tuning_report({"solo": sd}, wall_seconds=100, builders=4,
+                               jobs=32, oversubscribe=1.0)
+        self.assertTrue(rep["headroom"])
+        self.assertLess(rep["avg_concurrency"], 4 * 0.8)
+        self.assertIn("builders", rep["recommendation"])
+        self.assertGreater(rep["suggested"]["builders"], 4)
+
+    def test_no_traces_or_zero_wall_returns_none(self):
+        self.assertIsNone(bs.tuning_report({}, 100, 4, 32, 1.0))
+        sd = _write_trace(self.dir, "x", self._ramp(100, 5))
+        self.assertIsNone(bs.tuning_report({"x": sd}, 0, 4, 32, 1.0))
+
+    @patch("bits_helpers.build_stats.multiprocessing.cpu_count", return_value=4)
+    def test_tuning_embedded_in_stats_file(self, _cc):
+        sd = _write_trace(self.dir, "root", self._ramp(100, 50))
+        rep = bs.tuning_report({"root": sd}, wall_seconds=100, builders=2,
+                               jobs=8, oversubscribe=1.0)
+        bs.aggregate_and_write(self.dir, {"root": sd}, tuning=rep)
+        stats = json.load(open(bs.default_stats_path(self.dir)))
+        self.assertEqual(stats["tuning"], rep)
+        self.assertIn("recommendation", stats["tuning"])
 
 
 if __name__ == "__main__":

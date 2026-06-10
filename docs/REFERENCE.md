@@ -899,6 +899,16 @@ Summarise the resource data recorded when a build ran with `--resource-monitorin
 (per-package peaks) and the per-package traces under `SPECS/` (for average CPU
 and thread counts).
 
+**CPU-utilisation tuning hint.** At the end of a `--builders` run, bits estimates
+the whole-run CPU utilisation (useful core-seconds ÷ cores × wall-clock) and the
+average number of builders busy at once, and writes them under a `"tuning"` key
+in `bits_build_stats.json` together with a `recommendation`. When there is
+headroom (utilisation below ~90%) the recommendation is also printed at the end
+of the build: if the builder slots were mostly full it suggests a higher
+`--oversubscribe` (which raises each builder's `-j` without changing the memory
+budget); if the slots were often empty it points at the dependency graph and
+suggests more `--builders` and/or reusing prebuilt tarballs.
+
 ```bash
 bits stats [options]
 ```

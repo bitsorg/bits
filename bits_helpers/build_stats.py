@@ -97,7 +97,124 @@ def _median(values):
     return s[len(s) // 2] if s else 0
 
 
-def aggregate_and_write(work_dir: str, monitored: dict):
+def _integral_from_trace(path: str):
+    """Return ``{core_seconds, time}`` for one monitor trace, or None.
+
+    ``cpu`` in each sample is the summed process-tree percent (~100 per busy
+    core), taken once per real sampling interval.  Integrating ``cpu/100`` over
+    the actual spacing between samples (``diff`` of the relative ``time`` field)
+    yields the *core-seconds* of useful work that package consumed — the basis
+    for the whole-run CPU-utilisation estimate.
+    """
+    try:
+        with open(path) as fh:
+            samples = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(samples, list) or not samples:
+        return None
+    core_seconds = 0.0
+    prev_t = 0
+    duration = 0
+    for s in samples:
+        t = int(s.get("time", 0))
+        cpu = int(s.get("cpu", 0))
+        dt = t - prev_t
+        if dt <= 0:
+            dt = 1                      # defensive: keep monotonic spacing
+        core_seconds += (cpu / 100.0) * dt
+        prev_t = t
+        duration = max(duration, t)
+    return {"core_seconds": core_seconds, "time": duration}
+
+
+def tuning_report(monitored: dict, wall_seconds: float, builders: int,
+                  jobs: int, oversubscribe: float):
+    """Estimate CPU utilisation for a finished --builders run and suggest knobs.
+
+    Returns a dict (also embedded in the stats file and optionally printed) with
+    the measured ``cpu_utilisation`` (0–1, core-seconds / (ncpu × wall)),
+    ``avg_concurrency`` (mean number of packages building at once), a
+    ``headroom`` flag, and a human ``recommendation``.  Returns None when there
+    is not enough data (no traces, zero wall-clock).
+
+    Heuristic: if utilisation is below target but the builder slots were mostly
+    full, the limiter is per-package serial phases (configure/link/install/tar)
+    → suggest a higher ``--oversubscribe`` (which raises each builder's ``-j``
+    and, by design, leaves the memory budget untouched).  If the slots were
+    often empty, the dependency graph is the limiter → suggest more
+    ``--builders`` and/or reusing prebuilt tarballs.
+    """
+    builders = max(1, int(builders))
+    ncpu = multiprocessing.cpu_count() or 1
+    total_core_seconds = 0.0
+    total_pkg_seconds = 0
+    n = 0
+    for pkg, script_dir in monitored.items():
+        r = _integral_from_trace(join(script_dir, "%s.json" % pkg))
+        if not r:
+            continue
+        total_core_seconds += r["core_seconds"]
+        total_pkg_seconds += r["time"]
+        n += 1
+    if n == 0 or wall_seconds <= 0:
+        return None
+
+    try:
+        oversubscribe = max(1.0, float(oversubscribe))
+    except (TypeError, ValueError):
+        oversubscribe = 1.0
+
+    util = total_core_seconds / (ncpu * wall_seconds)
+    avg_conc = total_pkg_seconds / wall_seconds
+    busy_ratio = avg_conc / builders
+    target = 0.90
+    headroom = util < target
+
+    report = {
+        "ncpu": ncpu,
+        "wall_seconds": round(wall_seconds, 1),
+        "builders": builders,
+        "jobs": int(jobs),
+        "oversubscribe": round(oversubscribe, 2),
+        "cpu_utilisation": round(min(util, 1.0), 3),
+        "avg_concurrency": round(avg_conc, 2),
+        "headroom": headroom,
+    }
+
+    if not headroom:
+        report["recommendation"] = (
+            "CPU averaged %.0f%% of %d cores — good utilisation; no change suggested."
+            % (min(util, 1.0) * 100, ncpu)
+        )
+        report["suggested"] = {"builders": builders, "oversubscribe": round(oversubscribe, 2)}
+        return report
+
+    if busy_ratio >= 0.8:
+        # Builder slots were busy but cores idle → per-package serial phases.
+        new_ov = round(min(3.0, max(oversubscribe + 0.25,
+                                    oversubscribe * target / max(util, 0.3))), 2)
+        report["suggested"] = {"builders": builders, "oversubscribe": new_ov}
+        report["recommendation"] = (
+            "CPU averaged %.0f%% of %d cores while ~%.1f/%d builder slots were busy: "
+            "per-package serial phases (configure/link/install/tar) left cores idle. "
+            "Try --oversubscribe %.2f to raise each builder's -j (the memory budget is "
+            "unchanged)." % (util * 100, ncpu, avg_conc, builders, new_ov)
+        )
+    else:
+        # Slots often empty → dependency-graph / critical-path bound.
+        new_b = builders + max(1, builders // 2)
+        report["suggested"] = {"builders": new_b, "oversubscribe": round(oversubscribe, 2)}
+        report["recommendation"] = (
+            "CPU averaged %.0f%% of %d cores and only ~%.1f/%d builder slots were filled "
+            "on average: the dependency graph was the limiter. Try --builders %d, and/or "
+            "reuse prebuilt tarballs (remote/CVMFS store) for unchanged packages."
+            % (util * 100, ncpu, avg_conc, builders, new_b)
+        )
+    return report
+
+
+def aggregate_and_write(work_dir: str, monitored: dict, tuning: dict = None):
     """Aggregate per-package monitor traces into a stats file.
 
     Parameters
@@ -131,6 +248,8 @@ def aggregate_and_write(work_dir: str, monitored: dict):
         "known":     [],
         "defaults":  defaults,
     }
+    if tuning:
+        stats["tuning"] = tuning
     path = default_stats_path(work_dir)
     try:
         with open(path, "w") as fh:

@@ -2807,18 +2807,25 @@ def doBuild(args, parser):
       buildList.append((p, _build_cmd, tar_command, upload_command, cachedTarball, breq, checkout_cmd))
 
   if (not args.makeflow) and (args.builders > 1) and buildTargets:
+    _run_t0 = time.monotonic()
     try:
       scheduler.run()
     finally:
       # Always stop the straggler-renice watchdog, even if run() raised.
       if getattr(scheduler, "renice_watchdog", None) is not None:
         scheduler.renice_watchdog.stop()
+    _run_wall = time.monotonic() - _run_t0
     # Refresh the self-tuning resource-stats file from this run's monitor traces
     # so the next --builders invocation can schedule with up-to-date estimates (P3).
+    # Also estimate CPU utilisation and, when there is headroom, record/print a
+    # suggestion for --builders / --oversubscribe.
+    _tuning = None
     if args.resourceMonitoring and monitoredDirs:
       try:
-        from bits_helpers.build_stats import aggregate_and_write
-        aggregate_and_write(workDir, monitoredDirs)
+        from bits_helpers.build_stats import aggregate_and_write, tuning_report
+        _tuning = tuning_report(monitoredDirs, _run_wall, args.builders, args.jobs,
+                                getattr(args, "oversubscribe", 1.0) or 1.0)
+        aggregate_and_write(workDir, monitoredDirs, tuning=_tuning)
       except Exception as exc:  # pylint: disable=broad-except
         warning("Could not update build resource stats: %s", exc)
     for (action, error) in scheduler.errors.items():
@@ -2835,6 +2842,12 @@ def doBuild(args, parser):
         info("  Full error log:         %s", _full_path)
       info("  Per-package build logs: %s/BUILD/<package>-latest/log", workDir)
       info("=" * 70)
+    # End-of-run resource-tuning hint. Only on a clean build — the utilisation
+    # numbers are meaningless for a partial/failed run. The full report is in
+    # bits_build_stats.json under "tuning".
+    if _tuning and _tuning.get("headroom") and not scheduler.brokenJobs:
+      banner("Resource tuning (recorded in %s):\n  %s",
+             join(workDir, "bits_build_stats.json"), _tuning["recommendation"])
     if scheduler.brokenJobs:
       dieOnError(True, "Please fix the above errors.")
   elif args.makeflow and buildTargets:
