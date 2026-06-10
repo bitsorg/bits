@@ -41,6 +41,11 @@ Goal: every build is labelled and provenance-aware. No behaviour change.
    - Test: extend `tests/test_build_stats.py`/a new `tests/test_provenance.py` to assert fields land in the written JSON.
 
 3. **Surface `build_id` in the modulefile — hash-neutrally.**
+   *(DEFERRED to Stage 1/2.* There is no post-build modulefile step in
+   `build.py` today, so this would mean a new install-tree-mutation step on every
+   build — riskier than warranted while the resolver reads `build_id` from
+   `.meta.json`, not the modulefile. Do it when generating overlay modulefiles,
+   where modulefile content is already being written.)*
    - **Do NOT modify `bits-recipe-tools`/`MakeModule`**: that re-hashes every
      package (bits-recipe-tools is a universal `build_requires`) and would force
      a full rebuild for the simple aliBuild case — forbidden by the backward-

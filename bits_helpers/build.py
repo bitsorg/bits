@@ -740,6 +740,14 @@ def create_provenance_info(package, specs, args):
   def dependency_list(key):
     return [spec_info(specs[dep]) for dep in specs[package].get(key, ())]
 
+  # ADR-0001 additive provenance: build_id / abi_tag / reuse_policy + a repro
+  # block. Never enters the package hash and never alters behaviour (the simple
+  # aliBuild case is unaffected); all reads are defensive so a minimal build
+  # still produces a record. Stage 0: reuse_policy is always "strict" and
+  # provenance "pure" (relaxed reuse, which sets "loose", lands in a later stage).
+  from bits_helpers.provenance import (
+    compute_build_id, compute_abi_tag, recipe_tools_ref,
+  )
   return json.dumps({
     "comment": args.annotate.get(package),
     "bits_version": __version__,
@@ -748,6 +756,15 @@ def create_provenance_info(package, specs, args):
     },
     "architecture": args.architecture,
     "defaults": args.defaults,
+    "build_id": compute_build_id(specs, args),
+    "abi_tag": compute_abi_tag(args),
+    "reuse_policy": getattr(args, "reuse_policy", "strict") or "strict",
+    "provenance": "pure",
+    "repro": {
+      "dist_commit": os.environ.get("BITS_DIST_HASH"),
+      "recipe_tools": recipe_tools_ref(specs),
+      "defaults": args.defaults,
+    },
     "package": spec_info(specs[package]),
     "dependencies": {
       "direct": {
