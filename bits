@@ -111,6 +111,26 @@ function detectShell() {
   esac
 }
 
+function _listPkgVersions() {
+  # Emit the <pkg>/<version> directories under the install tree (the input the
+  # module-collection loop consumes).
+  #
+  # Fast path: when the tree is served from CVMFS, ask its serving catalog via
+  # the bitsModules helper — one HTTP fetch + a local SQLite query — instead of
+  # a per-file FUSE walk. The helper exits non-zero (fall-back contract) when
+  # its single-dedicated-catalog convention does not hold, in which case we use
+  # the POSIX `find` walk. Off CVMFS we go straight to find (no python spawn).
+  local dir="$1" real bm
+  real=$(readlink -f "$dir" 2> /dev/null || echo "$dir")
+  if [[ "$real" == /cvmfs/* ]]; then
+    bm=$(command -v bitsModules 2> /dev/null || echo "${BITSDIR}/bitsModules")
+    if [[ -x "$bm" ]] && "$bm" "$dir" --depth2-dirs 2> /dev/null; then
+      return 0
+    fi
+  fi
+  find "$dir" -maxdepth 2 -mindepth 2 2> /dev/null
+}
+
 function collectModules() {
   if [[ -z "$NO_REFRESH" ]]; then
     # Collect all modulefiles in one place.
@@ -134,7 +154,7 @@ EOF
       [[ ! -e "$PKG/etc/modulefiles/$PKGNAME" ]] && continue
       mkdir -p "${WORK_DIR}/MODULES/${ARCHITECTURE}/${PKGNAME}"
       cp "$PKG/etc/modulefiles/$PKGNAME" "${WORK_DIR}/MODULES/${ARCHITECTURE}/${PKGNAME}/${PKGVER}"
-    done < <(find "${WORK_DIR}/${ARCHITECTURE}" -maxdepth 2 -mindepth 2 2> /dev/null)
+    done < <(_listPkgVersions "${WORK_DIR}/${ARCHITECTURE}")
   else
     printf "${EY}WARNING: not updating modulefiles${EZ}\n" >&2
   fi
