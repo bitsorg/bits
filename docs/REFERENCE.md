@@ -630,7 +630,10 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--build-nice-boost-after SECONDS` | With `--build-nice`, a watchdog boosts a long-running straggler compile — one at a time — so a single heavy Fortran/C++ translation unit does not drag out the end of the build. Native builds: the longest-running niced-down build subtree is reniced toward 0 (requires privilege — root / `CAP_SYS_NICE` — and is a logged no-op otherwise). `--docker`/podman builds: each build runs in a named container (`bits-build-<pkg>-<id>`); the watchdog peeks inside with `docker exec … ps`, finds a compiler back-end (cc1plus/f951/…) that has been running longer than this, and renices it with `docker exec --user 0 … renice` (run as root inside the container, so it can raise priority). **Requires `ps` (the `procps` package) in the build image** — see note below. `0` disables. Default: 600. |
 | `--makeflow` | Generate a [Makeflow](https://ccl.cse.nd.edu/software/makeflow/) workflow file from the dependency graph and execute it with the `makeflow` binary (must be installed separately from CCTools). Bits collects all pending builds, writes `sw/BUILD/<hash>/makeflow/Makeflow`, then runs `makeflow` to execute the graph in parallel. Mutually exclusive with `--builders N`. |
 | `--pipeline` | Split each Makeflow rule into `.build`, `.tar`, and `.upload` stages so that tarball creation and upload can overlap with downstream builds. Requires `--makeflow`; silently ignored otherwise. |
-| `--prefetch-workers N` | Spawn *N* background threads to fetch remote tarballs and source archives ahead of the main build loop. Default: 0 (disabled). No effect without `--remote-store`. |
+| `--prefetch-workers N` | Spawn *N* background threads to fetch remote tarballs and source archives ahead of the main build loop, so downloads overlap with compilation instead of blocking the serial preparation pass. Default: `-1` (auto — scales with `--builders`, capped at 4); `0` disables. No effect without `--remote-store`. |
+| `--parallel-downloads N` | Maximum concurrent source/tarball downloads the `--builders` scheduler runs as standalone download tasks (so a checkout overlaps the previous package's build). Default: 2. |
+| `--auto-resources` | Opt-in measurement-driven scheduling for `--builders > 1`: auto-load the per-package CPU/RAM stats a previous run recorded (re-stamped for this machine) and enable monitoring to refresh them, so the scheduler only admits a new build when the machine still has budget. Off by default (concurrency is then bounded purely by `--builders`); explicit `--resources`/`--resource-monitoring` still take precedence. |
+| `--brew` | **macOS only.** Let a recipe that sources a system library from Homebrew run `brew install <formula>` on demand (during dependency resolution) when the formula is missing. Without it, such a recipe fails with a message naming the formula to install. Exported to recipe `prefer_system_check` scripts as `BITS_BREW=1`. See [macOS Homebrew system layer](#macos-homebrew-system-layer). |
 | `--parallel-sources N` | Download up to *N* `sources:` URLs concurrently within a single package checkout. Default: 1 (sequential). |
 | `-e KEY=VALUE` | Extra environment variable binding (repeatable). |
 | `-z PREFIX`, `--devel-prefix PREFIX` | Version prefix for development packages. |
@@ -1095,6 +1098,16 @@ bits avail         # raw modulecmd avail output
 
 `bits q` lists modules in `BITS_PKG_PREFIX@PKG::VERSION` format. The optional `REGEXP` is a case-insensitive extended regular expression. The modules directory is refreshed before listing. `bits avail` delegates directly to `modulecmd bash avail`.
 
+**Fast listing on CVMFS.** Enumerating the install tree per file is expensive on
+CVMFS (every directory test is a FUSE lookup). When the tree is served from
+`/cvmfs` the refresh first tries the `bitsModules` helper, which reads the
+serving catalog's content hash from the cvmfs `user.catalog_counters` xattr,
+fetches that one catalog object over HTTP, and lists every entry from a single
+local SQLite query — no per-file walk. It applies only when the queried path is
+served by a single dedicated catalog rooted there with no deeper nested
+catalogs; otherwise (and always off CVMFS) it falls back transparently to the
+POSIX `find` walk, so behaviour is unchanged.
+
 ---
 
 ### bits modulecmd
@@ -1359,6 +1372,32 @@ Because flavours enter the shared `defaults-release` environment, they are
 **global** to the build (they gate dependencies anywhere in the DAG, not just on
 the named package) and changing one re-hashes the affected packages, triggering
 a rebuild — the same as changing a defaults `env:` value.
+
+##### Defaults `variables:` and predefined platform variables
+
+The `(?NAME)` matcher reads from three merged sources:
+
+- a `--flavour NAME[=VALUE]` on the command line (above);
+- a `variables:` entry in any active defaults file;
+- **predefined platform variables** derived from the architecture — on
+  `osx_arm64` these are `osx`, `arm64`, and `aarch64` (truthy). So `pkg:(?osx)`
+  is an osx-only dependency. Note `pkg:(?!osx)` is a negative-lookahead **regex**
+  matched against the architecture string (the non-osx counterpart), *not*
+  variable negation — there is no variable-negation atom.
+
+A defaults `variables:` entry is either a plain `name: value`, or a **gated**
+form that only takes effect when its own matcher (same grammar as above) holds:
+
+```yaml
+variables:
+  cuda: false                        # plain default
+  use_openloops:
+    value: true
+    when: "(?openloops) && (?!osx)"  # only with --flavour openloops, and off macOS
+```
+
+A truthy value is anything except empty, `0`, `false`, `off`, or `no`. A
+`--flavour` of the same name overrides a defaults `variables:` value.
 
 #### Dependencies
 
@@ -1804,6 +1843,18 @@ The original platform architecture (`slc7_x86-64`) is still passed to the build 
 
 Packages that declare `architecture: shared` (see [§20](#20-architecture-independent-shared-packages)) are **unaffected** by either mechanism: their effective architecture is always `shared` regardless of which defaults are active.
 
+##### Entering a qualified-architecture build
+
+The module frontend (`bits enter`/`q`/`load`) auto-detects only the **raw**
+architecture, so when a build was qualified you must point it at the combined
+string. After a successful qualified build the success banner prints the exact
+command, e.g. `bits -a slc7_x86-64-dev-gcc13 enter MyPackage/latest-…`, and
+suggests `export BITS_ARCHITECTURE=slc7_x86-64-dev-gcc13` to make it the default
+for the session. As a convenience, when `-a` is not given and the detected raw
+architecture has no install tree under the work dir, the frontend uses the sole
+architecture present (if there is exactly one) or warns and lists them (if
+several) instead of silently picking one. An explicit `-a` is always respected.
+
 ---
 
 #### Global qualification with `qualify_arch`
@@ -1903,6 +1954,41 @@ bits clean -a slc7_x86-64-gcc13
 ### Architecture-specific overlay
 
 If a file named `defaults-<architecture>.sh` exists in the recipe repository (e.g. `defaults-osx_arm64.sh`), bits silently loads it and merges its header on top of the already-merged profile, skipping the `package` key to avoid a name clash. This is the mechanism for per-platform tweaks such as disabling packages that do not build on a particular OS.
+
+
+---
+
+### macOS Homebrew system layer
+
+macOS is a developer platform for bits — it does not build or publish CVMFS
+tarballs there, so stable low-level system libraries and build tools are sourced
+from **Homebrew** rather than built. A recipe opts in via its YAML header:
+
+```yaml
+homebrew_formula: readline          # one formula, or a list
+homebrew_taps:                      # optional, rarely needed
+  - some/tap
+```
+
+`bits brew` scans the recipes and writes a Brewfile (default
+`<recipe-dir>/macos/Brewfile`) listing every declared formula that applies to
+the target architecture. Two ways to install them:
+
+- **Build node (all up front):** `brew bundle --file macos/Brewfile`.
+- **Individual user (on demand):** `bits build --brew …`. With `--brew`, a
+  recipe's `prefer_system_check` (which runs unsandboxed during dependency
+  resolution and sees `BITS_BREW=1`) runs `brew install <formula>` only for a
+  formula a package actually being built needs and that is missing.
+
+The build phase itself is sandboxed on macOS (no network), so `HomebrewRecipe`
+never installs — it only exposes an installed formula as a bits package by
+symlinking its prefix into `$INSTALLROOT` (so `<PKG>_ROOT`, `PKG_CONFIG_PATH`
+etc. resolve to the Homebrew tree). `bits doctor` runs `brew bundle check`
+against the Brewfile on macOS and reports missing formulae.
+
+The Brewfile is a **derived** artifact (the recipes are the source of truth):
+regenerate and commit it whenever a recipe's `homebrew_formula` changes, and use
+`bits brew --check` in CI to fail on a stale file.
 
 
 ---
