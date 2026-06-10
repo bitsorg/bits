@@ -1368,6 +1368,13 @@ sees it) **and** the `env:` map (so it is exported as `$NAME` in every recipe's
 build and contributes to the package hash). A `--flavour` overrides a defaults
 `variables:`/`env:` entry of the same name.
 
+`NAME` must be a plain identifier — `[A-Za-z_][A-Za-z0-9_]*` (a letter or
+underscore, then letters/digits/underscores). **Hyphens are not allowed:** use
+`use_openloops`, not `use-openloops`. The `(?NAME)` matcher only recognises an
+identifier, so a hyphenated name is silently treated as an architecture regex
+(and its gate never fires); names are also exported as `$NAME` env vars, which
+cannot contain `-`. The same rule applies to defaults `variables:` keys.
+
 Because flavours enter the shared `defaults-release` environment, they are
 **global** to the build (they gate dependencies anywhere in the DAG, not just on
 the named package) and changing one re-hashes the affected packages, triggering
