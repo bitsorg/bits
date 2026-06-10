@@ -219,8 +219,17 @@ function normModules() {
 }
 
 function existModules() {
-  local MODULE
+  # A bits module <pkg>[/<version>] is present iff it exists in the modulefile
+  # cache: <pkg>/<version> is a file, a bare <pkg> a directory. Test that
+  # directly — instant — instead of spawning `modulecmd avail` (a full-tree
+  # scan/evaluate) once per requested module, which was the main reason
+  # load/enter/printenv were notably slower than q. Fall back to modulecmd only
+  # when the direct lookup misses, so extra MODULEPATH entries and
+  # default-version aliases still resolve. The `..` guard keeps the fast path
+  # from matching path-traversal names (modulecmd then rejects them).
+  local MODULE mroot="${WORK_DIR}/MODULES/${ARCHITECTURE}"
   for MODULE in "$@"; do
+    [[ "$MODULE" != *..* && -e "$mroot/$MODULE" ]] && continue
     $MODULECMD bash -t avail 2>&1 | grep -qFx "$MODULE" || \
       { printf "${ER}ERROR: $MODULE was not found${EZ}\n" >&2; return 1; }
   done
