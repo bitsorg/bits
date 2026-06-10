@@ -3005,12 +3005,25 @@ def doBuild(args, parser):
                                       _main_spec)))
         except Exception:  # pylint: disable=broad-except
           _install_root_line = ""
+      # When --defaults qualified the architecture (qualify_arch), the install
+      # tree lives under the combined arch string, but `bits enter` auto-detects
+      # only the raw base arch -- so the suggested command must pass -a
+      # explicitly, otherwise it would look in the wrong sw/<arch>.
+      if args.architecture != raw_architecture:
+        _arch_flag = "-a %s " % args.architecture
+        _arch_note = (
+            "\n\n(This build used the defaults-qualified architecture "
+            f"`{args.architecture}'; pass it with -a as above, or persist it "
+            f"with `export BITS_ARCHITECTURE={args.architecture}'.)")
+      else:
+        _arch_flag, _arch_note = "", ""
       banner(f"Build of {mainPackage} successfully completed on `{socket.gethostname()}'.\n"
              "Your software installation is at:"
              f"\n\n  {abspath(join(args.workDir, args.architecture))}\n"
              f"{_install_root_line}\n"
              "You can use this package by loading the environment:"
-             f"\n\n  bits enter {mainPackage}/latest-{mainBuildFamily}",
+             f"\n\n  bits {_arch_flag}enter {mainPackage}/latest-{mainBuildFamily}"
+             f"{_arch_note}",
              )
   else:
       banner("Successfully built dependencies for package %s on `%s'.\n",

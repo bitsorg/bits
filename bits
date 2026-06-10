@@ -418,9 +418,30 @@ if [[ -z "$WORK_DIR" ]]; then
 fi
 [[ ! -d "$WORK_DIR" ]] && { printHelp "Work dir $WORK_DIR cannot be accessed"; false; }
 WORK_DIR=$(cd "$WORK_DIR"; pwd)
+# Remember whether the architecture was given explicitly (-a); if so, respect it
+# verbatim and never second-guess it below.
+_ARCH_GIVEN=; [[ -n "$ARCHITECTURE" ]] && _ARCH_GIVEN=1
 [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("bitsBuild" architecture 2> /dev/null || true)"
 [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
-[[ -z "$ARCHITECTURE" || "$ARCHITECTURE" == "<unknown>" ]] && ARCHITECTURE=$(ls -1t "$WORK_DIR" 2>/dev/null | grep -vE '^[A-Z]+$' | head -n1)
+# --defaults can qualify the architecture (e.g. osx_arm64 -> osx_arm64_gcc15), so
+# the auto-detected base arch may have no install tree here. When -a was not
+# given and the detected arch is absent/unknown, prefer an arch actually present
+# in the work dir: guess it if there is exactly one, or warn and list them when
+# there are several (rather than silently picking the wrong one).
+if [[ -z "$_ARCH_GIVEN" ]] && \
+   { [[ -z "$ARCHITECTURE" || "$ARCHITECTURE" == "<unknown>" ]] || [[ ! -d "$WORK_DIR/$ARCHITECTURE" ]]; }; then
+  _present=()
+  for _a in $(ls -1 "$WORK_DIR" 2> /dev/null | grep -vE '^[A-Z]+$'); do
+    [[ -d "$WORK_DIR/$_a" ]] && _present+=("$_a")
+  done
+  if [[ ${#_present[@]} -eq 1 ]]; then
+    ARCHITECTURE="${_present[0]}"
+  elif [[ ${#_present[@]} -gt 1 ]]; then
+    printf "${EY}WARNING: several architectures are present in %s and none was selected:${EZ}\n" "$WORK_DIR" >&2
+    printf "           %s\n" "${_present[@]}" >&2
+    printf "${EY}         Pass one explicitly, e.g.  bits -a %s %s${EZ}\n" "${_present[0]}" "${ACTION:-q}" >&2
+  fi
+fi
 [[ -z "$ARCHITECTURE" ]] && { printHelp "Cannot autodetect architecture"; false; }
 
 # Look for modulecmd (v3) or modulecmd-compat (>= v4)
