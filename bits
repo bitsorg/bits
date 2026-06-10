@@ -147,6 +147,7 @@ function collectModules() {
     { printf "${ER}ERROR: WORK_DIR or ARCHITECTURE is empty; cannot refresh modules${EZ}\n" >&2; return 1; }
   local mroot="${WORK_DIR}/MODULES/${ARCHITECTURE}"
   local iroot="${WORK_DIR}/${ARCHITECTURE}"
+  local stamp="$mroot/.bits_sync_stamp"
   mkdir -p "$mroot/BASE"
   cat > "$mroot/BASE/1.0" <<EOF
 #%Module1.0
@@ -155,11 +156,19 @@ setenv BASEDIR \$base_path
 set osname [uname sysname]
 set osarchitecture [uname machine]
 EOF
-  # Incremental sync (was a full rm -rf + recopy on every load/enter/avail,
-  # which is slow with many packages): copy a modulefile into the cache only
-  # when it is missing or newer than the cached copy, then drop cache entries
-  # whose source has vanished. After a build with no module changes this copies
-  # nothing.
+  # Fast skip: the per-package stat/copy walk below is O(N) and, on a slow
+  # filesystem, dominates load/enter (seconds). If nothing in the install tree
+  # has changed since the last successful sync, the cache is already current —
+  # detect that with one shallow `find -newer` (the same cheap traversal as a
+  # bare find) and return. -maxdepth 2 includes the arch dir and the per-package
+  # dirs, so package add/remove and version re-symlinks all bump a checked mtime.
+  if [[ -f "$stamp" ]] && \
+     [[ -z "$(find "$iroot" -maxdepth 2 -newer "$stamp" 2> /dev/null | head -1)" ]]; then
+    return 0
+  fi
+  # Incremental sync: copy a modulefile into the cache only when it is missing
+  # or newer than the cached copy, then drop cache entries whose source has
+  # vanished. After a build with no module changes this copies nothing.
   local PKG PKGVER PKGNAME src dest
   while read -r PKG; do
     [[ -n "$PKG" ]] || continue
@@ -189,6 +198,8 @@ EOF
     [[ "$(basename "$d")" == BASE ]] && continue
     rmdir "$d" 2> /dev/null || true
   done
+  # Stamp the sync so the next call can fast-skip when nothing changed.
+  : > "$stamp" 2> /dev/null || true
 }
 
 function listAvailableModules() {
@@ -483,9 +494,11 @@ fi
 WORK_DIR=$(cd "$WORK_DIR"; pwd)
 # Remember whether the architecture was given explicitly (-a); if so, respect it
 # verbatim and never second-guess it below.
+_bt_mark startup            # script start → here (configBits, option/work-dir parsing)
 _ARCH_GIVEN=; [[ -n "$ARCHITECTURE" ]] && _ARCH_GIVEN=1
 [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("bitsBuild" architecture 2> /dev/null || true)"
 [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
+_bt_mark archdetect         # cost of the bitsBuild architecture python spawn
 # --defaults can qualify the architecture (e.g. osx_arm64 -> osx_arm64_gcc15), so
 # the auto-detected base arch may have no install tree here. When -a was not
 # given and the detected arch is absent/unknown, prefer an arch actually present
