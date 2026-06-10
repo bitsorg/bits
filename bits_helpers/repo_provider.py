@@ -318,7 +318,6 @@ def clone_or_update_provider(
     marker = join(checkout_dir, ".bits_provider_ok")
     if exists(marker):
         debug("Provider '%s' is up-to-date (cache hit @ %s)", package, short_hash)
-        info("Reusing cached provider '%s' @ %s", package, short_hash)
         symlink(short_hash, join(cache_root, "latest"))
         return checkout_dir, commit_hash
 

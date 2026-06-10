@@ -1521,8 +1521,6 @@ def doBuild(args, parser):
     if isinstance(_dn, bool):
       _dn = "on" if _dn else "off"
     args.sandboxNetwork = str(_dn).strip().lower()
-    if args.sandboxNetwork == "off":
-      info("Build-time sandbox network allowed by default (defaults system.sandbox_network: off)")
 
   # CPU oversubscription factor for the per-builder -j share. Precedence:
   #   explicit --oversubscribe  >  defaults system.build_oversubscribe  >  1.0.
