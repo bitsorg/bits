@@ -186,31 +186,64 @@ def effective_arch(spec: dict, build_arch: str) -> str:
 def compute_combined_arch(defaults_meta: dict, defaults_list: list, raw_arch: str) -> str:
   """Return the effective architecture string for install paths.
 
-  When any loaded defaults file sets ``qualify_arch: true``, the install
-  directory is qualified with the defaults combination joined by ``-``::
+  **Per-default ``append_arch`` (new mechanism)**
+
+  When one or more loaded defaults files set ``append_arch: <value>``, only
+  those explicit values are appended to *raw_arch*, regardless of the
+  ``qualify_arch`` flag::
+
+      # defaults-gcc13.sh has append_arch: -gcc13
+      # defaults-release.sh has no append_arch
+      # result for --default release::gcc13:
+      compute_combined_arch({"_append_arch_qualifiers": ["-gcc13"]},
+                            ["release", "gcc13"], "slc7_x86-64")
+      # → "slc7_x86-64-gcc13"
+
+  This lets recipe authors opt individual defaults files into architecture
+  qualification while keeping the others transparent.  The values from
+  ``append_arch`` are appended **verbatim**, in the same order as the defaults
+  chain (``--default a::b::c``); no separator is assumed.  Each value must
+  carry its own separator if one is wanted (and may also be glued on with
+  none)::
+
+      append_arch: -gcc15-dbg # -> "<raw>-gcc15-dbg"
+      append_arch: _gcc15     # -> "<raw>_gcc15"
+      append_arch: dbg        # -> "<raw>dbg"      (no separator, glued on)
+
+  **Legacy ``qualify_arch`` (backward-compatible fallback)**
+
+  When no defaults file uses ``append_arch``, the old behaviour applies: if
+  any loaded defaults file sets ``qualify_arch: true``, the install directory
+  is qualified with every non-``release`` default name joined by ``-``::
 
       <raw_arch>-<d1>-<d2>-...
 
-  The ``release`` component is omitted from the suffix because it is the
-  baseline and would add noise (``slc7_x86-64-release`` is less useful than
-  ``slc7_x86-64``).  If, after filtering, no qualifiers remain, *raw_arch*
-  is returned as-is.
-
-  When ``qualify_arch`` is absent or false in the merged defaults metadata the
-  function returns *raw_arch* unchanged, preserving full backward
-  compatibility.
+  When ``qualify_arch`` is absent or false and no ``append_arch`` values were
+  collected, *raw_arch* is returned unchanged.
 
   Examples::
 
       compute_combined_arch({}, ["release"], "slc7_x86-64")
-      # → "slc7_x86-64"  (no qualify_arch flag)
+      # → "slc7_x86-64"  (neither mechanism active)
 
       compute_combined_arch({"qualify_arch": True}, ["dev", "gcc13"], "slc7_x86-64")
-      # → "slc7_x86-64-dev-gcc13"
+      # → "slc7_x86-64-dev-gcc13"  (legacy qualify_arch)
 
       compute_combined_arch({"qualify_arch": True}, ["release"], "slc7_x86-64")
-      # → "slc7_x86-64"  (release-only, no suffix)
+      # → "slc7_x86-64"  (legacy, release-only → no suffix)
+
+      compute_combined_arch({"_append_arch_qualifiers": ["-gcc13"]},
+                            ["release", "gcc13"], "slc7_x86-64")
+      # → "slc7_x86-64-gcc13"  (per-default append_arch, separator in value)
   """
+  # --- New mechanism: per-default append_arch values -------------------------
+  per_default = defaults_meta.get("_append_arch_qualifiers")
+  if per_default:
+    # Append each value verbatim: the separator (if any) lives in the value, so
+    # callers can join with "-", "_", or nothing at all.
+    return raw_arch + "".join(q for q in per_default if q)
+
+  # --- Legacy mechanism: global qualify_arch flag ----------------------------
   if not defaults_meta.get("qualify_arch", False):
     return raw_arch
   qualifiers = [d for d in defaults_list if d != "release"]
@@ -280,9 +313,11 @@ nowKwds = {
   "hour":  str(now.hour).zfill(2),
 }
 
-def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""):
+def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream="",
+                      default_vars=None, strict=True):
   """Expand the data replacing the following keywords:
 
+  - %(name)s      — package name (alias for %(package)s, preferred in source URLs)
   - %(package)s
   - %(commit_hash)s
   - %(short_hash)s
@@ -305,6 +340,7 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
   tag = str(spec.get("tag", "tag_unknown"))
   package = spec.get("package")
   all_vars = {
+    "name": package,       # short alias used in source URLs: %(name)s-%(version)s.tar.gz
     "package": package,
     "root_dir": "${%s_ROOT}" % pkg_to_shell_id(package),
     "commit_hash": commit_hash,
@@ -320,18 +356,49 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
     "os_name": os.name,
     **nowKwds,
   }
+  # default_vars come from the active --defaults profile's `variables:` block and
+  # are shared across recipes.  Apply them BEFORE the recipe's own `variables:`
+  # so a recipe-local definition overrides a profile-wide one of the same name.
+  for k, v in (default_vars or {}).items():
+    all_vars[k] = v
   for k, v in spec.get("variables",{}).items():
     all_vars[k] = v
 
-  # Support for indirect variable expansion e.g. with
-  # variables:
-  #   v1: foo
-  #   foo_key: bar
-  #   final: %%(%(v1)s_key)s
-  # "final" will have the value "bar" (first expanded to "%(foo_key)s" and
-  # then to value of "foo_key" i.e. "bar")
-  while re.search(r"\%\([a-zA-Z][a-zA-Z0-9_]*\)s", data):
-    data = data % all_vars
+  if strict:
+    # Opted-in expansion — version/tag/source/patches, or a recipe that sets
+    # `variables:` / `expand_recipe: true`.  An unknown %(x)s is almost certainly
+    # a typo, so it is fatal.  Uses %-formatting so the documented indirect form
+    # `%%(%(v1)s_key)s` keeps working (%% collapses to % between passes).
+    #   variables:
+    #     v1: foo
+    #     foo_key: bar
+    #     final: %%(%(v1)s_key)s   # -> %(foo_key)s -> bar
+    while re.search(r"\%\([a-zA-Z][a-zA-Z0-9_]*\)s", data):
+      try:
+        data = data % all_vars
+      except KeyError as e:
+        dieOnError(True,
+          "Unknown variable %s referenced in recipe for '%s'.\n"
+          "  Offending value: %r\n"
+          "  Available variables: %s" % (
+            e, package or "?", data, ", ".join(sorted(all_vars))))
+        return data  # guard for mocked dieOnError in tests
+    return data
+
+  # Soft expansion — the recipe did NOT opt in and is only being expanded because
+  # the defaults profile defines `variables:`.  Substitute only the variables we
+  # actually know, leaving any other %(...)s — and bare `%` (shell parameter
+  # expansion like ${v%suffix}, printf %d, etc.) — untouched, so incidental
+  # occurrences in a recipe body are neither clobbered nor turned into a fatal
+  # error.  Loops to support indirect %(%(v1)s_key)s nesting; the prev!=data
+  # guard terminates once no further known substitutions are possible.
+  _var_re = re.compile(r"\%\(([a-zA-Z][a-zA-Z0-9_]*)\)s")
+  def _sub_known(m):
+    return str(all_vars[m.group(1)]) if m.group(1) in all_vars else m.group(0)
+  prev = None
+  while prev != data and _var_re.search(data):
+    prev = data
+    data = _var_re.sub(_sub_known, data)
   return data
 
 def resolve_version(spec, defaults, branch_basename, branch_stream):
@@ -344,7 +411,13 @@ def resolve_tag(spec):
   - %(day)s
   - %(hour)s
   """
-  return spec["tag"] % {**nowKwds, **spec}
+  try:
+    return spec["tag"] % {**nowKwds, **spec}
+  except KeyError as e:
+    dieOnError(True,
+      "Unknown variable %s in tag field of recipe for '%s': %r" % (
+        e, spec.get("package", "?"), spec.get("tag", "")))
+    return spec.get("tag", "")  # guard for mocked dieOnError in tests
 
 
 def normalise_multiple_options(option, sep=","):
@@ -386,50 +459,113 @@ def validateDefaults(finalPkgSpec, defaults):
                    "\n".join([" - " + x for x in validDefaults])), validDefaults)
 
 
-def doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor):
+# Built-in architecture layout, used when no `architecture:` template is set in
+# the defaults.  Expressed with the same %(...)s substitution syntax bits uses
+# elsewhere (sources, tags).  Available keys: see arch_components().
+DEFAULT_ARCH_TEMPLATE = "%(os)s_%(machine)s"
+
+
+def arch_components(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor):
+  """Return the substitution dict from which the architecture string is built.
+
+  Keys:
+    os        -- distro+version token, e.g. "ubuntu2510" (or "osx")
+    machine   -- bits-canonical dashed CPU form, e.g. "x86-64" (or "arm64")
+    _machine  -- uname/underscore CPU form, e.g. "x86_64"
+
+  doDetectArch() assembles the default layout via DEFAULT_ARCH_TEMPLATE; a
+  defaults file may instead supply its own `architecture:` template referencing
+  these keys (e.g. "%(os)s_%(_machine)s" for ubuntu2510_x86_64, or
+  "%(_machine)s-%(os)s" for x86_64-ubuntu2510).
+  """
   if platformSystem == "Darwin":
     processor = platformProcessor
     if not processor:
-      if platform.machine() == "x86_64":
-        processor = "x86-64"
-      else:
-        processor = "arm64"
-    return "osx_%s" % processor.replace("_", "-")
-  distribution, version, flavour = platformTuple
-  distribution = distribution.lower()
-  # If platform.dist does not return something sensible,
-  # let's try with /etc/os-release
-  if distribution not in ["ubuntu", "red hat enterprise linux", "redhat", "centos", "almalinux", "rocky linux"] and hasOsRelease:
-    for x in osReleaseLines:
-      key, is_prop, val = x.partition("=")
-      if not is_prop:
-        continue
-      val = val.strip("\n \"")
-      if key == "ID":
-        distribution = val.lower()
-      if key == "VERSION_ID":
-        version = val
+      processor = "x86-64" if platform.machine() == "x86_64" else "arm64"
+    os_token = "osx"
+  else:
+    distribution, version, flavour = platformTuple
+    distribution = distribution.lower()
+    # If platform.dist does not return something sensible,
+    # let's try with /etc/os-release
+    if distribution not in ["ubuntu", "red hat enterprise linux", "redhat", "centos", "almalinux", "rocky linux"] and hasOsRelease:
+      for x in osReleaseLines:
+        key, is_prop, val = x.partition("=")
+        if not is_prop:
+          continue
+        val = val.strip("\n \"")
+        if key == "ID":
+          distribution = val.lower()
+        if key == "VERSION_ID":
+          version = val
 
-  if distribution == "ubuntu":
-    major, _, minor = version.partition(".")
-    version = major + minor
-  elif distribution == "debian":
-    # http://askubuntu.com/questions/445487/which-ubuntu-version-is-equivalent-to-debian-squeeze
-    debian_ubuntu = {"7": "1204", "8": "1404", "9": "1604", "10": "1804", "11": "2004"}
-    if version in debian_ubuntu:
-      distribution = "ubuntu"
-      version = debian_ubuntu[version]
-  elif distribution in ["redhat", "red hat enterprise linux", "centos", "almalinux", "rocky linux"]:
-    distribution = "slc"
+    if distribution == "ubuntu":
+      major, _, minor = version.partition(".")
+      version = major + minor
+    elif distribution == "debian":
+      # http://askubuntu.com/questions/445487/which-ubuntu-version-is-equivalent-to-debian-squeeze
+      debian_ubuntu = {"7": "1204", "8": "1404", "9": "1604", "10": "1804", "11": "2004"}
+      if version in debian_ubuntu:
+        distribution = "ubuntu"
+        version = debian_ubuntu[version]
+    elif distribution in ["redhat", "red hat enterprise linux", "centos", "almalinux", "rocky linux"]:
+      distribution = "slc"
 
-  processor = platformProcessor
-  if not processor:
-    # Sometimes platform.processor returns an empty string
-    processor = getoutput(("uname", "-m")).strip()
+    processor = platformProcessor
+    if not processor:
+      # Sometimes platform.processor returns an empty string
+      processor = getoutput(("uname", "-m")).strip()
 
-  return "{distro}{version}_{machine}".format(
-    distro=distribution, version=version.split(".")[0],
-    machine=processor.replace("_", "-"))
+    os_token = "{distro}{version}".format(distro=distribution, version=version.split(".")[0])
+
+  return {
+    "os": os_token,
+    "machine": processor.replace("_", "-"),
+    "_machine": processor.replace("-", "_"),
+  }
+
+
+def apply_arch_template(template, components):
+  """Render an architecture *template* (``%(os)s``/``%(machine)s``/...) against
+  *components*.  A literal string with no placeholders is returned unchanged."""
+  try:
+    return template % components
+  except (KeyError, ValueError) as exc:
+    raise ValueError("invalid architecture template %r: %s" % (template, exc))
+
+
+def doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor):
+  return apply_arch_template(
+    DEFAULT_ARCH_TEMPLATE,
+    arch_components(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor))
+
+
+# ── architecture token matching (order- and separator-independent) ──────────
+# Used so that custom layouts (ubuntu2510_x86_64, x86_64-ubuntu2510, ...) are
+# recognised without --force-unknown-architecture, and so docker-image / S3
+# lookups match by content rather than by string position.
+_ARCH_DISTRO_RE = re.compile(
+  r"(slc[0-9]+|ubuntu[0-9]*|ubt[0-9]*|osx|fedora[0-9]*|alma(?:linux)?[0-9]*"
+  r"|centos[0-9]*|rocky[0-9]*|rhel[0-9]*|el[0-9]+|debian[0-9]*)")
+_ARCH_MACHINE_RE = re.compile(r"(x86[-_]64|aarch64|arm64|ppc64le|ppc64)")
+
+
+def arch_distro_token(architecture):
+  """Return the distro token (e.g. 'ubuntu2510') found anywhere in *architecture*."""
+  m = _ARCH_DISTRO_RE.search(architecture or "")
+  return m.group(0) if m else None
+
+
+def arch_machine_token(architecture):
+  """Return the CPU token (e.g. 'x86-64'/'x86_64') found anywhere in *architecture*."""
+  m = _ARCH_MACHINE_RE.search(architecture or "")
+  return m.group(0) if m else None
+
+
+def normalise_arch_key(architecture):
+  """(distro, dashed-machine) key for order/separator-independent comparison."""
+  mac = arch_machine_token(architecture)
+  return (arch_distro_token(architecture), mac.replace("_", "-") if mac else None)
 
 # Try to guess a good platform. This does not try to cover all the
 # possibly compatible linux distributions, but tries to get right the
@@ -466,33 +602,339 @@ def detectArch():
   except Exception:
     return doDetectArch(hasOsRelease, osReleaseLines, ["unknown", "", ""], "", "")
 
+
+def detectArchComponents():
+  """Like detectArch(), but returns the {os, machine, _machine} substitution
+  dict (see arch_components) so a defaults `architecture:` template can be
+  rendered against the locally detected platform."""
+  try:
+    with open("/etc/os-release") as osr:
+      osReleaseLines = osr.readlines()
+    hasOsRelease = True
+  except OSError:
+    osReleaseLines = []
+    hasOsRelease = False
+  if platform.system() == "Darwin":
+    machine = "x86-64" if platform.machine() == "x86_64" else platform.machine()
+    return {"os": "osx", "machine": machine.replace("_", "-"), "_machine": machine.replace("-", "_")}
+  try:
+    import distro
+    platformProcessor = platform.processor()
+    if not platformProcessor or " " in platformProcessor:
+      platformProcessor = platform.machine()
+    return arch_components(hasOsRelease, osReleaseLines, distro.linux_distribution(),
+                           platform.system(), platformProcessor)
+  except Exception:
+    return arch_components(hasOsRelease, osReleaseLines, ["unknown", "", ""], "", "")
+
 def _parse_req_matcher(r):
-  """Split a requirement string into ``(requirement_name, matcher)`` pair.
+  """Split a requirement string into ``(name, matcher, version_pin)`` triple.
 
-  Requirement strings may be plain package names or ``name:matcher`` where
-  *matcher* is either an architecture regex or ``defaults=<regex>``.
+  Supported syntaxes::
+
+      name                          plain dependency
+      name:matcher                  architecture/defaults-conditional dependency
+      name = version                dependency with explicit version pin
+      name = version:matcher        version pin + arch/defaults condition
+
+  *matcher* is an architecture regex or ``defaults=<regex>``, exactly as for
+  the two-field form.  *version_pin* is ``None`` when no ``= version`` clause
+  is present.
+
+  The ``=`` must appear **before** the ``:`` (if any) so that version strings
+  containing ``:`` are not ambiguous with matchers.  In practice version
+  strings do not contain ``:``, so this is not a real constraint.
   """
-  return r.split(":", 1) if ":" in r else (r, ".*")
+  # Locate = and : positions.  Only treat = as a version separator when it
+  # appears before the first : (or when there is no :).
+  eq_pos = r.find("=")
+  colon_pos = r.find(":")
+  if eq_pos != -1 and (colon_pos == -1 or eq_pos < colon_pos):
+    name = r[:eq_pos].strip()
+    rest = r[eq_pos + 1:].strip()
+    if ":" in rest:
+      pin, matcher = rest.split(":", 1)
+      return name, matcher, pin.strip()
+    return name, ".*", rest
+  if ":" in r:
+    name, matcher = r.split(":", 1)
+    return name, matcher, None
+  return r, ".*", None
 
-def filterByArchitectureDefaults(arch, defaults, requires):
-  """Yield requirements from *requires* that are satisfied by *arch*/*defaults*."""
+
+def _defaults_active(matcher, defaults):
+  """Return True if a ``defaults=<regex>`` *matcher* matches the active defaults.
+
+  ``defaults`` is what bits threads through from ``args.defaults``, which is a
+  *list* of profile names (``--defaults dev4::cuda`` -> ``["dev4", "cuda"]``);
+  older callers/tests may pass a bare string.  The conditional is active when the
+  regex matches ANY active profile, so a recipe can require a dependency only
+  under a given profile, e.g. ``- "cuda:defaults=cuda"`` (enabled by
+  defaults-cuda.sh).  Matching per-element also makes this safe: the previous
+  code passed the whole list to ``re.match`` and would raise TypeError.
+  """
+  rx = matcher[len("defaults="):]
+  defs = defaults if isinstance(defaults, (list, tuple)) else [defaults]
+  return any(re.match(rx, d) for d in defs)
+
+
+# A variable-reference matcher is spelled "(?NAME)" -- an identifier in the same
+# parenthesised form as a regex group, but one that is NOT a legal regex (e.g.
+# "(?cuda)" raises re.error: "unknown extension ?c").  This lets a recipe gate a
+# dependency on a defaults *variable* rather than on the architecture string:
+#   - "cuda:(?cuda)"      # require cuda only when variable `cuda` is truthy
+# It is deliberately distinct from arch regexes such as "(?!osx)" (a valid
+# negative-lookahead, kept as an arch match) -- we only treat "(?NAME)" as a
+# variable reference when it fails to compile as a regex, so real regexes
+# (including inline-flag groups like "(?i)") are never misinterpreted.
+_VAR_MATCHER_RE = re.compile(r"\(\?([A-Za-z_][A-Za-z0-9_]*)\)\Z")
+
+
+def _var_matcher_name(matcher):
+  """Return the variable NAME if *matcher* is a "(?NAME)" variable reference,
+  else None (in which case it is an arch regex / defaults= matcher)."""
+  m = _VAR_MATCHER_RE.match(matcher or "")
+  if not m:
+    return None
+  try:
+    re.compile(matcher)
+  except re.error:
+    return m.group(1)   # not a valid regex -> it's a variable reference
+  return None            # valid regex (e.g. "(?i)") -> treat as arch match
+
+
+def _var_truthy(default_vars, name):
+  """True when defaults variable *name* is defined and not a false-ish string."""
+  v = (default_vars or {}).get(name)
+  return v is not None and str(v).strip().lower() not in ("", "0", "false", "off", "no")
+
+
+def _loose_version_key(v):
+  """A natural-order sort key for version strings, à la ``sort -V``.
+
+  Splits the string into runs of digits and non-digits; digit runs compare
+  numerically (so v40r2 < v40r10) and non-digit runs lexicographically. Each
+  element is a (type, value) tuple so int and str runs never compare directly.
+  Handles the schemes bits sees: v40r2, v01-19-06, 01.07, 1.2.3, 0.1.0pre17.
+
+  Separator characters ``-``, ``.`` and ``_`` are treated as equivalent and do
+  not themselves contribute to the ordering, so dash- and dot-form tags compare
+  equal (``v6-40-00`` == ``v6.40.00``). Without this, the raw separator runs
+  sort lexicographically ('-' 0x2d < '.' 0x2e), which made ``v6-40-00`` rank
+  below ``v6.36.99`` and silently broke ``version>=`` gating for ROOT-style
+  dash tags.
+  """
+  key = []
+  for p in re.findall(r"\d+|\D+", str(v)):
+    if p.isdigit():
+      key.append((0, int(p)))
+    else:
+      s = re.sub(r"[-._]+", "", p)   # drop separators; keep alpha (v, r, pre…)
+      if s:
+        key.append((1, s))
+  return key
+
+
+def _version_compare(a, b):
+  """Return -1/0/1 comparing version strings *a* and *b* in natural order."""
+  ka, kb = _loose_version_key(a), _loose_version_key(b)
+  return (ka > kb) - (ka < kb)
+
+
+# version<op><value>: e.g. "version=v40r2", "version<v40r4", "version>=v40r2".
+_VERSION_OP_RE = re.compile(r"version\s*(>=|<=|==|!=|=|>|<)\s*(.+)\Z", re.DOTALL)
+_VERSION_OPS = {
+    "=":  lambda c: c == 0, "==": lambda c: c == 0, "!=": lambda c: c != 0,
+    "<":  lambda c: c < 0,  "<=": lambda c: c <= 0,
+    ">":  lambda c: c > 0,  ">=": lambda c: c >= 0,
+}
+
+
+def _matcher_atom_active(matcher, arch, defaults, default_vars=None, version=None):
+  """Evaluate a single (non-compound) matcher atom. See _matcher_active."""
+  if matcher.startswith("defaults="):
+    return _defaults_active(matcher, defaults)
+  vm = _VERSION_OP_RE.match(matcher)
+  if vm:
+    return version is not None and _VERSION_OPS[vm.group(1)](_version_compare(version, vm.group(2).strip()))
+  var = _var_matcher_name(matcher)
+  if var is not None:
+    return _var_truthy(default_vars, var)
+  return bool(re.match(matcher, arch))
+
+
+def _matcher_active(matcher, arch, defaults, default_vars=None, version=None):
+  """Whether a *matcher* is active for the current build.
+
+  Atoms:
+    * ``defaults=<regex>``       -> active when the regex matches an active profile;
+    * ``version<op><value>``     -> active when the package version satisfies the
+                                    comparison (op is one of = == != < <= > >=),
+                                    e.g. ``foo.patch:version=v40r2`` or
+                                    ``foo.patch:version<v40r4``. Versions compare
+                                    in natural order (sort -V semantics);
+    * ``(?VAR)``                 -> active when defaults variable VAR is truthy;
+    * anything else              -> a regex matched against the architecture string.
+
+  Atoms may be combined with ``&&`` (all) and ``||`` (any); ``||`` has the lower
+  precedence, e.g. ``(?!osx) && version>=v40r2 || (?cuda)`` is
+  ``((?!osx) AND version>=v40r2) OR (?cuda)``. (Note: a single ``|`` inside an
+  arch regex is still ordinary alternation — only the doubled ``||`` combines.)
+
+  *version* is the resolved package version (after overrides / pins); it is only
+  consulted by the ``version`` kind and may be ``None`` for callers that never
+  use it (e.g. requires filtering).
+  """
+  matcher = matcher.strip()
+  if "||" in matcher:
+    parts = [p for p in (s.strip() for s in matcher.split("||")) if p]
+    return any(_matcher_active(p, arch, defaults, default_vars, version) for p in parts)
+  if "&&" in matcher:
+    parts = [p for p in (s.strip() for s in matcher.split("&&")) if p]
+    return all(_matcher_active(p, arch, defaults, default_vars, version) for p in parts)
+  return _matcher_atom_active(matcher, arch, defaults, default_vars, version)
+
+
+def predefined_arch_vars(architecture):
+  """Predefined, architecture-derived boolean variables (truthy ones only).
+
+  These let a recipe or a defaults ``variables:`` gate test the platform with
+  the same ``(?NAME)`` spelling used for flavours, e.g. a package requirement
+  ``pkg:(?osx)`` or a variable gated ``when: "(?openloops) && (?!osx)"``. Only
+  the *true* members are returned (an unset variable is already falsy via
+  :func:`_var_truthy`, so ``(?osx)`` is correctly false off macOS). On
+  ``osx_arm64`` this is ``{'osx': 'true', 'arm64': 'true', 'aarch64': 'true'}``.
+  """
+  a = str(architecture or "")
+  is_osx = a.startswith("osx")
+  is_arm = ("arm64" in a) or ("aarch64" in a)
+  is_x86 = ("x86-64" in a) or ("x86_64" in a)
+  cand = {"osx": is_osx, "linux": not is_osx,
+          "arm64": is_arm, "aarch64": is_arm, "x86_64": is_x86}
+  return {k: "true" for k, v in cand.items() if v}
+
+
+def resolve_variables(variables, flavours, architecture, defaults):
+  """Resolve a defaults ``variables:`` block into a flat ``{name: value}`` dict.
+
+  Entries may be plain (``name: value`` -- always defined) or *gated*
+  (``name: {value: V, when: MATCHER}`` -- defined to ``V`` only when ``MATCHER``
+  is active for this build). ``MATCHER`` uses the requires-matcher grammar
+  (``(?flavour)``, an architecture regex such as ``osx`` / ``(?!osx)``,
+  ``defaults=<regex>``, combined with ``&&`` / ``||``) and is evaluated against
+  the variables resolved *so far*, so a gate may reference CLI flavours, the
+  predefined architecture variables, and any earlier entry ("a previously
+  defined variable"). A gated entry with no explicit ``value`` defaults to
+  ``True`` when active.
+
+  Precedence (low -> high): predefined arch vars < CLI flavours < defaults-file
+  entries, except that a CLI flavour always wins over a defaults entry of the
+  same name (an explicit override) while remaining visible to every gate.
+  """
+  flavours = flavours or {}
+  resolved = OrderedDict()
+  resolved.update(predefined_arch_vars(architecture))
+  resolved.update(flavours)                        # visible to the gates below
+  for name, entry in (variables or {}).items():
+    if name in flavours:
+      continue                                     # CLI flavour overrides defaults
+    if isinstance(entry, dict) and "when" in entry:
+      if _matcher_active(str(entry["when"]), architecture, defaults, resolved):
+        resolved[name] = entry.get("value", True)
+      # inactive -> leave undefined (falsy)
+    else:
+      resolved[name] = entry
+  return resolved
+
+
+def filterByArchitectureDefaults(arch, defaults, requires, default_vars=None, version=None):
+  """Yield requirements from *requires* that are satisfied by *arch*/*defaults*.
+
+  *version* is the depending package's own resolved version; pass it so a
+  requirement can be gated on it, e.g. ``- "curl:version>=v6.40.00"``.
+  """
   for r in requires:
-    require, matcher = _parse_req_matcher(r)
-    if matcher.startswith("defaults="):
-      if re.match(matcher[len("defaults="):], defaults):
-        yield require
-    elif re.match(matcher, arch):
+    require, matcher, _pin = _parse_req_matcher(r)
+    if _matcher_active(matcher, arch, defaults, default_vars, version):
       yield require
 
-def disabledByArchitectureDefaults(arch, defaults, requires):
+def disabledByArchitectureDefaults(arch, defaults, requires, default_vars=None, version=None):
   """Yield requirements from *requires* that are *not* satisfied by *arch*/*defaults*."""
   for r in requires:
-    require, matcher = _parse_req_matcher(r)
-    if matcher.startswith("defaults="):
-      if not re.match(matcher[len("defaults="):], defaults):
-        yield require
-    elif not re.match(matcher, arch):
+    require, matcher, _pin = _parse_req_matcher(r)
+    if not _matcher_active(matcher, arch, defaults, default_vars, version):
       yield require
+
+
+def _parse_patch_entry(entry):
+  """Split a ``patches:`` entry into ``(name, matcher_or_None, checksum_suffix)``.
+
+  Entry form: ``name[:matcher][,algo:digest]``. The optional inline checksum
+  (which itself contains ``:``) is separated first on the first ``,``; a ``:``
+  in the remaining head then introduces a conditional matcher, e.g.
+  ``foo.patch:version<v40r4`` or ``foo.patch:(?cuda),sha256:abc``.
+  """
+  head, sep, tail = entry.partition(",")
+  checksum = (sep + tail) if sep else ""
+  name, csep, matcher = head.partition(":")
+  return name.strip(), (matcher.strip() if csep else None), checksum
+
+
+def filterPatches(patches, arch, defaults, default_vars, version):
+  """Return the ``patches:`` entries active for this build, with any ``:matcher``
+  stripped so downstream (checksum lookup, copy to $SOURCEDIR, ``patch``) sees a
+  plain ``name[,algo:digest]``. Entries without a matcher are always kept."""
+  out = []
+  for entry in patches or []:
+    name, matcher, checksum = _parse_patch_entry(entry)
+    if matcher is None or _matcher_active(matcher, arch, defaults, default_vars, version=version):
+      out.append(name + checksum)
+  return out
+
+
+def _collect_version_pins(arch, defaults, raw_requires, owner, version_pins, specs,
+                          default_vars=None, version=None):
+  """Extract version pins from *raw_requires* and merge into *version_pins*.
+
+  Called while processing *owner*'s spec (before the requires list has been
+  reduced to plain names).  Any ``name = version`` clause that is active for
+  the current *arch*/*defaults* pair is registered in *version_pins*.
+
+  Raises a :exc:`SystemExit` (via :func:`dieOnError`) when:
+
+  * Two different packages pin the same dependency to **different** versions.
+  * A version pin is declared for a dependency that was already resolved with
+    a different version (i.e. ``name in specs`` with a conflicting version).
+    This happens when the pinned package appeared in the build queue before the
+    package that declares the pin, making the pin arrive too late.
+  """
+  for r in raw_requires:
+    name, matcher, pin = _parse_req_matcher(r)
+    if pin is None:
+      continue
+    # Check whether this entry is active for the current architecture/defaults.
+    if not _matcher_active(matcher, arch, defaults, default_vars, version):
+      continue
+    if name in version_pins:
+      if version_pins[name] != pin:
+        dieOnError(True,
+          "Conflicting version pin for '%s': '%s' (from an earlier spec) vs "
+          "'%s' (from '%s'). Only one version pin per dependency is allowed."
+          % (name, version_pins[name], pin, owner))
+      # Same pin value from multiple packages — harmless, nothing to do.
+      continue
+    if name in specs:
+      actual = specs[name].get("version", "")
+      if actual != pin:
+        dieOnError(True,
+          "Version pin '%s = %s' declared by '%s' cannot be applied: '%s' was "
+          "already resolved with version '%s'. Move the pinning package earlier "
+          "in the build list, or remove the conflicting pin."
+          % (name, pin, owner, name, actual))
+      # Already resolved with the same version — no action needed.
+      continue
+    version_pins[name] = pin
+    debug("Version pin registered: %s = %s  (from %s)", name, pin, owner)
 
 def merge_dicts(dict1, dict2, skip_keys=None) -> OrderedDict:
     """
@@ -586,6 +1028,7 @@ def resolve_pkg_family(defaults_meta: dict, package_name: str) -> str:
 def readDefaults(configDir, defaults, error, architecture):
   defaultsMeta = {}
   defaultsBody = ""
+  append_arch_qualifiers = []  # per-default append_arch values, in chain order
 
   for xdefaults in defaults:
     xDefaults = resolveDefaultsFilename(xdefaults, configDir, failOnError=False)
@@ -597,7 +1040,27 @@ def readDefaults(configDir, defaults, error, architecture):
       if err:
         error(err)
         sys.exit(1)
+      # Collect append_arch value before merging (merge_dicts would flatten it
+      # into a single scalar and we need the ordered per-default list).
+      if "append_arch" in xMeta:
+        append_arch_qualifiers.append(xMeta["append_arch"])
+      # Normalise this profile's overrides to dict-form *before* the chain merge
+      # so that defaults chained as a::b::c deep-merge: the union of all entries,
+      # last profile wins on a per-package key. Without this, merge_dicts sees a
+      # list-form block ("- pkg = ver") and a dict-form block ("pkg:\n  ...") as
+      # incompatible types and the later one REPLACES the earlier wholesale,
+      # silently dropping the other profile's pins. asDict turns both shapes into
+      # an OrderedDict, which merge_dicts then merges recursively (key-by-key,
+      # last wins).
+      if "overrides" in xMeta:
+        xMeta["overrides"] = asDict(xMeta["overrides"])
       defaultsMeta = merge_dicts(defaultsMeta, xMeta)
+
+  # Store the collected per-default qualifiers so compute_combined_arch can
+  # use them instead of appending every default name to the architecture.
+  if append_arch_qualifiers:
+    defaultsMeta["_append_arch_qualifiers"] = append_arch_qualifiers
+
   debug("Merged Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
 
   return (defaultsMeta, defaultsBody)
@@ -663,13 +1126,31 @@ def yamlLoad(s):
     """Include file referenced at node."""
     filename = os.path.abspath(os.path.join(loader._root, loader.construct_scalar(node)))
     extension = os.path.splitext(filename)[1].lstrip('.')
-    with open(filename) as f:
-      if extension in ('yaml', 'yml'):
-        return yaml.load(f, YamlSafeOrderedLoader)
-      elif extension in ('json', ):
-        return json.load(f)
-      else:
-        return ''.join(f.readlines())
+    try:
+      with open(filename) as f:
+        if extension in ('yaml', 'yml'):
+          try:
+            return yaml.load(f, YamlSafeOrderedLoader)
+          except (yaml.scanner.ScannerError, yaml.parser.ParserError) as e:
+            raise yaml.constructor.ConstructorError(
+              None, None,
+              "!include: failed to parse YAML file %r: %s" % (filename, e),
+              node.start_mark)
+        elif extension in ('json', ):
+          try:
+            return json.load(f)
+          except ValueError as e:
+            raise yaml.constructor.ConstructorError(
+              None, None,
+              "!include: failed to parse JSON file %r: %s" % (filename, e),
+              node.start_mark)
+        else:
+          return ''.join(f.readlines())
+    except OSError as e:
+      raise yaml.constructor.ConstructorError(
+        None, None,
+        "!include: cannot open file %r: %s" % (filename, e),
+        node.start_mark)
 
   def construct_mapping(loader, node):
     loader.flatten_mapping(node)
@@ -699,6 +1180,18 @@ def parseRecipe(reader, generatePackages=None, visited=None):
   try:
     d = reader()
     header,recipe = d.split("---", 1)
+    # YAML forbids '%' as the first character of a plain (unquoted) scalar because
+    # it is reserved for directives (e.g. %YAML, %TAG).  Recipe authors may want
+    # to write  "- %(name)s-%(version)s.patch"  in patches: (and similar lists)
+    # for the same variable substitution that sources: already supports.  Auto-
+    # quoting those list items here lets them write the bare %(…)s form without
+    # needing to remember YAML quoting rules.
+    header = re.sub(
+      r'^(\s*-\s+)(%[^\n\'"#\[\{].*)$',
+      lambda m: m.group(1) + '"' + m.group(2).replace('\\', '\\\\').replace('"', '\\"') + '"',
+      header,
+      flags=re.MULTILINE,
+    )
     spec = yamlLoad(header)
     if spec and "from" in spec:
       basename = os.path.basename(getattr(reader, "url", "") or "")
@@ -722,7 +1215,7 @@ def parseRecipe(reader, generatePackages=None, visited=None):
     err = str(e)
   except SpecError as e:
     err = "Malformed header for {}\n{}".format(reader.url, str(e))
-  except (yaml.scanner.ScannerError, yaml.parser.ParserError) as e:
+  except yaml.YAMLError as e:
     err = "Unable to parse {}\n{}".format(reader.url, str(e))
   except ValueError:
     err = "Unable to parse %s. Header missing." % reader.url
@@ -751,13 +1244,34 @@ def asDict(overrides_array):
       
     # Start with an empty OrderedDict
     result = OrderedDict()
-    
+
+    def _string_override(s):
+        """Support the "name = value" version-pin shorthand in overrides:, the
+        same syntax used for requires: pins. Returns {name: {version, tag}} so
+        that tarball URLs (%(version)s) and git checkouts (tag) both use the
+        pinned value, or None when the string is not a "name = value" pin."""
+        name, sep, value = s.partition("=")
+        name, value = name.strip(), value.strip()
+        if not (sep and name and value):
+            return None
+        return OrderedDict([(name, OrderedDict([("version", value), ("tag", value)]))])
+
     for item in overrides_array:
-        if isinstance(item, list):
+        if isinstance(item, str):
+            # e.g. "acts = 44.4.0" — previously silently ignored, which made a
+            # list-of-strings overrides: block a no-op.
+            d = _string_override(item)
+            if d is not None:
+                result = merge_dicts(result, d)
+        elif isinstance(item, list):
             # Handle nested lists - recursively process each element
             for subitem in item:
                 if isinstance(subitem, dict):
                     result = merge_dicts(result, subitem)
+                elif isinstance(subitem, str):
+                    d = _string_override(subitem)
+                    if d is not None:
+                        result = merge_dicts(result, d)
         elif isinstance(item, dict):
             result = merge_dicts(result, item)
 
@@ -910,9 +1424,24 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   validDefaults = []  # empty list: all OK; None: no valid default; non-empty list: list of valid ones
   if provider_dirs is None:
     provider_dirs = {}
+  _disable_set = set(disable)
+  # version_pins accumulates ``name -> version`` entries declared via the
+  # ``name = version`` syntax in any spec's requires / build_requires lists.
+  # Pins are applied to the dependency spec just before it is stored in
+  # *specs*, overriding the version stated in the recipe and any defaults-file
+  # override.  Conflicts (two different pins for the same name, or a pin that
+  # arrives after the dependency was already resolved) are fatal errors.
+  _version_pins = {}
   while packages:
     p = packages.pop(0)
     if p in specs:
+      continue
+    # A package already known to be disabled (prefer_system or system_requirement
+    # passed on a prior iteration) should not be re-processed.  Without this
+    # guard the package is re-evaluated once per occurrence in the queue —
+    # i.e. once per dependent — and disable.append() fires each time, producing
+    # hundreds of duplicate --disable=GCC-Toolchain entries in the argument log.
+    if p in _disable_set:
       continue
     skip = False
     for d in defaults:
@@ -991,11 +1520,20 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
 
     # If an override fully matches a package, we apply it. This means
     # you can have multiple overrides being applied for a given package.
+    # An override key may carry an optional ":matcher" suffix (same syntax as
+    # requires/patches: arch regex, defaults=, version<op>, (?VAR), &&/||) to
+    # gate it, e.g. "ROOT:osx" applies only on macOS architectures. Package
+    # names never contain ":", so splitting on the first ":" is unambiguous.
+    _ovr_vars = (defaults_meta or {}).get("variables")
     for override in overrides:
       # We downcase the regex in parseDefaults(), so downcase the package name
       # as well. FIXME: This is probably a bad idea; we should use
       # re.IGNORECASE instead or just match case-sensitively.
-      if not re.fullmatch(override, p.lower()):
+      pkg_re, sep, matcher = override.partition(":")
+      if not re.fullmatch(pkg_re, p.lower()):
+        continue
+      if sep and not _matcher_active(matcher, architecture, defaults, _ovr_vars,
+                                     spec.get("version")):
         continue
       log("Overrides for package %s: %s", spec["package"], overrides[override])
       spec.update(overrides.get(override, {}) or {})
@@ -1059,7 +1597,9 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
           # No replacement spec name given. Fall back to old system package
           # behaviour and just disable the package.
           systemPackages.add(spec["package"])
-          disable.append(spec["package"])
+          if spec["package"] not in _disable_set:
+            disable.append(spec["package"])
+            _disable_set.add(spec["package"])
         elif match:
           # The check printed the name of a replacement; use it.
           key = match.group("key").strip()
@@ -1075,6 +1615,15 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
             # The version is required for all specs. What we put there will
             # influence the package's hash, so allow the user to override it.
             replacement.setdefault("version", requested_version)
+            # Carry over structural keys set on the original spec earlier in
+            # getPackageList that build.py needs and that are NOT recomputed for
+            # the replacement. pkgdir (the recipe directory, used for PKGDIR) is
+            # mandatory — without it doBuild raises KeyError: 'pkgdir' when it
+            # builds the replacement (e.g. a HomebrewRecipe shim).
+            for _carry in ("pkgdir", "recipe_provider", "recipe_provider_hash",
+                           "force_revision"):
+              if _carry in spec and _carry not in replacement:
+                replacement[_carry] = spec[_carry]
             spec = replacement
             # Allows generalising the version based on the actual key provided
             spec["version"] = spec["version"].replace("%(key)s", key)
@@ -1105,7 +1654,9 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         failedRequirements.update([spec["package"]])
         spec["version"] = "failed"
       else:
-        disable.append(spec["package"])
+        if spec["package"] not in _disable_set:
+          disable.append(spec["package"])
+          _disable_set.add(spec["package"])
 
     spec["disabled"] = list(disable)
     if spec["package"] in disable:
@@ -1119,11 +1670,30 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         if not validDefaults:
           validDefaults = None  # no valid default works for all current packages
 
+    # Collect version pins declared by this spec's requires / build_requires
+    # *before* the lists are reduced to plain package names by the filter step
+    # below.  We pass the raw YAML lists so that _collect_version_pins can see
+    # the full "name = version[:matcher]" strings.
+    # Variables declared in the active --defaults profile(s) (`variables:` block)
+    # gate "(?VAR)" conditional requires, e.g. "- cuda:(?cuda)".
+    _default_vars = (defaults_meta or {}).get("variables")
+    # The depending package's own version, so a requirement can be gated on it
+    # via "name:version>=X" (matched in sort -V order). Use the recipe/defaults
+    # value resolved so far (dependent-declared pins are applied later and do
+    # not affect a package's own requires gating).
+    _own_version = spec.get("version")
+    _collect_version_pins(
+      architecture, defaults,
+      list(spec.get("requires", [])) + list(spec.get("build_requires", [])),
+      spec["package"], _version_pins, specs,
+      default_vars=_default_vars, version=_own_version,
+    )
+
     # For the moment we treat build_requires just as requires.
-    fn = lambda what: disabledByArchitectureDefaults(architecture, defaults, spec.get(what, []))
+    fn = lambda what: disabledByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars, _own_version)
     spec["disabled"] += [x for x in fn("requires")]
     spec["disabled"] += [x for x in fn("build_requires")]
-    fn = lambda what: filterByArchitectureDefaults(architecture, defaults, spec.get(what, []))
+    fn = lambda what: filterByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars, _own_version)
     spec["requires"] = [x for x in fn("requires") if x not in disable]
     spec["build_requires"] = [x for x in fn("build_requires") if x not in disable]
     if spec["package"] != "defaults-release":
@@ -1134,7 +1704,26 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     dieOnError(not isinstance(spec["version"], str),
                "In recipe \"%s\": version must be a string" % p)
     spec["tag"] = spec.get("tag", spec["version"])
+    # Apply any version pin registered for this package.  The pin is set by a
+    # dependent that declared "- depname = version" in its requires list.  We
+    # apply it here — after recipe defaults and defaults-*.sh overrides — so
+    # that the pin takes the highest precedence.  Both "version" and "tag" are
+    # updated so that tarball URLs (%(version)s) and git checkouts (tag) both
+    # see the pinned value.
+    if spec["package"] in _version_pins:
+      _pin = _version_pins[spec["package"]]
+      debug("Applying version pin to %s: %s -> %s", spec["package"],
+            spec.get("version"), _pin)
+      spec["version"] = _pin
+      spec["tag"] = _pin
     spec["version"] = spec["version"].replace("/", "_")
+    # Resolve version-/arch-/defaults-conditional patches now that the version is
+    # final (after overrides + pins). filterPatches drops inactive entries and
+    # strips the :matcher, so the hash, checkout copy, $PATCHn env and patch
+    # application all see the same plain name[,checksum] list.
+    if "patches" in spec:
+      spec["patches"] = filterPatches(spec.get("patches"), architecture, defaults,
+                                      _default_vars, spec["version"])
     spec["recipe"] = recipe.strip("\n")
     if spec["package"] in force_rebuild:
       spec["force_rebuild"] = True
@@ -1152,9 +1741,18 @@ def getGeneratedPackages(configDir):
   for pkgdir in pkgDirs:
     dir_pkgs = {}
     for vp in [x.split(os.sep)[-2] for x in glob(join(pkgdir, "*", "packages.py"))]:
+      packages_py = join(pkgdir, vp, "packages.py")
       sys.path.insert(0, join(pkgdir, vp))
-      pkg = __import__("packages")
-      pkg.getPackages(dir_pkgs, pkgdir)
+      try:
+        pkg = __import__("packages")
+      except (ImportError, SyntaxError) as e:
+        sys.path.pop(0)
+        dieOnError(True, "Failed to import generated-packages script %r: %s" % (packages_py, e))
+        continue
+      try:
+        pkg.getPackages(dir_pkgs, pkgdir)
+      except Exception as e:
+        dieOnError(True, "Error running getPackages() in %r: %s" % (packages_py, e))
       sys.modules.pop("packages")
       sys.path.pop(0)
     all_pkgs[pkgdir] = dir_pkgs

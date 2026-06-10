@@ -287,6 +287,33 @@ class TestAddPackage(unittest.TestCase):
         self.assertEqual(pkg["outcome"], "built_from_source")
         self.assertEqual(pkg["tarball_sha256"], _sha256(content))
 
+    def test_patches_and_variables_recorded(self):
+        # v3: patches (name + recorded checksum) and resolved variables.
+        spec = _make_spec()
+        spec["patches"] = ["fix-a.patch", "fix-b.patch"]
+        spec["patch_checksums"] = {"fix-a.patch": "sha256:aaa"}  # b has no checksum
+        spec["variables"] = {"foo": "bar", "ver": "1.2"}
+        m = _make_manifest(self.tmp)
+        m.add_package(spec, "built_from_source")
+        pkg = self._load(m)["packages"][0]
+        self.assertEqual(pkg["patches"], [
+            {"name": "fix-a.patch", "checksum": "sha256:aaa"},
+            {"name": "fix-b.patch", "checksum": None},
+        ])
+        self.assertEqual(pkg["variables"], {"foo": "bar", "ver": "1.2"})
+
+    def test_patches_and_variables_default_empty(self):
+        # A package with no patches/variables gets empty list / empty dict.
+        m = _make_manifest(self.tmp)
+        m.add_package(self.spec, "already_installed")
+        pkg = self._load(m)["packages"][0]
+        self.assertEqual(pkg["patches"], [])
+        self.assertEqual(pkg["variables"], {})
+
+    def test_schema_version_is_3(self):
+        m = _make_manifest(self.tmp)
+        self.assertEqual(self._load(m)["schema_version"], 3)
+
     def test_multiple_packages_recorded(self):
         m = _make_manifest(self.tmp)
         for i in range(5):
@@ -535,11 +562,11 @@ class TestSourceChecksums(unittest.TestCase):
         self.assertEqual(entry["url"], url)
         self.assertIsNone(entry["checksum"])
 
-    def test_schema_version_is_2(self):
-        """Schema version must reflect the source_checksums addition."""
+    def test_schema_version_current(self):
+        """Schema version reflects the latest additions (v3: patches + variables)."""
         m = _make_manifest(self.tmp)
         data = self._load(m)
-        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(data["schema_version"], 3)
 
 
 if __name__ == "__main__":

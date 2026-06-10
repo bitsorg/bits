@@ -7,10 +7,12 @@ Covers:
   - Backward compatibility: omitting new flags leaves existing defaults unchanged
 """
 import sys
+import types
 import unittest
 from unittest.mock import patch
 
-from bits_helpers.args import doParseArgs
+from bits_helpers.args import doParseArgs, _parse_flavours
+from bits_helpers.utilities import filterByArchitectureDefaults
 
 # Shared architecture that passes validation checks.
 _ARCH = "slc7_x86-64"
@@ -154,6 +156,93 @@ class PublishNoRelocateTest(unittest.TestCase):
         self.assertFalse(args.noRelocate)
         self.assertEqual(args.workDir, "sw")
         self.assertEqual(args.scratchDir, "/tmp/bits-scratch")
+
+
+class AutoResourcesFlagTest(unittest.TestCase):
+    """--auto-resources opts in to the measurement-driven --builders scheduler."""
+
+    def test_off_by_default(self):
+        args = _parse(["build", "-a", _ARCH, "--builders", "8", "LCG"])
+        self.assertFalse(getattr(args, "autoResources", False))
+
+    def test_enabled_with_flag(self):
+        args = _parse(["build", "-a", _ARCH, "--builders", "8",
+                       "--auto-resources", "LCG"])
+        self.assertTrue(args.autoResources)
+
+    def test_independent_of_explicit_resource_flags(self):
+        # --resources keeps its own default (None) and is unaffected.
+        args = _parse(["build", "-a", _ARCH, "--builders", "8", "LCG"])
+        self.assertIsNone(args.resources)
+
+    # finaliseArgs downgrades resourceMonitoring to False when psutil is not
+    # importable, so the "enabled" cases stub psutil into sys.modules to stay
+    # deterministic on hosts that don't have it installed.
+    def test_resource_monitoring_on_by_default_parallel(self):
+        # --builders > 1 enables per-package resource monitoring by default.
+        with patch.dict(sys.modules, {"psutil": types.ModuleType("psutil")}):
+            args = _parse(["build", "-a", _ARCH, "--builders", "8", "LCG"])
+        self.assertTrue(args.resourceMonitoring)
+
+    def test_resource_monitoring_off_by_default_serial(self):
+        # Serial builds (--builders 1, the default) leave monitoring off.
+        args = _parse(["build", "-a", _ARCH, "LCG"])
+        self.assertFalse(args.resourceMonitoring)
+
+    def test_resource_monitoring_explicit_opt_out(self):
+        # --no-resource-monitoring disables it even in parallel mode.
+        args = _parse(["build", "-a", _ARCH, "--builders", "8",
+                       "--no-resource-monitoring", "LCG"])
+        self.assertFalse(args.resourceMonitoring)
+
+    def test_resource_monitoring_explicit_opt_in_serial(self):
+        # --resource-monitoring forces it on even for a serial build.
+        with patch.dict(sys.modules, {"psutil": types.ModuleType("psutil")}):
+            args = _parse(["build", "-a", _ARCH, "--resource-monitoring", "LCG"])
+        self.assertTrue(args.resourceMonitoring)
+
+    def test_resource_monitoring_downgraded_without_psutil(self):
+        # Without psutil, even an explicit request is downgraded to False.
+        with patch.dict(sys.modules, {"psutil": None}):
+            args = _parse(["build", "-a", _ARCH, "--resource-monitoring", "LCG"])
+        self.assertFalse(args.resourceMonitoring)
+
+
+class FlavourFlagTest(unittest.TestCase):
+    """--flavour parsing and how flavours gate (?NAME) conditional requires."""
+
+    def test_parse_forms(self):
+        # bare -> true, !name -> false, name=value -> value
+        self.assertEqual(_parse_flavours(["cuda", "!debug", "onnx=cpu"]),
+                         {"cuda": "true", "debug": "false", "onnx": "cpu"})
+
+    def test_parse_comma_and_precedence(self):
+        # comma-separated within one token; later entry wins on a repeated name
+        self.assertEqual(_parse_flavours(["cuda,onnx=cpu", "onnx=gpu"]),
+                         {"cuda": "true", "onnx": "gpu"})
+
+    def test_parse_trims_and_skips_empty(self):
+        self.assertEqual(_parse_flavours([" cuda , ", "a = b", ""]),
+                         {"cuda": "true", "a": "b"})
+
+    def test_cli_end_to_end(self):
+        args = _parse(["build", "-a", _ARCH, "--flavour", "cuda",
+                       "--flavour", "onnx=cpu,debug=off", "key4hep"])
+        self.assertEqual(args.flavours, {"cuda": "true", "onnx": "cpu", "debug": "off"})
+
+    def test_default_empty(self):
+        args = _parse(["build", "-a", _ARCH, "key4hep"])
+        self.assertEqual(args.flavours, {})
+
+    def test_flavour_gates_conditional_require(self):
+        # A flavour in the vars dict activates "(?cuda)"; absent/falsey excludes it.
+        reqs = ["ROOT", "cudnn:(?cuda)"]
+        on = list(filterByArchitectureDefaults(_ARCH, ["dev"], reqs, _parse_flavours(["cuda"])))
+        self.assertIn("cudnn", on)
+        off = list(filterByArchitectureDefaults(_ARCH, ["dev"], reqs, _parse_flavours(["!cuda"])))
+        self.assertNotIn("cudnn", off)
+        none = list(filterByArchitectureDefaults(_ARCH, ["dev"], reqs, {}))
+        self.assertNotIn("cudnn", none)
 
 
 class BackwardCompatBuildTest(unittest.TestCase):

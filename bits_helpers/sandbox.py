@@ -144,8 +144,14 @@ def resolve_sandbox_mode(requested: str, docker_active: bool) -> str:
     if sys.platform == "darwin":
         return "sandbox-exec" if sandbox_exec_available() else "off"
 
-    # Linux, no docker
-    return "podman" if podman_available() else "off"
+    # Linux, no outer Docker: do NOT use — or even probe — podman here.  Recipe
+    # sandboxing with podman is only meaningful when a container image is
+    # available, i.e. inside --docker (the nested-podman branch above) or when
+    # the user explicitly asks for it via --sandbox=podman / --sandbox-image
+    # (handled by the requested == "podman" branch). Returning "off" here keeps
+    # an ordinary `bits build` from invoking `podman info` and from depending on
+    # a working rootless-podman setup.
+    return "off"
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +164,35 @@ _SBPL_TEMPLATE = """\
 (allow process*)
 (allow signal)
 (allow file-read*)
-(allow file-write* (subpath "{builddir}"))
+{builddir_rules}
+; Temp dirs. On macOS /tmp and /var are symlinks to /private/tmp and
+; /private/var, and SBPL subpath matching resolves symlinks, so the kernel
+; sees the canonical /private/... paths. Allow both the symlink names (in case
+; a path is matched pre-resolution) and the canonical targets — otherwise the
+; compiler's own temp files ($TMPDIR=/var/folders/.../T -> /private/var/...)
+; are denied and clang reports "unable to make temporary file" /
+; "C compiler cannot create executables".
 (allow file-write* (subpath "/tmp"))
 (allow file-write* (subpath "/var/folders"))
+(allow file-write* (subpath "/var/tmp"))
+(allow file-write* (subpath "/private/tmp"))
+(allow file-write* (subpath "/private/var/folders"))
+(allow file-write* (subpath "/private/var/tmp"))
+; Standard character devices. /dev is outside every allowed write subpath, so
+; without these the default (deny) breaks `> /dev/null`, process substitution
+; (/dev/fd), ptys, entropy, etc. — i.e. essentially every autotools configure.
+; Raw block/disk devices (/dev/disk*, /dev/rdisk*) are deliberately NOT listed
+; so a buggy or malicious recipe still cannot scribble over the raw disk.
+(allow file-write*
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/random")
+  (literal "/dev/urandom")
+  (literal "/dev/tty")
+  (literal "/dev/dtracehelper")
+  (literal "/dev/ptmx")
+  (subpath "/dev/fd")
+  (regex #"^/dev/ttys[0-9]+$"))
 (allow sysctl*)
 (allow mach*)
 (allow ipc*)
@@ -180,18 +212,32 @@ def make_sbpl_profile(allow_network: bool, builddir: str) -> str:
     :param builddir: absolute host path of the bits work directory;
                      the recipe is allowed to write anywhere beneath it
     """
-    # FIX: SBPL string literals are delimited by double-quotes, so a '"' in
+    # Allow writes under the build dir AND its symlink-resolved real path.
+    # SBPL subpath matching resolves symlinks, so if the work dir lives under a
+    # symlinked prefix (e.g. /var -> /private/var) only the canonical path
+    # actually matches; include both so either form works.
+    builddirs = [builddir]
+    real = os.path.realpath(builddir)
+    if real != builddir:
+        builddirs.append(real)
+
+    # FIX: SBPL string literals are delimited by double-quotes, so a '"' in a
     # builddir would escape the literal and allow injection of arbitrary SBPL
     # rules (e.g. lifting the write restriction to cover /etc).  Reject early.
-    if '"' in builddir:
-        raise ValueError(
-            f"workdir path contains '\"' which cannot be safely embedded in an "
-            f"SBPL sandbox profile: {builddir!r}. Use a path without double-quote "
-            f"characters."
-        )
+    for d in builddirs:
+        if '"' in d:
+            raise ValueError(
+                f"workdir path contains '\"' which cannot be safely embedded in an "
+                f"SBPL sandbox profile: {d!r}. Use a path without double-quote "
+                f"characters."
+            )
+    builddir_rules = "\n".join(
+        '(allow file-write* (subpath "%s"))' % d for d in builddirs
+    )
+
     network_rule = "(allow network*)" if allow_network else ""
     content = _SBPL_TEMPLATE.format(
-        builddir=builddir,
+        builddir_rules=builddir_rules,
         network_rule=network_rule,
     )
     fd, path = tempfile.mkstemp(suffix=".sb", prefix="bits-sandbox-")
@@ -243,8 +289,35 @@ def wrap_build_command(
         The Docker image name.  Used as the nested podman image when no
         ``--sandbox-image`` was given.
     """
-    sandbox_network = spec.get("sandbox_network", "on")
-    allow_network = (sandbox_network == "off")
+    # defaults-* packages (defaults-release, defaults-user, …) are pure
+    # configuration packages with no compiled build script — they inject
+    # default values into the build system and never run inside a sandbox.
+    # Skip silently so the "sandbox=podman requires a container image" warning
+    # is not emitted for every defaults package in the dependency tree.
+    pkg_name = spec.get("package", "")
+    if pkg_name.startswith("defaults-"):
+        return build_command
+
+    # Semantics: sandbox_network is "is the network *restriction* on?".
+    #   on  -> restriction on  -> network BLOCKED (allow_network False)
+    #   off -> restriction off -> network ALLOWED (allow_network True)
+    # Precedence: a recipe's own `sandbox_network:` field wins; otherwise fall
+    # back to the global default in opts.sandboxNetwork, which build.py resolves
+    # from --sandbox-network or the active defaults `sandbox_network:` (see
+    # defaults-release.sh), defaulting to "on". This lets a stack with many
+    # pip-installing recipes flip the default once instead of annotating every
+    # recipe.
+    global_default = getattr(opts, "sandboxNetwork", "on") or "on"
+    sandbox_network = spec.get("sandbox_network", global_default)
+    # YAML's SafeLoader parses bare on/off/yes/no as booleans, so a recipe line
+    # `sandbox_network: off` arrives here as Python False (not the string
+    # "off"). Normalise both forms so quoted and unquoted recipes behave the
+    # same and nobody silently keeps the network blocked by forgetting quotes.
+    if isinstance(sandbox_network, bool):
+        allow_network = (sandbox_network is False)
+    else:
+        allow_network = (str(sandbox_network).strip().lower()
+                         in ("off", "false", "no", "0"))
 
     requested = getattr(opts, "sandbox", "auto")
     mode = resolve_sandbox_mode(requested, docker_active)
@@ -258,11 +331,24 @@ def wrap_build_command(
 
     image = getattr(opts, "sandboxImage", None) or docker_image
     if mode == "podman" and not image:
-        warning(
-            "sandbox=podman requires a container image (--docker or --sandbox-image). "
-            "Sandboxing disabled for package %s.",
-            spec.get("package", "?"),
-        )
+        # No container image available.  If the user explicitly requested podman
+        # (--sandbox=podman) this is a configuration mistake — warn loudly.
+        # If podman was chosen automatically (sandbox=auto, Linux host) there is
+        # simply no image to use; downgrade silently to "off" so that running
+        # "bits build PKG" locally doesn't flood the console with per-package
+        # warnings on every build invocation.
+        if requested == "podman":
+            warning(
+                "sandbox=podman requires a container image (--docker or "
+                "--sandbox-image). Sandboxing disabled for package %s.",
+                spec.get("package", "?"),
+            )
+        else:
+            debug(
+                "sandbox=auto: podman available but no image supplied; "
+                "sandboxing disabled for package %s.",
+                spec.get("package", "?"),
+            )
         return build_command
 
     # --- sandbox-exec (macOS) ---

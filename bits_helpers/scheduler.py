@@ -3,7 +3,7 @@ import json
 import threading
 import traceback
 from io import StringIO
-from queue import Queue, PriorityQueue
+from queue import Queue, PriorityQueue, Empty
 from threading import Thread
 from time import sleep
 
@@ -81,7 +81,22 @@ class Scheduler:
     while self.parallelThreads:
       try:
         self.__doNotifications()
-        who, item = self.resultsQueue.get()
+        try:
+          # Bounded wait so the master never blocks indefinitely.  During
+          # normal operation the final-job re-queues itself continuously, so
+          # a timeout only elapses once there is nothing left to process --
+          # at which point the liveness/termination check below runs.
+          who, item = self.resultsQueue.get(timeout=1.0)
+        except Empty:
+          # No results this interval.  If every worker thread has exited
+          # (e.g. an unexpected crash) we would otherwise hang here forever
+          # waiting for a result that can never arrive, so fail any jobs
+          # still pending/running and stop -- guaranteeing the build always
+          # finishes and prints its summary.
+          if not any(t.is_alive() for t in all_threads):
+            self.__failStuckJobs("worker thread exited before reporting completion")
+            break
+          continue
         item[0](*item[1:])
         sleep(0.1)
         if not any([True for t in all_threads if t.is_alive()]):
@@ -107,10 +122,17 @@ class Scheduler:
         pri, taskId, item = self.workersQueue.get()
         try:
           result = item[0](*item[1:])
-        except Exception as e:
+        except BaseException as e:
+          # Catch BaseException (not just Exception) so that a task which
+          # raises SystemExit -- e.g. via dieOnError -- or any other
+          # BaseException is turned into a job-failure *result* instead of
+          # silently killing this worker thread.  A dead worker would leave
+          # its job stuck in runningJobs forever and prevent the scheduler
+          # from ever reaching its termination condition (the build would
+          # hang with no summary at the very end).
           s = StringIO()
           traceback.print_exc(file=s)
-          result = s.getvalue()
+          result = s.getvalue() or ("task raised %r" % (e,))
 
         if isinstance(result, _SchedulerQuitCommand):
           self.notifyTaskMaster(self.__releaseWorker)
@@ -141,7 +163,7 @@ class Scheduler:
     if taskType in ["build", "download", "fetch"]:
       try:
           self.jobs[taskId]["priority"] = 100000 - spec[1].requiredBy
-      except AttributeError:
+      except (AttributeError, IndexError):
           self.jobs[taskId]["priority"] = 1
     self.pendingJobs.append(taskId)
     self.finalJobDeps.append(taskId)
@@ -207,6 +229,20 @@ class Scheduler:
         self.runningJobsCount[taskType] += 1
       transition(taskId, self.pendingJobs, self.runningJobs)
       self.__scheduleParallel(taskId, self.jobs[taskId]["spec"], priority=self.jobs[taskId]["priority"])
+
+  # Move every job that is still running or pending (except the sentinel
+  # final-job) into the broken set with an explanatory error.  Called by the
+  # master watchdog when all worker threads have exited unexpectedly, so that
+  # scheduler.errors / scheduler.brokenJobs reflect the unfinished work and the
+  # caller prints a complete summary instead of the build hanging.
+  def __failStuckJobs(self, reason):
+    stuck = list(self.runningJobs) + [j for j in self.pendingJobs if j != "final-job"]
+    for taskId in stuck:
+      if taskId in self.runningJobs:
+        transition(taskId, self.runningJobs, self.brokenJobs)
+      elif taskId in self.pendingJobs:
+        transition(taskId, self.pendingJobs, self.brokenJobs)
+      self.errors.setdefault(taskId, reason)
 
   # Update the job with the result of running.
   def __updateJobStatus(self, taskId, error):

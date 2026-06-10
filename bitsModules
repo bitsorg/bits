@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""bits module-listing helper (entry point).
+
+Thin driver, in the same family as ``bitsBuild``/``bitsDeps``: it runs the CVMFS
+serving-catalog fast path (``bits_helpers.cvmfs_catalog``) so the shell ``bits``
+frontend can enumerate modulefiles on CVMFS with a single catalog fetch instead
+of a per-file FUSE walk.
+
+Arguments are forwarded as-is to the helper:
+
+    bitsModules <cvmfs-dir> [--regex RE] [--depth2-dirs]
+
+Exit status is the fallback contract: 0 = listing printed (use it), 3 = fast
+path unavailable (caller must fall back to its POSIX walk).
+"""
+import sys
+
+from bits_helpers.cvmfs_catalog import main
+
+if __name__ == "__main__":
+  sys.exit(main())

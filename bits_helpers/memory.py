@@ -32,6 +32,7 @@ Examples
     # zlib — tiny; omit the field entirely and $JOBS is used as-is
 """
 
+import math
 import platform
 import re
 import subprocess
@@ -124,6 +125,20 @@ def _available_linux() -> int:
 
 
 def _available_darwin() -> int:
+    """macOS estimate of memory available to a new workload, in MiB.
+
+    Mirrors the Linux ``MemAvailable`` semantics: file-backed cache, purgeable
+    and speculative pages are *reclaimable* and therefore count as available.
+    macOS keeps "Pages free" tiny (most idle RAM is reclaimable cache), so the
+    old ``free + inactive`` sum drastically underreported available memory and
+    throttled heavy builds (e.g. ROOT to ``-j2`` on a machine that runs
+    ``-j10`` fine).
+
+    Primary estimate ≈ physical − (anonymous + wired + compressed), i.e.
+    Activity Monitor's "physical − Memory Used": everything except app memory,
+    wired memory and the compressor is reclaimable.  Falls back to the sum of
+    the explicitly-reclaimable buckets when the needed fields are unavailable.
+    """
     out = subprocess.check_output(["vm_stat"], text=True)
     pages = {}
     for line in out.splitlines():
@@ -142,21 +157,60 @@ def _available_darwin() -> int:
         )
     except Exception:  # pylint: disable=broad-except
         pass
-    free     = pages.get("Pages free", 0)
-    inactive = pages.get("Pages inactive", 0)
-    return (free + inactive) * page_bytes // (1024 * 1024)
+
+    # Primary: physical RAM minus the genuinely-unavailable (non-reclaimable)
+    # buckets. File cache, purgeable and speculative pages are NOT subtracted
+    # because the kernel reclaims them under memory pressure.
+    anon     = pages.get("Anonymous pages")
+    wired    = pages.get("Pages wired down")
+    compress = pages.get("Pages occupied by compressor")
+    try:
+        physical = int(subprocess.check_output(
+            ["sysctl", "-n", "hw.memsize"], text=True).strip())
+    except Exception:  # pylint: disable=broad-except
+        physical = 0
+    if physical and None not in (anon, wired, compress):
+        used = (anon + wired + compress) * page_bytes
+        return max(0, physical - used) // (1024 * 1024)
+
+    # Fallback (older vm_stat / missing fields): sum the reclaimable buckets.
+    reclaimable = sum(pages.get(k, 0) for k in (
+        "Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"))
+    return reclaimable * page_bytes // (1024 * 1024)
 
 
 # ── Main public function ──────────────────────────────────────────────────────
 
-def effective_jobs(requested: int, spec: dict) -> int:
+def effective_jobs(requested: int, spec: dict, builders: int = 1,
+                   oversubscribe: float = 1.0) -> int:
     """Return the number of parallel jobs to use for *spec*.
 
-    If the recipe does not specify ``mem_per_job`` the *requested* value is
-    returned unchanged.  Otherwise the available memory is sampled and the
-    return value is::
+    The return value bounds two independent oversubscription axes so that the
+    *whole run* stays within one machine's worth of threads and RAM no matter
+    how many packages build concurrently (``--builders``):
 
-        min(requested, floor(available_mib * utilisation / mem_per_job))
+    * **CPU / load.**  ``requested`` is divided by the number of concurrent
+      builders, so the collective ``-j`` of all builders stays near the
+      single-builder budget.  An *oversubscribe* factor (>= 1.0) multiplies the
+      per-builder share before the split so that idle builder slots — a deep
+      dependency tree rarely keeps all ``--builders`` busy at once — do not
+      leave cores unused.  The per-package value is still clamped to
+      ``requested`` (``min`` below), so a single-builder build is unaffected and
+      no one ``make`` ever runs more than one machine's worth of threads; the
+      mild overshoot when several builders *are* busy is absorbed by the OS
+      scheduler and the nice ladder.  This applies to *every* recipe.
+
+    * **Memory.**  When the recipe declares ``mem_per_job`` the available
+      memory — split across the ``--builders`` *maximum* (NOT scaled by
+      *oversubscribe*) to avoid the sampling race where several heavy builds
+      start together and each reads the full free RAM — is divided by the
+      per-job footprint.  Memory stays conservative on purpose: CPU
+      oversubscription degrades gracefully, memory oversubscription means
+      OOM/swap, so the memory cap remains authoritative.
+
+    The result is::
+
+        min(requested, ceil(requested * oversubscribe / builders), memory_cap)
 
     Always returns at least 1 so the build is never completely stalled.
 
@@ -166,16 +220,36 @@ def effective_jobs(requested: int, spec: dict) -> int:
         The ``-j N`` value (or CPU count) chosen by the user / scheduler.
     spec:
         The package spec dict as returned by ``getPackageList``.
+    builders:
+        The number of packages building in parallel (``--builders``).  The CPU
+        and memory budgets are split across this many concurrent builders.
+        Defaults to 1 (single-builder behaviour, unchanged).
+    oversubscribe:
+        Factor (>= 1.0) applied to the per-builder CPU share only.  1.0 (the
+        default) keeps the previous behaviour exactly.  Has no effect on the
+        memory cap, nor on single-builder builds (the ``min(requested, …)``
+        clamp absorbs it).
     """
+    builders = max(1, int(builders))
+    try:
+        oversubscribe = float(oversubscribe)
+    except (TypeError, ValueError):
+        oversubscribe = 1.0
+    oversubscribe = max(1.0, oversubscribe)
+    # CPU/load budget: per-builder share, optionally oversubscribed, ceil'd so
+    # the integer split does not waste the remainder. Clamped to `requested`
+    # below so a lone build never exceeds one machine's worth of threads.
+    cpu_cap = max(1, math.ceil(requested * oversubscribe / builders))
+
     raw = spec.get("mem_per_job")
     if raw is None:
-        return requested                            # no hint → unchanged
+        return min(requested, cpu_cap)              # no mem hint → CPU cap only
 
     try:
         mem_per_job = parse_memory(raw)
     except ValueError as exc:
         warning("Ignoring invalid mem_per_job for %r: %s", spec.get("package", "?"), exc)
-        return requested
+        return min(requested, cpu_cap)
 
     utilisation = float(spec.get("mem_utilisation", 0.9))
     if not (0.0 < utilisation <= 1.0):
@@ -188,16 +262,18 @@ def effective_jobs(requested: int, spec: dict) -> int:
 
     avail = available_memory_mib()
     if avail <= 0:
-        return requested                            # detection failed → unchanged
+        return min(requested, cpu_cap)              # detection failed → CPU cap only
 
-    memory_cap = max(1, int(avail * utilisation / mem_per_job))
-    jobs = min(requested, memory_cap)
+    # Split the RAM budget across the concurrent builders so that builds
+    # starting in the same scheduling tick do not each claim the whole machine.
+    memory_cap = max(1, int((avail / builders) * utilisation / mem_per_job))
+    jobs = min(requested, cpu_cap, memory_cap)
 
     if jobs < requested:
         debug(
             "Package %r: capping $JOBS %d → %d "
-            "(%d MiB available, %d MiB/job, %.0f%% utilisation)",
+            "(%d MiB available, %d builders, %d MiB/job, %.0f%% utilisation)",
             spec.get("package", "?"), requested, jobs,
-            avail, mem_per_job, utilisation * 100,
+            avail, builders, mem_per_job, utilisation * 100,
         )
     return jobs

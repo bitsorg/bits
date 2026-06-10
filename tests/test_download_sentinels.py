@@ -174,6 +174,49 @@ class WaitForSentinelTest(unittest.TestCase):
         self.assertLess(elapsed, 1.5)
         t.join(timeout=1.0)
 
+    def test_stale_sentinel_from_dead_pid_returns_immediately(self):
+        """A sentinel owned by a PID that no longer exists is stale; the wait
+        must not block on it (a crashed prefetch worker can never hang us)."""
+        target = os.path.join(self.tmp, "orphan.tar.gz")
+        sentinel = _sentinel_path(target)
+        # Find a PID that is (almost certainly) not running.
+        dead_pid = 2 ** 22
+        while True:
+            try:
+                os.kill(dead_pid, 0)
+                dead_pid -= 1            # in use; try another
+            except OSError:
+                break                    # not in use -> good
+        with open(sentinel, "w") as fh:
+            fh.write(str(dead_pid))
+        start = time.monotonic()
+        _wait_for_sentinel(target)
+        self.assertLess(time.monotonic() - start, 0.5,
+                        "stale (dead-PID) sentinel should not be waited on")
+
+    def test_unreadable_sentinel_is_treated_as_stale(self):
+        """An empty/garbage sentinel cannot identify a live download and must
+        be treated as stale rather than waited on forever."""
+        target = os.path.join(self.tmp, "garbage.tar.gz")
+        with open(_sentinel_path(target), "w") as fh:
+            fh.write("not-a-pid")
+        start = time.monotonic()
+        _wait_for_sentinel(target)
+        self.assertLess(time.monotonic() - start, 0.5,
+                        "unparseable sentinel should be treated as stale")
+
+    def test_timeout_bounds_the_wait(self):
+        """Even if a sentinel is held by a live PID and never cleared, the wait
+        returns after the timeout instead of blocking forever."""
+        target = os.path.join(self.tmp, "forever.tar.gz")
+        _acquire_download(target)        # owned by THIS (live) process
+        start = time.monotonic()
+        _wait_for_sentinel(target, timeout=0.5, poll=0.1)
+        elapsed = time.monotonic() - start
+        self.assertGreaterEqual(elapsed, 0.5)
+        self.assertLess(elapsed, 2.0)
+        os.unlink(_sentinel_path(target))
+
 
 class SentinelIntegrationTest(unittest.TestCase):
     """End-to-end: one thread acquires, another waits, file is eventually ready."""

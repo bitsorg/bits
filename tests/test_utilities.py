@@ -4,12 +4,17 @@ import unittest
 from unittest.mock import patch
 
 from bits_helpers.utilities import doDetectArch, filterByArchitectureDefaults, disabledByArchitectureDefaults
+from bits_helpers.utilities import resolve_variables, predefined_arch_vars
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import asList
 from bits_helpers.utilities import prunePaths
-from bits_helpers.utilities import resolve_version
+from bits_helpers.utilities import resolve_version, resolve_spec_data
 from bits_helpers.utilities import topological_sort
 from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
+from bits_helpers.utilities import _parse_req_matcher, _collect_version_pins
+from bits_helpers.utilities import asDict, merge_dicts
+from bits_helpers.utilities import _version_compare, _parse_patch_entry, filterPatches, _matcher_active
+from collections import OrderedDict
 import bits_helpers
 import bits_helpers.log
 import os
@@ -274,6 +279,24 @@ class TestUtilities(unittest.TestCase):
     self.assertEqual([], list(filterByArchitectureDefaults("osx_x86-64", "ali", [])))
     self.assertEqual(["GCC"], list(filterByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:slc6", "GCC:defaults=ali"])))
     self.assertEqual([], list(filterByArchitectureDefaults("osx_x86-64", "o2", ["AliRoot:slc6", "GCC:defaults=ali"])))
+    # Version-pinned entries: filter still yields the plain name
+    self.assertEqual(["root"], list(filterByArchitectureDefaults("slc8_x86-64", "release", ["root = 6.24.02"])))
+    self.assertEqual([], list(filterByArchitectureDefaults("osx_arm64", "release", ["root = 6.24.02:(?!osx)"])))
+    self.assertEqual(["root"], list(filterByArchitectureDefaults("slc8_x86-64", "release", ["root = 6.24.02:(?!osx)"])))
+    # Version-gated requires keyed on the depending package's own version:
+    # the 5th positional arg is the owner version (sort -V comparison).
+    reqs = ["CMake", "curl:version>=v6.40.00"]
+    self.assertEqual(["CMake", "curl"],
+                     list(filterByArchitectureDefaults("osx_arm64", "release", reqs, None, "v6.40.00")))
+    self.assertEqual(["CMake"],
+                     list(filterByArchitectureDefaults("osx_arm64", "release", reqs, None, "v6.38.00")))
+    self.assertEqual(["CMake", "curl"],
+                     list(filterByArchitectureDefaults("osx_arm64", "release", reqs, None, "v6.42.00")))
+    # Combined arch + version atom: curl only on non-osx AND >= 6.40.
+    reqs2 = ["curl:(?!osx) && version>=v6.40.00"]
+    self.assertEqual(["curl"], list(filterByArchitectureDefaults("slc9_x86-64", "release", reqs2, None, "v6.40.00")))
+    self.assertEqual([], list(filterByArchitectureDefaults("osx_arm64", "release", reqs2, None, "v6.40.00")))
+    self.assertEqual([], list(filterByArchitectureDefaults("slc9_x86-64", "release", reqs2, None, "v6.38.00")))
 
   def test_disabledByArchitecture(self) -> None:
     self.assertEqual([], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot"])))
@@ -284,6 +307,148 @@ class TestUtilities(unittest.TestCase):
     self.assertEqual([], list(disabledByArchitectureDefaults("osx_x86-64", "ali", [])))
     self.assertEqual(["AliRoot"], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:slc6", "GCC:defaults=ali"])))
     self.assertEqual(["AliRoot", "GCC"], list(disabledByArchitectureDefaults("osx_x86-64", "o2", ["AliRoot:slc6", "GCC:defaults=ali"])))
+    # Version-pinned entries are disabled according to the matcher, not the pin
+    self.assertEqual(["root"], list(disabledByArchitectureDefaults("osx_arm64", "release", ["root = 6.24.02:(?!osx)"])))
+
+  def test_variable_conditional_requires(self) -> None:
+    """`dep:(?VAR)` is active iff defaults variable VAR is truthy."""
+    arch = "ubuntu2510_x86-64-gcc15-dbg"
+    # Active when the variable is truthy ...
+    self.assertEqual(["cuda"], list(filterByArchitectureDefaults(
+        arch, ["dev4", "cuda"], ["cuda:(?cuda)"], {"cuda": "true"})))
+    self.assertEqual([], list(disabledByArchitectureDefaults(
+        arch, ["dev4", "cuda"], ["cuda:(?cuda)"], {"cuda": "true"})))
+    # ... and disabled when unset or false-ish ...
+    for vars_ in (None, {}, {"cuda": "false"}, {"cuda": "off"}, {"cuda": "0"}, {"cuda": ""}):
+      self.assertEqual([], list(filterByArchitectureDefaults(
+          arch, ["dev4"], ["cuda:(?cuda)"], vars_)), vars_)
+      self.assertEqual(["cuda"], list(disabledByArchitectureDefaults(
+          arch, ["dev4"], ["cuda:(?cuda)"], vars_)), vars_)
+    # A variable matcher must not be confused with a real arch regex like (?!osx)
+    self.assertEqual([], list(filterByArchitectureDefaults(
+        "osx_arm64", ["dev4"], ["GCC:(?!osx)"], {"cuda": "true"})))
+    self.assertEqual(["GCC"], list(filterByArchitectureDefaults(
+        arch, ["dev4"], ["GCC:(?!osx)"], {"cuda": "true"})))
+
+  def test_predefined_arch_vars(self) -> None:
+    """Only the truthy platform variables are exposed, so (?osx) is false off mac."""
+    self.assertEqual({"osx": "true", "arm64": "true", "aarch64": "true"},
+                     predefined_arch_vars("osx_arm64"))
+    v = predefined_arch_vars("ubuntu2510_x86-64-gcc15")
+    self.assertEqual("true", v.get("linux"))
+    self.assertEqual("true", v.get("x86_64"))
+    self.assertNotIn("osx", v)
+    self.assertNotIn("arm64", v)
+
+  def test_resolve_variables(self) -> None:
+    """Gated `variables:` entries resolve against flavours / predefined / earlier vars."""
+    linux = "ubuntu2510_x86-64-gcc15"
+    osx = "osx_arm64"
+    # Plain entries pass through; predefined arch vars are seeded.
+    r = resolve_variables({"cxxstd": "20"}, {}, linux, ["dev4"])
+    self.assertEqual("20", r["cxxstd"])
+    self.assertEqual("true", r["linux"])
+    self.assertNotIn("osx", r)
+    # Gated on a CLI flavour: defined only when the flavour is set.
+    vblock = {"heavygen": {"value": "yes", "when": "(?openloops)"}}
+    self.assertNotIn("heavygen", resolve_variables(vblock, {}, linux, ["dev4"]))
+    self.assertEqual("yes", resolve_variables(
+        vblock, {"openloops": "true"}, linux, ["dev4"])["heavygen"])
+    # Gated on flavour AND not-osx (arch regex): off on mac even with the flavour.
+    g = {"heavygen": {"value": True, "when": "(?openloops) && (?!osx)"}}
+    self.assertIn("heavygen", resolve_variables(g, {"openloops": "1"}, linux, ["dev4"]))
+    self.assertNotIn("heavygen", resolve_variables(g, {"openloops": "1"}, osx, ["dev4"]))
+    # Gated on a predefined arch var directly: (?osx) true on mac only.
+    o = {"macflag": {"value": True, "when": "(?osx)"}}
+    self.assertIn("macflag", resolve_variables(o, {}, osx, ["dev4"]))
+    self.assertNotIn("macflag", resolve_variables(o, {}, linux, ["dev4"]))
+    # Chained: a later entry gated on an earlier (previously defined) variable.
+    chain = OrderedDict([
+        ("base", {"value": True, "when": "(?openloops)"}),
+        ("derived", {"value": True, "when": "(?base)"}),
+    ])
+    self.assertIn("derived", resolve_variables(chain, {"openloops": "1"}, linux, ["dev4"]))
+    self.assertNotIn("derived", resolve_variables(chain, {}, linux, ["dev4"]))
+    # A CLI flavour overrides a defaults entry of the same name.
+    self.assertEqual("cli", resolve_variables(
+        {"x": "file"}, {"x": "cli"}, linux, ["dev4"])["x"])
+    # The resolved variables then drive package gating end to end.
+    rv = resolve_variables({"heavygen": {"value": True, "when": "(?openloops) && (?!osx)"}},
+                           {"openloops": "1"}, linux, ["dev4"])
+    self.assertEqual(["herwig3"], list(filterByArchitectureDefaults(
+        linux, ["dev4"], ["herwig3:(?heavygen)"], rv)))
+
+  def test_parse_req_matcher(self) -> None:
+    """_parse_req_matcher should correctly parse all requirement syntax variants."""
+    # Plain name
+    self.assertEqual(("AliRoot", ".*", None), _parse_req_matcher("AliRoot"))
+    # Arch-conditional
+    self.assertEqual(("AliRoot", "(?!osx)", None), _parse_req_matcher("AliRoot:(?!osx)"))
+    # defaults= conditional
+    self.assertEqual(("GCC", "defaults=ali", None), _parse_req_matcher("GCC:defaults=ali"))
+    # Version pin, no matcher
+    self.assertEqual(("root", ".*", "6.24.02"), _parse_req_matcher("root = 6.24.02"))
+    self.assertEqual(("root", ".*", "6.24.02"), _parse_req_matcher("root=6.24.02"))
+    self.assertEqual(("root", ".*", "master"), _parse_req_matcher("root = master"))
+    # Version pin with spaces around =
+    self.assertEqual(("my-provider", ".*", "feature-xyz"), _parse_req_matcher("my-provider = feature-xyz"))
+    # Version pin + arch matcher
+    self.assertEqual(("root", "(?!osx)", "6.24.02"), _parse_req_matcher("root = 6.24.02:(?!osx)"))
+    # Version pin + defaults= matcher
+    self.assertEqual(("boost", "defaults=o2", "1.80.0"), _parse_req_matcher("boost = 1.80.0:defaults=o2"))
+
+  def test_collect_version_pins_basic(self) -> None:
+    """_collect_version_pins registers active pins and ignores inactive ones."""
+    pins = {}
+    _collect_version_pins("slc8_x86-64", "release",
+                          ["root = 6.24.02", "hepmc3", "boost = 1.82.0:(?!osx)"],
+                          "mypackage", pins, {})
+    self.assertEqual({"root": "6.24.02", "boost": "1.82.0"}, pins)
+
+  def test_collect_version_pins_arch_inactive(self) -> None:
+    """A pin whose matcher does not match the current arch is ignored."""
+    pins = {}
+    _collect_version_pins("osx_arm64", "release",
+                          ["boost = 1.82.0:(?!osx)"],
+                          "mypackage", pins, {})
+    self.assertEqual({}, pins)
+
+  def test_collect_version_pins_same_version_two_owners(self) -> None:
+    """Two packages pinning the same dep to the same version is not an error."""
+    pins = {"root": "6.24.02"}
+    # Should not raise
+    _collect_version_pins("slc8_x86-64", "release",
+                          ["root = 6.24.02"],
+                          "other-package", pins, {})
+    self.assertEqual({"root": "6.24.02"}, pins)
+
+  def test_collect_version_pins_conflict_raises(self) -> None:
+    """Two different version pins for the same dep must raise a fatal error."""
+    pins = {"root": "6.24.02"}
+    with self.assertRaises(SystemExit):
+      _collect_version_pins("slc8_x86-64", "release",
+                            ["root = 6.32.06"],
+                            "other-package", pins, {})
+
+  def test_collect_version_pins_already_resolved_same_version(self) -> None:
+    """A pin for an already-resolved dep at the same version is silently accepted."""
+    from collections import OrderedDict
+    specs = {"root": {"version": "6.24.02"}}
+    pins = {}
+    _collect_version_pins("slc8_x86-64", "release",
+                          ["root = 6.24.02"],
+                          "mypackage", pins, specs)
+    # No pin registered (already resolved correctly); no error raised
+    self.assertEqual({}, pins)
+
+  def test_collect_version_pins_already_resolved_conflict_raises(self) -> None:
+    """A pin for a dep resolved at a *different* version must raise a fatal error."""
+    specs = {"root": {"version": "6.32.06"}}
+    pins = {}
+    with self.assertRaises(SystemExit):
+      _collect_version_pins("slc8_x86-64", "release",
+                            ["root = 6.24.02"],
+                            "mypackage", pins, specs)
 
   def test_prunePaths(self) -> None:
     fake_env = {
@@ -396,6 +561,274 @@ class TestTopologicalSort(unittest.TestCase):
         }))
         self.assertEqual({"A", "B", "C"}, set(result))
         self.assertEqual(3, len(result))
+
+
+class TestResolveSpecDataVariables(unittest.TestCase):
+    """Defaults-profile variables + soft expansion (PR #97, softer variant)."""
+
+    def _spec(self, variables=None):
+        return {"package": "foo", "commit_hash": "abc1234567", "tag": "v1",
+                "version": "1.0", "variables": variables or {}}
+
+    def test_default_var_available(self):
+        out = resolve_spec_data(self._spec(), "%(base)s/x", ["release"],
+                                default_vars={"base": "http://h"}, strict=False)
+        self.assertEqual(out, "http://h/x")
+
+    def test_recipe_var_overrides_default(self):
+        out = resolve_spec_data(self._spec({"v": "recipe"}), "%(v)s", ["release"],
+                                default_vars={"v": "defaults"}, strict=True)
+        self.assertEqual(out, "recipe")
+
+    def test_soft_leaves_unknown_and_shell_percent_untouched(self):
+        # %(base)s/%(name)s substitute; %(unknown)s, %%, and ${X%suffix} stay put,
+        # and nothing raises (the soft path never does raw %-formatting).
+        data = "u=%(base)s/%(name)s pct=100%% keep=${X%suffix} miss=%(unknown)s"
+        out = resolve_spec_data(self._spec(), data, ["release"],
+                                default_vars={"base": "http://h"}, strict=False)
+        self.assertEqual(out, "u=http://h/foo pct=100%% keep=${X%suffix} miss=%(unknown)s")
+
+    def test_soft_indirect_nesting(self):
+        out = resolve_spec_data(self._spec(), "%(%(v1)s_key)s", ["release"],
+                                default_vars={"v1": "foo", "foo_key": "bar"}, strict=False)
+        self.assertEqual(out, "bar")
+
+    def test_strict_unknown_is_fatal(self):
+        with patch("bits_helpers.utilities.dieOnError") as die:
+            resolve_spec_data(self._spec(), "%(nope)s", ["release"], strict=True)
+        self.assertTrue(die.called)
+        self.assertIs(die.call_args[0][0], True)  # dieOnError(True, ...)
+
+    def test_strict_indirect_double_percent_still_works(self):
+        spec = self._spec({"v1": "foo", "foo_key": "bar"})
+        out = resolve_spec_data(spec, "%%(%(v1)s_key)s", ["release"], strict=True)
+        self.assertEqual(out, "bar")
+
+
+class AsDictTest(unittest.TestCase):
+    """overrides: collapsing, including the 'name = value' pin shorthand."""
+
+    def test_string_pin_shorthand(self):
+        # A list of "name = value" strings (same syntax as requires: pins) must
+        # produce per-package {version, tag} overrides, not be silently dropped.
+        out = asDict(["acts = 44.4.0", "k4actstracking = v00-02"])
+        self.assertEqual(dict(out["acts"]), {"version": "44.4.0", "tag": "44.4.0"})
+        self.assertEqual(dict(out["k4actstracking"]), {"version": "v00-02", "tag": "v00-02"})
+
+    def test_dict_form_preserved(self):
+        out = asDict([{"GCC-Toolchain": {"source": "x", "tag": "v1"}}])
+        self.assertEqual(dict(out["GCC-Toolchain"]), {"source": "x", "tag": "v1"})
+
+    def test_mixed_and_malformed(self):
+        # bare names (no '=') are ignored; valid pins still applied.
+        out = asDict(["justaname", "a = 1"])
+        self.assertNotIn("justaname", out)
+        self.assertEqual(dict(out["a"]), {"version": "1", "tag": "1"})
+
+    def test_empty_is_empty(self):
+        self.assertEqual(asDict([]), {})
+        self.assertEqual(asDict(None), {})
+
+
+class DefaultsChainMergeTest(unittest.TestCase):
+    """Chained defaults (a::b::c) deep-merge overrides: union of entries, last
+    wins per key, regardless of list-form vs dict-form per profile."""
+
+    @staticmethod
+    def _merge_chain(*profiles):
+        # Mirror readDefaults: normalise each profile's overrides to dict-form
+        # BEFORE merging, so list-form and dict-form blocks interoperate.
+        merged = OrderedDict()
+        for p in profiles:
+            p = OrderedDict(p)
+            if "overrides" in p:
+                p["overrides"] = asDict(p["overrides"])
+            merged = merge_dicts(merged, p)
+        return merged["overrides"]
+
+    def test_dict_then_list_both_survive(self):
+        # gcc15 (dict-form toolchain pin) :: key4hep (list-form acts pin):
+        # both pins must survive -- the regression that silently dropped the
+        # GCC-Toolchain pin (falling back to the gcc14 recipe default).
+        ov = self._merge_chain(
+            {"overrides": [{"GCC-Toolchain": {"source": "x", "tag": "v15.2.0-alice1"}}]},
+            {"overrides": ["acts = 44.4.0", "k4actstracking = v00-02"]},
+        )
+        self.assertEqual(ov["GCC-Toolchain"]["tag"], "v15.2.0-alice1")
+        self.assertEqual(dict(ov["acts"]), {"version": "44.4.0", "tag": "44.4.0"})
+        self.assertEqual(dict(ov["k4actstracking"]), {"version": "v00-02", "tag": "v00-02"})
+
+    def test_list_then_dict_both_survive(self):
+        # Order-independent: the same chain with the forms swapped.
+        ov = self._merge_chain(
+            {"overrides": ["acts = 44.4.0"]},
+            {"overrides": [{"GCC-Toolchain": {"tag": "v15.2.0-alice1"}}]},
+        )
+        self.assertIn("acts", ov)
+        self.assertEqual(ov["GCC-Toolchain"]["tag"], "v15.2.0-alice1")
+
+    def test_same_key_last_wins(self):
+        # A later profile overriding the same package replaces its value.
+        ov = self._merge_chain(
+            {"overrides": ["acts = 26.0.0"]},
+            {"overrides": ["acts = 44.4.0"]},
+        )
+        self.assertEqual(ov["acts"]["version"], "44.4.0")
+
+    def test_same_key_deep_merge_keeps_other_fields(self):
+        # Same package across profiles: fields merge key-by-key, last wins per
+        # field, other fields preserved.
+        ov = self._merge_chain(
+            {"overrides": [{"ROOT": {"tag": "v6-36-04", "source": "orig"}}]},
+            {"overrides": [{"ROOT": {"tag": "v6-40-00"}}]},
+        )
+        self.assertEqual(ov["ROOT"]["tag"], "v6-40-00")   # last wins
+        self.assertEqual(ov["ROOT"]["source"], "orig")    # untouched field kept
+
+
+class ArchTemplateTest(unittest.TestCase):
+    """Configurable architecture layout: components, templates, and the
+    order/separator-independent matching used for validation, docker, S3."""
+
+    UBUNTU = ("ubuntu", "25.10", "")
+
+    def _comp(self, processor="x86_64"):
+        from bits_helpers.utilities import arch_components
+        return arch_components(True, [], self.UBUNTU, "Linux", processor)
+
+    def test_components(self):
+        c = self._comp()
+        self.assertEqual(c, {"os": "ubuntu2510", "machine": "x86-64", "_machine": "x86_64"})
+
+    def test_default_layout_unchanged(self):
+        # The built-in template must reproduce today's string byte-for-byte.
+        from bits_helpers.utilities import doDetectArch, DEFAULT_ARCH_TEMPLATE, apply_arch_template
+        self.assertEqual(DEFAULT_ARCH_TEMPLATE, "%(os)s_%(machine)s")
+        self.assertEqual(doDetectArch(True, [], self.UBUNTU, "Linux", "x86_64"), "ubuntu2510_x86-64")
+        self.assertEqual(apply_arch_template(DEFAULT_ARCH_TEMPLATE, self._comp()), "ubuntu2510_x86-64")
+
+    def test_three_layouts(self):
+        from bits_helpers.utilities import apply_arch_template
+        c = self._comp()
+        self.assertEqual(apply_arch_template("%(os)s_%(machine)s", c), "ubuntu2510_x86-64")
+        self.assertEqual(apply_arch_template("%(os)s_%(_machine)s", c), "ubuntu2510_x86_64")
+        self.assertEqual(apply_arch_template("%(_machine)s-%(os)s", c), "x86_64-ubuntu2510")
+
+    def test_literal_template_passthrough(self):
+        from bits_helpers.utilities import apply_arch_template
+        self.assertEqual(apply_arch_template("ubuntu2510_x86-64", self._comp()), "ubuntu2510_x86-64")
+
+    def test_bad_template_raises(self):
+        from bits_helpers.utilities import apply_arch_template
+        with self.assertRaises(ValueError):
+            apply_arch_template("%(nope)s", self._comp())
+
+    def test_osx_components(self):
+        from bits_helpers.utilities import arch_components
+        c = arch_components(False, [], ("", "", ""), "Darwin", "arm64")
+        self.assertEqual(c["os"], "osx")
+        self.assertEqual(c["machine"], "arm64")
+
+    def test_tokens(self):
+        from bits_helpers.utilities import arch_distro_token, arch_machine_token
+        self.assertEqual(arch_distro_token("x86_64-ubuntu2510"), "ubuntu2510")
+        self.assertEqual(arch_distro_token("slc9_aarch64"), "slc9")
+        self.assertEqual(arch_machine_token("ubuntu2510_x86_64"), "x86_64")
+        self.assertEqual(arch_machine_token("ubuntu2510_x86-64"), "x86-64")
+        self.assertIsNone(arch_distro_token("garbage123"))
+
+    def test_normalise_arch_key_equivalence(self):
+        from bits_helpers.utilities import normalise_arch_key
+        # underscore and dash machine forms collapse to the same key
+        self.assertEqual(normalise_arch_key("ubuntu2404_x86_64"),
+                         normalise_arch_key("ubuntu2404_x86-64"))
+        # order does not matter for the (distro, machine) key
+        self.assertEqual(normalise_arch_key("x86_64-ubuntu2404"),
+                         normalise_arch_key("ubuntu2404_x86-64"))
+
+    def test_matchValidArch_layouts(self):
+        from bits_helpers.args import matchValidArch
+        for a in ("ubuntu2510_x86-64", "ubuntu2510_x86_64", "x86_64-ubuntu2510",
+                  "slc9_aarch64", "osx_arm64"):
+            self.assertTrue(matchValidArch(a), a)
+        self.assertFalse(matchValidArch("garbage123"))
+
+    def test_cmdline_detection(self):
+        from bits_helpers.args import _architecture_given_on_cmdline as g
+        self.assertTrue(g(["bits", "build", "-a", "x", "pkg"]))
+        self.assertTrue(g(["bits", "build", "--architecture", "x"]))
+        self.assertTrue(g(["bits", "build", "--architecture=x"]))
+        self.assertTrue(g(["bits", "build", "-ax86_64-ubuntu2510"]))
+        self.assertFalse(g(["bits", "build", "pkg"]))
+
+
+class VersionMatcherTest(unittest.TestCase):
+    """version<op> matchers, &&/|| combinators, and conditional patches."""
+
+    ARCH = "ubuntu2510_x86-64-gcc15-dbg"
+
+    def _m(self, matcher, version=None, default_vars=None):
+        return _matcher_active(matcher, self.ARCH, ["dev4"], default_vars, version)
+
+    def test_natural_version_compare(self):
+        self.assertEqual(_version_compare("v40r2", "v40r4"), -1)
+        self.assertEqual(_version_compare("v40r10", "v40r2"), 1)   # numeric, not lexical
+        self.assertEqual(_version_compare("01.07", "01.10"), -1)
+        self.assertEqual(_version_compare("v40r2", "v40r2"), 0)
+
+    def test_separator_dash_dot_underscore_equivalent(self):
+        # '-', '.', '_' are equivalent separators: dash- and dot-form tags
+        # compare equal, and ordering is numeric across separators (the old
+        # code ranked v6-40-00 below v6.36.99 because '-' < '.').
+        self.assertEqual(_version_compare("v6-40-00", "v6.40.00"), 0)
+        self.assertEqual(_version_compare("v6_40_00", "v6.40.00"), 0)
+        self.assertEqual(_version_compare("v6-40-00", "v6.36.99"), 1)
+        self.assertEqual(_version_compare("v6-38-00", "v6.40.00"), -1)
+        # dash-form tag in a version>= matcher now gates correctly
+        self.assertTrue(self._m("version>=v6.40.00", "v6-40-00"))
+        self.assertFalse(self._m("version>=v6.40.00", "v6-38-00"))
+
+    def test_version_operators(self):
+        self.assertTrue(self._m("version=v40r2", "v40r2"))
+        self.assertFalse(self._m("version=v40r2", "v40r4"))
+        self.assertTrue(self._m("version!=v40r2", "v40r4"))
+        self.assertTrue(self._m("version<v40r4", "v40r2"))
+        self.assertFalse(self._m("version<v40r4", "v40r4"))
+        self.assertTrue(self._m("version<=v40r4", "v40r4"))
+        self.assertTrue(self._m("version>=v40r3", "v40r4"))
+        self.assertFalse(self._m("version>v40r4", "v40r4"))
+
+    def test_version_no_version_is_inactive(self):
+        self.assertFalse(self._m("version=v40r2", None))
+
+    def test_and_or_combinators(self):
+        self.assertTrue(self._m("version>=v40r2 && version<v41r0", "v40r4"))
+        self.assertFalse(self._m("version>=v40r2 && version<v40r4", "v40r4"))
+        self.assertTrue(self._m("version<v40r0 || version>=v40r4", "v40r4"))
+        # && binds tighter than ||
+        self.assertTrue(self._m("(?!osx) && version>=v40r3 || version<v40r0", "v40r4"))
+
+    def test_single_pipe_is_regex_alternation(self):
+        # a lone | inside an arch regex is ordinary alternation, not OR
+        self.assertTrue(self._m(".*gcc15.*|.*osx.*"))
+        self.assertFalse(self._m(".*osx.*|.*arm64.*"))
+
+    def test_parse_patch_entry(self):
+        self.assertEqual(_parse_patch_entry("p.patch"), ("p.patch", None, ""))
+        self.assertEqual(_parse_patch_entry("p.patch:version=v40r2"),
+                         ("p.patch", "version=v40r2", ""))
+        self.assertEqual(_parse_patch_entry("p.patch,sha256:abc"),
+                         ("p.patch", None, ",sha256:abc"))
+        self.assertEqual(_parse_patch_entry("p.patch:(?cuda),md5:x"),
+                         ("p.patch", "(?cuda)", ",md5:x"))
+
+    def test_filter_patches_strips_matcher_and_drops_inactive(self):
+        pl = ["a.patch:version=v40r2", "b.patch", "c.patch:version>=v40r4,sha256:zz"]
+        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r2"),
+                         ["a.patch", "b.patch"])
+        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r4"),
+                         ["b.patch", "c.patch,sha256:zz"])
+
 
 if __name__ == '__main__':
     unittest.main()

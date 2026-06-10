@@ -58,6 +58,28 @@ cpath=$(which gcc)
 
 function hash() { true; }
 
+# bits_apply_patches [strip] : apply the patch files bits staged in $SOURCEDIR
+# ($PATCH0 .. up to $PATCH_COUNT) in declaration order, with `patch -p<strip>`
+# (default strip level 1). Use this from recipes built with `auto_patch: false`
+# (or under --no-auto-patch), where bits stages the patches but does not apply
+# them. A .bits_applied_patches sentinel makes repeated calls / incremental
+# rebuilds a no-op, mirroring bits' own idempotency.
+bits_apply_patches() {
+  local _strip="${1:-1}" _i _vn _pf
+  local _sentinel="$SOURCEDIR/.bits_applied_patches"
+  [ -f "$_sentinel" ] && return 0
+  [ "${PATCH_COUNT:-0}" -gt 0 ] || return 0
+  ( cd "$SOURCEDIR" || exit 1
+    for ((_i=0; _i<${PATCH_COUNT:-0}; _i++)); do
+      _vn="PATCH${_i}"; _pf="${!_vn}"
+      [ -n "$_pf" ] || continue
+      echo "bits: applying patch $_pf (-p${_strip})"
+      patch -p"${_strip}" --batch --input "$SOURCEDIR/$_pf"
+    done
+  ) || return $?
+  : > "$_sentinel"
+}
+
 export WORK_DIR="${WORK_DIR_OVERRIDE:-%(workDir)s}"
 export BITS_CONFIG_DIR="${BITS_CONFIG_DIR_OVERRIDE:-%(configDir)s}"
 
@@ -134,6 +156,18 @@ export RECC_PREFIX_MAP=$BUILDDIR=/recc/BUILDDIR-$PKGNAME:$INSTALLROOT=/recc/INST
 # No point in mixing packages
 export RECC_ACTION_SALT="$PKGNAME"
 
+# Safety guards: validate WORK_DIR and PKGHASH before any destructive rm
+# operation.  An empty WORK_DIR would expand "$WORK_DIR/INSTALLROOT/$PKGHASH"
+# to "/INSTALLROOT/..." (catastrophic); an empty PKGHASH would wipe the entire
+# INSTALLROOT tree.  BUILDROOT inherits the same risk.
+if [[ -z "${WORK_DIR}" || ! "${WORK_DIR}" = /* ]]; then
+  echo "ERROR: WORK_DIR is empty or not an absolute path ('${WORK_DIR:-}') — aborting." >&2
+  exit 1
+fi
+if [[ -z "${PKGHASH}" ]]; then
+  echo "ERROR: PKGHASH is empty — refusing to rm -fr '$WORK_DIR/INSTALLROOT/'" >&2
+  exit 1
+fi
 rm -fr "$WORK_DIR/INSTALLROOT/$PKGHASH"
 # We remove the build directory only if we are not in incremental mode.
 if [[ "$INCREMENTAL_BUILD_HASH" == 0 ]] && ! rm -rf "$BUILDROOT"; then
@@ -169,11 +203,6 @@ cat << EOF > "$BUILDDIR/.envrc"
 # Source the build environment which was used for this package
 WORK_DIR=\${WORK_DIR:-$WORK_DIR} source "\${WORK_DIR:-$WORK_DIR}/${INSTALLROOT#$WORK_DIR/}/etc/profile.d/init.sh"
 source_up
-# On mac we build with the proper installation relative RPATH,
-# so this is not actually used and it's actually harmful since
-# startup time is reduced a lot by the extra overhead from the
-# dynamic loader
-unset DYLD_LIBRARY_PATH
 EOF
 
 cd "$BUILDROOT"
@@ -205,25 +234,28 @@ function Run() { # dummy function
 
 if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
   set -o pipefail;
-  { unset DYLD_LIBRARY_PATH
-    set -e
+  # Keep DYLD_LIBRARY_PATH (set from dependencies by init.sh above) so build-time
+  # tools on macOS find their dependencies' dylibs, mirroring LD_LIBRARY_PATH on
+  # Linux. Inherited contamination was already cleared before init.sh ran.
+  { set -e
     set -x
     source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
     if [[ $(type -t Run) == function ]]; then Run "$@"; fi
   } 2>&1 | tee "$BUILDROOT/log"
-  [ $PIPESTATUS -eq 0 ] || exit $PIPESTATUS
+  rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # read PIPESTATUS[0] BEFORE any command clobbers it
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
     set -o pipefail
-    (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log" || exit 1
+    (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log"
+    rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # propagate the real recipe exit code (was masked to 1)
 elif [[ "$CACHED_TARBALL" == "" ]]; then
    set -o pipefail;
-   { unset DYLD_LIBRARY_PATH
-     set -e
+   # Keep DYLD_LIBRARY_PATH (from dependencies via init.sh) — see note above.
+   { set -e
      set -x
      source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
      if [[ $(type -t Run) == function ]]; then Run "$@"; fi
    } 2>&1 | tee "$BUILDROOT/log"
-   [ $PIPESTATUS -eq 0 ] || exit $PIPESTATUS
+   rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # read PIPESTATUS[0] BEFORE any command clobbers it
 else
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
   # files.

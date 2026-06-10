@@ -1,5 +1,8 @@
 import argparse
 from bits_helpers.utilities import detectArch, normalise_multiple_options
+from bits_helpers.utilities import (arch_distro_token, arch_machine_token,
+                                    normalise_arch_key, detectArchComponents,
+                                    apply_arch_template, readDefaults)
 from bits_helpers.workarea import cleanup_git_log
 import configparser
 import multiprocessing
@@ -161,6 +164,12 @@ def doParseArgs():
                                       description="Generate a dependency graph for a given package.")
   doctor_parser = subparsers.add_parser("doctor", help="verify status of your system",
                                         description="Verify the status of your system.")
+  brew_parser = subparsers.add_parser("brew", help="generate a Homebrew Brewfile from recipes (macOS)",
+                                      description="Scan recipes for Homebrew-sourced system packages "
+                                                  "(homebrew_formula:) and write a Brewfile listing the "
+                                                  "formulae the stack expects. Run 'brew bundle' against "
+                                                  "it to install them, or build with --brew to install on "
+                                                  "demand.")
   init_parser = subparsers.add_parser("init", help="initialise local packages",
                                       description="Initialise development packages.")
   version_parser = subparsers.add_parser("version", help="display %(prog)s version",
@@ -202,6 +211,26 @@ def doParseArgs():
           "3 = manifest unreadable."
       ),
   )
+  stats_parser = subparsers.add_parser(
+      "stats",
+      help="show a human-readable resource report from a monitored build",
+      description=(
+          "Summarise the resource usage recorded when a build ran with "
+          "--resource-monitoring. Reads <work-dir>/bits_build_stats.json and the "
+          "per-package traces under SPECS/, leads with the heaviest/slowest "
+          "packages, and flags likely memory or parallelism problems."
+      ),
+  )
+  stats_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
+                            help="Build work area to read stats from (default: %(default)s).")
+  stats_parser.add_argument("--package", dest="package", metavar="NAME", default=None,
+                            help="Show the resource timeline detail for a single package.")
+  stats_parser.add_argument("--top", dest="top", type=int, default=10, metavar="N",
+                            help="Show the top N packages in the table (default: %(default)s).")
+  stats_parser.add_argument("--sort", dest="sort", choices=["time", "rss", "cpu"],
+                            default="time", help="Sort the table by this metric (default: %(default)s).")
+  stats_parser.add_argument("--json", dest="json", action="store_true",
+                            help="Emit machine-readable JSON instead of the text report.")
 
   # Options for the analytics command
   # analytics_parser.add_argument("state", choices=["on", "off"], help="Whether to report analytics or not")
@@ -212,6 +241,14 @@ def doParseArgs():
 
   build_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
                             help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+
+  build_parser.add_argument("--flavour", "--flavor", dest="flavours", action="append",
+                            default=[], metavar="NAME[=VALUE]",
+                            help=("Set a build-wide flavour variable (repeatable, comma-separated). "
+                                  "NAME -> true, NAME=VALUE -> VALUE, !NAME -> false. Flavours gate "
+                                  "conditional requires/sources/patches via (?NAME) and are exported "
+                                  "into the build environment; they override a defaults `variables:` "
+                                  "entry of the same name."))
 
   build_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                             help=("Build as if on the specified architecture. When used with --docker, build "
@@ -229,10 +266,63 @@ def doParseArgs():
   build_parser.add_argument("--builders", dest="builders", type=int, default=1,
                             help=("The number of independent packages to build in parallel. "
                                   "Default is: %(default)d."))
-  build_parser.add_argument("--resource-monitoring", dest="resourceMonitoring", action="store_true",
-                            help="Enable resource monitoring for each built package.")
+  build_parser.add_argument("--oversubscribe", dest="oversubscribe", type=float, default=None,
+                            metavar="FACTOR",
+                            help=("CPU oversubscription factor (>= 1.0) for the per-builder "
+                                  "-j share. A deep dependency tree rarely keeps all --builders "
+                                  "busy, so each package's -j = ceil(jobs * FACTOR / builders), "
+                                  "still clamped to -j and to the (unscaled) memory cap. >1.0 "
+                                  "fills idle cores at the cost of mild overshoot when all "
+                                  "builders are busy (absorbed by the OS scheduler / nice ladder). "
+                                  "When unset, falls back to `build_oversubscribe:` in the active "
+                                  "defaults, then 1.0 (no oversubscription)."))
+  build_parser.add_argument("--no-auto-patch", dest="autoPatch", action="store_false", default=True,
+                            help=("Do not apply recipe patches: automatically. Patch files are "
+                                  "still staged in $SOURCEDIR and exported as $PATCH0..$PATCH_COUNT, "
+                                  "but each recipe must apply its own patches (e.g. via the "
+                                  "bits_apply_patches helper). Default: patches are auto-applied. "
+                                  "A recipe can opt out individually with `auto_patch: false`."))
+  # --build-nice / --no-build-nice as a pair of store_true/store_false on the
+  # same dest (argparse.BooleanOptionalAction is only available on Python 3.9+).
+  # OFF by default: the priority ladder (and its renice watchdog) is opt-in, so
+  # the default --builders path is the plain scheduler with no command wrapping
+  # or background threads. Enable with --build-nice.
+  build_parser.add_argument("--build-nice", dest="buildNice", action="store_true", default=False,
+                            help=("Opt in to staggering concurrent --builders jobs across OS 'nice' "
+                                  "levels so CPU contention degrades gracefully: one build runs at top "
+                                  "priority and the others are progressively backed off, with a watchdog "
+                                  "boosting long-running stragglers. Native builds use 'nice'; "
+                                  "--docker/podman builds use 'docker run --cpu-shares'. Off by default; "
+                                  "only affects --builders > 1. Memory is capped separately (mem_per_job)."))
+  build_parser.add_argument("--no-build-nice", dest="buildNice", action="store_false",
+                            help="Explicitly disable the --build-nice priority ladder (this is the default).")
+  build_parser.add_argument("--build-nice-step", dest="buildNiceStep", type=int, default=5, metavar="N",
+                            help=("Nice increment between concurrent build slots when --build-nice is set "
+                                  "(slot k -> nice min(k*N, 19)). N=1 gives a gentle 0,1,2,3 ladder; larger "
+                                  "values separate slots more aggressively. Default: %(default)d."))
+  build_parser.add_argument("--build-nice-boost-after", dest="buildNiceBoostAfter", type=int, default=600,
+                            metavar="SECONDS",
+                            help=("With --build-nice on native builds, a watchdog renices a build that has "
+                                  "been running longer than this (and was niced down) back up to top "
+                                  "priority, one straggler at a time, so a long low-priority compile does not "
+                                  "drag out the end of the build. Requires privilege to raise priority "
+                                  "(root / CAP_SYS_NICE); a no-op otherwise. 0 disables. Default: %(default)d."))
+  build_parser.add_argument("--resource-monitoring", dest="resourceMonitoring",
+                            action="store_const", const=True, default=None,
+                            help=("Enable per-package resource monitoring. Defaults to ON in "
+                                  "parallel mode (--builders > 1)."))
+  build_parser.add_argument("--no-resource-monitoring", dest="resourceMonitoring",
+                            action="store_const", const=False,
+                            help="Disable per-package resource monitoring even when --builders > 1.")
   build_parser.add_argument("--resources", dest="resources", default=None,
                             help="JSON files containing resources utilization of packages.")
+  build_parser.add_argument("--auto-resources", dest="autoResources", action="store_true",
+                            help=("Opt in to the self-tuning resource scheduler for --builders > 1: "
+                                  "auto-load the build-stats file a previous run left behind and use it "
+                                  "to gate how many build jobs start concurrently, and auto-enable "
+                                  "resource monitoring to refresh it. Off by default; concurrency is then "
+                                  "bounded only by --builders. Explicit --resources / --resource-monitoring "
+                                  "still work without this flag."))
   build_parser.add_argument("-u", "--fetch-repos", dest="fetchRepos", action="store_true",
                             help=("Fetch updates to repositories in MIRRORDIR. Required but nonexistent "
                                   "repositories are always cloned, even if this option is not given."))
@@ -314,18 +404,20 @@ def doParseArgs():
 
   build_sandbox = build_parser.add_argument_group(title="Recipe sandbox", description="""\
   Run each recipe build script inside an isolated sandbox to limit the impact
-  of malicious or buggy recipes.  On Linux, podman (rootless) is used; on
-  macOS, the built-in sandbox-exec is used (no VM, no overhead).
-  When --docker is active, a nested podman container is added inside the
-  builder container for an additional isolation layer.
+  of malicious or buggy recipes.  On macOS, the built-in sandbox-exec is used
+  (no VM, no overhead).  On Linux, podman (rootless) is used only when --docker
+  is active (a nested podman container inside the builder image) or when
+  requested explicitly with --sandbox=podman; a plain local Linux build is not
+  sandboxed and never invokes podman.
   """)
   build_sandbox.add_argument(
       "--sandbox", dest="sandbox", metavar="MODE", default="auto",
       choices=["off", "auto", "podman", "sandbox-exec"],
       help=(
           "Recipe sandbox mode. "
-          "'auto' (default): use podman on Linux if available, "
-          "sandbox-exec on macOS, nested podman when --docker is active. "
+          "'auto' (default): sandbox-exec on macOS, nested podman when --docker "
+          "is active, and 'off' on a local Linux build (podman is not used or "
+          "even probed there). "
           "'podman': always use podman (requires --docker or --sandbox-image). "
           "'sandbox-exec': macOS only. "
           "'off': no sandboxing."
@@ -337,6 +429,20 @@ def doParseArgs():
           "Container image to use for --sandbox=podman when not using --docker. "
           "Implies --sandbox=podman. "
           "Defaults to the --docker image when --docker is set."
+      ),
+  )
+  build_sandbox.add_argument(
+      "--sandbox-network", dest="sandboxNetwork", metavar="MODE", default=None,
+      choices=["on", "off"],
+      help=(
+          "Global default for build-time network access inside the sandbox: "
+          "'on' blocks outgoing network, 'off' allows it. A recipe's own "
+          "`sandbox_network:` field always overrides this. Has no effect where "
+          "sandboxing is off (e.g. a plain local Linux build). When not given "
+          "on the command line, the value falls back to `sandbox_network:` in "
+          "the active defaults (e.g. defaults-release.sh), then to 'on'. "
+          "Setting it once in defaults is the recommended way to enable network "
+          "for a stack with many recipes that pip-install at build time."
       ),
   )
 
@@ -358,6 +464,10 @@ def doParseArgs():
                             is set to the same value). Implies --no-system. May be set to a default store on some
                             architectures; use --no-remote-store to disable it in that case.
                             """)
+  build_remote.add_argument("--reuse-cvmfs", dest="reuseCvmfs", action="store_true",
+                            help=("Reuse already-deployed components from the CVMFS area declared by the "
+                                  "defaults `cvmfs_dir:` field. Sets --remote-store to cvmfs://<cvmfs_dir> "
+                                  "when no remote store is given."))
   build_remote.add_argument("--write-store", dest="writeStore", metavar="STORE", default="",
                             help=("Where to upload newly built packages. Same syntax as --remote-store, "
                                   "except ::rw is not recognised. Implies --no-system."))
@@ -370,13 +480,22 @@ def doParseArgs():
                             upload run concurrently with downstream package builds. Silently ignored without
                             --makeflow. Has no effect when --write-store is not set.
                             """)
-  build_remote.add_argument("--prefetch-workers", dest="prefetchWorkers", type=int, default=0,
+  build_remote.add_argument("--prefetch-workers", dest="prefetchWorkers", type=int, default=-1,
                             metavar="N",
                             help="""\
                             Start N background threads that pre-download pre-built tarballs and source
-                            archives for all packages in the build graph before they are needed. A
+                            archives for all packages in the build graph before they are needed, so that
+                            downloads overlap the (serial) preparation loop instead of blocking it. A
                             .downloading sentinel file coordinates with the build loop so no file is
-                            fetched twice. Default: 0 (disabled). Works in all build modes.
+                            fetched twice. Default: -1 (auto = min(builders, 4)); 0 disables prefetch.
+                            Works in all build modes.
+                            """)
+  build_remote.add_argument("--parallel-downloads", dest="parallelDownloads", type=int, default=2,
+                            metavar="N",
+                            help="""\
+                            Maximum number of package downloads the build scheduler runs concurrently
+                            (the scheduler's "download" task cap, separate from the --builders compile
+                            cap). Default: 2. Works with --builders > 1.
                             """)
   build_remote.add_argument("--parallel-sources", dest="parallelSources", type=int, default=1,
                             metavar="N",
@@ -421,6 +540,16 @@ def doParseArgs():
                             help="Always use system packages when compatible.")
   build_system.add_argument("--no-system", dest="noSystem", nargs="?", const="*", default=None, metavar="PACKAGES",
                             help="Never use system packages for the provided, command separated, PACKAGES, even if compatible.")
+  build_parser.add_argument(
+      "--brew", dest="brew", action="store_true", default=False,
+      help=(
+          "macOS only: allow recipes that source a system package from Homebrew "
+          "to run 'brew install <formula>' automatically when the formula is "
+          "missing. Without --brew, such recipes fail with a message telling you "
+          "which formula to 'brew install'. Exported to recipe checks as "
+          "BITS_BREW=1."
+      ),
+  )
 
   build_checksums = build_parser.add_argument_group(
       title="Source and patch checksum verification",
@@ -685,6 +814,25 @@ def doParseArgs():
             "Example: https://prepub.example.org:8080"),
   )
 
+  # Options for the brew subcommand
+  brew_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
+                           help=("Generate the Brewfile for the specified architecture. Only recipes whose "
+                                 "prefer_system matches this architecture are included. Default '%(default)s'."))
+  brew_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
+                           help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  brew_parser.add_argument("-o", "--output", dest="output", metavar="FILE", default=None,
+                           help=("Write the Brewfile to %(metavar)s. Use '-' for stdout. "
+                                 "Default: <CONFIGDIR>/macos/Brewfile (next to the recipes, "
+                                 "which are the source of truth)."))
+  brew_parser.add_argument("--check", dest="check", action="store_true", default=False,
+                           help=("Do not write; exit non-zero if FILE is missing or differs from what "
+                                 "would be generated (for CI / pre-commit)."))
+  brew_parser.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR", "alidist"),
+                           help="The directory containing build recipes. Default '%(default)s'.")
+  brew_parser.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
+                           help=("Change to the specified directory before doing anything. "
+                                 "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
+
   # Options for the init subcommand
   init_parser.add_argument("pkgname", nargs="?", default="", metavar="PACKAGE",
                            help="Package to clone locally. One of the packages in CONFIGDIR.")
@@ -736,8 +884,9 @@ def doParseArgs():
                         help="Binary store to upload newly-built tarballs to (written as 'write_store' "
                              "in bits.rc). Accepts the same URL formats as 'bits build --write-store'.")
   init_cfg.add_argument("--organisation", dest="organisation", default=None, metavar="NAME",
-                        help="Organisation name stored under the 'organisation' key in bits.rc. "
-                             "May be used by defaults profiles and recipe tooling.")
+                        help="Organisation name selecting the registry/provider 'home' repo, also "
+                             "stored under the 'organisation' key in bits.rc. Defaults to the "
+                             "BITS_ORGANISATION environment variable (set by the aliBuild wrapper).")
   init_cfg.add_argument("--rc-file", dest="rcFile", default="bits.rc", metavar="FILE",
                         help="Path of the bits.rc file to create or update. Default '%(default)s'.")
   init_cfg.add_argument("--append", dest="appendRc", action="store_true", default=False,
@@ -955,6 +1104,12 @@ def doParseArgs():
   for _rc_key, _dest in _RC_KEY_TO_DEST:
     if _rc_early.get(_rc_key):
       _rc_defaults[_dest] = _rc_early[_rc_key]
+  # organisation may also arrive via the environment (the aliBuild wrapper
+  # exports BITS_ORGANISATION). Honour it when bits.rc doesn't set it, so the
+  # registry/provider "home" is selected for build/etc., not just init. An
+  # explicit --organisation on the CLI still wins via normal argparse order.
+  if not _rc_defaults.get("organisation") and os.environ.get("BITS_ORGANISATION"):
+    _rc_defaults["organisation"] = os.environ["BITS_ORGANISATION"]
   if _rc_defaults:
     # set_defaults on the *parent* parser is overridden by each subparser's own
     # argument-level defaults (add_argument(..., default=...)).  We must call
@@ -1004,7 +1159,50 @@ def doParseArgs():
 VALID_ARCHS_RE = "^slc[5-9]_(x86-64|ppc64|aarch64)$|^(ubuntu|ubt|osx|fedora)[0-9]*_(x86-64|arm64)$"
 
 def matchValidArch(architecture):
-  return bool(re.match(VALID_ARCHS_RE, architecture))
+  # Recognise an architecture by content rather than by a fixed string layout,
+  # so custom `architecture:` templates (ubuntu2510_x86_64, x86_64-ubuntu2510,
+  # ...) build without --force-unknown-architecture. We still enforce the same
+  # distro/CPU *combinations* the old regex did (e.g. osx pairs only with
+  # x86-64/arm64, not ppc64), just independently of order and of the
+  # x86-64/x86_64 separator.
+  distro = arch_distro_token(architecture)
+  machine = arch_machine_token(architecture)
+  if not distro or not machine:
+    return False
+  machine = machine.replace("_", "-")           # canonical dashed form
+  family = re.match(r"[a-z]+", distro).group(0)  # strip trailing version digits
+  if family == "slc":
+    return machine in ("x86-64", "ppc64", "ppc64le", "aarch64")
+  if family in ("ubuntu", "ubt", "osx", "fedora"):
+    return machine in ("x86-64", "arm64")
+  # Other recognised distros (alma, centos, rocky, rhel, el, debian): accept the
+  # common server CPUs.
+  return machine in ("x86-64", "arm64", "aarch64", "ppc64", "ppc64le")
+
+
+def _architecture_given_on_cmdline(argv):
+  """True iff -a/--architecture was passed explicitly (so a defaults
+  `architecture:` template must be ignored)."""
+  for tok in argv:
+    if tok in ("-a", "--architecture") or tok.startswith("--architecture="):
+      return True
+    # bundled short form: -aVALUE (but not a long option)
+    if len(tok) > 2 and tok[0] == "-" and tok[1] == "a" and not tok.startswith("--"):
+      return True
+  return False
+
+
+def _defaults_architecture_template(args):
+  """Return the `architecture:` template string from the merged defaults chain,
+  or None. Read defensively: a malformed/unreadable defaults set must not break
+  argument parsing (the build flow re-reads and reports defaults errors)."""
+  try:
+    meta, _ = readDefaults(args.configDir, args.defaults,
+                           lambda *a, **k: None, args.architecture)
+    val = meta.get("architecture")
+    return val if isinstance(val, str) and val.strip() else None
+  except Exception:
+    return None
 
 ARCHITECTURE_TABLE = """\
 On Linux, x86-64:
@@ -1031,18 +1229,65 @@ On Mac, 1-2 latest supported OSX versions:
 
 # When updating this variable, also update docs/docs/user.md!
 S3_SUPPORTED_ARCHS = "slc7_x86-64", "slc8_x86-64", "ubuntu2004_x86-64", "ubuntu2204_x86-64", "ubuntu2404_x86-64", "slc9_x86-64", "slc9_aarch64"
+# Match S3 support by (distro, machine) rather than exact string, so an
+# equivalent layout (e.g. ubuntu2404_x86_64) still resolves to the same entry.
+_S3_SUPPORTED_ARCH_KEYS = {normalise_arch_key(a) for a in S3_SUPPORTED_ARCHS}
+
+def _parse_flavours(raw):
+  """Parse repeated/comma-separated --flavour values into an ordered dict.
+
+  NAME -> "true"; NAME=VALUE -> "VALUE"; !NAME -> "false". Whitespace is
+  trimmed; empty tokens are ignored; later entries win on a repeated name.
+  """
+  result = {}
+  for chunk in (raw or []):
+    for tok in str(chunk).split(","):
+      tok = tok.strip()
+      if not tok:
+        continue
+      if tok.startswith("!"):
+        name, value = tok[1:].strip(), "false"
+      elif "=" in tok:
+        name, _, value = tok.partition("=")
+        name, value = name.strip(), value.strip()
+      else:
+        name, value = tok, "true"
+      if name:
+        result[name] = value
+  return result
+
+
+def _with_release_base(defaults):
+  """Ensure "release" is the base of the defaults chain.
+
+  ``--defaults`` defaults to ``"release"``, so ``release`` is the conceptual
+  base of every build. Selecting another profile (e.g. ``--defaults dev4``)
+  should *overlay* it on top of release — i.e. behave like ``release::dev4`` —
+  rather than replacing it, so stack-wide globals (compiler flags, sandbox
+  policy, MACOSX_DEPLOYMENT_TARGET, …) can live once in ``defaults-release``.
+
+  ``release`` is prepended only when not already present anywhere in the chain
+  (an explicit ``release::x`` or ``x::release`` is respected as written).
+  ``readDefaults`` silently skips a missing ``defaults-release`` file, so stacks
+  that do not ship one are unaffected.
+  """
+  defaults = list(defaults)
+  if "release" not in defaults:
+    defaults = ["release"] + defaults
+  return defaults
+
 
 def finaliseArgs(args, parser):
 
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
-  if args.action in ["version", "architecture", "verify"]:
+  if args.action in ["version", "architecture", "verify", "stats"]:
     return args
 
   # Minimal finalisation for status: normalise lists and expand referenceSources.
   if args.action == "status":
     if hasattr(args, "defaults"):
-      args.defaults = args.defaults.split("::")
+      args.defaults = _with_release_base(args.defaults.split("::"))
     args.noDevel       = normalise_multiple_options(args.noDevel)
     args.disable       = normalise_multiple_options(args.disable)
     args.force_rebuild = normalise_multiple_options(args.force_rebuild)
@@ -1050,7 +1295,11 @@ def finaliseArgs(args, parser):
     return args
 
   if hasattr(args, "defaults"):
-    args.defaults = args.defaults.split("::")
+    args.defaults = _with_release_base(args.defaults.split("::"))
+
+  # Resolve --flavour into an ordered {name: value} dict (see _parse_flavours).
+  if hasattr(args, "flavours"):
+    args.flavours = _parse_flavours(args.flavours)
 
   # ── bits.rc / BITS_PROVIDERS ─────────────────────────────────────────────
   # Read persistent configuration from the first bits.rc / .bitsrc /
@@ -1113,6 +1362,21 @@ def finaliseArgs(args, parser):
     # version pinning and tarball verification.
     args.fromManifestData = _manifest_data
 
+  # ── architecture template (defaults-release.sh) ──────────────────────────
+  # Precedence: an explicit --architecture wins and any template is ignored.
+  # Otherwise, if a defaults file in the chain defines `architecture:` -- a
+  # literal string or a %(os)s / %(machine)s / %(_machine)s template -- the
+  # architecture is recomputed from it against the locally detected platform.
+  # With neither, the auto-detected string already in args.architecture stands.
+  if args.action in ["build", "clean"] and getattr(args, "architecture", None) \
+     and hasattr(args, "defaults") and not _architecture_given_on_cmdline(sys.argv):
+    tmpl = _defaults_architecture_template(args)
+    if tmpl:
+      try:
+        args.architecture = apply_arch_template(tmpl, detectArchComponents())
+      except ValueError as exc:
+        parser.error(str(exc))
+
   # --architecture can be specified in both clean and build.
   if args.action in ["build", "clean"] and not args.architecture:
     parser.error("Cannot determine architecture. Please pass it explicitly.\n\n"
@@ -1162,7 +1426,12 @@ def finaliseArgs(args, parser):
     # in docker the docker image is given by the first part of the
     # architecture we want to build for.
     if args.docker and not args.dockerImage:
-      args.dockerImage = "registry.cern.ch/alisw/%s-builder" % args.architecture.split("_")[0]
+      # Derive the builder image from the distro token wherever it sits in the
+      # architecture string (pattern, not positional split), so reordered or
+      # underscore-machine layouts still resolve. Fall back to the legacy
+      # first-underscore field if no known distro token is recognised.
+      distro_token = arch_distro_token(args.architecture) or args.architecture.split("_")[0]
+      args.dockerImage = "registry.cern.ch/alisw/%s-builder" % distro_token
 
     # ── --docker-platform / cross-compilation ─────────────────────────────────
     # Derive the Docker --platform value from --architecture when the user has
@@ -1205,7 +1474,7 @@ def finaliseArgs(args, parser):
   if args.action in ("build", "doctor"):
 
     # On selected platforms, caching is active by default
-    if args.architecture in S3_SUPPORTED_ARCHS and not args.preferSystem and not args.no_remote_store:
+    if normalise_arch_key(args.architecture) in _S3_SUPPORTED_ARCH_KEYS and not args.preferSystem and not args.no_remote_store:
       args.noSystem = "*"
       if not args.remoteStore:
         args.remoteStore = "https://s3.cern.ch/swift/v1/alibuild-repo"
@@ -1234,6 +1503,11 @@ def finaliseArgs(args, parser):
   if args.action == "init":
     args.configDir = args.configDir % {"prefix": args.develPrefix + "/"}
   elif args.action == "build":
+    # Resource monitoring defaults ON in parallel mode (--builders > 1) and OFF
+    # for serial builds, unless the user passed --resource-monitoring /
+    # --no-resource-monitoring explicitly (in which case it is True/False here).
+    if args.resourceMonitoring is None:
+      args.resourceMonitoring = getattr(args, "builders", 1) > 1
     if args.resourceMonitoring:
       try:
         import psutil

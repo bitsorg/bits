@@ -15,6 +15,10 @@ def errorTask():
 def exceptionTask():
   raise Exception("foo")
 
+def systemExitTask():
+  # Mimics a build task that calls dieOnError(), which raises SystemExit.
+  raise SystemExit(1)
+
 # Mimics workflow.
 def scheduleMore(scheduler):
   scheduler.parallel("download", [], "build",dummyTask)
@@ -65,6 +69,28 @@ def test_resource_monitor():
     assert(len(scheduler.resourceManager.seenPackages)==0)
     assert(len(scheduler.resourceManager.allocated)==0)
   return
+
+def test_systemexit_task_does_not_hang():
+  """A task that raises SystemExit (e.g. via dieOnError) must be reported as a
+  broken job and must NOT hang the scheduler.
+
+  Regression test: previously the worker's ``except Exception`` did not catch
+  SystemExit, so the worker thread died without reporting status, the job was
+  stuck in runningJobs forever, and scheduler.run() never returned (the build
+  hung at the end with no summary).
+  """
+  import threading
+  scheduler = Scheduler(2, parallelDownloads=0)
+  scheduler.parallel("build:ok", [], "build", dummyTask)
+  scheduler.parallel("build:dies", [], "build", systemExitTask)
+  t = threading.Thread(target=scheduler.run, daemon=True)
+  t.start()
+  t.join(timeout=15)
+  assert not t.is_alive(), "scheduler.run() hung on a SystemExit-raising task"
+  assert "build:dies" in scheduler.brokenJobs
+  assert "build:ok" in scheduler.doneJobs
+  assert scheduler.errors.get("build:dies")
+
 
 if __name__ == "__main__":
   scheduler = Scheduler(10)

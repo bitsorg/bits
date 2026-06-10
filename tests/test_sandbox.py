@@ -24,16 +24,23 @@ from bits_helpers.sandbox import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _opts(sandbox="auto", sandbox_image=None):
+def _opts(sandbox="auto", sandbox_image=None, sandbox_network="on"):
     """Return a minimal argparse-like namespace."""
     ns = types.SimpleNamespace()
     ns.sandbox = sandbox
     ns.sandboxImage = sandbox_image
+    ns.sandboxNetwork = sandbox_network
     return ns
 
 
-def _spec(pkg="TestPkg", sandbox_network="on"):
-    return {"package": pkg, "sandbox_network": sandbox_network}
+_UNSET = object()
+
+
+def _spec(pkg="TestPkg", sandbox_network=_UNSET):
+    spec = {"package": pkg}
+    if sandbox_network is not _UNSET:
+        spec["sandbox_network"] = sandbox_network
+    return spec
 
 
 LOCAL_CMD = "env FOO=bar bash -e -x /sw/slc8_x86-64/TestPkg/build.sh 2>&1"
@@ -162,16 +169,19 @@ class ResolveSandboxModeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve_sandbox_mode("sandbox-exec", False)
 
-    # auto, no docker, Linux
+    # auto, no docker, Linux: sandboxing is off and podman is NOT probed.
+    # podman is only used inside --docker or when explicitly requested.
     @patch("sys.platform", "linux")
     @patch("bits_helpers.sandbox.podman_available", return_value=True)
-    def test_auto_linux_podman_available(self, _p):
-        self.assertEqual("podman", resolve_sandbox_mode("auto", False))
+    def test_auto_linux_no_docker_is_off(self, _p):
+        self.assertEqual("off", resolve_sandbox_mode("auto", False))
+        _p.assert_not_called()
 
     @patch("sys.platform", "linux")
     @patch("bits_helpers.sandbox.podman_available", return_value=False)
-    def test_auto_linux_no_podman(self, _p):
+    def test_auto_linux_no_docker_off_without_probe(self, _p):
         self.assertEqual("off", resolve_sandbox_mode("auto", False))
+        _p.assert_not_called()
 
     # auto, no docker, macOS
     @patch("sys.platform", "darwin")
@@ -235,11 +245,33 @@ class WrapPodmanLocalTests(unittest.TestCase):
         self.assertNotIn("--network=none", result)
         self.assertIn("podman run", result)
 
+    @patch("bits_helpers.sandbox.warning")
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
-    def test_no_image_returns_unchanged(self, _r):
-        """Without an image, sandbox falls back gracefully."""
+    def test_no_image_explicit_podman_warns(self, _r, mock_warn):
+        """--sandbox=podman with no image emits a warning and returns unchanged."""
         result = wrap_build_command(
             LOCAL_CMD, _spec(), _opts(sandbox="podman", sandbox_image=None),
+            workdir="/sw",
+        )
+        self.assertEqual(result, LOCAL_CMD)
+        self.assertTrue(mock_warn.called, "expected a warning for explicit podman + no image")
+
+    @patch("bits_helpers.sandbox.warning")
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
+    def test_no_image_auto_mode_silent(self, _r, mock_warn):
+        """sandbox=auto with no image falls back silently (no console warning)."""
+        result = wrap_build_command(
+            LOCAL_CMD, _spec(), _opts(sandbox="auto", sandbox_image=None),
+            workdir="/sw",
+        )
+        self.assertEqual(result, LOCAL_CMD)
+        self.assertFalse(mock_warn.called, "auto-detected podman with no image must not warn")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="podman")
+    def test_no_image_returns_unchanged(self, _r):
+        """Without an image, sandbox falls back gracefully (legacy compat check)."""
+        result = wrap_build_command(
+            LOCAL_CMD, _spec(), _opts(sandbox="auto", sandbox_image=None),
             workdir="/sw",
         )
         self.assertEqual(result, LOCAL_CMD)
@@ -360,6 +392,57 @@ class WrapSandboxExecTests(unittest.TestCase):
         )
         mock_profile.assert_called_once_with(True, "/sw")
 
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_yaml_boolean_off_enables_network(self, mock_profile, _r):
+        # Regression: YAML SafeLoader parses bare `sandbox_network: off` as the
+        # Python bool False (not the string "off"). It must still enable network.
+        wrap_build_command(
+            LOCAL_CMD, _spec(sandbox_network=False), _opts(sandbox="sandbox-exec"),
+            workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(True, "/sw")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_yaml_boolean_on_blocks_network(self, mock_profile, _r):
+        # `sandbox_network: on` -> Python bool True -> network blocked.
+        wrap_build_command(
+            LOCAL_CMD, _spec(sandbox_network=True), _opts(sandbox="sandbox-exec"),
+            workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(False, "/sw")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_global_default_off_allows_when_recipe_silent(self, mock_profile, _r):
+        # No per-recipe field -> fall back to global --sandbox-network/bits.rc.
+        wrap_build_command(
+            LOCAL_CMD, _spec(), _opts(sandbox="sandbox-exec", sandbox_network="off"),
+            workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(True, "/sw")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_recipe_field_overrides_global_default(self, mock_profile, _r):
+        # Global default off, but recipe explicitly asks for network blocked.
+        wrap_build_command(
+            LOCAL_CMD, _spec(sandbox_network="on"),
+            _opts(sandbox="sandbox-exec", sandbox_network="off"),
+            workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(False, "/sw")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_global_default_on_blocks_when_recipe_silent(self, mock_profile, _r):
+        wrap_build_command(
+            LOCAL_CMD, _spec(), _opts(sandbox="sandbox-exec", sandbox_network="on"),
+            workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(False, "/sw")
+
 
 # ---------------------------------------------------------------------------
 # make_sbpl_profile
@@ -385,6 +468,41 @@ class MakeSbplProfileTests(unittest.TestCase):
             with open(path) as fh:
                 content = fh.read()
             self.assertIn("(allow network*)", content)
+        finally:
+            os.unlink(path)
+
+    def test_canonical_temp_dirs_writable(self):
+        # Regression: macOS resolves /tmp -> /private/tmp and
+        # /var/folders -> /private/var/folders, and SBPL subpath matching uses
+        # the resolved path. Without the /private/... rules the compiler's own
+        # $TMPDIR temp files are denied ("C compiler cannot create executables").
+        path = make_sbpl_profile(allow_network=False, builddir="/sw")
+        try:
+            with open(path) as fh:
+                content = fh.read()
+            for sub in ('(subpath "/private/tmp")',
+                        '(subpath "/private/var/folders")',
+                        '(subpath "/private/var/tmp")'):
+                self.assertIn(sub, content)
+        finally:
+            os.unlink(path)
+
+    def test_standard_char_devices_writable(self):
+        # Regression: /dev/null is outside every allowed write subpath, so
+        # without an explicit allow the default-deny breaks `> /dev/null` and
+        # thus essentially every autotools configure on macOS.
+        path = make_sbpl_profile(allow_network=False, builddir="/sw")
+        try:
+            with open(path) as fh:
+                content = fh.read()
+            for dev in ('"/dev/null"', '"/dev/zero"', '"/dev/urandom"',
+                        '"/dev/tty"', '"/dev/ptmx"'):
+                self.assertIn(dev, content)
+            self.assertIn('(subpath "/dev/fd")', content)
+            # Raw disk devices must stay denied: no rule should reference them
+            # as a quoted SBPL pattern (the explanatory comment may mention them).
+            self.assertNotIn('"/dev/disk', content)
+            self.assertNotIn('"/dev/rdisk', content)
         finally:
             os.unlink(path)
 

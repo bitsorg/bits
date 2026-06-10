@@ -44,11 +44,43 @@ def _acquire_download(path):
         return False
 
 
-def _wait_for_sentinel(path):
-    """Block until no in-progress download sentinel exists for *path*."""
+def _sentinel_is_stale(sentinel):
+    """Return True if *sentinel* is orphaned and should be ignored.
+
+    A sentinel is stale if its owning PID is no longer alive, or if it cannot
+    be read/parsed at all (truncated, empty, or unreadable).  Treating an
+    unparseable sentinel as stale guarantees the caller can never block forever
+    on a sentinel that will never be cleared (e.g. a crashed prefetch worker).
+    """
+    try:
+        with open(sentinel) as fh:
+            pid = int(fh.read().strip())
+    except Exception:
+        return True   # missing / empty / garbage -> not a live download
+    try:
+        os.kill(pid, 0)   # signal 0: liveness probe, does not actually signal
+        return False      # owner still alive -> a real in-progress download
+    except OSError:
+        return True       # no such process -> stale
+
+
+def _wait_for_sentinel(path, timeout=600.0, poll=0.25):
+    """Block until the in-progress download sentinel for *path* clears.
+
+    Returns as soon as the sentinel is gone, or early if it is stale (its
+    owning process has died) or *timeout* seconds elapse -- so a crashed
+    prefetch worker can never hang the build indefinitely.
+    """
     sentinel = _sentinel_path(path)
+    deadline = time() + timeout
     while os.path.exists(sentinel):
-        sleep(0.25)
+        if _sentinel_is_stale(sentinel):
+            break
+        if time() >= deadline:
+            warning("Timed out after %.0fs waiting for download sentinel %s; "
+                    "proceeding without it.", timeout, sentinel)
+            break
+        sleep(poll)
 
 urlRe = re.compile(r".*:.*/.*")
 urlAuthRe = re.compile(r'^(http(s|)://)([^:]+:[^@]+)@(.+)$')
@@ -405,7 +437,14 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
     match = urlTypeRe.match(source)
     if not urlTypeRe.match(source):
         raise MalformedUrl(source)
-    downloadHandler = downloadHandlers[match.group(1)]
+    protocol = match.group(1)
+    if protocol not in downloadHandlers:
+      from bits_helpers.log import dieOnError as _dieOnError
+      _dieOnError(True,
+        "Unsupported protocol %r in source URL.\n"
+        "  Supported protocols: %s\n"
+        "  URL: %s" % (protocol, ", ".join(sorted(downloadHandlers)), source))
+    downloadHandler = downloadHandlers[protocol]
     filename = source.rsplit("/", 1)[1]
     downloadDir = join(cacheDir, url_checksum[0:2], url_checksum)
     try:

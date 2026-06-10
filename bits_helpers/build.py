@@ -16,7 +16,7 @@ from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script
 from bits_helpers.sandbox import wrap_build_command
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
 from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id, ver_rev
-from bits_helpers.utilities import parseDefaults, readDefaults
+from bits_helpers.utilities import parseDefaults, readDefaults, resolve_variables
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
 from bits_helpers.utilities import Hasher
@@ -44,6 +44,7 @@ import socket
 import os
 import re
 import shutil
+import shlex
 import sys
 import time
 import subprocess
@@ -270,6 +271,40 @@ def storeHook(package, specs, defaults) -> bool:
 
     return bool(spec["hook"])
 
+_HEREDOC_START = re.compile(r"<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def normalize_recipe_for_hash(recipe):
+  """Return a copy of a recipe body for HASHING ONLY, with full-line comments
+  and blank lines removed so comment/whitespace edits do not change the build
+  hash (and thus do not force a rebuild). The executed recipe is untouched.
+
+  Lines inside a here-document are preserved verbatim -- a leading '#' there is
+  data, not a comment. The here-doc scan is deliberately conservative: it only
+  ever protects MORE text, so the worst case is a recipe that keeps hashing its
+  comments (the old behaviour), never two distinct recipes hashing alike.
+  """
+  if not isinstance(recipe, str):
+    return recipe
+  out, pending, active = [], [], None
+  for line in recipe.split("\n"):
+    if active is not None:          # inside a here-doc body: keep verbatim
+      out.append(line)
+      if line.strip() == active:    # terminator (tabs allowed for <<-)
+        active = pending.pop(0) if pending else None
+      continue
+    delims = [m.group(2) for m in _HEREDOC_START.finditer(line)]
+    if delims:                      # this line opens one or more here-docs
+      out.append(line)
+      active, pending = delims[0], delims[1:]
+      continue
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):  # blank or whole-line comment
+      continue
+    out.append(line)
+  return "\n".join(out)
+
+
 def storeHashes(package, specs, considerRelocation):
   """Calculate various hashes for package, and store them in specs[package].
 
@@ -293,7 +328,12 @@ def storeHashes(package, specs, considerRelocation):
     h_all(str(time.time()))
 
   for key in ("recipe", "version", "package"):
-    h_all(spec.get(key, "none"))
+    val = spec.get(key, "none")
+    # Hash the recipe with full-line comments / blank lines removed so that
+    # documentation-only edits do not change the hash and force a rebuild.
+    if key == "recipe":
+      val = normalize_recipe_for_hash(val)
+    h_all(val)
 
   # pkg_family changes the installation path (ARCH/FAMILY/PKG/VER vs
   # ARCH/PKG/VER), so tarballs built with different family settings are
@@ -634,27 +674,48 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # We only put the values in double-quotes, so that they can refer to other
     # shell variables or do command substitution (e.g. $(brew --prefix ...)).
     lines.extend('export {}="{}"'.format(key, resolve_spec_data(spec, value, ""))
-                 for key, value in spec.get("env", {}).items()
-                 if key != "DYLD_LIBRARY_PATH")
+                 for key, value in spec.get("env", {}).items())
 
     # Append paths to variables, if requested using append_path.
     # Again, only put values in double quotes so that they can refer to other variables.
     lines.extend('export {key}="${key}:{value}"'
                  .format(key=key, value=":".join(asList(value)))
-                 for key, value in spec.get("append_path", {}).items()
-                 if key != "DYLD_LIBRARY_PATH")
+                 for key, value in spec.get("append_path", {}).items())
 
     # First convert all values to list, so that we can use .setdefault().insert() below.
     prepend_path = {key: [resolve_spec_data(spec, dir, "") for dir in asList(value)]
                     for key, value in spec.get("prepend_path", {}).items()}
-    # By default we add the .../bin directory to PATH and .../lib to LD_LIBRARY_PATH.
-    # Prepend to these paths, so that our packages win against system ones.
-    for key, value in (("PATH", "bin"), ("LD_LIBRARY_PATH", "lib"),  ("LD_LIBRARY_PATH", "lib64")):
+    # By default we add the .../bin directory to PATH, .../lib to LD_LIBRARY_PATH
+    # and .../lib*/pkgconfig to PKG_CONFIG_PATH.  Prepend to these paths, so that
+    # our packages win against system ones.
+    #
+    # PKG_CONFIG_PATH is added generically here so that the *build-time*
+    # environment mirrors what each package's runtime modulefile exposes via the
+    # ModuleRecipe `--pkgconfig` flag: a downstream recipe's ./configure or cmake
+    # then finds every dependency's .pc files without the recipe having to declare
+    # `prepend_path: { PKG_CONFIG_PATH: ... }` by hand.  Each entry is guarded by a
+    # directory-existence test below, so adding it for every dependency is safe
+    # (it is a no-op for packages that ship no pkgconfig directory).
+    #
+    # CMAKE_PREFIX_PATH is deliberately NOT added here: CMake recipes pass it on
+    # the cmake command line as a `;`-separated -D argument (built by CMakeRecipe's
+    # _SetBuildEnvBase), whereas an environment variable would need `:` separators
+    # on Unix.  Mixing the two on the same name corrupts the list, so build-time
+    # CMAKE_PREFIX_PATH stays owned by CMakeRecipe.
+    # The dynamic-loader search path is platform-specific: macOS dyld uses
+    # DYLD_LIBRARY_PATH (and ignores LD_LIBRARY_PATH), Linux uses LD_LIBRARY_PATH.
+    # Emit only the relevant one so build-time tools find their dependencies'
+    # shared libraries — on macOS this is what lets e.g. protoc -> Abseil work
+    # after the install-time rpath is stripped. The build environment must NOT
+    # unset this variable after sourcing init.sh (see build_template.sh).
+    _lib_path_var = "DYLD_LIBRARY_PATH" if architecture.startswith("osx") else "LD_LIBRARY_PATH"
+    for key, value in (("PATH", "bin"),
+                       (_lib_path_var, "lib"), (_lib_path_var, "lib64"),
+                       ("PKG_CONFIG_PATH", "lib/pkgconfig"), ("PKG_CONFIG_PATH", "lib64/pkgconfig")):
       prepend_path.setdefault(key, []).insert(0, f"${bigpackage}_ROOT/{value}")
     lines.extend('[ ! -d "{value}" ] || export {key}="{value}${{{key}+:${key}}}"'
                  .format(key=key, value=dir)
                  for key, value in prepend_path.items()
-                 if key != "DYLD_LIBRARY_PATH"
                  for dir in value)
 
   # Return string without a trailing newline, since we expect call sites to
@@ -701,6 +762,135 @@ def create_provenance_info(package, specs, args):
   })
 
 
+# High-signal patterns that usually pinpoint the proximate cause of a build
+# failure. Used to surface a short excerpt in the failure message so users do
+# not have to open and grep the full (often huge) log by hand.
+_ERROR_PATTERNS = re.compile(
+    r"(?i)("
+    r"error:|"                        # gcc/clang "error:" and "CMake Error:"
+    r"fatal error:|"                  # missing headers etc.
+    r"configure: error:|"             # autotools
+    r"CMake Error|"                   # cmake (non-colon form)
+    r"undefined reference|"           # link errors
+    r"collect2: error|"               # linker driver
+    r"ld: (error|cannot|symbol)|"     # linker (avoid matching e.g. "build:")
+    r"No such file or directory|"
+    r"command not found|"
+    r"Permission denied|"
+    r"Traceback \(most recent call last\)|"
+    r"ModuleNotFoundError|ImportError:|"
+    r"\*\*\* \[.*\] Error [0-9]|"      # make: *** [target] Error N
+    r"make(\[[0-9]+\])?: \*\*\*|"      # make: *** / make[1]: ***
+    r"recipe for target|"
+    r"Could NOT find|"                # cmake find_package failure reason
+    r"missing: |"                     # cmake "(missing: VAR ...)" detail
+    r"Configuring incomplete"         # cmake configure summary
+    r")"
+)
+
+
+def _extract_error_excerpt(log_path, max_match=15, tail=12, scan_limit=20000):
+  """Return a short, high-signal excerpt from a build log to speed up triage.
+
+  Collects the last `max_match` lines matching known error patterns (scanning
+  only the final `scan_limit` lines, since the proximate cause is near the end)
+  plus the final `tail` lines (the actual failure point). Best-effort only:
+  returns "" if the log is missing/empty/unreadable and never raises.
+  """
+  try:
+    with open(log_path, "r", errors="replace") as f:
+      lines = f.readlines()
+  except (OSError, IOError):
+    return ""
+  if not lines:
+    return ""
+  window = lines[-scan_limit:]
+  matched = []
+  for ln in window:
+    if _ERROR_PATTERNS.search(ln):
+      s = ln.rstrip("\n")
+      if not matched or matched[-1] != s:  # drop consecutive duplicates
+        matched.append(s)
+  matched = matched[-max_match:]
+  tail_lines = [ln.rstrip("\n") for ln in lines[-tail:]]
+  out = []
+  if matched:
+    out.append("  Matched error lines (last %d):" % len(matched))
+    out.extend("    " + m for m in matched)
+  if tail_lines:
+    out.append("  Last %d lines of log:" % len(tail_lines))
+    out.extend("    " + t for t in tail_lines)
+  return "\n".join(out)
+
+
+def write_failure_summary(work_dir, scheduler):
+  """Write a concise per-run failure summary for a --builders build.
+
+  The full per-package error messages collected by the scheduler are verbose
+  (log paths, environment, next-steps, ...), so a whole-stack failure produces
+  an unreadable wall of text.  This distils, into ``<work_dir>/build-summary.log``:
+    * each package that *directly* failed to build, with its log path and the
+      proximate error excerpt (the matched error lines);
+    * the count of packages skipped only because a dependency failed.
+  Also writes the full, verbose per-action errors to
+  ``<work_dir>/build-errors-full.log`` so there is a single combined log to
+  consult (the concise summary points at the individual per-package logs).
+
+  Returns ``(summary_path, full_path)`` (either element may be None), or
+  ``(None, None)`` if there were no failures.
+  """
+  fails = getattr(scheduler, "buildFailures", None) or []
+  errors = getattr(scheduler, "errors", {}) or {}
+  direct_names = {f["package"].split("@", 1)[0] for f in fails}
+  cascaded = []
+  for action, msg in errors.items():
+    if "could not complete" in str(msg):
+      pkg = str(action).split(":", 1)[-1]
+      if pkg not in direct_names:
+        cascaded.append(pkg)
+  if not fails and not cascaded:
+    return (None, None)
+  _ansi = re.compile(r"\033\[[0-9;]*m")
+  full_path = os.path.join(work_dir, "build-errors-full.log")
+  try:
+    with open(full_path, "w") as fh:
+      for action, msg in errors.items():
+        fh.write("* %s\n%s\n\n" % (action, _ansi.sub("", str(msg))))
+  except OSError as exc:
+    warning("Could not write full error log %s: %s", full_path, exc)
+    full_path = None
+  path = os.path.join(work_dir, "build-summary.log")
+  try:
+    with open(path, "w") as fh:
+      fh.write("BUILD FAILURE SUMMARY\n=====================\n\n")
+      fh.write("%d package(s) failed to build; %d skipped because a dependency failed.\n\n"
+               % (len(fails), len(cascaded)))
+      if fails:
+        fh.write("Failed to build:\n")
+        for f in sorted(fails, key=lambda x: x["package"].lower()):
+          fh.write("  - %s\n" % f["package"])
+        fh.write("\n")
+      for f in sorted(fails, key=lambda x: x["package"].lower()):
+        fh.write("-" * 72 + "\n")
+        fh.write("FAILED: %s\n" % f["package"])
+        fh.write("  log: %s\n" % f.get("log", "?"))
+        if f.get("install_root"):
+          fh.write("  install root: %s\n" % f["install_root"])
+        if f.get("excerpt"):
+          fh.write("\n")
+          for line in f["excerpt"].splitlines():
+            fh.write("  " + line + "\n")
+        fh.write("\n")
+      if cascaded:
+        fh.write("-" * 72 + "\n")
+        fh.write("Skipped (a dependency failed to build), %d package(s):\n  %s\n"
+                 % (len(cascaded), ", ".join(sorted(cascaded))))
+  except OSError as exc:
+    warning("Could not write failure summary %s: %s", path, exc)
+    return (None, full_path)
+  return (path, full_path)
+
+
 def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper):
   spec = specs[p]
   debug("Build command: %s", build_command)
@@ -721,10 +911,49 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       (spec["package"],
       args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
     )
-  if args.resourceMonitoring:
-    err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=progress)
-  else:
-    err = execute(build_command, printer=progress)
+  # Optional nice-ladder: claim a priority slot for this concurrent build so CPU
+  # contention degrades gracefully (lead build at full speed, others backed off).
+  # No-op unless --build-nice is set (nice_ladder stays None).
+  #   * Native builds: wrap in `nice -n N /bin/sh -c <cmd>` so the whole build
+  #     process tree inherits the niceness.  Robust for compound commands and
+  #     thread-safe (no preexec_fn fork hazard in the scheduler's workers).
+  #   * Docker/podman builds: each builder is a separate container (cgroup), so
+  #     niceness inside one cannot rank it against the others — the host ranks
+  #     the *containers* by cgroup CPU weight.  Inject `--cpu-shares=W` (the
+  #     container-level equivalent, derived from the same ladder) into `… run`.
+  nice_ladder = getattr(scheduler, "nice_ladder", None) if scheduler is not None else None
+  nice_token = None
+  if nice_ladder is not None:
+    nice_token, nice_level = nice_ladder.acquire()
+    if nice_level:  # nice 0 / default shares need no change
+      if getattr(args, "docker", False):
+        from bits_helpers.nice_ladder import cpu_shares_for_nice
+        shares = cpu_shares_for_nice(nice_level)
+        # Name the build container (unique per build) so the straggler watchdog
+        # can later restore its cpu-shares via `docker update <name>`.
+        cname = "bits-build-%s-%s" % (re.sub(r'[^a-zA-Z0-9_.-]', '-', p), os.urandom(4).hex())
+        build_command, _subbed = re.subn(
+            r'\b(docker|podman)\s+run\s',
+            r'\1 run --cpu-shares=%d --name %s ' % (shares, cname),
+            build_command, count=1)
+        if _subbed:
+          _wd = getattr(scheduler, "renice_watchdog", None) if scheduler is not None else None
+          if _wd is not None:
+            _dbin = "podman" if build_command.lstrip().startswith("podman") else "docker"
+            _wd.register_container(cname, _dbin)
+        else:
+          debug("build-nice: could not inject --cpu-shares/--name (no 'docker/podman run' "
+                "in command); container build runs unthrottled this slot.")
+      else:
+        build_command = "nice -n %d /bin/sh -c %s" % (nice_level, shlex.quote(build_command))
+  try:
+    if args.resourceMonitoring:
+      err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=progress)
+    else:
+      err = execute(build_command, printer=progress)
+  finally:
+    if nice_ladder is not None:
+      nice_ladder.release(nice_token)
   if args.builders==1:
     progress.end("failed" if err else "done", err)
   report_event("BuildError" if err else "BuildSuccess", spec["package"], " ".join((
@@ -744,13 +973,25 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   # Determine paths
   devSuffix = "-" + args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else ""
   log_path = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/log"
+  log_abs_path = log_path  # keep the absolute path; log_path may become relative below
   build_dir = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/{spec['package']}"
+  # Staging install prefix ($INSTALLROOT in the recipe): where the package's
+  # files are installed before being tarred. Useful for inspecting a partial
+  # install after a failure.
+  try:
+    install_root = _pkg_install_path(
+      join(buildWorkDir, "INSTALLROOT", spec["hash"]),
+      effective_arch(spec, args.architecture), spec)
+  except Exception:  # pylint: disable=broad-except
+    install_root = None
 
   # Use relative paths if we're inside the work directory
   try:
     from os.path import relpath
     log_path = relpath(log_path, os.getcwd())
     build_dir = relpath(build_dir, os.getcwd())
+    if install_root:
+      install_root = relpath(install_root, os.getcwd())
   except (ValueError, OSError):
     pass  # Keep absolute paths if relpath fails
 
@@ -769,6 +1010,18 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
 
   buildErrMsg += f"{bold}Build Directory:{reset}\n"
   buildErrMsg += f"  {build_dir}\n"
+
+  if install_root:
+    buildErrMsg += f"{bold}Install Root:{reset}\n"
+    buildErrMsg += f"  {install_root}\n"
+
+  # Surface the proximate error so the user does not have to open the full log.
+  excerpt = ""
+  if err:
+    excerpt = _extract_error_excerpt(log_abs_path) or ""
+    if excerpt:
+      buildErrMsg += f"\n{bold}Error excerpt:{reset}\n"
+      buildErrMsg += excerpt + "\n"
 
   updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
   if spec["is_devel_pkg"]:
@@ -796,13 +1049,18 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
           cli_args.append(f"--{k}")
       elif isinstance(v, list):
         if v:  # Only show non-empty lists
-          # For lists, use multiple --flag value or --flag=val1,val2
+          # For lists, use multiple --flag=val entries; deduplicate while
+          # preserving first-seen order (duplicates can arise from the
+          # prefer_system / system_requirement resolution loop).
+          seen = set()
           for item in v:
-            cli_args.append(f"--{k}={quote(str(item))}")
+            if item not in seen:
+              seen.add(item)
+              cli_args.append(f"--{k}={quote(str(item))}")
       else:
         # Quote if needed
         cli_args.append(f"--{k}={quote(str(v))}")
-    
+
     args_str = " ".join(cli_args)
 
     buildErrMsg += f"\n{bold}Environment:{reset}\n"
@@ -840,6 +1098,16 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   buildErrMsg += f"  • Please upload the full log to CERNBox/Dropbox if you intend to request support.\n"
 
   if err and args.builders>1:
+    # Record a concise entry for the end-of-run failure summary (write_failure_summary).
+    fails = getattr(scheduler, "buildFailures", None)
+    if fails is not None:
+      try:
+        with scheduler.buildFailuresLock:
+          fails.append({"package": "%s@%s" % (spec["package"], spec["version"]),
+                        "log": log_path, "install_root": install_root,
+                        "excerpt": excerpt})
+      except Exception:  # pylint: disable=broad-except
+        pass
     return buildErrMsg.strip()
   else:
     dieOnError(err, buildErrMsg.strip())
@@ -885,6 +1153,31 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       dieOnError(err, buildErrMsg.strip())
 
   doFinalSync(spec, specs, args, syncHelper)
+
+
+def _doCheckout(spec, workDir, referenceSources, docker, enforce_mode,
+                syncHelper, parallel_sources, architecture):
+  """Scheduler "download" task: fetch a package's sources.
+
+  Used by the --builders path so that source clones/archive downloads run as
+  scheduler tasks (capped by --parallel-downloads) overlapping compilation,
+  instead of being executed serially in the preparation loop before any build
+  starts.  Mirrors the work the Makeflow path does in its parallel .checkout
+  rules (bits_helpers.checkout_runner).
+
+  Returns an empty string on success or an error message on failure, matching
+  the scheduler convention (a falsy result means the task succeeded).
+  """
+  try:
+    checkout_sources(spec, workDir, referenceSources, docker,
+                     enforce_mode=enforce_mode,
+                     sync_helper=syncHelper,
+                     parallel_sources=parallel_sources,
+                     architecture=architecture)
+  except OSError as e:
+    return "Failed to fetch sources for %s@%s: %s" % (
+      spec.get("package", "?"), spec.get("version", "?"), e)
+  return ""
 
 
 def doFinalSync(spec, specs, args, syncHelper):
@@ -1120,6 +1413,26 @@ def doBuild(args, parser):
 
   buildTargets = " ".join(args.pkgname)
 
+  if not exists(args.configDir):
+    from bits_helpers.repo_provider import bootstrap_default_config, cwd_is_recipe_dir
+    _default_config_dir = os.environ.get("BITS_REPO_DIR", "alidist")
+
+    # Step 1 — CWD detection: if the user is sitting inside a checked-out
+    # recipe repository (e.g. they did "git clone …/lhcb.bits && cd lhcb.bits")
+    # and did NOT explicitly override --config-dir, use "." so bits picks up the
+    # local recipes without any further configuration.
+    if args.configDir == _default_config_dir and cwd_is_recipe_dir():
+      debug("Recipe files detected in current directory; using '.' as config dir")
+      args.configDir = "."
+
+    # Step 2 — Network bootstrap: when still no config dir, fetch bits-providers
+    # and follow the community pointer (default.bits.sh or <org>.bits.sh) to
+    # clone a recipe repo automatically.
+    elif not exists(args.configDir):
+      bootstrapped = bootstrap_default_config(args, workDir)
+      if bootstrapped:
+        args.configDir = bootstrapped
+
   dieOnError(not exists(args.configDir),
             'Cannot find recipes under directory "%s".\n'
             'Maybe you need to "cd" to the right directory or '
@@ -1133,7 +1446,26 @@ def doBuild(args, parser):
   if branch_stream == branch_basename:
     branch_stream = ""
 
-  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+  def defaultsReader():
+    meta, body = readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+    # Resolve the `variables:` block into a flat map. Entries may be gated
+    # (`name: {value: V, when: MATCHER}`) on CLI flavours, the predefined
+    # architecture variables (osx/linux/arm64/...), or earlier entries; the CLI
+    # --flavour values are folded in as inputs. The resulting map feeds the
+    # (?NAME) conditional matchers that gate package requires and %(NAME)s recipe
+    # templating. CLI flavours override a defaults entry of the same name.
+    flavours = getattr(args, "flavours", None) or {}
+    meta["variables"] = resolve_variables(
+        meta.get("variables"), flavours, args.architecture, args.defaults)
+    # Flavours are ALSO exported into the build environment + package hash (via
+    # the `env:` map, which becomes the defaults-release env every package
+    # depends on), exactly as before.
+    if flavours:
+      from collections import OrderedDict as _OD
+      meta.setdefault("env", _OD())
+      for _k, _v in flavours.items():
+        meta["env"][_k] = _v
+    return meta, body
   (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
                                         defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)
@@ -1150,6 +1482,54 @@ def doBuild(args, parser):
   if args.architecture != raw_architecture:
     debug("qualify_arch active: using combined architecture %s (raw: %s)",
           args.architecture, raw_architecture)
+
+  # ── CVMFS layout (templated dirs from defaults-release) ────────────────────
+  # When defaults declare cvmfs_dir / install_dir / module_dir (templates that
+  # may use %(architecture)s), resolve them and use them to default the build/
+  # reuse flags so the whole CVMFS chain can be driven from one declaration:
+  #   * docker build  -> --cvmfs-prefix = <install_path> (build in place)
+  #   * reuse deployed -> --remote-store = cvmfs://<cvmfs_dir>  (with --reuse-cvmfs)
+  from bits_helpers.cvmfs_layout import resolve_cvmfs_layout
+  _cvmfs = resolve_cvmfs_layout(defaultsMeta, args.architecture)
+  if _cvmfs:
+    info("CVMFS layout: install=%s  modules=%s", _cvmfs["install_path"], _cvmfs["module_path"])
+    if args.docker and not getattr(args, "cvmfsPrefix", None) and _cvmfs["cvmfs_dir"]:
+      args.cvmfsPrefix = _cvmfs["install_path"]
+      info("Defaulting --cvmfs-prefix to %s (from defaults CVMFS layout)", args.cvmfsPrefix)
+    if getattr(args, "reuseCvmfs", False) and not args.remoteStore and _cvmfs["cvmfs_dir"]:
+      args.remoteStore = "cvmfs://" + _cvmfs["cvmfs_dir"]
+      info("Reusing deployed components: --remote-store %s", args.remoteStore)
+
+  # Build-host policy knobs live under a single `system:` entry in defaults.
+  # These control *how* the build runs (network, CPU) — not *what* it produces —
+  # so, unlike `env:`, they are NOT folded into any package hash and changing
+  # them never triggers a rebuild. For backward compatibility a bare top-level
+  # key is still honoured (system: wins).
+  _system = defaultsMeta.get("system", {}) or {}
+  def _system_opt(key, top_default):
+    if key in _system:
+      return _system[key]
+    return defaultsMeta.get(key, top_default)
+
+  # Global build-time network policy for the recipe sandbox. Precedence:
+  #   explicit --sandbox-network  >  defaults system.sandbox_network  >  "on".
+  # A recipe's own sandbox_network field still overrides this per package
+  # (handled in sandbox.wrap_build_command). YAML parses bare on/off as bools,
+  # so normalise to the "on"/"off" strings the sandbox layer expects.
+  if getattr(args, "sandboxNetwork", None) is None:
+    _dn = _system_opt("sandbox_network", "on")
+    if isinstance(_dn, bool):
+      _dn = "on" if _dn else "off"
+    args.sandboxNetwork = str(_dn).strip().lower()
+
+  # CPU oversubscription factor for the per-builder -j share. Precedence:
+  #   explicit --oversubscribe  >  defaults system.build_oversubscribe  >  1.0.
+  # Memory budgeting is unaffected (see effective_jobs).
+  if getattr(args, "oversubscribe", None) is None:
+    try:
+      args.oversubscribe = float(_system_opt("build_oversubscribe", 1.0))
+    except (TypeError, ValueError):
+      args.oversubscribe = 1.0
 
   # syncHelper is constructed after defaults loading so that it receives the
   # (potentially combined) architecture string.
@@ -1182,6 +1562,12 @@ def doBuild(args, parser):
 
   extra_env = {"BITS_CONFIG_DIR": "/pkgdist.bits" if args.docker else os.path.abspath(args.configDir)}
   extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
+  # --brew lets prefer_system_check scripts run `brew install <formula>` when a
+  # Homebrew-sourced system package is missing (macOS dev platform). The checks
+  # run unsandboxed during resolution and read this from the environment; the
+  # sandboxed build phase only symlinks the (now-present) Homebrew prefix.
+  if getattr(args, "brew", False):
+    extra_env["BITS_BREW"] = "1"
 
   # ── Repository-provider discovery ─────────────────────────────────────────
   # Phase 1 – Always-on providers: recipes with ``always_load: true`` (and
@@ -1285,10 +1671,19 @@ def doBuild(args, parser):
   
   banner("Configured directory:\n%s", os.path.abspath(args.configDir))
   banner("Package Recipe will be searched in the following order \n%s", os.environ.get("BITS_PATH"))
+  # Resolve the effective auto-patch flag for every package. Default behaviour is
+  # unchanged: patches are applied automatically. A recipe opts out individually
+  # with `auto_patch: false` in its header (already in spec via YAML); the global
+  # --no-auto-patch CLI flag or `auto_patch: false` in the active defaults force
+  # it off for every package. When off, bits still stages the patch files in
+  # $SOURCEDIR and exports $PATCH0..$PATCH_COUNT, but the recipe applies them.
+  _global_auto_patch = (bool(getattr(args, "autoPatch", True))
+                        and bool(defaultsMeta.get("auto_patch", True)))
   for x in specs.values():
     x["requires"] = [r for r in x["requires"] if r not in args.disable]
     x["build_requires"] = [r for r in x["build_requires"] if r not in args.disable]
     x["runtime_requires"] = [r for r in x["runtime_requires"] if r not in args.disable]
+    x["auto_patch"] = _global_auto_patch and bool(x.get("auto_patch", True))
 
   if systemPackages:
     banner("bits can take the following packages from the system and will not build them:\n  %s",
@@ -1449,8 +1844,21 @@ def doBuild(args, parser):
       spec["source"] = resolve_spec_data(spec, spec["source"], args.defaults, branch_basename, branch_stream)
     if "sources" in spec:
       spec["sources"] = [resolve_spec_data(spec, src, args.defaults, branch_basename, branch_stream) for src in spec["sources"]]
-    if variables or spec.get("expand_recipe", False):
-      spec["recipe"] = resolve_spec_data(spec, spec["recipe"], args.defaults, branch_basename, branch_stream)
+    if "patches" in spec:
+      spec["patches"] = [resolve_spec_data(spec, p, args.defaults, branch_basename, branch_stream) for p in spec["patches"]]
+    # Variables defined in the active --defaults profile's `variables:` block are
+    # available to every recipe body.  When a recipe does not itself opt into
+    # expansion (no `variables:` / `expand_recipe: true`) we expand it in SOFT
+    # mode: only known variables are substituted and any other %(...)s / bare %
+    # is left untouched, so profile-wide variables never clobber or break a
+    # recipe that happens to contain a literal %(...)s or shell `%`.
+    default_vars = defaultsMeta.get("variables") or None
+    recipe_opts_in = bool(variables or spec.get("expand_recipe", False))
+    if recipe_opts_in or default_vars:
+      spec["recipe"] = resolve_spec_data(spec, spec["recipe"], args.defaults,
+                                         branch_basename, branch_stream,
+                                         default_vars=default_vars,
+                                         strict=recipe_opts_in)
 
     if spec["is_devel_pkg"] and "develPrefix" in args and args.develPrefix != "ali-master":
       spec["version"] = args.develPrefix
@@ -1541,30 +1949,107 @@ def doBuild(args, parser):
     mainPackage = buildOrder.pop()
     warning("Not rebuilding %s because --only-deps option provided.", mainPackage)
 
+  # Records {package: scriptDir} for packages whose build we resource-monitor,
+  # so we can distil per-package CPU/RAM stats at the end of the run (P3).
+  monitoredDirs = {}
+
   scheduler = None
   if (args.builders > 1) and buildOrder:
     from bits_helpers.scheduler import Scheduler
     from bits_helpers.log import logger
-    scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources)
+
+    # --- Self-tuning resource stats (P3) --------------------------------------
+    # When building many packages in parallel, hand the scheduler per-package
+    # CPU/RAM estimates so its ResourceManager only admits a new build when the
+    # machine still has budget — preventing N heavy builds from starting at once
+    # and thrashing the node.  We auto-load the stats file a previous run left
+    # behind (re-stamped for this machine), and auto-enable monitoring so the
+    # current run refreshes it.
+    #
+    # This measurement-driven gating is OPT-IN (--auto-resources), off by
+    # default: without it, concurrency is bounded purely by --builders, which is
+    # more predictable.  Explicit --resources / --resource-monitoring still take
+    # precedence and work regardless of the flag.
+    if getattr(args, "autoResources", False):
+      if not args.resources:
+        from bits_helpers.build_stats import autoload_stats_path
+        _auto_stats = autoload_stats_path(workDir)
+        if _auto_stats:
+          args.resources = _auto_stats
+          info("Auto-loaded build resource stats from a previous run: %s", _auto_stats)
+      if not args.resourceMonitoring:
+        try:
+          import psutil  # noqa: F401  (availability probe only)
+          args.resourceMonitoring = True
+          debug("Enabled resource monitoring (--builders > 1) to record build stats")
+        except Exception:  # pylint: disable=broad-except
+          debug("psutil unavailable; resource monitoring stays off")
+
+    scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
+                          parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)))
+
+    # Collect concise per-package failures during the run so we can write a
+    # readable summary at the end (write_failure_summary), instead of leaving the
+    # user to scroll the full verbose error dump.
+    import threading as _threading
+    scheduler.buildFailures = []
+    scheduler.buildFailuresLock = _threading.Lock()
+
+    # Optionally stagger concurrent build jobs across OS 'nice' levels so CPU
+    # contention degrades gracefully (lead build at nice 0, others niced down).
+    # OPT-IN (--build-nice), off by default: the default --builders path does no
+    # command wrapping and starts no renice-watchdog thread.
+    scheduler.nice_ladder = None
+    scheduler.renice_watchdog = None
+    if getattr(args, "buildNice", False):
+      from bits_helpers.nice_ladder import NiceLadder, ReniceWatchdog
+      scheduler.nice_ladder = NiceLadder(args.builders, step=getattr(args, "buildNiceStep", 5))
+      info("Build nice-ladder enabled (--build-nice): %d slots, step %d (lead build at nice 0).",
+           args.builders, getattr(args, "buildNiceStep", 5))
+      # A build backed off by the ladder can become the last straggler and
+      # crawl; a watchdog boosts the longest such build back to full speed, one
+      # at a time.  Native builds are reniced toward 0; docker builds (each in
+      # its own named container) get their cgroup cpu-shares restored via
+      # `docker update`.
+      _boost_after = getattr(args, "buildNiceBoostAfter", 600)
+      if _boost_after:
+        scheduler.renice_watchdog = ReniceWatchdog(boost_after=_boost_after, log=info).start()
 
   # --- Stale sentinel cleanup -------------------------------------------------
   # Remove any leftover *.downloading sentinels from a previous run that was
   # killed before it could clean up.  This must happen BEFORE launching the
   # prefetch pool so that no live sentinels are confused with stale ones.
-  # Use os.walk rather than glob(..., recursive=True) to avoid the mock in tests.
-  if os.path.isdir(workDir):
-    for _root, _dirs, _files in os.walk(workDir):
-      for _fname in _files:
-        if _fname.endswith(".downloading"):
-          _s = os.path.join(_root, _fname)
-          debug("Removing stale sentinel: %s", _s)
-          try:
-            os.unlink(_s)
-          except OSError:
-            pass
+  #
+  # Sentinels are only ever created at two fixed, known depths (see
+  # _prefetch_package / bits_helpers.download):
+  #   - source archives:  SOURCES/<package>/<version>/<file>.downloading
+  #   - prebuilt tarballs: TARS/<arch>/store/<hash[:2]>/<hash>.downloading
+  #     (resolve_store_path)
+  # Walking the WHOLE workDir would also descend INSTALLROOT and BUILD -- the
+  # entire installed stack, tens of thousands of files -- adding a long,
+  # pointless stat() storm before the first build (very noticeable on macOS).
+  # Because the depths are fixed, we don't even need a recursive walk: two
+  # depth-bounded (non-recursive) glob patterns match exactly the directories
+  # where sentinels can appear and nothing else.
+  _sentinel_globs = [
+    os.path.join(workDir, "SOURCES", "*", "*", "*.downloading"),
+    os.path.join(workDir, "TARS", "*", "store", "*", "*.downloading"),
+  ]
+  for _pattern in _sentinel_globs:
+    for _s in glob(_pattern):
+      debug("Removing stale sentinel: %s", _s)
+      try:
+        os.unlink(_s)
+      except OSError:
+        pass
 
   # --- Optional prefetch pool -------------------------------------------------
-  _prefetch_workers = getattr(args, "prefetchWorkers", 0)
+  # Default (-1) means "auto": scale with the number of builders so that, on the
+  # serial preparation loop, downloads overlap instead of blocking — capped at 4
+  # to avoid hammering the store.  0 explicitly disables prefetch; N>0 forces N.
+  _prefetch_workers = getattr(args, "prefetchWorkers", -1)
+  if _prefetch_workers < 0:
+    _prefetch_workers = min(max(int(getattr(args, "builders", 1)), 1), 4)
   _prefetch_executor = None
   if _prefetch_workers > 0 and buildOrder and not isinstance(syncHelper,
       __import__("bits_helpers.sync", fromlist=["NoRemoteSync"]).NoRemoteSync):
@@ -1850,9 +2335,25 @@ def doBuild(args, parser):
     # Check if this development package needs to be rebuilt.
     if spec["is_devel_pkg"]:
       debug("Checking if devel package %s needs rebuild", spec["package"])
-      if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"]:
+      # The source is unchanged only if devel_hash+deps_hash still matches the
+      # sentinel.  But the install directory is named after ver_rev(spec), and
+      # the *revision* can change without a source change (e.g. the dependency
+      # hash shifted, so a new localN was assigned in the revision scan above).
+      # When that happens the new revision's directory was never populated, yet
+      # every consumer's init.sh sources this dependency at the new ver_rev --
+      # so skipping the rebuild would leave them pointing at a missing
+      # .../<pkg>/<ver_rev>/etc/profile.d/init.sh.  Only skip when that
+      # directory actually exists.
+      devel_install_dir = _pkg_install_path(
+        workDir, effective_arch(spec, args.architecture), spec)
+      if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"] \
+         and os.path.isdir(devel_install_dir):
         info("Development package %s does not need rebuild", spec["package"])
         continue
+      if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"]:
+        debug("Devel package %s source unchanged but install dir %s is missing "
+              "(revision changed to %s); rebuilding to populate it.",
+              spec["package"], devel_install_dir, ver_rev(spec))
 
     # Now that we have all the information about the package we want to build, let's
     # check if it wasn't built / unpacked already.
@@ -1983,11 +2484,22 @@ def doBuild(args, parser):
       # In Makeflow mode we skip the sequential checkout here and instead
       # generate a .checkout Makeflow rule per package so that all clones and
       # archive downloads run in parallel as part of the DAG.
-      if not args.makeflow:
-        checkout_sources(spec, workDir, args.referenceSources, args.docker,
-                         enforce_mode=_download_time_mode(effective_checksum_mode),
-                         sync_helper=syncHelper,
-                         parallel_sources=getattr(args, "parallelSources", 1))
+      #
+      # In --builders mode (args.builders > 1) we likewise defer the checkout:
+      # it is registered below as a scheduler "download" task (fetch:<pkg>) that
+      # the build task depends on, so source downloads overlap compilation
+      # instead of running serially here before any build starts.  Only the
+      # single-builder path still checks out inline.
+      if not args.makeflow and args.builders == 1:
+        try:
+          checkout_sources(spec, workDir, args.referenceSources, args.docker,
+                           enforce_mode=_download_time_mode(effective_checksum_mode),
+                           sync_helper=syncHelper,
+                           parallel_sources=getattr(args, "parallelSources", 1),
+                           architecture=raw_architecture)
+        except OSError as e:
+          dieOnError(True, "Failed to fetch sources for %s@%s: %s" % (
+            spec.get("package", "?"), spec.get("version", "?"), e))
 
     # Collect every processed spec for the post-build checksum phase.
     # This includes specs whose tarball was cached (cachedTarball != "").
@@ -2003,6 +2515,10 @@ def doBuild(args, parser):
 
     init_workDir = container_workDir if args.docker else args.workDir
     makedirs(scriptDir, exist_ok=True)
+    # Remember where the resource monitor will write this package's trace so we
+    # can aggregate build stats once the run finishes (P3).
+    if args.resourceMonitoring:
+      monitoredDirs[p] = scriptDir
     writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
     hook_params_locals = "\n  ".join(
       'export %s="%s"' % (k, v) for k, v in spec.get("hook_params", {}).items()
@@ -2038,7 +2554,8 @@ def doBuild(args, parser):
       ("GIT_COMMITTER_NAME", "unknown"),
       ("GIT_COMMITTER_EMAIL", "unknown"),
       ("INCREMENTAL_BUILD_HASH", spec.get("incremental_hash", "0")),
-      ("JOBS", str(effective_jobs(args.jobs, spec))),
+      ("JOBS", str(effective_jobs(args.jobs, spec, builders=args.builders,
+                                  oversubscribe=getattr(args, "oversubscribe", 1.0) or 1.0))),
       ("PKGFAMILY", spec.get("pkg_family", "")),
       ("PKGHASH", spec["hash"]),
       ("PKGNAME", spec["package"]),
@@ -2215,6 +2732,19 @@ def doBuild(args, parser):
         runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper)
       else:
         build_deps = ["build:%s" % d for d in specs[p]["full_requires"] if d in buildTargets]
+        # When the package must be built from source, register its checkout as a
+        # scheduler "download" task (capped by --parallel-downloads) and make the
+        # build wait on it.  The scheduler then compiles ready packages while
+        # other packages' sources are still downloading, removing the up-front
+        # serial download loop.  Packages restored from a cached tarball need no
+        # source download, so they get no fetch task.
+        if not cachedTarball:
+          fetch_id = "fetch:%s" % p
+          scheduler.parallel(fetch_id, [], "download", _doCheckout, spec, workDir,
+                             args.referenceSources, args.docker,
+                             _download_time_mode(effective_checksum_mode), syncHelper,
+                             getattr(args, "parallelSources", 1), raw_architecture)
+          build_deps = build_deps + [fetch_id]
         scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
     else:
       breq = " ".join([str(element) + ".build" for element in spec["full_requires"] if element in buildTargets])
@@ -2246,6 +2776,7 @@ def doBuild(args, parser):
           "reference":        spec.get("reference", ""),
           "write_repo":       spec.get("write_repo", ""),
           "patches":          spec.get("patches", []),
+          "auto_patch":       spec.get("auto_patch", True),
           "sources":          spec.get("sources", []),
           "source_checksums": spec.get("source_checksums") or {},
           "patch_checksums":  spec.get("patch_checksums") or {},
@@ -2276,9 +2807,47 @@ def doBuild(args, parser):
       buildList.append((p, _build_cmd, tar_command, upload_command, cachedTarball, breq, checkout_cmd))
 
   if (not args.makeflow) and (args.builders > 1) and buildTargets:
-    scheduler.run()
+    _run_t0 = time.monotonic()
+    try:
+      scheduler.run()
+    finally:
+      # Always stop the straggler-renice watchdog, even if run() raised.
+      if getattr(scheduler, "renice_watchdog", None) is not None:
+        scheduler.renice_watchdog.stop()
+    _run_wall = time.monotonic() - _run_t0
+    # Refresh the self-tuning resource-stats file from this run's monitor traces
+    # so the next --builders invocation can schedule with up-to-date estimates (P3).
+    # Also estimate CPU utilisation and, when there is headroom, record/print a
+    # suggestion for --builders / --oversubscribe.
+    _tuning = None
+    if args.resourceMonitoring and monitoredDirs:
+      try:
+        from bits_helpers.build_stats import aggregate_and_write, tuning_report
+        _tuning = tuning_report(monitoredDirs, _run_wall, args.builders, args.jobs,
+                                getattr(args, "oversubscribe", 1.0) or 1.0)
+        aggregate_and_write(workDir, monitoredDirs, tuning=_tuning)
+      except Exception as exc:  # pylint: disable=broad-except
+        warning("Could not update build resource stats: %s", exc)
     for (action, error) in scheduler.errors.items():
       info("* The action \"{}\" was not completed successfully because {}".format(action, error))
+    # Write a concise failure summary plus a combined full error log, and tell
+    # the user where to find them and the individual per-package logs.
+    _summary_path, _full_path = write_failure_summary(workDir, scheduler)
+    if _summary_path or _full_path:
+      info("=" * 70)
+      info("Build finished with errors. Where to look:")
+      if _summary_path:
+        info("  Summary (start here):   %s", _summary_path)
+      if _full_path:
+        info("  Full error log:         %s", _full_path)
+      info("  Per-package build logs: %s/BUILD/<package>-latest/log", workDir)
+      info("=" * 70)
+    # End-of-run resource-tuning hint. Only on a clean build — the utilisation
+    # numbers are meaningless for a partial/failed run. The full report is in
+    # bits_build_stats.json under "tuning".
+    if _tuning and _tuning.get("headroom") and not scheduler.brokenJobs:
+      banner("Resource tuning (recorded in %s):\n  %s",
+             join(workDir, "bits_build_stats.json"), _tuning["recommendation"])
     if scheduler.brokenJobs:
       dieOnError(True, "Please fix the above errors.")
   elif args.makeflow and buildTargets:
@@ -2373,8 +2942,11 @@ def doBuild(args, parser):
               cli_args.append(f"--{k}")
           elif isinstance(v, list):
             if v:  # Only show non-empty lists
+              seen = set()
               for item in v:
-                cli_args.append(f"--{k}={quote(str(item))}")
+                if item not in seen:
+                  seen.add(item)
+                  cli_args.append(f"--{k}={quote(str(item))}")
           else:
             # Quote if needed
             cli_args.append(f"--{k}={quote(str(v))}")
@@ -2430,11 +3002,39 @@ def doBuild(args, parser):
                                    do_print=_do_print, do_write=_do_write)
 
   if not args.onlyDeps:
+      # Resolve the main package's install root (sw/<arch>/<pkg>/<ver-rev>) so
+      # the success summary points at the package directory, not just the arch
+      # root -- mirroring the Install Root shown on failure.
+      _install_root_line = ""
+      _main_spec = specs.get(mainPackage)
+      if _main_spec is not None:
+        try:
+          _install_root_line = "\nThe %s install root is:\n\n  %s\n" % (
+            mainPackage,
+            abspath(_pkg_install_path(args.workDir,
+                                      effective_arch(_main_spec, args.architecture),
+                                      _main_spec)))
+        except Exception:  # pylint: disable=broad-except
+          _install_root_line = ""
+      # When --defaults qualified the architecture (qualify_arch), the install
+      # tree lives under the combined arch string, but `bits enter` auto-detects
+      # only the raw base arch -- so the suggested command must pass -a
+      # explicitly, otherwise it would look in the wrong sw/<arch>.
+      if args.architecture != raw_architecture:
+        _arch_flag = "-a %s " % args.architecture
+        _arch_note = (
+            "\n\n(This build used the defaults-qualified architecture "
+            f"`{args.architecture}'; pass it with -a as above, or persist it "
+            f"with `export BITS_ARCHITECTURE={args.architecture}'.)")
+      else:
+        _arch_flag, _arch_note = "", ""
       banner(f"Build of {mainPackage} successfully completed on `{socket.gethostname()}'.\n"
              "Your software installation is at:"
-             f"\n\n  {abspath(join(args.workDir, args.architecture))}\n\n"
+             f"\n\n  {abspath(join(args.workDir, args.architecture))}\n"
+             f"{_install_root_line}\n"
              "You can use this package by loading the environment:"
-             f"\n\n  bits enter {mainPackage}/latest-{mainBuildFamily}",
+             f"\n\n  bits {_arch_flag}enter {mainPackage}/latest-{mainBuildFamily}"
+             f"{_arch_note}",
              )
   else:
       banner("Successfully built dependencies for package %s on `%s'.\n",

@@ -239,6 +239,86 @@ def _check_qemu_binfmt(arch: str) -> Tuple[str, str]:
     )
 
 
+def _check_macos_clt() -> Tuple[str, str]:
+    """macOS: verify the Xcode Command Line Tools (clang + SDK) actually work.
+
+    SKIP on non-Darwin.  On Darwin, ``xcode-select -p`` must resolve to an
+    installed developer dir AND a trivial C program must compile with ``cc``
+    (catches a broken/partial install or a missing SDK).
+    """
+    if sys.platform != "darwin":
+        return SKIP, "not macOS"
+    err_xs, out_xs = getstatusoutput("xcode-select -p")
+    if err_xs:
+        return FAIL, ("Xcode Command Line Tools not installed.\n"
+                      "  Install with: xcode-select --install")
+    # Confirm clang/SDK can actually build something.
+    err_cc, out_cc = getstatusoutput(
+        "printf 'int main(void){return 0;}\\n' | cc -xc - -o /dev/null")
+    if err_cc:
+        return FAIL, ("Xcode Command Line Tools present (%s) but cc cannot "
+                      "compile — SDK may be missing or broken:\n  %s\n"
+                      "  Try: xcode-select --install" % (out_xs.strip(), out_cc[:200]))
+    return PASS, "Xcode Command Line Tools functional (%s)" % out_xs.strip()
+
+
+def _check_xquartz() -> Tuple[str, str]:
+    """macOS: WARN if XQuartz headers/libs are absent under /opt/X11.
+
+    SKIP on non-Darwin.  X11/GL-dependent packages build against XQuartz on
+    macOS; ROOT uses the native Cocoa backend and does not need it, so a
+    missing XQuartz is a warning rather than a failure.
+    """
+    if sys.platform != "darwin":
+        return SKIP, "not macOS"
+    if os.path.isdir("/opt/X11/include"):
+        return PASS, "XQuartz present (/opt/X11)"
+    return WARN, ("XQuartz not found under /opt/X11 — X11/GL packages will fail "
+                  "to build (ROOT's Cocoa backend is unaffected).\n"
+                  "  Install with: brew install --cask xquartz")
+
+
+def _find_brewfile(args) -> str:
+    """Return the first existing Brewfile path among conventional locations."""
+    candidates = []
+    cfg = getattr(args, "configDir", "") or ""
+    # The canonical location is <configDir>/macos/Brewfile (next to the recipes);
+    # check it first, then fall back to legacy locations for back-compat.
+    for base in (cfg, ".", os.path.join(cfg, "..", "stacks.bits")):
+        candidates.append(os.path.join(base, "macos", "Brewfile"))
+        candidates.append(os.path.join(base, "Brewfile"))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
+def _check_brewfile(args) -> Tuple[str, str]:
+    """macOS: verify the generated Brewfile's formulae are installed.
+
+    SKIP on non-Darwin or when no Brewfile is found.  Runs `brew bundle check`
+    so the report mirrors what `bits build --brew` (or a fresh-Mac onboarding
+    `brew bundle`) would need.  Missing Homebrew is a WARN, not a FAIL — a stack
+    may not use any Homebrew-sourced packages.
+    """
+    if sys.platform != "darwin":
+        return SKIP, "not macOS"
+    brewfile = _find_brewfile(args)
+    if not brewfile:
+        return SKIP, "no Brewfile found"
+    if getstatusoutput("command -v brew")[0]:
+        return WARN, ("Homebrew not installed but a Brewfile is present (%s).\n"
+                      "  Install Homebrew (https://brew.sh), then: "
+                      "brew bundle --file %s" % (brewfile, brewfile))
+    err, out = getstatusoutput("brew bundle check --file %s" % brewfile)
+    if err:
+        return WARN, ("Brewfile not fully satisfied (%s):\n  %s\n"
+                      "  Install the missing formulae with: brew bundle --file %s\n"
+                      "  or build with --brew to install on demand."
+                      % (brewfile, out.strip()[:300], brewfile))
+    return PASS, "Brewfile satisfied (%s)" % brewfile
+
+
 def _check_cvmfs_repo(repo_path: str) -> Tuple[str, str]:
     """PASS if *repo_path* exists and contains at least one entry."""
     if not os.path.isdir(repo_path):
@@ -555,6 +635,19 @@ def _run_runner_checks(args) -> List[CheckResult]:
     # ── Podman / sandbox ─────────────────────────────────────────────────────
     podman_status, podman_detail = _check_podman()
     checks.append(("podman (sandbox)", podman_status, podman_detail))
+
+    # ── macOS developer toolchain (SKIP elsewhere) ───────────────────────────
+    clt_status, clt_detail = _check_macos_clt()
+    if clt_status != SKIP:
+        checks.append(("Xcode Command Line Tools", clt_status, clt_detail))
+
+    xq_status, xq_detail = _check_xquartz()
+    if xq_status != SKIP:
+        checks.append(("XQuartz (X11/GL)", xq_status, xq_detail))
+
+    brewfile_status, brewfile_detail = _check_brewfile(args)
+    if brewfile_status != SKIP:
+        checks.append(("Homebrew Brewfile", brewfile_status, brewfile_detail))
 
     # ── CVMFS repos ──────────────────────────────────────────────────────────
     cvmfs_repos = list(getattr(args, "cvmfsRepos", None) or [])

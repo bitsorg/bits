@@ -2,7 +2,7 @@
 
 Bits is a build orchestration tool for complex software stacks. It fetches sources, resolves dependencies, and builds packages in a reproducible, parallel environment.
 
-> Full documentation is available in [REFERENCE.md](REFERENCE.md). This guide covers only the essentials.
+> Full documentation is available in [docs/USERGUIDE.md](docs/USERGUIDE.md), [docs/COOKBOOK.md](docs/COOKBOOK.md), and [docs/REFERENCE.md](docs/REFERENCE.md). This guide covers only the essentials.
 
 ---
 
@@ -24,27 +24,44 @@ On RHEL/CentOS: `yum install environment-modules`
 
 ---
 
-## Quick Start (Building ROOT)
+## Quick Start
+
+### ALICE (default community — no configuration needed)
 
 ```bash
-# 1. Clone a recipe repository
-git clone https://github.com/bitsorg/alice.bits.git
-cd alice.bits
-
-# 2. Check system requirements for ROOT
-bits doctor ROOT
-
-# 3. Build ROOT and all its dependencies
+# In any empty directory: bits auto-bootstraps the ALICE recipe repo
 bits build ROOT
 
-# 4. Enter the built environment
+# Enter the built environment and run
 bits enter ROOT/latest
-
-# 5. Run the software
 root -b
-
-# 6. Exit the environment
 exit
+```
+
+### Another community (e.g. LHCb) — one-time setup
+
+```bash
+# Write community and work-directory to bits.rc once
+bits init --organisation LHCB --work-dir /path/to/sw
+
+# Then build as normal — bits auto-bootstraps the LHCb recipe repo
+bits build DaVinci
+bits enter DaVinci/latest
+```
+
+### Inside a cloned recipe repository
+
+```bash
+# bits detects defaults-release.sh and uses "." as the recipe directory
+git clone https://github.com/bitsorg/lhcb.bits
+cd lhcb.bits
+bits build DaVinci
+```
+
+### Check system requirements before building
+
+```bash
+bits doctor ROOT
 ```
 
 ---
@@ -63,41 +80,51 @@ exit
 | `bits doctor --runner` | Validate the full build-runner environment (compiler, git, Docker, podman, CVMFS, disk, store). |
 | `bits verify --from-manifest FILE` | Confirm a live deployment matches the build manifest (SHA-256 and provider commits). |
 
-[Full command reference](REFERENCE.md#16-command-line-reference)
+[Full command reference](docs/REFERENCE.md#16-command-line-reference)
 
 ---
 
 ## Configuration
 
-Create a `bits.rc` file (INI format) to set defaults:
+Use `bits init` to write persistent settings to `bits.rc` (created in the current directory):
+
+```bash
+bits init --organisation LHCB \
+          --work-dir /path/to/sw \
+          --remote-store https://mybucket/builds
+```
+
+Or write `bits.rc` by hand (INI format, `[bits]` section):
 
 ```ini
 [bits]
-organisation     = ALICE
-remote_store     = https://s3.cern.ch/swift/v1/alibuild-repo
-prerequisites_url = https://alice-doc.github.io/alice-analysis-tutorial/building/
-cvmfs_repos      = /cvmfs/alice.cern.ch,/cvmfs/sft.cern.ch
-
-[ALICE]
-sw_dir       = /path/to/sw          # output directory
-repo_dir     = /path/to/recipes     # recipe repository root
-search_path  = common,extra         # additional recipe dirs (appended .bits)
+organisation      = LHCB
+work_dir          = /path/to/sw
+remote_store      = https://s3.cern.ch/swift/v1/alibuild-repo
+prerequisites_url = https://lhcb-software.web.cern.ch/
+cvmfs_repos       = /cvmfs/lhcbdev.cern.ch,/cvmfs/sft.cern.ch
 ```
 
-Bits looks for `bits.rc` in: `--config FILE` → `./bits.rc` → `./.bitsrc` → `~/.bitsrc`.
+`organisation` is written **uppercase** (`ALICE`, `LHCB`, …).  Bits lowercases it
+internally when resolving the community recipe repository from bits-providers
+(e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`).
+
+Bits looks for `bits.rc` in: `--rc-file FILE` → `./bits.rc` → `./.bitsrc` → `~/.bitsrc`.
 
 Useful `[bits]` keys:
 
-| Key | Description |
-|-----|-------------|
-| `remote_store` | Default binary store URL (same syntax as `--remote-store`). |
-| `write_store` | Default upload store URL. |
-| `prerequisites_url` | URL shown when `bits doctor` cannot find the C++ compiler or git. |
-| `cvmfs_repos` | Comma-separated CVMFS mount paths checked by `bits doctor --runner`. |
-| `provider_policy` | `name:prepend\|append` pairs controlling `BITS_PATH` insertion order. |
-| `store_integrity` | `true` to enable SHA-256 verification of every recalled tarball. |
+| Key | CLI flag | Description |
+|-----|----------|-------------|
+| `organisation` | `--organisation` | Community name (uppercase). Used to auto-bootstrap the recipe repo. |
+| `work_dir` | `-w` / `--work-dir` | Output directory for built packages (default: `sw`). |
+| `remote_store` | `--remote-store` | Binary store URL for pre-built tarball retrieval. |
+| `write_store` | `--write-store` | Binary store URL for uploading newly built tarballs. |
+| `prerequisites_url` | — | URL shown when `bits doctor` cannot find the C++ compiler or git. |
+| `cvmfs_repos` | — | Comma-separated CVMFS mount paths checked by `bits doctor --runner`. |
+| `provider_policy` | — | `name:prepend\|append` pairs controlling `BITS_PATH` insertion order. |
+| `store_integrity` | `--store-integrity` | `true` to enable SHA-256 verification of every recalled tarball. |
 
-[Configuration details](REFERENCE.md#4-configuration)
+[Configuration details](docs/USERGUIDE.md#4-configuration)
 
 ---
 
@@ -118,7 +145,7 @@ make -j${JOBS:-1}
 make install
 ```
 
-[Complete recipe reference](REFERENCE.md#17-recipe-format-reference)
+[Complete recipe reference](docs/REFERENCE.md#17-recipe-format-reference)
 
 ---
 
@@ -134,7 +161,7 @@ bits cleanup --min-free 100       # free space until at least 100 GiB available
 bits cleanup -n                   # dry-run: show what would be removed
 ```
 
-[Cleaning options](REFERENCE.md#7-cleaning-up)
+[Cleaning options](docs/USERGUIDE.md#7-cleaning-up)
 
 ---
 
@@ -151,9 +178,9 @@ bits build --docker --architecture slc9_aarch64 MyAnalysis
 bits build --remote-store s3://mybucket/builds ROOT
 ```
 
-The `--cvmfs-prefix` flag (which embeds the final CVMFS deployment path at compile time so no relocation is needed at publish time) and `bits publish --no-relocate` are used by the **bits-console-triggered CI pipeline** on the build runners — they are not normally typed by end users. See [WORKFLOWS.md Phase 5](WORKFLOWS.md#phase-5--ci-build-and-cvmfs-publication-via-bits-console) for the user-facing workflow and [REFERENCE.md §22](REFERENCE.md#22-docker-support) for the flag reference.
+The `--cvmfs-prefix` flag (which embeds the final CVMFS deployment path at compile time so no relocation is needed at publish time) and `bits publish --no-relocate` are used by the **bits-console-triggered CI pipeline** on the build runners — they are not normally typed by end users. See [WORKFLOWS.md Phase 5](docs/WORKFLOWS.md#phase-5--ci-build-and-cvmfs-publication-via-bits-console) for the user-facing workflow and [docs/REFERENCE.md §22](docs/REFERENCE.md#22-docker-support) for the flag reference.
 
-[Docker support](REFERENCE.md#22-docker-support) | [Cross-compilation via QEMU](REFERENCE.md#22b-cross-compilation-via-qemu) | [Remote stores](REFERENCE.md#21-remote-binary-store-backends)
+[Docker support](docs/REFERENCE.md#22-docker-support) | [Cross-compilation via QEMU](docs/REFERENCE.md#222-cross-compilation-via-qemu) | [Remote stores](docs/REFERENCE.md#21-remote-binary-store-backends)
 
 ---
 
@@ -171,7 +198,7 @@ bits verify --from-manifest alice-o2-20260411.json \
             --cvmfs-root /cvmfs/alice.cern.ch
 ```
 
-[bits doctor reference](REFERENCE.md#bits-doctor) | [bits verify reference](REFERENCE.md#bits-verify) | [Deployment verification §22c](REFERENCE.md#22c-bits-verify--deployment-verification)
+[bits doctor reference](docs/REFERENCE.md#bits-doctor) | [bits verify reference](docs/REFERENCE.md#23-bits-verify--deployment-verification)
 
 ---
 
@@ -190,7 +217,7 @@ tox -e darwin           # reduced suite on macOS
 pytest                  # fast unit tests only
 ```
 
-[Developer guide](REFERENCE.md#part-ii--developer-guide)
+[Developer guide](docs/REFERENCE.md#part-i--developer-guide)
 
 ---
 
@@ -198,24 +225,19 @@ pytest                  # fast unit tests only
 
 bits uses a single toolchain from your laptop to experiment-wide CVMFS. Clone a package source next to your recipe checkout and bits detects it automatically, building your local version while resolving all other dependencies from the shared recipe repo. Once tested locally, the change follows an unbroken path: commit → recipe MR → CI build → `bits publish` → CVMFS. Group admins publish full experiment stacks; individual users can publish single packages to a separate namespace — both paths use the same commands and the same recipes.
 
-See **[WORKFLOWS.md](WORKFLOWS.md)** for the full phase-by-phase walkthrough and workflow diagram.
+See **[WORKFLOWS.md](docs/WORKFLOWS.md)** for the full phase-by-phase walkthrough and workflow diagram.
 
 ---
 
 ## Next Steps
 
-- [Development-to-deployment workflow & diagram](WORKFLOWS.md)
-- [Environment management (`bits enter`, `load`, `unload`)](REFERENCE.md#6-managing-environments)
-- [Dependency graph visualisation](REFERENCE.md#bits-deps)
-- [Runner environment validation (`bits doctor --runner`)](REFERENCE.md#bits-doctor)
-- [Deployment verification (`bits verify`)](REFERENCE.md#22c-bits-verify--deployment-verification)
-- [Repository provider feature (dynamic recipe repos)](REFERENCE.md#13-repository-provider-feature)
-- [Defaults profiles](REFERENCE.md#18-defaults-profiles)
-- [Cross-compilation via QEMU](REFERENCE.md#22b-cross-compilation-via-qemu)
-- [Design principles & limitations](REFERENCE.md#24-design-principles--limitations)
-- [CVMFS publishing pipeline & bits-console](REFERENCE.md#26-cvmfs-publishing-pipeline)
+- **[User Guide](docs/USERGUIDE.md)** — installation, configuration, building, environments, cleaning up
+- **[Cookbook](docs/COOKBOOK.md)** — practical recipes for common tasks
+- **[Reference Manual](docs/REFERENCE.md)** — command-line flags, recipe format, environment variables, Docker, stores, CVMFS pipeline, developer guide
+- **[Workflows](docs/WORKFLOWS.md)** — development-to-deployment walkthrough and diagram
+- **[Roadmap](docs/ROADMAP.md)** — planned features and priorities
 
 ---
 
-**Note**: Bits is under active development. For the most up-to-date information, see the full [REFERENCE.md](REFERENCE.md).
+**Note**: Bits is under active development. For the most up-to-date information, see the full [docs/REFERENCE.md](docs/REFERENCE.md).
 ```

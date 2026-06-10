@@ -140,12 +140,34 @@ class TestAvailableMemoryMib(unittest.TestCase):
 
     @patch("subprocess.check_output")
     @patch("platform.system", return_value="Darwin")
-    def test_darwin_sums_free_and_inactive(self, _mock_sys, mock_sub):
-        # First call → vm_stat, second call → sysctl hw.pagesize
-        mock_sub.side_effect = [_VM_STAT_OUTPUT, "4096\n"]
-        mib = available_memory_mib()
-        # (512000 + 512000) * 4096 / 1024**2 = 4000 MiB
-        self.assertEqual(mib, 4000)
+    def test_darwin_physical_minus_used(self, _mock_sys, mock_sub):
+        # Reclaimable-inclusive: available = physical - (anon + wired + compress).
+        # calls: vm_stat, sysctl hw.pagesize, sysctl hw.memsize
+        full = dedent("""\
+            Mach Virtual Memory Statistics: (page size of 4096 bytes)
+            Pages free:                           100000.
+            Pages active:                        1000000.
+            Pages inactive:                       400000.
+            Pages speculative:                     50000.
+            Pages wired down:                     256000.
+            Pages purgeable:                       20000.
+            Anonymous pages:                      512000.
+            File-backed pages:                    900000.
+            Pages occupied by compressor:         256000.
+        """)
+        # physical 8388608000 B; used=(512000+256000+256000)*4096=4194304000 B
+        # available = 8388608000 - 4194304000 = 4000 MiB
+        mock_sub.side_effect = [full, "4096\n", "8388608000\n"]
+        self.assertEqual(available_memory_mib(), 4000)
+
+    @patch("subprocess.check_output")
+    @patch("platform.system", return_value="Darwin")
+    def test_darwin_fallback_reclaimable_buckets(self, _mock_sys, mock_sub):
+        # Old/partial vm_stat without anon/compressor → sum reclaimable buckets:
+        # free+inactive+speculative+purgeable = 512000+512000+64000+0 = 1088000.
+        mock_sub.side_effect = [_VM_STAT_OUTPUT, "4096\n", "8388608000\n"]
+        # 1088000 * 4096 / 1024**2 = 4250 MiB
+        self.assertEqual(available_memory_mib(), 4250)
 
     @patch("platform.system", return_value="Windows")
     def test_unknown_platform_returns_zero(self, _mock_sys):
@@ -278,6 +300,81 @@ class TestEffectiveJobs(unittest.TestCase):
         with _avail(1024):       # only 1 GiB available
             jobs = effective_jobs(1, spec)
         self.assertEqual(jobs, 1)
+
+    # ── builders-aware CPU/load budget (P1) ──────────────────────────────────
+
+    def test_builders_divide_cpu_no_hint(self):
+        # 32 jobs across 4 builders, no mem_per_job → 32 // 4 = 8
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(32, spec, builders=4), 8)
+
+    def test_builders_default_one_unchanged(self):
+        # builders defaults to 1 → behaviour identical to the old signature
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(32, spec), 32)
+        self.assertEqual(effective_jobs(32, spec, builders=1), 32)
+
+    def test_builders_cpu_floor_at_one(self):
+        # more builders than jobs → never below 1
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(2, spec, builders=4), 1)
+
+    def test_builders_divide_memory_budget(self):
+        # avail RAM is split across builders before the per-job division:
+        # cpu_cap = 32 // 4 = 8; memory_cap = floor((16384/4)*0.9/1024) = 3
+        spec = {"package": "root", "mem_per_job": 1024}
+        with _avail(16384):
+            jobs = effective_jobs(32, spec, builders=4)
+        self.assertEqual(jobs, 3)
+
+    def test_builders_cpu_cap_dominates_when_ram_ample(self):
+        # tiny footprint + lots of RAM → CPU share is the binding constraint
+        # cpu_cap = 32 // 2 = 16; memory_cap = floor((65536/2)*0.9/256) = 115
+        spec = {"package": "boost", "mem_per_job": 256}
+        with _avail(65536):
+            jobs = effective_jobs(32, spec, builders=2)
+        self.assertEqual(jobs, 16)
+
+    def test_builders_no_hint_detection_irrelevant(self):
+        # without mem_per_job the memory probe is never consulted
+        spec = {"package": "zlib"}
+        with _avail(0):
+            jobs = effective_jobs(16, spec, builders=4)
+        self.assertEqual(jobs, 4)
+
+    # ── oversubscribe factor ─────────────────────────────────────────────────
+
+    def test_oversubscribe_default_is_noop(self):
+        # factor 1.0 (default) is identical to the plain builder split.
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(12, spec, builders=4), 3)
+        self.assertEqual(effective_jobs(12, spec, builders=4, oversubscribe=1.0), 3)
+
+    def test_oversubscribe_raises_per_builder_share(self):
+        # 12 jobs, 4 builders, factor 1.5 → ceil(12*1.5/4) = ceil(4.5) = 5.
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(12, spec, builders=4, oversubscribe=1.5), 5)
+        # 2 builders → ceil(18/2) = 9.
+        self.assertEqual(effective_jobs(12, spec, builders=2, oversubscribe=1.5), 9)
+
+    def test_oversubscribe_clamped_to_requested(self):
+        # single builder (or factor large enough) never exceeds -j itself.
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(12, spec, builders=1, oversubscribe=1.5), 12)
+        self.assertEqual(effective_jobs(12, spec, builders=2, oversubscribe=4.0), 12)
+
+    def test_oversubscribe_below_one_ignored(self):
+        # factors < 1.0 are floored to 1.0 (never *under*-subscribe the split).
+        spec = {"package": "zlib"}
+        self.assertEqual(effective_jobs(12, spec, builders=4, oversubscribe=0.5), 3)
+
+    def test_oversubscribe_does_not_scale_memory_cap(self):
+        # The memory cap must stay on the *max* builders, unscaled by the factor:
+        # cpu_cap = ceil(32*1.5/4) = 12, but memory_cap = floor((16384/4)*0.9/1024) = 3.
+        spec = {"package": "root", "mem_per_job": 1024}
+        with _avail(16384):
+            jobs = effective_jobs(32, spec, builders=4, oversubscribe=1.5)
+        self.assertEqual(jobs, 3)
 
 
 if __name__ == "__main__":

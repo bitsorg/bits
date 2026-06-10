@@ -24,11 +24,13 @@ from bits_helpers.build import doBuild
 from bits_helpers.clean import doClean
 from bits_helpers.cleanup import doCleanup
 from bits_helpers.deps import doDeps
+from bits_helpers.brew import doBrew
 from bits_helpers.doctor import doDoctor
 from bits_helpers.init import doInit
 from bits_helpers.publish import doPublish
 from bits_helpers.verify import doVerify
 from bits_helpers.status import doStatus
+from bits_helpers.stats import doStats
 from bits_helpers.log import debug, error, info, logger
 from bits_helpers.utilities import detectArch
 
@@ -85,6 +87,9 @@ def doMain(args, parser):
   if args.action == "deps":
     sys.exit(0 if doDeps(args, parser) else 1)
 
+  if args.action == "brew":
+    sys.exit(0 if doBrew(args, parser) else 1)
+
   if args.action == "clean":
     doClean(workDir=args.workDir, architecture=args.architecture,
             aggressiveCleanup=args.aggressiveCleanup, dryRun=args.dryRun)
@@ -113,6 +118,10 @@ def doMain(args, parser):
 
   if args.action == "status":
     doStatus(args, parser)
+    sys.exit(0)
+
+  if args.action == "stats":
+    doStats(args, parser)
     sys.exit(0)
 
 

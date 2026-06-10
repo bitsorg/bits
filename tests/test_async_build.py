@@ -10,6 +10,7 @@ Covers:
 
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -352,10 +353,12 @@ class NewCLIFlagsTest(unittest.TestCase):
             args, _ = doParseArgs()
 
         self.assertFalse(args.pipeline, "--pipeline must default to False")
-        self.assertEqual(args.prefetchWorkers, 0,
-                         "--prefetch-workers must default to 0")
+        self.assertEqual(args.prefetchWorkers, -1,
+                         "--prefetch-workers must default to -1 (auto)")
         self.assertEqual(args.parallelSources, 1,
                          "--parallel-sources must default to 1")
+        self.assertEqual(args.parallelDownloads, 2,
+                         "--parallel-downloads must default to 2")
 
     @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")
@@ -447,6 +450,7 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
             "patch_checksums": {},
         }
 
+    @patch("bits_helpers.workarea._extract_source_archives", new=MagicMock())
     @patch("bits_helpers.workarea.symlink", new=MagicMock())
     @patch("bits_helpers.workarea.download")
     @patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0")
@@ -460,6 +464,7 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
                          parallel_sources=1)
         self.assertEqual(mock_download.call_count, len(self.SOURCES))
 
+    @patch("bits_helpers.workarea._extract_source_archives", new=MagicMock())
     @patch("bits_helpers.workarea.symlink", new=MagicMock())
     @patch("bits_helpers.workarea.download")
     @patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0")
@@ -473,6 +478,7 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
                          parallel_sources=4)
         self.assertEqual(mock_download.call_count, len(self.SOURCES))
 
+    @patch("bits_helpers.workarea._extract_source_archives", new=MagicMock())
     @patch("bits_helpers.workarea.symlink", new=MagicMock())
     @patch("bits_helpers.workarea.download")
     @patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0")
@@ -492,6 +498,7 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
             checkout_sources(spec, "/sw", "/sw/MIRROR", containerised_build=False,
                              parallel_sources=3)
 
+    @patch("bits_helpers.workarea._extract_source_archives", new=MagicMock())
     @patch("bits_helpers.workarea.symlink", new=MagicMock())
     @patch("bits_helpers.workarea.download")
     @patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0")
@@ -520,6 +527,7 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
         self.assertLess(elapsed, 0.40,
                         "Parallel downloads should not take longer than serial")
 
+    @patch("bits_helpers.workarea._extract_source_archives", new=MagicMock())
     @patch("bits_helpers.workarea.symlink", new=MagicMock())
     @patch("bits_helpers.workarea.download")
     @patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0")
@@ -534,5 +542,213 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
         mock_download.assert_called_once()
 
 
+# ---------------------------------------------------------------------------
+# 6. _extract_source_archives()
+# ---------------------------------------------------------------------------
+
+class ExtractSourceArchivesTest(unittest.TestCase):
+    """_extract_source_archives() unpacks archives found in source_dir."""
+
+    def setUp(self):
+        self.source_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.source_dir, ignore_errors=True)
+
+    # -- sentinel prevents re-extraction --------------------------------------
+
+    def test_sentinel_skips_extraction(self):
+        """A valid .bits_extracted sentinel skips re-extraction (no subprocess)."""
+        import json
+        from bits_helpers.workarea import (_extract_source_archives,
+                                           _archive_prefix_depth)
+        # Place a fake tarball so we can verify it is not touched.
+        fake = os.path.join(self.source_dir, "pkg-1.0.tar.gz")
+        open(fake, "w").close()
+        # The sentinel records the strip depth used for each archive. Extraction
+        # is skipped only when the recorded depths match what we'd compute now;
+        # an empty/legacy sentinel is treated as stale and triggers re-extraction.
+        # Write a valid sentinel matching the current strip depth.
+        sentinel = os.path.join(self.source_dir, ".bits_extracted")
+        with open(sentinel, "w") as fh:
+            json.dump({"strips": {"pkg-1.0.tar.gz": _archive_prefix_depth(fake)}}, fh)
+        with patch("bits_helpers.workarea.subprocess") as mock_sp:
+            _extract_source_archives(self.source_dir)
+            mock_sp.check_call.assert_not_called()
+
+    # -- tar archives ---------------------------------------------------------
+
+    def _make_tar(self, filename, strip_dir="pkg-1.0"):
+        """Create a small but valid tar archive with one file inside strip_dir/."""
+        import tarfile, io
+        archive_path = os.path.join(self.source_dir, filename)
+        with tarfile.open(archive_path, "w:gz") as tf:
+            content = b"hello\n"
+            info = tarfile.TarInfo(name=strip_dir + "/hello.txt")
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+        return archive_path
+
+    def test_tar_gz_extracted_with_strip(self):
+        """A .tar.gz archive is extracted and hello.txt lands in source_dir."""
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_tar("pkg-1.0.tar.gz")
+        _extract_source_archives(self.source_dir)
+        self.assertTrue(os.path.exists(os.path.join(self.source_dir, "hello.txt")))
+
+    def test_tgz_extracted(self):
+        """A .tgz archive (alias for .tar.gz) is also extracted."""
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_tar("pkg-1.0.tgz")
+        _extract_source_archives(self.source_dir)
+        self.assertTrue(os.path.exists(os.path.join(self.source_dir, "hello.txt")))
+
+    def test_expected_names_ignores_stale_archive(self):
+        """A stale archive (not in expected_names) is skipped, not extracted.
+
+        Regression: a leftover ``pkg-1.1.tar.gz`` from a previous recipe revision
+        sharing the version directory must not be extracted (and must not abort
+        the build when it is a corrupt/HTML download), while the current
+        ``pkg-1.1.atlas1.tar.gz`` is unpacked normally.
+        """
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_tar("pkg-1.1.atlas1.tar.gz")          # current, valid
+        stale = os.path.join(self.source_dir, "pkg-1.1.tar.gz")
+        with open(stale, "w") as fh:                     # corrupt leftover
+            fh.write("<html>404 Not Found</html>\n")
+        # Must not raise despite the corrupt stale file ...
+        _extract_source_archives(self.source_dir,
+                                 expected_names={"pkg-1.1.atlas1.tar.gz"})
+        # ... and the valid archive's contents are present.
+        self.assertTrue(os.path.exists(os.path.join(self.source_dir, "hello.txt")))
+
+    def test_tar_bz2_extracted(self):
+        """A .tar.bz2 archive is extracted."""
+        import tarfile, io
+        from bits_helpers.workarea import _extract_source_archives
+        archive_path = os.path.join(self.source_dir, "pkg-1.0.tar.bz2")
+        with tarfile.open(archive_path, "w:bz2") as tf:
+            content = b"hello\n"
+            info = tarfile.TarInfo(name="pkg-1.0/hello.txt")
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+        _extract_source_archives(self.source_dir)
+        self.assertTrue(os.path.exists(os.path.join(self.source_dir, "hello.txt")))
+
+    def test_sentinel_written_after_extraction(self):
+        """After extraction, .bits_extracted is created."""
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_tar("pkg-1.0.tar.gz")
+        _extract_source_archives(self.source_dir)
+        self.assertTrue(
+            os.path.exists(os.path.join(self.source_dir, ".bits_extracted"))
+        )
+
+    def test_no_archives_no_sentinel(self):
+        """If there are no archives, no sentinel is written."""
+        from bits_helpers.workarea import _extract_source_archives
+        open(os.path.join(self.source_dir, "README"), "w").close()
+        _extract_source_archives(self.source_dir)
+        self.assertFalse(
+            os.path.exists(os.path.join(self.source_dir, ".bits_extracted"))
+        )
+
+    def test_idempotent_second_call_skipped(self):
+        """A second call is a no-op when the sentinel already exists."""
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_tar("pkg-1.0.tar.gz")
+        _extract_source_archives(self.source_dir)
+        # Remove extracted file and call again — should not re-extract.
+        os.unlink(os.path.join(self.source_dir, "hello.txt"))
+        _extract_source_archives(self.source_dir)
+        self.assertFalse(
+            os.path.exists(os.path.join(self.source_dir, "hello.txt"))
+        )
+
+    # -- zip archives ---------------------------------------------------------
+
+    def _make_zip(self, filename, strip_dir="pkg-1.0"):
+        """Create a small but valid zip archive with one file inside strip_dir/."""
+        import zipfile
+        archive_path = os.path.join(self.source_dir, filename)
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            zf.writestr(strip_dir + "/", "")          # directory entry
+            zf.writestr(strip_dir + "/hello.txt", "hello\n")
+        return archive_path
+
+    def test_zip_extracted_with_strip(self):
+        """A .zip archive is extracted and hello.txt lands in source_dir."""
+        from bits_helpers.workarea import _extract_source_archives
+        self._make_zip("pkg-1.0.zip")
+        _extract_source_archives(self.source_dir)
+        self.assertTrue(os.path.exists(os.path.join(self.source_dir, "hello.txt")))
+
+    # -- checkout_sources integration -----------------------------------------
+
+    def test_checkout_sources_calls_extract(self):
+        """checkout_sources() calls _extract_source_archives after downloading."""
+        from bits_helpers.workarea import checkout_sources
+        spec = {
+            "package": "mypkg",
+            "version": "1.0",
+            "commit_hash": "v1.0",
+            "tag": "v1.0",
+            "is_devel_pkg": False,
+            "sources": ["https://example.com/pkg-1.0.tar.gz"],
+            "scm": MagicMock(),
+            "source_checksums": {},
+            "patch_checksums": {},
+        }
+        with patch("bits_helpers.workarea.download"), \
+             patch("bits_helpers.workarea.short_commit_hash", return_value="v1.0"), \
+             patch("os.makedirs"), \
+             patch("bits_helpers.workarea._extract_source_archives") as mock_extract:
+            checkout_sources(spec, "/sw", "/sw/MIRROR", containerised_build=False)
+            mock_extract.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# write_failure_summary()  (--builders concise failure report)
+# ---------------------------------------------------------------------------
+class WriteFailureSummaryTest(unittest.TestCase):
+    """write_failure_summary() distils a readable per-run failure report."""
+
+    class _Sched:
+        def __init__(self, fails, errors):
+            self.buildFailures = fails
+            self.errors = errors
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_summary_lists_direct_and_cascaded(self):
+        from bits_helpers.build import write_failure_summary
+        sched = self._Sched(
+            fails=[{"package": "motif@2.3.8", "log": "/sw/BUILD/motif-latest/log",
+                    "excerpt": "  Matched error lines (last 1):\n    err: boom"}],
+            errors={"build:motif": "BUILD FAILED",
+                    "build:foo": "The following dependencies could not complete:\nbuild:motif"})
+        path, full = write_failure_summary(self.dir, sched)
+        self.assertTrue(path and os.path.exists(path))
+        text = open(path).read()
+        self.assertIn("FAILED: motif@2.3.8", text)
+        self.assertIn("err: boom", text)                       # excerpt included
+        self.assertIn("1 package(s) failed", text)
+        self.assertIn("Skipped", text)
+        self.assertIn("foo", text)                             # cascaded dependent
+        self.assertNotIn("motif", text.split("Skipped")[1])    # not double-counted
+        # the combined full error log is also written
+        self.assertTrue(full and os.path.exists(full))
+        self.assertIn("build:motif", open(full).read())
+
+    def test_no_failures_writes_nothing(self):
+        from bits_helpers.build import write_failure_summary
+        self.assertEqual(write_failure_summary(self.dir, self._Sched([], {})), (None, None))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "build-summary.log")))

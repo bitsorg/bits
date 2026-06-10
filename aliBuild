@@ -1,1 +1,14 @@
-bits
+#!/bin/bash
+# aliBuild — backward-compatible wrapper around bits.
+#
+# Reproduces the original aliBuild behaviour and module-listing output
+# (e.g. "VO_ALICE@zstd::1.5.7-local1") WITHOUT needing or creating a bits.rc.
+# It exports the ALICE settings as environment variables and execs bits:
+#   BITS_ORGANISATION  selects ALICE's registry/provider "home" repo
+#   BITS_PKG_PREFIX    the display prefix shown by `bits q`
+#   BITS_BRANDING      cosmetic program name
+# Plain `bits` (no organisation, no prefix) prints native "<pkg>/<version>".
+export BITS_ORGANISATION="${BITS_ORGANISATION:-ALICE}"
+export BITS_PKG_PREFIX="${BITS_PKG_PREFIX:-VO_ALICE}"
+export BITS_BRANDING="${BITS_BRANDING:-aliBuild}"
+exec "$(dirname "$0")/bits" "$@"

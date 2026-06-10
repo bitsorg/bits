@@ -51,6 +51,7 @@ import os
 import shutil
 from collections import OrderedDict
 from os.path import join, exists, abspath
+from typing import Optional
 
 from bits_helpers.log import debug, info, warning, banner, dieOnError
 from bits_helpers.git import Git
@@ -302,6 +303,12 @@ def clone_or_update_provider(
         or tag  # fall-back: tag is already a raw commit hash
     )
     short_hash = commit_hash[:10] if len(commit_hash) > 10 else commit_hash
+    # Safety: an empty hash would collapse checkout_dir to cache_root itself,
+    # causing shutil.rmtree to wipe the entire package cache on the next step.
+    dieOnError(not short_hash,
+               "commit_hash resolved to empty string for provider '%s' tag '%s' — "
+               "refusing to construct checkout_dir to prevent clobbering the "
+               "package cache." % (package, tag))
     checkout_dir = join(cache_root, short_hash)
 
     # ── 3. Cache-hit check ───────────────────────────────────────────────
@@ -311,12 +318,18 @@ def clone_or_update_provider(
     marker = join(checkout_dir, ".bits_provider_ok")
     if exists(marker):
         debug("Provider '%s' is up-to-date (cache hit @ %s)", package, short_hash)
-        info("Reusing cached provider '%s' @ %s", package, short_hash)
         symlink(short_hash, join(cache_root, "latest"))
         return checkout_dir, commit_hash
 
     # ── 4. Clone + checkout ──────────────────────────────────────────────
     banner("Fetching repository provider '%s' @ %s", package, tag)
+    # Safety: refuse to clone over an existing git repository — this would
+    # destroy a different provider's checkout if two packages ever resolved to
+    # the same (or an empty) hash subdirectory.
+    dieOnError(exists(join(checkout_dir, ".git")),
+               "checkout_dir '%s' already contains a .git repository; refusing "
+               "to clone provider '%s' over it to prevent clobbering an existing "
+               "checkout." % (checkout_dir, package))
     shutil.rmtree(checkout_dir, ignore_errors=True)
 
     err, out = scm.exec(
@@ -499,6 +512,132 @@ def load_always_on_providers(
     )
 
   return provider_dirs
+
+
+# ── CWD recipe-directory detection ─────────────────────────────────────────
+
+def cwd_is_recipe_dir() -> bool:
+  """Return True if the current working directory looks like a bits recipe repo.
+
+  The definitive marker of a bits recipe repository is the presence of a
+  ``defaults-release.sh`` file.  Every community recipe repo ships one so
+  that bits knows which default build profile to apply.  Checking for this
+  specific file avoids false-positive matches on arbitrary directories that
+  happen to contain ``*.sh`` files with YAML headers.
+
+  This check is intentionally fast (a single ``os.path.exists`` call) so it
+  can be called on every ``bits build`` invocation without measurable overhead.
+  """
+  return os.path.exists("defaults-release.sh")
+
+
+# ── Backward-compat bootstrap ───────────────────────────────────────────────
+
+def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
+  """Bootstrap a default recipe repository when no config dir exists.
+
+  Called when ``bits build <PKG>`` is run without a pre-existing recipe
+  directory.  The lookup order for which community recipe repo to clone is:
+
+  1. **``organisation`` from bits.rc / ``--organisation``** — if set to e.g.
+     ``lhcb``, bits looks for ``lhcb.bits.sh`` in the bits-providers checkout.
+  2. **``default.bits.sh``** — fallback for backward-compatibility with the
+     original ALICE workflow when no organisation is configured.
+
+  Procedure:
+
+  1. Fetch **bits-providers** (using the URL from ``args.bits_providers``).
+  2. Resolve the candidate recipe filename: ``<org>.bits.sh`` or
+     ``default.bits.sh``.
+  3. Parse that recipe and clone the ``source`` repository it points to.
+  4. Return the local checkout path (caller assigns it to ``args.configDir``).
+
+  Returns ``None`` when any step cannot proceed; the caller decides whether
+  to die or show the normal "missing config dir" error.
+  """
+  bits_providers_url = getattr(args, "bits_providers", None)
+  if not bits_providers_url:
+    return None
+
+  reference_sources = getattr(args, "referenceSources", "")
+  fetch_repos = getattr(args, "fetchRepos", True)
+
+  # ── 1. Clone / update bits-providers ──────────────────────────────────
+  url, tag = _parse_provider_url(bits_providers_url)
+  spec = _make_bits_providers_spec(url, tag)
+  try:
+    info("Bootstrapping: fetching bits-providers from %s …", url)
+    providers_checkout, _ = clone_or_update_provider(
+      spec, work_dir, reference_sources, fetch_repos,
+    )
+  except SystemExit:
+    warning("Bootstrap failed: could not clone bits-providers from %s", url)
+    return None
+
+  # ── 2. Resolve candidate recipe file ──────────────────────────────────
+  # Prefer <organisation>.bits.sh when an organisation is configured so that
+  # "bits init --organisation lhcb && bits build PKG" just works without any
+  # other arguments.  Fall back to default.bits.sh for ALICE backward compat.
+  # Organisation is stored in uppercase in bits.rc (e.g. "ALICE", "LHCB") but
+  # the bits-providers filenames are lowercase (alice.bits.sh, lhcb.bits.sh).
+  organisation = (getattr(args, "organisation", None) or "").lower()
+  candidates = []
+  if organisation:
+    candidates.append(("%s.bits.sh" % organisation, organisation))
+  candidates.append(("default.bits.sh", "default"))
+
+  chosen_sh = None
+  chosen_label = None
+  for filename, label in candidates:
+    path = join(providers_checkout, filename)
+    if exists(path):
+      chosen_sh = path
+      chosen_label = label
+      break
+
+  if chosen_sh is None:
+    if organisation:
+      debug(
+        "Bootstrap: neither %s.bits.sh nor default.bits.sh found in "
+        "bits-providers — cannot auto-configure",
+        organisation,
+      )
+    else:
+      debug("Bootstrap: no default.bits.sh in bits-providers — nothing to auto-configure")
+    return None
+
+  try:
+    err, default_spec, _ = parseRecipe(getRecipeReader(chosen_sh))
+  except Exception as exc:
+    warning("Bootstrap: could not parse %s.bits.sh: %s", chosen_label, exc)
+    return None
+  if err or default_spec is None:
+    warning("Bootstrap: parse error in %s.bits.sh: %s", chosen_label, err)
+    return None
+
+  default_source = default_spec.get("source", "")
+  if not default_source:
+    warning("Bootstrap: %s.bits.sh has no 'source' URL", chosen_label)
+    return None
+
+  # ── 3. Clone the config repository ────────────────────────────────────
+  try:
+    info(
+      "Bootstrapping: cloning %s recipe repository from %s …",
+      chosen_label, default_source,
+    )
+    checkout_dir, _ = clone_or_update_provider(
+      default_spec, work_dir, reference_sources, fetch_repos,
+    )
+  except SystemExit:
+    warning(
+      "Bootstrap failed: could not clone %s config repository from %s",
+      chosen_label, default_source,
+    )
+    return None
+
+  info("Bootstrap complete: using recipe repository at %s", checkout_dir)
+  return checkout_dir
 
 
 # ── Iterative provider discovery ────────────────────────────────────────────

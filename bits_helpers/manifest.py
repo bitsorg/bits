@@ -24,12 +24,19 @@ Manifests are written to a dedicated subdirectory of the work directory::
 The ``bits-manifest-latest.json`` symlink is updated atomically after each
 incremental write.
 
-Schema (version 2)
+Schema (version 3)
 ------------------
+
+Version 3 adds ``patches`` (recipe patch filenames + their recorded checksums)
+and ``variables`` (the package's resolved recipe variables) to each
+``PackageEntry``, so a replay/audit can see every patch and template value that
+shaped a build — not just its source checksums.  Consumers should treat unknown
+fields as additive and key off ``schema_version``.
+
 ::
 
     {
-      "schema_version":    int,         # always 1 for this implementation
+      "schema_version":    int,         # this implementation writes 3
       "bits_version":      str,         # bits package version (or "unknown")
       "bits_dist_hash":    str,         # BITS_DIST_HASH env var
       "created_at":        ISO-8601,
@@ -67,6 +74,8 @@ Schema (version 2)
       "tarball":                str | null,       # tarball filename
       "tarball_sha256":         str | null,       # sha256:<hex> of the tarball, if present
       "source_checksums":       [SourceEntry],    # per-source archive integrity anchors
+      "patches":                [PatchEntry],     # recipe patches + their checksums (v3+)
+      "variables":              {str: str},       # resolved recipe variables (v3+)
       "completed_at":           ISO-8601
     }
 
@@ -95,6 +104,20 @@ Schema (version 2)
     write time, and the value matches exactly what the checksum system already
     verified during the build.
 
+    PatchEntry::
+    {
+      "name":     str,          # patch filename from the recipe's `patches:` list
+      "checksum": str | null    # recorded digest (algo:hex) from patch_checksums,
+                                #   or null if none was declared/recorded
+    }
+
+    ``patches`` lists the recipe's patches with the checksum the checksum system
+    recorded for each (``spec['patch_checksums']``); names without a recorded
+    digest get ``null``.  ``variables`` is the package's resolved recipe-variable
+    map (``%(...)s`` values already expanded), captured for audit/debugging — it
+    does not drive replay (replay is pinned by ``requested_packages`` +
+    ``config_commit`` + per-package ``hash``).
+
 Replay
 ------
 When ``bits build --from-manifest FILE`` is invoked, bits reads the manifest
@@ -108,6 +131,8 @@ import json
 import os
 import re
 import subprocess
+import tempfile
+import threading
 from datetime import datetime, timezone
 
 try:
@@ -180,6 +205,25 @@ def _source_entries(spec: dict) -> list:
     return result
 
 
+def _patch_entries(spec: dict) -> list:
+    """Return ``[{name, checksum}]`` for each patch the recipe applied.
+
+    ``name`` is the filename from the recipe's ``patches:`` list; ``checksum`` is
+    the digest recorded for it in ``spec['patch_checksums']`` (``algo:hex``) or
+    ``None`` when none was declared.  No file I/O: the checksum is exactly what
+    the checksum system already recorded for the build.  Empty list when the
+    package applies no patches.
+    """
+    patches = spec.get("patches") or []
+    checks = spec.get("patch_checksums") or {}
+    result = []
+    for name in patches:
+        if not isinstance(name, str):
+            continue
+        result.append({"name": name, "checksum": checks.get(name)})
+    return result
+
+
 # ── BuildManifest ─────────────────────────────────────────────────────────────
 
 class BuildManifest:
@@ -197,7 +241,7 @@ class BuildManifest:
         manifest.complete()   # or manifest.fail(package_name, reason)
     """
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
     _LATEST_SYMLINK = "bits-manifest-latest.json"
 
     def __init__(
@@ -225,6 +269,9 @@ class BuildManifest:
             else "bits-manifest-{}.json".format(timestamp)
         )
         self._path = os.path.join(self._manifest_dir, _name)
+        # Serialises concurrent add_package()/_save() calls from --builders
+        # worker threads so they neither corrupt _data nor race os.replace().
+        self._lock = threading.Lock()
         self._data = {
             "schema_version":     self.SCHEMA_VERSION,
             "bits_version":       __version__ or "unknown",
@@ -263,19 +310,20 @@ class BuildManifest:
         This is the dict returned by both ``load_always_on_providers()`` and
         ``fetch_repo_providers_iteratively()``.  Call once after merging both.
         """
-        for checkout_dir, (name, commit) in provider_dirs.items():
-            abs_dir = os.path.abspath(checkout_dir)
-            entry = {
-                "name":         name,
-                "checkout_dir": abs_dir,
-                "commit":       commit,
-                "remote_url":   _git_remote_url(abs_dir),
-            }
-            self._data["providers"].append(entry)
-            debug("manifest: recorded provider %s @ %s", name, commit[:10])
-        if provider_dirs:
-            self._data["updated_at"] = _now_iso()
-            self._save()
+        with self._lock:
+            for checkout_dir, (name, commit) in provider_dirs.items():
+                abs_dir = os.path.abspath(checkout_dir)
+                entry = {
+                    "name":         name,
+                    "checkout_dir": abs_dir,
+                    "commit":       commit,
+                    "remote_url":   _git_remote_url(abs_dir),
+                }
+                self._data["providers"].append(entry)
+                debug("manifest: recorded provider %s @ %s", name, commit[:10])
+            if provider_dirs:
+                self._data["updated_at"] = _now_iso()
+                self._save()
 
     # ── Package recording ─────────────────────────────────────────────────────
 
@@ -326,20 +374,26 @@ class BuildManifest:
             "tarball":                os.path.basename(tarball_path) if tarball_path else None,
             "tarball_sha256":         _tarball_sha256(tarball_path),
             "source_checksums":       _source_entries(spec),
+            # v3: patch provenance (names + recorded checksums) and the resolved
+            # recipe variables that shaped this build.
+            "patches":                _patch_entries(spec),
+            "variables":              dict(spec.get("variables") or {}),
             "completed_at":           _now_iso(),
         }
-        self._data["packages"].append(entry)
-        self._data["updated_at"] = _now_iso()
-        self._save()
+        with self._lock:
+            self._data["packages"].append(entry)
+            self._data["updated_at"] = _now_iso()
+            self._save()
         debug("manifest: %s recorded as %s", spec.get("package", "?"), outcome)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def complete(self) -> None:
         """Mark the manifest as successfully completed and write a final save."""
-        self._data["status"] = "complete"
-        self._data["updated_at"] = _now_iso()
-        self._save()
+        with self._lock:
+            self._data["status"] = "complete"
+            self._data["updated_at"] = _now_iso()
+            self._save()
         debug("manifest: complete — %s", self._path)
 
     def fail(self, package_name: str = "", reason: str = "") -> None:
@@ -348,13 +402,14 @@ class BuildManifest:
         The manifest still contains all packages recorded up to this point,
         so partial builds are preserved for inspection.
         """
-        self._data["status"] = "failed"
-        self._data["updated_at"] = _now_iso()
-        if package_name:
-            self._data["failed_package"] = package_name
-        if reason:
-            self._data["failure_reason"] = reason
-        self._save()
+        with self._lock:
+            self._data["status"] = "failed"
+            self._data["updated_at"] = _now_iso()
+            if package_name:
+                self._data["failed_package"] = package_name
+            if reason:
+                self._data["failure_reason"] = reason
+            self._save()
         debug("manifest: failed at package %s", package_name or "(unknown)")
 
     # ── Serialisation ─────────────────────────────────────────────────────────
@@ -373,12 +428,25 @@ class BuildManifest:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _save(self) -> None:
-        """Atomically write the JSON manifest and update the ``latest`` symlink."""
-        tmp = self._path + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump(self._data, fh, indent=2)
-            fh.write("\n")
-        os.replace(tmp, self._path)
+        """Atomically write the JSON manifest and update the ``latest`` symlink.
+
+        Uses a unique temp file (not a fixed ``<path>.tmp``) so that concurrent
+        --builders workers cannot race on a shared temp name -- previously two
+        simultaneous saves could leave one ``os.replace`` with a missing temp
+        (FileNotFoundError), failing an otherwise-successful package.
+        """
+        fd, tmp = tempfile.mkstemp(dir=self._manifest_dir, prefix=".manifest-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(self._data, fh, indent=2)
+                fh.write("\n")
+            os.replace(tmp, self._path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
         # Update the ``bits-manifest-latest.json`` symlink atomically.
         # The symlink lives alongside the timestamped files inside MANIFESTS/.
