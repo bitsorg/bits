@@ -433,16 +433,18 @@ if [[ -z "$_ARCH_GIVEN" ]] && \
   # A real, module-serving architecture has a $WORK_DIR/MODULES/<arch> tree.
   # Enumerate those rather than scanning sw/ directly, which also contains
   # non-arch dirs (e.g. wrapper-scripts) that must not be offered as choices.
+  # `ls -1t` lists newest-first by mtime, so when several are present we pick
+  # the most recently modified (built) one; override with an explicit -a.
   _present=()
-  for _a in $(ls -1 "$WORK_DIR/MODULES" 2> /dev/null); do
+  for _a in $(ls -1t "$WORK_DIR/MODULES" 2> /dev/null); do
     [[ -d "$WORK_DIR/MODULES/$_a" ]] && _present+=("$_a")
   done
-  if [[ ${#_present[@]} -eq 1 ]]; then
+  if [[ ${#_present[@]} -ge 1 ]]; then
     ARCHITECTURE="${_present[0]}"
-  elif [[ ${#_present[@]} -gt 1 ]]; then
-    printf "${EY}WARNING: several architectures are present in %s and none was selected:${EZ}\n" "$WORK_DIR" >&2
-    printf "           %s\n" "${_present[@]}" >&2
-    printf "${EY}         Pass one explicitly, e.g.  bits -a %s %s${EZ}\n" "${_present[0]}" "${ACTION:-q}" >&2
+    if [[ ${#_present[@]} -gt 1 ]]; then
+      printf "${EY}NOTE: several architectures present; selected most recent: %s${EZ}\n" "$ARCHITECTURE" >&2
+      printf "${EY}      (override with  bits -a <arch> %s)${EZ}\n" "${ACTION:-q}" >&2
+    fi
   fi
 fi
 [[ -z "$ARCHITECTURE" ]] && { printHelp "Cannot autodetect architecture"; false; }
