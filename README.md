@@ -38,26 +38,6 @@ root -b
 exit
 ```
 
-### Another community (e.g. LHCb) — one-time setup
-
-```bash
-# Write community and work-directory to bits.rc once
-bits init --organisation LHCB --work-dir /path/to/sw
-
-# Then build as normal — bits auto-bootstraps the LHCb recipe repo
-bits build DaVinci
-bits enter DaVinci/latest
-```
-
-### Inside a cloned recipe repository
-
-```bash
-# bits detects defaults-release.sh and uses "." as the recipe directory
-git clone https://github.com/bitsorg/lhcb.bits
-cd lhcb.bits
-bits build DaVinci
-```
-
 ### Check system requirements before building
 
 ```bash
