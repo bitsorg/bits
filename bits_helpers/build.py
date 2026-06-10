@@ -758,8 +758,10 @@ def create_provenance_info(package, specs, args):
     "defaults": args.defaults,
     "build_id": compute_build_id(specs, args),
     "abi_tag": compute_abi_tag(args),
-    "reuse_policy": getattr(args, "reuse_policy", "strict") or "strict",
-    "provenance": "pure",
+    "reuse_policy": getattr(args, "reusePolicy", "strict") or "strict",
+    # "loose" once any grafted (relaxed) dep enters this package's closure
+    # (Stage 1c sets spec["provenance"]); "pure" otherwise.
+    "provenance": "loose" if specs.get(package, {}).get("provenance") == "loose" else "pure",
     "repro": {
       "dist_commit": os.environ.get("BITS_DIST_HASH"),
       "recipe_tools": recipe_tools_ref(specs),
@@ -1547,6 +1549,24 @@ def doBuild(args, parser):
       args.oversubscribe = float(_system_opt("build_oversubscribe", 1.0))
     except (TypeError, ValueError):
       args.oversubscribe = 1.0
+
+  # Relaxed CVMFS reuse policy (ADR-0001). Non-hashed build-host policy, like
+  # the two above. Precedence: explicit --reuse-policy/--reuse-base  >  defaults
+  # system.reuse_policy / reuse_base  >  strict / none. Default strict keeps the
+  # simple aliBuild case bit-for-bit unchanged.
+  if getattr(args, "reusePolicy", None) is None:
+    args.reusePolicy = str(_system_opt("reuse_policy", "strict")).strip().lower()
+  if args.reusePolicy not in ("strict", "relaxed"):
+    args.reusePolicy = "strict"
+  if getattr(args, "reuseBase", None) is None:
+    args.reuseBase = _system_opt("reuse_base", "") or ""
+  # Publish guard: relaxed builds are loose-provenance (their closure includes
+  # unverified deployed binaries) and must never reach a write store / publish
+  # pipeline. Refuse early and clearly.
+  if args.reusePolicy == "relaxed" and (getattr(args, "writeStore", "") or getattr(args, "pipeline", False)):
+    dieOnError(True,
+               "--reuse-policy relaxed produces loose-provenance artifacts that cannot be "
+               "published. Drop --write-store/--pipeline, or rebuild with --reuse-policy strict.")
 
   # syncHelper is constructed after defaults loading so that it receives the
   # (potentially combined) architecture string.

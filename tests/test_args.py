@@ -206,5 +206,33 @@ class ReleaseBaseTestCase(unittest.TestCase):
     self.assertEqual(_with_release_base(["dev4", "release"]), ["dev4", "release"])
 
 
+class ReusePolicyArgsTestCase(unittest.TestCase):
+  """ADR-0001 relaxed-reuse CLI flags parse and default safely."""
+
+  def _parse(self, cmd):
+    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+         mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
+         mock.patch("bits_helpers.args.commands") as mock_cmd, \
+         patch.object(sys, "argv", ["alibuild"] + shlex.split(cmd)):
+      mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
+      args, _ = doParseArgs()
+      return vars(args)
+
+  def test_defaults_are_inert(self):
+    # Simple aliBuild case: flags absent → None/[] at the arg layer (build.py
+    # resolves reusePolicy to "strict"); nothing changes.
+    a = self._parse("build --force-unknown-architecture zlib")
+    self.assertIsNone(a["reusePolicy"])
+    self.assertIsNone(a["reuseBase"])
+    self.assertEqual(a["buildLocal"], [])
+
+  def test_relaxed_flags_parse(self):
+    a = self._parse("build --force-unknown-architecture --reuse-policy relaxed "
+                    "--reuse-base LCG_109 --build-local p1,p2 zlib")
+    self.assertEqual(a["reusePolicy"], "relaxed")
+    self.assertEqual(a["reuseBase"], "LCG_109")
+    self.assertEqual(a["buildLocal"], ["p1", "p2"])
+
+
 if __name__ == '__main__':
   unittest.main()

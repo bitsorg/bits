@@ -468,6 +468,21 @@ def doParseArgs():
                             help=("Reuse already-deployed components from the CVMFS area declared by the "
                                   "defaults `cvmfs_dir:` field. Sets --remote-store to cvmfs://<cvmfs_dir> "
                                   "when no remote store is given."))
+  build_remote.add_argument("--reuse-policy", dest="reusePolicy", choices=["strict", "relaxed"],
+                            default=None,
+                            help=("CVMFS reuse strictness (ADR-0001). 'strict' (default): reuse only on "
+                                  "exact content-hash match; result is publishable. 'relaxed': also graft "
+                                  "deployed packages of a blessed release matched by (name, architecture, "
+                                  "build_id) for fast local dev; the result is loose-provenance and is "
+                                  "refused by the publish path. Falls back to the defaults `reuse_policy:` "
+                                  "value, else 'strict'."))
+  build_remote.add_argument("--reuse-base", dest="reuseBase", metavar="BUILD_ID", default=None,
+                            help=("With --reuse-policy relaxed, the build_id of the deployed release to "
+                                  "graft packages from. Falls back to the defaults `reuse_base:` value."))
+  build_remote.add_argument("--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",
+                            help=("Comma-separated packages to always build locally even under "
+                                  "--reuse-policy relaxed (e.g. a package you need patched), rather than "
+                                  "grafting them from the base."))
   build_remote.add_argument("--write-store", dest="writeStore", metavar="STORE", default="",
                             help=("Where to upload newly built packages. Same syntax as --remote-store, "
                                   "except ::rw is not recognised. Implies --no-system."))
@@ -1300,6 +1315,10 @@ def finaliseArgs(args, parser):
   # Resolve --flavour into an ordered {name: value} dict (see _parse_flavours).
   if hasattr(args, "flavours"):
     args.flavours = _parse_flavours(args.flavours)
+
+  # --build-local: comma/space-separated → list (ADR-0001 relaxed-reuse opt-out).
+  if hasattr(args, "buildLocal"):
+    args.buildLocal = [p for p in (args.buildLocal or "").replace(",", " ").split() if p]
 
   # ── bits.rc / BITS_PROVIDERS ─────────────────────────────────────────────
   # Read persistent configuration from the first bits.rc / .bitsrc /

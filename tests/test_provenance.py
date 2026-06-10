@@ -93,7 +93,7 @@ class TestProvenanceRecord(unittest.TestCase):
 
     def test_old_keys_preserved_new_keys_added(self):
         rec = self._record(SimpleNamespace(annotate={}, architecture="arch",
-                                           defaults=["release"], reuse_policy="strict"))
+                                           defaults=["release"], reusePolicy="strict"))
         for k in self.OLD_KEYS:
             self.assertIn(k, rec, "pre-existing key %r dropped" % k)
         for k in self.NEW_KEYS:
