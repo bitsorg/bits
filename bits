@@ -132,32 +132,58 @@ function _listPkgVersions() {
 }
 
 function collectModules() {
-  if [[ -z "$NO_REFRESH" ]]; then
-    # Collect all modulefiles in one place.
-    # Guard against empty variables before any rm -rf to prevent accidental
-    # deletion of paths like /MODULES/ if WORK_DIR or ARCHITECTURE is unset.
-    [[ -n "$WORK_DIR" && -n "$ARCHITECTURE" ]] || \
-      { printf "${ER}ERROR: WORK_DIR or ARCHITECTURE is empty; cannot refresh modules${EZ}\n" >&2; return 1; }
-    rm -rf "${WORK_DIR}/MODULES/${ARCHITECTURE}"
-    mkdir -p "${WORK_DIR}/MODULES/${ARCHITECTURE}/BASE"
-    cat > "${WORK_DIR}/MODULES/${ARCHITECTURE}/BASE/1.0" <<EOF
+  if [[ -n "$NO_REFRESH" ]]; then
+    printf "${EY}WARNING: not updating modulefiles${EZ}\n" >&2
+    return 0
+  fi
+  # Guard against empty variables before any rm to prevent accidental deletion
+  # of paths like /MODULES/ if WORK_DIR or ARCHITECTURE is unset.
+  [[ -n "$WORK_DIR" && -n "$ARCHITECTURE" ]] || \
+    { printf "${ER}ERROR: WORK_DIR or ARCHITECTURE is empty; cannot refresh modules${EZ}\n" >&2; return 1; }
+  local mroot="${WORK_DIR}/MODULES/${ARCHITECTURE}"
+  local iroot="${WORK_DIR}/${ARCHITECTURE}"
+  mkdir -p "$mroot/BASE"
+  cat > "$mroot/BASE/1.0" <<EOF
 #%Module1.0
-set base_path ${WORK_DIR}/${ARCHITECTURE}
+set base_path ${iroot}
 setenv BASEDIR \$base_path
 set osname [uname sysname]
 set osarchitecture [uname machine]
 EOF
-    while read -r PKG; do
-      PKGVER=${PKG##*/}
-      PKGNAME=${PKG%/*}
-      PKGNAME=${PKGNAME##*/}
-      [[ ! -e "$PKG/etc/modulefiles/$PKGNAME" ]] && continue
-      mkdir -p "${WORK_DIR}/MODULES/${ARCHITECTURE}/${PKGNAME}"
-      cp "$PKG/etc/modulefiles/$PKGNAME" "${WORK_DIR}/MODULES/${ARCHITECTURE}/${PKGNAME}/${PKGVER}"
-    done < <(_listPkgVersions "${WORK_DIR}/${ARCHITECTURE}")
-  else
-    printf "${EY}WARNING: not updating modulefiles${EZ}\n" >&2
-  fi
+  # Incremental sync (was a full rm -rf + recopy on every load/enter/avail,
+  # which is slow with many packages): copy a modulefile into the cache only
+  # when it is missing or newer than the cached copy, then drop cache entries
+  # whose source has vanished. After a build with no module changes this copies
+  # nothing.
+  local PKG PKGVER PKGNAME src dest
+  while read -r PKG; do
+    [[ -n "$PKG" ]] || continue
+    PKGVER=${PKG##*/}
+    PKGNAME=${PKG%/*}; PKGNAME=${PKGNAME##*/}
+    src="$PKG/etc/modulefiles/$PKGNAME"
+    [[ -e "$src" ]] || continue
+    dest="$mroot/$PKGNAME/$PKGVER"
+    if [[ ! -e "$dest" || "$src" -nt "$dest" ]]; then
+      mkdir -p "$mroot/$PKGNAME"
+      cp "$src" "$dest"
+    fi
+  done < <(_listPkgVersions "$iroot")
+  # Prune cache entries whose source modulefile no longer exists (deleted
+  # package/version). Walk the (small) cache tree with plain find — no GNU
+  # -printf, for macOS portability.
+  local DESTFILE rel pkg ver d
+  while read -r DESTFILE; do
+    [[ -n "$DESTFILE" ]] || continue
+    rel=${DESTFILE#"$mroot/"}
+    pkg=${rel%/*}; ver=${rel##*/}
+    [[ "$pkg" == BASE ]] && continue
+    [[ -e "$iroot/$pkg/$ver/etc/modulefiles/$pkg" ]] || rm -f "$DESTFILE"
+  done < <(find "$mroot" -mindepth 2 -maxdepth 2 -type f 2> /dev/null)
+  # Remove now-empty package directories (rmdir only deletes empties; keep BASE).
+  for d in "$mroot"/*/; do
+    [[ "$(basename "$d")" == BASE ]] && continue
+    rmdir "$d" 2> /dev/null || true
+  done
 }
 
 function listAvailableModules() {
