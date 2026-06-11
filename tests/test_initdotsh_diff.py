@@ -80,17 +80,24 @@ class TestSummarize(unittest.TestCase):
             "vecgeom/1.2": {"added_functional": {"CMAKE_PREFIX_PATH": "x"},
                             "missing_functional": {}, "changed_path": {},
                             "changed_scalar": {}},
+            # missing only the bits-owned layer → expected, still counts clean
+            "expected/1": {"added_functional": {},
+                           "missing_functional": {"CXXFLAGS": "-O2",
+                                                  "DEFAULTS_RELEASE_ROOT": "/x"},
+                           "changed_path": {}, "changed_scalar": {}},
+            # missing a real var → unexpected, flagged
             "weird/9": {"added_functional": {},
                         "missing_functional": {"SOME_VAR": "z"},
                         "changed_path": {}, "changed_scalar": {}},
         }
         s = d.summarize(results)
-        self.assertEqual(s["packages"], 3)
+        self.assertEqual(s["packages"], 4)
         self.assertEqual(s["gain_cmake_prefix_path"], 2)
         self.assertEqual(s["gain_pythonpath"], 1)
-        self.assertEqual(s["with_missing_functional"], 1)
-        self.assertEqual(s["clean"], 2)
-        self.assertEqual(s["missing_by_var"], {"SOME_VAR": 1})
+        self.assertEqual(s["with_unexpected_missing"], 1)        # only weird/9
+        self.assertEqual(s["clean"], 3)                          # incl. expected/1
+        self.assertEqual(s["missing_expected"], {"CXXFLAGS": 1, "DEFAULTS_RELEASE_ROOT": 1})
+        self.assertEqual(s["missing_unexpected"], {"SOME_VAR": 1})
 
 
 if __name__ == "__main__":

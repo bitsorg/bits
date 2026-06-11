@@ -50,6 +50,22 @@ PATHLIKE = set(FUNCTIONAL) - {""}
 # (or vice-versa) — not a functional difference, reported separately/suppressed.
 BOOKKEEPING_SUFFIXES = ("_VERSION", "_REVISION", "_HASH", "_COMMIT")
 BOOKKEEPING_EXACT = {"RECC_PREFIX_MAP"}
+# The bits-owned build-config layer: variables that come from defaults and the
+# build-only tools, NOT from a runtime modulefile. A runtime modulefile is not
+# expected to carry these — bits injects them into the build env directly — so
+# their absence on the modules side is EXPECTED, not an actionable gap.
+BUILD_CONFIG_LAYER = {
+    "CFLAGS", "CXXFLAGS", "LDFLAGS", "FFLAGS", "CXXSTD", "CMAKE_BUILD_TYPE",
+    "CMAKE_GENERATOR", "ENABLE_IPO", "MACOSX_DEPLOYMENT_TARGET",
+    "DEFAULTS_RELEASE_ROOT", "BITS_RECIPE_TOOLS_ROOT",
+    "CMAKE_ROOT", "PKG_CONFIG_ROOT", "NINJA_ROOT", "AUTOTOOLS_ROOT",
+}
+
+
+def is_build_config(name):
+    """True if *name* is the bits-owned defaults/build-tool layer (expected to be
+    absent from a runtime modulefile)."""
+    return name in BUILD_CONFIG_LAYER
 # Shell / modules machinery that is noise for this comparison.
 NOISE = {
     "_", "SHLVL", "PWD", "OLDPWD", "HOME", "BASEDIR", "WORK_DIR", "ARCHITECTURE",
@@ -144,8 +160,9 @@ def summarize(results):
     modules env (the redundant-hack signal) and packages with any functional var
     missing in the modules env (the regression signal).
     """
-    gains_cmake = gains_python = missing_any = clean = 0
-    regressions = {}
+    gains_cmake = gains_python = clean = 0
+    unexpected_pkgs = 0
+    expected_miss, unexpected_miss = {}, {}
     for pkg, d in results.items():
         add = d["added_functional"]
         if "CMAKE_PREFIX_PATH" in add:
@@ -153,20 +170,29 @@ def summarize(results):
         if "PYTHONPATH" in add:
             gains_python += 1
         miss = d["missing_functional"]
-        if miss:
-            missing_any += 1
-            for v in miss:
-                regressions[v] = regressions.get(v, 0) + 1
-        if not miss and not d["changed_scalar"]:
+        has_unexpected = False
+        for v in miss:
+            if is_build_config(v):
+                expected_miss[v] = expected_miss.get(v, 0) + 1
+            else:
+                unexpected_miss[v] = unexpected_miss.get(v, 0) + 1
+                has_unexpected = True
+        if has_unexpected:
+            unexpected_pkgs += 1
+        if not has_unexpected and not d["changed_scalar"]:
             clean += 1
+    def _sorted(d):
+        return dict(sorted(d.items(), key=lambda kv: -kv[1]))
     return {
         "packages": len(results),
         "gain_cmake_prefix_path": gains_cmake,
         "gain_pythonpath": gains_python,
-        "with_missing_functional": missing_any,
+        # Packages whose only missing vars are the bits-owned build-config layer
+        # (expected) count as clean; only genuine unexpected gaps are flagged.
+        "with_unexpected_missing": unexpected_pkgs,
         "clean": clean,
-        "missing_by_var": dict(sorted(regressions.items(),
-                                      key=lambda kv: -kv[1])),
+        "missing_expected": _sorted(expected_miss),
+        "missing_unexpected": _sorted(unexpected_miss),
     }
 
 
@@ -310,12 +336,16 @@ def main(argv=None):
           % s["gain_cmake_prefix_path"])
     print("  gain PYTHONPATH from modules        : %d  (bits_pythonpath_from_deps redundant)"
           % s["gain_pythonpath"])
-    print("  functional var MISSING in modules   : %d  (inspect before rebuild)"
-          % s["with_missing_functional"])
-    print("  functional env already matches      : %d" % s["clean"])
-    if s["missing_by_var"]:
-        print("  missing-in-modules by var: " +
-              ", ".join("%s×%d" % (v, n) for v, n in s["missing_by_var"].items()))
+    print("  packages with UNEXPECTED missing var: %d  (inspect before rebuild)"
+          % s["with_unexpected_missing"])
+    print("  dependency env otherwise complete   : %d" % s["clean"])
+    if s["missing_expected"]:
+        print("  missing (expected: bits-owned defaults/build-tool layer, "
+              "injected separately): " +
+              ", ".join("%s×%d" % (v, n) for v, n in s["missing_expected"].items()))
+    if s["missing_unexpected"]:
+        print("  missing (UNEXPECTED — investigate): " +
+              ", ".join("%s×%d" % (v, n) for v, n in s["missing_unexpected"].items()))
     return 0
 
 
