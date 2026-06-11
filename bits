@@ -45,7 +45,7 @@ Usage: $0 \\
       Exit code is preserved.
       Example: $ET$0 setenv AliRoot/v5-08-02-1 -c aliroot -b$EZ
 
-    ${EM}printenv${EZ} or ${EM}load${EZ} [${ET}-q${EZ}] MODULE1[,MODULE2...]
+    ${EM}printenv${EZ} or ${EM}load${EZ} [${ET}-q${EZ}] [${ET}--view${EZ}] MODULE1[,MODULE2...]
       Prints the environment in the current shell for the given modules (${ET}-q${EZ} for quiet).
       This command does not set any environment and it must be executed through ${ET}eval${EZ} to be effective.
       Override shell with the environment variable ${ET}MODULES_SHELL${EZ}.
@@ -559,10 +559,16 @@ IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
 # prefix onto the view and de-duplicated; system entries are kept. The
 # modulefiles' setenvs (<PKG>_ROOT, ROOTSYS, recipe env: variables) are left
 # untouched. The view is cached per closure under $WORK_DIR/VIEWS/$ARCHITECTURE.
+# Run the view helper so it can import bits_helpers WITHOUT polluting PYTHONPATH:
+# the source dir is added via sys.path (passed as BITS_SELF), not the PYTHONPATH
+# env var, so the collapse reads the *real* module PYTHONPATH and never echoes the
+# bits source directory back into the user's environment.
+_bitsView() {
+  BITS_SELF="${BITSDIR}" python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.view_cmd import main; sys.exit(main())' "$@"
+}
 applyView() {
   [[ $VIEWOPT == 1 ]] || return 0
-  eval "$(PYTHONPATH="${BITSDIR}${PYTHONPATH:+:$PYTHONPATH}" python3 -m bits_helpers.view_cmd \
-            --cache "${WORK_DIR}/VIEWS/${ARCHITECTURE}" 2> /dev/null)"
+  eval "$(_bitsView --cache "${WORK_DIR}/VIEWS/${ARCHITECTURE}" 2> /dev/null)"
 }
 
 case "$ACTION" in
@@ -629,6 +635,15 @@ case "$ACTION" in
     fi
     detectShell
     $MODULECMD $MODULES_SHELL $ACTION $MODULES 2> >(grep -v "$IGNORE_ERR" >&2)
+    # --view: emit the view-collapsed path overrides AFTER the module setup so they
+    # win on eval. printenv/load only print (they don't load in-process), so the
+    # closure is loaded in a subshell to compute the collapse; output is rendered
+    # in the caller's shell syntax (sh export vs csh setenv).
+    if [[ $VIEWOPT == 1 && $ACTION == load ]]; then
+      _vshell=sh; case "$MODULES_SHELL" in csh|tcsh) _vshell=csh;; esac
+      ( eval "$($MODULECMD bash load $MODULES 2> /dev/null)"
+        _bitsView --cache "${WORK_DIR}/VIEWS/${ARCHITECTURE}" --shell "$_vshell" 2> /dev/null )
+    fi
     _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && ( eval $($MODULECMD $MODULES_SHELL $ACTION $MODULES 2> /dev/null) &> /dev/null; stripDyld )
     exit 0

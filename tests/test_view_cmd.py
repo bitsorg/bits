@@ -99,5 +99,56 @@ class TestCollapseExports(unittest.TestCase):
             self.assertIn('export PATH="%s/bin"' % view, out)
 
 
+class TestShellSyntax(unittest.TestCase):
+
+    def test_csh_uses_setenv(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = _pkg(os.path.join(d, "a"), ["bin/x"])
+            env = {"A_ROOT": a, "PATH": "%s/bin:/usr/bin" % a}
+            view = view_cmd.view_dir_for([a], os.path.join(d, "cache"))
+            sh = view_cmd.collapse_exports(env, os.path.join(d, "cache"), shell="sh")
+            csh = view_cmd.collapse_exports(env, os.path.join(d, "cache"), shell="csh")
+            self.assertIn('export PATH="%s/bin:/usr/bin"' % view, sh)
+            self.assertIn('setenv PATH "%s/bin:/usr/bin";' % view, csh)
+
+
+class TestPruneViews(unittest.TestCase):
+
+    def _build(self, roots, view_dir):
+        os.makedirs(view_dir, exist_ok=True)
+
+    def test_touch_on_use_then_age_based_gc(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            cache = os.path.join(d, "cache")
+            fresh = view_cmd.ensure_view([os.path.join(d, "a")], cache, _build=self._build)
+            stale = view_cmd.ensure_view([os.path.join(d, "b")], cache, _build=self._build)
+            # age the 'stale' view's stamp to 2 days ago
+            old = time.time() - 2 * 86400
+            os.utime(os.path.join(stale, view_cmd.READY_STAMP), (old, old))
+
+            removed = view_cmd.prune_views(cache, ttl_days=1)
+            self.assertEqual(removed, [os.path.basename(stale)])
+            self.assertFalse(os.path.exists(stale))
+            self.assertTrue(os.path.exists(fresh))      # recently used → kept
+
+    def test_ensure_view_refreshes_stamp(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            cache = os.path.join(d, "cache")
+            v = view_cmd.ensure_view([os.path.join(d, "a")], cache, _build=self._build)
+            stamp = os.path.join(v, view_cmd.READY_STAMP)
+            old = time.time() - 5 * 86400
+            os.utime(stamp, (old, old))
+            view_cmd.ensure_view([os.path.join(d, "a")], cache, _build=self._build)  # re-use
+            self.assertGreater(os.path.getmtime(stamp), old)   # touched
+
+    def test_gc_disabled_when_ttl_zero(self):
+        with tempfile.TemporaryDirectory() as d:
+            cache = os.path.join(d, "cache")
+            view_cmd.ensure_view([os.path.join(d, "a")], cache, _build=self._build)
+            self.assertEqual(view_cmd.prune_views(cache, ttl_days=0), [])
+
+
 if __name__ == "__main__":
     unittest.main()
