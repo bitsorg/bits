@@ -861,12 +861,19 @@ class Boto3RemoteSync:
 
       dist_symlinks[link_dir] = symlinks
 
-    # ver_rev(spec) is used so the tarball filename is consistent with what
-    # build_template.sh wrote: "{pkg}-{ver_rev}.{arch}.tar.gz".  The content-
-    # addressed store key (under store/<h2>/<hash>/) is unaffected and always
-    # uses the package hash rather than the version-revision label.
-    tarball = "{package}-{ver_rev}.{architecture}.tar.gz" \
-      .format(architecture=arch, ver_rev=ver_rev(spec), **spec)
+    # ver_rev(spec) keeps the filename consistent with what build_template.sh
+    # wrote: PACKAGE_WITH_REV=$PKGNAME-$VERREV.$EFFECTIVE_ARCHITECTURE.tar.gz.
+    # `arch` is already effective_arch(spec, self.architecture) — i.e. "shared"
+    # for shared packages, else the build arch — matching EFFECTIVE_ARCHITECTURE
+    # and the store/link paths below, exactly like the rsync backend's eff_arch.
+    # The fields are passed explicitly: a bare **spec collides with the
+    # architecture= keyword whenever the spec carries an "architecture" key
+    # (shared packages, or any recipe that sets the field), raising
+    # "TypeError: got multiple values for keyword argument 'architecture'".
+    # The content-addressed store key (store/<h2>/<hash>/) is unaffected; it
+    # always uses the package hash rather than the version-revision label.
+    tarball = "{package}-{ver_rev}.{architecture}.tar.gz".format(
+        package=spec["package"], ver_rev=ver_rev(spec), architecture=arch)
     tar_path = os.path.join(resolve_store_path(arch, spec["hash"]),
                             tarball)
     link_path = os.path.join(resolve_links_path(arch, spec["package"]),

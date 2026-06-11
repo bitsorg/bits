@@ -327,6 +327,36 @@ class Boto3TestCase(unittest.TestCase):
         b3sync.s3.put_object.assert_not_called()
         b3sync.s3.upload_file.assert_not_called()
 
+    @patch("os.listdir", new=lambda path: (
+        [] if path.endswith("-" + MISSING_SPEC["revision"]) else NotImplemented
+    ))
+    @patch("os.readlink", new=MagicMock(return_value="dummy path"))
+    @patch("os.path.islink", new=MagicMock(return_value=True))
+    def test_tarball_upload_spec_with_architecture_key(self) -> None:
+        """Regression: a spec carrying an 'architecture' key (shared packages, or
+        any recipe that sets the field) must not crash tarball naming.
+
+        The previous code did ``"...".format(architecture=arch, **spec)``; when
+        spec has an 'architecture' key, **spec re-passes it and Python raises
+        'TypeError: got multiple values for keyword argument architecture'. The
+        tarball must be named with effective_arch (== build arch here), matching
+        the store key and the symlink target.
+        """
+        b3sync = sync.Boto3RemoteSync(
+            remoteStore="b3://localhost", writeStore="b3://localhost",
+            architecture=ARCHITECTURE, workdir="/sw")
+        b3sync.s3 = self.mock_s3()
+        # MISSING_SPEC routing (fresh upload) + an explicit architecture key.
+        spec = dict(MISSING_SPEC, architecture=ARCHITECTURE)
+        b3sync.s3.put_object.reset_mock()
+        b3sync.s3.upload_file.reset_mock()
+        b3sync.upload_symlinks_and_tarball(spec)   # must not raise TypeError
+        b3sync.s3.upload_file.assert_called()
+        # The tarball is uploaded under the effective-arch name (== ARCHITECTURE).
+        key = b3sync.s3.upload_file.call_args.kwargs["Key"]
+        self.assertTrue(key.endswith(tarball_name(MISSING_SPEC)),
+                        "tarball key %r not named with effective arch" % key)
+
 
 if __name__ == '__main__':
     unittest.main()
