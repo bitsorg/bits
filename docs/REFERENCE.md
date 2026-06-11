@@ -620,6 +620,9 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `--flavour NAME[=VALUE]` | Set a build-wide flavour variable (repeatable, comma-separated). `NAME`→`true`, `NAME=VALUE`→`VALUE`, `!NAME`→`false`. Gates `(?NAME)` conditional requires/sources/patches and is exported into the build environment; overrides a defaults `variables:` entry of the same name. See [Flavours](#flavours). |
 | `--reuse-cvmfs` | Reuse already-deployed components from the defaults `cvmfs_dir:` area: sets `--remote-store cvmfs://<cvmfs_dir>` when no store is given. See [CVMFS layout](#cvmfs-layout). |
+| `--reuse-policy {strict,relaxed}` | How CVMFS reuse is matched. `strict` (default): reuse only on an exact content-hash match; the result is publishable. `relaxed`: also graft deployed packages of a blessed release matched by (name, architecture, `build_id`), for fast local dev on top of e.g. an LCG release — only the top of the stack is built. Relaxed artifacts are *loose-provenance* and are refused by the publish path. Falls back to the defaults `reuse_policy:` value. See [Relaxed CVMFS reuse](#relaxed-cvmfs-reuse). |
+| `--reuse-base BUILD_ID` | With `--reuse-policy relaxed`, the `build_id` of the deployed release to graft from (the value `bits` records under `build_id` in each deployed package's `.meta.json`). Falls back to the defaults `reuse_base:` value. |
+| `--build-local PKG[,PKG…]` | Packages to always build locally even under `--reuse-policy relaxed` (e.g. one you need patched), instead of grafting them from the base. |
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [§9](#9-architecture-overview)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
@@ -2590,6 +2593,44 @@ Steps to investigate:
    rm $WORK_DIR/STORE_CHECKSUMS/TARS/<arch>/store/<h2>/<hash>/<tarball>.sha256
    ```
    The next build run will re-record the current digest and warn instead of aborting.
+
+### Relaxed CVMFS reuse
+
+Strict reuse (the default) only reuses a deployed package when bits recomputes
+the **exact same content hash** — which guarantees reproducibility and keeps the
+result publishable, but means that to build one package on top of a blessed
+release (e.g. an LCG release on `/cvmfs`) you must reproduce every hashed input
+of the whole stack. **Relaxed reuse** trades that for speed in local
+development: it grafts deployed packages matched by **(name, architecture,
+`build_id`)** instead of by hash, so only the top of the stack is built and
+everything below it is symlinked from `/cvmfs`.
+
+`build_id` is the per-release coherence token bits records in each package's
+`.meta.json` (and which is identical for every package built together). Matching
+on it — together with the *combined* architecture string, which already encodes
+OS, compiler and build type — means the grafted set is ABI-consistent by
+construction, without re-verifying the dependency closure.
+
+```bash
+bits build --reuse-policy relaxed \
+           --reuse-base LCG_109-<digest> \
+           --remote-store cvmfs:///cvmfs/sft.cern.ch/lcg/releases \
+           --defaults dev4 key4hep
+```
+
+Grafted dependencies are logged as **Unpacking** (no recompilation); only the
+requested top package is **Compiling**. Use `--build-local PKG[,PKG…]` to force
+specific packages to build locally anyway (e.g. one you need patched).
+
+**Provenance.** Any package built on top of a relaxed graft is *loose* — its
+closure includes binaries adopted by name/`build_id` rather than verified hash,
+so its own hash no longer certifies reproducible inputs. bits records
+`provenance: loose` in such a package's `.meta.json`, and the **publish path
+refuses loose artifacts** (`--reuse-policy relaxed` with `--write-store` or
+`--pipeline` is rejected). Relaxed reuse is therefore strictly a dev/iteration
+accelerator; production builds use `strict`. The matcher requires a `cvmfs://`
+`--remote-store` and a `--reuse-base`; without either, relaxed reuse warns and
+falls back to a normal build.
 
 ---
 
