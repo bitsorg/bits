@@ -64,6 +64,22 @@ def closure_build_id(roots):
     return None
 
 
+def closure_views_dir(roots):
+    """The ``views_dir`` the release was published under, read from the closure's
+    ``.meta.json`` ``cvmfs_layout`` (default ``Views``). Lets the client honour a
+    non-default views directory without loading the defaults profile.
+    """
+    for root in roots:
+        try:
+            with open(os.path.join(root, ".meta.json")) as fh:
+                layout = json.load(fh).get("cvmfs_layout")
+        except Exception:
+            continue
+        if isinstance(layout, dict) and layout.get("views_dir"):
+            return layout["views_dir"]
+    return "Views"
+
+
 def view_dir_for(roots, cache_root):
     """Deterministic cache directory for a set of *roots*."""
     key = hashlib.sha256("\n".join(roots).encode("utf-8")).hexdigest()[:16]
@@ -147,7 +163,8 @@ def resolve_view_dir(roots, work_dir, architecture, _ensure=ensure_view):
     """
     build_id = closure_build_id(roots)
     if build_id:
-        pub = find_published_view(work_dir, build_id, architecture)
+        pub = find_published_view(work_dir, build_id, architecture,
+                                  views_dir=closure_views_dir(roots))
         if pub:
             return pub, True
     cache_root = os.path.join(work_dir, CLIENT_CACHE_SUBDIR, architecture)

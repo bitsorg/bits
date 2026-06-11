@@ -46,6 +46,20 @@ def _build_id_of_package(work_dir, architecture, package):
     return None
 
 
+def _layout_views_dir(roots):
+    """The ``views_dir`` recorded in the release's package metadata (default
+    ``Views``), so the published view honours a non-default profile layout."""
+    for root in roots:
+        try:
+            with open(os.path.join(root, ".meta.json")) as fh:
+                layout = json.load(fh).get("cvmfs_layout")
+        except Exception:
+            continue
+        if isinstance(layout, dict) and layout.get("views_dir"):
+            return layout["views_dir"]
+    return "Views"
+
+
 def _build_ids_in_area(work_dir, architecture):
     """Return the set of build_ids present in the work area for this arch."""
     base = os.path.join(work_dir, architecture)
@@ -107,7 +121,9 @@ def doPublishView(args, parser):
               "(publish the packages first).", build_id, store)
         return False
 
-    result = build_published_view(roots, name, build_id, architecture, store)
+    views_dir = _layout_views_dir(roots)
+    result = build_published_view(roots, name, build_id, architecture, store,
+                                  views_dir=views_dir)
     info("publish --view: '%s' (%s) — %d package(s) -> %s (%d link(s))",
          name, build_id, len(roots), result["view_dir"], len(result["linked"]))
     if result["conflicts"]:

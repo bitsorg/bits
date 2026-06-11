@@ -155,6 +155,19 @@ class TestPublishedView(unittest.TestCase):
             self.assertFalse(os.path.isabs(os.readlink(link)))
             self.assertTrue(os.path.exists(link))
 
+    def test_custom_views_dir_built_and_found(self):
+        with tempfile.TemporaryDirectory() as store:
+            a = self._deployed_pkg(store, "el9/A/1.0", ["bin/a"], "L-1")
+            res = build_published_view([a], "myrel", "L-1", "el9", store,
+                                       views_dir="release-views")
+            self.assertEqual(res["view_dir"],
+                             os.path.join(store, "release-views", "myrel-L-1", "el9"))
+            # default Views lookup misses; the configured one finds it
+            self.assertIsNone(find_published_view(store, "L-1", "el9"))
+            self.assertEqual(
+                find_published_view(store, "L-1", "el9", views_dir="release-views"),
+                res["view_dir"])
+
 
 if __name__ == "__main__":
     unittest.main()

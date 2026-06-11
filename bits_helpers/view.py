@@ -91,12 +91,14 @@ def published_view_dirname(name, build_id):
     return "%s-%s" % (name, build_id)
 
 
-def find_published_view(store_root, build_id, architecture):
-    """Return the published view dir for *build_id* under ``<store_root>/Views``,
+def find_published_view(store_root, build_id, architecture, views_dir="Views"):
+    """Return the published view dir for *build_id* under ``<store_root>/<views_dir>``,
     or None. The view dir is named ``<name>-<build_id>`` (the publish-time *name*
-    is unknown to a consumer), so it is matched by build_id suffix.
+    is unknown to a consumer), so it is matched by build_id suffix. *views_dir*
+    defaults to ``Views`` and is overridden from the package metadata when the
+    profile declares a non-default ``views_dir``.
     """
-    views = os.path.join(store_root, "Views")
+    views = os.path.join(store_root, views_dir)
     try:
         entries = os.listdir(views)
     except OSError:
@@ -135,19 +137,21 @@ def collect_build_id_roots(scan_root, build_id, architecture=None):
 
 
 def build_published_view(roots, name, build_id, architecture, store_root,
-                         subdirs=DEFAULT_SUBDIRS, link=os.symlink):
+                         subdirs=DEFAULT_SUBDIRS, link=os.symlink, views_dir="Views"):
     """Materialise the named per-build_id view under
-    ``<store_root>/Views/<name>-<build_id>/<arch>`` and drop a CVMFS nested
+    ``<store_root>/<views_dir>/<name>-<build_id>/<arch>`` and drop a CVMFS nested
     catalog at the ``<name>-<build_id>`` level.
 
     *roots* must already live under *store_root* (the deployed/staged tree), so the
-    relative symlinks resolve once the whole tree is on CVMFS. Returns the
-    :func:`build_view` result with ``view_dir`` added.
+    relative symlinks resolve once the whole tree is on CVMFS. *views_dir* (the
+    prefix the release views live under, ``Views`` by default — the arch is
+    appended after ``<name>-<build_id>``) comes from the profile's layout. Returns
+    the :func:`build_view` result with ``view_dir`` added.
     """
     dirname = published_view_dirname(name, build_id)
-    view_dir = os.path.join(store_root, "Views", dirname, architecture)
+    view_dir = os.path.join(store_root, views_dir, dirname, architecture)
     result = build_view(roots, view_dir, subdirs=subdirs, relative=True, link=link)
-    catalog_dir = os.path.join(store_root, "Views", dirname)
+    catalog_dir = os.path.join(store_root, views_dir, dirname)
     os.makedirs(catalog_dir, exist_ok=True)
     open(os.path.join(catalog_dir, CATALOG_FILE), "w").close()
     result["view_dir"] = view_dir

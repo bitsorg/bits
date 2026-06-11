@@ -817,6 +817,10 @@ def create_provenance_info(package, specs, args):
     "defaults": args.defaults,
     "build_id": compute_build_id(specs, args),
     "abi_tag": compute_abi_tag(args),
+    # The resolved CVMFS layout (install/module/views dirs), so publish and the
+    # view client read the three tree paths from here, not by reloading defaults.
+    # None when the profile declares no layout (additive; never hashed).
+    "cvmfs_layout": getattr(args, "cvmfsLayout", None),
     "reuse_policy": getattr(args, "reusePolicy", "strict") or "strict",
     "provenance": _provenance,
     "repro": {
@@ -1579,8 +1583,14 @@ def doBuild(args, parser):
   #   * reuse deployed -> --remote-store = cvmfs://<cvmfs_dir>  (with --reuse-cvmfs)
   from bits_helpers.cvmfs_layout import resolve_cvmfs_layout
   _cvmfs = resolve_cvmfs_layout(defaultsMeta, args.architecture)
+  # Stash the resolved layout so create_provenance_info can record it in each
+  # package's .meta.json — that way publish (targets) and the view client
+  # (views_dir) read the three tree paths from the package metadata without
+  # re-loading the defaults profile.
+  args.cvmfsLayout = _cvmfs
   if _cvmfs:
-    info("CVMFS layout: install=%s  modules=%s", _cvmfs["install_path"], _cvmfs["module_path"])
+    info("CVMFS layout: install=%s  modules=%s  views=%s",
+         _cvmfs["install_path"], _cvmfs["module_path"], _cvmfs["views_path"])
     if args.docker and not getattr(args, "cvmfsPrefix", None) and _cvmfs["cvmfs_dir"]:
       args.cvmfsPrefix = _cvmfs["install_path"]
       info("Defaulting --cvmfs-prefix to %s (from defaults CVMFS layout)", args.cvmfsPrefix)

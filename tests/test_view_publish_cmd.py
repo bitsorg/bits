@@ -64,6 +64,20 @@ class TestDoPublishView(unittest.TestCase):
             self.assertTrue(os.path.isfile(
                 os.path.join(s, "Views", "rel-L-1", ".cvmfscatalog")))
 
+    def test_honours_layout_views_dir(self):
+        with tempfile.TemporaryDirectory() as s:
+            prefix = _deployed(s, "ROOT/1", "L-1", files=("bin/root",))
+            # inject a non-default views_dir into the recorded layout
+            with open(os.path.join(prefix, ".meta.json")) as fh:
+                meta = json.load(fh)
+            meta["cvmfs_layout"] = {"views_dir": "release-views"}
+            with open(os.path.join(prefix, ".meta.json"), "w") as fh:
+                json.dump(meta, fh)
+            self.assertTrue(vp.doPublishView(_args(s), None))
+            self.assertTrue(os.path.isdir(
+                os.path.join(s, "release-views", "rel-L-1", "el9")))
+            self.assertFalse(os.path.exists(os.path.join(s, "Views")))
+
     def test_no_packages_fails(self):
         with tempfile.TemporaryDirectory() as s:
             os.makedirs(os.path.join(s, "el9"))

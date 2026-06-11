@@ -153,6 +153,27 @@ class TestPublishedPreference(unittest.TestCase):
             out = view_cmd.collapse_exports(env, d, ARCH)
             self.assertIn('export PATH="%s/bin"' % _client_view(d, [a]), out)
 
+    def test_closure_views_dir_from_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = _pkg(os.path.join(d, "a"), ["bin/x"])
+            with open(os.path.join(a, ".meta.json"), "w") as fh:
+                json.dump({"build_id": "L-1",
+                           "cvmfs_layout": {"views_dir": "release-views"}}, fh)
+            self.assertEqual(view_cmd.closure_views_dir([a]), "release-views")
+            self.assertEqual(view_cmd.closure_views_dir(
+                [os.path.join(d, "nope")]), "Views")          # default
+
+    def test_prefers_published_view_under_custom_views_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = _pkg(os.path.join(d, "a"), ["bin/x"])
+            with open(os.path.join(a, ".meta.json"), "w") as fh:
+                json.dump({"build_id": "L-1",
+                           "cvmfs_layout": {"views_dir": "release-views"}}, fh)
+            pub = os.path.join(d, "release-views", "rel-L-1", ARCH)
+            os.makedirs(os.path.join(pub, "bin"))
+            out = view_cmd.collapse_exports({"A_ROOT": a, "PATH": "%s/bin" % a}, d, ARCH)
+            self.assertIn('export PATH="%s/bin"' % pub, out)
+
 
 class TestPruneViews(unittest.TestCase):
 

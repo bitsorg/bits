@@ -81,7 +81,8 @@ class TestProvenanceRecord(unittest.TestCase):
 
     OLD_KEYS = ("comment", "bits_version", "dist", "architecture",
                 "defaults", "package", "dependencies")
-    NEW_KEYS = ("build_id", "abi_tag", "reuse_policy", "provenance", "repro")
+    NEW_KEYS = ("build_id", "abi_tag", "reuse_policy", "provenance", "repro",
+                "cvmfs_layout")
 
     def _record(self, args):
         specs = {"a": _spec("a")}
@@ -101,6 +102,17 @@ class TestProvenanceRecord(unittest.TestCase):
         self.assertEqual(rec["reuse_policy"], "strict")
         self.assertEqual(rec["provenance"], "pure")
         self.assertEqual(rec["package"]["hash"], "ha")
+        self.assertIsNone(rec["cvmfs_layout"])   # None when args has no layout
+
+    def test_cvmfs_layout_recorded_when_present(self):
+        layout = {"cvmfs_dir": "/cvmfs/x", "install_dir": "arch",
+                  "module_dir": "arch/modules", "views_dir": "Views",
+                  "install_path": "/cvmfs/x/arch", "module_path": "/cvmfs/x/arch/modules",
+                  "views_path": "/cvmfs/x/Views"}
+        rec = self._record(SimpleNamespace(annotate={}, architecture="arch",
+                                           defaults=["release"], cvmfsLayout=layout))
+        self.assertEqual(rec["cvmfs_layout"]["views_dir"], "Views")
+        self.assertEqual(rec["cvmfs_layout"]["views_path"], "/cvmfs/x/Views")
 
     def test_reuse_policy_defaults_to_strict_when_arg_absent(self):
         # args without a reuse_policy attribute (the aliBuild simple case)
