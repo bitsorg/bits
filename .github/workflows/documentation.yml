@@ -26,5 +26,6 @@ jobs:
             mkdocs-material-
       - run: |
           pip install mkdocs-material mkdocs-redirects
-          cd docs
+          # mkdocs.yml lives at the repo root (docs_dir: docs); run from there.
+          # MkDocs refuses a config that sits inside its own docs_dir.
           mkdocs gh-deploy --force # Always keep in sync with master branch

@@ -12,7 +12,7 @@ import sys
 here = os.path.abspath(os.path.dirname(__file__))
 
 # Get the long description from the README file
-with open(os.path.join(here, 'README.rst'), encoding='utf-8') as f:
+with open(os.path.join(here, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
 install_requires = ['pyyaml', 'requests', 'distro', 'jinja2', 'boto3']
@@ -22,7 +22,7 @@ setup(
 
     description='Software Build Tool',
     long_description=long_description,
-    long_description_content_type='text/x-rst',
+    long_description_content_type='text/markdown',
 
     # The project's main homepage.
     url='https://github.com/bitsorg/bits',

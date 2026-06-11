@@ -1,0 +1,23 @@
+site_name: bits
+site_description: The bits build system — documentation
+docs_dir: docs
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+nav:
+  - User Guide: USERGUIDE.md
+  - Cookbook: COOKBOOK.md
+  - Workflows: WORKFLOWS.md
+  - Reference: REFERENCE.md
+  - Roadmap: ROADMAP.md
+  - Design (ADR):
+      - Relaxed CVMFS reuse: adr/0001-cvmfs-relaxed-reuse.md
+      - Implementation plan: adr/0001-implementation-plan.md
