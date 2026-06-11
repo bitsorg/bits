@@ -284,26 +284,6 @@ def doParseArgs():
                              action="store_true",
                              help="Stamp and write even if the release is not closed (deps missing).")
 
-  view_publish_parser = subparsers.add_parser(
-      "view-publish",
-      help="generate the merged view for a published release (under Views/<build_id>/)",
-      description=(
-          "Run against the deployed/staged CVMFS tree: union every package that "
-          "carries BUILD_ID in its .meta.json into <store>/Views/<build_id>/<arch>/ "
-          "with relative symlinks + a nested .cvmfscatalog, so consumers get a "
-          "single-entry environment for the release with no per-node view build."
-      ),
-  )
-  view_publish_parser.add_argument("--store", dest="viewStore", metavar="DIR",
-                                   required=True,
-                                   help="Deployed/staged CVMFS root holding the packages.")
-  view_publish_parser.add_argument("--build-id", dest="viewBuildId", metavar="ID",
-                                   required=True,
-                                   help="build_id of the release to build a view for.")
-  view_publish_parser.add_argument("-a", "--architecture", dest="architecture",
-                                   metavar="ARCH", default=detectedArch,
-                                   help="Architecture (default: %(default)s).")
-
   # Options for the analytics command
   # analytics_parser.add_argument("state", choices=["on", "off"], help="Whether to report analytics or not")
 
@@ -995,12 +975,18 @@ def doParseArgs():
                                     "the current system architecture, which is '%(default)s'."))
 
   # Options for the publish command
-  publish_parser.add_argument("package", metavar="PACKAGE",
-                              help="Name of the package to publish.")
+  publish_parser.add_argument("package", metavar="PACKAGE", nargs="?", default=None,
+                              help="Name of the package to publish. With --view, optional: names the "
+                                   "release's top package to pick its build_id when the build area "
+                                   "holds more than one.")
   publish_parser.add_argument("version", metavar="VERSION", nargs="?", default=None,
                               help="Version (and optional revision) to publish. Defaults to the latest build.")
+  publish_parser.add_argument("--view", dest="publishView", metavar="NAME", default=None,
+                              help="Instead of a package, publish the merged VIEW for a release to "
+                                   "<cvmfs-target>/Views/NAME-<build_id>/<arch>/. The build_id is read "
+                                   "from the packages' .meta.json, not given here.")
   publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=True, metavar="PATH",
-                              help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9).")
+                              help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9). With --view, the CVMFS root the Views/ tree lives under.")
   # --spool is required for the legacy rsync-to-spool path; omit it when using --prepub-url.
   publish_parser.add_argument("--spool", dest="spool", default=None, metavar="[USER@HOST:]PATH",
                               help=("Ingestion spool root.  Either a local directory or a remote rsync "

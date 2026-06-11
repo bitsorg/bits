@@ -16,7 +16,7 @@ import json
 import os
 import sys
 
-from bits_helpers.view import build_view, published_view_path
+from bits_helpers.view import build_view, find_published_view
 
 READY_STAMP = ".bits_view_ready"
 # Client-built views are cached here (distinct from the published `Views/` tree).
@@ -147,8 +147,8 @@ def resolve_view_dir(roots, work_dir, architecture, _ensure=ensure_view):
     """
     build_id = closure_build_id(roots)
     if build_id:
-        pub = published_view_path(work_dir, build_id, architecture)
-        if os.path.isdir(pub):
+        pub = find_published_view(work_dir, build_id, architecture)
+        if pub:
             return pub, True
     cache_root = os.path.join(work_dir, CLIENT_CACHE_SUBDIR, architecture)
     return _ensure(roots, cache_root), False

@@ -1,45 +1,117 @@
-"""`bits view-publish` — generate the merged view for a published release.
+"""`bits publish --view <name>` — publish the merged view for a release.
 
-Run against the deployed/staged CVMFS tree (where the packages already sit at
-their final paths). It finds every package carrying *build_id* in its
-``.meta.json``, unions them into ``<store>/Views/<build_id>/<arch>/`` with
-relative symlinks (so they resolve once on CVMFS), and drops a nested
-``.cvmfscatalog`` at the build_id level. Clients then get a ready-made,
-single-entry environment for that release with no per-node view build (see
-``bits enter --view``); arbitrary/dev closures still fall back to a client-side
-view.
+Unions every package of one release (one ``build_id``) into
+``<cvmfs-target>/Views/<name>-<build_id>/<arch>/`` with relative symlinks + a
+nested ``.cvmfscatalog``, so consumers get a single-entry environment for the
+release with no per-node view build (``bits enter --view`` prefers it).
+
+The ``build_id`` is *not* given on the command line — it is read from the
+packages' ``.meta.json``: from the named package's metadata when a package is
+given, otherwise auto-detected from the build area (and, if the area holds more
+than one build, you are asked to disambiguate by naming the top package).
 """
 
+import json
 import os
 
 from bits_helpers.log import error, info, warning
 from bits_helpers.view import collect_build_id_roots, build_published_view
 
 
-def doViewPublish(args, parser):
-    """Build the per-build_id published view. Returns True on success."""
-    store = args.viewStore
-    build_id = args.viewBuildId
-    arch = args.architecture
+def _build_id_of_package(work_dir, architecture, package):
+    """Read the build_id from a named package's .meta.json under the work area.
 
-    if not store or not os.path.isdir(store):
-        error("view-publish: store directory %s does not exist", store)
-        return False
+    *package* may be ``name`` or ``name/version``; the first installed match wins.
+    """
+    name = package.split("/", 1)[0]
+    base = os.path.join(work_dir, architecture)
+    for dirpath, dirs, files in os.walk(base):
+        if ".meta.json" not in files:
+            continue
+        dirs[:] = []
+        if os.path.basename(os.path.dirname(dirpath)) != name and \
+           os.path.basename(dirpath) != name:
+            # match either <name>/<ver> (dir parent is name) or <name> itself
+            if name not in dirpath.split(os.sep):
+                continue
+        try:
+            with open(os.path.join(dirpath, ".meta.json")) as fh:
+                meta = json.load(fh)
+        except Exception:
+            continue
+        if meta.get("package") == name or os.path.basename(os.path.dirname(dirpath)) == name:
+            bid = meta.get("build_id")
+            if bid:
+                return bid
+    return None
+
+
+def _build_ids_in_area(work_dir, architecture):
+    """Return the set of build_ids present in the work area for this arch."""
+    base = os.path.join(work_dir, architecture)
+    ids = set()
+    for dirpath, dirs, files in os.walk(base):
+        if ".meta.json" not in files:
+            continue
+        dirs[:] = []
+        try:
+            with open(os.path.join(dirpath, ".meta.json")) as fh:
+                bid = json.load(fh).get("build_id")
+        except Exception:
+            continue
+        if bid:
+            ids.add(bid)
+    return ids
+
+
+def _resolve_build_id(args, work_dir, architecture):
+    """Derive the build_id to publish a view for, or None on an error already
+    reported to the user."""
+    package = getattr(args, "package", None)
+    if package:
+        bid = _build_id_of_package(work_dir, architecture, package)
+        if not bid:
+            error("publish --view: no build_id found for package %s under %s/%s",
+                  package, work_dir, architecture)
+        return bid
+    ids = _build_ids_in_area(work_dir, architecture)
+    if not ids:
+        error("publish --view: no packages with a build_id found under %s/%s",
+              work_dir, architecture)
+        return None
+    if len(ids) > 1:
+        error("publish --view: %d build_ids in the build area: %s. Name the "
+              "release's top package to pick one (e.g. `bits publish --view %s "
+              "ROOT/<ver>`).", len(ids), ", ".join(sorted(ids)),
+              getattr(args, "publishView", "<name>"))
+        return None
+    return ids.pop()
+
+
+def doPublishView(args, parser):
+    """Build and place the named release view. Returns True on success."""
+    name = args.publishView
+    architecture = args.architecture
+    work_dir = os.path.abspath(args.workDir)
+    # The view's symlinks must resolve where the packages finally live, so they
+    # are collected from the deployed target, not the raw build area.
+    store = getattr(args, "cvmfsTarget", None) or work_dir
+
+    build_id = _resolve_build_id(args, work_dir, architecture)
     if not build_id:
-        error("view-publish: --build-id is required")
         return False
 
-    roots = collect_build_id_roots(store, build_id, architecture=arch)
+    roots = collect_build_id_roots(store, build_id, architecture=architecture)
     if not roots:
-        error("view-publish: no packages with build_id %s found under %s",
-              build_id, store)
+        error("publish --view: no deployed packages for build_id %s under %s "
+              "(publish the packages first).", build_id, store)
         return False
 
-    result = build_published_view(roots, build_id, arch, store)
-    info("view-publish: %d package(s) -> %s (%d link(s))",
-         len(roots), result["view_dir"], len(result["linked"]))
+    result = build_published_view(roots, name, build_id, architecture, store)
+    info("publish --view: '%s' (%s) — %d package(s) -> %s (%d link(s))",
+         name, build_id, len(roots), result["view_dir"], len(result["linked"]))
     if result["conflicts"]:
-        warning("view-publish: %d file conflict(s) (first writer kept); e.g. %s",
+        warning("publish --view: %d file conflict(s), first writer kept; e.g. %s",
                 len(result["conflicts"]),
                 ", ".join(c[0] for c in result["conflicts"][:5]))
     return True

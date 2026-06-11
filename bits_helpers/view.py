@@ -86,9 +86,27 @@ def build_view(roots, view_dir, subdirs=DEFAULT_SUBDIRS, relative=True,
     return result
 
 
-def published_view_path(store_root, build_id, architecture):
-    """The canonical published-view location: ``<store_root>/Views/<id>/<arch>``."""
-    return os.path.join(store_root, "Views", build_id, architecture)
+def published_view_dirname(name, build_id):
+    """Human-identifiable view directory name: ``<name>-<build_id>``."""
+    return "%s-%s" % (name, build_id)
+
+
+def find_published_view(store_root, build_id, architecture):
+    """Return the published view dir for *build_id* under ``<store_root>/Views``,
+    or None. The view dir is named ``<name>-<build_id>`` (the publish-time *name*
+    is unknown to a consumer), so it is matched by build_id suffix.
+    """
+    views = os.path.join(store_root, "Views")
+    try:
+        entries = os.listdir(views)
+    except OSError:
+        return None
+    for entry in entries:
+        if entry == build_id or entry.endswith("-" + build_id):
+            cand = os.path.join(views, entry, architecture)
+            if os.path.isdir(cand):
+                return cand
+    return None
 
 
 def collect_build_id_roots(scan_root, build_id, architecture=None):
@@ -116,18 +134,20 @@ def collect_build_id_roots(scan_root, build_id, architecture=None):
     return sorted(roots)
 
 
-def build_published_view(roots, build_id, architecture, store_root,
+def build_published_view(roots, name, build_id, architecture, store_root,
                          subdirs=DEFAULT_SUBDIRS, link=os.symlink):
-    """Materialise the per-build_id view under ``<store_root>/Views/<id>/<arch>``
-    and drop a CVMFS nested catalog at the build_id level.
+    """Materialise the named per-build_id view under
+    ``<store_root>/Views/<name>-<build_id>/<arch>`` and drop a CVMFS nested
+    catalog at the ``<name>-<build_id>`` level.
 
     *roots* must already live under *store_root* (the deployed/staged tree), so the
     relative symlinks resolve once the whole tree is on CVMFS. Returns the
     :func:`build_view` result with ``view_dir`` added.
     """
-    view_dir = published_view_path(store_root, build_id, architecture)
+    dirname = published_view_dirname(name, build_id)
+    view_dir = os.path.join(store_root, "Views", dirname, architecture)
     result = build_view(roots, view_dir, subdirs=subdirs, relative=True, link=link)
-    catalog_dir = os.path.join(store_root, "Views", build_id)
+    catalog_dir = os.path.join(store_root, "Views", dirname)
     os.makedirs(catalog_dir, exist_ok=True)
     open(os.path.join(catalog_dir, CATALOG_FILE), "w").close()
     result["view_dir"] = view_dir

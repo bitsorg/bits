@@ -26,7 +26,6 @@ from bits_helpers.cleanup import doCleanup
 from bits_helpers.deps import doDeps
 from bits_helpers.brew import doBrew
 from bits_helpers.cvmfs_import_cmd import doImport
-from bits_helpers.view_publish_cmd import doViewPublish
 from bits_helpers.doctor import doDoctor
 from bits_helpers.init import doInit
 from bits_helpers.publish import doPublish
@@ -95,9 +94,6 @@ def doMain(args, parser):
   if args.action == "import":
     sys.exit(0 if doImport(args, parser) else 1)
 
-  if args.action == "view-publish":
-    sys.exit(0 if doViewPublish(args, parser) else 1)
-
   if args.action == "clean":
     doClean(workDir=args.workDir, architecture=args.architecture,
             aggressiveCleanup=args.aggressiveCleanup, dryRun=args.dryRun)
@@ -116,8 +112,8 @@ def doMain(args, parser):
     sys.exit(0)
 
   if args.action == "publish":
-    doPublish(args, parser)
-    sys.exit(0)
+    _rc = doPublish(args, parser)        # --view returns a bool; package path returns None
+    sys.exit(0 if _rc is None or _rc else 1)
 
   if args.action == "verify":
     doVerify(args, parser)

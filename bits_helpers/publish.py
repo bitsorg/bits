@@ -238,7 +238,17 @@ def doPublish(args, parser):
         Requires ``--prepub-url``.  Packages the relocated tree as a tar,
         POSTs it to the cvmfs-prepub REST API, and polls until the job
         reaches ``published``.
+
+    View mode (``--view NAME``):
+        Publishes the merged release view rather than a package; delegated to
+        :func:`bits_helpers.view_publish_cmd.doPublishView`. Returns its bool.
     """
+    if getattr(args, "publishView", None):
+        from bits_helpers.view_publish_cmd import doPublishView
+        return doPublishView(args, parser)
+
+    if not getattr(args, "package", None):
+        parser.error("publish: PACKAGE is required (or use --view NAME to publish a release view).")
 
     architecture = getattr(args, "architecture", None) or detectArch()
     work_dir     = abspath(args.workDir)

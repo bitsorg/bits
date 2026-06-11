@@ -7,7 +7,8 @@ import unittest
 
 from bits_helpers.view import (build_view, view_env, DEFAULT_SUBDIRS,
                                collect_build_id_roots, build_published_view,
-                               published_view_path, CATALOG_FILE)
+                               find_published_view, published_view_dirname,
+                               CATALOG_FILE)
 
 
 def _pkg(prefix, files):
@@ -129,27 +130,28 @@ class TestPublishedView(unittest.TestCase):
             roots = collect_build_id_roots(store, "L-1", architecture="el9")
             self.assertEqual(roots, sorted([a, b]))
 
-    def test_build_published_view_layout_and_catalog(self):
+    def test_build_published_view_named_layout_and_catalog(self):
         with tempfile.TemporaryDirectory() as store:
             a = self._deployed_pkg(store, "el9/A/1.0", ["bin/a", "lib/liba.so"], "L-1")
             b = self._deployed_pkg(store, "el9/B/2.0", ["bin/b", "include/b.h"], "L-1")
-            res = build_published_view([a, b], "L-1", "el9", store)
-            view = published_view_path(store, "L-1", "el9")
+            res = build_published_view([a, b], "myrel", "L-1", "el9", store)
+            dirname = published_view_dirname("myrel", "L-1")
+            view = os.path.join(store, "Views", dirname, "el9")
             self.assertEqual(res["view_dir"], view)
-            self.assertEqual(view, os.path.join(store, "Views", "L-1", "el9"))
+            self.assertEqual(dirname, "myrel-L-1")
             for rel in ("bin/a", "lib/liba.so", "bin/b", "include/b.h"):
                 self.assertTrue(os.path.islink(os.path.join(view, rel)), rel)
-            # nested catalog at the build_id level
             self.assertTrue(os.path.isfile(
-                os.path.join(store, "Views", "L-1", CATALOG_FILE)))
+                os.path.join(store, "Views", dirname, CATALOG_FILE)))
+            # a consumer (knows only the build_id, not the name) finds it by suffix
+            self.assertEqual(find_published_view(store, "L-1", "el9"), view)
+            self.assertIsNone(find_published_view(store, "OTHER", "el9"))
 
     def test_published_view_symlinks_are_relative_and_resolve(self):
-        # built over the deployed tree → relative links resolve in place (and would
-        # on /cvmfs, since the relative offset is preserved by relocation)
         with tempfile.TemporaryDirectory() as store:
             a = self._deployed_pkg(store, "el9/A/1.0", ["bin/a"], "L-1")
-            build_published_view([a], "L-1", "el9", store)
-            link = os.path.join(published_view_path(store, "L-1", "el9"), "bin", "a")
+            build_published_view([a], "myrel", "L-1", "el9", store)
+            link = os.path.join(find_published_view(store, "L-1", "el9"), "bin", "a")
             self.assertFalse(os.path.isabs(os.readlink(link)))
             self.assertTrue(os.path.exists(link))
 

@@ -133,8 +133,8 @@ class TestPublishedPreference(unittest.TestCase):
     def test_prefers_published_view_when_build_id_matches(self):
         with tempfile.TemporaryDirectory() as d:
             a = self._pkg_with_meta(os.path.join(d, "a"), ["bin/x", "lib/la.so"], "L-1")
-            # a published view exists for L-1
-            pub = os.path.join(d, "Views", "L-1", ARCH)
+            # a published view named "rel-L-1" exists; the client finds it by build_id
+            pub = os.path.join(d, "Views", "rel-L-1", ARCH)
             os.makedirs(os.path.join(pub, "bin"))
             env = {"A_ROOT": a, "PATH": "%s/bin:/usr/bin" % a,
                    "LD_LIBRARY_PATH": "%s/lib" % a}
