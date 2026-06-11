@@ -56,4 +56,4 @@ where = ["."]
 exclude = ["yaml"]
 
 [tool.setuptools.dynamic]
-readme = {file = ["README.rst"]}
+readme = {file = ["README.md"], content-type = "text/markdown"}
