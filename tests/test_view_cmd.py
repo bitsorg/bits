@@ -47,38 +47,56 @@ class TestEnsureViewCaching(unittest.TestCase):
 
 class TestCollapseExports(unittest.TestCase):
 
-    def test_replaces_path_vars_keeps_setenvs(self):
+    def test_remaps_entries_dedups_keeps_system_and_setenvs(self):
         with tempfile.TemporaryDirectory() as d:
-            a = _pkg(os.path.join(d, "a"),
-                     ["bin/x", "lib/libx.so", "lib/pkgconfig/x.pc",
-                      "lib/python3.13/site-packages/x.py"])
-            env = {"X_ROOT": a, "ROOTSYS": a, "XRD_TIMEOUT": "150"}
-            out = view_cmd.collapse_exports(env, os.path.join(d, "cache"),
-                                            system_path="/usr/bin:/bin")
-            view = view_cmd.view_dir_for([a], os.path.join(d, "cache"))
-            # path-list vars collapse to single view entries
-            self.assertIn('export PATH="%s/bin:/usr/bin:/bin"' % view, out)
-            self.assertIn('export CMAKE_PREFIX_PATH="%s"' % view, out)
-            self.assertIn('export LD_LIBRARY_PATH="%s/lib"' % view, out)
-            self.assertIn('export PKG_CONFIG_PATH="%s/lib/pkgconfig"' % view, out)
-            self.assertIn("python3.13/site-packages", out)
-            # the collapse helper does NOT touch setenvs (ROOTSYS/XRD_*); the
-            # caller keeps those from the module load.
+            cache = os.path.join(d, "cache")
+            a = _pkg(os.path.join(d, "a"), ["bin/x", "lib/liba.so"])
+            # ROOT-style: PyROOT modules live directly in lib (the --pylib case)
+            b = _pkg(os.path.join(d, "b"), ["bin/y", "lib/libb.so", "lib/ROOT.py"])
+            env = {
+                "A_ROOT": a, "B_ROOT": b,
+                "ROOTSYS": b,                                  # setenv → untouched
+                "PATH": "%s/bin:%s/bin:/usr/bin:/bin" % (a, b),
+                "LD_LIBRARY_PATH": "%s/lib:%s/lib" % (a, b),   # both deps → one view/lib
+                "PYTHONPATH": "%s/lib" % b,                    # --pylib preserved
+                "CMAKE_PREFIX_PATH": "%s:%s" % (a, b),         # roots → view, deduped
+            }
+            out = view_cmd.collapse_exports(env, cache)
+            view = view_cmd.view_dir_for(sorted([a, b]), cache)
+            self.assertIn('export PATH="%s/bin:/usr/bin:/bin"' % view, out)  # system kept
+            self.assertIn('export LD_LIBRARY_PATH="%s/lib"' % view, out)     # deduped to one
+            self.assertIn('export PYTHONPATH="%s/lib"' % view, out)          # PyROOT findable
+            self.assertIn('export CMAKE_PREFIX_PATH="%s"' % view, out)       # roots → one view
+            # setenvs are not collapsed
             self.assertNotIn("ROOTSYS", out)
-            self.assertNotIn("XRD_TIMEOUT", out)
+            # and the remapped PyROOT module really exists in the built view
+            self.assertTrue(os.path.exists(os.path.join(view, "lib", "ROOT.py")))
 
     def test_no_roots_is_empty(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(view_cmd.collapse_exports({"PATH": "/usr/bin"},
                                                        os.path.join(d, "cache")), "")
 
-    def test_macos_lib_var(self):
+    def test_macos_dyld_var_collapsed(self):
         with tempfile.TemporaryDirectory() as d:
             a = _pkg(os.path.join(d, "a"), ["lib/libx.dylib"])
-            out = view_cmd.collapse_exports({"X_ROOT": a}, os.path.join(d, "cache"),
-                                            lib_path_var="DYLD_LIBRARY_PATH")
-            self.assertIn("export DYLD_LIBRARY_PATH=", out)
-            self.assertNotIn("export LD_LIBRARY_PATH=", out)
+            out = view_cmd.collapse_exports(
+                {"X_ROOT": a, "DYLD_LIBRARY_PATH": "%s/lib" % a},
+                os.path.join(d, "cache"))
+            view = view_cmd.view_dir_for([a], os.path.join(d, "cache"))
+            self.assertIn('export DYLD_LIBRARY_PATH="%s/lib"' % view, out)
+
+    def test_longest_root_wins_no_false_prefix(self):
+        # a root must not prefix-shadow a sibling whose path starts the same way
+        with tempfile.TemporaryDirectory() as d:
+            a = _pkg(os.path.join(d, "ROOT"), ["bin/r"])
+            ab = _pkg(os.path.join(d, "ROOTfoo"), ["bin/rf"])
+            env = {"ROOT_ROOT": a, "ROOTFOO_ROOT": ab,
+                   "PATH": "%s/bin:%s/bin" % (a, ab)}
+            out = view_cmd.collapse_exports(env, os.path.join(d, "cache"))
+            view = view_cmd.view_dir_for(sorted([a, ab]), os.path.join(d, "cache"))
+            # both map under the same view/bin (merged), deduped to one entry
+            self.assertIn('export PATH="%s/bin"' % view, out)
 
 
 if __name__ == "__main__":

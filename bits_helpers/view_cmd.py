@@ -11,16 +11,25 @@ The view is cached under a directory keyed on the exact set of loaded prefixes,
 so the (potentially large) symlink farm is built once per closure and reused.
 """
 
-import glob
 import hashlib
 import os
 import sys
 
-from bits_helpers.view import build_view, view_env
+from bits_helpers.view import build_view
 
-# Path-list variables a view collapses. PATH keeps a system tail so basic tools
-# survive; the rest become pure single view entries.
 READY_STAMP = ".bits_view_ready"
+
+# The additive, colon-separated path variables a view collapses. Each entry that
+# lives under a loaded package prefix is remapped onto the merged view and
+# deduplicated; entries outside any prefix (system dirs) are kept in place. These
+# are *only* the list-valued vars — single-valued setenvs like ROOTSYS,
+# <PKG>_ROOT and <PKG>_INCLUDE_DIR are deliberately left untouched, because
+# software uses them to locate package-relative files (e.g. $ROOTSYS/etc) that
+# the view does not merge.
+COLLAPSE_VARS = (
+    "PATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "CMAKE_PREFIX_PATH",
+    "PKG_CONFIG_PATH", "PYTHONPATH", "ROOT_INCLUDE_PATH", "CPATH",
+)
 
 
 def collect_roots(env):
@@ -51,34 +60,49 @@ def ensure_view(roots, cache_root, _build=build_view):
     return view_dir
 
 
-def _python_path(view_dir):
-    hits = sorted(glob.glob(os.path.join(view_dir, "lib", "python*", "site-packages")))
-    unversioned = os.path.join(view_dir, "lib", "python", "site-packages")
-    if os.path.isdir(unversioned):
-        hits.append(unversioned)
-    return os.pathsep.join(hits)
+def _remap_entry(entry, roots_longest_first, view_dir):
+    """Map a single path entry onto the view: if it lives under a package root,
+    replace that root with *view_dir*; otherwise (a system/foreign dir) return it
+    unchanged. Roots are matched longest-first so a prefix root can't shadow a
+    deeper one.
+    """
+    for root in roots_longest_first:
+        if entry == root:
+            return view_dir
+        if entry.startswith(root + os.sep):
+            return view_dir + entry[len(root):]
+    return entry
 
 
-def collapse_exports(env, cache_root, lib_path_var="LD_LIBRARY_PATH",
-                     system_path="/usr/bin:/bin", _ensure=ensure_view):
-    """Return shell ``export`` lines that replace the path-list vars with the
-    view's single entries. Empty string when there is nothing to collapse.
+def collapse_exports(env, cache_root, _ensure=ensure_view):
+    """Return shell ``export`` lines that collapse the additive path variables
+    onto a merged view of the loaded closure. Empty string when there are no
+    package roots in *env*.
+
+    Each variable's entries are remapped through the view and de-duplicated, so a
+    variable that listed every dependency's directory becomes a single view entry
+    (plus any system directories, kept in place). Set-valued environment is left
+    entirely alone — the caller keeps the modulefiles' setenvs.
     """
     roots = collect_roots(env)
     if not roots:
         return ""
     view_dir = _ensure(roots, cache_root)
-    ve = view_env(view_dir, lib_path_var=lib_path_var)
+    roots_longest_first = sorted(roots, key=len, reverse=True)
     lines = []
-    if "PATH" in ve:
-        tail = (os.pathsep + system_path) if system_path else ""
-        lines.append('export PATH="%s%s"' % (ve["PATH"], tail))
-    for var in (lib_path_var, "CMAKE_PREFIX_PATH", "PKG_CONFIG_PATH"):
-        if var in ve:
-            lines.append('export %s="%s"' % (var, ve[var]))
-    pythonpath = _python_path(view_dir)
-    if pythonpath:
-        lines.append('export PYTHONPATH="%s"' % pythonpath)
+    for var in COLLAPSE_VARS:
+        if var not in env or not env[var]:
+            continue
+        out, seen = [], set()
+        for entry in env[var].split(os.pathsep):
+            if not entry:
+                continue
+            mapped = _remap_entry(entry, roots_longest_first, view_dir)
+            if mapped not in seen:
+                seen.add(mapped)
+                out.append(mapped)
+        if out:
+            lines.append('export %s="%s"' % (var, os.pathsep.join(out)))
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -89,13 +113,8 @@ def main(argv=None):
                     "environment's path variables onto a cached merged view.")
     ap.add_argument("--cache", required=True,
                     help="Directory under which per-closure views are cached.")
-    ap.add_argument("--lib-var", default="LD_LIBRARY_PATH",
-                    help="Library path variable (DYLD_LIBRARY_PATH on macOS).")
-    ap.add_argument("--system-path", default="/usr/bin:/bin",
-                    help="System PATH tail to keep after the view's bin.")
     args = ap.parse_args(argv)
-    sys.stdout.write(collapse_exports(dict(os.environ), args.cache,
-                                      args.lib_var, args.system_path))
+    sys.stdout.write(collapse_exports(dict(os.environ), args.cache))
     return 0
 
 

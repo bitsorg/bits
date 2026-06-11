@@ -552,20 +552,17 @@ IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
 # be captured/parsed cleanly. Honoured by environment-modules >= 4.
 [[ -z "${VERBOSE:-}" ]] && export MODULES_VERBOSITY=silent
 
-# --view: once modules are loaded *in process*, replace the long path-list
+# --view: once modules are loaded *in process*, collapse the additive path
 # variables (PATH / LD_LIBRARY_PATH / CMAKE_PREFIX_PATH / PKG_CONFIG_PATH /
-# PYTHONPATH) with single entries from a merged view of the loaded closure, so the
-# environment stays small on big stacks. The modulefiles' setenvs (<PKG>_ROOT,
-# ROOTSYS, recipe env: variables) are left untouched. The view is cached per
-# closure under $WORK_DIR/VIEWS/$ARCHITECTURE. Captured before any module load.
-BITS_ORIG_PATH="${PATH}"
+# PYTHONPATH / ROOT_INCLUDE_PATH) onto a merged view of the loaded closure, so the
+# environment stays small on big stacks. Each entry is remapped from its package
+# prefix onto the view and de-duplicated; system entries are kept. The
+# modulefiles' setenvs (<PKG>_ROOT, ROOTSYS, recipe env: variables) are left
+# untouched. The view is cached per closure under $WORK_DIR/VIEWS/$ARCHITECTURE.
 applyView() {
   [[ $VIEWOPT == 1 ]] || return 0
-  local _libvar=LD_LIBRARY_PATH
-  [[ $UNAME == Darwin ]] && _libvar=DYLD_LIBRARY_PATH
   eval "$(PYTHONPATH="${BITSDIR}${PYTHONPATH:+:$PYTHONPATH}" python3 -m bits_helpers.view_cmd \
-            --cache "${WORK_DIR}/VIEWS/${ARCHITECTURE}" --lib-var "${_libvar}" \
-            --system-path "${BITS_ORIG_PATH}" 2> /dev/null)"
+            --cache "${WORK_DIR}/VIEWS/${ARCHITECTURE}" 2> /dev/null)"
 }
 
 case "$ACTION" in
