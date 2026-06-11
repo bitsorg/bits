@@ -1003,7 +1003,7 @@ work_dir     = /opt/sw
 organisation = MYORG
 ```
 
-> **Format note.** `bits.rc` keeps a single `[bits]` section with the canonical keys above. The old per-organisation `[NAME]` sections and the keys `sw_dir`, `repo_dir`, `search_path`, `pkg_prefix`, and `branding` are no longer accepted: `bits` detects such a file, prints the required renames (`sw_dir`→`work_dir`, `repo_dir`→`config_dir`, and so on), and exits. Display prefix and branding (`BITS_PKG_PREFIX`, `BITS_BRANDING`) and recipe search order (`BITS_PATH` / repository providers) are environment/provider concerns rather than `bits.rc` keys; the `aliBuild` wrapper sets the ALICE branding env vars automatically.
+> **Format note.** `bits.rc` may be a flat `key = value` file or a single `[bits]` INI section — a header-less file is read as the `[bits]` section. The old per-organisation `[NAME]` sections and the keys `sw_dir`, `repo_dir`, `pkg_prefix`, and `branding` are no longer accepted: `bits` detects such a file, prints the required renames (`sw_dir`→`work_dir`, `repo_dir`→`config_dir`), and exits. `search_path` **is** still supported — it seeds `BITS_PATH` (comma-separated relative names resolve to `<config_dir>/<name>.bits`), which is required so that building a single package whose recipe lives in a sub-repo (e.g. `bits build ROOT` where `ROOT` is in `./lcg.bits`) finds it; an explicit `BITS_PATH` environment variable wins. Display prefix and branding (`BITS_PKG_PREFIX`, `BITS_BRANDING`) are environment concerns the `aliBuild` wrapper sets automatically.
 
 ---
 
