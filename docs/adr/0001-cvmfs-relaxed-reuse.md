@@ -127,7 +127,7 @@ separate, bits-owned overlay (generated modulefiles + module-side metadata) that
 selects the source: `strict` reads the package-side `.meta.json` (the binary's
 own hash); `relaxed` reads the module-side `build_id`.
 
-**D7 — Importer (`bits cvmfs-import` or standalone tool).** Convert a foreign
+**D7 — Importer (`bits import`).** Convert a foreign
 deployment into a bits-consumable overlay:
 
 1. **Harvest** the deployed modulefiles by *evaluating* them
@@ -149,6 +149,11 @@ deployment into a bits-consumable overlay:
 5. **Generate** the bits overlay modulefiles (retargeted prefix + `build_id` +
    remapped deps) and the module-side metadata of D6, with **path validation**
    (the generated paths must exist in the CVMFS tree) and per-package overrides.
+   The modulefile is made **build-sufficient** — it adds the build hooks
+   (`CMAKE_PREFIX_PATH`/`PKG_CONFIG_PATH`/`CPATH`/`<Pkg>_ROOT`, guarded on the
+   tree) so a grafted dep's build env comes from *loading the modulefile* (via
+   `bits printenv`/module), the same mechanism as bits-native deps. No separate
+   `init.sh` is synthesised.
 
 The corpus is simultaneously the import source, the bits-native manifest for the
 release, the template library, and the name corpus.

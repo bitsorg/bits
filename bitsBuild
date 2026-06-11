@@ -25,7 +25,7 @@ from bits_helpers.clean import doClean
 from bits_helpers.cleanup import doCleanup
 from bits_helpers.deps import doDeps
 from bits_helpers.brew import doBrew
-from bits_helpers.cvmfs_import_cmd import doCvmfsImport
+from bits_helpers.cvmfs_import_cmd import doImport
 from bits_helpers.doctor import doDoctor
 from bits_helpers.init import doInit
 from bits_helpers.publish import doPublish
@@ -91,8 +91,8 @@ def doMain(args, parser):
   if args.action == "brew":
     sys.exit(0 if doBrew(args, parser) else 1)
 
-  if args.action == "cvmfs-import":
-    sys.exit(0 if doCvmfsImport(args, parser) else 1)
+  if args.action == "import":
+    sys.exit(0 if doImport(args, parser) else 1)
 
   if args.action == "clean":
     doClean(workDir=args.workDir, architecture=args.architecture,

@@ -246,43 +246,43 @@ def doParseArgs():
   stats_parser.add_argument("--json", dest="json", action="store_true",
                             help="Emit machine-readable JSON instead of the text report.")
 
-  cvmfs_import_parser = subparsers.add_parser(
-      "cvmfs-import",
+  import_parser = subparsers.add_parser(
+      "import",
       help="import a foreign CVMFS deployment (e.g. LCG) into a bits reuse overlay",
       description=(
           "Harvest each deployed module's resolved environment (or read a "
           "manifest), closure-check the set, stamp it with one deterministic "
-          "build_id, and generate a per-build_id overlay (bits modulefiles + "
-          "build-sufficient init.sh + module-side .meta.json + .cvmfscatalog) "
-          "that 'bits build --reuse-policy relaxed --reuse-base <build_id>' can "
-          "graft without recompiling. See ADR-0001."
+          "build_id, and generate a per-build_id overlay (build-sufficient bits "
+          "modulefiles + module-side .meta.json + .cvmfscatalog) that "
+          "'bits build --reuse-policy relaxed --reuse-base <build_id>' can graft "
+          "without recompiling. See ADR-0001."
       ),
   )
-  cvmfs_import_parser.add_argument("-w", "--work-dir", dest="workDir",
-                                   default=DEFAULT_WORK_DIR,
-                                   help="Build work area (overlay defaults to <work-dir>/MODULES).")
-  cvmfs_import_parser.add_argument("-a", "--architecture", dest="architecture",
-                                   metavar="ARCH", default=detectedArch,
-                                   help="Architecture the deployment was built for (default: %(default)s).")
-  cvmfs_import_parser.add_argument("--modulepath", dest="cvmfsImportModulepath",
-                                   metavar="DIR", default=None,
-                                   help="MODULEPATH of the foreign deployment to harvest via modulecmd.")
-  cvmfs_import_parser.add_argument("--manifest", dest="cvmfsImportManifest",
-                                   metavar="FILE", default=None,
-                                   help="JSON manifest to import instead of harvesting (fallback when "
-                                        "no modulefiles exist).")
-  cvmfs_import_parser.add_argument("--aliases", dest="cvmfsImportAliases",
-                                   metavar="FILE", default=None,
-                                   help="JSON name-alias map (foreign -> bits names).")
-  cvmfs_import_parser.add_argument("--label", dest="cvmfsImportLabel",
-                                   metavar="NAME", default=None,
-                                   help="Human-readable build_id prefix (e.g. LCG_109). Default: import.")
-  cvmfs_import_parser.add_argument("--out", dest="cvmfsImportOut",
-                                   metavar="DIR", default=None,
-                                   help="Overlay root to write into (default: <work-dir>/MODULES).")
-  cvmfs_import_parser.add_argument("--force", dest="cvmfsImportForce",
-                                   action="store_true",
-                                   help="Stamp and write even if the release is not closed (deps missing).")
+  import_parser.add_argument("-w", "--work-dir", dest="workDir",
+                             default=DEFAULT_WORK_DIR,
+                             help="Build work area (overlay defaults to <work-dir>/MODULES).")
+  import_parser.add_argument("-a", "--architecture", dest="architecture",
+                             metavar="ARCH", default=detectedArch,
+                             help="Architecture the deployment was built for (default: %(default)s).")
+  import_parser.add_argument("--modulepath", dest="importModulepath",
+                             metavar="DIR", default=None,
+                             help="MODULEPATH of the foreign deployment to harvest via modulecmd.")
+  import_parser.add_argument("--manifest", dest="importManifest",
+                             metavar="FILE", default=None,
+                             help="JSON manifest to import instead of harvesting (fallback when "
+                                  "no modulefiles exist).")
+  import_parser.add_argument("--aliases", dest="importAliases",
+                             metavar="FILE", default=None,
+                             help="JSON name-alias map (foreign -> bits names).")
+  import_parser.add_argument("--label", dest="importLabel",
+                             metavar="NAME", default=None,
+                             help="Human-readable build_id prefix (e.g. LCG_109). Default: import.")
+  import_parser.add_argument("--out", dest="importOut",
+                             metavar="DIR", default=None,
+                             help="Overlay root to write into (default: <work-dir>/MODULES).")
+  import_parser.add_argument("--force", dest="importForce",
+                             action="store_true",
+                             help="Stamp and write even if the release is not closed (deps missing).")
 
   # Options for the analytics command
   # analytics_parser.add_argument("state", choices=["on", "off"], help="Whether to report analytics or not")

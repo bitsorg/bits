@@ -1,4 +1,4 @@
-"""`bits cvmfs-import` — import a foreign CVMFS deployment into a bits overlay.
+"""`bits import` — import a foreign CVMFS deployment into a bits reuse overlay.
 
 Harvest each deployed module's *resolved* environment (via `modulecmd display`)
 or read an equivalent manifest, classify it, closure-check the set, stamp it with
@@ -40,32 +40,32 @@ def _list_modules(modulepath):
     return sorted(ids)
 
 
-def doCvmfsImport(args, parser):
-    """Drive an import. Returns True on success, False on refusal/error."""
-    out_root = getattr(args, "cvmfsImportOut", None) or os.path.join(
+def doImport(args, parser):
+    """Drive `bits import`. Returns True on success, False on refusal/error."""
+    out_root = getattr(args, "importOut", None) or os.path.join(
         args.workDir, "MODULES")
     arch = args.architecture or "unknown"
-    label = getattr(args, "cvmfsImportLabel", None) or "import"
-    alias_path = getattr(args, "cvmfsImportAliases", None)
+    label = getattr(args, "importLabel", None) or "import"
+    alias_path = getattr(args, "importAliases", None)
     alias = AliasMap.load(alias_path) if alias_path else AliasMap()
-    force = bool(getattr(args, "cvmfsImportForce", False))
+    force = bool(getattr(args, "importForce", False))
 
-    manifest = getattr(args, "cvmfsImportManifest", None)
-    modulepath = getattr(args, "cvmfsImportModulepath", None)
+    manifest = getattr(args, "importManifest", None)
+    modulepath = getattr(args, "importModulepath", None)
 
     if manifest:
         try:
             with open(manifest) as fh:
                 corpus = corpus_from_manifest(json.load(fh))
         except Exception as exc:
-            error("cvmfs-import: cannot read manifest %s: %s", manifest, exc)
+            error("import: cannot read manifest %s: %s", manifest, exc)
             return False
         if not corpus:
-            error("cvmfs-import: manifest %s contained no packages", manifest)
+            error("import: manifest %s contained no packages", manifest)
             return False
     elif modulepath:
         if not os.path.isdir(modulepath):
-            error("cvmfs-import: modulepath %s does not exist", modulepath)
+            error("import: modulepath %s does not exist", modulepath)
             return False
         corpus = {}
         for mid in _list_modules(modulepath):
@@ -73,31 +73,31 @@ def doCvmfsImport(args, parser):
             if entry is not None:
                 corpus[mid] = entry
         if not corpus:
-            error("cvmfs-import: no modules harvested from %s "
+            error("import: no modules harvested from %s "
                   "(is environment-modules installed?)", modulepath)
             return False
     else:
-        error("cvmfs-import: provide --manifest <file> or --modulepath <dir>")
+        error("import: provide --manifest <file> or --modulepath <dir>")
         return False
 
     result = import_release(corpus, label, arch, out_root, alias=alias,
                             abi_tag=(args.architecture or ""), force=force)
 
     if result["dangling"] and not force:
-        error("cvmfs-import: release is not closed; these dependencies are "
+        error("import: release is not closed; these dependencies are "
               "missing from the set: %s", ", ".join(result["dangling"]))
         info("Import the missing packages too, add aliases, or re-run with "
              "--force to stamp an open set anyway.")
         return False
 
-    info("cvmfs-import: build_id %s", result["build_id"])
-    info("cvmfs-import: wrote %d module(s) under %s",
+    info("import: build_id %s", result["build_id"])
+    info("import: wrote %d module(s) under %s",
          len(result["written"]),
          os.path.join(out_root, result["build_id"], arch))
 
     if alias_path:
         gaps = alias.unmapped([mid.split("/", 1)[0] for mid in corpus])
         if gaps:
-            warning("cvmfs-import: %d name(s) had no bits alias and were passed "
+            warning("import: %d name(s) had no bits alias and were passed "
                     "through unchanged: %s", len(gaps), ", ".join(gaps))
     return True

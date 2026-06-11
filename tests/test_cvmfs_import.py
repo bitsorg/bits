@@ -8,7 +8,7 @@ import unittest
 from bits_helpers.cvmfs_import import (
     parse_module_display, factor_ops, summarize_options, build_corpus_entry,
     closure_check, compute_corpus_build_id, generate_modulefile,
-    generate_init_sh, build_module_meta,
+    build_module_meta,
     AliasMap, corpus_from_manifest, _infer_base_prefix, write_overlay,
     import_release,
 )
@@ -169,6 +169,22 @@ class TestGenerateModulefile(unittest.TestCase):
         # verbatim oddity preserved
         self.assertIn("something-weird custom args", lines)
 
+    def test_build_sufficient_hooks_in_modulefile(self):
+        # SAMPLE sets no CMAKE_PREFIX_PATH/PKG_CONFIG_PATH/CPATH → all added,
+        # the pkgconfig/include ones guarded on the deployed tree.
+        entry = build_corpus_entry(SAMPLE, PREFIX)
+        text = generate_modulefile("ROOT/6.38.00", entry, "bid")
+        self.assertIn("prepend-path CMAKE_PREFIX_PATH %s" % PREFIX, text)
+        self.assertIn('if {[file isdirectory "%s/lib/pkgconfig"]} {' % PREFIX, text)
+        self.assertIn("prepend-path PKG_CONFIG_PATH %s/lib/pkgconfig" % PREFIX, text)
+        self.assertIn('if {[file isdirectory "%s/include"]} {' % PREFIX, text)
+        self.assertIn("setenv ROOT_ROOT %s" % PREFIX, text)
+
+    def test_existing_cmake_prefix_not_redeclared(self):
+        entry = build_corpus_entry("prepend-path CMAKE_PREFIX_PATH %s\n" % PREFIX, PREFIX)
+        text = generate_modulefile("p/1", entry, "bid")
+        self.assertEqual(text.count("prepend-path CMAKE_PREFIX_PATH"), 1)
+
     def test_prefix_override_relocates(self):
         entry = build_corpus_entry(SAMPLE, PREFIX)
         text = generate_modulefile("ROOT/6.38.00", entry, "bid", prefix="/opt/root")
@@ -181,37 +197,12 @@ class TestGenerateModulefile(unittest.TestCase):
         self.assertNotIn("module-whatis", text)
 
 
-class TestGenerateInitSh(unittest.TestCase):
+class TestModulefileNaming(unittest.TestCase):
 
-    def setUp(self):
-        self.entry = build_corpus_entry(SAMPLE, PREFIX, version="6.38.00", revision="1")
-        self.sh = generate_init_sh("ROOT/6.38.00", self.entry)
-
-    def test_replays_path_ops_as_prepend_exports(self):
-        self.assertIn('export PATH="%s/bin${PATH:+:$PATH}"' % PREFIX, self.sh)
-        self.assertIn('export ROOTSYS="%s"' % PREFIX, self.sh)
-
-    def test_build_sufficient_extras(self):
-        # SAMPLE has no CMAKE_PREFIX_PATH / PKG_CONFIG_PATH → must be added
-        self.assertIn("CMAKE_PREFIX_PATH=\"$P", self.sh)
-        self.assertIn("$P/lib/pkgconfig", self.sh)
-        self.assertIn('[ -d "$P/include" ]', self.sh)
-        self.assertIn('export ROOT_ROOT="$P"', self.sh)
-
-    def test_existing_cmake_prefix_not_duplicated(self):
-        e = build_corpus_entry("prepend-path CMAKE_PREFIX_PATH %s\n" % PREFIX, PREFIX)
-        sh = generate_init_sh("p/1", e)
-        self.assertEqual(sh.count("export CMAKE_PREFIX_PATH="), 1)
-
-    def test_prefix_override(self):
-        sh = generate_init_sh("ROOT/6.38.00", self.entry, prefix="/opt/r")
-        self.assertIn('P="/opt/r"', sh)
-        self.assertNotIn(PREFIX, sh)
-
-    def test_dashed_name_sanitised(self):
+    def test_dashed_name_sanitised_in_root_var(self):
         e = build_corpus_entry("setenv X 1\n", "/cvmfs/p")
-        sh = generate_init_sh("py-foo/1", e)
-        self.assertIn("export PY_FOO_ROOT=", sh)
+        text = generate_modulefile("py-foo/1", e, "bid")
+        self.assertIn("setenv PY_FOO_ROOT /cvmfs/p", text)
 
 
 class TestBuildModuleMeta(unittest.TestCase):
@@ -313,8 +304,9 @@ class TestWriteOverlay(unittest.TestCase):
             self.assertIn('module-whatis "build_id: %s"' % bid, text)
             # dep edge remapped to bits name in the prereq
             self.assertIn("prereq python/3.13.11", text)
-            # hidden sidecars
-            self.assertTrue(os.path.isfile(os.path.join(arch_root, "root", ".6.38.00.init.sh")))
+            # modulefile is the single env artifact — no init.sh sidecar
+            self.assertFalse(os.path.exists(os.path.join(arch_root, "root", ".6.38.00.init.sh")))
+            self.assertIn("setenv ROOT_ROOT /cvmfs/x/ROOT/6.38.00", text)
             meta = json.load(open(os.path.join(arch_root, "root", ".6.38.00.meta.json")))
             self.assertEqual(meta["build_id"], bid)
             self.assertEqual(meta["abi_tag"], "x86-64-gcc13")

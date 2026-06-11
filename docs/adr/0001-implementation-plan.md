@@ -124,8 +124,18 @@ rejects it; strict path unchanged; suite green.
 
 Goal: turn a non-bits CVMFS release into a Stage-1-consumable overlay.
 
+> **As-built note (Stage 2 done).** The command is **`bits import`** (not
+> `cvmfs-import` — that read like a CernVM-FS-suite tool). There is **no
+> synthesised `init.sh`**: the generated modulefile is made *build-sufficient*
+> (it carries `CMAKE_PREFIX_PATH`/`PKG_CONFIG_PATH`/`CPATH`/`<Pkg>_ROOT`, the
+> path ones guarded on the deployed tree), so a grafted dep's environment is set
+> up by **loading its modulefile** (`module load` / `bits printenv`) — the same
+> single mechanism for imported and bits-native packages. Logic lives in
+> `bits_helpers/cvmfs_import.py` (stdlib-only) with the CLI in
+> `bits_helpers/cvmfs_import_cmd.py`.
+
 1. **Harvest → corpus.**
-   - New tool `tools/cvmfs_import.py` (or `bits cvmfs-import`).
+   - New subcommand `bits import` (`bits_helpers/cvmfs_import_cmd.py`).
    - Input modes: (a) modulefiles present → `MODULEPATH=<lcg> modulecmd sh
      display <pkg>/<ver>` per package, parse the *resolved* ops; (b)
      manifest-only → env from manifest paths + matched recipe template (fallback).
@@ -141,16 +151,17 @@ Goal: turn a non-bits CVMFS release into a Stage-1-consumable overlay.
    - Test: dangling-edge corpus → refused; complete corpus → stable id.
 
 3. **Generate overlay (D6/D10).**
-   - Per package, emit into `MODULES/<build_id>/<arch>/<pkg>/<ver>`: a bits
-     modulefile (generic `BitsModule` template + remapped `module load` deps +
-     verbatim extras + `module-whatis build_id/abi_tag`), and a **build-time
-     `init.sh`** synthesised from the same env (this is the "build-sufficient"
-     piece for foreign deps that lack one), plus module-side `.meta.json`.
+   - Per package, emit into `MODULES/<build_id>/<arch>/<pkg>/<ver>`: a
+     **build-sufficient** bits modulefile (harvested env ops re-targeted to the
+     deployed path + remapped deps as `prereq` + `module-whatis build_id` + the
+     build hooks `CMAKE_PREFIX_PATH`/`PKG_CONFIG_PATH`/`CPATH`/`<Pkg>_ROOT`,
+     guarded on the tree), plus a hidden module-side `.meta.json`. **No separate
+     `init.sh`** — the modulefile is the single env artifact.
    - Validate generated paths exist in the CVMFS tree; per-package overrides for
      the awkward ones (ROOT/Geant4 data, etc.).
-   - Drop a `.cvmfscatalog` at the overlay root (D9) → fast catalog enumeration.
-   - Test: generated overlay loads under modulecmd; `init.sh` exports the
-     build hooks (`CMAKE_PREFIX_PATH`, `*_ROOT`, `PKG_CONFIG_PATH`).
+   - Drop a `.cvmfscatalog` per `build_id` dir (D9) → fast catalog enumeration.
+   - Test: generated modulefile carries the build hooks (`CMAKE_PREFIX_PATH`,
+     `*_ROOT`, guarded `PKG_CONFIG_PATH`/`CPATH`).
 
 4. **Name-alias map (D8).**
    - `alias.yaml`: lcg.bits-name ↔ foreign-name; bootstrap from corpus+recipe
@@ -160,11 +171,12 @@ Goal: turn a non-bits CVMFS release into a Stage-1-consumable overlay.
 5. **Wire the overlay into Stage 1.**
    - The Stage-1 resolver reads module-side `.meta.json`/`build_id` from the
      overlay (D6 out-of-tree read), uses the alias map for name matching, and
-     grafts as in Stage 1 — now the grafted dep's `init.sh` is the *generated*
-     one. End-to-end test: import a fixture release → relaxed-build a top
-     package against it.
+     grafts as in Stage 1 — the grafted dep's build env now comes from loading
+     the *generated* build-sufficient modulefile (via `bits printenv`/module),
+     not an `init.sh`. End-to-end test: import a fixture release → relaxed-build
+     a top package against it.
 
-Done when: `bits cvmfs-import <release>` produces a loadable, catalog-backed,
+Done when: `bits import <release>` produces a loadable, catalog-backed,
 build-sufficient overlay that Stage 1 consumes to build a top package without
 rebuilding the base.
 
@@ -226,7 +238,8 @@ only by *added* keys. CI fails if the simple path's hash moves.
 ## Risk register (from the ADR review)
 
 1. **Build-sufficient env** — bits-native deps already ship `init.sh` (Stage 1
-   safe); the risk is concentrated in Stage 2's generated `init.sh`. Mitigate
+   safe); the risk is concentrated in Stage 2's generated build-sufficient
+   *modulefile* (loaded via `bits printenv`/module — no init.sh). Mitigate
    with the validation in Stage 2.3.
 2. **Strict cross-host hash reproducibility** — the `repro` block (Stage 0.2)
    records the inputs; `bits reproduce` (Stage 3) verifies. If parity fails in

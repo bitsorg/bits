@@ -1,4 +1,4 @@
-"""Tests for the `bits cvmfs-import` CLI driver (bits_helpers/cvmfs_import_cmd)."""
+"""Tests for the `bits import` CLI driver (bits_helpers/cvmfs_import_cmd)."""
 
 import json
 import os
@@ -6,14 +6,14 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
-from bits_helpers.cvmfs_import_cmd import doCvmfsImport, _list_modules
+from bits_helpers.cvmfs_import_cmd import doImport, _list_modules
 
 
 def _args(out, **kw):
     base = dict(workDir=out, architecture="x86_64-el9-gcc13",
-               cvmfsImportOut=out, cvmfsImportLabel="LCG_109",
-               cvmfsImportAliases=None, cvmfsImportForce=False,
-               cvmfsImportManifest=None, cvmfsImportModulepath=None)
+               importOut=out, importLabel="LCG_109",
+               importAliases=None, importForce=False,
+               importManifest=None, importModulepath=None)
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -53,7 +53,7 @@ class TestDoCvmfsImport(unittest.TestCase):
     def test_closed_manifest_writes_overlay(self):
         with tempfile.TemporaryDirectory() as out:
             mf = self._manifest(out, CLOSED_MANIFEST)
-            ok = doCvmfsImport(_args(out, cvmfsImportManifest=mf), None)
+            ok = doImport(_args(out, importManifest=mf), None)
             self.assertTrue(ok)
             # exactly one build_id dir written, with a catalog + modulefiles
             bids = [d for d in os.listdir(out) if d.startswith("LCG_109-")]
@@ -66,24 +66,24 @@ class TestDoCvmfsImport(unittest.TestCase):
         man = {"packages": [CLOSED_MANIFEST["packages"][0]]}   # ROOT, dep dangles
         with tempfile.TemporaryDirectory() as out:
             mf = self._manifest(out, man)
-            self.assertFalse(doCvmfsImport(_args(out, cvmfsImportManifest=mf), None))
+            self.assertFalse(doImport(_args(out, importManifest=mf), None))
             self.assertEqual([d for d in os.listdir(out) if d.startswith("LCG_109")], [])
 
     def test_open_release_forced(self):
         man = {"packages": [CLOSED_MANIFEST["packages"][0]]}
         with tempfile.TemporaryDirectory() as out:
             mf = self._manifest(out, man)
-            self.assertTrue(doCvmfsImport(
-                _args(out, cvmfsImportManifest=mf, cvmfsImportForce=True), None))
+            self.assertTrue(doImport(
+                _args(out, importManifest=mf, importForce=True), None))
 
     def test_no_source_errors(self):
         with tempfile.TemporaryDirectory() as out:
-            self.assertFalse(doCvmfsImport(_args(out), None))
+            self.assertFalse(doImport(_args(out), None))
 
     def test_missing_manifest_errors(self):
         with tempfile.TemporaryDirectory() as out:
-            self.assertFalse(doCvmfsImport(
-                _args(out, cvmfsImportManifest=os.path.join(out, "nope.json")), None))
+            self.assertFalse(doImport(
+                _args(out, importManifest=os.path.join(out, "nope.json")), None))
 
 
 if __name__ == "__main__":

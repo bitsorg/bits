@@ -169,15 +169,23 @@ def build_corpus_entry(display_text, base_prefix, version=None, revision=None):
 
 
 def generate_modulefile(module_id, entry, build_id, prefix=None):
-    """Regenerate a bits-style modulefile for a corpus *entry*.
+    """Regenerate a **build-sufficient** bits-style modulefile for a corpus entry.
 
-    Re-targets the factored ``$PREFIX`` to *prefix* (defaults to the deployed
-    ``base_prefix``, i.e. the overlay points straight at the package on CVMFS),
-    stamps the ``build_id`` as a queryable ``module-whatis`` (not a setenv, so it
-    does not leak into the environment), emits each dependency as a ``prereq``,
-    then the env ops and any verbatim extras.
+    The modulefile is the single source of truth for the package's environment:
+    loading it (via environment-modules or ``bits printenv``) yields an env
+    sufficient to *build* against the package, so imported packages are consumed
+    exactly like bits-native ones — no separate ``init.sh`` sidecar is needed.
+
+    Re-targets the factored ``$PREFIX`` to *prefix* (the deployed path), stamps
+    the ``build_id`` as a queryable ``module-whatis`` (not a setenv, so it does
+    not leak into the environment), emits each dependency as a ``prereq`` and the
+    harvested env ops, then adds the few build-time hooks a runtime-only
+    modulefile might omit (``CMAKE_PREFIX_PATH`` / ``PKG_CONFIG_PATH`` / ``CPATH``
+    / ``<Pkg>_ROOT``) — each guarded on the deployed tree so it never introduces
+    a dangling path.
     """
     target = prefix if prefix is not None else entry.get("base_prefix", "")
+    pkg = module_id.split("/", 1)[0]
 
     def _sub(s):
         return s.replace("$PREFIX", target)
@@ -187,8 +195,28 @@ def generate_modulefile(module_id, entry, build_id, prefix=None):
         lines.append('module-whatis "build_id: %s"' % build_id)
     for dep in entry.get("deps", []):
         lines.append("prereq %s" % dep)
+
+    saw = set()
     for directive, var, value in entry.get("env", []):
+        saw.add(var)
         lines.append("%s %s %s" % (directive, var, _sub(value)))
+
+    # Build-time hooks the harvested runtime ops may not have provided.
+    if "CMAKE_PREFIX_PATH" not in saw:
+        lines.append("prepend-path CMAKE_PREFIX_PATH %s" % target)
+    if "PKG_CONFIG_PATH" not in saw:
+        lines.append('if {[file isdirectory "%s/lib/pkgconfig"]} {' % target)
+        lines.append("    prepend-path PKG_CONFIG_PATH %s/lib/pkgconfig" % target)
+        lines.append("}")
+    if "CPATH" not in saw:
+        lines.append('if {[file isdirectory "%s/include"]} {' % target)
+        lines.append("    prepend-path CPATH %s/include" % target)
+        lines.append("}")
+    root = _shell_id(pkg)
+    lines.append("setenv %s_ROOT %s" % (root, target))
+    if root.upper() != root:
+        lines.append("setenv %s_ROOT %s" % (root.upper(), target))
+
     for line in entry.get("verbatim", []):
         lines.append(_sub(line))
     return "\n".join(lines) + "\n"
@@ -197,60 +225,6 @@ def generate_modulefile(module_id, entry, build_id, prefix=None):
 def _shell_id(name):
     """Sanitise a package name to a valid shell/env identifier fragment."""
     return "".join(c if (c.isalnum() or c == "_") else "_" for c in name)
-
-
-def generate_init_sh(module_id, entry, prefix=None):
-    """Synthesise a **build-sufficient** ``init.sh`` for a corpus *entry*.
-
-    This is the ADR's highest-risk surface: a relaxed build breaks first at
-    compile/link if the grafted dependency exposes only a *runtime* environment.
-    So beyond replaying the modulefile's path ops as shell exports, we also
-    guarantee the three things a downstream **build** needs to find a dependency:
-
-    * ``CMAKE_PREFIX_PATH`` contains the prefix (CMake ``find_package`` config mode);
-    * ``PKG_CONFIG_PATH`` contains ``lib/pkgconfig`` (autotools/pkg-config);
-    * ``<Pkg>_ROOT`` / ``<PKG>_ROOT`` point at the prefix (find_package ROOT hint);
-    * headers are surfaced via ``CPATH`` when an ``include/`` dir exists.
-
-    Path-existence is guarded at runtime (``[ -d ... ]``) since the deployed tree
-    is not inspectable at generation time.
-    """
-    target = prefix if prefix is not None else entry.get("base_prefix", "")
-    pkg = module_id.split("/", 1)[0]
-
-    def _sub(s):
-        return s.replace("$PREFIX", target)
-
-    lines = ["# build-sufficient environment for %s (generated)" % module_id,
-             'P="%s"' % target]
-
-    saw = set()
-    for directive, var, value in entry.get("env", []):
-        val = _sub(value)
-        saw.add(var)
-        if directive == "setenv":
-            lines.append('export %s="%s"' % (var, val))
-        elif directive == "append-path":
-            lines.append('export %s="${%s:+$%s:}%s"' % (var, var, var, val))
-        else:  # prepend-path
-            lines.append('export %s="%s${%s:+:$%s}"' % (var, val, var, var))
-
-    # Build-time guarantees the runtime modulefile may not have provided.
-    if "CMAKE_PREFIX_PATH" not in saw:
-        lines.append('export CMAKE_PREFIX_PATH="$P${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"')
-    if "PKG_CONFIG_PATH" not in saw:
-        lines.append('[ -d "$P/lib/pkgconfig" ] && '
-                     'export PKG_CONFIG_PATH="$P/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"')
-    lines.append('[ -d "$P/include" ] && '
-                 'export CPATH="$P/include${CPATH:+:$CPATH}"')
-    root = _shell_id(pkg)
-    lines.append('export %s_ROOT="$P"' % root)
-    if root.upper() != root:
-        lines.append('export %s_ROOT="$P"' % root.upper())
-
-    for line in entry.get("verbatim", []):
-        lines.append("# verbatim: " + _sub(line))
-    return "\n".join(lines) + "\n"
 
 
 def build_module_meta(module_id, entry, build_id, package_hash="", abi_tag=""):
@@ -458,12 +432,13 @@ def write_overlay(corpus, build_id, arch, out_root, alias=None,
 
         <out_root>/<build_id>/<arch>/
             .cvmfscatalog
-            <bits_name>/<version>            # Tcl modulefile (module avail)
-            <bits_name>/.<version>.init.sh   # build-sufficient env (hidden)
+            <bits_name>/<version>             # build-sufficient Tcl modulefile
             <bits_name>/.<version>.meta.json  # relaxed-resolver metadata (hidden)
 
-    Foreign names (module ids and dep edges) are remapped to bits names through
-    *alias*. Returns the sorted list of written bits module ids.
+    The modulefile is the single environment artifact (no init.sh): loading it
+    yields a build-sufficient env, the same way bits-native packages are
+    consumed. Foreign names (module ids and dep edges) are remapped to bits names
+    through *alias*. Returns the sorted list of written bits module ids.
     """
     import json
     import os
@@ -481,8 +456,6 @@ def write_overlay(corpus, build_id, arch, out_root, alias=None,
         vfile = ver or "default"
         with open(os.path.join(dest, vfile), "w") as fh:
             fh.write(generate_modulefile(bits_id, remapped, build_id))
-        with open(os.path.join(dest, ".%s.init.sh" % vfile), "w") as fh:
-            fh.write(generate_init_sh(bits_id, remapped))
         meta = build_module_meta(bits_id, entry, build_id,
                                  package_hash=package_hashes.get(module_id, ""),
                                  abi_tag=abi_tag)
