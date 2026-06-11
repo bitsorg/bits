@@ -535,6 +535,15 @@ def doParseArgs():
                             help=("Comma-separated packages to always build locally even under "
                                   "--reuse-policy relaxed (e.g. a package you need patched), rather than "
                                   "grafting them from the base."))
+  build_parser.add_argument("--initdotsh-from-modules", dest="initdotshFromModules",
+                            action="store_true",
+                            help=("EXPERIMENTAL: set up each build's dependency environment from the "
+                                  "dependencies' modulefiles (the single source of truth used for runtime "
+                                  "AND development) instead of the legacy build-time init.sh, and gate the "
+                                  "per-recipe env reconstruction (bits_pythonpath_from_deps, CMAKE_PREFIX_PATH "
+                                  "rebuild) off. Because this changes build behaviour it is a HASHED input: "
+                                  "off-state hashes are unchanged; on-state produces a distinct, reproducible "
+                                  "identity (a separate artifact tree)."))
   build_remote.add_argument("--write-store", dest="writeStore", metavar="STORE", default="",
                             help=("Where to upload newly built packages. Same syntax as --remote-store, "
                                   "except ::rw is not recognised. Implies --no-system."))

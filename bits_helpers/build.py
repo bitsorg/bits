@@ -1512,6 +1512,18 @@ def doBuild(args, parser):
       meta.setdefault("env", _OD())
       for _k, _v in flavours.items():
         meta["env"][_k] = _v
+    # EXPERIMENTAL (--initdotsh-from-modules): publish a build-mode marker through
+    # the defaults-release env. Routing it here is deliberate: the defaults env is
+    # (a) folded into every package's hash, so flipping the mode yields a distinct,
+    # reproducible identity rather than silently colliding with strict-mode
+    # artifacts, and (b) exported into the build environment before each recipe is
+    # sourced, so bits_pythonpath_from_deps / CMakeRecipe can gate their now-
+    # redundant reconstruction on it. When the flag is off nothing is added, so
+    # existing hashes are byte-identical (the aliBuild simple case is unchanged).
+    if getattr(args, "initdotshFromModules", False):
+      from collections import OrderedDict as _OD
+      meta.setdefault("env", _OD())
+      meta["env"]["BITS_INITDOTSH_FROM_MODULES"] = "1"
     return meta, body
   (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
                                         defaultsReader, debug, args.architecture, args.configDir)

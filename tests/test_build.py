@@ -477,6 +477,32 @@ class BuildTestCase(unittest.TestCase):
         self.assertEqual(len(extra["remote_hashes"]), 3)
         self.assertEqual(extra["local_hashes"][0], TEST_EXTRA_BUILD_HASH)
 
+    def test_initdotsh_from_modules_is_a_hashed_input(self) -> None:
+        """--initdotsh-from-modules must fold into the hash so the mode change is
+        reproducible (a distinct identity), while leaving off-state hashes
+        byte-identical to today (the aliBuild simple case).
+
+        The flag is published through the defaults-release env
+        (BITS_INITDOTSH_FROM_MODULES=1), which every package depends on — so a
+        change to it flows into every package's hash. This guards that wiring.
+        """
+        def _default_hash(mode_on):
+            d = self.setup_spec(TEST_DEFAULT_RELEASE)
+            d["commit_hash"] = "0"
+            d["is_devel_pkg"] = False
+            if mode_on:
+                d.setdefault("env", OrderedDict())["BITS_INITDOTSH_FROM_MODULES"] = "1"
+            specs = {d["package"]: d}
+            storeHashes("defaults-release", specs, considerRelocation=False)
+            return d["remote_revision_hash"]
+
+        # Off: byte-identical to the pinned golden hash (no rebuild for anyone).
+        self.assertEqual(_default_hash(False), TEST_DEFAULT_RELEASE_BUILD_HASH)
+        # On: a distinct identity (separate artifact tree), and deterministic.
+        on = _default_hash(True)
+        self.assertNotEqual(on, TEST_DEFAULT_RELEASE_BUILD_HASH)
+        self.assertEqual(on, _default_hash(True))
+
     def test_initdotsh(self) -> None:
         """Sanity-check the generated init.sh for a few variables."""
         specs = {
