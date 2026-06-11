@@ -188,13 +188,35 @@ def capture_legacy(init_sh, work_dir, arch):
     return _capture('. "%s" >/dev/null 2>&1 || true' % init_sh, base)
 
 
-def capture_modules(module, work_dir, arch, from_modules_cmd):
-    base = {"HOME": os.environ.get("HOME", "/tmp"),
-            "PATH": "/usr/bin:/bin",
+def _modules_base_env(work_dir, arch):
+    # SHELL must be set: `bits printenv` resolves the output shell via detectShell,
+    # and with SHELL unset it can emit syntax the capturing bash cannot eval (only
+    # the PATH prepend survives), producing a near-empty, misleading comparison.
+    return {"HOME": os.environ.get("HOME", "/tmp"),
+            "PATH": "/usr/bin:/bin", "SHELL": "/bin/bash",
             "WORK_DIR": work_dir, "ARCHITECTURE": arch,
             "MODULEPATH": os.path.join(work_dir, "MODULES", arch)}
+
+
+def capture_modules(module, work_dir, arch, from_modules_cmd):
+    base = _modules_base_env(work_dir, arch)
     cmd = from_modules_cmd.format(module=module)
     return _capture('eval "$(%s 2>/dev/null)" >/dev/null 2>&1 || true' % cmd, base)
+
+
+def dump_modules_raw(module, work_dir, arch, from_modules_cmd):
+    """Return the raw stdout+stderr of the from-modules command for *module*.
+
+    Diagnostic: shows exactly what e.g. `bits printenv <module>` emits, so a
+    near-empty modules env (only PATH surviving) can be traced to the command
+    rather than mistaken for sparse modulefiles.
+    """
+    cmd = from_modules_cmd.format(module=module)
+    proc = subprocess.run(["bash", "-c", cmd],
+                          env=_modules_base_env(work_dir, arch),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          universal_newlines=True)
+    return proc.stdout
 
 
 def discover_packages(work_dir, arch):
@@ -248,7 +270,17 @@ def main(argv=None):
                          "Default uses modulecmd + MODULEPATH; alt: 'bits printenv {module}'.")
     ap.add_argument("--quiet-matches", action="store_true",
                     help="Only print packages with a functional difference.")
+    ap.add_argument("--dump-raw", metavar="MODULE", default=None,
+                    help="Diagnostic: print the raw output of the from-modules "
+                         "command for MODULE (e.g. ROOT/v6.38.00-local1) and exit. "
+                         "Use this to check the modules side is actually emitting "
+                         "setenv/prepend-path, not just PATH.")
     args = ap.parse_args(argv)
+
+    if args.dump_raw:
+        sys.stdout.write(dump_modules_raw(args.dump_raw, args.work_dir,
+                                          args.architecture, args.from_modules_cmd))
+        return 0
 
     pkgs = discover_packages(args.work_dir, args.architecture)
     if not pkgs:
