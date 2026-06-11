@@ -205,6 +205,5 @@ class ReleaseBaseTestCase(unittest.TestCase):
     # An explicitly-positioned release is respected as written.
     self.assertEqual(_with_release_base(["dev4", "release"]), ["dev4", "release"])
 
-
 if __name__ == '__main__':
   unittest.main()
