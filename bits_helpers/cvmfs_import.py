@@ -319,3 +319,193 @@ def compute_corpus_build_id(corpus, label):
     digest = hashlib.sha256(
         json.dumps(members, sort_keys=True).encode("utf-8")).hexdigest()[:12]
     return "%s-%s" % (label, digest)
+
+
+# ── Name-alias map (D8): lcg.bits name <-> foreign module name ────────────────
+#
+# The single fuzzy, human-maintained step. Foreign deployments name modules in
+# their own scheme (e.g. LCG's "ROOT"); bits recipes use their own (e.g. "root").
+# The alias map translates foreign → bits at generation time so the overlay's
+# module ids and prereq edges resolve against bits-native names. Names absent
+# from the map pass through unchanged; `unmapped()` reports the gaps to fill in.
+
+class AliasMap(object):
+
+    def __init__(self, foreign_to_bits=None):
+        self._f2b = dict(foreign_to_bits or {})
+        self._b2f = {}
+        for foreign, bits in self._f2b.items():
+            self._b2f.setdefault(bits, foreign)   # first wins on collision
+
+    def to_bits(self, name):
+        return self._f2b.get(name, name)
+
+    def to_foreign(self, name):
+        return self._b2f.get(name, name)
+
+    def unmapped(self, foreign_names):
+        """Foreign names with no explicit bits alias (the human to-do list)."""
+        return sorted(n for n in set(foreign_names) if n not in self._f2b)
+
+    @classmethod
+    def load(cls, path):
+        """Load a map from JSON. Accepts ``{foreign: bits}``, ``{"aliases": {..}}``
+        or ``[[foreign, bits], ...]``. Returns an empty (identity) map on error."""
+        import json
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+        except Exception:
+            return cls()
+        if isinstance(data, dict):
+            data = data.get("aliases", data)
+        if isinstance(data, dict):
+            return cls({str(k): str(v) for k, v in data.items()})
+        if isinstance(data, list):
+            try:
+                return cls({str(a): str(b) for a, b in data})
+            except Exception:
+                return cls()
+        return cls()
+
+
+def _remap_id(module_id, fn):
+    """Apply name-mapping *fn* to the name component of ``name/version``."""
+    if "/" in module_id:
+        name, ver = module_id.split("/", 1)
+        return fn(name) + "/" + ver
+    return fn(module_id)
+
+
+# ── Harvest driver + manifest fallback + overlay writer ───────────────────────
+
+def _infer_base_prefix(ops, module_id=""):
+    """Best-effort install prefix of a package from its own path ops.
+
+    Prefer a ``PATH .../bin`` (strip ``/bin``), then a ``*LIBRARY_PATH .../lib``;
+    else the common path of all absolute op values. Used when the harvest source
+    does not state the prefix explicitly.
+    """
+    import os
+    for _d, var, val in ops:
+        if var == "PATH" and val.endswith("/bin"):
+            return val[:-len("/bin")]
+    for _d, var, val in ops:
+        if var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH") and val.endswith("/lib"):
+            return val[:-len("/lib")]
+    vals = [v for _d, _v, v in ops if v.startswith("/")]
+    if not vals:
+        return ""
+    try:
+        return os.path.commonpath(vals)
+    except Exception:
+        return os.path.dirname(vals[0])
+
+
+def harvest_display(module_id, modulepath, modulecmd="modulecmd", base_prefix=None):
+    """Harvest one deployed module into a corpus entry by running
+    ``modulecmd sh display <module_id>`` under *modulepath*.
+
+    environment-modules writes the resolved display to **stderr**. Returns the
+    corpus entry, or None if the command could not be run. The shell-out is the
+    only non-pure part of the importer; everything downstream is testable.
+    """
+    import os
+    import subprocess
+    env = dict(os.environ)
+    env["MODULEPATH"] = modulepath
+    try:
+        proc = subprocess.run([modulecmd, "sh", "display", module_id],
+                              env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True)
+    except Exception:
+        return None
+    text = proc.stderr or proc.stdout or ""
+    ver = module_id.split("/", 1)[1] if "/" in module_id else None
+    parsed = parse_module_display(text)
+    prefix = base_prefix or _infer_base_prefix(parsed["ops"], module_id)
+    return build_corpus_entry(text, prefix, version=ver)
+
+
+def corpus_from_manifest(manifest):
+    """Fallback corpus builder for deployments without modulefiles.
+
+    *manifest* is ``{"packages": [item, ...]}`` or a bare list, where each item
+    is ``{module_id, base_prefix, env, deps, version, revision[, verbatim]}`` and
+    ``env`` is the already-factored ``[[directive, var, value], ...]`` list.
+    """
+    items = manifest.get("packages", manifest) if isinstance(manifest, dict) else manifest
+    corpus = {}
+    for it in items:
+        mid = it["module_id"]
+        corpus[mid] = {
+            "version": it.get("version"),
+            "revision": it.get("revision"),
+            "base_prefix": it.get("base_prefix", ""),
+            "env": [tuple(op) for op in it.get("env", [])],
+            "options": list(it.get("options", [])),
+            "verbatim": list(it.get("verbatim", [])),
+            "deps": list(it.get("deps", [])),
+        }
+    return corpus
+
+
+def write_overlay(corpus, build_id, arch, out_root, alias=None,
+                  package_hashes=None, abi_tag=""):
+    """Write the per-build_id module+metadata overlay (ADR-0001 D6/D10).
+
+    Layout (each build_id dir is one CVMFS nested catalog)::
+
+        <out_root>/<build_id>/<arch>/
+            .cvmfscatalog
+            <bits_name>/<version>            # Tcl modulefile (module avail)
+            <bits_name>/.<version>.init.sh   # build-sufficient env (hidden)
+            <bits_name>/.<version>.meta.json  # relaxed-resolver metadata (hidden)
+
+    Foreign names (module ids and dep edges) are remapped to bits names through
+    *alias*. Returns the sorted list of written bits module ids.
+    """
+    import json
+    import os
+    alias = alias or AliasMap()
+    package_hashes = package_hashes or {}
+    arch_root = os.path.join(out_root, build_id, arch)
+    written = []
+    for module_id, entry in corpus.items():
+        bits_id = _remap_id(module_id, alias.to_bits)
+        remapped = dict(entry)
+        remapped["deps"] = [_remap_id(d, alias.to_bits) for d in entry.get("deps", [])]
+        name, _, ver = bits_id.partition("/")
+        dest = os.path.join(arch_root, name)
+        os.makedirs(dest, exist_ok=True)
+        vfile = ver or "default"
+        with open(os.path.join(dest, vfile), "w") as fh:
+            fh.write(generate_modulefile(bits_id, remapped, build_id))
+        with open(os.path.join(dest, ".%s.init.sh" % vfile), "w") as fh:
+            fh.write(generate_init_sh(bits_id, remapped))
+        meta = build_module_meta(bits_id, entry, build_id,
+                                 package_hash=package_hashes.get(module_id, ""),
+                                 abi_tag=abi_tag)
+        with open(os.path.join(dest, ".%s.meta.json" % vfile), "w") as fh:
+            json.dump(meta, fh, indent=2, sort_keys=True)
+        written.append(bits_id)
+    os.makedirs(os.path.join(out_root, build_id), exist_ok=True)
+    open(os.path.join(out_root, build_id, ".cvmfscatalog"), "w").close()
+    return sorted(written)
+
+
+def import_release(corpus, label, arch, out_root, alias=None, abi_tag="",
+                   force=False):
+    """Orchestrate: closure-check → build_id → write overlay.
+
+    Returns ``{"build_id", "written", "dangling"}``. If the corpus is not closed
+    and *force* is false, no overlay is written and ``build_id`` is None — a
+    non-closed release cannot be coherently stamped.
+    """
+    dangling = closure_check(corpus)
+    if dangling and not force:
+        return {"build_id": None, "written": [], "dangling": dangling}
+    build_id = compute_corpus_build_id(corpus, label)
+    written = write_overlay(corpus, build_id, arch, out_root, alias=alias,
+                            abi_tag=abi_tag)
+    return {"build_id": build_id, "written": written, "dangling": dangling}

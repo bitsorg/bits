@@ -1,11 +1,16 @@
-"""Tests for bits_helpers/cvmfs_import.parse_module_display (ADR-0001 Stage 2)."""
+"""Tests for bits_helpers/cvmfs_import (ADR-0001 Stage 2)."""
 
+import json
+import os
+import tempfile
 import unittest
 
 from bits_helpers.cvmfs_import import (
     parse_module_display, factor_ops, summarize_options, build_corpus_entry,
     closure_check, compute_corpus_build_id, generate_modulefile,
     generate_init_sh, build_module_meta,
+    AliasMap, corpus_from_manifest, _infer_base_prefix, write_overlay,
+    import_release,
 )
 
 PREFIX = "/cvmfs/x/ROOT/6.38.00"
@@ -224,6 +229,106 @@ class TestBuildModuleMeta(unittest.TestCase):
         self.assertEqual(m["base_prefix"], PREFIX)
         self.assertEqual(m["deps"], ["Python/3.13.11", "Boost/1.90.0", "gcc/13"])
         self.assertTrue(m["imported"])
+
+
+class TestAliasMap(unittest.TestCase):
+
+    def test_bidirectional_with_identity_fallback(self):
+        a = AliasMap({"ROOT": "root", "Boost": "boost"})
+        self.assertEqual(a.to_bits("ROOT"), "root")
+        self.assertEqual(a.to_foreign("root"), "ROOT")
+        self.assertEqual(a.to_bits("Unknown"), "Unknown")   # identity passthrough
+        self.assertEqual(a.to_foreign("unknown"), "unknown")
+
+    def test_unmapped_reports_gaps(self):
+        a = AliasMap({"ROOT": "root"})
+        self.assertEqual(a.unmapped(["ROOT", "Boost", "Python", "Boost"]),
+                         ["Boost", "Python"])
+
+    def test_load_dict_and_list_forms(self):
+        with tempfile.TemporaryDirectory() as d:
+            p1 = os.path.join(d, "m1.json")
+            with open(p1, "w") as fh:
+                json.dump({"ROOT": "root"}, fh)
+            self.assertEqual(AliasMap.load(p1).to_bits("ROOT"), "root")
+            p2 = os.path.join(d, "m2.json")
+            with open(p2, "w") as fh:
+                json.dump({"aliases": [["Boost", "boost"]]}, fh)
+            self.assertEqual(AliasMap.load(p2).to_bits("Boost"), "boost")
+            self.assertEqual(AliasMap.load(os.path.join(d, "nope.json")).to_bits("x"), "x")
+
+
+class TestManifestAndInference(unittest.TestCase):
+
+    def test_corpus_from_manifest(self):
+        man = {"packages": [{
+            "module_id": "ROOT/6.38.00", "base_prefix": "/cvmfs/x/ROOT/6.38.00",
+            "version": "6.38.00", "revision": "1",
+            "env": [["prepend-path", "PATH", "$PREFIX/bin"]],
+            "deps": ["Python/3.13.11"],
+        }]}
+        c = corpus_from_manifest(man)
+        self.assertEqual(c["ROOT/6.38.00"]["env"], [("prepend-path", "PATH", "$PREFIX/bin")])
+        self.assertEqual(c["ROOT/6.38.00"]["deps"], ["Python/3.13.11"])
+
+    def test_infer_base_prefix_from_bin(self):
+        ops = [("prepend-path", "PATH", "/cvmfs/x/ROOT/6.38.00/bin"),
+               ("prepend-path", "LD_LIBRARY_PATH", "/cvmfs/x/ROOT/6.38.00/lib")]
+        self.assertEqual(_infer_base_prefix(ops), "/cvmfs/x/ROOT/6.38.00")
+
+    def test_infer_base_prefix_falls_back_to_lib(self):
+        ops = [("prepend-path", "LD_LIBRARY_PATH", "/cvmfs/x/Q/1.0/lib")]
+        self.assertEqual(_infer_base_prefix(ops), "/cvmfs/x/Q/1.0")
+
+
+class TestWriteOverlay(unittest.TestCase):
+
+    def _corpus(self):
+        return {
+            "ROOT/6.38.00": build_corpus_entry(SAMPLE, PREFIX, version="6.38.00", revision="1"),
+            "Python/3.13.11": build_corpus_entry(
+                "prepend-path PATH /cvmfs/x/Python/3.13.11/bin\n",
+                "/cvmfs/x/Python/3.13.11", version="3.13.11", revision="1"),
+            "Boost/1.90.0": build_corpus_entry(
+                "prepend-path LD_LIBRARY_PATH /cvmfs/x/Boost/1.90.0/lib\n",
+                "/cvmfs/x/Boost/1.90.0", version="1.90.0", revision="1"),
+            "gcc/13": build_corpus_entry("setenv CC /cvmfs/x/gcc/13/bin/gcc\n",
+                                         "/cvmfs/x/gcc/13", version="13", revision="1"),
+        }
+
+    def test_layout_and_alias_remap(self):
+        alias = AliasMap({"ROOT": "root", "Python": "python", "Boost": "boost"})
+        with tempfile.TemporaryDirectory() as out:
+            res = import_release(self._corpus(), "LCG_109", "x86_64-el9-gcc13",
+                                 out, alias=alias, abi_tag="x86-64-gcc13")
+            bid = res["build_id"]
+            self.assertTrue(bid.startswith("LCG_109-"))
+            self.assertEqual(res["dangling"], [])
+            self.assertIn("root/6.38.00", res["written"])   # remapped name
+            arch_root = os.path.join(out, bid, "x86_64-el9-gcc13")
+            # modulefile present at name/version
+            mf = os.path.join(arch_root, "root", "6.38.00")
+            self.assertTrue(os.path.isfile(mf))
+            text = open(mf).read()
+            self.assertIn('module-whatis "build_id: %s"' % bid, text)
+            # dep edge remapped to bits name in the prereq
+            self.assertIn("prereq python/3.13.11", text)
+            # hidden sidecars
+            self.assertTrue(os.path.isfile(os.path.join(arch_root, "root", ".6.38.00.init.sh")))
+            meta = json.load(open(os.path.join(arch_root, "root", ".6.38.00.meta.json")))
+            self.assertEqual(meta["build_id"], bid)
+            self.assertEqual(meta["abi_tag"], "x86-64-gcc13")
+            # one nested catalog per build_id
+            self.assertTrue(os.path.isfile(os.path.join(out, bid, ".cvmfscatalog")))
+
+    def test_non_closed_corpus_refused(self):
+        corpus = {"ROOT/6.38.00": build_corpus_entry(SAMPLE, PREFIX)}  # deps dangle
+        with tempfile.TemporaryDirectory() as out:
+            res = import_release(corpus, "L", "arch", out)
+            self.assertIsNone(res["build_id"])
+            self.assertEqual(res["written"], [])
+            self.assertTrue(res["dangling"])
+            self.assertEqual(os.listdir(out), [])   # nothing written
 
 
 if __name__ == "__main__":
