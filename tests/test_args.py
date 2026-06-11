@@ -234,5 +234,34 @@ class ReusePolicyArgsTestCase(unittest.TestCase):
     self.assertEqual(a["buildLocal"], ["p1", "p2"])
 
 
+class ReadBitsRcTestCase(unittest.TestCase):
+  """_read_bits_rc accepts the simplified flat layout and the [bits] section."""
+
+  def _read(self, content):
+    import tempfile, os
+    import bits_helpers.args as A
+    p = os.path.join(tempfile.mkdtemp(), "bits.rc")
+    with open(p, "w") as fh:
+      fh.write(content)
+    with mock.patch.object(A, "_BITS_RC_SEARCH_PATHS", [p]):
+      return A._read_bits_rc()
+
+  def test_flat_headerless_file(self):
+    # The simplified format (no [bits] section), incl. a trailing space.
+    rc = self._read("organisation = stacks \nconfig_dir=.\n")
+    self.assertEqual(rc.get("organisation"), "stacks")
+    self.assertEqual(rc.get("config_dir"), ".")
+
+  def test_explicit_bits_section_still_works(self):
+    rc = self._read("[bits]\norganisation = stacks\nconfig_dir = .\n")
+    self.assertEqual(rc.get("organisation"), "stacks")
+    self.assertEqual(rc.get("config_dir"), ".")
+
+  def test_missing_file_returns_empty(self):
+    import bits_helpers.args as A
+    with mock.patch.object(A, "_BITS_RC_SEARCH_PATHS", ["/no/such/bits.rc"]):
+      self.assertEqual(A._read_bits_rc(), {})
+
+
 if __name__ == '__main__':
   unittest.main()

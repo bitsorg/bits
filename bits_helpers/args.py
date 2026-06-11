@@ -99,20 +99,34 @@ def _parse_provider_policy(value: str) -> dict:
 def _read_bits_rc() -> dict:
   """Return settings from the first bits.rc / .bitsrc / ~/.bitsrc found.
 
-  Only the ``[bits]`` section is returned; all keys are lower-cased.
-  Returns an empty dict when no config file is present.
+  Accepts either the simplified flat ``key = value`` layout (no section header)
+  or an explicit ``[bits]`` INI section; a header-less file is treated as the
+  ``[bits]`` section. All keys are lower-cased. Returns an empty dict when no
+  readable config file is present.
 
   Example bits.rc::
 
-      [bits]
-      providers = https://github.com/org/bits-stdlib.git@stable
-      sw_dir    = /opt/sw
+      organisation = stacks
+      config_dir   = .
   """
   cfg = configparser.ConfigParser()
   for path in _BITS_RC_SEARCH_PATHS:
-    if exists(path):
-      cfg.read(path)
-      break
+    if not exists(path):
+      continue
+    try:
+      with open(path) as fh:
+        content = fh.read()
+    except OSError:
+      return {}
+    # Tolerate a flat, header-less file: synthesise the [bits] section so the
+    # same parser handles both the flat and the explicit-[bits] layouts.
+    if not any(line.lstrip().startswith("[") for line in content.splitlines()):
+      content = "[bits]\n" + content
+    try:
+      cfg.read_string(content, source=path)
+    except configparser.Error:
+      return {}
+    break
   return dict(cfg["bits"]) if "bits" in cfg else {}
 
 
