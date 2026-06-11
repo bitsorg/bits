@@ -1748,9 +1748,14 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         spec["cvmfs_build_id"] = _m.get("build_id")
         if _m.get("hash"):
           spec["cvmfs_hash"] = _m["hash"]
+        # Adopt the DEPLOYED version/revision (base versions win, ADR-0001) so the
+        # install path and the consumer's reuse-decision regex both match the
+        # deployed tarball. version/revision come from the deployed .meta.json.
         if _m.get("version"):
           spec["version"] = _m["version"]
-          spec.setdefault("tag", spec["version"])
+          spec["tag"] = _m["version"]
+        if _m.get("revision") is not None:
+          spec["revision"] = _m["revision"]
         spec["requires"] = []
         spec["build_requires"] = []
         spec["runtime_requires"] = []

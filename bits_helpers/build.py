@@ -334,6 +334,9 @@ def storeHashes(package, specs, considerRelocation):
     spec["remote_hashes"] = [_h]
     spec["local_hashes"] = [_h]
     spec["hash"] = _h
+    # The grafted package has no followed dependencies; set deps_hash too (the
+    # normal path always sets it, and DEPS_HASH is read via spec.get downstream).
+    spec.setdefault("deps_hash", "")
     return
 
   # For now, all the hashers share data -- they'll be split below.
@@ -1710,20 +1713,24 @@ def doBuild(args, parser):
     # unaffected). Uses the combined architecture (args.architecture) — the arch
     # recorded in the deployed packages' .meta.json — not raw_architecture.
     _cvmfs_match = None
-    if getattr(args, "reusePolicy", "strict") == "relaxed" and getattr(args, "reuseBase", ""):
+    if getattr(args, "reusePolicy", "strict") == "relaxed":
+      _base = getattr(args, "reuseBase", "") or ""
       _store = args.remoteStore or ""
-      if _store.startswith("cvmfs://"):
+      if not _base:
+        warning("--reuse-policy relaxed needs --reuse-base <build_id> (or defaults "
+                "reuse_base:); no packages will be grafted.")
+      elif not _store.startswith("cvmfs://"):
+        warning("--reuse-policy relaxed needs a cvmfs:// --remote-store "
+                "(or --reuse-cvmfs); no packages will be grafted.")
+      else:
         from bits_helpers.cvmfs_reuse import graftable_match
         _store_root = re.sub("^cvmfs://", "", _store)
         _build_local = set(getattr(args, "buildLocal", []) or [])
-        def _cvmfs_match(spec, _root=_store_root, _bid=args.reuseBase,
+        def _cvmfs_match(spec, _root=_store_root, _bid=_base,
                          _arch=args.architecture, _bl=_build_local):
           if spec["package"] in _bl:
             return None
           return graftable_match(spec["package"], _arch, _bid, _root)
-      else:
-        warning("--reuse-policy relaxed needs a cvmfs:// --remote-store "
-                "(or --reuse-cvmfs); no packages will be grafted.")
 
     systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = packages,

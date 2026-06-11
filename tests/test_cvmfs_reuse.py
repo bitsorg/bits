@@ -16,13 +16,18 @@ from bits_helpers.cvmfs_reuse import graftable_match
 ARCH = "ubuntu2510_x86-64-gcc15-dbg"
 
 
-def _deploy(root, pkg, version, *, build_id=None, architecture=ARCH, pkg_hash="h",
-            write_meta=True):
-    """Create <root>/<arch>/Packages/<pkg>/<version>/ with an optional .meta.json."""
-    d = os.path.join(root, architecture, "Packages", pkg, version)
+def _deploy(root, pkg, version, revision="1", *, build_id=None, architecture=ARCH,
+            pkg_hash="h", write_meta=True):
+    """Create <root>/<arch>/Packages/<pkg>/<version>-<revision>/ + .meta.json.
+
+    The directory is named version-revision (as bits deploys); version/revision
+    are recorded authoritatively in .meta.json's package field.
+    """
+    d = os.path.join(root, architecture, "Packages", pkg, "%s-%s" % (version, revision))
     os.makedirs(d, exist_ok=True)
     if write_meta:
-        meta = {"architecture": architecture, "package": {"hash": pkg_hash}}
+        meta = {"architecture": architecture,
+                "package": {"hash": pkg_hash, "version": version, "revision": revision}}
         if build_id is not None:
             meta["build_id"] = build_id
         with open(os.path.join(d, ".meta.json"), "w") as fh:
@@ -36,10 +41,12 @@ class TestGraftableMatch(unittest.TestCase):
         self.root = tempfile.mkdtemp()
 
     def test_match_on_name_arch_build_id(self):
-        d = _deploy(self.root, "ROOT", "6.38.00-1", build_id="LCG_109-abc")
+        d = _deploy(self.root, "ROOT", "6.38.00", "1", build_id="LCG_109-abc")
         m = graftable_match("ROOT", ARCH, "LCG_109-abc", self.root)
         self.assertIsNotNone(m)
-        self.assertEqual(m["version"], "6.38.00-1")
+        # version/revision come from .meta.json, not the dir basename
+        self.assertEqual(m["version"], "6.38.00")
+        self.assertEqual(m["revision"], "1")
         self.assertEqual(m["path"], d)
         self.assertEqual(m["hash"], "h")
         self.assertEqual(m["build_id"], "LCG_109-abc")
@@ -66,11 +73,12 @@ class TestGraftableMatch(unittest.TestCase):
         self.assertIsNone(graftable_match("ROOT", ARCH, "LCG_109-abc", self.root))
 
     def test_picks_the_matching_version_among_several(self):
-        _deploy(self.root, "Boost", "1.88.0-1", build_id="OTHER")
-        _deploy(self.root, "Boost", "1.90.0-1", build_id="LCG_109-abc")
+        _deploy(self.root, "Boost", "1.88.0", "1", build_id="OTHER")
+        _deploy(self.root, "Boost", "1.90.0", "1", build_id="LCG_109-abc")
         m = graftable_match("Boost", ARCH, "LCG_109-abc", self.root)
         self.assertIsNotNone(m)
-        self.assertEqual(m["version"], "1.90.0-1")
+        self.assertEqual(m["version"], "1.90.0")
+        self.assertEqual(m["revision"], "1")
 
     def test_empty_inputs_are_safe(self):
         self.assertIsNone(graftable_match("", ARCH, "x", self.root))

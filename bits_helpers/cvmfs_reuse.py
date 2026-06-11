@@ -57,9 +57,15 @@ def graftable_match(package, architecture, build_id, store_root):
         if meta_arch and meta_arch != architecture:
             continue
         pkg_info = meta.get("package") if isinstance(meta.get("package"), dict) else {}
+        # Take version/revision from the deployed .meta.json (authoritative), NOT
+        # from the directory basename — that is "<version>-<revision>" and cannot
+        # be split unambiguously (versions contain dashes). The consumer's reuse
+        # decision matches the deployed tarball by "<package>-<version>-…", so the
+        # spec's version MUST equal the deployed version for the graft to fire.
         return {
             "package": package,
-            "version": os.path.basename(ver_dir.rstrip("/")),
+            "version": pkg_info.get("version") or os.path.basename(ver_dir.rstrip("/")),
+            "revision": pkg_info.get("revision"),
             "path": ver_dir,
             "hash": pkg_info.get("hash"),
             "build_id": build_id,
