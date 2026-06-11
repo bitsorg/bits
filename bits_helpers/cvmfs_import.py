@@ -120,16 +120,23 @@ def _factor_line(line, base_prefix):
     return line.replace(base_prefix, "$PREFIX") if base_prefix else line
 
 
-def classify_ops(ops, base_prefix):
-    """Split env ops into generic BitsModule *options* and *verbatim* extras.
+def factor_ops(ops, base_prefix):
+    """Return *ops* with the install prefix factored to ``$PREFIX`` (lossless).
 
-    A (prepend|append)-path op on a known path variable whose value lives under
-    the package's install prefix contributes its category (bin/lib/python/
-    pkgconfig) to ``options`` (de-duplicated, order-preserving). Everything else —
-    other path variables, paths pointing outside the prefix, every ``setenv`` —
-    is kept verbatim with the prefix factored to ``$PREFIX``.
+    Keeping the full ops — not just a category summary — matters: the exact
+    sub-paths (e.g. ``lib/python3.13/site-packages``, ``lib64`` vs ``lib``) must
+    be reproduced when the overlay modulefile is regenerated.
     """
-    options, verbatim = [], []
+    return [(directive, var, _factor(value, base_prefix))
+            for directive, var, value in ops]
+
+
+def summarize_options(ops, base_prefix):
+    """Derived summary: which generic BitsModule categories a package's path ops
+    cover (bin/lib/python/pkgconfig). Informational — generation uses the full
+    ops, not this — but useful for reporting how "standard" the imported set is.
+    """
+    options = []
     for directive, var, value in ops:
         if (directive in ("prepend-path", "append-path")
                 and var in _PATH_CATEGORY and base_prefix
@@ -137,30 +144,135 @@ def classify_ops(ops, base_prefix):
             cat = _PATH_CATEGORY[var]
             if cat not in options:
                 options.append(cat)
-        else:
-            verbatim.append("%s %s %s" % (directive, var, _factor(value, base_prefix)))
-    return {"options": options, "verbatim": verbatim}
+    return options
 
 
 def build_corpus_entry(display_text, base_prefix, version=None, revision=None):
     """Build one corpus entry from a package's ``module show`` text.
 
-    Returns ``{version, revision, base_prefix, options, verbatim, deps}`` — the
-    prefix-factored, classified representation used to regenerate a bits modulefile
-    and to form the release dependency graph.
+    Returns ``{version, revision, base_prefix, env, options, verbatim, deps}``:
+    ``env`` is the prefix-factored list of ``(directive, var, value)`` ops (the
+    source of truth for regeneration); ``options`` is the derived category
+    summary; ``verbatim`` is the prefix-factored unparsed lines; ``deps`` is the
+    dependency edge list.
     """
     parsed = parse_module_display(display_text)
-    classified = classify_ops(parsed["ops"], base_prefix)
-    verbatim = classified["verbatim"] + [
-        _factor_line(line, base_prefix) for line in parsed["verbatim"]
-    ]
     return {
         "version": version,
         "revision": revision,
         "base_prefix": base_prefix,
-        "options": classified["options"],
-        "verbatim": verbatim,
+        "env": factor_ops(parsed["ops"], base_prefix),
+        "options": summarize_options(parsed["ops"], base_prefix),
+        "verbatim": [_factor_line(line, base_prefix) for line in parsed["verbatim"]],
         "deps": parsed["deps"],
+    }
+
+
+def generate_modulefile(module_id, entry, build_id, prefix=None):
+    """Regenerate a bits-style modulefile for a corpus *entry*.
+
+    Re-targets the factored ``$PREFIX`` to *prefix* (defaults to the deployed
+    ``base_prefix``, i.e. the overlay points straight at the package on CVMFS),
+    stamps the ``build_id`` as a queryable ``module-whatis`` (not a setenv, so it
+    does not leak into the environment), emits each dependency as a ``prereq``,
+    then the env ops and any verbatim extras.
+    """
+    target = prefix if prefix is not None else entry.get("base_prefix", "")
+
+    def _sub(s):
+        return s.replace("$PREFIX", target)
+
+    lines = ["#%Module1.0"]
+    if build_id:
+        lines.append('module-whatis "build_id: %s"' % build_id)
+    for dep in entry.get("deps", []):
+        lines.append("prereq %s" % dep)
+    for directive, var, value in entry.get("env", []):
+        lines.append("%s %s %s" % (directive, var, _sub(value)))
+    for line in entry.get("verbatim", []):
+        lines.append(_sub(line))
+    return "\n".join(lines) + "\n"
+
+
+def _shell_id(name):
+    """Sanitise a package name to a valid shell/env identifier fragment."""
+    return "".join(c if (c.isalnum() or c == "_") else "_" for c in name)
+
+
+def generate_init_sh(module_id, entry, prefix=None):
+    """Synthesise a **build-sufficient** ``init.sh`` for a corpus *entry*.
+
+    This is the ADR's highest-risk surface: a relaxed build breaks first at
+    compile/link if the grafted dependency exposes only a *runtime* environment.
+    So beyond replaying the modulefile's path ops as shell exports, we also
+    guarantee the three things a downstream **build** needs to find a dependency:
+
+    * ``CMAKE_PREFIX_PATH`` contains the prefix (CMake ``find_package`` config mode);
+    * ``PKG_CONFIG_PATH`` contains ``lib/pkgconfig`` (autotools/pkg-config);
+    * ``<Pkg>_ROOT`` / ``<PKG>_ROOT`` point at the prefix (find_package ROOT hint);
+    * headers are surfaced via ``CPATH`` when an ``include/`` dir exists.
+
+    Path-existence is guarded at runtime (``[ -d ... ]``) since the deployed tree
+    is not inspectable at generation time.
+    """
+    target = prefix if prefix is not None else entry.get("base_prefix", "")
+    pkg = module_id.split("/", 1)[0]
+
+    def _sub(s):
+        return s.replace("$PREFIX", target)
+
+    lines = ["# build-sufficient environment for %s (generated)" % module_id,
+             'P="%s"' % target]
+
+    saw = set()
+    for directive, var, value in entry.get("env", []):
+        val = _sub(value)
+        saw.add(var)
+        if directive == "setenv":
+            lines.append('export %s="%s"' % (var, val))
+        elif directive == "append-path":
+            lines.append('export %s="${%s:+$%s:}%s"' % (var, var, var, val))
+        else:  # prepend-path
+            lines.append('export %s="%s${%s:+:$%s}"' % (var, val, var, var))
+
+    # Build-time guarantees the runtime modulefile may not have provided.
+    if "CMAKE_PREFIX_PATH" not in saw:
+        lines.append('export CMAKE_PREFIX_PATH="$P${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"')
+    if "PKG_CONFIG_PATH" not in saw:
+        lines.append('[ -d "$P/lib/pkgconfig" ] && '
+                     'export PKG_CONFIG_PATH="$P/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"')
+    lines.append('[ -d "$P/include" ] && '
+                 'export CPATH="$P/include${CPATH:+:$CPATH}"')
+    root = _shell_id(pkg)
+    lines.append('export %s_ROOT="$P"' % root)
+    if root.upper() != root:
+        lines.append('export %s_ROOT="$P"' % root.upper())
+
+    for line in entry.get("verbatim", []):
+        lines.append("# verbatim: " + _sub(line))
+    return "\n".join(lines) + "\n"
+
+
+def build_module_meta(module_id, entry, build_id, package_hash="", abi_tag=""):
+    """Module-side ``.meta.json`` payload for a corpus *entry* (D6 overlay).
+
+    Co-located with the generated modulefile (not the foreign package tree), this
+    is what relaxed reuse reads: the ``build_id`` coherence token plus the
+    identity (name/version/revision/hash) and ``abi_tag`` needed to graft the
+    deployed tree without recompiling. Additive and self-contained.
+    """
+    pkg = module_id.split("/", 1)[0]
+    return {
+        "package": pkg,
+        "module_id": module_id,
+        "version": entry.get("version"),
+        "revision": entry.get("revision"),
+        "hash": package_hash,
+        "build_id": build_id,
+        "abi_tag": abi_tag,
+        "base_prefix": entry.get("base_prefix", ""),
+        "deps": list(entry.get("deps", [])),
+        "imported": True,
     }
 
 
@@ -199,7 +311,7 @@ def compute_corpus_build_id(corpus, label):
     members = sorted(
         [mid,
          entry.get("base_prefix", ""),
-         list(entry.get("options", [])),
+         [list(op) for op in entry.get("env", [])],
          list(entry.get("verbatim", [])),
          list(entry.get("deps", []))]
         for mid, entry in corpus.items()

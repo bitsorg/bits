@@ -3,8 +3,9 @@
 import unittest
 
 from bits_helpers.cvmfs_import import (
-    parse_module_display, classify_ops, build_corpus_entry,
-    closure_check, compute_corpus_build_id,
+    parse_module_display, factor_ops, summarize_options, build_corpus_entry,
+    closure_check, compute_corpus_build_id, generate_modulefile,
+    generate_init_sh, build_module_meta,
 )
 
 PREFIX = "/cvmfs/x/ROOT/6.38.00"
@@ -69,33 +70,27 @@ class TestParseModuleDisplay(unittest.TestCase):
         self.assertEqual(r["deps"], ["cmake/3.30", "ninja/1.12"])
 
 
-class TestClassifyOps(unittest.TestCase):
+class TestFactorAndSummarize(unittest.TestCase):
 
-    def test_standard_path_ops_become_options(self):
+    def test_factor_ops_replaces_prefix_losslessly(self):
+        ops = [("prepend-path", "PYTHONPATH", PREFIX + "/lib/python3.13/site-packages"),
+               ("setenv", "ROOTSYS", PREFIX),
+               ("prepend-path", "PATH", "/usr/local/bin")]   # outside prefix → unchanged
+        self.assertEqual(factor_ops(ops, PREFIX), [
+            ("prepend-path", "PYTHONPATH", "$PREFIX/lib/python3.13/site-packages"),
+            ("setenv", "ROOTSYS", "$PREFIX"),
+            ("prepend-path", "PATH", "/usr/local/bin"),
+        ])
+
+    def test_summarize_options(self):
         ops = [
             ("prepend-path", "PATH", PREFIX + "/bin"),
             ("prepend-path", "LD_LIBRARY_PATH", PREFIX + "/lib"),
-            ("prepend-path", "PYTHONPATH", PREFIX + "/lib/python3.13/site-packages"),
-            ("prepend-path", "PKG_CONFIG_PATH", PREFIX + "/lib/pkgconfig"),
+            ("prepend-path", "CMAKE_PREFIX_PATH", PREFIX),        # dedups into lib
+            ("prepend-path", "PYTHONPATH", PREFIX + "/lib/py/sp"),
+            ("setenv", "ROOTSYS", PREFIX),                       # not a category
         ]
-        r = classify_ops(ops, PREFIX)
-        self.assertEqual(r["options"], ["bin", "lib", "python", "pkgconfig"])
-        self.assertEqual(r["verbatim"], [])
-
-    def test_cmake_prefix_path_dedups_into_lib(self):
-        ops = [("prepend-path", "LD_LIBRARY_PATH", PREFIX + "/lib"),
-               ("prepend-path", "CMAKE_PREFIX_PATH", PREFIX)]
-        self.assertEqual(classify_ops(ops, PREFIX)["options"], ["lib"])
-
-    def test_setenv_goes_verbatim_with_prefix_factored(self):
-        r = classify_ops([("setenv", "ROOTSYS", PREFIX)], PREFIX)
-        self.assertEqual(r["options"], [])
-        self.assertEqual(r["verbatim"], ["setenv ROOTSYS $PREFIX"])
-
-    def test_path_outside_prefix_is_verbatim(self):
-        r = classify_ops([("prepend-path", "PATH", "/usr/local/bin")], PREFIX)
-        self.assertEqual(r["options"], [])
-        self.assertEqual(r["verbatim"], ["prepend-path PATH /usr/local/bin"])
+        self.assertEqual(summarize_options(ops, PREFIX), ["bin", "lib", "python"])
 
 
 class TestBuildCorpusEntry(unittest.TestCase):
@@ -105,14 +100,17 @@ class TestBuildCorpusEntry(unittest.TestCase):
         self.assertEqual(e["version"], "6.38.00")
         self.assertEqual(e["revision"], "1")
         self.assertEqual(e["base_prefix"], PREFIX)
+        # env keeps the full factored ops (lossless), incl. the exact python path
+        self.assertIn(("prepend-path", "PYTHONPATH", "$PREFIX/lib/python"), e["env"])
+        self.assertIn(("setenv", "ROOTSYS", "$PREFIX"), e["env"])
         self.assertEqual(e["options"], ["bin", "lib", "python"])  # no pkgconfig in SAMPLE
-        self.assertIn("setenv ROOTSYS $PREFIX", e["verbatim"])
         self.assertIn("something-weird custom args", e["verbatim"])
         self.assertEqual(e["deps"], ["Python/3.13.11", "Boost/1.90.0", "gcc/13"])
 
 
-def _entry(deps=(), base="/cvmfs/x", options=("lib",), verbatim=()):
-    return {"base_prefix": base, "options": list(options),
+def _entry(deps=(), base="/cvmfs/x",
+           env=(("prepend-path", "LD_LIBRARY_PATH", "$PREFIX/lib"),), verbatim=()):
+    return {"base_prefix": base, "env": [tuple(t) for t in env],
             "verbatim": list(verbatim), "deps": list(deps)}
 
 
@@ -141,10 +139,91 @@ class TestClosureAndBuildId(unittest.TestCase):
         self.assertEqual(a, b)   # insertion order independent
 
     def test_build_id_changes_with_content(self):
-        c1 = {"ROOT/6.38.00": _entry(options=["lib"])}
-        c2 = {"ROOT/6.38.00": _entry(options=["lib", "bin"])}
+        c1 = {"ROOT/6.38.00": _entry(env=[("prepend-path", "PATH", "$PREFIX/bin")])}
+        c2 = {"ROOT/6.38.00": _entry(env=[("prepend-path", "PATH", "$PREFIX/sbin")])}
         self.assertNotEqual(compute_corpus_build_id(c1, "L"),
                             compute_corpus_build_id(c2, "L"))
+
+
+class TestGenerateModulefile(unittest.TestCase):
+
+    def test_regenerates_targeted_modulefile(self):
+        entry = build_corpus_entry(SAMPLE, PREFIX, version="6.38.00", revision="1")
+        text = generate_modulefile("ROOT/6.38.00", entry, "LCG_109-abc123def456")
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "#%Module1.0")
+        # build_id is queryable, not an env var
+        self.assertIn('module-whatis "build_id: LCG_109-abc123def456"', lines)
+        # deps become prereqs
+        self.assertIn("prereq Python/3.13.11", lines)
+        self.assertIn("prereq gcc/13", lines)
+        # $PREFIX re-targeted to the deployed path (lossless python sub-path kept)
+        self.assertIn("prepend-path PATH %s/bin" % PREFIX, lines)
+        self.assertIn("prepend-path PYTHONPATH %s/lib/python" % PREFIX, lines)
+        self.assertIn("setenv ROOTSYS %s" % PREFIX, lines)
+        # verbatim oddity preserved
+        self.assertIn("something-weird custom args", lines)
+
+    def test_prefix_override_relocates(self):
+        entry = build_corpus_entry(SAMPLE, PREFIX)
+        text = generate_modulefile("ROOT/6.38.00", entry, "bid", prefix="/opt/root")
+        self.assertIn("prepend-path PATH /opt/root/bin", text.splitlines())
+        self.assertNotIn(PREFIX, text)
+
+    def test_no_build_id_omits_whatis(self):
+        entry = build_corpus_entry("prepend-path PATH %s/bin\n" % PREFIX, PREFIX)
+        text = generate_modulefile("p/1", entry, "")
+        self.assertNotIn("module-whatis", text)
+
+
+class TestGenerateInitSh(unittest.TestCase):
+
+    def setUp(self):
+        self.entry = build_corpus_entry(SAMPLE, PREFIX, version="6.38.00", revision="1")
+        self.sh = generate_init_sh("ROOT/6.38.00", self.entry)
+
+    def test_replays_path_ops_as_prepend_exports(self):
+        self.assertIn('export PATH="%s/bin${PATH:+:$PATH}"' % PREFIX, self.sh)
+        self.assertIn('export ROOTSYS="%s"' % PREFIX, self.sh)
+
+    def test_build_sufficient_extras(self):
+        # SAMPLE has no CMAKE_PREFIX_PATH / PKG_CONFIG_PATH → must be added
+        self.assertIn("CMAKE_PREFIX_PATH=\"$P", self.sh)
+        self.assertIn("$P/lib/pkgconfig", self.sh)
+        self.assertIn('[ -d "$P/include" ]', self.sh)
+        self.assertIn('export ROOT_ROOT="$P"', self.sh)
+
+    def test_existing_cmake_prefix_not_duplicated(self):
+        e = build_corpus_entry("prepend-path CMAKE_PREFIX_PATH %s\n" % PREFIX, PREFIX)
+        sh = generate_init_sh("p/1", e)
+        self.assertEqual(sh.count("export CMAKE_PREFIX_PATH="), 1)
+
+    def test_prefix_override(self):
+        sh = generate_init_sh("ROOT/6.38.00", self.entry, prefix="/opt/r")
+        self.assertIn('P="/opt/r"', sh)
+        self.assertNotIn(PREFIX, sh)
+
+    def test_dashed_name_sanitised(self):
+        e = build_corpus_entry("setenv X 1\n", "/cvmfs/p")
+        sh = generate_init_sh("py-foo/1", e)
+        self.assertIn("export PY_FOO_ROOT=", sh)
+
+
+class TestBuildModuleMeta(unittest.TestCase):
+
+    def test_carries_identity_and_build_id(self):
+        entry = build_corpus_entry(SAMPLE, PREFIX, version="6.38.00", revision="1")
+        m = build_module_meta("ROOT/6.38.00", entry, "LCG_109-abc", package_hash="h1",
+                              abi_tag="x86-64-gcc15")
+        self.assertEqual(m["package"], "ROOT")
+        self.assertEqual(m["version"], "6.38.00")
+        self.assertEqual(m["revision"], "1")
+        self.assertEqual(m["build_id"], "LCG_109-abc")
+        self.assertEqual(m["hash"], "h1")
+        self.assertEqual(m["abi_tag"], "x86-64-gcc15")
+        self.assertEqual(m["base_prefix"], PREFIX)
+        self.assertEqual(m["deps"], ["Python/3.13.11", "Boost/1.90.0", "gcc/13"])
+        self.assertTrue(m["imported"])
 
 
 if __name__ == "__main__":
