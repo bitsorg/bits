@@ -284,6 +284,26 @@ def doParseArgs():
                              action="store_true",
                              help="Stamp and write even if the release is not closed (deps missing).")
 
+  view_publish_parser = subparsers.add_parser(
+      "view-publish",
+      help="generate the merged view for a published release (under Views/<build_id>/)",
+      description=(
+          "Run against the deployed/staged CVMFS tree: union every package that "
+          "carries BUILD_ID in its .meta.json into <store>/Views/<build_id>/<arch>/ "
+          "with relative symlinks + a nested .cvmfscatalog, so consumers get a "
+          "single-entry environment for the release with no per-node view build."
+      ),
+  )
+  view_publish_parser.add_argument("--store", dest="viewStore", metavar="DIR",
+                                   required=True,
+                                   help="Deployed/staged CVMFS root holding the packages.")
+  view_publish_parser.add_argument("--build-id", dest="viewBuildId", metavar="ID",
+                                   required=True,
+                                   help="build_id of the release to build a view for.")
+  view_publish_parser.add_argument("-a", "--architecture", dest="architecture",
+                                   metavar="ARCH", default=detectedArch,
+                                   help="Architecture (default: %(default)s).")
+
   # Options for the analytics command
   # analytics_parser.add_argument("state", choices=["on", "off"], help="Whether to report analytics or not")
 

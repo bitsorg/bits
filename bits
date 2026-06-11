@@ -568,7 +568,7 @@ _bitsView() {
 }
 applyView() {
   [[ $VIEWOPT == 1 ]] || return 0
-  eval "$(_bitsView --cache "${WORK_DIR}/VIEWS/${ARCHITECTURE}" 2> /dev/null)"
+  eval "$(_bitsView --work-dir "${WORK_DIR}" --arch "${ARCHITECTURE}" 2> /dev/null)"
 }
 
 case "$ACTION" in
@@ -642,7 +642,7 @@ case "$ACTION" in
     if [[ $VIEWOPT == 1 && $ACTION == load ]]; then
       _vshell=sh; case "$MODULES_SHELL" in csh|tcsh) _vshell=csh;; esac
       ( eval "$($MODULECMD bash load $MODULES 2> /dev/null)"
-        _bitsView --cache "${WORK_DIR}/VIEWS/${ARCHITECTURE}" --shell "$_vshell" 2> /dev/null )
+        _bitsView --work-dir "${WORK_DIR}" --arch "${ARCHITECTURE}" --shell "$_vshell" 2> /dev/null )
     fi
     _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && ( eval $($MODULECMD $MODULES_SHELL $ACTION $MODULES 2> /dev/null) &> /dev/null; stripDyld )

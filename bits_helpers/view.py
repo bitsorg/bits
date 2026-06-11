@@ -21,7 +21,10 @@ bits dependencies, so it is exercised directly in tests; wiring it into the buil
 or publish path is separate.
 """
 
+import json
 import os
+
+CATALOG_FILE = ".cvmfscatalog"
 
 
 # The consumable subtrees to merge. Deliberately excludes per-package metadata
@@ -80,6 +83,54 @@ def build_view(roots, view_dir, subdirs=DEFAULT_SUBDIRS, relative=True,
                 continue
             _merge(src_base, os.path.join(view_dir, sub),
                    view_dir, owner, result, relative, link)
+    return result
+
+
+def published_view_path(store_root, build_id, architecture):
+    """The canonical published-view location: ``<store_root>/Views/<id>/<arch>``."""
+    return os.path.join(store_root, "Views", build_id, architecture)
+
+
+def collect_build_id_roots(scan_root, build_id, architecture=None):
+    """Return the install prefixes under *scan_root* whose ``.meta.json`` records
+    *build_id* (and *architecture*, if given) — i.e. the packages built together.
+
+    Each package tree has a ``.meta.json`` at its root; the walk stops descending
+    once it finds one, so package contents are not rescanned.
+    """
+    roots = []
+    for dirpath, dirs, files in os.walk(scan_root):
+        if ".meta.json" not in files:
+            continue
+        try:
+            with open(os.path.join(dirpath, ".meta.json")) as fh:
+                meta = json.load(fh)
+        except Exception:
+            continue
+        dirs[:] = []   # a package root: do not descend into its contents
+        if meta.get("build_id") != build_id:
+            continue
+        if architecture is not None and meta.get("architecture") not in (None, architecture):
+            continue
+        roots.append(dirpath)
+    return sorted(roots)
+
+
+def build_published_view(roots, build_id, architecture, store_root,
+                         subdirs=DEFAULT_SUBDIRS, link=os.symlink):
+    """Materialise the per-build_id view under ``<store_root>/Views/<id>/<arch>``
+    and drop a CVMFS nested catalog at the build_id level.
+
+    *roots* must already live under *store_root* (the deployed/staged tree), so the
+    relative symlinks resolve once the whole tree is on CVMFS. Returns the
+    :func:`build_view` result with ``view_dir`` added.
+    """
+    view_dir = published_view_path(store_root, build_id, architecture)
+    result = build_view(roots, view_dir, subdirs=subdirs, relative=True, link=link)
+    catalog_dir = os.path.join(store_root, "Views", build_id)
+    os.makedirs(catalog_dir, exist_ok=True)
+    open(os.path.join(catalog_dir, CATALOG_FILE), "w").close()
+    result["view_dir"] = view_dir
     return result
 
 

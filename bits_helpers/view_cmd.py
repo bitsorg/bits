@@ -12,12 +12,15 @@ so the (potentially large) symlink farm is built once per closure and reused.
 """
 
 import hashlib
+import json
 import os
 import sys
 
-from bits_helpers.view import build_view
+from bits_helpers.view import build_view, published_view_path
 
 READY_STAMP = ".bits_view_ready"
+# Client-built views are cached here (distinct from the published `Views/` tree).
+CLIENT_CACHE_SUBDIR = ".bits-view-cache"
 
 # The additive, colon-separated path variables a view collapses. Each entry that
 # lives under a loaded package prefix is remapped onto the merged view and
@@ -40,6 +43,25 @@ def collect_roots(env):
     """
     return sorted({v for k, v in env.items()
                    if k.endswith("_ROOT") and v and os.path.isdir(v)})
+
+
+def closure_build_id(roots):
+    """Return the single build_id shared by all *roots* (from their .meta.json),
+    or None if they disagree or any lacks one. A unanimous build_id means the
+    closure is exactly a coherent release, so a published whole-release view
+    applies; a mixed/absent set (dev build, ad-hoc subset) means it does not.
+    """
+    ids = set()
+    for root in roots:
+        try:
+            with open(os.path.join(root, ".meta.json")) as fh:
+                ids.add(json.load(fh).get("build_id"))
+        except Exception:
+            ids.add(None)
+    if len(ids) == 1:
+        only = ids.pop()
+        return only or None
+    return None
 
 
 def view_dir_for(roots, cache_root):
@@ -117,21 +139,37 @@ def _remap_entry(entry, roots_longest_first, view_dir):
     return entry
 
 
-def collapse_exports(env, cache_root, shell="sh", _ensure=ensure_view):
+def resolve_view_dir(roots, work_dir, architecture, _ensure=ensure_view):
+    """Pick the view for *roots*: a published per-build_id view when the closure
+    is exactly a release that has one, else a client-built (cached) view.
+
+    Returns ``(view_dir, published)``.
+    """
+    build_id = closure_build_id(roots)
+    if build_id:
+        pub = published_view_path(work_dir, build_id, architecture)
+        if os.path.isdir(pub):
+            return pub, True
+    cache_root = os.path.join(work_dir, CLIENT_CACHE_SUBDIR, architecture)
+    return _ensure(roots, cache_root), False
+
+
+def collapse_exports(env, work_dir, architecture, shell="sh", _ensure=ensure_view):
     """Return shell assignments that collapse the additive path variables onto a
     merged view of the loaded closure. Empty string when there are no package
     roots in *env*.
 
-    Each variable's entries are remapped through the view and de-duplicated, so a
-    variable that listed every dependency's directory becomes a single view entry
-    (plus any system directories, kept in place). Set-valued environment is left
-    entirely alone — the caller keeps the modulefiles' setenvs. *shell* selects
-    the output syntax (``sh`` export vs ``csh`` setenv) for `printenv`/`load`.
+    Prefers a published ``Views/<build_id>/<arch>`` view when the loaded closure
+    is exactly a release that has one; otherwise builds and caches a client-side
+    view. Each variable's entries are remapped through the chosen view and
+    de-duplicated, so a variable that listed every dependency's directory becomes
+    a single view entry (plus any system directories, kept in place). Set-valued
+    environment is left alone. *shell* selects sh export vs csh setenv output.
     """
     roots = collect_roots(env)
     if not roots:
         return ""
-    view_dir = _ensure(roots, cache_root)
+    view_dir, _published = resolve_view_dir(roots, work_dir, architecture, _ensure)
     roots_longest_first = sorted(roots, key=len, reverse=True)
     lines = []
     for var in COLLAPSE_VARS:
@@ -161,20 +199,25 @@ def main(argv=None):
         description="Emit shell that collapses the current loaded module "
                     "environment's path variables onto a cached merged view, and "
                     "garbage-collect stale views.")
-    ap.add_argument("--cache", required=True,
-                    help="Directory under which per-closure views are cached.")
+    ap.add_argument("--work-dir", required=True,
+                    help="bits work dir (holds the published Views/ tree and the "
+                         "client view cache).")
+    ap.add_argument("--arch", required=True, help="Architecture subdirectory.")
     ap.add_argument("--shell", default="sh", choices=["sh", "csh"],
                     help="Output syntax: sh export (default) or csh setenv.")
     ap.add_argument("--gc-only", action="store_true",
-                    help="Only garbage-collect stale views; emit nothing.")
+                    help="Only garbage-collect stale client views; emit nothing.")
     ap.add_argument("--ttl-days", type=float,
                     default=float(os.environ.get("BITS_VIEW_TTL_DAYS",
                                                  DEFAULT_TTL_DAYS)),
-                    help="GC views unused for this many days (0 disables).")
+                    help="GC client views unused for this many days (0 disables).")
     args = ap.parse_args(argv)
     if not args.gc_only:
-        sys.stdout.write(collapse_exports(dict(os.environ), args.cache, args.shell))
-    prune_views(args.cache, args.ttl_days)
+        sys.stdout.write(collapse_exports(dict(os.environ), args.work_dir,
+                                          args.arch, args.shell))
+    # GC only touches the client cache; published views are managed by publishing.
+    prune_views(os.path.join(args.work_dir, CLIENT_CACHE_SUBDIR, args.arch),
+                args.ttl_days)
     return 0
 
 

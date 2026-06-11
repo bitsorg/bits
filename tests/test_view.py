@@ -1,10 +1,13 @@
 """Tests for bits_helpers/view.py (merged symlink-farm view)."""
 
+import json
 import os
 import tempfile
 import unittest
 
-from bits_helpers.view import build_view, view_env, DEFAULT_SUBDIRS
+from bits_helpers.view import (build_view, view_env, DEFAULT_SUBDIRS,
+                               collect_build_id_roots, build_published_view,
+                               published_view_path, CATALOG_FILE)
 
 
 def _pkg(prefix, files):
@@ -107,6 +110,48 @@ class TestViewEnv(unittest.TestCase):
             env = view_env(view, lib_path_var="DYLD_LIBRARY_PATH")
             self.assertIn("DYLD_LIBRARY_PATH", env)
             self.assertNotIn("LD_LIBRARY_PATH", env)
+
+
+class TestPublishedView(unittest.TestCase):
+
+    def _deployed_pkg(self, store, rel, files, build_id, arch="el9"):
+        prefix = os.path.join(store, rel)
+        _pkg(prefix, files)
+        with open(os.path.join(prefix, ".meta.json"), "w") as fh:
+            json.dump({"build_id": build_id, "architecture": arch}, fh)
+        return prefix
+
+    def test_collect_build_id_roots(self):
+        with tempfile.TemporaryDirectory() as store:
+            a = self._deployed_pkg(store, "el9/A/1.0", ["bin/a"], "L-1")
+            b = self._deployed_pkg(store, "el9/B/2.0", ["bin/b"], "L-1")
+            self._deployed_pkg(store, "el9/C/3.0", ["bin/c"], "OTHER")   # different id
+            roots = collect_build_id_roots(store, "L-1", architecture="el9")
+            self.assertEqual(roots, sorted([a, b]))
+
+    def test_build_published_view_layout_and_catalog(self):
+        with tempfile.TemporaryDirectory() as store:
+            a = self._deployed_pkg(store, "el9/A/1.0", ["bin/a", "lib/liba.so"], "L-1")
+            b = self._deployed_pkg(store, "el9/B/2.0", ["bin/b", "include/b.h"], "L-1")
+            res = build_published_view([a, b], "L-1", "el9", store)
+            view = published_view_path(store, "L-1", "el9")
+            self.assertEqual(res["view_dir"], view)
+            self.assertEqual(view, os.path.join(store, "Views", "L-1", "el9"))
+            for rel in ("bin/a", "lib/liba.so", "bin/b", "include/b.h"):
+                self.assertTrue(os.path.islink(os.path.join(view, rel)), rel)
+            # nested catalog at the build_id level
+            self.assertTrue(os.path.isfile(
+                os.path.join(store, "Views", "L-1", CATALOG_FILE)))
+
+    def test_published_view_symlinks_are_relative_and_resolve(self):
+        # built over the deployed tree → relative links resolve in place (and would
+        # on /cvmfs, since the relative offset is preserved by relocation)
+        with tempfile.TemporaryDirectory() as store:
+            a = self._deployed_pkg(store, "el9/A/1.0", ["bin/a"], "L-1")
+            build_published_view([a], "L-1", "el9", store)
+            link = os.path.join(published_view_path(store, "L-1", "el9"), "bin", "a")
+            self.assertFalse(os.path.isabs(os.readlink(link)))
+            self.assertTrue(os.path.exists(link))
 
 
 if __name__ == "__main__":

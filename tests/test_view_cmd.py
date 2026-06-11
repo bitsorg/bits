@@ -1,5 +1,6 @@
 """Tests for bits_helpers/view_cmd.py (interactive view-env collapse)."""
 
+import json
 import os
 import tempfile
 import unittest
@@ -45,11 +46,19 @@ class TestEnsureViewCaching(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(v1, view_cmd.READY_STAMP)))
 
 
+ARCH = "arch"
+
+
+def _client_view(work_dir, roots):
+    """The client-cache view dir collapse_exports would build for *roots*."""
+    cache = os.path.join(work_dir, view_cmd.CLIENT_CACHE_SUBDIR, ARCH)
+    return view_cmd.view_dir_for(sorted(roots), cache)
+
+
 class TestCollapseExports(unittest.TestCase):
 
     def test_remaps_entries_dedups_keeps_system_and_setenvs(self):
         with tempfile.TemporaryDirectory() as d:
-            cache = os.path.join(d, "cache")
             a = _pkg(os.path.join(d, "a"), ["bin/x", "lib/liba.so"])
             # ROOT-style: PyROOT modules live directly in lib (the --pylib case)
             b = _pkg(os.path.join(d, "b"), ["bin/y", "lib/libb.so", "lib/ROOT.py"])
@@ -61,42 +70,35 @@ class TestCollapseExports(unittest.TestCase):
                 "PYTHONPATH": "%s/lib" % b,                    # --pylib preserved
                 "CMAKE_PREFIX_PATH": "%s:%s" % (a, b),         # roots → view, deduped
             }
-            out = view_cmd.collapse_exports(env, cache)
-            view = view_cmd.view_dir_for(sorted([a, b]), cache)
+            out = view_cmd.collapse_exports(env, d, ARCH)
+            view = _client_view(d, [a, b])                     # no build_id → client view
             self.assertIn('export PATH="%s/bin:/usr/bin:/bin"' % view, out)  # system kept
             self.assertIn('export LD_LIBRARY_PATH="%s/lib"' % view, out)     # deduped to one
             self.assertIn('export PYTHONPATH="%s/lib"' % view, out)          # PyROOT findable
             self.assertIn('export CMAKE_PREFIX_PATH="%s"' % view, out)       # roots → one view
-            # setenvs are not collapsed
-            self.assertNotIn("ROOTSYS", out)
-            # and the remapped PyROOT module really exists in the built view
+            self.assertNotIn("ROOTSYS", out)                                 # setenv untouched
             self.assertTrue(os.path.exists(os.path.join(view, "lib", "ROOT.py")))
 
     def test_no_roots_is_empty(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(view_cmd.collapse_exports({"PATH": "/usr/bin"},
-                                                       os.path.join(d, "cache")), "")
+            self.assertEqual(
+                view_cmd.collapse_exports({"PATH": "/usr/bin"}, d, ARCH), "")
 
     def test_macos_dyld_var_collapsed(self):
         with tempfile.TemporaryDirectory() as d:
             a = _pkg(os.path.join(d, "a"), ["lib/libx.dylib"])
             out = view_cmd.collapse_exports(
-                {"X_ROOT": a, "DYLD_LIBRARY_PATH": "%s/lib" % a},
-                os.path.join(d, "cache"))
-            view = view_cmd.view_dir_for([a], os.path.join(d, "cache"))
-            self.assertIn('export DYLD_LIBRARY_PATH="%s/lib"' % view, out)
+                {"X_ROOT": a, "DYLD_LIBRARY_PATH": "%s/lib" % a}, d, ARCH)
+            self.assertIn('export DYLD_LIBRARY_PATH="%s/lib"' % _client_view(d, [a]), out)
 
     def test_longest_root_wins_no_false_prefix(self):
-        # a root must not prefix-shadow a sibling whose path starts the same way
         with tempfile.TemporaryDirectory() as d:
             a = _pkg(os.path.join(d, "ROOT"), ["bin/r"])
             ab = _pkg(os.path.join(d, "ROOTfoo"), ["bin/rf"])
             env = {"ROOT_ROOT": a, "ROOTFOO_ROOT": ab,
                    "PATH": "%s/bin:%s/bin" % (a, ab)}
-            out = view_cmd.collapse_exports(env, os.path.join(d, "cache"))
-            view = view_cmd.view_dir_for(sorted([a, ab]), os.path.join(d, "cache"))
-            # both map under the same view/bin (merged), deduped to one entry
-            self.assertIn('export PATH="%s/bin"' % view, out)
+            out = view_cmd.collapse_exports(env, d, ARCH)
+            self.assertIn('export PATH="%s/bin"' % _client_view(d, [a, ab]), out)
 
 
 class TestShellSyntax(unittest.TestCase):
@@ -105,11 +107,51 @@ class TestShellSyntax(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             a = _pkg(os.path.join(d, "a"), ["bin/x"])
             env = {"A_ROOT": a, "PATH": "%s/bin:/usr/bin" % a}
-            view = view_cmd.view_dir_for([a], os.path.join(d, "cache"))
-            sh = view_cmd.collapse_exports(env, os.path.join(d, "cache"), shell="sh")
-            csh = view_cmd.collapse_exports(env, os.path.join(d, "cache"), shell="csh")
+            view = _client_view(d, [a])
+            sh = view_cmd.collapse_exports(env, d, ARCH, shell="sh")
+            csh = view_cmd.collapse_exports(env, d, ARCH, shell="csh")
             self.assertIn('export PATH="%s/bin:/usr/bin"' % view, sh)
             self.assertIn('setenv PATH "%s/bin:/usr/bin";' % view, csh)
+
+
+class TestPublishedPreference(unittest.TestCase):
+
+    def _pkg_with_meta(self, prefix, files, build_id):
+        _pkg(prefix, files)
+        with open(os.path.join(prefix, ".meta.json"), "w") as fh:
+            json.dump({"build_id": build_id}, fh)
+        return prefix
+
+    def test_closure_build_id(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = self._pkg_with_meta(os.path.join(d, "a"), ["bin/x"], "L-1")
+            b = self._pkg_with_meta(os.path.join(d, "b"), ["bin/y"], "L-1")
+            c = _pkg(os.path.join(d, "c"), ["bin/z"])            # no meta
+            self.assertEqual(view_cmd.closure_build_id([a, b]), "L-1")   # unanimous
+            self.assertIsNone(view_cmd.closure_build_id([a, c]))         # mixed/absent
+
+    def test_prefers_published_view_when_build_id_matches(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = self._pkg_with_meta(os.path.join(d, "a"), ["bin/x", "lib/la.so"], "L-1")
+            # a published view exists for L-1
+            pub = os.path.join(d, "Views", "L-1", ARCH)
+            os.makedirs(os.path.join(pub, "bin"))
+            env = {"A_ROOT": a, "PATH": "%s/bin:/usr/bin" % a,
+                   "LD_LIBRARY_PATH": "%s/lib" % a}
+            out = view_cmd.collapse_exports(env, d, ARCH)
+            # entries remapped onto the PUBLISHED view, not a freshly built client one
+            self.assertIn('export PATH="%s/bin:/usr/bin"' % pub, out)
+            self.assertIn('export LD_LIBRARY_PATH="%s/lib"' % pub, out)
+            # no client cache was built
+            self.assertFalse(os.path.exists(
+                os.path.join(d, view_cmd.CLIENT_CACHE_SUBDIR)))
+
+    def test_falls_back_to_client_when_no_published(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = self._pkg_with_meta(os.path.join(d, "a"), ["bin/x"], "L-1")  # no pub dir
+            env = {"A_ROOT": a, "PATH": "%s/bin" % a}
+            out = view_cmd.collapse_exports(env, d, ARCH)
+            self.assertIn('export PATH="%s/bin"' % _client_view(d, [a]), out)
 
 
 class TestPruneViews(unittest.TestCase):
