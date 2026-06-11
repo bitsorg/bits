@@ -540,6 +540,37 @@ class BuildTestCase(unittest.TestCase):
         self.assertIn("export APPEND_ROOT_1=", complete_initdotsh)
         self.assertIn("export PREPEND_ROOT_1=", complete_initdotsh)
 
+    def test_initdotsh_from_modules(self) -> None:
+        """--initdotsh-from-modules adds the modulefile-equivalent dev env
+        (<PKG>_INCLUDE_DIR, PYTHONPATH site-packages) to the package's own
+        post-build section, guarded on existence, and changes nothing when off."""
+        specs = {
+            spec["package"]: dict(spec, revision="1", commit_hash="424242", hash="010101")
+            for spec in map(self.setup_spec, (
+                    TEST_DEFAULT_RELEASE, TEST_ZLIB_RECIPE,
+                    TEST_ROOT_RECIPE, TEST_EXTRA_RECIPE))
+        }
+
+        # Off-state must be byte-identical to the unflagged generator.
+        base = generate_initdotsh("ROOT", specs, "slc7_x86-64", post_build=True)
+        off = generate_initdotsh("ROOT", specs, "slc7_x86-64", post_build=True,
+                                 from_modules=False)
+        self.assertEqual(base, off)
+        self.assertNotIn("_INCLUDE_DIR", off)
+
+        on = generate_initdotsh("ROOT", specs, "slc7_x86-64", post_build=True,
+                                from_modules=True)
+        # Guarded include dir + site-packages glob, keyed off the package root.
+        self.assertIn('export ROOT_INCLUDE_DIR="${ROOT_ROOT}/include"', on)
+        self.assertIn('${ROOT_ROOT}"/lib/python*/site-packages', on)
+        self.assertIn("PYTHONPATH=", on)
+        # Guarded so it is a no-op when the dir is absent.
+        self.assertIn('[ ! -d "${ROOT_ROOT}/include" ]', on)
+        # The setup (pre-build, deps-only) pass adds nothing self-referential.
+        setup_on = generate_initdotsh("ROOT", specs, "slc7_x86-64", post_build=False,
+                                      from_modules=True)
+        self.assertNotIn("ROOT_INCLUDE_DIR", setup_on)
+
 
 if __name__ == '__main__':
     unittest.main()

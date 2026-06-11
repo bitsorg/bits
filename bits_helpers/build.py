@@ -590,11 +590,19 @@ def _pkg_install_path(workDir, architecture, spec):
   return join(workDir, architecture, spec["package"], ver_rev(spec))
 
 
-def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False):
+def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False,
+                       from_modules=False):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
   If post_build is true, also generate variables pointing to the package
   itself; else, only generate variables pointing at it dependencies.
+
+  If from_modules is true (the --initdotsh-from-modules build mode), the
+  post_build self-environment additionally exposes the development/build
+  variables the runtime modulefile carries but the legacy init.sh omits
+  (<PKG>_INCLUDE_DIR, Python site-packages on PYTHONPATH), generated from the
+  package root and guarded on existence. Off by default, so the generated text
+  is byte-identical to before when the mode is not active.
   """
   spec = specs[package]
   # Allow users to override BITS_ARCH_PREFIX if they manually source
@@ -735,6 +743,27 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
                  .format(key=key, value=dir)
                  for key, value in prepend_path.items()
                  for dir in value)
+
+    if from_modules:
+      # --initdotsh-from-modules: also expose the development/build environment
+      # the runtime modulefile provides but the legacy init.sh omits — the
+      # package's own headers (<PKG>_INCLUDE_DIR) and Python site-packages on
+      # PYTHONPATH. Each package sets only its own; a consumer that sources the
+      # dependency chain therefore accumulates the whole closure, matching what
+      # loading the modulefile chain would yield. Everything is generated from
+      # the package root bits already knows and guarded on directory existence,
+      # so it is a no-op for packages that ship no headers / Python modules.
+      # CMAKE_PREFIX_PATH is intentionally NOT set here: it stays owned by
+      # CMakeRecipe, whose ';'-separated -D form would corrupt a ':'-separated
+      # environment variable of the same name.
+      root = "${%s_ROOT}" % bigpackage
+      lines.append('[ ! -d "%s/include" ] || export %s_INCLUDE_DIR="%s/include"'
+                   % (root, bigpackage, root))
+      lines.append(
+        'for _bits_sp in "%s"/lib/python*/site-packages '
+        '"%s"/lib/python/site-packages; do [ -d "$_bits_sp" ] && export '
+        'PYTHONPATH="$_bits_sp${PYTHONPATH:+:$PYTHONPATH}"; done; unset _bits_sp'
+        % (root, root))
 
   # Return string without a trailing newline, since we expect call sites to
   # append that (and the obvious way to inesrt it into the build template is by
@@ -2628,8 +2657,10 @@ def doBuild(args, parser):
     )
     writeAll("%s/build.sh" % scriptDir, cmd_raw % {
       "provenance": create_provenance_info(spec["package"], specs, args),
-      "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False),
-      "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True),
+      "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False,
+                                           from_modules=getattr(args, "initdotshFromModules", False)),
+      "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True,
+                                           from_modules=getattr(args, "initdotshFromModules", False)),
       "develPrefix": develPrefix,
       "workDir": workDir,
       "configDir": abspath(args.configDir),
