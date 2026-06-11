@@ -313,6 +313,22 @@ class TestWriteOverlay(unittest.TestCase):
             # one nested catalog per build_id
             self.assertTrue(os.path.isfile(os.path.join(out, bid, ".cvmfscatalog")))
 
+    def test_path_traversal_module_id_is_refused(self):
+        corpus = {
+            "ROOT/6.38.00": build_corpus_entry(SAMPLE, PREFIX, version="6.38.00"),
+            "../evil/1": build_corpus_entry("setenv X 1\n", "/cvmfs/p", version="1"),
+            "ok/../../etc": build_corpus_entry("setenv Y 1\n", "/cvmfs/q", version="x"),
+        }
+        with tempfile.TemporaryDirectory() as out:
+            res = import_release(corpus, "L", "arch", out, force=True)
+            # the safe module is written; the traversal ones are dropped
+            self.assertIn("ROOT/6.38.00", res["written"])
+            self.assertNotIn("../evil/1", res["written"])
+            # nothing was written outside the build_id overlay
+            escaped = os.path.join(os.path.dirname(out), "evil")
+            self.assertFalse(os.path.exists(escaped))
+            self.assertFalse(os.path.exists(os.path.join(out, "..", "evil")))
+
     def test_non_closed_corpus_refused(self):
         corpus = {"ROOT/6.38.00": build_corpus_entry(SAMPLE, PREFIX)}  # deps dangle
         with tempfile.TemporaryDirectory() as out:

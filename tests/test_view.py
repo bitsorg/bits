@@ -155,6 +155,18 @@ class TestPublishedView(unittest.TestCase):
             self.assertFalse(os.path.isabs(os.readlink(link)))
             self.assertTrue(os.path.exists(link))
 
+    def test_republish_rebuilds_cleanly(self):
+        # re-running publish over an existing view must not skip files as conflicts
+        with tempfile.TemporaryDirectory() as store:
+            a = self._deployed_pkg(store, "el9/A/1.0", ["bin/a"], "L-1")
+            build_published_view([a], "myrel", "L-1", "el9", store)
+            b = self._deployed_pkg(store, "el9/B/2.0", ["bin/b"], "L-1")
+            res = build_published_view([a, b], "myrel", "L-1", "el9", store)
+            view = find_published_view(store, "L-1", "el9")
+            self.assertEqual(res["conflicts"], [])                       # clean
+            self.assertTrue(os.path.islink(os.path.join(view, "bin", "a")))
+            self.assertTrue(os.path.islink(os.path.join(view, "bin", "b")))
+
     def test_custom_views_dir_built_and_found(self):
         with tempfile.TemporaryDirectory() as store:
             a = self._deployed_pkg(store, "el9/A/1.0", ["bin/a"], "L-1")

@@ -14,6 +14,7 @@ so the (potentially large) symlink farm is built once per closure and reused.
 import hashlib
 import json
 import os
+import shutil
 import sys
 
 from bits_helpers.view import build_view, find_published_view
@@ -95,6 +96,12 @@ def ensure_view(roots, cache_root, _build=build_view):
     view_dir = view_dir_for(roots, cache_root)
     stamp = os.path.join(view_dir, READY_STAMP)
     if not os.path.exists(stamp):
+        # A view dir present without its ready-stamp is a partial/interrupted
+        # build. Remove it first so the rebuild is clean: build_view treats
+        # pre-existing files as conflicts and skips them, which would otherwise
+        # leave the view permanently incomplete once the stamp is written.
+        if os.path.isdir(view_dir):
+            shutil.rmtree(view_dir, ignore_errors=True)
         _build(roots, view_dir)
         os.makedirs(view_dir, exist_ok=True)
         with open(stamp, "w") as fh:
@@ -135,10 +142,20 @@ def prune_views(cache_root, ttl_days, now=None):
 
 
 def _assign(var, value, shell):
-    """Render a shell assignment for *var*. ``csh`` → setenv, otherwise sh-family."""
+    """Render a shell assignment for *var*. ``csh`` → setenv, otherwise sh-family.
+
+    The value is a list of directory paths. For sh-family it is double-quoted with
+    the characters that are special *inside* double quotes neutralised, so a path
+    containing them cannot break out of the assignment or inject a command. (Normal
+    paths contain none of these, so the output is unchanged for them.) csh quoting
+    is left as the simple double-quoted form — bits-produced paths never contain
+    shell metacharacters; a path with an embedded ``"`` is the residual edge there.
+    """
     if shell == "csh":
         return 'setenv %s "%s";' % (var, value)
-    return 'export %s="%s"' % (var, value)
+    safe = (value.replace("\\", "\\\\").replace('"', '\\"')
+                 .replace("$", "\\$").replace("`", "\\`"))
+    return 'export %s="%s"' % (var, safe)
 
 
 def _remap_entry(entry, roots_longest_first, view_dir):

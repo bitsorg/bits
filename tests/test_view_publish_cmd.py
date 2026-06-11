@@ -17,7 +17,7 @@ def _deployed(store, rel, build_id, files=("bin/x",), arch="el9", package=None):
         open(p, "w").close()
     meta = {"build_id": build_id, "architecture": arch}
     if package:
-        meta["package"] = package
+        meta["package"] = {"name": package}   # real .meta.json shape (a dict)
     with open(os.path.join(prefix, ".meta.json"), "w") as fh:
         json.dump(meta, fh)
     return prefix

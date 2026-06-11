@@ -212,6 +212,44 @@ class TestPruneViews(unittest.TestCase):
             view_cmd.ensure_view([os.path.join(d, "a")], cache, _build=self._build)
             self.assertEqual(view_cmd.prune_views(cache, ttl_days=0), [])
 
+    def test_partial_view_without_stamp_is_rebuilt_clean(self):
+        builds = []
+
+        def build(roots, view_dir):
+            builds.append(view_dir)
+            os.makedirs(view_dir, exist_ok=True)
+            open(os.path.join(view_dir, "fresh"), "w").close()
+
+        with tempfile.TemporaryDirectory() as d:
+            cache = os.path.join(d, "cache")
+            vdir = view_cmd.view_dir_for([os.path.join(d, "a")], cache)
+            os.makedirs(vdir)
+            open(os.path.join(vdir, "stale"), "w").close()   # partial, no stamp
+            view_cmd.ensure_view([os.path.join(d, "a")], cache, _build=build)
+            self.assertEqual(len(builds), 1)                 # rebuilt
+            self.assertFalse(os.path.exists(os.path.join(vdir, "stale")))  # cleaned
+            self.assertTrue(os.path.exists(os.path.join(vdir, "fresh")))
+
+
+class TestAssignQuoting(unittest.TestCase):
+
+    def test_sh_assignment_is_injection_safe(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "pwn")
+            # a value that, unescaped, would close the quote and run a command,
+            # plus a command substitution
+            value = '/x";touch %s;"$(touch %s)`touch %s`' % (marker, marker, marker)
+            out = view_cmd._assign("V", value, "sh")
+            res = subprocess.run(["bash", "-c", out + '\nprintf %s "$V"'],
+                                 stdout=subprocess.PIPE, universal_newlines=True)
+            self.assertFalse(os.path.exists(marker), "command injected: %r" % out)
+            self.assertEqual(res.stdout, value, "value not preserved verbatim")
+
+    def test_normal_path_unchanged(self):
+        self.assertEqual(view_cmd._assign("PATH", "/usr/bin:/bin", "sh"),
+                         'export PATH="/usr/bin:/bin"')
+
 
 if __name__ == "__main__":
     unittest.main()

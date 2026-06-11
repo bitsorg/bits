@@ -150,6 +150,11 @@ def build_published_view(roots, name, build_id, architecture, store_root,
     """
     dirname = published_view_dirname(name, build_id)
     view_dir = os.path.join(store_root, views_dir, dirname, architecture)
+    # Rebuild cleanly: a leftover view from a previous publish would otherwise make
+    # build_view skip every pre-existing file as a conflict, yielding a stale view.
+    if os.path.isdir(view_dir):
+        import shutil
+        shutil.rmtree(view_dir, ignore_errors=True)
     result = build_view(roots, view_dir, subdirs=subdirs, relative=True, link=link)
     catalog_dir = os.path.join(store_root, views_dir, dirname)
     os.makedirs(catalog_dir, exist_ok=True)

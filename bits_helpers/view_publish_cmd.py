@@ -22,27 +22,24 @@ def _build_id_of_package(work_dir, architecture, package):
     """Read the build_id from a named package's .meta.json under the work area.
 
     *package* may be ``name`` or ``name/version``; the first installed match wins.
+    Matching is on the recorded package name (``.meta.json``'s ``package.name``),
+    not the directory layout.
     """
     name = package.split("/", 1)[0]
     base = os.path.join(work_dir, architecture)
     for dirpath, dirs, files in os.walk(base):
         if ".meta.json" not in files:
             continue
-        dirs[:] = []
-        if os.path.basename(os.path.dirname(dirpath)) != name and \
-           os.path.basename(dirpath) != name:
-            # match either <name>/<ver> (dir parent is name) or <name> itself
-            if name not in dirpath.split(os.sep):
-                continue
+        dirs[:] = []   # a package root: do not descend into its contents
         try:
             with open(os.path.join(dirpath, ".meta.json")) as fh:
                 meta = json.load(fh)
         except Exception:
             continue
-        if meta.get("package") == name or os.path.basename(os.path.dirname(dirpath)) == name:
-            bid = meta.get("build_id")
-            if bid:
-                return bid
+        pkg = meta.get("package")
+        pkg_name = pkg.get("name") if isinstance(pkg, dict) else pkg
+        if pkg_name == name and meta.get("build_id"):
+            return meta["build_id"]
     return None
 
 

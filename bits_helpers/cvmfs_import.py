@@ -424,6 +424,16 @@ def corpus_from_manifest(manifest):
     return corpus
 
 
+def _unsafe_component(*comps):
+    """True if any path component would escape its parent (absolute or contains a
+    ``..`` segment) — a guard against path traversal via a hostile module id."""
+    for c in comps:
+        norm = (c or "").replace("\\", "/")
+        if not norm or norm.startswith("/") or ".." in norm.split("/"):
+            return True
+    return False
+
+
 def write_overlay(corpus, build_id, arch, out_root, alias=None,
                   package_hashes=None, abi_tag=""):
     """Write the per-build_id module+metadata overlay (ADR-0001 D6/D10).
@@ -451,9 +461,13 @@ def write_overlay(corpus, build_id, arch, out_root, alias=None,
         remapped = dict(entry)
         remapped["deps"] = [_remap_id(d, alias.to_bits) for d in entry.get("deps", [])]
         name, _, ver = bits_id.partition("/")
+        vfile = ver or "default"
+        # Refuse a module id whose name/version would write outside the overlay
+        # (path traversal); the names come from foreign modulefiles / a manifest.
+        if _unsafe_component(name, vfile):
+            continue
         dest = os.path.join(arch_root, name)
         os.makedirs(dest, exist_ok=True)
-        vfile = ver or "default"
         with open(os.path.join(dest, vfile), "w") as fh:
             fh.write(generate_modulefile(bits_id, remapped, build_id))
         meta = build_module_meta(bits_id, entry, build_id,
