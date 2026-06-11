@@ -90,3 +90,75 @@ def parse_module_display(text):
             verbatim.append(line)
 
     return {"ops": ops, "deps": deps, "verbatim": verbatim}
+
+
+# ── Corpus builder: classify a package's ops into a generic BitsModule shape ──
+
+# Path variables that the generic BitsModule template already knows how to emit,
+# mapped to the recipe MODULE_OPTIONS category they correspond to. A package whose
+# path ops are only these collapses to "BitsModule(options)"; anything else is
+# kept verbatim.
+_PATH_CATEGORY = {
+    "PATH": "bin",
+    "LD_LIBRARY_PATH": "lib",
+    "DYLD_LIBRARY_PATH": "lib",
+    "CMAKE_PREFIX_PATH": "lib",
+    "PYTHONPATH": "python",
+    "PKG_CONFIG_PATH": "pkgconfig",
+}
+
+
+def _factor(value, base_prefix):
+    """Replace the package install prefix with the ``$PREFIX`` placeholder so the
+    generated overlay can re-target it (prefix factoring)."""
+    if base_prefix and value.startswith(base_prefix):
+        return "$PREFIX" + value[len(base_prefix):]
+    return value
+
+
+def _factor_line(line, base_prefix):
+    return line.replace(base_prefix, "$PREFIX") if base_prefix else line
+
+
+def classify_ops(ops, base_prefix):
+    """Split env ops into generic BitsModule *options* and *verbatim* extras.
+
+    A (prepend|append)-path op on a known path variable whose value lives under
+    the package's install prefix contributes its category (bin/lib/python/
+    pkgconfig) to ``options`` (de-duplicated, order-preserving). Everything else —
+    other path variables, paths pointing outside the prefix, every ``setenv`` —
+    is kept verbatim with the prefix factored to ``$PREFIX``.
+    """
+    options, verbatim = [], []
+    for directive, var, value in ops:
+        if (directive in ("prepend-path", "append-path")
+                and var in _PATH_CATEGORY and base_prefix
+                and value.startswith(base_prefix)):
+            cat = _PATH_CATEGORY[var]
+            if cat not in options:
+                options.append(cat)
+        else:
+            verbatim.append("%s %s %s" % (directive, var, _factor(value, base_prefix)))
+    return {"options": options, "verbatim": verbatim}
+
+
+def build_corpus_entry(display_text, base_prefix, version=None, revision=None):
+    """Build one corpus entry from a package's ``module show`` text.
+
+    Returns ``{version, revision, base_prefix, options, verbatim, deps}`` — the
+    prefix-factored, classified representation used to regenerate a bits modulefile
+    and to form the release dependency graph.
+    """
+    parsed = parse_module_display(display_text)
+    classified = classify_ops(parsed["ops"], base_prefix)
+    verbatim = classified["verbatim"] + [
+        _factor_line(line, base_prefix) for line in parsed["verbatim"]
+    ]
+    return {
+        "version": version,
+        "revision": revision,
+        "base_prefix": base_prefix,
+        "options": classified["options"],
+        "verbatim": verbatim,
+        "deps": parsed["deps"],
+    }

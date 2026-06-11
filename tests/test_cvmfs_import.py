@@ -2,7 +2,11 @@
 
 import unittest
 
-from bits_helpers.cvmfs_import import parse_module_display
+from bits_helpers.cvmfs_import import (
+    parse_module_display, classify_ops, build_corpus_entry,
+)
+
+PREFIX = "/cvmfs/x/ROOT/6.38.00"
 
 
 # Representative `module show ROOT/6.38.00` output from environment-modules.
@@ -62,6 +66,48 @@ class TestParseModuleDisplay(unittest.TestCase):
     def test_depends_on_directive(self):
         r = parse_module_display("depends-on cmake/3.30 ninja/1.12\n")
         self.assertEqual(r["deps"], ["cmake/3.30", "ninja/1.12"])
+
+
+class TestClassifyOps(unittest.TestCase):
+
+    def test_standard_path_ops_become_options(self):
+        ops = [
+            ("prepend-path", "PATH", PREFIX + "/bin"),
+            ("prepend-path", "LD_LIBRARY_PATH", PREFIX + "/lib"),
+            ("prepend-path", "PYTHONPATH", PREFIX + "/lib/python3.13/site-packages"),
+            ("prepend-path", "PKG_CONFIG_PATH", PREFIX + "/lib/pkgconfig"),
+        ]
+        r = classify_ops(ops, PREFIX)
+        self.assertEqual(r["options"], ["bin", "lib", "python", "pkgconfig"])
+        self.assertEqual(r["verbatim"], [])
+
+    def test_cmake_prefix_path_dedups_into_lib(self):
+        ops = [("prepend-path", "LD_LIBRARY_PATH", PREFIX + "/lib"),
+               ("prepend-path", "CMAKE_PREFIX_PATH", PREFIX)]
+        self.assertEqual(classify_ops(ops, PREFIX)["options"], ["lib"])
+
+    def test_setenv_goes_verbatim_with_prefix_factored(self):
+        r = classify_ops([("setenv", "ROOTSYS", PREFIX)], PREFIX)
+        self.assertEqual(r["options"], [])
+        self.assertEqual(r["verbatim"], ["setenv ROOTSYS $PREFIX"])
+
+    def test_path_outside_prefix_is_verbatim(self):
+        r = classify_ops([("prepend-path", "PATH", "/usr/local/bin")], PREFIX)
+        self.assertEqual(r["options"], [])
+        self.assertEqual(r["verbatim"], ["prepend-path PATH /usr/local/bin"])
+
+
+class TestBuildCorpusEntry(unittest.TestCase):
+
+    def test_full_entry(self):
+        e = build_corpus_entry(SAMPLE, PREFIX, version="6.38.00", revision="1")
+        self.assertEqual(e["version"], "6.38.00")
+        self.assertEqual(e["revision"], "1")
+        self.assertEqual(e["base_prefix"], PREFIX)
+        self.assertEqual(e["options"], ["bin", "lib", "python"])  # no pkgconfig in SAMPLE
+        self.assertIn("setenv ROOTSYS $PREFIX", e["verbatim"])
+        self.assertIn("something-weird custom args", e["verbatim"])
+        self.assertEqual(e["deps"], ["Python/3.13.11", "Boost/1.90.0", "gcc/13"])
 
 
 if __name__ == "__main__":
