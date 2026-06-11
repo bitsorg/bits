@@ -293,7 +293,7 @@ function checkLegacyBitsRc() {
   bad="$(awk '
     /^[[:space:]]*\[/ {
       if ($0 !~ /^[[:space:]]*\[bits\][[:space:]]*$/) { print "  section " $0 } ; next }
-    /^[[:space:]]*(repo_dir|sw_dir|search_path|pkg_prefix|branding)[[:space:]]*=/ {
+    /^[[:space:]]*(repo_dir|sw_dir|pkg_prefix|branding)[[:space:]]*=/ {
       k=$0; sub(/^[[:space:]]*/,"",k); sub(/[[:space:]]*=.*/,"",k); print "  key    " k }
   ' "$cfgfile")"
   [[ -z "$bad" ]] && return 0
@@ -301,18 +301,19 @@ function checkLegacyBitsRc() {
     echo "ERROR: $cfgfile uses the old bits.rc format. Offending entries:"
     echo "$bad"
     echo
-    echo "Please update it (keep a single [bits] section):"
+    echo "Please update it (a flat key = value file, or a single [bits] section):"
     echo "  repo_dir     -> config_dir"
     echo "  sw_dir       -> work_dir"
-    echo "  search_path  -> removed; set BITS_PATH (e.g. export BITS_PATH=lcg) or use a provider"
     echo "  pkg_prefix   -> removed; the display prefix comes from the aliBuild wrapper (BITS_PKG_PREFIX)"
     echo "  branding     -> removed"
+    echo "(search_path is still supported: it seeds BITS_PATH so recipes in a"
+    echo " sub-repo such as ./lcg.bits are found, e.g. for 'bits build ROOT'.)"
     echo "Per-organisation [NAME] sections are no longer supported."
     echo
     echo "Example:"
-    echo "  [bits]"
     echo "  organisation = stacks"
     echo "  config_dir   = ."
+    echo "  search_path  = lcg"
   } >&2
   exit 1
 }

@@ -1139,6 +1139,13 @@ def doParseArgs():
   # explicit --organisation on the CLI still wins via normal argparse order.
   if not _rc_defaults.get("organisation") and os.environ.get("BITS_ORGANISATION"):
     _rc_defaults["organisation"] = os.environ["BITS_ORGANISATION"]
+  # bits.rc `search_path` seeds BITS_PATH (the recipe search order read by
+  # getConfigPaths). Required so that building a single package whose recipe lives
+  # in a sub-repo — e.g. `bits build ROOT` where ROOT is in ./lcg.bits — finds it,
+  # not only the primary config_dir. Comma-separated relative names resolve to
+  # <config_dir>/<name>.bits; an explicit BITS_PATH environment variable wins.
+  if _rc_early.get("search_path") and not os.environ.get("BITS_PATH"):
+    os.environ["BITS_PATH"] = str(_rc_early["search_path"]).strip()
   if _rc_defaults:
     # set_defaults on the *parent* parser is overridden by each subparser's own
     # argument-level defaults (add_argument(..., default=...)).  We must call
