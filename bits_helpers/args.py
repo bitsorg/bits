@@ -987,6 +987,12 @@ def doParseArgs():
                                    "from the packages' .meta.json, not given here.")
   publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=True, metavar="PATH",
                               help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9). With --view, the CVMFS root the Views/ tree lives under.")
+  publish_parser.add_argument("--module-target", dest="moduleTarget", metavar="PATH", default=None,
+                              help="CVMFS path of the separate modules tree. When given (prepub path), "
+                                   "the package's etc/modulefiles are tar'd and published as an "
+                                   "independent job here, since modulefiles live in a different tree "
+                                   "(module_dir) from the payload — so they are installed even with "
+                                   "--no-relocate.")
   # --spool is required for the legacy rsync-to-spool path; omit it when using --prepub-url.
   publish_parser.add_argument("--spool", dest="spool", default=None, metavar="[USER@HOST:]PATH",
                               help=("Ingestion spool root.  Either a local directory or a remote rsync "

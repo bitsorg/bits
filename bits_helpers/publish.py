@@ -392,69 +392,93 @@ def doPublish(args, parser):
         return
 
     # ------------------------------------------------------------------
-    # 6b. cvmfs-prepub direct path — package as tar, submit, poll
+    # 6b. cvmfs-prepub direct path — each independent directory tree is
+    #     tar'd and submitted to *its own* CVMFS path.  The package payload
+    #     and the modulefiles live in different trees (install_dir vs
+    #     module_dir), so a single tar would land the modulefiles inside the
+    #     package tree; they are submitted as a separate job to --module-target.
     # ------------------------------------------------------------------
-    from bits_helpers.prepub import (
-        _cvmfs_repo_and_path,
-        poll_job,
-        resolve_token,
-        submit_job,
+    from bits_helpers.prepub import resolve_token
+
+    prepub_cfg = _PrepubConfig(
+        url=prepub_url, token=resolve_token(prepub_token),
+        webhook=prepub_webhook, no_verify_tls=prepub_no_verify_tls,
+        poll_interval=prepub_poll_interval, timeout=prepub_timeout,
     )
 
-    # Resolve repository name and sub-path.
-    if prepub_repo and prepub_path:
-        repo    = prepub_repo
-        subpath = prepub_path.strip("/")
-    elif prepub_repo or prepub_path:
-        parser.error(
-            "--prepub-repo and --prepub-path must both be supplied when either is given; "
-            "omit both to derive them automatically from --cvmfs-target."
-        )
-    else:
-        try:
-            repo, subpath = _cvmfs_repo_and_path(cvmfs_target)
-        except ValueError as exc:
-            parser.error(str(exc))
-
+    # Package payload tree.
+    repo, subpath = _resolve_repo_subpath(prepub_repo, prepub_path, cvmfs_target, parser)
     debug("prepub repo=%s  path=%s", repo, subpath)
 
-    # Build a .tar.gz of the (already relocated) working copy.
-    tar_fd, tar_path = tempfile.mkstemp(prefix=f"bits-prepub-{pkg_id}-", suffix=".tar.gz")
-    os.close(tar_fd)
-    try:
-        info("Packaging relocated tree as tar …")
-        with tarfile.open(tar_path, "w:gz") as tf:
-            tf.add(copy_dir, arcname=".")
+    # Modulefiles tree (independent of relocation): published to module_dir when
+    # --module-target is given, so they reach the separate modules tree even when
+    # the package itself is published with --no-relocate.
+    module_target = getattr(args, "moduleTarget", None)
+    module_dir = join(copy_dir, "etc", "modulefiles")
+    publish_modules = bool(module_target) and os.path.isdir(module_dir) and os.listdir(module_dir)
 
-        # ------------------------------------------------------------------
-        # 7b. Cleanup working copy before upload (free disk space early).
-        # ------------------------------------------------------------------
+    try:
+        _publish_tree(copy_dir, repo, subpath, prepub_cfg, "package %s" % pkg_id)
+        if publish_modules:
+            mrepo, msub = _resolve_repo_subpath(None, None, module_target, parser)
+            _publish_tree(module_dir, mrepo, msub, prepub_cfg,
+                          "modulefiles for %s" % pkg_id)
+        elif module_target:
+            info("No modulefiles under %s; nothing to publish to module tree.", module_dir)
+    finally:
         info("Cleaning up working copy …")
         shutil.rmtree(copy_dir, ignore_errors=True)
         if not scratch_dir:
             shutil.rmtree(_tmpparent, ignore_errors=True)
+    return True
 
-        token = resolve_token(prepub_token)
-        job_id = submit_job(
-            prepub_url    = prepub_url,
-            token         = token,
-            repo          = repo,
-            path          = subpath,
-            tar_path      = tar_path,
-            webhook_url   = prepub_webhook,
-            no_verify_tls = prepub_no_verify_tls,
-        )
 
-        poll_job(
-            prepub_url    = prepub_url,
-            token         = token,
-            job_id        = job_id,
-            poll_interval = prepub_poll_interval,
-            timeout       = prepub_timeout,
-            no_verify_tls = prepub_no_verify_tls,
-        )
+class _PrepubConfig:
+    """The cvmfs-prepub connection settings shared by every per-tree submission."""
+
+    def __init__(self, url, token, webhook, no_verify_tls, poll_interval, timeout):
+        self.url = url
+        self.token = token
+        self.webhook = webhook
+        self.no_verify_tls = no_verify_tls
+        self.poll_interval = poll_interval
+        self.timeout = timeout
+
+
+def _resolve_repo_subpath(prepub_repo, prepub_path, cvmfs_target, parser):
+    """Return ``(repo, subpath)`` for a CVMFS target, from explicit
+    ``--prepub-repo/--prepub-path`` or derived from the target path."""
+    from bits_helpers.prepub import _cvmfs_repo_and_path
+    if prepub_repo and prepub_path:
+        return prepub_repo, prepub_path.strip("/")
+    if prepub_repo or prepub_path:
+        parser.error("--prepub-repo and --prepub-path must both be supplied when "
+                     "either is given; omit both to derive them from the target.")
+    try:
+        return _cvmfs_repo_and_path(cvmfs_target)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+def _publish_tree(tree_dir, repo, subpath, cfg, what):
+    """Tar *tree_dir* and submit it to ``<repo>/<subpath>`` via cvmfs-prepub,
+    polling to completion. This is the single per-tree primitive: the package
+    payload, the modulefiles tree and a release view are each published with it,
+    to their own independent CVMFS path."""
+    from bits_helpers.prepub import poll_job, submit_job
+    tar_fd, tar_path = tempfile.mkstemp(prefix="bits-prepub-", suffix=".tar.gz")
+    os.close(tar_fd)
+    try:
+        info("Packaging %s as tar → %s/%s …", what, repo, subpath)
+        with tarfile.open(tar_path, "w:gz") as tf:
+            tf.add(tree_dir, arcname=".")
+        job_id = submit_job(prepub_url=cfg.url, token=cfg.token, repo=repo,
+                            path=subpath, tar_path=tar_path, webhook_url=cfg.webhook,
+                            no_verify_tls=cfg.no_verify_tls)
+        poll_job(prepub_url=cfg.url, token=cfg.token, job_id=job_id,
+                 poll_interval=cfg.poll_interval, timeout=cfg.timeout,
+                 no_verify_tls=cfg.no_verify_tls)
     finally:
-        # Always remove the temporary tar, even on error.
         try:
             os.unlink(tar_path)
         except OSError:
