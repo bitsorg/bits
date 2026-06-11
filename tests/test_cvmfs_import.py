@@ -4,6 +4,7 @@ import unittest
 
 from bits_helpers.cvmfs_import import (
     parse_module_display, classify_ops, build_corpus_entry,
+    closure_check, compute_corpus_build_id,
 )
 
 PREFIX = "/cvmfs/x/ROOT/6.38.00"
@@ -108,6 +109,42 @@ class TestBuildCorpusEntry(unittest.TestCase):
         self.assertIn("setenv ROOTSYS $PREFIX", e["verbatim"])
         self.assertIn("something-weird custom args", e["verbatim"])
         self.assertEqual(e["deps"], ["Python/3.13.11", "Boost/1.90.0", "gcc/13"])
+
+
+def _entry(deps=(), base="/cvmfs/x", options=("lib",), verbatim=()):
+    return {"base_prefix": base, "options": list(options),
+            "verbatim": list(verbatim), "deps": list(deps)}
+
+
+class TestClosureAndBuildId(unittest.TestCase):
+
+    def test_closed_corpus_has_no_dangling(self):
+        corpus = {
+            "ROOT/6.38.00": _entry(deps=["Python/3.13.11"]),
+            "Python/3.13.11": _entry(),
+        }
+        self.assertEqual(closure_check(corpus), [])
+
+    def test_dangling_edges_reported_sorted(self):
+        corpus = {
+            "ROOT/6.38.00": _entry(deps=["Python/3.13.11", "Boost/1.90.0"]),
+            "Python/3.13.11": _entry(),
+        }
+        self.assertEqual(closure_check(corpus), ["Boost/1.90.0"])
+
+    def test_build_id_deterministic_and_labelled(self):
+        corpus = {"ROOT/6.38.00": _entry(deps=["Python/3.13.11"]),
+                  "Python/3.13.11": _entry()}
+        a = compute_corpus_build_id(corpus, "LCG_109")
+        b = compute_corpus_build_id(dict(reversed(list(corpus.items()))), "LCG_109")
+        self.assertTrue(a.startswith("LCG_109-"))
+        self.assertEqual(a, b)   # insertion order independent
+
+    def test_build_id_changes_with_content(self):
+        c1 = {"ROOT/6.38.00": _entry(options=["lib"])}
+        c2 = {"ROOT/6.38.00": _entry(options=["lib", "bin"])}
+        self.assertNotEqual(compute_corpus_build_id(c1, "L"),
+                            compute_corpus_build_id(c2, "L"))
 
 
 if __name__ == "__main__":

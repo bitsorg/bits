@@ -162,3 +162,48 @@ def build_corpus_entry(display_text, base_prefix, version=None, revision=None):
         "verbatim": verbatim,
         "deps": parsed["deps"],
     }
+
+
+# ── Closure check + deterministic build_id ───────────────────────────────────
+#
+# A corpus is ``{module_id: entry}`` where *module_id* is the fully-qualified
+# module name as it appears in dependency edges (e.g. ``"ROOT/6.38.00"``). The
+# closure check ensures every edge points inside the corpus, so the whole set is
+# a self-contained, internally-consistent release before it is stamped with one
+# build_id — the token that lets relaxed reuse adopt any subset ABI-safely.
+
+def closure_check(corpus):
+    """Return the sorted dependency edges that point *outside* the corpus.
+
+    An empty list means the corpus is closed (every ``deps`` target is a known
+    module). A non-empty list is a refusal reason — do not assign a build_id.
+    """
+    keys = set(corpus)
+    dangling = set()
+    for entry in corpus.values():
+        for dep in entry.get("deps", ()):
+            if dep not in keys:
+                dangling.add(dep)
+    return sorted(dangling)
+
+
+def compute_corpus_build_id(corpus, label):
+    """Return a deterministic, content-derived build_id for *corpus*.
+
+    ``<label>-<digest>`` where the digest is a hash over the sorted, normalised
+    corpus, so an independent or repeated import of the same release yields the
+    same id (matching the ``provenance.compute_build_id`` format used natively).
+    """
+    import hashlib
+    import json
+    members = sorted(
+        [mid,
+         entry.get("base_prefix", ""),
+         list(entry.get("options", [])),
+         list(entry.get("verbatim", [])),
+         list(entry.get("deps", []))]
+        for mid, entry in corpus.items()
+    )
+    digest = hashlib.sha256(
+        json.dumps(members, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    return "%s-%s" % (label, digest)
