@@ -321,6 +321,21 @@ def storeHashes(package, specs, considerRelocation):
     # subsequent calculations.
     return
 
+  # Relaxed CVMFS graft (ADR-0001): a grafted package adopts the *deployed*
+  # artifact's hash. The existing reuse path (CVMFSRemoteSync.fetch_symlinks +
+  # the reuse decision) then materialises and symlinks the deployed tree under
+  # that hash instead of building, and consumers hash against the real deployed
+  # dependency — so no separate build-skip branch is needed. Only triggers when
+  # the resolver tagged the spec from_cvmfs (relaxed mode); never in strict.
+  if spec.get("from_cvmfs") and spec.get("cvmfs_hash"):
+    _h = spec["cvmfs_hash"]
+    spec["remote_revision_hash"] = _h
+    spec["local_revision_hash"] = _h
+    spec["remote_hashes"] = [_h]
+    spec["local_hashes"] = [_h]
+    spec["hash"] = _h
+    return
+
   # For now, all the hashers share data -- they'll be split below.
   h_all = Hasher()
 
@@ -748,6 +763,18 @@ def create_provenance_info(package, specs, args):
   from bits_helpers.provenance import (
     compute_build_id, compute_abi_tag, recipe_tools_ref,
   )
+  # Contagious provenance (ADR-0001): a locally-built package is "loose" when its
+  # dependency closure contains a package grafted from CVMFS (adopted by
+  # name/build_id, not verified hash). Grafted packages are not built, so this
+  # function only ever runs for local builds.
+  def _closure_grafted():
+    for _key in ("full_build_requires", "full_runtime_requires"):
+      for _dep in specs[package].get(_key, ()):
+        _ds = specs.get(_dep)
+        if isinstance(_ds, dict) and _ds.get("from_cvmfs"):
+          return True
+    return False
+  _provenance = "loose" if _closure_grafted() else "pure"
   return json.dumps({
     "comment": args.annotate.get(package),
     "bits_version": __version__,
@@ -759,9 +786,7 @@ def create_provenance_info(package, specs, args):
     "build_id": compute_build_id(specs, args),
     "abi_tag": compute_abi_tag(args),
     "reuse_policy": getattr(args, "reusePolicy", "strict") or "strict",
-    # "loose" once any grafted (relaxed) dep enters this package's closure
-    # (Stage 1c sets spec["provenance"]); "pure" otherwise.
-    "provenance": "loose" if specs.get(package, {}).get("provenance") == "loose" else "pure",
+    "provenance": _provenance,
     "repro": {
       "dist_commit": os.environ.get("BITS_DIST_HASH"),
       "recipe_tools": recipe_tools_ref(specs),
@@ -1679,6 +1704,27 @@ def doBuild(args, parser):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
         return getstatusoutput_docker(cmd, cwd=temp_dir)
 
+    # Relaxed CVMFS graft callback (ADR-0001). Active only under --reuse-policy
+    # relaxed with a cvmfs:// remote store and a --reuse-base build_id; None in
+    # every other case → strict behaviour, no graft (simple aliBuild path
+    # unaffected). Uses the combined architecture (args.architecture) — the arch
+    # recorded in the deployed packages' .meta.json — not raw_architecture.
+    _cvmfs_match = None
+    if getattr(args, "reusePolicy", "strict") == "relaxed" and getattr(args, "reuseBase", ""):
+      _store = args.remoteStore or ""
+      if _store.startswith("cvmfs://"):
+        from bits_helpers.cvmfs_reuse import graftable_match
+        _store_root = re.sub("^cvmfs://", "", _store)
+        _build_local = set(getattr(args, "buildLocal", []) or [])
+        def _cvmfs_match(spec, _root=_store_root, _bid=args.reuseBase,
+                         _arch=args.architecture, _bl=_build_local):
+          if spec["package"] in _bl:
+            return None
+          return graftable_match(spec["package"], _arch, _bid, _root)
+      else:
+        warning("--reuse-policy relaxed needs a cvmfs:// --remote-store "
+                "(or --reuse-cvmfs); no packages will be grafted.")
+
     systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = packages,
                      specs                   = specs,
@@ -1696,7 +1742,8 @@ def doBuild(args, parser):
                      taps                    = taps,
                      log                     = debug,
                      provider_dirs          = provider_dirs,
-                     defaults_meta           = defaultsMeta)
+                     defaults_meta           = defaultsMeta,
+                     performCvmfsMatch       = _cvmfs_match)
 
   dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
              "Specified default `%s' is not compatible with the packages you want to build.\n"

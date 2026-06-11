@@ -108,6 +108,28 @@ class TestProvenanceRecord(unittest.TestCase):
                                            defaults=["release"]))
         self.assertEqual(rec["reuse_policy"], "strict")
 
+    def _record_specs(self, specs):
+        args = SimpleNamespace(annotate={}, architecture="arch", defaults=["release"])
+        os.environ["BITS_DIST_HASH"] = "x"
+        try:
+            return json.loads(create_provenance_info("a", specs, args))
+        finally:
+            os.environ.pop("BITS_DIST_HASH", None)
+
+    def test_provenance_loose_when_closure_has_graft(self):
+        specs = {
+            "a": _spec("a", full_runtime_requires=["dep"], full_build_requires=[]),
+            "dep": _spec("dep", from_cvmfs=True),
+        }
+        self.assertEqual(self._record_specs(specs)["provenance"], "loose")
+
+    def test_provenance_pure_when_no_graft_in_closure(self):
+        specs = {
+            "a": _spec("a", full_runtime_requires=["dep"], full_build_requires=[]),
+            "dep": _spec("dep"),   # locally built, not grafted
+        }
+        self.assertEqual(self._record_specs(specs)["provenance"], "pure")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -91,5 +91,27 @@ class TestRelaxedFrontierCut(unittest.TestCase):
             self.assertNotIn("from_cvmfs", specs[p])
 
 
+class TestStoreHashesGraft(unittest.TestCase):
+    """A from_cvmfs spec adopts the deployed hash so the existing reuse path
+    symlinks it instead of building (ADR-0001 Stage 1c)."""
+
+    def test_from_cvmfs_adopts_deployed_hash(self):
+        from bits_helpers.build import storeHashes
+        specs = {
+            "ROOT": {
+                "package": "ROOT", "version": "v1", "revision": "1",
+                "from_cvmfs": True, "cvmfs_hash": "deadbeef",
+                "requires": [], "pkg_family": "",
+            },
+        }
+        storeHashes("ROOT", specs, considerRelocation=False)
+        s = specs["ROOT"]
+        self.assertEqual(s["hash"], "deadbeef")
+        self.assertEqual(s["remote_revision_hash"], "deadbeef")
+        self.assertEqual(s["local_revision_hash"], "deadbeef")
+        self.assertEqual(s["remote_hashes"], ["deadbeef"])
+        self.assertEqual(s["local_hashes"], ["deadbeef"])
+
+
 if __name__ == "__main__":
     unittest.main()
