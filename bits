@@ -29,7 +29,7 @@ Usage: $0 \\
     ${EM}help${EZ}
       This help screen.
 
-    ${EM}enter${EZ} [${ET}-q${EZ}] [${ET}--shellrc${EZ}] [${ET}--dev${EZ}] MODULE1[,MODULE2...]
+    ${EM}enter${EZ} [${ET}-q${EZ}] [${ET}--shellrc${EZ}] [${ET}--dev${EZ}] [${ET}--view${EZ}] MODULE1[,MODULE2...]
       Enters a new shell with the given modules loaded (${ET}-q${EZ} silences the module-load messages).
       Return to the clean environment by exiting the shell with ${ET}exit${EZ}.
       Inside the environment you can use the native ${ET}modulecmd${EZ}.
@@ -416,6 +416,7 @@ DEFAULT_WORK_DIRS=("$BITS_WORK_DIR" "$BITS_WORK_DIR" ${BITSBUILD_CHDIR:+"$BITSBU
 COMMAND_IN_ENV=()
 CLEAN_ENV=1
 DEVOPT=0
+VIEWOPT=0
 VERBOSE=1
 
 ARGS=()
@@ -435,6 +436,8 @@ do
 	  unset CLEAN_ENV;;
       --dev)
 	  DEVOPT=1;;
+      --view)
+	  VIEWOPT=1;;
       -h|--help|help)
 	  printHelp; exit 0 ;;
       -c) 
@@ -548,6 +551,23 @@ IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
 # "Loading requirement:" progress lines so setenv/printenv/load/enter output can
 # be captured/parsed cleanly. Honoured by environment-modules >= 4.
 [[ -z "${VERBOSE:-}" ]] && export MODULES_VERBOSITY=silent
+
+# --view: once modules are loaded *in process*, replace the long path-list
+# variables (PATH / LD_LIBRARY_PATH / CMAKE_PREFIX_PATH / PKG_CONFIG_PATH /
+# PYTHONPATH) with single entries from a merged view of the loaded closure, so the
+# environment stays small on big stacks. The modulefiles' setenvs (<PKG>_ROOT,
+# ROOTSYS, recipe env: variables) are left untouched. The view is cached per
+# closure under $WORK_DIR/VIEWS/$ARCHITECTURE. Captured before any module load.
+BITS_ORIG_PATH="${PATH}"
+applyView() {
+  [[ $VIEWOPT == 1 ]] || return 0
+  local _libvar=LD_LIBRARY_PATH
+  [[ $UNAME == Darwin ]] && _libvar=DYLD_LIBRARY_PATH
+  eval "$(PYTHONPATH="${BITSDIR}${PYTHONPATH:+:$PYTHONPATH}" python3 -m bits_helpers.view_cmd \
+            --cache "${WORK_DIR}/VIEWS/${ARCHITECTURE}" --lib-var "${_libvar}" \
+            --system-path "${BITS_ORIG_PATH}" 2> /dev/null)"
+}
+
 case "$ACTION" in
   enter)
     [[ $BITSLVL == 1 ]] || \
@@ -576,6 +596,7 @@ case "$ACTION" in
     _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
     detectShell
+    applyView
     if [[ ! -z "$CLEAN_ENV" ]]; then
       case $MODULES_SHELL in
         sh|bash) export PS1="[$MODULES]$PS1DEV"' \w $> '   ;;
@@ -623,6 +644,7 @@ case "$ACTION" in
     existModules $MODULES
     eval $($MODULECMD bash add $MODULES 2> >(grep -v "$IGNORE_ERR" >&2))
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
+    applyView
     exec "${COMMAND_IN_ENV[@]}"
   ;;
   q|query)
