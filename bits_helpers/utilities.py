@@ -1396,7 +1396,7 @@ def resolveDefaultsFilename(defaults, configDir, failOnError=True):
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,
                    performValidateDefaults, overrides, taps, log, force_rebuild=(),
-                   provider_dirs=None, defaults_meta=None):
+                   provider_dirs=None, defaults_meta=None, performCvmfsMatch=None):
   """Resolve the full set of packages required by *packages*.
 
   *provider_dirs* is an optional ``dict`` returned by
@@ -1731,6 +1731,32 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # Falls back to "" when no package_family mapping is configured, preserving
     # the legacy install layout <arch>/<pkg>/<version>-<revision>.
     spec["pkg_family"] = resolve_pkg_family(defaults_meta or {}, spec["package"])
+
+    # Relaxed CVMFS graft (ADR-0001). performCvmfsMatch is wired by build.py only
+    # under --reuse-policy relaxed (None otherwise → no effect, strict unchanged).
+    # It returns a descriptor for a package already deployed in the blessed
+    # release, or None. On a match we keep the spec in `specs` so consumers still
+    # source its deployed init.sh, but PRUNE its subtree — the grafted package's
+    # own dependencies are provided from /cvmfs via that init.sh cascade — and
+    # tag it (from_cvmfs/cvmfs_*) so the build step symlinks it instead of
+    # compiling (Stage 1c). The deployed hash is recorded for the hashing step.
+    if performCvmfsMatch is not None:
+      _m = performCvmfsMatch(spec)
+      if _m:
+        spec["from_cvmfs"] = True
+        spec["cvmfs_path"] = _m.get("path")
+        spec["cvmfs_build_id"] = _m.get("build_id")
+        if _m.get("hash"):
+          spec["cvmfs_hash"] = _m["hash"]
+        if _m.get("version"):
+          spec["version"] = _m["version"]
+          spec.setdefault("tag", spec["version"])
+        spec["requires"] = []
+        spec["build_requires"] = []
+        spec["runtime_requires"] = []
+        specs[spec["package"]] = spec
+        continue
+
     specs[spec["package"]] = spec
     packages += spec["requires"]
   return (systemPackages, ownPackages, failedRequirements, validDefaults)
