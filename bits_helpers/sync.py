@@ -18,6 +18,18 @@ from bits_helpers.utilities import resolve_store_path, resolve_links_path, symli
 
 def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False):
   """Parse remote store URLs and return the correct RemoteSync instance for them."""
+  # Read-only read stores (a CVMFS filesystem mount, an HTTP mirror) cannot
+  # upload. When a separate --write-store is also given it is necessarily a
+  # different backend, so pair the read-only reader with a writer built from
+  # write_url (see DualRemoteSync). Without this, the write store was silently
+  # dropped below and nothing was ever uploaded.
+  if write_url and (read_url.startswith("cvmfs://") or read_url.startswith("http")):
+    if read_url.startswith("http"):
+      reader = HttpRemoteSync(read_url, architecture, work_dir, insecure)
+    else:
+      reader = CVMFSRemoteSync(read_url, None, architecture, work_dir)
+    return DualRemoteSync(reader, _writer_from_url(write_url, architecture, work_dir))
+
   if read_url.startswith("http"):
     return HttpRemoteSync(read_url, architecture, work_dir, insecure)
   if read_url.startswith("s3://"):
@@ -29,6 +41,82 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False)
   if read_url:
     return RsyncRemoteSync(read_url, write_url, architecture, work_dir)
   return NoRemoteSync()
+
+
+def _writer_from_url(write_url, architecture, work_dir):
+  """Build a write helper for *write_url*, for the DualRemoteSync case.
+
+  Constructed with read == write == write_url so the helper's skip/exists checks
+  consult the write store itself; only its upload_* methods are ever called.
+  """
+  if write_url.startswith("s3://"):
+    return S3RemoteSync(write_url, write_url, architecture, work_dir)
+  if write_url.startswith("b3://"):
+    return Boto3RemoteSync(write_url, write_url, architecture, work_dir)
+  if write_url.startswith("cvmfs://"):
+    dieOnError(True, "Cannot use a cvmfs:// store as a --write-store: CVMFS is read-only.")
+  return RsyncRemoteSync(write_url, write_url, architecture, work_dir)
+
+
+class DualRemoteSync:
+  """Read packages from one backend, upload freshly-built ones to another.
+
+  Used when packages are recalled from a read-only store (e.g. a CVMFS mount)
+  but newly built packages must be published to a different store (e.g. S3).
+  Reads delegate to *reader*; uploads delegate to *writer*.
+
+  Only freshly-built packages are uploaded. A package recalled from the read
+  store carries a non-empty ``spec["cachedTarball"]`` (and, for CVMFS, only a
+  synthetic tarball of symlinks into ``/cvmfs``); uploading it would publish a
+  stub and/or duplicate an artifact that already lives on the read store. This
+  mirrors build.py's own "built_from_source" vs "from_store" distinction.
+  """
+
+  def __init__(self, reader, writer) -> None:
+    self.reader = reader
+    self.writer = writer
+    self.architecture = getattr(reader, "architecture", None)
+    self.workdir = getattr(reader, "workdir", None)
+
+  # build.py both reads and writes syncHelper.writeStore (the development-package
+  # path sets it to "" to disable uploads), so proxy it onto the writer.
+  @property
+  def writeStore(self):
+    return getattr(self.writer, "writeStore", None)
+
+  @writeStore.setter
+  def writeStore(self, value):
+    self.writer.writeStore = value
+
+  @staticmethod
+  def _was_recalled(spec) -> bool:
+    return bool(spec.get("cachedTarball"))
+
+  # ── reads → reader ──────────────────────────────────────────────────────────
+  def fetch_tarball(self, spec):
+    return self.reader.fetch_tarball(spec)
+
+  def fetch_symlinks(self, spec):
+    return self.reader.fetch_symlinks(spec)
+
+  def fetch_source(self, *args, **kwargs):
+    return self.reader.fetch_source(*args, **kwargs)
+
+  # ── writes → writer (freshly-built packages only) ────────────────────────────
+  def upload_symlinks_and_tarball(self, spec):
+    if self._was_recalled(spec):
+      debug("Not uploading %s: recalled from the read store, not built this run.",
+            spec.get("package", "?"))
+      return
+    return self.writer.upload_symlinks_and_tarball(spec)
+
+  def upload_shell_command(self, spec):
+    if self._was_recalled(spec):
+      return None
+    return self.writer.upload_shell_command(spec)
+
+  def upload_source(self, *args, **kwargs):
+    return self.writer.upload_source(*args, **kwargs)
 
 
 def _source_remote_path(url_checksum, filename):
