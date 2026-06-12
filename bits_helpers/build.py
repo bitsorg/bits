@@ -1867,9 +1867,17 @@ def doBuild(args, parser):
       builtPackages = buildOrder[:-1]
     else:
       builtPackages = buildOrder
+    # Expand %(version)s etc. in the tag for this display only. Per-spec tag
+    # resolution (resolve_tag, further below) hasn't run yet here, so a templated
+    # tag like "v%(version)s" would otherwise print raw. strict=False makes it
+    # best-effort: unknown placeholders are left as-is and it never aborts.
+    def _display_ref(pkg):
+      spec = specs[pkg]
+      return resolve_spec_data(spec, str(spec.get("tag", spec.get("version", "?"))),
+                               args.defaults, strict=False)
     if len(builtPackages) > 1:
       banner("Packages will be built in the following order:\n - %s",
-             "\n - ".join(x+" (development package)" if x in develPkgs else "{}@{}".format(x, specs[x]["tag"])
+             "\n - ".join(x+" (development package)" if x in develPkgs else "{}@{}".format(x, _display_ref(x))
                           for x in builtPackages if x != "defaults-release"))
     else:
       banner("No dependencies of package %s to build.", buildOrder[-1])
