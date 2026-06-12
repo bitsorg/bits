@@ -180,6 +180,18 @@ if __name__ == "__main__":
     info("Interrupted by user (Ctrl-C)")
     report_event("user", "ctrlc")
     sys.exit(1)
+  except SystemExit as e:
+    # SystemExit is NOT an Exception, so a bare sys.exit() deep in the setup path
+    # (a malformed defaults / recipe file is the classic trigger) would otherwise
+    # leave the user with a non-zero exit and *no* explanation. Make sure every
+    # non-zero exit that wasn't already explained points at the likely cause.
+    #   - a string code means sys.exit("msg") already printed the message
+    #   - code 2 is argparse parser.error, which prints usage itself
+    if not isinstance(e.code, str) and e.code not in (None, 0, 2):
+      error("bits exited with status %s. If the cause is not clear above, re-run "
+            "with --debug for the failing step (a malformed defaults or recipe "
+            "file is a common cause).", e.code)
+    raise
   except Exception as e:
     traceback.print_exc()
     report_exception(e)

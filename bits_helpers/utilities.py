@@ -1288,7 +1288,7 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
       defaultsArchMeta = {}
       err, defaultsArchMeta, archBody = parseRecipe(getRecipeReader(archDefaults, configDir))
       if err:
-        dieOnError (err, None, None)
+        dieOnError(err, err)   # was dieOnError(err, None, None): 3 args + a None message
       banner("Using defaults-%s file found in %s", architecture, configDir)
       debug("Architecture-specific defaults mentioned in: %s ", archDefaults)
       defaultsMeta = merge_dicts(defaultsMeta, defaultsArchMeta, skip_keys={"package"})
