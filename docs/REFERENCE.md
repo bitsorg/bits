@@ -1430,6 +1430,7 @@ A truthy value is anything except empty, `0`, `false`, `off`, or `no`. A
 | `requires` | Runtime + build-time dependencies. |
 | `build_requires` | Build-time-only dependencies (e.g. `cmake`, `ninja`). |
 | `runtime_requires` | Runtime-only dependencies. |
+| `untracked_requires` | Runtime-linked dependencies **excluded from this package's identity hash**. Editing one does **not** invalidate or rebuild this package or anything above it — only the dependency itself rebuilds (it is hashed normally). For iterating on a dependency you control without paying a full-stack rebuild. **You are responsible for ABI compatibility**: a reused consumer links the new dependency without recompiling, so an interface-breaking change can produce a broken build. Any build whose closure includes one is recorded `provenance: loose` in `.meta.json` (discoverable; still publishable). The dependency must keep a **stable install label** — set `force_revision:` on it — so its `<pkg>/<version-revision>` path does not move when it changes, or already-built consumers keep linking the previous build (bits warns if it lacks one). |
 
 Each entry in `requires` / `build_requires` is a string in one of these forms:
 

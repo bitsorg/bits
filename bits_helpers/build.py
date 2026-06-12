@@ -463,11 +463,24 @@ def storeHashes(package, specs, considerRelocation):
     for hook_name in sorted(spec.get("hook_params", {})):
       h_all("hook_params:" + hook_name + "=" + str(spec["hook_params"][hook_name]))
 
+  # untracked_requires: dependencies the user controls and links at runtime but
+  # has chosen NOT to fold into this package's identity hash, so that editing one
+  # does not invalidate (rebuild) this package or anything above it. (Empty for
+  # ordinary recipes, so their hashes are byte-identical to before.)
+  untracked = set(spec.get("untracked_requires", ()))
   dh = Hasher()
   for dep in spec.get("requires", []):
     # At this point, our dependencies have a single hash, local or remote, in
     # specs[dep]["hash"].
     hash_and_devel_hash = specs[dep]["hash"] + specs[dep].get("devel_hash", "")
+    if dep in untracked:
+      # Excluded from the identity hash entirely (not even the base hash), so a
+      # change to this dependency leaves the consumer's hash — and therefore the
+      # hashes of everything above it — unchanged. It is still fed into deps_hash
+      # below, so a *development* build of this package picks the new dependency
+      # up via an incremental rebuild.
+      dh(hash_and_devel_hash)
+      continue
     # If this package is a dev package, and it depends on another dev pkg, then
     # this package's hash shouldn't change if the other dev package was
     # changed, so that we can just rebuild this one incrementally.
@@ -806,7 +819,21 @@ def create_provenance_info(package, specs, args):
         if isinstance(_ds, dict) and _ds.get("from_cvmfs"):
           return True
     return False
-  _provenance = "loose" if _closure_grafted() else "pure"
+  # A build is also loose if its closure decoupled a dependency via
+  # untracked_requires: this package, or one below it, was hashed as if that
+  # dependency never changed, so its identity no longer certifies its full input
+  # closure. Contagious upward like grafted provenance.
+  def _closure_untracked():
+    if specs[package].get("untracked_requires"):
+      return True
+    for _key in ("full_build_requires", "full_runtime_requires"):
+      for _dep in specs[package].get(_key, ()):
+        _ds = specs.get(_dep)
+        if isinstance(_ds, dict) and _ds.get("untracked_requires"):
+          return True
+    return False
+  _untracked = list(specs[package].get("untracked_requires", ()))
+  _provenance = "loose" if (_closure_grafted() or _closure_untracked()) else "pure"
   return json.dumps({
     "comment": args.annotate.get(package),
     "bits_version": __version__,
@@ -823,6 +850,8 @@ def create_provenance_info(package, specs, args):
     "cvmfs_layout": getattr(args, "cvmfsLayout", None),
     "reuse_policy": getattr(args, "reusePolicy", "strict") or "strict",
     "provenance": _provenance,
+    # Dependencies this package linked but excluded from its identity hash.
+    "untracked_requires": _untracked,
     "repro": {
       "dist_commit": os.environ.get("BITS_DIST_HASH"),
       "recipe_tools": recipe_tools_ref(specs),
@@ -1900,6 +1929,28 @@ def doBuild(args, parser):
            "  git pull --rebase\n",
            ", ".join(develPkgs),
            os.getcwd())
+
+  # Packages pulled in by some recipe via `untracked_requires`: linked at runtime
+  # but excluded from their consumers' identity hash, so editing one does not
+  # rebuild the stack above it. List them like development packages, and warn if a
+  # target has no stable install label — a reused consumer references it by
+  # <pkg>/<version-revision>, so that path must not move when the package changes.
+  untrackedTargets = sorted({d for s in specs.values()
+                             for d in s.get("untracked_requires", ()) if d in specs})
+  if untrackedTargets:
+    banner("Untracked dependencies (%s).\n"
+           "These are linked at runtime but excluded from the identity hash of the\n"
+           "packages that require them, so editing one does NOT rebuild the packages\n"
+           "above it. Builds whose closure includes one are marked loose-provenance\n"
+           "in .meta.json. You are responsible for keeping them ABI-compatible.",
+           ", ".join(untrackedTargets))
+    for t in untrackedTargets:
+      if "force_revision" not in specs[t]:
+        warning("Untracked dependency %s has no stable install label "
+                "(force_revision): its install path moves when it changes, so "
+                "already-built consumers keep linking the previous build. Set "
+                "`force_revision:` on %s to keep <%s>/<version-revision> stable.",
+                t, t, t)
 
   for pkg, spec in specs.items():
     spec["is_devel_pkg"] = pkg in develPkgs

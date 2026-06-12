@@ -1693,13 +1693,19 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     fn = lambda what: disabledByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars, _own_version)
     spec["disabled"] += [x for x in fn("requires")]
     spec["disabled"] += [x for x in fn("build_requires")]
+    spec["disabled"] += [x for x in fn("untracked_requires")]
     fn = lambda what: filterByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars, _own_version)
     spec["requires"] = [x for x in fn("requires") if x not in disable]
     spec["build_requires"] = [x for x in fn("build_requires") if x not in disable]
+    # untracked_requires: real, runtime-linked dependencies that are deliberately
+    # NOT folded into this package's identity hash (see storeHashes), so editing
+    # one does not invalidate/rebuild its consumers. They still take part in the
+    # dependency graph, build ordering and environment via `requires`.
+    spec["untracked_requires"] = [x for x in fn("untracked_requires") if x not in disable]
     if spec["package"] != "defaults-release":
       spec["build_requires"].append("defaults-release")
     spec["runtime_requires"] = spec["requires"]
-    spec["requires"] = spec["runtime_requires"] + spec["build_requires"]
+    spec["requires"] = spec["runtime_requires"] + spec["build_requires"] + spec["untracked_requires"]
     # Check that version is a string
     dieOnError(not isinstance(spec["version"], str),
                "In recipe \"%s\": version must be a string" % p)

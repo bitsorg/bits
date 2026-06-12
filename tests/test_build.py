@@ -477,6 +477,38 @@ class BuildTestCase(unittest.TestCase):
         self.assertEqual(len(extra["remote_hashes"]), 3)
         self.assertEqual(extra["local_hashes"][0], TEST_EXTRA_BUILD_HASH)
 
+    def test_untracked_requires_does_not_affect_consumer_hash(self) -> None:
+        """A dependency under untracked_requires is linked (stays in `requires`)
+        but excluded from the consumer's identity hash, so editing it does not
+        invalidate the consumer. deps_hash still reflects it (incremental signal).
+        """
+        def consumer_hashes(untracked, dep_hash):
+            # Fresh specs each call (storeHashes memoises onto the spec).
+            specs = {
+                "D": {"package": "D", "hash": dep_hash},
+                "E": {"package": "E", "hash": "eeee"},
+                "C": {"package": "C", "recipe": "", "version": "1",
+                      "commit_hash": "0", "is_devel_pkg": False,
+                      "requires": ["D", "E"],
+                      "untracked_requires": ["D"] if untracked else []},
+            }
+            storeHashes("C", specs, considerRelocation=False)
+            return specs["C"]["remote_revision_hash"], specs["C"]["deps_hash"]
+
+        # Tracked: changing D's hash changes the consumer's identity hash.
+        h_aaaa, _ = consumer_hashes(untracked=False, dep_hash="aaaa")
+        h_bbbb, _ = consumer_hashes(untracked=False, dep_hash="bbbb")
+        self.assertNotEqual(h_aaaa, h_bbbb)
+
+        # Untracked: D's hash change leaves the consumer's identity UNCHANGED …
+        u_aaaa, udh_aaaa = consumer_hashes(untracked=True, dep_hash="aaaa")
+        u_bbbb, udh_bbbb = consumer_hashes(untracked=True, dep_hash="bbbb")
+        self.assertEqual(u_aaaa, u_bbbb)
+        # … while deps_hash still differs, so a devel build rebuilds incrementally.
+        self.assertNotEqual(udh_aaaa, udh_bbbb)
+        # Marking D untracked is itself a distinct (but stable) identity.
+        self.assertNotEqual(h_aaaa, u_aaaa)
+
     def test_initdotsh_from_modules_is_a_hashed_input(self) -> None:
         """--initdotsh-from-modules must fold into the hash so the mode change is
         reproducible (a distinct identity), while leaving off-state hashes
