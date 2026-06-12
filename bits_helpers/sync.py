@@ -107,7 +107,7 @@ class DualRemoteSync:
     if self._was_recalled(spec):
       debug("Not uploading %s: recalled from the read store, not built this run.",
             spec.get("package", "?"))
-      return
+      return None
     return self.writer.upload_symlinks_and_tarball(spec)
 
   def upload_shell_command(self, spec):
