@@ -1640,6 +1640,14 @@ def doBuild(args, parser):
     args.unleashFinal = _uf if isinstance(_uf, bool) \
         else str(_uf).strip().lower() in ("1", "true", "yes", "on")
 
+  # Critical-path scheduling order for --builders (non-hashed; affects dispatch
+  # order only, never build output). Precedence: explicit flag >
+  # system.build_critical_path_schedule > on.
+  if getattr(args, "criticalPathSchedule", None) is None:
+    _cp = _system_opt("build_critical_path_schedule", True)
+    args.criticalPathSchedule = _cp if isinstance(_cp, bool) \
+        else str(_cp).strip().lower() in ("1", "true", "yes", "on")
+
   # Relaxed CVMFS reuse policy (ADR-0001). Non-hashed build-host policy, like
   # the two above. Precedence: explicit --reuse-policy/--reuse-base  >  defaults
   # system.reuse_policy / reuse_base  >  strict / none. Default strict keeps the
@@ -2147,7 +2155,8 @@ def doBuild(args, parser):
           debug("psutil unavailable; resource monitoring stays off")
 
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
-                          parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)))
+                          parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)),
+                          criticalPath=getattr(args, "criticalPathSchedule", True))
 
     # Collect concise per-package failures during the run so we can write a
     # readable summary at the end (write_failure_summary), instead of leaving the

@@ -628,6 +628,8 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
 | `--no-auto-patch` | Do not apply recipe `patches:` automatically for any package in this build. The patch files are still staged in `$SOURCEDIR` and exported as `$PATCH0..$PATCH_COUNT`, but each recipe must apply its own patches (e.g. via the `bits_apply_patches` helper). Default: patches are auto-applied. A single recipe can opt out with `auto_patch: false` in its header; a defaults profile can opt out with `auto_patch: false`. See [Controlling patch application](#controlling-patch-application). |
 | `--builders N` | Packages to build simultaneously using the built-in Python scheduler. Default: 1 (serial). Mutually exclusive with `--makeflow`; if both are given, `--makeflow` takes precedence. With N>1, each build's `$JOBS` is divided across the builders (the CPU/load budget, see [Memory- and load-aware parallelism](#memory-aware-parallelism)) so the concurrent jobs together do not oversubscribe the machine. |
+| `--unleash-final` / `--no-unleash-final` | The final (top-level) package depends on every other package, so it is always scheduled last and builds **alone**. With unleashing on (the default for `--builders > 1`), it uses the full `-j` instead of the per-builder share, since nothing else is running; the `mem_per_job` cap still applies (now against the full free RAM). Pass `--no-unleash-final` to keep it on the per-builder share. Falls back to `build_unleash_final:` under the defaults `system:` block when unset. No effect for `--builders 1`. |
+| `--critical-path-schedule` / `--no-critical-path-schedule` | Order ready `--builders` jobs by their **critical-path weight** — the longest path, weighted by recorded build times, from each job to the final target — so the build's long pole starts as early as its dependencies allow (Ninja-style scheduling). Weights come from a previous run's `bits_build_stats.json`; with no history the weight reduces to graph depth. **On by default**; `--no-critical-path-schedule` falls back to registration-order dispatch. Falls back to `build_critical_path_schedule:` under the defaults `system:` block when unset. Affects dispatch order only — never what is built or any hash. |
 | `--build-nice` / `--no-build-nice` | Stagger the concurrent `--builders` jobs across OS scheduling priority so CPU contention degrades gracefully: at any moment one build runs at top priority (full speed) and the others are progressively backed off, with the freed top slot taken over as builds finish. Native builds are wrapped in `nice -n N`; `--docker`/podman builds get `docker run --cpu-shares=W` (each builder is a separate container/cgroup, so the host ranks the build *containers* by cgroup CPU weight). Memory is still capped separately via `mem_per_job`. **On by default** for `--builders > 1`; pass `--no-build-nice` to disable. |
 | `--build-nice-step N` | Nice increment between concurrent build slots when `--build-nice` is set: slot *k* → nice `min(k×N, 19)`. `N=1` gives a gentle `0,1,2,3` ladder; larger values separate the slots more aggressively. Default: 5. |
 | `--build-nice-boost-after SECONDS` | With `--build-nice`, a watchdog boosts a long-running straggler compile — one at a time — so a single heavy Fortran/C++ translation unit does not drag out the end of the build. Native builds: the longest-running niced-down build subtree is reniced toward 0 (requires privilege — root / `CAP_SYS_NICE` — and is a logged no-op otherwise). `--docker`/podman builds: each build runs in a named container (`bits-build-<pkg>-<id>`); the watchdog peeks inside with `docker exec … ps`, finds a compiler back-end (cc1plus/f951/…) that has been running longer than this, and renices it with `docker exec --user 0 … renice` (run as root inside the container, so it can raise priority). **Requires `ps` (the `procps` package) in the build image** — see note below. `0` disables. Default: 600. |
@@ -1476,6 +1478,8 @@ The bits-providers repository URL itself accepts an `@<tag>` suffix (`BITS_PROVI
 
 The result is `min(requested, requested ÷ builders, floor((available ÷ builders) × utilisation ÷ mem_per_job))`, floored at 1. With `--builders 1` the CPU cap is a no-op and behaviour is unchanged.
 
+The **final (top-level) package** is exempt from the `÷ builders` CPU split: it depends on every other package, so it builds alone once they finish, and dividing its `-j` would needlessly starve the largest compile of the run. It is computed as if `builders = 1` — i.e. the full `-j`, bounded only by the (now full-RAM) `mem_per_job` cap. Controlled by [`--unleash-final` / `--no-unleash-final`](#) and `build_unleash_final:` (default on for `--builders > 1`). `$JOBS` never enters a package hash, so this is wall-time-only build-host policy.
+
 | Field | Description |
 |-------|-------------|
 | `mem_per_job` | Expected peak RSS per parallel compilation process. Accepts a plain integer (MiB) or a string with a unit suffix: `512`, `"1500"`, `"1.5 GiB"`, `"2 GB"`. When set, bits samples available system memory at the start of the package's build and applies the memory term above. Omitting the field leaves only the CPU/`builders` cap in effect. |
@@ -2315,6 +2319,16 @@ When either `--remote-store` or `--write-store` is given, bits automatically set
 | `b3://BUCKET/PATH` | S3-compatible via `boto3` | ✓ | ✓ | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` env vars |
 | `cvmfs://REPO/PATH` | CernVM File System | ✓ | — | None (read-only filesystem) |
 | `rsync://HOST/PATH` or `/local/path` | rsync | ✓ | ✓ | SSH keys (`~/.ssh/`) or filesystem permissions |
+
+#### Mixing a read-only remote with a separate write store
+
+A read-only `--remote-store` (`cvmfs://` or `http(s)://`) can be paired with a writable `--write-store` of a different backend, e.g. recall pre-built packages from a CVMFS release and upload newly-built ones to S3:
+
+```bash
+bits build ... --remote-store cvmfs:///cvmfs/.../bits/ --write-store b3://mybucket
+```
+
+Reads (recall) go to the remote store; uploads go to the write store. **Only freshly-built packages are uploaded** — packages recalled from the read-only store keep their original provenance and are not re-published (a CVMFS-recalled package has only a synthetic tarball of symlinks into `/cvmfs`, so uploading it would publish a stub). This is *strict* reuse only; `--reuse-policy relaxed` (loose provenance) remains barred from any write store.
 
 #### HTTP / HTTPS
 

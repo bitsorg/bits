@@ -343,6 +343,20 @@ def doParseArgs():
   build_parser.add_argument("--no-unleash-final", dest="unleashFinal",
                             action="store_const", const=False,
                             help="Keep the final package on the per-builder -j share (disable unleashing).")
+  # Critical-path scheduling for --builders: order ready jobs by the longest
+  # (history-weighted) path to the final target, so the build's long pole starts
+  # as early as its dependencies allow. ON by default; tri-state so the active
+  # defaults can override via `build_critical_path_schedule:`.
+  build_parser.add_argument("--critical-path-schedule", dest="criticalPathSchedule",
+                            action="store_const", const=True, default=None,
+                            help=("Order --builders jobs by their critical-path weight (longest "
+                                  "history-weighted path to the final target). Weights come from a "
+                                  "previous run's bits_build_stats.json; with no history this is "
+                                  "graph depth. On by default; does not affect what is built or any "
+                                  "hash."))
+  build_parser.add_argument("--no-critical-path-schedule", dest="criticalPathSchedule",
+                            action="store_const", const=False,
+                            help="Disable critical-path ordering; dispatch ready jobs in registration order.")
   build_parser.add_argument("--no-auto-patch", dest="autoPatch", action="store_false", default=True,
                             help=("Do not apply recipe patches: automatically. Patch files are "
                                   "still staged in $SOURCEDIR and exported as $PATCH0..$PATCH_COUNT, "
