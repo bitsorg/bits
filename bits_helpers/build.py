@@ -1629,6 +1629,17 @@ def doBuild(args, parser):
     except (TypeError, ValueError):
       args.oversubscribe = 1.0
 
+  # The final target builds alone (every other package is one of its
+  # already-finished dependencies), so the per-builder -j split needlessly
+  # starves the largest compile of the run. Let it use the full -j; the memory
+  # cap (mem_per_job) still applies. Non-hashed build-host policy like the knobs
+  # above — JOBS never feeds a package hash, so this changes wall time only.
+  # Precedence: --unleash-final/--no-unleash-final > system.build_unleash_final > on.
+  if getattr(args, "unleashFinal", None) is None:
+    _uf = _system_opt("build_unleash_final", True)
+    args.unleashFinal = _uf if isinstance(_uf, bool) \
+        else str(_uf).strip().lower() in ("1", "true", "yes", "on")
+
   # Relaxed CVMFS reuse policy (ADR-0001). Non-hashed build-host policy, like
   # the two above. Precedence: explicit --reuse-policy/--reuse-base  >  defaults
   # system.reuse_policy / reuse_base  >  strict / none. Default strict keeps the
@@ -2698,8 +2709,18 @@ def doBuild(args, parser):
       ("GIT_COMMITTER_NAME", "unknown"),
       ("GIT_COMMITTER_EMAIL", "unknown"),
       ("INCREMENTAL_BUILD_HASH", spec.get("incremental_hash", "0")),
-      ("JOBS", str(effective_jobs(args.jobs, spec, builders=args.builders,
-                                  oversubscribe=getattr(args, "oversubscribe", 1.0) or 1.0))),
+      # The final (top-level) package builds alone once its dependencies finish,
+      # so give it the full -j instead of the per-builder share (builders=1).
+      # mainPackage is buildOrder[-1] (in --only-deps it is popped off and never
+      # built, so nothing matches and nothing is unleashed). No-op for
+      # --builders == 1, keeping the common path byte-identical.
+      ("JOBS", str(effective_jobs(
+        args.jobs, spec,
+        builders=(1 if (getattr(args, "unleashFinal", True)
+                        and args.builders > 1
+                        and spec["package"] == mainPackage)
+                  else args.builders),
+        oversubscribe=getattr(args, "oversubscribe", 1.0) or 1.0))),
       ("PKGFAMILY", spec.get("pkg_family", "")),
       ("PKGHASH", spec["hash"]),
       ("PKGNAME", spec["package"]),

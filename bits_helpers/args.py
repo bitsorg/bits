@@ -328,6 +328,21 @@ def doParseArgs():
                                   "builders are busy (absorbed by the OS scheduler / nice ladder). "
                                   "When unset, falls back to `build_oversubscribe:` in the active "
                                   "defaults, then 1.0 (no oversubscription)."))
+  # The final (top-level) package builds alone — everything else is one of its
+  # already-finished dependencies — so dividing its -j by --builders needlessly
+  # starves the single largest compile of the run (e.g. ROOT getting -j7 of 32).
+  # Tri-state on a shared dest: neither flag set (None) → resolved from
+  # `build_unleash_final:` in the active defaults, then on.
+  build_parser.add_argument("--unleash-final", dest="unleashFinal",
+                            action="store_const", const=True, default=None,
+                            help=("Let the final (top-level) package use the full -j instead of the "
+                                  "per-builder share, since it builds alone once its dependencies "
+                                  "finish. The memory cap (mem_per_job) still applies. On by default; "
+                                  "only affects --builders > 1. Falls back to `build_unleash_final:` "
+                                  "in the active defaults when unset."))
+  build_parser.add_argument("--no-unleash-final", dest="unleashFinal",
+                            action="store_const", const=False,
+                            help="Keep the final package on the per-builder -j share (disable unleashing).")
   build_parser.add_argument("--no-auto-patch", dest="autoPatch", action="store_false", default=True,
                             help=("Do not apply recipe patches: automatically. Patch files are "
                                   "still staged in $SOURCEDIR and exported as $PATCH0..$PATCH_COUNT, "
