@@ -1375,7 +1375,16 @@ def resolveFilename(taps, pkg, configDir, generatedPackages, ext=".sh"):
     filename = checkForFilename(taps, pkg, d, ext=ext)
     if exists(filename):
       return (filename, d)
-  dieOnError(True, "Package {} not found in {}".format(pkg, configDir))
+  dieOnError(True,
+             "Package {pkg} not found on any loaded recipe path (searched "
+             "BITS_PATH, primary config dir: {cfg}).\n"
+             "If {pkg} is provided by a repository that was not loaded, add "
+             "`always_load: true` to that provider's recipe (alongside "
+             "`provides_repository: true`) so it is cloned before resolution — or "
+             "list it in BITS_PROVIDERS. A repository-provider is otherwise "
+             "auto-loaded only when it appears as a dependency in the build graph, "
+             "which a base recipe repository usually does not.".format(
+               pkg=pkg, cfg=configDir))
 
 def resolveDefaultsFilename(defaults, configDir, failOnError=True):
   """Return the path of ``defaults-<defaults>.sh`` searched across all config paths.
