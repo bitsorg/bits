@@ -152,11 +152,12 @@ def _checkout_group_repo(args, group):
   (bits-providers) and clone the repository it points to into $CWD, so packages
   can then be developed beside it (`bits init -c <group> <PACKAGE>`)."""
   from bits_helpers.repo_provider import resolve_registry_repo
-  resolved = resolve_registry_repo(args, group, getattr(args, "workDir", "sw"))
-  if not resolved:
+  reg_spec = resolve_registry_repo(args, group, getattr(args, "workDir", "sw"))
+  if not reg_spec:
     sys.exit(1)
-  source, ver = resolved
-  url  = source if ":" in source else "https://github.com/" + source
+  source = reg_spec["source"]
+  ver    = reg_spec.get("tag", reg_spec.get("version", ""))
+  url    = source if ":" in source else "https://github.com/" + source
   dest = join(getattr(args, "develPrefix", ".") or ".", group)
 
   if path.exists(dest):
@@ -234,6 +235,36 @@ def doInit(args):
   specs = {}
   defaultsReader = lambda: readDefaults(args.configDir, args.defaults, lambda msg: error("%s", msg), args.architecture)
   (err, overrides, taps, _defaultsMeta) = parseDefaults([], defaultsReader, debug)
+
+  # Native (provider) mode: make recipes in repository-providers reachable so a
+  # package living in a *required* provider repo (e.g. ROOT in alidist.bits,
+  # required by alice.bits) can be found and developed side-by-side. The configDir
+  # is the checked-out group (e.g. alice.bits); we seed provider discovery with
+  # that group's own registry `requires`, since those repos aren't dependencies of
+  # the package being developed. Best-effort — a registry hiccup must not block a
+  # dev checkout, and aliBuild's legacy path (no registry) is unaffected.
+  if getattr(args, "bits_providers", None):
+    try:
+      from bits_helpers.repo_provider import (
+        load_always_on_providers, fetch_repo_providers_iteratively,
+        resolve_registry_repo)
+      _wd = getattr(args, "workDir", "sw")
+      load_always_on_providers(
+        config_dir=args.configDir, work_dir=_wd,
+        reference_sources=args.referenceSources,
+        fetch_repos=getattr(args, "fetchRepos", True),
+        bits_providers=args.bits_providers, taps=taps)
+      _group = os.path.basename(os.path.normpath(args.configDir))
+      _reg = (resolve_registry_repo(args, _group, _wd, quiet=True)
+              if _group.endswith(".bits") else None)
+      _seed = list((_reg or {}).get("requires", []))
+      fetch_repo_providers_iteratively(
+        packages=[p["name"] for p in pkgs] + _seed, config_dir=args.configDir,
+        work_dir=_wd, reference_sources=args.referenceSources,
+        fetch_repos=getattr(args, "fetchRepos", True), taps=taps)
+    except Exception as _e:  # pylint: disable=broad-except
+      debug("init: provider loading skipped (%r)", _e)
+
   (_,_,_,validDefaults) = getPackageList(packages=[ p["name"] for p in pkgs ],
                                          specs=specs,
                                          configDir=args.configDir,

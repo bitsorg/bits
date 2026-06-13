@@ -654,19 +654,25 @@ def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
   return checkout_dir
 
 
-def resolve_registry_repo(args, name: str, work_dir: str):
+def resolve_registry_repo(args, name: str, work_dir: str, quiet: bool = False):
   """Look up *name* (e.g. ``alice.bits``) in the bits-providers registry and
-  return ``(source_url, tag)`` for the repository it points to, or ``None`` if
-  there is no registry configured or no ``<name>.sh`` entry.
+  return the parsed registry recipe (an OrderedDict with at least ``source``;
+  also ``tag``/``version`` and any ``requires``), or ``None`` if there is no
+  registry configured or no ``<name>.sh`` entry.
 
   Used by ``bits init <group>.bits`` to check out a recipe repository named in
-  the provider registry. Does NOT clone the target repo itself — the caller does
-  that (so the checkout location and reference-repo handling stay with init).
+  the provider registry (the caller clones it), and by the package-init path to
+  read a checked-out group's own ``requires`` for provider-discovery seeding.
+  *quiet* suppresses the warnings, for best-effort callers.
   """
+  def _warn(*a):
+    if not quiet:
+      warning(*a)
+
   bits_providers_url = getattr(args, "bits_providers", None)
   if not bits_providers_url:
-    warning("No provider registry is configured (BITS_PROVIDERS); cannot resolve '%s'.",
-            name)
+    _warn("No provider registry is configured (BITS_PROVIDERS); cannot resolve '%s'.",
+          name)
     return None
   reference_sources = getattr(args, "referenceSources", "")
   fetch_repos = getattr(args, "fetchRepos", True)
@@ -676,26 +682,25 @@ def resolve_registry_repo(args, name: str, work_dir: str):
     providers_checkout, _ = clone_or_update_provider(
       _make_bits_providers_spec(url, tag), work_dir, reference_sources, fetch_repos)
   except SystemExit:
-    warning("Could not fetch the provider registry from %s.", url)
+    _warn("Could not fetch the provider registry from %s.", url)
     return None
 
   sh = join(providers_checkout, name + ".sh")
   if not exists(sh):
-    warning("No '%s.sh' in the provider registry %s.", name, url)
+    _warn("No '%s.sh' in the provider registry %s.", name, url)
     return None
   try:
     err, reg_spec, _ = parseRecipe(getRecipeReader(sh))
   except Exception as exc:  # pylint: disable=broad-except
-    warning("Could not parse %s.sh from the registry: %s", name, exc)
+    _warn("Could not parse %s.sh from the registry: %s", name, exc)
     return None
   if err or reg_spec is None:
-    warning("Parse error in %s.sh from the registry: %s", name, err)
+    _warn("Parse error in %s.sh from the registry: %s", name, err)
     return None
-  source = reg_spec.get("source", "")
-  if not source:
-    warning("Registry entry %s.sh has no 'source' URL.", name)
+  if not reg_spec.get("source", ""):
+    _warn("Registry entry %s.sh has no 'source' URL.", name)
     return None
-  return source, reg_spec.get("tag", reg_spec.get("version", ""))
+  return reg_spec
 
 
 # ── Iterative provider discovery ────────────────────────────────────────────

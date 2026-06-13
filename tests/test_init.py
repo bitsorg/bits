@@ -61,7 +61,7 @@ class InitTestCase(unittest.TestCase):
     @patch("bits_helpers.repo_provider.resolve_registry_repo")
     def test_init_group_bits_checks_out_repo(self, mock_resolve, mock_path, mock_git, _banner) -> None:
         # `bits init alice.bits` resolves the group in the registry and clones it.
-        mock_resolve.return_value = ("bitsorg/alice.bits", "main")
+        mock_resolve.return_value = {"source": "bitsorg/alice.bits", "tag": "main"}
         mock_path.exists.return_value = False
         args = Namespace(pkgname="alice.bits", develPrefix=".", dryRun=False, workDir="sw")
         doInit(args)
@@ -70,6 +70,36 @@ class InitTestCase(unittest.TestCase):
         mock_git.assert_called_once_with(
             ["clone", "--origin", "upstream",
              "https://github.com/bitsorg/alice.bits", "-b", "main", dest])
+
+    @patch("bits_helpers.init.git")
+    @patch("bits_helpers.init.os")
+    @patch("bits_helpers.init.path")
+    @patch("bits_helpers.init.getPackageList")
+    @patch("bits_helpers.init.parseDefaults")
+    @patch("bits_helpers.repo_provider.fetch_repo_providers_iteratively")
+    @patch("bits_helpers.repo_provider.load_always_on_providers")
+    @patch("bits_helpers.repo_provider.resolve_registry_repo")
+    def test_package_init_seeds_group_requires(self, mock_resolve, mock_always, mock_fetch,
+                                               mock_parsedefaults, mock_getpkglist,
+                                               mock_path, _mock_os, _mock_git) -> None:
+        # `bits init -c alice.bits ROOT`: provider discovery is seeded with the
+        # checked-out group's registry requires so a package in a required
+        # provider repo (alidist.bits) can be found.
+        mock_path.exists.return_value = True            # configDir exists
+        mock_parsedefaults.return_value = (None, {}, {}, {})
+        mock_resolve.return_value = {"requires": ["alidist.bits"]}
+        mock_getpkglist.side_effect = SystemExit(0)     # stop after the provider phase
+        args = Namespace(pkgname="ROOT", configDir="alice.bits",
+                         bits_providers="https://example/p",
+                         dist={"repo": "alisw/alidist", "ver": "master"},
+                         develPrefix=".", referenceSources="/sw/MIRROR",
+                         defaults=["release"], architecture="", dryRun=False,
+                         workDir="sw", fetchRepos=False)
+        with self.assertRaises(SystemExit):
+            doInit(args)
+        seeded = mock_fetch.call_args.kwargs["packages"]
+        self.assertIn("ROOT", seeded)
+        self.assertIn("alidist.bits", seeded)
 
     @patch.dict(os.environ, {"BITS_BRANDING": ""})
     @patch("bits_helpers.init.doInitConfig")
