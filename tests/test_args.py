@@ -246,6 +246,39 @@ class ReusePolicyArgsTestCase(unittest.TestCase):
       ["initdotshFromModules"], True)
 
 
+class ProviderPathFrontendTestCase(unittest.TestCase):
+  """Legacy vs provider path is chosen by the front-end: aliBuild
+  (BITS_BRANDING=aliBuild) defaults to NO bits-providers (legacy alidist path);
+  native bits defaults to the provider path. Explicit BITS_PROVIDERS wins."""
+
+  def _bits_providers(self, set_env):
+    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+         mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
+         mock.patch("bits_helpers.args.commands") as mock_cmd, \
+         mock.patch("bits_helpers.args._read_bits_rc", return_value={}), \
+         mock.patch.dict(os.environ, set_env, clear=False), \
+         patch.object(sys, "argv", ["x", "build", "--force-unknown-architecture", "zlib"]):
+      for k in ("BITS_BRANDING", "BITS_PROVIDERS"):
+        if k not in set_env:
+          os.environ.pop(k, None)
+      mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
+      args, _ = doParseArgs()
+      return vars(args)["bits_providers"]
+
+  def test_alibuild_frontend_defaults_to_no_providers(self):
+    self.assertEqual(self._bits_providers({"BITS_BRANDING": "aliBuild"}), "")
+
+  def test_native_bits_defaults_to_providers(self):
+    self.assertEqual(self._bits_providers({}),
+                     "https://github.com/bitsorg/bits-providers")
+
+  def test_explicit_providers_wins_under_alibuild(self):
+    self.assertEqual(
+      self._bits_providers({"BITS_BRANDING": "aliBuild",
+                            "BITS_PROVIDERS": "https://example.com/p"}),
+      "https://example.com/p")
+
+
 class ReadBitsRcTestCase(unittest.TestCase):
   """_read_bits_rc accepts the simplified flat layout and the [bits] section."""
 

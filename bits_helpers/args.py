@@ -1444,13 +1444,22 @@ def finaliseArgs(args, parser):
   # The resolved value is stored on ``args`` and also written back to the
   # environment so that child processes inherit it.
   _BITS_PROVIDERS_DEFAULT = "https://github.com/bitsorg/bits-providers"
+  # Legacy vs provider path is chosen by the front-end: the aliBuild
+  # compatibility wrapper (BITS_BRANDING=aliBuild) emulates classic aliBuild,
+  # whose recipes come from a local alidist checkout (`aliBuild init`) — NOT the
+  # bits-providers bootstrap. So under aliBuild the built-in providers default is
+  # off; native `bits` defaults to the provider path. An explicit BITS_PROVIDERS,
+  # --providers, or bits.rc `providers` still wins in either mode.
+  _alibuild_mode = os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild"
+  _providers_default = "" if _alibuild_mode else _BITS_PROVIDERS_DEFAULT
   _rc = _read_bits_rc()
   args.bits_providers = (
     os.environ.get("BITS_PROVIDERS")
     or _rc.get("providers")
-    or _BITS_PROVIDERS_DEFAULT
+    or _providers_default
   )
-  os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
+  if args.bits_providers:
+    os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
 
   # ── store_integrity ───────────────────────────────────────────────────────
   # The flag is off by default.  It can be activated either by the CLI flag
