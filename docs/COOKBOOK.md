@@ -182,6 +182,21 @@ bits build --providers https://github.com/bitsorg/bits-providers@LCG_106 LCG
 
 The provider's commit hash is folded into every dependent package's build hash, so changing the provider version triggers a rebuild of everything sourced from it. Note that provider repositories are cloned *before* defaults `overrides:` are applied, so an `overrides:` entry does **not** change which provider snapshot is fetched — use the `tag:` field or the `@<tag>` URL suffix instead.
 
+### Check out a recipe repository and develop against it
+
+Native `bits` uses the provider path: `bits init <group>.bits` resolves the named recipe repository in the [bits-providers registry](REFERENCE.md#13-repository-provider-feature) and clones it into the current directory, so you can develop its packages — including ones whose recipes live in a *required* provider repository — beside it:
+
+```bash
+bits init alice.bits              # clone the alice.bits recipe repo into ./alice.bits
+bits init -c alice.bits ROOT      # check out ROOT's source for development, beside it
+# … edit ROOT under ./ROOT …
+bits build -c alice.bits ROOT     # build with the local alice.bits recipes + your ROOT
+```
+
+`bits init -c alice.bits ROOT` loads the provider chain (e.g. `alice.bits` `requires: [alidist.bits]`), so a package whose recipe lives in a required provider repo is still found.
+
+The **aliBuild** front-end is the legacy path instead: `aliBuild init` checks out `alisw/alidist`, and `aliBuild build ROOT` uses it directly with no provider registry and the legacy build-time `init.sh` (see [Repository Provider Feature](REFERENCE.md#13-repository-provider-feature)).
+
 ### Use a private recipe repository alongside the defaults
 
 Set `BITS_PATH` to prepend a custom repository to the search path:

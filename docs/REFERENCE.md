@@ -336,6 +336,29 @@ export BITS_PROVIDERS=https://github.com/bitsorg/bits-providers@v2.0
 
 The `@tag` suffix is optional; when omitted, `main` is used.
 
+### Front-end choice: native `bits` (provider path) vs `aliBuild` (legacy path)
+
+Which path is used is chosen by the front-end:
+
+- **Native `bits`** uses the **provider path**: `bits_providers` defaults to the official `bitsorg/bits-providers` registry, so the always-on provider and the org-pointer bootstrap are active.
+- **The `aliBuild` wrapper** (it exports `BITS_BRANDING=aliBuild`) emulates **legacy aliBuild**: the providers default is *empty*, so no registry is loaded and recipes come from a local `alidist` checkout instead. `aliBuild init` clones `alisw/alidist`, `aliBuild build <PKG>` uses it directly, and the legacy build-time `init.sh` is kept (`BITS_LEGACY_INITDOTSH=1`, alidist-compatible hashes; `--legacy-initdotsh` selects it explicitly).
+
+An explicit `BITS_PROVIDERS` / `--providers` / `bits.rc providers` overrides the default in either mode.
+
+### Bootstrapping a recipe repository from the registry
+
+When native `bits` runs without a recipe directory, it bootstraps one through the registry: it follows the `<organisation>.bits.sh` (or `default.bits.sh`) pointer in `bits-providers` and clones the recipe repo it names. That pointer recipe's own `requires` are then seeded into provider discovery, so a base provider it depends on (e.g. `alice.bits` `requires: [alidist.bits]`) is loaded too — even though it is not a dependency of the package being built.
+
+To check out a recipe repository explicitly for development, name it on `bits init` (the `.bits` convention):
+
+```bash
+bits init alice.bits           # resolve alice.bits in the registry, clone it into ./alice.bits
+bits init -c alice.bits ROOT   # develop a package beside it (incl. one from a required provider repo)
+bits build -c alice.bits ROOT
+```
+
+`bits init -c <group> <pkg>` loads the provider chain and seeds it with the checked-out group's registry `requires`, so a package whose recipe lives in a required provider repository (e.g. `ROOT` in `alidist.bits`) is found and checked out side by side.
+
 ### Auto-synthesised `bits-providers` package
 
 When `BITS_PROVIDERS` is set (explicitly or via the built-in default), bits automatically synthesises and loads a virtual package named **`bits-providers`** equivalent to writing the following recipe by hand:
