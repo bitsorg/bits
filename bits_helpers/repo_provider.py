@@ -637,6 +637,19 @@ def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
     return None
 
   info("Bootstrap complete: using recipe repository at %s", checkout_dir)
+  # The org-pointer recipe (e.g. alice.bits.sh) is itself a provider recipe, and
+  # its own ``requires`` names sibling provider repositories the recipe repo
+  # depends on (e.g. alidist.bits, which supplies the base recipes). Stash them so
+  # doBuild can seed provider discovery with them — otherwise a base provider that
+  # supplies needed recipes but is not itself a build-graph dependency would never
+  # be loaded (the dependency walk starts from the build target, not the repo).
+  try:
+    args._bootstrap_provider_requires = (
+      list(default_spec.get("requires", []))
+      + list(default_spec.get("build_requires", []))
+    )
+  except Exception:  # pylint: disable=broad-except
+    pass
   return checkout_dir
 
 

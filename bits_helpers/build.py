@@ -1789,9 +1789,15 @@ def doBuild(args, parser):
   # conservative (pre-loading a provider on every architecture) is safe and
   # avoids a chicken-and-egg where the provider's own recipes would be needed
   # to evaluate the architecture condition.
+  # Also seed with the bootstrap org-pointer recipe's own requires (e.g.
+  # alice.bits.sh ``requires: [alidist.bits]``): the recipe repo we just
+  # bootstrapped depends on those sibling provider repos for its base recipes,
+  # but they are not build-graph dependencies of the requested target, so the
+  # walk would otherwise never reach them.
   defaults_provider_seed = (
     list(defaultsMeta.get("requires", []))
     + list(defaultsMeta.get("build_requires", []))
+    + list(getattr(args, "_bootstrap_provider_requires", []) or [])
   )
 
   provider_dirs = fetch_repo_providers_iteratively(

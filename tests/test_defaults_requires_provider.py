@@ -621,5 +621,51 @@ class TestDefaultsRequiresNoCycle(unittest.TestCase):
         self.assertIn("defaults-release", specs["zlib"].get("requires", []))
 
 
+class TestBootstrapStashesProviderRequires(unittest.TestCase):
+    """The bootstrap org-pointer recipe's own ``requires`` (e.g. alice.bits.sh
+    ``requires: [alidist.bits]``) are stashed on args so doBuild can seed
+    provider discovery with them. Without this, a base provider repo that
+    supplies needed recipes but is not a build-graph dependency of the target
+    (alidist.bits → gsl, needed by ROOT in alice.bits) is never loaded."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.providers = os.path.join(self.tmp, "bits-providers")
+        self.recipe_repo = os.path.join(self.tmp, "alice.bits")
+        os.makedirs(self.providers)
+        os.makedirs(self.recipe_repo)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @patch("bits_helpers.repo_provider._add_to_bits_path")
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    def test_org_pointer_requires_are_stashed(self, mock_clone, mock_add):
+        from argparse import Namespace
+        from bits_helpers.repo_provider import bootstrap_default_config
+
+        # alice.bits.sh in the bits-providers checkout: the org-pointer provider
+        # recipe, which requires the alidist.bits provider repo.
+        _write_sh(self.providers, "alice.bits", textwrap.dedent("""\
+            package: alice.bits
+            version: "1"
+            tag: main
+            provides_repository: true
+            source: https://github.com/bitsorg/alice.bits
+            requires:
+              - alidist.bits
+        """))
+        # 1st clone = bits-providers checkout; 2nd = the alice.bits recipe repo.
+        mock_clone.side_effect = [(self.providers, "aaa"), (self.recipe_repo, "bbb")]
+
+        args = Namespace(bits_providers="https://github.com/bitsorg/bits-providers",
+                         organisation="alice", referenceSources="", fetchRepos=False)
+        checkout = bootstrap_default_config(args, self.tmp)
+
+        self.assertEqual(checkout, self.recipe_repo)
+        self.assertEqual(getattr(args, "_bootstrap_provider_requires", None),
+                         ["alidist.bits"])
+
+
 if __name__ == "__main__":
     unittest.main()
