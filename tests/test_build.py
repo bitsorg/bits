@@ -592,11 +592,14 @@ class BuildTestCase(unittest.TestCase):
                                  from_modules=False)
         self.assertEqual(base, off)
         self.assertNotIn("_INCLUDE_DIR", off)
+        self.assertNotIn("CMAKE_PREFIX_PATH", off)   # legacy: owned by CMakeRecipe
 
         on = generate_initdotsh("ROOT", specs, "slc7_x86-64", post_build=True,
                                 from_modules=True)
         # Guarded include dir + site-packages glob, keyed off the package root.
         self.assertIn('export ROOT_INCLUDE_DIR="${ROOT_ROOT}/include"', on)
+        # CMAKE_PREFIX_PATH as a ':'-separated env var (CMake reads it natively).
+        self.assertIn('export CMAKE_PREFIX_PATH="${ROOT_ROOT}', on)
         self.assertIn('${ROOT_ROOT}"/lib/python*/site-packages', on)
         self.assertIn("PYTHONPATH=", on)
         # Guarded so it is a no-op when the dir is absent.

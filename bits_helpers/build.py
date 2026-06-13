@@ -766,12 +766,16 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       # loading the modulefile chain would yield. Everything is generated from
       # the package root bits already knows and guarded on directory existence,
       # so it is a no-op for packages that ship no headers / Python modules.
-      # CMAKE_PREFIX_PATH is intentionally NOT set here: it stays owned by
-      # CMakeRecipe, whose ';'-separated -D form would corrupt a ':'-separated
-      # environment variable of the same name.
+      # CMAKE_PREFIX_PATH is set as the ':'-separated environment variable, which
+      # CMake's find_package() reads natively on Unix (in addition to any
+      # ';'-separated -D cache value). So CMakeRecipe's reconstruction is gated
+      # off under this mode (it would otherwise overwrite this with a ';'-list).
       root = "${%s_ROOT}" % bigpackage
       lines.append('[ ! -d "%s/include" ] || export %s_INCLUDE_DIR="%s/include"'
                    % (root, bigpackage, root))
+      lines.append('[ ! -d "%s" ] || export '
+                   'CMAKE_PREFIX_PATH="%s${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"'
+                   % (root, root))
       lines.append(
         'for _bits_sp in "%s"/lib/python*/site-packages '
         '"%s"/lib/python/site-packages; do [ -d "$_bits_sp" ] && export '
