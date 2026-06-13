@@ -667,5 +667,59 @@ class TestBootstrapStashesProviderRequires(unittest.TestCase):
                          ["alidist.bits"])
 
 
+class TestProviderVersionConflictWarning(unittest.TestCase):
+    """A package requesting a *specific* version of a provider repo that is
+    already loaded at a different one must warn (the request is silently
+    ignored — one version per provider per build)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.config_dir = os.path.join(self.tmp, "cfg")
+        self.work_dir = os.path.join(self.tmp, "sw")
+        os.makedirs(self.config_dir)
+        os.makedirs(self.work_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, consumer_requires):
+        checkout = os.path.join(self.work_dir, "myprov")
+        os.makedirs(checkout, exist_ok=True)
+        _write_sh(self.config_dir, "myprov", textwrap.dedent("""\
+            package: myprov
+            version: "1"
+            source: https://github.com/org/myprov.git
+            tag: master
+            provides_repository: true
+        """))
+        _write_sh(self.config_dir, "consumer",
+                  "package: consumer\nversion: '1'\nrequires:\n  - %s\n" % consumer_requires)
+        from bits_helpers.repo_provider import fetch_repo_providers_iteratively
+        with patch("bits_helpers.repo_provider.clone_or_update_provider",
+                   return_value=(checkout, "abc1234")), \
+             patch("bits_helpers.repo_provider._add_to_bits_path"), \
+             patch("bits_helpers.repo_provider.warning") as mock_warn:
+            fetch_repo_providers_iteratively(
+                packages=["myprov", "consumer"], config_dir=self.config_dir,
+                work_dir=self.work_dir,
+                reference_sources=os.path.join(self.tmp, "mirror"),
+                fetch_repos=False, taps={})
+        return " ".join(str(c) for c in mock_warn.call_args_list)
+
+    def test_warns_on_conflicting_version(self):
+        warned = self._run("myprov = LCG_109")
+        self.assertIn("myprov", warned)
+        self.assertIn("LCG_109", warned)
+        self.assertIn("already loaded", warned)
+
+    def test_no_warning_when_version_matches(self):
+        # Pin equals the tag the provider was cloned at → no conflict.
+        self.assertNotIn("already loaded", self._run("myprov = master"))
+
+    def test_no_warning_for_plain_reference(self):
+        # No version pin at all → no conflict.
+        self.assertNotIn("already loaded", self._run("myprov"))
+
+
 if __name__ == "__main__":
     unittest.main()

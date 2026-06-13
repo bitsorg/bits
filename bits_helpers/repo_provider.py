@@ -63,6 +63,7 @@ from bits_helpers.utilities import (
     getRecipeReader,
     parseRecipe,
     symlink,
+    _parse_req_matcher,
 )
 
 # Maximum provider-discovery iterations (guards against run-away recursion)
@@ -686,6 +687,11 @@ def fetch_repo_providers_iteratively(
     policy = provider_policy or {}
     # package names already cloned (avoids re-cloning on every restart)
     cloned: set = set()
+    # provider name -> tag it was actually cloned at, so we can warn when a
+    # later reference asks for a *different* version of an already-loaded
+    # provider (which is silently ignored — one version per provider per build).
+    cloned_tag: dict = {}
+    warned_version_conflicts: set = set()
     # packages we have successfully read (cache to avoid re-parsing)
     resolved: dict = {}
     # packages that couldn't be found on the most recent full walk
@@ -733,6 +739,7 @@ def fetch_repo_providers_iteratively(
                 )
                 provider_dirs[checkout_dir] = (pkg, commit_hash)
                 cloned.add(pkg)
+                cloned_tag[pkg] = spec.get("tag", spec.get("version", "HEAD"))
 
                 # Invalidate the resolved-spec cache for packages that were
                 # not previously findable; they may now be reachable via the
@@ -749,6 +756,29 @@ def fetch_repo_providers_iteratively(
                 list(spec.get("requires", []))
                 + list(spec.get("build_requires", []))
             )
+            # Warn if any dependency asks for a *specific* version of a provider
+            # repository that is already loaded at a different one. A repository
+            # provider is cloned once per build (deduped by name, at the tag from
+            # its provider recipe), so the version pin here is silently ignored —
+            # make that visible instead of mysterious.
+            for _r in deps:
+                try:
+                    _dep_name, _matcher, _pin = _parse_req_matcher(_r)
+                except Exception:  # pylint: disable=broad-except
+                    continue
+                if _pin and _dep_name in cloned and _pin != cloned_tag.get(_dep_name):
+                    _key = (_dep_name, _pin)
+                    if _key not in warned_version_conflicts:
+                        warned_version_conflicts.add(_key)
+                        warning(
+                            "%s requests provider repository '%s' at version '%s', "
+                            "but it is already loaded at '%s' (first reference wins). "
+                            "The requested version is IGNORED: a provider repo is "
+                            "loaded once per build, at the tag from its provider "
+                            "recipe. Set '%s' as that recipe's tag (or an @tag on its "
+                            "source URL) if every consumer in this build should use it.",
+                            spec.get("package", pkg), _dep_name, _pin,
+                            cloned_tag.get(_dep_name, "?"), _pin)
             queue.extend(r for r in deps if r.lower() not in visited)
 
         if not found_new_provider:
