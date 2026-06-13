@@ -398,9 +398,11 @@ PACKAGE_WITH_REV=$PKGNAME-${_VERREV}.$EFFECTIVE_ARCHITECTURE.tar.gz
 # Copy and tar/compress (if applicable) in parallel.
 # Use -H to match tar's behaviour of preserving hardlinks.
 rsync -aH "$WORK_DIR/INSTALLROOT/$PKGHASH/" "$WORK_DIR" & rsync_pid=$!
-if [ "$CAN_DELETE" = 1 ]; then
+if [ "$CAN_DELETE" = 1 ] && [ -z "$BITS_HAS_WRITE_STORE" ]; then
   # We're deleting the tarball anyway, so no point in creating a new one.
   # There might be an old existing tarball, and we should delete it.
+  # (When a write store is configured the tarball is still needed for upload, so
+  # we fall through and create it; doFinalSync removes it again after upload.)
   rm -f "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
 elif [ -z "$CACHED_TARBALL" ] && [ -z "$SKIP_TARBALL" ]; then
   # Use pigz to compress, if we can, because it's multicore.

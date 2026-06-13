@@ -1315,6 +1315,20 @@ def doFinalSync(spec, specs, args, syncHelper):
       from bits_helpers.store_integrity import record_tarball_checksum
       record_tarball_checksum(spec, args.workDir, args.architecture)
 
+  # --aggressive-cleanup + a write store: the build script kept the tarball (it
+  # would otherwise have skipped it) only so it could be uploaded above. Now that
+  # the upload is done, reclaim the space — mirroring the in-build CAN_DELETE
+  # behaviour for the no-write-store case. Safe if it was never created.
+  if getattr(args, "aggressiveCleanup", False) and getattr(syncHelper, "writeStore", ""):
+    from bits_helpers.utilities import resolve_store_path, effective_arch, ver_rev
+    _arch = effective_arch(spec, args.architecture)
+    _tar = os.path.join(args.workDir, resolve_store_path(_arch, spec["hash"]),
+                        "{}-{}.{}.tar.gz".format(spec["package"], ver_rev(spec), _arch))
+    try:
+      os.remove(_tar)
+    except OSError:
+      pass
+
   # ── Manifest recording ─────────────────────────────────────────────────────
   # Record the completed package in the incremental build manifest so that a
   # partial build still yields a useful record.  The outcome is:
@@ -2769,6 +2783,11 @@ def doBuild(args, parser):
       ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
       ("CACHED_TARBALL", cachedTarball),
       ("CAN_DELETE", args.aggressiveCleanup and "1" or ""),
+      # Whether a write store will need this package's tarball for upload. Under
+      # --aggressive-cleanup the build script otherwise skips creating the tarball
+      # (to save space), but doFinalSync still needs it to upload — so keep it when
+      # a write store is configured. The space is reclaimed after upload below.
+      ("BITS_HAS_WRITE_STORE", "1" if getattr(syncHelper, "writeStore", "") else ""),
       ("COMMIT_HASH", short_commit_hash(spec)),
       ("DEPS_HASH", spec.get("deps_hash", "")),
       ("DEVEL_HASH", spec.get("devel_hash", "")),
