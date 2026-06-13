@@ -55,6 +55,22 @@ class InitTestCase(unittest.TestCase):
             ["clone", "--origin", "upstream", "https://github.com/alisw/alidist",
              "-b", "master", "alidist"])
 
+    @patch("bits_helpers.init.banner")
+    @patch("bits_helpers.init.git")
+    @patch("bits_helpers.init.path")
+    @patch("bits_helpers.repo_provider.resolve_registry_repo")
+    def test_init_group_bits_checks_out_repo(self, mock_resolve, mock_path, mock_git, _banner) -> None:
+        # `bits init alice.bits` resolves the group in the registry and clones it.
+        mock_resolve.return_value = ("bitsorg/alice.bits", "main")
+        mock_path.exists.return_value = False
+        args = Namespace(pkgname="alice.bits", develPrefix=".", dryRun=False, workDir="sw")
+        doInit(args)
+        dest = path.join(".", "alice.bits")
+        mock_resolve.assert_called_once()
+        mock_git.assert_called_once_with(
+            ["clone", "--origin", "upstream",
+             "https://github.com/bitsorg/alice.bits", "-b", "main", dest])
+
     @patch.dict(os.environ, {"BITS_BRANDING": ""})
     @patch("bits_helpers.init.doInitConfig")
     def test_plain_bits_init_no_package_writes_config(self, mock_cfg) -> None:

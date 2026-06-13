@@ -147,11 +147,49 @@ def _checkout_recipes_only(args):
          "Edit them there, then build with: aliBuild build <PACKAGE>", args.configDir)
 
 
+def _checkout_group_repo(args, group):
+  """`bits init <group>.bits`: resolve *group* in the provider registry
+  (bits-providers) and clone the repository it points to into $CWD, so packages
+  can then be developed beside it (`bits init -c <group> <PACKAGE>`)."""
+  from bits_helpers.repo_provider import resolve_registry_repo
+  resolved = resolve_registry_repo(args, group, getattr(args, "workDir", "sw"))
+  if not resolved:
+    sys.exit(1)
+  source, ver = resolved
+  url  = source if ":" in source else "https://github.com/" + source
+  dest = join(getattr(args, "develPrefix", ".") or ".", group)
+
+  if path.exists(dest):
+    warning("%s already exists — leaving it as is.", dest)
+    return
+  if args.dryRun:
+    info("Would clone recipe repository %s (branch %s) into %s.\n"
+         "--dry-run / -n specified. Doing nothing.", url, ver or "default", dest)
+    return
+
+  cmd = ["clone", "--origin", "upstream", url]
+  if ver:
+    cmd.extend(["-b", ver])
+  cmd.append(dest)
+  git(cmd)
+  banner("Recipe repository '%s' checked out at %s.\n"
+         "Develop a package beside it with:  bits init -c %s <PACKAGE>\n"
+         "or build with:                     bits build -c %s <PACKAGE>",
+         group, dest, dest, dest)
+
+
 def doInit(args):
   if args.pkgname is None:
     raise ValueError("doInit: args.pkgname must not be None")
 
   pkgs = parsePackagesDefinition(args.pkgname) if args.pkgname else []
+
+  # ── `bits init <group>.bits` ────────────────────────────────────────────────
+  # An argument named like a recipe repository (the `.bits` convention) is a
+  # request to check out that repository from the provider registry, rather than
+  # to develop a package source.
+  if len(pkgs) == 1 and pkgs[0]["name"].endswith(".bits"):
+    return _checkout_group_repo(args, pkgs[0]["name"])
 
   # ── No PACKAGE given ────────────────────────────────────────────────────────
   if not pkgs:
