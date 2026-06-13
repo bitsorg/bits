@@ -117,17 +117,51 @@ def doInitConfig(args):
     banner("Configuration written to %s", rc_file)
 
 
+def _checkout_recipes_only(args):
+  """Clone the recipe (alidist) repository into ``args.configDir`` and exit.
+
+  This is the classic ``aliBuild init`` behaviour when no PACKAGE is given:
+  check out the recipes for development. The repository and branch come from
+  ``--dist`` (default ``alisw/alidist@master``); the destination is
+  ``--config-dir`` (default ``alidist``).
+  """
+  dist = args.dist if isinstance(args.dist, dict) else {}
+  repo = dist.get("repo") or "alisw/alidist"
+  ver  = dist.get("ver") or "master"
+  url  = repo if ":" in repo else "https://github.com/" + repo
+
+  if path.exists(args.configDir):
+    warning("Recipes already checked out at %s — leaving them as is.", args.configDir)
+    return
+  if args.dryRun:
+    info("Would clone recipes from %s (branch %s) into %s.\n"
+         "--dry-run / -n specified. Doing nothing.", url, ver, args.configDir)
+    return
+
+  cmd = ["clone", "--origin", "upstream", url]
+  if ver:
+    cmd.extend(["-b", ver])
+  cmd.append(args.configDir)
+  git(cmd)
+  banner("Recipes checked out at %s.\n"
+         "Edit them there, then build with: aliBuild build <PACKAGE>", args.configDir)
+
+
 def doInit(args):
   if args.pkgname is None:
     raise ValueError("doInit: args.pkgname must not be None")
 
   pkgs = parsePackagesDefinition(args.pkgname) if args.pkgname else []
 
-  # ── Config mode ────────────────────────────────────────────────────────────
-  # When no PACKAGE is given, treat the invocation as a request to write (or
-  # update) bits.rc from the supplied options.  This is backward-compatible:
-  # old callers that supply a PACKAGE are unaffected.
+  # ── No PACKAGE given ────────────────────────────────────────────────────────
   if not pkgs:
+    # aliBuild compatibility: `aliBuild init` with no PACKAGE checks out the
+    # recipe (alidist) repository for development and exits, like classic
+    # aliBuild. Plain `bits init` instead writes (or updates) bits.rc from the
+    # supplied options — backward-compatible: callers that supply a PACKAGE are
+    # unaffected either way.
+    if os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild":
+      return _checkout_recipes_only(args)
     return doInitConfig(args)
 
   # ── Clone mode (existing behaviour) ────────────────────────────────────────

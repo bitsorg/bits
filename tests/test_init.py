@@ -41,6 +41,28 @@ class InitTestCase(unittest.TestCase):
                        [{'ver': '', 'name': 'AliRoot'},
                         {'ver': 'v5-08-16-01', 'name': 'AliPhysics'}])
 
+    @patch.dict(os.environ, {"BITS_BRANDING": "aliBuild"})
+    @patch("bits_helpers.init.banner")
+    @patch("bits_helpers.init.git")
+    @patch("bits_helpers.init.path")
+    def test_alibuild_init_no_package_checks_out_recipes(self, mock_path, mock_git, _banner) -> None:
+        # `aliBuild init` with no PACKAGE clones the alidist recipes and exits.
+        mock_path.exists.return_value = False  # configDir not present yet
+        args = Namespace(pkgname="", configDir="alidist", dryRun=False,
+                         dist={"repo": "alisw/alidist", "ver": "master"})
+        doInit(args)
+        mock_git.assert_called_once_with(
+            ["clone", "--origin", "upstream", "https://github.com/alisw/alidist",
+             "-b", "master", "alidist"])
+
+    @patch.dict(os.environ, {"BITS_BRANDING": ""})
+    @patch("bits_helpers.init.doInitConfig")
+    def test_plain_bits_init_no_package_writes_config(self, mock_cfg) -> None:
+        # Plain `bits init` (not aliBuild) keeps the settings-writing behaviour.
+        args = Namespace(pkgname="", configDir="alidist", dryRun=False, dist={})
+        doInit(args)
+        mock_cfg.assert_called_once()
+
     @patch("bits_helpers.init.info")
     @patch("bits_helpers.init.path")
     @patch("bits_helpers.init.os")
