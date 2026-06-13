@@ -1588,19 +1588,30 @@ def doBuild(args, parser):
       meta.setdefault("env", _OD())
       for _k, _v in flavours.items():
         meta["env"][_k] = _v
-    # EXPERIMENTAL (--initdotsh-from-modules): publish a build-mode marker through
-    # the defaults-release env. Routing it here is deliberate: the defaults env is
-    # (a) folded into every package's hash, so flipping the mode yields a distinct,
-    # reproducible identity rather than silently colliding with strict-mode
-    # artifacts, and (b) exported into the build environment before each recipe is
-    # sourced, so bits_pythonpath_from_deps / CMakeRecipe can gate their now-
-    # redundant reconstruction on it. When the flag is off nothing is added, so
-    # existing hashes are byte-identical (the aliBuild simple case is unchanged).
+    # init.sh-from-modules (the default) publishes a build-mode marker through the
+    # defaults-release env. Routing it here is deliberate: the defaults env is
+    # (a) folded into every package's hash, so the mode yields a distinct,
+    # reproducible identity rather than silently colliding with legacy artifacts,
+    # and (b) exported into the build environment before each recipe is sourced, so
+    # bits_pythonpath_from_deps / CMakeRecipe can gate their now-redundant
+    # reconstruction on it. In legacy mode (--legacy-initdotsh) nothing is added,
+    # so its hashes are byte-identical to the pre-modules default (alidist tarballs
+    # stay reusable).
     if getattr(args, "initdotshFromModules", False):
       from collections import OrderedDict as _OD
       meta.setdefault("env", _OD())
       meta["env"]["BITS_INITDOTSH_FROM_MODULES"] = "1"
     return meta, body
+  # Deriving the dependency env from the dependencies' modulefiles is the default.
+  # --legacy-initdotsh (CLI) or BITS_LEGACY_INITDOTSH=1 (the environment — the
+  # aliBuild wrapper sets it) selects the legacy build-time init.sh, which injects
+  # nothing above and so hashes byte-identically to the pre-modules default (bits
+  # can still reuse alidist tarballs). Resolved here, before parseDefaults runs the
+  # reader closure above that reads args.initdotshFromModules.
+  if getattr(args, "initdotshFromModules", None) is None:
+    _legacy_env = os.environ.get("BITS_LEGACY_INITDOTSH", "").strip().lower() in (
+      "1", "true", "yes", "on")
+    args.initdotshFromModules = not _legacy_env
   (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
                                         defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)

@@ -233,6 +233,18 @@ class ReusePolicyArgsTestCase(unittest.TestCase):
     self.assertEqual(a["reuseBase"], "LCG_109")
     self.assertEqual(a["buildLocal"], ["p1", "p2"])
 
+  def test_initdotsh_flag_tristate(self):
+    # Unset at the arg layer (build.py resolves None -> from-modules, or legacy
+    # when BITS_LEGACY_INITDOTSH=1); the two flags force the value explicitly.
+    self.assertIsNone(
+      self._parse("build --force-unknown-architecture zlib")["initdotshFromModules"])
+    self.assertIs(
+      self._parse("build --force-unknown-architecture --legacy-initdotsh zlib")
+      ["initdotshFromModules"], False)
+    self.assertIs(
+      self._parse("build --force-unknown-architecture --initdotsh-from-modules zlib")
+      ["initdotshFromModules"], True)
+
 
 class ReadBitsRcTestCase(unittest.TestCase):
   """_read_bits_rc accepts the simplified flat layout and the [bits] section."""

@@ -355,6 +355,9 @@ class BuildTestCase(unittest.TestCase):
             noSystem=None,
             debug=True,
             dryRun=False,
+            # This fixture pins the legacy (pre-modules) build hashes, so run in
+            # legacy mode; the from-modules default is hash-tested separately.
+            initdotshFromModules=False,
             aggressiveCleanup=False,
             environment=[],
             autoCleanup=False,

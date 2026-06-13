@@ -11,4 +11,9 @@
 export BITS_ORGANISATION="${BITS_ORGANISATION:-ALICE}"
 export BITS_PKG_PREFIX="${BITS_PKG_PREFIX:-VO_ALICE}"
 export BITS_BRANDING="${BITS_BRANDING:-aliBuild}"
+# alidist recipes are the legacy aliBuild format and do not use bits-recipe-tools,
+# so keep the legacy build-time init.sh: its hashes are byte-identical to the
+# pre-modules default, so bits and aliBuild can still share tarballs. Override by
+# exporting BITS_LEGACY_INITDOTSH=0 (or passing --initdotsh-from-modules).
+export BITS_LEGACY_INITDOTSH="${BITS_LEGACY_INITDOTSH:-1}"
 exec "$(dirname "$0")/bits" "$@"

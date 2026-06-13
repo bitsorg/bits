@@ -565,14 +565,19 @@ def doParseArgs():
                                   "--reuse-policy relaxed (e.g. a package you need patched), rather than "
                                   "grafting them from the base."))
   build_parser.add_argument("--initdotsh-from-modules", dest="initdotshFromModules",
-                            action="store_true",
-                            help=("EXPERIMENTAL: set up each build's dependency environment from the "
-                                  "dependencies' modulefiles (the single source of truth used for runtime "
-                                  "AND development) instead of the legacy build-time init.sh, and gate the "
-                                  "per-recipe env reconstruction (bits_pythonpath_from_deps, CMAKE_PREFIX_PATH "
-                                  "rebuild) off. Because this changes build behaviour it is a HASHED input: "
-                                  "off-state hashes are unchanged; on-state produces a distinct, reproducible "
-                                  "identity (a separate artifact tree)."))
+                            action="store_const", const=True, default=None,
+                            help=("(default) Set up each build's dependency environment from the "
+                                  "dependencies' modulefiles — the single source of truth for runtime "
+                                  "AND development — instead of the legacy build-time init.sh. Because "
+                                  "this changes build behaviour it is a HASHED input; --legacy-initdotsh "
+                                  "restores the pre-modules (aliBuild-compatible) hashes."))
+  build_parser.add_argument("--legacy-initdotsh", dest="initdotshFromModules",
+                            action="store_const", const=False,
+                            help=("Use the legacy build-time init.sh instead of deriving the dependency "
+                                  "environment from modulefiles. Produces hashes byte-identical to the "
+                                  "pre-modules default, so bits can still reuse alidist tarballs. Also "
+                                  "selectable with BITS_LEGACY_INITDOTSH=1 in the environment — the "
+                                  "aliBuild compatibility wrapper sets it."))
   build_remote.add_argument("--write-store", dest="writeStore", metavar="STORE", default="",
                             help=("Where to upload newly built packages. Same syntax as --remote-store, "
                                   "except ::rw is not recognised. Implies --no-system."))
