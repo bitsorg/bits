@@ -936,17 +936,21 @@ def _extract_error_excerpt(log_path, max_match=15, tail=12, scan_limit=20000):
   return "\n".join(out)
 
 
-def write_failure_summary(work_dir, scheduler):
+def write_failure_summary(work_dir, scheduler, arch):
   """Write a concise per-run failure summary for a --builders build.
+
+  Logs are written under ``<work_dir>/LOGS/<arch>/`` so that concurrent builds
+  of *different* platforms sharing one work area do not clobber each other.
 
   The full per-package error messages collected by the scheduler are verbose
   (log paths, environment, next-steps, ...), so a whole-stack failure produces
-  an unreadable wall of text.  This distils, into ``<work_dir>/build-summary.log``:
+  an unreadable wall of text.  This distils, into
+  ``<work_dir>/LOGS/<arch>/build-summary.log``:
     * each package that *directly* failed to build, with its log path and the
       proximate error excerpt (the matched error lines);
     * the count of packages skipped only because a dependency failed.
   Also writes the full, verbose per-action errors to
-  ``<work_dir>/build-errors-full.log`` so there is a single combined log to
+  ``<work_dir>/LOGS/<arch>/build-errors-full.log`` so there is a single combined log to
   consult (the concise summary points at the individual per-package logs).
 
   Returns ``(summary_path, full_path)`` (either element may be None), or
@@ -964,7 +968,18 @@ def write_failure_summary(work_dir, scheduler):
   if not fails and not cascaded:
     return (None, None)
   _ansi = re.compile(r"\033\[[0-9;]*m")
-  full_path = os.path.join(work_dir, "build-errors-full.log")
+  # Per-architecture log directory: one shared work area may be used to build
+  # different effective platforms, and these run-level logs are not otherwise
+  # arch-scoped, so write them under LOGS/<arch>/ to avoid cross-platform
+  # clobbering. Fall back to the work-dir root if the directory can't be made.
+  log_dir = os.path.join(work_dir, "LOGS", arch or "")
+  try:
+    os.makedirs(log_dir, exist_ok=True)
+  except OSError as exc:
+    warning("Could not create log dir %s (%s); writing logs to %s instead",
+            log_dir, exc, work_dir)
+    log_dir = work_dir
+  full_path = os.path.join(log_dir, "build-errors-full.log")
   try:
     with open(full_path, "w") as fh:
       for action, msg in errors.items():
@@ -972,7 +987,7 @@ def write_failure_summary(work_dir, scheduler):
   except OSError as exc:
     warning("Could not write full error log %s: %s", full_path, exc)
     full_path = None
-  path = os.path.join(work_dir, "build-summary.log")
+  path = os.path.join(log_dir, "build-summary.log")
   try:
     with open(path, "w") as fh:
       fh.write("BUILD FAILURE SUMMARY\n=====================\n\n")
@@ -3105,7 +3120,7 @@ def doBuild(args, parser):
       info("* The action \"{}\" was not completed successfully because {}".format(action, error))
     # Write a concise failure summary plus a combined full error log, and tell
     # the user where to find them and the individual per-package logs.
-    _summary_path, _full_path = write_failure_summary(workDir, scheduler)
+    _summary_path, _full_path = write_failure_summary(workDir, scheduler, args.architecture)
     if _summary_path or _full_path:
       info("=" * 70)
       info("Build finished with errors. Where to look:")
