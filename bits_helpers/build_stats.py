@@ -42,7 +42,8 @@ package is charged a sensible cost rather than zero.
 
 import json
 import multiprocessing
-from os.path import join, isfile
+from os import makedirs
+from os.path import join, isfile, dirname
 
 from bits_helpers.log import debug, warning
 
@@ -50,9 +51,16 @@ from bits_helpers.log import debug, warning
 STATS_FILENAME = "bits_build_stats.json"
 
 
-def default_stats_path(work_dir: str) -> str:
-    """Return the canonical stats-file path for *work_dir*."""
-    return join(work_dir, STATS_FILENAME)
+def default_stats_path(work_dir: str, arch: str = "") -> str:
+    """Return the canonical stats-file path for *work_dir* / *arch*.
+
+    Scoped per architecture (``<work_dir>/LOGS/<arch>/bits_build_stats.json``)
+    so that concurrent builds of *different* platforms sharing one work area
+    keep separate, correct timing histories instead of clobbering one file
+    (build costs are platform-specific, so a shared file is also semantically
+    wrong).
+    """
+    return join(work_dir, "LOGS", arch, STATS_FILENAME)
 
 
 def machine_resources() -> dict:
@@ -214,7 +222,7 @@ def tuning_report(monitored: dict, wall_seconds: float, builders: int,
     return report
 
 
-def aggregate_and_write(work_dir: str, monitored: dict, tuning: dict = None):
+def aggregate_and_write(work_dir: str, monitored: dict, tuning: dict = None, arch: str = ""):
     """Aggregate per-package monitor traces into a stats file.
 
     Parameters
@@ -250,8 +258,9 @@ def aggregate_and_write(work_dir: str, monitored: dict, tuning: dict = None):
     }
     if tuning:
         stats["tuning"] = tuning
-    path = default_stats_path(work_dir)
+    path = default_stats_path(work_dir, arch)
     try:
+        makedirs(dirname(path), exist_ok=True)
         with open(path, "w") as fh:
             json.dump(stats, fh)
         debug("build_stats: wrote resource stats for %d packages to %s",
@@ -262,14 +271,14 @@ def aggregate_and_write(work_dir: str, monitored: dict, tuning: dict = None):
         return None
 
 
-def autoload_stats_path(work_dir: str):
-    """Return a re-stamped stats-file path for *work_dir*, or None.
+def autoload_stats_path(work_dir: str, arch: str = ""):
+    """Return a re-stamped stats-file path for *work_dir* / *arch*, or None.
 
     The file's machine totals are overwritten with the *current* machine's
     resources before use, so a stats file produced on a different node is still
     safe to consume.  Returns None when no readable file exists.
     """
-    path = default_stats_path(work_dir)
+    path = default_stats_path(work_dir, arch)
     if not isfile(path):
         return None
     try:

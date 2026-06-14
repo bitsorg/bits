@@ -2244,7 +2244,7 @@ def doBuild(args, parser):
     if getattr(args, "autoResources", False):
       if not args.resources:
         from bits_helpers.build_stats import autoload_stats_path
-        _auto_stats = autoload_stats_path(workDir)
+        _auto_stats = autoload_stats_path(workDir, args.architecture)
         if _auto_stats:
           args.resources = _auto_stats
           info("Auto-loaded build resource stats from a previous run: %s", _auto_stats)
@@ -3111,10 +3111,10 @@ def doBuild(args, parser):
     _tuning = None
     if args.resourceMonitoring and monitoredDirs:
       try:
-        from bits_helpers.build_stats import aggregate_and_write, tuning_report
+        from bits_helpers.build_stats import aggregate_and_write, tuning_report, default_stats_path
         _tuning = tuning_report(monitoredDirs, _run_wall, args.builders, args.jobs,
                                 getattr(args, "oversubscribe", 1.0) or 1.0)
-        aggregate_and_write(workDir, monitoredDirs, tuning=_tuning)
+        aggregate_and_write(workDir, monitoredDirs, tuning=_tuning, arch=args.architecture)
       except Exception as exc:  # pylint: disable=broad-except
         warning("Could not update build resource stats: %s", exc)
     for (action, error) in scheduler.errors.items():
@@ -3136,7 +3136,7 @@ def doBuild(args, parser):
     # bits_build_stats.json under "tuning".
     if _tuning and _tuning.get("headroom") and not scheduler.brokenJobs:
       banner("Resource tuning (recorded in %s):\n  %s",
-             join(workDir, "bits_build_stats.json"), _tuning["recommendation"])
+             default_stats_path(workDir, args.architecture), _tuning["recommendation"])
     if scheduler.brokenJobs:
       dieOnError(True, "Please fix the above errors.")
   elif args.makeflow and buildTargets:
