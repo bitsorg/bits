@@ -924,11 +924,9 @@ bits verify --from-manifest FILE [options]
 ### bits stats
 
 Summarise the resource data recorded when a build ran with `--resource-monitoring`
-(on by default for `--builders > 1`). Reads `<work-dir>/LOGS/<arch>/bits_build_stats.json`
-(per-package peaks; written per-architecture so concurrent builds of different
-platforms in one work area don't clobber each other) and the per-package traces
-under `SPECS/` (for average CPU and thread counts). When the architecture isn't
-specified, `bits stats` reads the most recent `LOGS/*/bits_build_stats.json`.
+(on by default for `--builders > 1`). Reads `<work-dir>/bits_build_stats.json`
+(per-package peaks) and the per-package traces under `SPECS/` (for average CPU
+and thread counts).
 
 **CPU-utilisation tuning hint.** At the end of a `--builders` run, bits estimates
 the whole-run CPU utilisation (useful core-seconds ÷ cores × wall-clock) and the
