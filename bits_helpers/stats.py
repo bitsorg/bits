@@ -2,7 +2,7 @@
 
 Reads the resource data produced when monitoring is active:
 
-* ``<work_dir>/bits_build_stats.json`` — per-package peaks (cpu, rss, time) plus
+* ``<work_dir>/LOGS/<arch>/bits_build_stats.json`` — per-package peaks (cpu, rss, time) plus
   the machine's total schedulable resources (written by ``build_stats.py``).
 * ``<work_dir>/SPECS/<arch>/<pkg>/<ver-rev>/<pkg>.json`` — the per-package
   time-series trace (one sample per second). Used, when present, to derive the
@@ -17,6 +17,7 @@ import os
 from glob import glob
 from os.path import join, isfile
 
+from bits_helpers.build_stats import default_stats_path, STATS_FILENAME
 from bits_helpers.log import error, info
 
 
@@ -48,9 +49,25 @@ def cores(cpu_percent):
 
 # ── data loading ────────────────────────────────────────────────────────────
 
-def load_build_stats(work_dir):
-    """Return the parsed bits_build_stats.json dict, or None."""
-    path = join(work_dir, "bits_build_stats.json")
+def load_build_stats(work_dir, arch=""):
+    """Return the parsed bits_build_stats.json dict, or None.
+
+    Stats are written per-architecture under ``<work_dir>/LOGS/<arch>/``. With
+    *arch* we read that file directly; without it (the ``bits stats`` command
+    does not resolve the architecture) we pick the most recently written one
+    under ``LOGS/``, and still accept the legacy flat ``<work_dir>`` location.
+    """
+    if arch:
+        path = default_stats_path(work_dir, arch)
+    else:
+        candidates = [p for p in glob(join(work_dir, "LOGS", "*", STATS_FILENAME))
+                      if isfile(p)]
+        legacy = join(work_dir, STATS_FILENAME)        # pre-relocation location
+        if isfile(legacy):
+            candidates.append(legacy)
+        if not candidates:
+            return None
+        path = max(candidates, key=os.path.getmtime)
     if not isfile(path):
         return None
     try:
@@ -106,14 +123,14 @@ def trace_metrics(path):
     }
 
 
-def collect(work_dir):
+def collect(work_dir, arch=""):
     """Return (resources, [per-package metric dicts]).
 
     Each metric dict: package, peak_rss, peak_cpu, avg_cpu, time, cpu_seconds,
     peak_threads. Peaks come from bits_build_stats.json; avg_cpu / peak_threads /
     cpu_seconds come from the trace when available.
     """
-    stats = load_build_stats(work_dir)
+    stats = load_build_stats(work_dir, arch)
     if not stats:
         return None, []
     resources = stats.get("resources", {}) or {}
@@ -278,6 +295,7 @@ def render_package(work_dir, package):
 
 def doStats(args, parser):
     work_dir = getattr(args, "workDir", "sw")
+    arch = getattr(args, "architecture", "") or ""
     as_json = getattr(args, "json", False)
 
     if getattr(args, "package", None):
@@ -289,10 +307,10 @@ def doStats(args, parser):
             print(render_package(work_dir, args.package))
         return
 
-    resources, metrics = collect(work_dir)
+    resources, metrics = collect(work_dir, arch)
     if metrics is None or not metrics:
-        if not load_build_stats(work_dir):
-            error("No resource stats found at %s/bits_build_stats.json. "
+        if not load_build_stats(work_dir, arch):
+            error("No resource stats found under %s/LOGS/. "
                   "Run a build with --resource-monitoring first.", work_dir)
             parser.exit(1)
         info("Resource stats file present but contained no package data.")
