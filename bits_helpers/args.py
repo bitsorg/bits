@@ -230,7 +230,7 @@ def doParseArgs():
       help="show a human-readable resource report from a monitored build",
       description=(
           "Summarise the resource usage recorded when a build ran with "
-          "--resource-monitoring. Reads <work-dir>/bits_build_stats.json and the "
+          "--resource-monitoring. Reads <work-dir>/LOGS/<arch>/bits_build_stats.json and the "
           "per-package traces under SPECS/, leads with the heaviest/slowest "
           "packages, and flags likely memory or parallelism problems."
       ),
