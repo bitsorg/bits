@@ -80,7 +80,7 @@ class Scheduler:
     # terminate until we are completely done.
     self.finalJobDeps = []
     self.finalJobSpec = [self.doSerial, "final-job", self.finalJobDeps] + [self.__doLog, "Nothing else to be done, exiting."]
-    self.resultsQueue.put((threading.currentThread(), self.finalJobSpec))
+    self.resultsQueue.put((threading.current_thread(), self.finalJobSpec))
     self.jobs["final-job"] = {"scheduler": "serial", "deps": self.finalJobSpec, "spec": self.finalJobSpec}
     self.pendingJobs.append("final-job")
 
@@ -354,10 +354,10 @@ class Scheduler:
 
   # Helper to enqueu replies to the master thread.
   def notifyTaskMaster(self, *commandSpec):
-    self.resultsQueue.put((threading.currentThread(), commandSpec))
+    self.resultsQueue.put((threading.current_thread(), commandSpec))
 
   def notifyMaster(self, *commandSpec):
-    self.notifyQueue.put((threading.currentThread(), commandSpec))
+    self.notifyQueue.put((threading.current_thread(), commandSpec))
 
   def forceDone(self, taskId):
     if taskId in self.doneJobs: return
@@ -368,7 +368,7 @@ class Scheduler:
   def serial(self, taskId, deps, *commandSpec):
     if taskId in self.jobs: return
     spec = [self.doSerial, taskId, deps] + list(commandSpec)
-    self.resultsQueue.put((threading.currentThread(), spec))
+    self.resultsQueue.put((threading.current_thread(), spec))
     self.jobs[taskId] = {"scheduler": "serial", "deps": deps, "spec": spec}
     self.pendingJobs.append(taskId)
     self.finalJobDeps.append(taskId)
@@ -379,7 +379,7 @@ class Scheduler:
     if brokenDeps:
       #put back if there are other pending tasks
       if [dep for dep in pendingDeps if not dep in brokenDeps]:
-        self.resultsQueue.put((threading.currentThread(), [self.doSerial, taskId, deps] + list(commandSpec)))
+        self.resultsQueue.put((threading.current_thread(), [self.doSerial, taskId, deps] + list(commandSpec)))
         return
       transition(taskId, self.pendingJobs, self.brokenJobs)
       self.errors[taskId] = "The following dependencies could not complete:\n%s" % "\n".join(brokenDeps)
@@ -389,7 +389,7 @@ class Scheduler:
 
     # Put back the task on the queue, since it has pending dependencies.
     if pendingDeps:
-      self.resultsQueue.put((threading.currentThread(), [self.doSerial, taskId, deps] + list(commandSpec)))
+      self.resultsQueue.put((threading.current_thread(), [self.doSerial, taskId, deps] + list(commandSpec)))
       return
     # No broken dependencies and no pending ones. Run the job.
     if not (taskId in self.doneJobs):
