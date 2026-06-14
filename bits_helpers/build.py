@@ -1345,8 +1345,9 @@ def doFinalSync(spec, specs, args, syncHelper):
                         "{}-{}.{}.tar.gz".format(spec["package"], ver_rev(spec), _arch))
     try:
       os.remove(_tar)
-    except OSError:
-      pass
+    except OSError as err:
+      # Best-effort cleanup: inability to remove this tarball must not fail the build.
+      debug("Skipping aggressive cleanup for %s: %s", _tar, err)
 
   # ── Manifest recording ─────────────────────────────────────────────────────
   # Record the completed package in the incremental build manifest so that a
