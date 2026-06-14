@@ -92,14 +92,25 @@ def available_memory_mib() -> int:
 
     On Linux this is ``MemAvailable`` from ``/proc/meminfo`` (the kernel's own
     estimate of how much memory can be given to a new workload without
-    swapping).  On macOS it sums free + inactive pages reported by
-    ``vm_stat``.
+    swapping).  On macOS it sums the reclaimable ``vm_stat`` buckets (free +
+    inactive + speculative + purgeable).  When the optional ``psutil`` package
+    is importable, its vetted cross-platform reading is preferred over both.
 
     Returns 0 when detection fails so that callers can treat 0 as "unknown"
     and skip capping.
     """
     system = platform.system()
     try:
+        # Prefer psutil's vetted reading when the optional dependency is present:
+        # it is more accurate than the per-OS heuristics below — notably on macOS,
+        # where vm_stat's overlapping page buckets make an exact "available" hard.
+        try:
+            import psutil
+            avail = int(psutil.virtual_memory().available) // (1024 * 1024)
+            if avail > 0:
+                return avail
+        except Exception:  # pylint: disable=broad-except
+            pass  # psutil absent/failed → fall back to per-OS detection below
         if system == "Linux":
             return _available_linux()
         elif system == "Darwin":
@@ -134,10 +145,13 @@ def _available_darwin() -> int:
     throttled heavy builds (e.g. ROOT to ``-j2`` on a machine that runs
     ``-j10`` fine).
 
-    Primary estimate ≈ physical − (anonymous + wired + compressed), i.e.
-    Activity Monitor's "physical − Memory Used": everything except app memory,
-    wired memory and the compressor is reclaimable.  Falls back to the sum of
-    the explicitly-reclaimable buckets when the needed fields are unavailable.
+    Estimate = the reclaimable ``vm_stat`` buckets (free + inactive +
+    speculative + purgeable).  An earlier version used
+    ``physical − (anonymous + wired + compressed)``, but "Anonymous pages"
+    includes *inactive* anonymous pages, which the kernel reclaims by
+    compressing/swapping — so subtracting all of them under-reported available
+    memory and throttled heavy builds (ROOT to -j2 on an idle 24 GB Mac).
+    ``psutil``, when importable, is preferred over this by the caller.
     """
     out = subprocess.check_output(["vm_stat"], text=True)
     pages = {}
@@ -158,22 +172,10 @@ def _available_darwin() -> int:
     except Exception:  # pylint: disable=broad-except
         pass
 
-    # Primary: physical RAM minus the genuinely-unavailable (non-reclaimable)
-    # buckets. File cache, purgeable and speculative pages are NOT subtracted
-    # because the kernel reclaims them under memory pressure.
-    anon     = pages.get("Anonymous pages")
-    wired    = pages.get("Pages wired down")
-    compress = pages.get("Pages occupied by compressor")
-    try:
-        physical = int(subprocess.check_output(
-            ["sysctl", "-n", "hw.memsize"], text=True).strip())
-    except Exception:  # pylint: disable=broad-except
-        physical = 0
-    if physical and None not in (anon, wired, compress):
-        used = (anon + wired + compress) * page_bytes
-        return max(0, physical - used) // (1024 * 1024)
-
-    # Fallback (older vm_stat / missing fields): sum the reclaimable buckets.
+    # Available ≈ the reclaimable pages the kernel can hand to a new workload
+    # without OOM/swap: free + inactive + speculative + purgeable. We do NOT
+    # add "File-backed pages": those overlap "Pages inactive" (inactive file
+    # pages are counted in both buckets), so adding them would double-count.
     reclaimable = sum(pages.get(k, 0) for k in (
         "Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"))
     return reclaimable * page_bytes // (1024 * 1024)
