@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """`bits publish --view <name>` — publish the merged view for a release.
 
 Unions every package of one release (one ``build_id``) into

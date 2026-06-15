@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Merged-view ("symlink farm") support.
 
 A *view* unions a coherent set of package install prefixes into one directory,

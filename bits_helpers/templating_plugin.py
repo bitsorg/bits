@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """A text templating plugin for Bits.
 
 This plugin allows reusing specs like those that would be used during the

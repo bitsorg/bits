@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Tests for the qualify_arch / append_arch defaults-file fields.
 
 Covers:

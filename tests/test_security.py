@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Security regression tests for path injection and traversal vulnerabilities.
 
 Each test class corresponds to one reported finding:

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Tests for bits_helpers/build_stats.py — the self-tuning resource-stats loop
 that feeds the --builders scheduler's ResourceManager.

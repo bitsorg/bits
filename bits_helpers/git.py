@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 from shlex import quote
 from bits_helpers.cmd import getstatusoutput
 from bits_helpers.log import debug

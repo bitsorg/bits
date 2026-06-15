@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Unit tests for bits_helpers.sandbox.
 
 All tests mock external calls (podman, sandbox-exec, /proc, /.dockerenv) so

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """`bits brew` — generate a Homebrew Brewfile from the recipes.
 
 macOS is a developer platform for bits (it does not build/distribute CVMFS

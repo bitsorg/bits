@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """bits doctor — system requirement checks and runner environment validation.
 
 In its default (recipe-check) mode ``bits doctor`` examines a package's

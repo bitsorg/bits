@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 import argparse
 from bits_helpers.utilities import detectArch, normalise_multiple_options
 from bits_helpers.utilities import (arch_distro_token, arch_machine_token,

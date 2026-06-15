@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """bits publish — copy, relocate, and stream a built package to a CVMFS ingestion spool.
 
 Pipeline on the build host

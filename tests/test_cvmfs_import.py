@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Tests for bits_helpers/cvmfs_import (ADR-0001 Stage 2)."""
 
 import json

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Tests for bits_helpers/provenance.py (build_id / abi_tag) and the additive
 provenance fields in create_provenance_info().

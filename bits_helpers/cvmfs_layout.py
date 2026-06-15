@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Templated CVMFS layout resolved from the defaults profile.
 
 Lets a single place (``defaults-release.sh``) declare where a build's packages

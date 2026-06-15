@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """bits build driver.
 
 Entry point for all ``bits`` sub-commands (build, clean, deps, doctor, init,

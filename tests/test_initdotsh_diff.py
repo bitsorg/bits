@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Tests for the pure logic of tools/initdotsh_modules_diff.py."""
 
 import os

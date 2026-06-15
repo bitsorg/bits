@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Collapse a loaded module environment onto a merged view (interactive `bits`).
 
 Used by `bits enter`/`load`/`printenv` in *view* mode: after the modules are

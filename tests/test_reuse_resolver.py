@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Tests for the relaxed-reuse frontier-cut in getPackageList (ADR-0001 Stage 1b).
 
 A `performCvmfsMatch` callback that returns a deployed-package descriptor causes

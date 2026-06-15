@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """bits status — dry-run build-plan resolver.
 
 Classifies every package in the dependency tree without building anything.

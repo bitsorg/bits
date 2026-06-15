@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """``bits stats`` — human-readable build resource report.
 
 Reads the resource data produced when monitoring is active:

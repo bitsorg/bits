@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Relaxed-reuse matcher (ADR-0001, Stage 1b).
 

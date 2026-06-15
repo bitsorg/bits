@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Build provenance helpers: a deterministic ``build_id`` (a per-release coherence
 token) and an ``abi_tag`` (the ABI-relevant build configuration).
