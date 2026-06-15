@@ -313,8 +313,47 @@ nowKwds = {
   "hour":  str(now.hour).zfill(2),
 }
 
+# Matches %(##INCLUDE:path/to/snippet.sh)s in recipe text.
+_MAX_INCLUDE_DEPTH = 10
+_INCLUDE_RE = re.compile(r"%\(##INCLUDE:([^)]+)\)s")
+
+def _expand_includes(
+    text: str,
+    configDir: str = "",
+    _depth: int = 0,
+    _seen: frozenset = frozenset(),
+) -> str:
+  """Expand ``%(##INCLUDE:path)s`` directives recursively.
+
+  The include path is resolved relative to the parent of configDir.
+  Example: %(##INCLUDE:cms.bits/scram-project-build.sh)s
+
+  Raises:
+      KeyError: file not found, unreadable, include cycle, or depth overflow.
+  """
+  if _depth > _MAX_INCLUDE_DEPTH:
+    raise KeyError(
+      f"##INCLUDE nesting depth exceeds {_MAX_INCLUDE_DEPTH} "
+      f"— likely a cycle among: {', '.join(sorted(_seen))}"
+    )
+  if not _INCLUDE_RE.search(text):
+    return text
+  base_dir = os.path.abspath(os.path.dirname(configDir))
+  def _resolve_and_read(match):
+    raw = match.group(1).strip()
+    path = os.path.realpath(os.path.join(base_dir, raw))
+    if path in _seen:
+      raise KeyError(f"%(##INCLUDE:{raw})s — include cycle detected")
+    try:
+      with open(path) as fh:
+        content = fh.read()
+    except OSError as exc:
+      raise KeyError(f"%(##INCLUDE:{raw})s — {exc}") from None
+    return _expand_includes(content, configDir, _depth + 1, _seen | {path})
+  return _INCLUDE_RE.sub(_resolve_and_read, text)
+
 def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream="",
-                      default_vars=None, strict=True):
+                      default_vars=None, strict=True, configDir=""):
   """Expand the data replacing the following keywords:
 
   - %(name)s      — package name (alias for %(package)s, preferred in source URLs)
@@ -335,6 +374,11 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
 
   with the calculated content.
   """
+  try:
+    data = _expand_includes(data, configDir)
+  except KeyError as e:
+    dieOnError(True, "Include error in recipe for '%s': %s" % (spec.get("package") or "?", e.args[0] if e.args else e))
+    return data  # guard for mocked dieOnError in tests
   defaults_upper = "" if defaults == ['release'] else "_".join(d.upper() for d in defaults)
   commit_hash = spec.get("commit_hash", "hash_unknown")
   tag = str(spec.get("tag", "tag_unknown"))
