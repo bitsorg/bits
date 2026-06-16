@@ -1449,6 +1449,35 @@ variables:
 A truthy value is anything except empty, `0`, `false`, `off`, or `no`. A
 `--flavour` of the same name overrides a defaults `variables:` value.
 
+##### `variables` vs `env` vs `flavours` — quick comparison
+
+These three are easy to confuse. `variables:` is **text templating only** (Python
+`%(NAME)s`, never a shell variable); `env:` is a **shell variable only** (`$NAME`,
+never `%(NAME)s`); a `flavour` is a CLI knob that feeds **both** at once. All keep
+the name **verbatim** — none of them upper-cases it.
+
+| | `variables:` | `env:` | `flavours` (`--flavour`) |
+|---|---|---|---|
+| Defined in | defaults / recipe `variables:` | defaults `env:` | CLI (repeatable) |
+| Surface in recipe | `%(NAME)s` (text) | `$NAME` (shell) | both `%(NAME)s` **and** `$NAME` |
+| Gates `(?NAME)` requires/sources/patches | yes | no | yes |
+| Exported into build shell | no | yes (via `defaults-release`) | yes |
+| In the package hash | only when the expanded text lands in a hashed field (`version`/`source`/`patches`, or the body when expansion is opted in) | yes — folded through the `defaults-release` `env` dict | yes (both paths) |
+| When evaluated | build-time text substitution, **before** hashing | exported into the shell before the recipe body runs | both |
+| Name case | verbatim | verbatim | verbatim |
+
+To use one name as *both* `%(NAME)s` and `$NAME`, pass it as a `--flavour`, or
+define it in **both** `variables:` and `env:`.
+
+> **Auto-uppercased shell variables are a separate, per-package mechanism.** For
+> every dependency, bits exports `<PKG>_ROOT`, `<PKG>_VERSION`, `<PKG>_REVISION`,
+> `<PKG>_HASH`, and `<PKG>_COMMIT`, where `<PKG>` is the package name run through
+> `pkg_to_shell_id()` (non-alphanumerics → `_`, then upper-cased): `boost` →
+> `$BOOST_ROOT`, `common.bits` → `$COMMON_BITS_ROOT`, `o2.framework` →
+> `$O2_FRAMEWORK_ROOT`. The same transform backs `%(root_dir)s` (→ `${<PKG>_ROOT}`).
+> This is keyed off the **package name**, not off any `variables`/`env`/`flavour`
+> entry — those keep whatever case you write.
+
 #### Dependencies
 
 | Field | Description |
