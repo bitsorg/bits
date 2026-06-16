@@ -1177,12 +1177,79 @@ def yamlDump(s):
   YamlOrderedDumper.add_representer(OrderedDict, represent_ordereddict)
   return yaml.dump(s, Dumper=YamlOrderedDumper)
 
+# Whole-line recipe-body include directive, C-preprocessor style:
+#     #include <repo/qualified/path.sh>   (resolved under the recipes repo root)
+#     #include "local/path.sh"            (resolved relative to the recipe's dir)
+# Only a full line of exactly this shape matches, so ordinary shell `#` comments,
+# shebangs, and `# include the headers` prose are left untouched.
+INCLUDE_RE = re.compile(
+  r'^[ \t]*#include[ \t]+(?:<([^>\n]+)>|"([^"\n]+)")[ \t]*$',
+  re.MULTILINE,
+)
+MAX_INCLUDE_DEPTH = 32
+
+
+def resolveIncludes(body, recipe_url, repo_dir=None, _visited=None, _depth=0):
+  """Splice ``#include`` directives in a recipe *body* with the referenced file.
+
+  This is a deliberately narrow, bits-owned preprocessor — NOT a full C
+  preprocessor (running shell through ``cpp`` mangles ``#`` comments, ``//`` in
+  URLs / ``${x//a/b}``, and predefined macros like ``linux``).  It touches only
+  whole-line ``#include <...>`` / ``#include "..."`` directives and leaves every
+  other byte verbatim.
+
+  Resolution mirrors the existing ``from:`` mechanism and C's two include forms:
+  ``<path>`` resolves under the recipes repo root (``$BITS_REPO_DIR``), ``"path"``
+  relative to the including recipe's own directory.  Inclusion is recursive with
+  cycle detection and a depth cap; a path that escapes its base (``..`` or an
+  absolute path) is rejected.
+
+  The spliced text is returned verbatim, BEFORE variable substitution and hashing
+  run downstream — so an included file's content is expanded in the consumer's
+  context (``%(compiler)s`` etc.) and folds into the consumer package's hash,
+  exactly as if it had been written inline.
+  """
+  if body is None or "#include" not in body:
+    return body  # fast path: nothing to do
+  if _depth > MAX_INCLUDE_DEPTH:
+    raise RuntimeError("#include: nesting too deep (>%d) at %s" % (MAX_INCLUDE_DEPTH, recipe_url or "?"))
+  if _visited is None:
+    _visited = []
+  if repo_dir is None:
+    repo_dir = os.environ.get("BITS_REPO_DIR") or os.path.dirname(recipe_url or "") or "."
+  recipe_dir = os.path.dirname(recipe_url or "") or "."
+
+  def _splice(m):
+    angle, quoted = m.group(1), m.group(2)
+    rel = (angle if angle is not None else quoted).strip()
+    base = repo_dir if angle is not None else recipe_dir
+    base_abs = os.path.abspath(base)
+    path_abs = os.path.abspath(os.path.join(base_abs, rel))
+    # Path safety: reject absolute references and any `..` escape outside base.
+    if os.path.isabs(rel) or not (path_abs == base_abs or path_abs.startswith(base_abs + os.sep)):
+      raise RuntimeError("#include: unsafe path %r in %s" % (rel, recipe_url or "?"))
+    if path_abs in _visited:
+      raise RuntimeError("#include: cyclic include: %s" % " -> ".join(_visited + [path_abs]))
+    try:
+      with open(path_abs) as f:
+        content = f.read()
+    except OSError as e:
+      raise RuntimeError("#include: cannot open %r referenced in %s: %s" % (rel, recipe_url or "?", e))
+    # Recurse so an included file may itself include (cycle-guarded by _visited).
+    return resolveIncludes(content, path_abs, repo_dir, _visited + [path_abs], _depth + 1)
+
+  return INCLUDE_RE.sub(_splice, body)
+
+
 def parseRecipe(reader, generatePackages=None, visited=None):
   assert(reader.__call__)
   err, spec, recipe = (None, None, None)
   try:
     d = reader()
     header,recipe = d.split("---", 1)
+    # Splice any `#include` directives in the body before anything else sees it,
+    # so the included text is variable-expanded and hashed as if written inline.
+    recipe = resolveIncludes(recipe, getattr(reader, "url", "") or "")
     # YAML forbids '%' as the first character of a plain (unquoted) scalar because
     # it is reserved for directives (e.g. %YAML, %TAG).  Recipe authors may want
     # to write  "- %(name)s-%(version)s.patch"  in patches: (and similar lists)
