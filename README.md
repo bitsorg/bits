@@ -220,8 +220,8 @@ See **[WORKFLOWS.md](docs/WORKFLOWS.md)** for the full phase-by-phase walkthroug
 ---
 
 **Note**: Bits is under active development. For the most up-to-date information, see the full [docs/REFERENCE.md](docs/REFERENCE.md).
-```
-# Licensing
+
+## Licensing
 
 The bits ecosystem spans several repositories under two licenses, chosen by
 provenance rather than preference.
@@ -247,8 +247,7 @@ combinations, so these components can still be combined with the GPL parts.
 | `bits-recipe-tools` | GPL-3.0-or-later | `GPL-3.0-or-later` | recipe helper snippets |
 | `bits-providers` | GPL-3.0-or-later | `GPL-3.0-or-later` | provider/registry data |
 | `bits-console` | GPL-3.0-or-later | `GPL-3.0-or-later` | web UI |
-| `remote-runner` | GPL-3.0-or-later | `GPL-3.0-or-later` | host-side build job runner |
-| `cvmfs-bits` (cvmfs-prepub) | Apache-2.0 | `Apache-2.0` | new Go service |
+| `cvmfs-bits` (cvmfs-prepub) | Apache-2.0 | `Apache-2.0` | bits/CVMFS pipeline  |
 | `cvmfs-testbed` | Apache-2.0 | `Apache-2.0` | deployment example |
 
 Each licensed source file carries an `SPDX-License-Identifier` header (Python
