@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Tests for bits_helpers/memory.py.
 
@@ -117,6 +120,15 @@ _VM_STAT_OUTPUT = dedent("""\
 
 class TestAvailableMemoryMib(unittest.TestCase):
 
+    def setUp(self):
+        # Force the psutil-preferred path OFF so these tests deterministically
+        # exercise the per-OS detection whether or not psutil happens to be
+        # installed in the test environment. (sys.modules['psutil']=None makes
+        # `import psutil` raise ImportError.)
+        p = patch.dict("sys.modules", {"psutil": None})
+        p.start()
+        self.addCleanup(p.stop)
+
     @patch("platform.system", return_value="Linux")
     def test_linux_uses_mem_available(self, _mock_sys):
         with patch("builtins.open", mock_open(read_data=_PROC_MEMINFO)):
@@ -140,9 +152,12 @@ class TestAvailableMemoryMib(unittest.TestCase):
 
     @patch("subprocess.check_output")
     @patch("platform.system", return_value="Darwin")
-    def test_darwin_physical_minus_used(self, _mock_sys, mock_sub):
-        # Reclaimable-inclusive: available = physical - (anon + wired + compress).
-        # calls: vm_stat, sysctl hw.pagesize, sysctl hw.memsize
+    def test_darwin_reclaimable_sum(self, _mock_sys, mock_sub):
+        # available = reclaimable buckets: free + inactive + speculative +
+        # purgeable. Anonymous/wired/compressor are NOT subtracted — the old
+        # "physical - (anon+wired+compress)" formula did, and under-reported
+        # because inactive anonymous pages are reclaimable.
+        # calls: vm_stat, sysctl hw.pagesize
         full = dedent("""\
             Mach Virtual Memory Statistics: (page size of 4096 bytes)
             Pages free:                           100000.
@@ -155,10 +170,10 @@ class TestAvailableMemoryMib(unittest.TestCase):
             File-backed pages:                    900000.
             Pages occupied by compressor:         256000.
         """)
-        # physical 8388608000 B; used=(512000+256000+256000)*4096=4194304000 B
-        # available = 8388608000 - 4194304000 = 4000 MiB
-        mock_sub.side_effect = [full, "4096\n", "8388608000\n"]
-        self.assertEqual(available_memory_mib(), 4000)
+        # free+inactive+speculative+purgeable = 100000+400000+50000+20000
+        #   = 570000 pages * 4096 / 1024**2 = 2226 MiB
+        mock_sub.side_effect = [full, "4096\n"]
+        self.assertEqual(available_memory_mib(), 2226)
 
     @patch("subprocess.check_output")
     @patch("platform.system", return_value="Darwin")
@@ -179,6 +194,49 @@ class TestAvailableMemoryMib(unittest.TestCase):
         with patch("builtins.open", side_effect=Exception("unexpected")):
             mib = available_memory_mib()
         self.assertEqual(mib, 0)
+
+    @patch("subprocess.check_output")
+    @patch("platform.system", return_value="Darwin")
+    def test_darwin_24gb_busy_mac_regression(self, _mock_sys, mock_sub):
+        # Real vm_stat from a busy 24 GB Apple-Silicon Mac (16 KB pages) where
+        # ROOT (1500 MiB/job) was wrongly capped to -j2. The old
+        # "physical - (anon+wired+compress)" formula returned ~4746 MiB; the
+        # reclaimable sum returns ~7020 MiB, lifting the unleashed cap to -j4.
+        vmstat = dedent("""\
+            Mach Virtual Memory Statistics: (page size of 16384 bytes)
+            Pages free:                                    42961.
+            Pages active:                                 389655.
+            Pages inactive:                               388506.
+            Pages speculative:                               923.
+            Pages wired down:                             179113.
+            Pages purgeable:                               16913.
+            File-backed pages:                            208290.
+            Anonymous pages:                              570794.
+            Pages occupied by compressor:                 519237.
+        """)
+        # free+inactive+speculative+purgeable = 42961+388506+923+16913 = 449303
+        #   * 16384 / 1024**2 = 7020 MiB
+        mock_sub.side_effect = [vmstat, "16384\n"]
+        self.assertEqual(available_memory_mib(), 7020)
+
+
+class TestAvailableMemoryPsutil(unittest.TestCase):
+    """The psutil-preferred path short-circuits the per-OS heuristics."""
+
+    def test_prefers_psutil_available(self):
+        fake = MagicMock()
+        fake.virtual_memory.return_value = MagicMock(available=12 * 1024**3)  # 12 GiB
+        # platform/subprocess are never consulted when psutil returns > 0.
+        with patch.dict("sys.modules", {"psutil": fake}):
+            self.assertEqual(available_memory_mib(), 12 * 1024)  # 12288 MiB
+
+    def test_psutil_zero_falls_through_to_os(self):
+        fake = MagicMock()
+        fake.virtual_memory.return_value = MagicMock(available=0)
+        with patch.dict("sys.modules", {"psutil": fake}), \
+             patch("platform.system", return_value="Linux"), \
+             patch("builtins.open", mock_open(read_data=_PROC_MEMINFO)):
+            self.assertEqual(available_memory_mib(), 8000)  # /proc MemAvailable
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Assuming you are using the mock library to ... mock things
 from unittest import mock
 from unittest.mock import patch
@@ -205,6 +208,80 @@ class ReleaseBaseTestCase(unittest.TestCase):
     # An explicitly-positioned release is respected as written.
     self.assertEqual(_with_release_base(["dev4", "release"]), ["dev4", "release"])
 
+
+class ReusePolicyArgsTestCase(unittest.TestCase):
+  """ADR-0001 relaxed-reuse CLI flags parse and default safely."""
+
+  def _parse(self, cmd):
+    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+         mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
+         mock.patch("bits_helpers.args.commands") as mock_cmd, \
+         patch.object(sys, "argv", ["alibuild"] + shlex.split(cmd)):
+      mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
+      args, _ = doParseArgs()
+      return vars(args)
+
+  def test_defaults_are_inert(self):
+    # Simple aliBuild case: flags absent → None/[] at the arg layer (build.py
+    # resolves reusePolicy to "strict"); nothing changes.
+    a = self._parse("build --force-unknown-architecture zlib")
+    self.assertIsNone(a["reusePolicy"])
+    self.assertIsNone(a["reuseBase"])
+    self.assertEqual(a["buildLocal"], [])
+
+  def test_relaxed_flags_parse(self):
+    a = self._parse("build --force-unknown-architecture --reuse-policy relaxed "
+                    "--reuse-base LCG_109 --build-local p1,p2 zlib")
+    self.assertEqual(a["reusePolicy"], "relaxed")
+    self.assertEqual(a["reuseBase"], "LCG_109")
+    self.assertEqual(a["buildLocal"], ["p1", "p2"])
+
+  def test_initdotsh_flag_tristate(self):
+    # Unset at the arg layer (build.py resolves None -> from-modules, or legacy
+    # when BITS_LEGACY_INITDOTSH=1); the two flags force the value explicitly.
+    self.assertIsNone(
+      self._parse("build --force-unknown-architecture zlib")["initdotshFromModules"])
+    self.assertIs(
+      self._parse("build --force-unknown-architecture --legacy-initdotsh zlib")
+      ["initdotshFromModules"], False)
+    self.assertIs(
+      self._parse("build --force-unknown-architecture --initdotsh-from-modules zlib")
+      ["initdotshFromModules"], True)
+
+
+class ProviderPathFrontendTestCase(unittest.TestCase):
+  """Legacy vs provider path is chosen by the front-end: aliBuild
+  (BITS_BRANDING=aliBuild) defaults to NO bits-providers (legacy alidist path);
+  native bits defaults to the provider path. Explicit BITS_PROVIDERS wins."""
+
+  def _bits_providers(self, set_env):
+    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+         mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
+         mock.patch("bits_helpers.args.commands") as mock_cmd, \
+         mock.patch("bits_helpers.args._read_bits_rc", return_value={}), \
+         mock.patch.dict(os.environ, set_env, clear=False), \
+         patch.object(sys, "argv", ["x", "build", "--force-unknown-architecture", "zlib"]):
+      for k in ("BITS_BRANDING", "BITS_PROVIDERS"):
+        if k not in set_env:
+          os.environ.pop(k, None)
+      mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
+      args, _ = doParseArgs()
+      return vars(args)["bits_providers"]
+
+  def test_alibuild_frontend_defaults_to_no_providers(self):
+    self.assertEqual(self._bits_providers({"BITS_BRANDING": "aliBuild"}), "")
+
+  def test_native_bits_defaults_to_providers(self):
+    self.assertEqual(self._bits_providers({}),
+                     "https://github.com/bitsorg/bits-providers")
+
+  def test_explicit_providers_wins_under_alibuild(self):
+    self.assertEqual(
+      self._bits_providers({"BITS_BRANDING": "aliBuild",
+                            "BITS_PROVIDERS": "https://example.com/p"}),
+      "https://example.com/p")
+
+
 class ReadBitsRcTestCase(unittest.TestCase):
   """_read_bits_rc accepts the simplified flat layout and the [bits] section."""
 
@@ -256,6 +333,7 @@ class ReadBitsRcTestCase(unittest.TestCase):
       os.environ.pop("BITS_PATH", None)
       if saved is not None:
         os.environ["BITS_PATH"] = saved
+
 
 if __name__ == '__main__':
   unittest.main()

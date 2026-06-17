@@ -43,6 +43,37 @@ bits build libfoo           # rebuilds only libfoo (devel mode)
 eval "$(bits load libfoo/latest)"
 ```
 
+### Iterate on a dependency without rebuilding the stack above it
+
+Editing a low-level dependency normally re-hashes every package that depends on it, forcing a full rebuild of the stack. To rebuild **only the dependency** and reuse its consumers, list it under `untracked_requires:` instead of `requires:` in each consumer that can tolerate it:
+
+```yaml
+package: MyApp
+version: "1.0"
+requires:
+  - ROOT
+untracked_requires:
+  - libfoo          # linked at runtime, but changes to it don't re-hash MyApp
+```
+
+Give the dependency a **stable install label** so reused consumers keep finding it after it changes:
+
+```yaml
+package: libfoo
+version: "2.3"
+force_revision: "dev"   # install path stays …/libfoo/2.3-dev across edits
+```
+
+```bash
+bits init libfoo        # writable checkout of the dependency
+# … edit libfoo source …
+bits build MyApp        # rebuilds libfoo only; MyApp is reused and relinks it
+```
+
+Only `libfoo` rebuilds; `MyApp` (and everything above it) keeps its identity hash and is reused, picking up the new `libfoo` through its `…/libfoo/2.3-dev` path.
+
+**Caveats.** The consumer is *relinked, not recompiled*, so this is valid only while your change keeps `libfoo` ABI-compatible (same headers / soname). Any build whose closure includes an untracked dependency is recorded `provenance: loose` in `.meta.json` — still publishable, but you own the ABI decision. Without `force_revision` the dependency's path moves on each edit and reused consumers keep linking the previous build (bits warns). See [`untracked_requires`](REFERENCE.md#dependencies) in the reference.
+
 ### Debug a failed build
 
 ```bash
@@ -150,6 +181,21 @@ bits build --providers https://github.com/bitsorg/bits-providers@LCG_106 LCG
 ```
 
 The provider's commit hash is folded into every dependent package's build hash, so changing the provider version triggers a rebuild of everything sourced from it. Note that provider repositories are cloned *before* defaults `overrides:` are applied, so an `overrides:` entry does **not** change which provider snapshot is fetched — use the `tag:` field or the `@<tag>` URL suffix instead.
+
+### Check out a recipe repository and develop against it
+
+Native `bits` uses the provider path: `bits init <group>.bits` resolves the named recipe repository in the [bits-providers registry](REFERENCE.md#13-repository-provider-feature) and clones it into the current directory, so you can develop its packages — including ones whose recipes live in a *required* provider repository — beside it:
+
+```bash
+bits init alice.bits              # clone the alice.bits recipe repo into ./alice.bits
+bits init -c alice.bits ROOT      # check out ROOT's source for development, beside it
+# … edit ROOT under ./ROOT …
+bits build -c alice.bits ROOT     # build with the local alice.bits recipes + your ROOT
+```
+
+`bits init -c alice.bits ROOT` loads the provider chain (e.g. `alice.bits` `requires: [alidist.bits]`), so a package whose recipe lives in a required provider repo is still found.
+
+The **aliBuild** front-end is the legacy path instead: `aliBuild init` checks out `alisw/alidist`, and `aliBuild build ROOT` uses it directly with no provider registry and the legacy build-time `init.sh` (see [Repository Provider Feature](REFERENCE.md#13-repository-provider-feature)).
 
 ### Use a private recipe repository alongside the defaults
 

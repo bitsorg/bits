@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 import json
 from os.path import dirname, abspath, join
 from time import sleep
@@ -90,6 +93,45 @@ def test_systemexit_task_does_not_hang():
   assert "build:dies" in scheduler.brokenJobs
   assert "build:ok" in scheduler.doneJobs
   assert scheduler.errors.get("build:dies")
+
+
+def test_critical_path_default_on_and_opt_out():
+  # New behaviour is the default; it can be turned off.
+  assert Scheduler(2, parallelDownloads=0).criticalPath is True
+  assert Scheduler(2, parallelDownloads=0, criticalPath=False).criticalPath is False
+
+
+def test_critical_path_cold_start_is_depth():
+  # With no recorded times every build weighs the same, so the critical-path
+  # weight is the longest chain of build edges to the sink (graph depth).
+  # Chain: a <- b <- c  (c depends on b depends on a).
+  s = Scheduler(4, parallelDownloads=0)             # no buildStats -> cold start
+  s.parallel("build:a", [], "build", dummyTask)
+  s.parallel("build:b", ["build:a"], "build", dummyTask)
+  s.parallel("build:c", ["build:b"], "build", dummyTask)
+  w = s.compute_critical_paths()
+  assert w["build:a"] == 3.0    # a + b + c
+  assert w["build:b"] == 2.0    # b + c
+  assert w["build:c"] == 1.0    # c (its only consumer is the zero-cost sink)
+  # Larger weight => smaller (more negative) priority => dispatched first.
+  assert s.jobs["build:a"]["priority"] < s.jobs["build:b"]["priority"] < s.jobs["build:c"]["priority"]
+
+
+def test_critical_path_uses_history():
+  # Two independent deps of one target, same depth. History makes the slow one
+  # heavier, so it outranks the fast one despite equal depth.
+  s = Scheduler(4, parallelDownloads=0)
+  s._buildTimes = {"fast": 1.0, "slow": 100.0, "top": 1.0}
+  s.parallel("build:fast", [], "build", dummyTask)
+  s.parallel("build:slow", [], "build", dummyTask)
+  s.parallel("build:top", ["build:fast", "build:slow"], "build", dummyTask)
+  w = s.compute_critical_paths()
+  assert w["build:slow"] > w["build:fast"]          # heavy branch is more critical
+  assert w["build:slow"] == 101.0                   # slow(100) + top(1)
+  assert w["build:fast"] == 2.0                     # fast(1)  + top(1)
+  # The terminal target sinks last.
+  assert w["build:top"] < w["build:slow"]
+  assert s.jobs["build:slow"]["priority"] < s.jobs["build:fast"]["priority"]
 
 
 if __name__ == "__main__":

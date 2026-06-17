@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Tests for bits_helpers/repo_provider.py and the related changes to
 bits_helpers/utilities.py (getConfigPaths, getPackageList provider_dirs).

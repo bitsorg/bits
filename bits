@@ -1,4 +1,7 @@
 #!/bin/bash -e
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 
 BITSDIR="$(dirname "$0")"
 
@@ -29,7 +32,7 @@ Usage: $0 \\
     ${EM}help${EZ}
       This help screen.
 
-    ${EM}enter${EZ} [${ET}-q${EZ}] [${ET}--shellrc${EZ}] [${ET}--dev${EZ}] MODULE1[,MODULE2...]
+    ${EM}enter${EZ} [${ET}-q${EZ}] [${ET}--shellrc${EZ}] [${ET}--dev${EZ}] [${ET}--view${EZ}] MODULE1[,MODULE2...]
       Enters a new shell with the given modules loaded (${ET}-q${EZ} silences the module-load messages).
       Return to the clean environment by exiting the shell with ${ET}exit${EZ}.
       Inside the environment you can use the native ${ET}modulecmd${EZ}.
@@ -45,7 +48,7 @@ Usage: $0 \\
       Exit code is preserved.
       Example: $ET$0 setenv AliRoot/v5-08-02-1 -c aliroot -b$EZ
 
-    ${EM}printenv${EZ} or ${EM}load${EZ} [${ET}-q${EZ}] MODULE1[,MODULE2...]
+    ${EM}printenv${EZ} or ${EM}load${EZ} [${ET}-q${EZ}] [${ET}--view${EZ}] MODULE1[,MODULE2...]
       Prints the environment in the current shell for the given modules (${ET}-q${EZ} for quiet).
       This command does not set any environment and it must be executed through ${ET}eval${EZ} to be effective.
       Override shell with the environment variable ${ET}MODULES_SHELL${EZ}.
@@ -416,6 +419,7 @@ DEFAULT_WORK_DIRS=("$BITS_WORK_DIR" "$BITS_WORK_DIR" ${BITSBUILD_CHDIR:+"$BITSBU
 COMMAND_IN_ENV=()
 CLEAN_ENV=1
 DEVOPT=0
+VIEWOPT=0
 VERBOSE=1
 
 ARGS=()
@@ -435,6 +439,8 @@ do
 	  unset CLEAN_ENV;;
       --dev)
 	  DEVOPT=1;;
+      --view)
+	  VIEWOPT=1;;
       -h|--help|help)
 	  printHelp; exit 0 ;;
       -c) 
@@ -548,6 +554,26 @@ IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
 # "Loading requirement:" progress lines so setenv/printenv/load/enter output can
 # be captured/parsed cleanly. Honoured by environment-modules >= 4.
 [[ -z "${VERBOSE:-}" ]] && export MODULES_VERBOSITY=silent
+
+# --view: once modules are loaded *in process*, collapse the additive path
+# variables (PATH / LD_LIBRARY_PATH / CMAKE_PREFIX_PATH / PKG_CONFIG_PATH /
+# PYTHONPATH / ROOT_INCLUDE_PATH) onto a merged view of the loaded closure, so the
+# environment stays small on big stacks. Each entry is remapped from its package
+# prefix onto the view and de-duplicated; system entries are kept. The
+# modulefiles' setenvs (<PKG>_ROOT, ROOTSYS, recipe env: variables) are left
+# untouched. The view is cached per closure under $WORK_DIR/VIEWS/$ARCHITECTURE.
+# Run the view helper so it can import bits_helpers WITHOUT polluting PYTHONPATH:
+# the source dir is added via sys.path (passed as BITS_SELF), not the PYTHONPATH
+# env var, so the collapse reads the *real* module PYTHONPATH and never echoes the
+# bits source directory back into the user's environment.
+_bitsView() {
+  BITS_SELF="${BITSDIR}" python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.view_cmd import main; sys.exit(main())' "$@"
+}
+applyView() {
+  [[ $VIEWOPT == 1 ]] || return 0
+  eval "$(_bitsView --work-dir "${WORK_DIR}" --arch "${ARCHITECTURE}" 2> /dev/null)"
+}
+
 case "$ACTION" in
   enter)
     [[ $BITSLVL == 1 ]] || \
@@ -576,6 +602,7 @@ case "$ACTION" in
     _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
     detectShell
+    applyView
     if [[ ! -z "$CLEAN_ENV" ]]; then
       case $MODULES_SHELL in
         sh|bash) export PS1="[$MODULES]$PS1DEV"' \w $> '   ;;
@@ -611,6 +638,15 @@ case "$ACTION" in
     fi
     detectShell
     $MODULECMD $MODULES_SHELL $ACTION $MODULES 2> >(grep -v "$IGNORE_ERR" >&2)
+    # --view: emit the view-collapsed path overrides AFTER the module setup so they
+    # win on eval. printenv/load only print (they don't load in-process), so the
+    # closure is loaded in a subshell to compute the collapse; output is rendered
+    # in the caller's shell syntax (sh export vs csh setenv).
+    if [[ $VIEWOPT == 1 && $ACTION == load ]]; then
+      _vshell=sh; case "$MODULES_SHELL" in csh|tcsh) _vshell=csh;; esac
+      ( eval "$($MODULECMD bash load $MODULES 2> /dev/null)"
+        _bitsView --work-dir "${WORK_DIR}" --arch "${ARCHITECTURE}" --shell "$_vshell" 2> /dev/null )
+    fi
     _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && ( eval $($MODULECMD $MODULES_SHELL $ACTION $MODULES 2> /dev/null) &> /dev/null; stripDyld )
     exit 0
@@ -623,6 +659,7 @@ case "$ACTION" in
     existModules $MODULES
     eval $($MODULECMD bash add $MODULES 2> >(grep -v "$IGNORE_ERR" >&2))
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
+    applyView
     exec "${COMMAND_IN_ENV[@]}"
   ;;
   q|query)

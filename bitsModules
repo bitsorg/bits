@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """bits module-listing helper (entry point).
 
 Thin driver, in the same family as ``bitsBuild``/``bitsDeps``: it runs the CVMFS

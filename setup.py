@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """ Package bits using setuptools
 """
 
@@ -32,7 +35,7 @@ setup(
     author_email='giulio.eulisse@cern.ch',
 
     # Choose your license
-    license='GPL',
+    license='GPL-3.0-or-later',
 
     # See https://pypi.org/classifiers/
     classifiers=[

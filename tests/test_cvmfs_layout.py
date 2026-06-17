@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Tests for the templated CVMFS layout resolver (bits_helpers/cvmfs_layout.py)."""
 
 import os
@@ -28,11 +31,19 @@ class CvmfsLayoutTest(unittest.TestCase):
         self.assertEqual(layout["module_path"],
                          "/cvmfs/sft.cern.ch/lcg/releases/%s/modules" % ARCH)
 
-    def test_install_dir_defaults_to_arch(self):
+    def test_dirs_default_sensibly(self):
         layout = R({"cvmfs_dir": "/cvmfs/x"}, ARCH)
         self.assertEqual(layout["install_dir"], ARCH)
         self.assertEqual(layout["module_dir"], "%s/modules" % ARCH)
+        self.assertEqual(layout["views_dir"], "Views")          # default views dir
         self.assertEqual(layout["install_path"], "/cvmfs/x/" + ARCH)
+        self.assertEqual(layout["views_path"], "/cvmfs/x/Views")
+
+    def test_views_dir_override_and_triggers_layout(self):
+        # views_dir alone is enough to opt in, and is overridable
+        layout = R({"views_dir": "%(architecture)s/views"}, ARCH)
+        self.assertIsNotNone(layout)
+        self.assertEqual(layout["views_path"], "%s/views" % ARCH)  # relative, no cvmfs_dir
 
     def test_unknown_placeholder_left_intact(self):
         layout = R({"cvmfs_dir": "/cvmfs/x",

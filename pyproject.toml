@@ -7,7 +7,7 @@ name = 'build-bits'
 dynamic = ['readme', 'version']
 description = 'Build Tool'
 keywords = ['HEP', 'ALICE']
-license = { file = 'LICENSE' }
+license = { file = 'LICENSE.md' }
 authors = [
   {name = 'Giulio Eulisse', email = 'giulio.eulisse@cern.ch'},
   {name = 'Timo Wilken', email = 'timo.wilken@cern.ch'},

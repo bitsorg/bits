@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Standard library
 import configparser
 import os
@@ -117,17 +120,90 @@ def doInitConfig(args):
     banner("Configuration written to %s", rc_file)
 
 
+def _checkout_recipes_only(args):
+  """Clone the recipe (alidist) repository into ``args.configDir`` and exit.
+
+  This is the classic ``aliBuild init`` behaviour when no PACKAGE is given:
+  check out the recipes for development. The repository and branch come from
+  ``--dist`` (default ``alisw/alidist@master``); the destination is
+  ``--config-dir`` (default ``alidist``).
+  """
+  dist = args.dist if isinstance(args.dist, dict) else {}
+  repo = dist.get("repo") or "alisw/alidist"
+  ver  = dist.get("ver") or "master"
+  url  = repo if ":" in repo else "https://github.com/" + repo
+
+  if path.exists(args.configDir):
+    warning("Recipes already checked out at %s — leaving them as is.", args.configDir)
+    return
+  if args.dryRun:
+    info("Would clone recipes from %s (branch %s) into %s.\n"
+         "--dry-run / -n specified. Doing nothing.", url, ver, args.configDir)
+    return
+
+  cmd = ["clone", "--origin", "upstream", url]
+  if ver:
+    cmd.extend(["-b", ver])
+  cmd.append(args.configDir)
+  git(cmd)
+  banner("Recipes checked out at %s.\n"
+         "Edit them there, then build with: aliBuild build <PACKAGE>", args.configDir)
+
+
+def _checkout_group_repo(args, group):
+  """`bits init <group>.bits`: resolve *group* in the provider registry
+  (bits-providers) and clone the repository it points to into $CWD, so packages
+  can then be developed beside it (`bits init -c <group> <PACKAGE>`)."""
+  from bits_helpers.repo_provider import resolve_registry_repo
+  reg_spec = resolve_registry_repo(args, group, getattr(args, "workDir", "sw"))
+  if not reg_spec:
+    sys.exit(1)
+  source = reg_spec["source"]
+  ver    = reg_spec.get("tag", reg_spec.get("version", ""))
+  url    = source if ":" in source else "https://github.com/" + source
+  dest = join(getattr(args, "develPrefix", ".") or ".", group)
+
+  if path.exists(dest):
+    warning("%s already exists — leaving it as is.", dest)
+    return
+  if args.dryRun:
+    info("Would clone recipe repository %s (branch %s) into %s.\n"
+         "--dry-run / -n specified. Doing nothing.", url, ver or "default", dest)
+    return
+
+  cmd = ["clone", "--origin", "upstream", url]
+  if ver:
+    cmd.extend(["-b", ver])
+  cmd.append(dest)
+  git(cmd)
+  banner("Recipe repository '%s' checked out at %s.\n"
+         "Develop a package beside it with:  bits init -c %s <PACKAGE>\n"
+         "or build with:                     bits build -c %s <PACKAGE>",
+         group, dest, dest, dest)
+
+
 def doInit(args):
   if args.pkgname is None:
     raise ValueError("doInit: args.pkgname must not be None")
 
   pkgs = parsePackagesDefinition(args.pkgname) if args.pkgname else []
 
-  # ── Config mode ────────────────────────────────────────────────────────────
-  # When no PACKAGE is given, treat the invocation as a request to write (or
-  # update) bits.rc from the supplied options.  This is backward-compatible:
-  # old callers that supply a PACKAGE are unaffected.
+  # ── `bits init <group>.bits` ────────────────────────────────────────────────
+  # An argument named like a recipe repository (the `.bits` convention) is a
+  # request to check out that repository from the provider registry, rather than
+  # to develop a package source.
+  if len(pkgs) == 1 and pkgs[0]["name"].endswith(".bits"):
+    return _checkout_group_repo(args, pkgs[0]["name"])
+
+  # ── No PACKAGE given ────────────────────────────────────────────────────────
   if not pkgs:
+    # aliBuild compatibility: `aliBuild init` with no PACKAGE checks out the
+    # recipe (alidist) repository for development and exits, like classic
+    # aliBuild. Plain `bits init` instead writes (or updates) bits.rc from the
+    # supplied options — backward-compatible: callers that supply a PACKAGE are
+    # unaffected either way.
+    if os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild":
+      return _checkout_recipes_only(args)
     return doInitConfig(args)
 
   # ── Clone mode (existing behaviour) ────────────────────────────────────────
@@ -162,6 +238,36 @@ def doInit(args):
   specs = {}
   defaultsReader = lambda: readDefaults(args.configDir, args.defaults, lambda msg: error("%s", msg), args.architecture)
   (err, overrides, taps, _defaultsMeta) = parseDefaults([], defaultsReader, debug)
+
+  # Native (provider) mode: make recipes in repository-providers reachable so a
+  # package living in a *required* provider repo (e.g. ROOT in alidist.bits,
+  # required by alice.bits) can be found and developed side-by-side. The configDir
+  # is the checked-out group (e.g. alice.bits); we seed provider discovery with
+  # that group's own registry `requires`, since those repos aren't dependencies of
+  # the package being developed. Best-effort — a registry hiccup must not block a
+  # dev checkout, and aliBuild's legacy path (no registry) is unaffected.
+  if getattr(args, "bits_providers", None):
+    try:
+      from bits_helpers.repo_provider import (
+        load_always_on_providers, fetch_repo_providers_iteratively,
+        resolve_registry_repo)
+      _wd = getattr(args, "workDir", "sw")
+      load_always_on_providers(
+        config_dir=args.configDir, work_dir=_wd,
+        reference_sources=args.referenceSources,
+        fetch_repos=getattr(args, "fetchRepos", True),
+        bits_providers=args.bits_providers, taps=taps)
+      _group = os.path.basename(os.path.normpath(args.configDir))
+      _reg = (resolve_registry_repo(args, _group, _wd, quiet=True)
+              if _group.endswith(".bits") else None)
+      _seed = list((_reg or {}).get("requires", []))
+      fetch_repo_providers_iteratively(
+        packages=[p["name"] for p in pkgs] + _seed, config_dir=args.configDir,
+        work_dir=_wd, reference_sources=args.referenceSources,
+        fetch_repos=getattr(args, "fetchRepos", True), taps=taps)
+    except Exception as _e:  # pylint: disable=broad-except
+      debug("init: provider loading skipped (%r)", _e)
+
   (_,_,_,validDefaults) = getPackageList(packages=[ p["name"] for p in pkgs ],
                                          specs=specs,
                                          configDir=args.configDir,

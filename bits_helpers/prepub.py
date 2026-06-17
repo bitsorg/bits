@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """bits_helpers.prepub — HTTP client for the cvmfs-prepub REST API.
 
 This module is used by ``bits publish --prepub-url`` to submit a tar archive

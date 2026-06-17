@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 import os
 import os.path
 import sys
@@ -326,6 +329,102 @@ class Boto3TestCase(unittest.TestCase):
         self.assertRaises(SystemExit, b3sync.upload_symlinks_and_tarball, BAD_SPEC)
         b3sync.s3.put_object.assert_not_called()
         b3sync.s3.upload_file.assert_not_called()
+
+    @patch("os.listdir", new=lambda path: (
+        [] if path.endswith("-" + MISSING_SPEC["revision"]) else NotImplemented
+    ))
+    @patch("os.readlink", new=MagicMock(return_value="dummy path"))
+    @patch("os.path.islink", new=MagicMock(return_value=True))
+    def test_tarball_upload_spec_with_architecture_key(self) -> None:
+        """Regression: a spec carrying an 'architecture' key (shared packages, or
+        any recipe that sets the field) must not crash tarball naming.
+
+        The previous code did ``"...".format(architecture=arch, **spec)``; when
+        spec has an 'architecture' key, **spec re-passes it and Python raises
+        'TypeError: got multiple values for keyword argument architecture'. The
+        tarball must be named with effective_arch (== build arch here), matching
+        the store key and the symlink target.
+        """
+        b3sync = sync.Boto3RemoteSync(
+            remoteStore="b3://localhost", writeStore="b3://localhost",
+            architecture=ARCHITECTURE, workdir="/sw")
+        b3sync.s3 = self.mock_s3()
+        # MISSING_SPEC routing (fresh upload) + an explicit architecture key.
+        spec = dict(MISSING_SPEC, architecture=ARCHITECTURE)
+        b3sync.s3.put_object.reset_mock()
+        b3sync.s3.upload_file.reset_mock()
+        b3sync.upload_symlinks_and_tarball(spec)   # must not raise TypeError
+        b3sync.s3.upload_file.assert_called()
+        # The tarball is uploaded under the effective-arch name (== ARCHITECTURE).
+        key = b3sync.s3.upload_file.call_args.kwargs["Key"]
+        self.assertTrue(key.endswith(tarball_name(MISSING_SPEC)),
+                        "tarball key %r not named with effective arch" % key)
+
+
+@patch("bits_helpers.sync.Boto3RemoteSync._s3_init", new=MagicMock())
+class DualRemoteSyncTestCase(unittest.TestCase):
+    """Cross-backend stores: recall from CVMFS, upload freshly-built to S3."""
+
+    READ = "cvmfs:///cvmfs/sft-nightlies-test.cern.ch/lcg/bits/"
+    WRITE = "b3://bucketofpieces"
+
+    # ── remote_from_url dispatch ─────────────────────────────────────────────
+    def test_cvmfs_read_plus_write_returns_dual(self):
+        helper = sync.remote_from_url(self.READ, self.WRITE, ARCHITECTURE, "/work")
+        self.assertIsInstance(helper, sync.DualRemoteSync)
+        self.assertIsInstance(helper.reader, sync.CVMFSRemoteSync)
+        self.assertIsInstance(helper.writer, sync.Boto3RemoteSync)
+        # Writer targets the write store for both its read-back and its uploads.
+        self.assertEqual(helper.writer.writeStore, "bucketofpieces")
+        self.assertEqual(helper.writer.remoteStore, "bucketofpieces")
+
+    def test_cvmfs_read_without_write_is_unchanged(self):
+        # No write store -> the old read-only CVMFS helper, not a Dual.
+        helper = sync.remote_from_url(self.READ, "", ARCHITECTURE, "/work")
+        self.assertIsInstance(helper, sync.CVMFSRemoteSync)
+
+    def test_same_backend_is_unchanged(self):
+        helper = sync.remote_from_url("b3://bucket", "b3://bucket", ARCHITECTURE, "/work")
+        self.assertIsInstance(helper, sync.Boto3RemoteSync)
+
+    @patch("bits_helpers.sync.error", new=MagicMock())
+    def test_cvmfs_write_target_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            sync.remote_from_url(self.READ, "cvmfs:///somewhere", ARCHITECTURE, "/work")
+
+    # ── routing + freshly-built gate ─────────────────────────────────────────
+    def _dual(self):
+        return sync.DualRemoteSync(reader=MagicMock(), writer=MagicMock())
+
+    def test_reads_go_to_reader(self):
+        dual = self._dual()
+        spec = {"package": PACKAGE}
+        dual.fetch_tarball(spec)
+        dual.fetch_symlinks(spec)
+        dual.reader.fetch_tarball.assert_called_once_with(spec)
+        dual.reader.fetch_symlinks.assert_called_once_with(spec)
+        dual.writer.fetch_tarball.assert_not_called()
+
+    def test_freshly_built_package_is_uploaded(self):
+        dual = self._dual()
+        spec = {"package": PACKAGE, "cachedTarball": ""}     # built from source
+        dual.upload_symlinks_and_tarball(spec)
+        dual.writer.upload_symlinks_and_tarball.assert_called_once_with(spec)
+
+    def test_recalled_package_is_not_uploaded(self):
+        dual = self._dual()
+        spec = {"package": PACKAGE, "cachedTarball": "/work/TARS/.../zlib.tar.gz"}
+        dual.upload_symlinks_and_tarball(spec)
+        dual.writer.upload_symlinks_and_tarball.assert_not_called()
+        self.assertIsNone(dual.upload_shell_command(spec))
+        dual.writer.upload_shell_command.assert_not_called()
+
+    def test_writeStore_disable_propagates_to_writer(self):
+        # build.py sets syncHelper.writeStore = "" to disable uploads for devel pkgs.
+        dual = sync.DualRemoteSync(reader=MagicMock(), writer=MagicMock(writeStore="bucket"))
+        self.assertEqual(dual.writeStore, "bucket")
+        dual.writeStore = ""
+        self.assertEqual(dual.writer.writeStore, "")
 
 
 if __name__ == '__main__':

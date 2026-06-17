@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # This file is needed to package build_template.sh.
 
 # Single-source a PEP440-compliant version using setuptools_scm.

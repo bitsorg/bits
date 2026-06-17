@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Tests for the defaults-file ``requires`` → provider-scan seeding feature.
 
 A defaults file (defaults-*.sh) can declare a top-level ``requires`` (and/or
@@ -619,6 +622,106 @@ class TestDefaultsRequiresNoCycle(unittest.TestCase):
         self.assertIn("zlib", specs)
         # zlib should still auto-depend on defaults-release
         self.assertIn("defaults-release", specs["zlib"].get("requires", []))
+
+
+class TestBootstrapStashesProviderRequires(unittest.TestCase):
+    """The bootstrap org-pointer recipe's own ``requires`` (e.g. alice.bits.sh
+    ``requires: [alidist.bits]``) are stashed on args so doBuild can seed
+    provider discovery with them. Without this, a base provider repo that
+    supplies needed recipes but is not a build-graph dependency of the target
+    (alidist.bits → gsl, needed by ROOT in alice.bits) is never loaded."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.providers = os.path.join(self.tmp, "bits-providers")
+        self.recipe_repo = os.path.join(self.tmp, "alice.bits")
+        os.makedirs(self.providers)
+        os.makedirs(self.recipe_repo)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @patch("bits_helpers.repo_provider._add_to_bits_path")
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    def test_org_pointer_requires_are_stashed(self, mock_clone, mock_add):
+        from argparse import Namespace
+        from bits_helpers.repo_provider import bootstrap_default_config
+
+        # alice.bits.sh in the bits-providers checkout: the org-pointer provider
+        # recipe, which requires the alidist.bits provider repo.
+        _write_sh(self.providers, "alice.bits", textwrap.dedent("""\
+            package: alice.bits
+            version: "1"
+            tag: main
+            provides_repository: true
+            source: https://github.com/bitsorg/alice.bits
+            requires:
+              - alidist.bits
+        """))
+        # 1st clone = bits-providers checkout; 2nd = the alice.bits recipe repo.
+        mock_clone.side_effect = [(self.providers, "aaa"), (self.recipe_repo, "bbb")]
+
+        args = Namespace(bits_providers="https://github.com/bitsorg/bits-providers",
+                         organisation="alice", referenceSources="", fetchRepos=False)
+        checkout = bootstrap_default_config(args, self.tmp)
+
+        self.assertEqual(checkout, self.recipe_repo)
+        self.assertEqual(getattr(args, "_bootstrap_provider_requires", None),
+                         ["alidist.bits"])
+
+
+class TestProviderVersionConflictWarning(unittest.TestCase):
+    """A package requesting a *specific* version of a provider repo that is
+    already loaded at a different one must warn (the request is silently
+    ignored — one version per provider per build)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.config_dir = os.path.join(self.tmp, "cfg")
+        self.work_dir = os.path.join(self.tmp, "sw")
+        os.makedirs(self.config_dir)
+        os.makedirs(self.work_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, consumer_requires):
+        checkout = os.path.join(self.work_dir, "myprov")
+        os.makedirs(checkout, exist_ok=True)
+        _write_sh(self.config_dir, "myprov", textwrap.dedent("""\
+            package: myprov
+            version: "1"
+            source: https://github.com/org/myprov.git
+            tag: master
+            provides_repository: true
+        """))
+        _write_sh(self.config_dir, "consumer",
+                  "package: consumer\nversion: '1'\nrequires:\n  - %s\n" % consumer_requires)
+        from bits_helpers.repo_provider import fetch_repo_providers_iteratively
+        with patch("bits_helpers.repo_provider.clone_or_update_provider",
+                   return_value=(checkout, "abc1234")), \
+             patch("bits_helpers.repo_provider._add_to_bits_path"), \
+             patch("bits_helpers.repo_provider.warning") as mock_warn:
+            fetch_repo_providers_iteratively(
+                packages=["myprov", "consumer"], config_dir=self.config_dir,
+                work_dir=self.work_dir,
+                reference_sources=os.path.join(self.tmp, "mirror"),
+                fetch_repos=False, taps={})
+        return " ".join(str(c) for c in mock_warn.call_args_list)
+
+    def test_warns_on_conflicting_version(self):
+        warned = self._run("myprov = LCG_109")
+        self.assertIn("myprov", warned)
+        self.assertIn("LCG_109", warned)
+        self.assertIn("already loaded", warned)
+
+    def test_no_warning_when_version_matches(self):
+        # Pin equals the tag the provider was cloned at → no conflict.
+        self.assertNotIn("already loaded", self._run("myprov = master"))
+
+    def test_no_warning_for_plain_reference(self):
+        # No version pin at all → no conflict.
+        self.assertNotIn("already loaded", self._run("myprov"))
 
 
 if __name__ == "__main__":

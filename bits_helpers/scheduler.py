@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Standard library
 import json
 import threading
@@ -41,7 +44,8 @@ class Scheduler:
   # There is one, special, "final-job" which depends on all the scheduled jobs
   # either parallel or serial. This job is guaranteed to be executed last and
   # avoids having deadlocks due to all the queues having been disposed.
-  def __init__(self, parallelThreads, logDelegate=None, buildStats=None, parallelDownloads=2):
+  def __init__(self, parallelThreads, logDelegate=None, buildStats=None, parallelDownloads=2,
+               criticalPath=True):
     self.workersQueue = PriorityQueue()
     self.resultsQueue = Queue()
     self.notifyQueue = Queue()
@@ -57,14 +61,29 @@ class Scheduler:
     self.resourceManager = None
     self.runningJobsCount = {"build": 0, "fetch": 0, "download": 0, "max_build": parallelThreads, "max_download": parallelDownloads}
     self.errors = {}
+    # Critical-path scheduling: order ready jobs by the longest (history-weighted)
+    # path to the sink, so the build's long pole starts as early as its
+    # dependencies allow. Default on; reduces to graph depth with no history.
+    self.criticalPath = criticalPath
+    self._buildTimes = {}     # package -> recorded wall time (s), from build stats
+    self._defaultCost = 1.0   # cold-start fallback weight (=> depth ordering)
     if buildStats:
       with open(buildStats) as ref:
-        self.resourceManager = ResourceManager(json.load(ref), self)
+        _stats = json.load(ref)
+      self.resourceManager = ResourceManager(_stats, self)
+      try:
+        self._buildTimes = {p: float(v.get("time", 0) or 0)
+                            for p, v in _stats.get("packages", {}).get("build", {}).items()}
+        _dt = _stats.get("defaults", {}).get("time", [])
+        if _dt and float(_dt[0]) > 0:
+          self._defaultCost = float(_dt[0])
+      except (AttributeError, TypeError, ValueError, KeyError):
+        pass
     # Add a final job, which will depend on any spawned task so that we do not
     # terminate until we are completely done.
     self.finalJobDeps = []
     self.finalJobSpec = [self.doSerial, "final-job", self.finalJobDeps] + [self.__doLog, "Nothing else to be done, exiting."]
-    self.resultsQueue.put((threading.currentThread(), self.finalJobSpec))
+    self.resultsQueue.put((threading.current_thread(), self.finalJobSpec))
     self.jobs["final-job"] = {"scheduler": "serial", "deps": self.finalJobSpec, "spec": self.finalJobSpec}
     self.pendingJobs.append("final-job")
 
@@ -75,6 +94,15 @@ class Scheduler:
       all_threads.append(t)
       t.daemon = True
       t.start()
+
+    if self.criticalPath:
+      # Weight ready jobs by their distance to the sink before the first
+      # dispatch. Defensive: a failure here must never break the build, only
+      # fall back to the registration-order priorities set in parallel().
+      try:
+        self.compute_critical_paths()
+      except Exception as e:  # pylint: disable=broad-except
+        self.debug("critical-path scheduling unavailable, using default order (%r)" % (e,))
 
     self.__doRescheduleParallel()
     # Wait until all the workers are done.
@@ -167,6 +195,68 @@ class Scheduler:
           self.jobs[taskId]["priority"] = 1
     self.pendingJobs.append(taskId)
     self.finalJobDeps.append(taskId)
+
+  def _job_cost(self, taskId):
+    """Critical-path weight of a single job: its recorded build wall time (or
+    the cold-start default) for build jobs; 0 for fetch/download/sentinel jobs,
+    which act as zero-cost connectors in the DAG (cf. Ninja's phony edges)."""
+    job = self.jobs.get(taskId, {})
+    if job.get("taskType") != "build":
+      return 0.0
+    pkg = taskId.split(":", 1)[1] if ":" in taskId else taskId
+    return self._buildTimes.get(pkg, self._defaultCost)
+
+  def compute_critical_paths(self):
+    """Set each job's ``priority`` from the longest weighted path to the sink
+    (its bottom level / remaining critical path), so the most schedule-critical
+    ready jobs dispatch first. Ported from Ninja's critical-path scheduler:
+    build-job weights are recorded wall times (``bits_build_stats.json``); with
+    no history every build weighs the same and the weight reduces to graph
+    depth. Larger weight => earlier dispatch; the scheduler dispatches by
+    ascending priority (a min-heap / ``sorted``), so ``priority = -weight``.
+
+    O(V+E): one DFS post-order (producers before consumers) then a single
+    reverse-order relaxation. Iterative to stay safe on large stacks.
+    """
+    jobs = self.jobs
+    # Real dependency ids for a job. Most jobs store deps as a list of task-id
+    # strings; the synthetic "final-job" sentinel stores its serial *spec* here
+    # (methods and nested lists), so keep only string ids that name a job — that
+    # also correctly excludes the sentinel sink from the weight graph.
+    def _deps(tid):
+      return [d for d in jobs[tid].get("deps", ()) if isinstance(d, str) and d in jobs]
+    # Producers-first topological order over the dependency edges.
+    order = []
+    visited = set()
+    for root in jobs:
+      if root in visited:
+        continue
+      stack = [(root, False)]
+      while stack:
+        tid, done = stack.pop()
+        if done:
+          order.append(tid)
+          continue
+        if tid in visited:
+          continue
+        visited.add(tid)
+        stack.append((tid, True))
+        for dep in _deps(tid):
+          if dep not in visited:
+            stack.append((dep, False))
+    # weight[x] = cost(x) + max over consumers c of weight[c]. Initialise to the
+    # job's own cost, then relax consumers -> producers in reverse topo order so
+    # every consumer is final before its producers are updated.
+    weight = {tid: self._job_cost(tid) for tid in jobs}
+    for tid in reversed(order):
+      w = weight[tid]
+      for dep in _deps(tid):
+        cand = w + self._job_cost(dep)
+        if cand > weight[dep]:
+          weight[dep] = cand
+    for tid, job in jobs.items():
+      job["priority"] = -weight.get(tid, 0.0)
+    return weight
 
   # Does the rescheduling of tasks. Derived class should call it.
   def __rescheduleParallel(self):
@@ -267,10 +357,10 @@ class Scheduler:
 
   # Helper to enqueu replies to the master thread.
   def notifyTaskMaster(self, *commandSpec):
-    self.resultsQueue.put((threading.currentThread(), commandSpec))
+    self.resultsQueue.put((threading.current_thread(), commandSpec))
 
   def notifyMaster(self, *commandSpec):
-    self.notifyQueue.put((threading.currentThread(), commandSpec))
+    self.notifyQueue.put((threading.current_thread(), commandSpec))
 
   def forceDone(self, taskId):
     if taskId in self.doneJobs: return
@@ -281,7 +371,7 @@ class Scheduler:
   def serial(self, taskId, deps, *commandSpec):
     if taskId in self.jobs: return
     spec = [self.doSerial, taskId, deps] + list(commandSpec)
-    self.resultsQueue.put((threading.currentThread(), spec))
+    self.resultsQueue.put((threading.current_thread(), spec))
     self.jobs[taskId] = {"scheduler": "serial", "deps": deps, "spec": spec}
     self.pendingJobs.append(taskId)
     self.finalJobDeps.append(taskId)
@@ -292,7 +382,7 @@ class Scheduler:
     if brokenDeps:
       #put back if there are other pending tasks
       if [dep for dep in pendingDeps if not dep in brokenDeps]:
-        self.resultsQueue.put((threading.currentThread(), [self.doSerial, taskId, deps] + list(commandSpec)))
+        self.resultsQueue.put((threading.current_thread(), [self.doSerial, taskId, deps] + list(commandSpec)))
         return
       transition(taskId, self.pendingJobs, self.brokenJobs)
       self.errors[taskId] = "The following dependencies could not complete:\n%s" % "\n".join(brokenDeps)
@@ -302,7 +392,7 @@ class Scheduler:
 
     # Put back the task on the queue, since it has pending dependencies.
     if pendingDeps:
-      self.resultsQueue.put((threading.currentThread(), [self.doSerial, taskId, deps] + list(commandSpec)))
+      self.resultsQueue.put((threading.current_thread(), [self.doSerial, taskId, deps] + list(commandSpec)))
       return
     # No broken dependencies and no pending ones. Run the job.
     if not (taskId in self.doneJobs):

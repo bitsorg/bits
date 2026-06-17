@@ -221,3 +221,58 @@ See **[WORKFLOWS.md](docs/WORKFLOWS.md)** for the full phase-by-phase walkthroug
 
 **Note**: Bits is under active development. For the most up-to-date information, see the full [docs/REFERENCE.md](docs/REFERENCE.md).
 ```
+# Licensing
+
+The bits ecosystem spans several repositories under two licenses, chosen by
+provenance rather than preference.
+
+## Why two licenses
+
+`bits` and its recipe repositories descend from ALICE's **aliBuild** and
+**alidist**, both licensed under **GPL-3.0**. Under the GPL's copyleft, these
+derivative works must remain GPL-3.0-or-later.
+
+The newer services written from scratch for the CVMFS publish chain — the Go
+publisher (`cvmfs-bits` / cvmfs-prepub) and its deployment example
+(`cvmfs-testbed`) — contain no aliBuild code, so they use the permissive
+**Apache-2.0** license. Apache-2.0 is one-way compatible *into* GPL-licensed
+combinations, so these components can still be combined with the GPL parts.
+
+## Per-component licenses
+
+| Component | License | SPDX identifier | Provenance |
+|-----------|---------|-----------------|------------|
+| `bits` (core) | GPL-3.0-or-later | `GPL-3.0-or-later` | derived from aliBuild |
+| `common.bits`, `lcg.bits`, `stacks.bits` | GPL-3.0-or-later | `GPL-3.0-or-later` | recipes, derived from alidist |
+| `bits-recipe-tools` | GPL-3.0-or-later | `GPL-3.0-or-later` | recipe helper snippets |
+| `bits-providers` | GPL-3.0-or-later | `GPL-3.0-or-later` | provider/registry data |
+| `bits-console` | GPL-3.0-or-later | `GPL-3.0-or-later` | web UI |
+| `remote-runner` | GPL-3.0-or-later | `GPL-3.0-or-later` | host-side build job runner |
+| `cvmfs-bits` (cvmfs-prepub) | Apache-2.0 | `Apache-2.0` | new Go service |
+| `cvmfs-testbed` | Apache-2.0 | `Apache-2.0` | deployment example |
+
+Each licensed source file carries an `SPDX-License-Identifier` header (Python
+modules and CLI scripts in `bits`; Go in `cvmfs-bits`; JS/config in
+`bits-console`; shell/compose in `cvmfs-testbed`). Two deliberate exceptions
+keep build hashes and generated output stable, and are governed by their
+repository-level `LICENSE`/`COPYRIGHT` instead:
+
+- the `bits-recipe-tools` recipe snippets (sourced and hashed by bits); and
+- the `bits` build harness sourced into per-package builds or copied into
+  tarballs (`bits_helpers/build_template.sh`, `tar_template.sh`,
+  `relocate-me.sh`) and the Jinja scaffolding templates (`templates/*.jnj`).
+
+The recipe repositories (`lcg.bits`, `common.bits`, `stacks.bits`) and the
+`bits-providers` data repository are likewise covered by their repository-level
+`LICENSE`/`COPYRIGHT` only — recipes are content-addressed, so per-file headers
+are omitted to keep their hashes stable.
+
+## Copyright & contributions
+
+Copyright (C) CERN and the bits
+project contributors. Work produced by CERN personnel is owned by CERN; please
+involve CERN Knowledge Transfer before changing any license.
+
+Contributions are accepted under the **Developer Certificate of Origin (DCO)**:
+sign off your commits with `git commit -s`.
+

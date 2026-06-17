@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 import argparse
 from bits_helpers.utilities import detectArch, normalise_multiple_options
 from bits_helpers.utilities import (arch_distro_token, arch_machine_token,
@@ -230,7 +233,7 @@ def doParseArgs():
       help="show a human-readable resource report from a monitored build",
       description=(
           "Summarise the resource usage recorded when a build ran with "
-          "--resource-monitoring. Reads <work-dir>/bits_build_stats.json and the "
+          "--resource-monitoring. Reads <work-dir>/LOGS/<arch>/bits_build_stats.json and the "
           "per-package traces under SPECS/, leads with the heaviest/slowest "
           "packages, and flags likely memory or parallelism problems."
       ),
@@ -245,6 +248,44 @@ def doParseArgs():
                             default="time", help="Sort the table by this metric (default: %(default)s).")
   stats_parser.add_argument("--json", dest="json", action="store_true",
                             help="Emit machine-readable JSON instead of the text report.")
+
+  import_parser = subparsers.add_parser(
+      "import",
+      help="import a foreign CVMFS deployment (e.g. LCG) into a bits reuse overlay",
+      description=(
+          "Harvest each deployed module's resolved environment (or read a "
+          "manifest), closure-check the set, stamp it with one deterministic "
+          "build_id, and generate a per-build_id overlay (build-sufficient bits "
+          "modulefiles + module-side .meta.json + .cvmfscatalog) that "
+          "'bits build --reuse-policy relaxed --reuse-base <build_id>' can graft "
+          "without recompiling. See ADR-0001."
+      ),
+  )
+  import_parser.add_argument("-w", "--work-dir", dest="workDir",
+                             default=DEFAULT_WORK_DIR,
+                             help="Build work area (overlay defaults to <work-dir>/MODULES).")
+  import_parser.add_argument("-a", "--architecture", dest="architecture",
+                             metavar="ARCH", default=detectedArch,
+                             help="Architecture the deployment was built for (default: %(default)s).")
+  import_parser.add_argument("--modulepath", dest="importModulepath",
+                             metavar="DIR", default=None,
+                             help="MODULEPATH of the foreign deployment to harvest via modulecmd.")
+  import_parser.add_argument("--manifest", dest="importManifest",
+                             metavar="FILE", default=None,
+                             help="JSON manifest to import instead of harvesting (fallback when "
+                                  "no modulefiles exist).")
+  import_parser.add_argument("--aliases", dest="importAliases",
+                             metavar="FILE", default=None,
+                             help="JSON name-alias map (foreign -> bits names).")
+  import_parser.add_argument("--label", dest="importLabel",
+                             metavar="NAME", default=None,
+                             help="Human-readable build_id prefix (e.g. LCG_109). Default: import.")
+  import_parser.add_argument("--out", dest="importOut",
+                             metavar="DIR", default=None,
+                             help="Overlay root to write into (default: <work-dir>/MODULES).")
+  import_parser.add_argument("--force", dest="importForce",
+                             action="store_true",
+                             help="Stamp and write even if the release is not closed (deps missing).")
 
   # Options for the analytics command
   # analytics_parser.add_argument("state", choices=["on", "off"], help="Whether to report analytics or not")
@@ -290,6 +331,35 @@ def doParseArgs():
                                   "builders are busy (absorbed by the OS scheduler / nice ladder). "
                                   "When unset, falls back to `build_oversubscribe:` in the active "
                                   "defaults, then 1.0 (no oversubscription)."))
+  # The final (top-level) package builds alone — everything else is one of its
+  # already-finished dependencies — so dividing its -j by --builders needlessly
+  # starves the single largest compile of the run (e.g. ROOT getting -j7 of 32).
+  # Tri-state on a shared dest: neither flag set (None) → resolved from
+  # `build_unleash_final:` in the active defaults, then on.
+  build_parser.add_argument("--unleash-final", dest="unleashFinal",
+                            action="store_const", const=True, default=None,
+                            help=("Let the final (top-level) package use the full -j instead of the "
+                                  "per-builder share, since it builds alone once its dependencies "
+                                  "finish. The memory cap (mem_per_job) still applies. On by default; "
+                                  "only affects --builders > 1. Falls back to `build_unleash_final:` "
+                                  "in the active defaults when unset."))
+  build_parser.add_argument("--no-unleash-final", dest="unleashFinal",
+                            action="store_const", const=False,
+                            help="Keep the final package on the per-builder -j share (disable unleashing).")
+  # Critical-path scheduling for --builders: order ready jobs by the longest
+  # (history-weighted) path to the final target, so the build's long pole starts
+  # as early as its dependencies allow. ON by default; tri-state so the active
+  # defaults can override via `build_critical_path_schedule:`.
+  build_parser.add_argument("--critical-path-schedule", dest="criticalPathSchedule",
+                            action="store_const", const=True, default=None,
+                            help=("Order --builders jobs by their critical-path weight (longest "
+                                  "history-weighted path to the final target). Weights come from a "
+                                  "previous run's bits_build_stats.json; with no history this is "
+                                  "graph depth. On by default; does not affect what is built or any "
+                                  "hash."))
+  build_parser.add_argument("--no-critical-path-schedule", dest="criticalPathSchedule",
+                            action="store_const", const=False,
+                            help="Disable critical-path ordering; dispatch ready jobs in registration order.")
   build_parser.add_argument("--no-auto-patch", dest="autoPatch", action="store_false", default=True,
                             help=("Do not apply recipe patches: automatically. Patch files are "
                                   "still staged in $SOURCEDIR and exported as $PATCH0..$PATCH_COUNT, "
@@ -482,6 +552,35 @@ def doParseArgs():
                             help=("Reuse already-deployed components from the CVMFS area declared by the "
                                   "defaults `cvmfs_dir:` field. Sets --remote-store to cvmfs://<cvmfs_dir> "
                                   "when no remote store is given."))
+  build_remote.add_argument("--reuse-policy", dest="reusePolicy", choices=["strict", "relaxed"],
+                            default=None,
+                            help=("CVMFS reuse strictness (ADR-0001). 'strict' (default): reuse only on "
+                                  "exact content-hash match; result is publishable. 'relaxed': also graft "
+                                  "deployed packages of a blessed release matched by (name, architecture, "
+                                  "build_id) for fast local dev; the result is loose-provenance and is "
+                                  "refused by the publish path. Falls back to the defaults `reuse_policy:` "
+                                  "value, else 'strict'."))
+  build_remote.add_argument("--reuse-base", dest="reuseBase", metavar="BUILD_ID", default=None,
+                            help=("With --reuse-policy relaxed, the build_id of the deployed release to "
+                                  "graft packages from. Falls back to the defaults `reuse_base:` value."))
+  build_remote.add_argument("--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",
+                            help=("Comma-separated packages to always build locally even under "
+                                  "--reuse-policy relaxed (e.g. a package you need patched), rather than "
+                                  "grafting them from the base."))
+  build_parser.add_argument("--initdotsh-from-modules", dest="initdotshFromModules",
+                            action="store_const", const=True, default=None,
+                            help=("(default) Set up each build's dependency environment from the "
+                                  "dependencies' modulefiles — the single source of truth for runtime "
+                                  "AND development — instead of the legacy build-time init.sh. Because "
+                                  "this changes build behaviour it is a HASHED input; --legacy-initdotsh "
+                                  "restores the pre-modules (aliBuild-compatible) hashes."))
+  build_parser.add_argument("--legacy-initdotsh", dest="initdotshFromModules",
+                            action="store_const", const=False,
+                            help=("Use the legacy build-time init.sh instead of deriving the dependency "
+                                  "environment from modulefiles. Produces hashes byte-identical to the "
+                                  "pre-modules default, so bits can still reuse alidist tarballs. Also "
+                                  "selectable with BITS_LEGACY_INITDOTSH=1 in the environment — the "
+                                  "aliBuild compatibility wrapper sets it."))
   build_remote.add_argument("--write-store", dest="writeStore", metavar="STORE", default="",
                             help=("Where to upload newly built packages. Same syntax as --remote-store, "
                                   "except ::rw is not recognised. Implies --no-system."))
@@ -913,12 +1012,24 @@ def doParseArgs():
                                     "the current system architecture, which is '%(default)s'."))
 
   # Options for the publish command
-  publish_parser.add_argument("package", metavar="PACKAGE",
-                              help="Name of the package to publish.")
+  publish_parser.add_argument("package", metavar="PACKAGE", nargs="?", default=None,
+                              help="Name of the package to publish. With --view, optional: names the "
+                                   "release's top package to pick its build_id when the build area "
+                                   "holds more than one.")
   publish_parser.add_argument("version", metavar="VERSION", nargs="?", default=None,
                               help="Version (and optional revision) to publish. Defaults to the latest build.")
+  publish_parser.add_argument("--view", dest="publishView", metavar="NAME", default=None,
+                              help="Instead of a package, publish the merged VIEW for a release to "
+                                   "<cvmfs-target>/Views/NAME-<build_id>/<arch>/. The build_id is read "
+                                   "from the packages' .meta.json, not given here.")
   publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=True, metavar="PATH",
-                              help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9).")
+                              help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9). With --view, the CVMFS root the Views/ tree lives under.")
+  publish_parser.add_argument("--module-target", dest="moduleTarget", metavar="PATH", default=None,
+                              help="CVMFS path of the separate modules tree. When given (prepub path), "
+                                   "the package's etc/modulefiles are tar'd and published as an "
+                                   "independent job here, since modulefiles live in a different tree "
+                                   "(module_dir) from the payload — so they are installed even with "
+                                   "--no-relocate.")
   # --spool is required for the legacy rsync-to-spool path; omit it when using --prepub-url.
   publish_parser.add_argument("--spool", dest="spool", default=None, metavar="[USER@HOST:]PATH",
                               help=("Ingestion spool root.  Either a local directory or a remote rsync "
@@ -1322,6 +1433,10 @@ def finaliseArgs(args, parser):
   if hasattr(args, "flavours"):
     args.flavours = _parse_flavours(args.flavours)
 
+  # --build-local: comma/space-separated → list (ADR-0001 relaxed-reuse opt-out).
+  if hasattr(args, "buildLocal"):
+    args.buildLocal = [p for p in (args.buildLocal or "").replace(",", " ").split() if p]
+
   # ── bits.rc / BITS_PROVIDERS ─────────────────────────────────────────────
   # Read persistent configuration from the first bits.rc / .bitsrc /
   # ~/.bitsrc found, then resolve ``bits_providers``.  Precedence:
@@ -1332,13 +1447,22 @@ def finaliseArgs(args, parser):
   # The resolved value is stored on ``args`` and also written back to the
   # environment so that child processes inherit it.
   _BITS_PROVIDERS_DEFAULT = "https://github.com/bitsorg/bits-providers"
+  # Legacy vs provider path is chosen by the front-end: the aliBuild
+  # compatibility wrapper (BITS_BRANDING=aliBuild) emulates classic aliBuild,
+  # whose recipes come from a local alidist checkout (`aliBuild init`) — NOT the
+  # bits-providers bootstrap. So under aliBuild the built-in providers default is
+  # off; native `bits` defaults to the provider path. An explicit BITS_PROVIDERS,
+  # --providers, or bits.rc `providers` still wins in either mode.
+  _alibuild_mode = os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild"
+  _providers_default = "" if _alibuild_mode else _BITS_PROVIDERS_DEFAULT
   _rc = _read_bits_rc()
   args.bits_providers = (
     os.environ.get("BITS_PROVIDERS")
     or _rc.get("providers")
-    or _BITS_PROVIDERS_DEFAULT
+    or _providers_default
   )
-  os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
+  if args.bits_providers:
+    os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
 
   # ── store_integrity ───────────────────────────────────────────────────────
   # The flag is off by default.  It can be activated either by the CLI flag

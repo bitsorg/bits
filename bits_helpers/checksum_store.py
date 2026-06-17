@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """External checksum store for bits packages.
 
 Each recipe repository can carry an optional ``checksums/`` subdirectory.

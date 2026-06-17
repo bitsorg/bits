@@ -336,6 +336,29 @@ export BITS_PROVIDERS=https://github.com/bitsorg/bits-providers@v2.0
 
 The `@tag` suffix is optional; when omitted, `main` is used.
 
+### Front-end choice: native `bits` (provider path) vs `aliBuild` (legacy path)
+
+Which path is used is chosen by the front-end:
+
+- **Native `bits`** uses the **provider path**: `bits_providers` defaults to the official `bitsorg/bits-providers` registry, so the always-on provider and the org-pointer bootstrap are active.
+- **The `aliBuild` wrapper** (it exports `BITS_BRANDING=aliBuild`) emulates **legacy aliBuild**: the providers default is *empty*, so no registry is loaded and recipes come from a local `alidist` checkout instead. `aliBuild init` clones `alisw/alidist`, `aliBuild build <PKG>` uses it directly, and the legacy build-time `init.sh` is kept (`BITS_LEGACY_INITDOTSH=1`, alidist-compatible hashes; `--legacy-initdotsh` selects it explicitly).
+
+An explicit `BITS_PROVIDERS` / `--providers` / `bits.rc providers` overrides the default in either mode.
+
+### Bootstrapping a recipe repository from the registry
+
+When native `bits` runs without a recipe directory, it bootstraps one through the registry: it follows the `<organisation>.bits.sh` (or `default.bits.sh`) pointer in `bits-providers` and clones the recipe repo it names. That pointer recipe's own `requires` are then seeded into provider discovery, so a base provider it depends on (e.g. `alice.bits` `requires: [alidist.bits]`) is loaded too — even though it is not a dependency of the package being built.
+
+To check out a recipe repository explicitly for development, name it on `bits init` (the `.bits` convention):
+
+```bash
+bits init alice.bits           # resolve alice.bits in the registry, clone it into ./alice.bits
+bits init -c alice.bits ROOT   # develop a package beside it (incl. one from a required provider repo)
+bits build -c alice.bits ROOT
+```
+
+`bits init -c <group> <pkg>` loads the provider chain and seeds it with the checked-out group's registry `requires`, so a package whose recipe lives in a required provider repository (e.g. `ROOT` in `alidist.bits`) is found and checked out side by side.
+
 ### Auto-synthesised `bits-providers` package
 
 When `BITS_PROVIDERS` is set (explicitly or via the built-in default), bits automatically synthesises and loads a virtual package named **`bits-providers`** equivalent to writing the following recipe by hand:
@@ -620,11 +643,17 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `--flavour NAME[=VALUE]` | Set a build-wide flavour variable (repeatable, comma-separated). `NAME`→`true`, `NAME=VALUE`→`VALUE`, `!NAME`→`false`. Gates `(?NAME)` conditional requires/sources/patches and is exported into the build environment; overrides a defaults `variables:` entry of the same name. See [Flavours](#flavours). |
 | `--reuse-cvmfs` | Reuse already-deployed components from the defaults `cvmfs_dir:` area: sets `--remote-store cvmfs://<cvmfs_dir>` when no store is given. See [CVMFS layout](#cvmfs-layout). |
+| `--reuse-policy {strict,relaxed}` | How CVMFS reuse is matched. `strict` (default): reuse only on an exact content-hash match; the result is publishable. `relaxed`: also graft deployed packages of a blessed release matched by (name, architecture, `build_id`), for fast local dev on top of e.g. an LCG release — only the top of the stack is built. Relaxed artifacts are *loose-provenance* and are refused by the publish path. Falls back to the defaults `reuse_policy:` value. See [Relaxed CVMFS reuse](#relaxed-cvmfs-reuse). |
+| `--reuse-base BUILD_ID` | With `--reuse-policy relaxed`, the `build_id` of the deployed release to graft from (the value `bits` records under `build_id` in each deployed package's `.meta.json`). Falls back to the defaults `reuse_base:` value. |
+| `--build-local PKG[,PKG…]` | Packages to always build locally even under `--reuse-policy relaxed` (e.g. one you need patched), instead of grafting them from the base. |
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [§9](#9-architecture-overview)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
 | `--no-auto-patch` | Do not apply recipe `patches:` automatically for any package in this build. The patch files are still staged in `$SOURCEDIR` and exported as `$PATCH0..$PATCH_COUNT`, but each recipe must apply its own patches (e.g. via the `bits_apply_patches` helper). Default: patches are auto-applied. A single recipe can opt out with `auto_patch: false` in its header; a defaults profile can opt out with `auto_patch: false`. See [Controlling patch application](#controlling-patch-application). |
 | `--builders N` | Packages to build simultaneously using the built-in Python scheduler. Default: 1 (serial). Mutually exclusive with `--makeflow`; if both are given, `--makeflow` takes precedence. With N>1, each build's `$JOBS` is divided across the builders (the CPU/load budget, see [Memory- and load-aware parallelism](#memory-aware-parallelism)) so the concurrent jobs together do not oversubscribe the machine. |
+| `--unleash-final` / `--no-unleash-final` | The final (top-level) package depends on every other package, so it is always scheduled last and builds **alone**. With unleashing on (the default for `--builders > 1`), it uses the full `-j` instead of the per-builder share, since nothing else is running; the `mem_per_job` cap still applies (now against the full free RAM). Pass `--no-unleash-final` to keep it on the per-builder share. Falls back to `build_unleash_final:` under the defaults `system:` block when unset. No effect for `--builders 1`. |
+| `--legacy-initdotsh` / `--initdotsh-from-modules` | How each build's **dependency environment** is set up. The default (`--initdotsh-from-modules`) derives it from the dependencies' modulefiles — the single source of truth for runtime *and* development — so recipes need not hand-reconstruct `PYTHONPATH`/include dirs. `--legacy-initdotsh` uses the legacy build-time `init.sh` instead. **HASHED**: the default folds `BITS_INITDOTSH_FROM_MODULES` into every package hash (a distinct, reproducible identity); legacy folds in nothing, so its hashes are byte-identical to the pre-modules default and bits can still reuse **alidist** tarballs. Legacy is also selectable with `BITS_LEGACY_INITDOTSH=1` in the environment — the aliBuild compatibility wrapper sets it. |
+| `--critical-path-schedule` / `--no-critical-path-schedule` | Order ready `--builders` jobs by their **critical-path weight** — the longest path, weighted by recorded build times, from each job to the final target — so the build's long pole starts as early as its dependencies allow (Ninja-style scheduling). Weights come from a previous run's `bits_build_stats.json`; with no history the weight reduces to graph depth. **On by default**; `--no-critical-path-schedule` falls back to registration-order dispatch. Falls back to `build_critical_path_schedule:` under the defaults `system:` block when unset. Affects dispatch order only — never what is built or any hash. |
 | `--build-nice` / `--no-build-nice` | Stagger the concurrent `--builders` jobs across OS scheduling priority so CPU contention degrades gracefully: at any moment one build runs at top priority (full speed) and the others are progressively backed off, with the freed top slot taken over as builds finish. Native builds are wrapped in `nice -n N`; `--docker`/podman builds get `docker run --cpu-shares=W` (each builder is a separate container/cgroup, so the host ranks the build *containers* by cgroup CPU weight). Memory is still capped separately via `mem_per_job`. **On by default** for `--builders > 1`; pass `--no-build-nice` to disable. |
 | `--build-nice-step N` | Nice increment between concurrent build slots when `--build-nice` is set: slot *k* → nice `min(k×N, 19)`. `N=1` gives a gentle `0,1,2,3` ladder; larger values separate the slots more aggressively. Default: 5. |
 | `--build-nice-boost-after SECONDS` | With `--build-nice`, a watchdog boosts a long-running straggler compile — one at a time — so a single heavy Fortran/C++ translation unit does not drag out the end of the build. Native builds: the longest-running niced-down build subtree is reniced toward 0 (requires privilege — root / `CAP_SYS_NICE` — and is a logged no-op otherwise). `--docker`/podman builds: each build runs in a named container (`bits-build-<pkg>-<id>`); the watchdog peeks inside with `docker exec … ps`, finds a compiler back-end (cc1plus/f951/…) that has been running longer than this, and renices it with `docker exec --user 0 … renice` (run as root inside the container, so it can raise priority). **Requires `ps` (the `procps` package) in the build image** — see note below. `0` disables. Default: 600. |
@@ -895,9 +924,11 @@ bits verify --from-manifest FILE [options]
 ### bits stats
 
 Summarise the resource data recorded when a build ran with `--resource-monitoring`
-(on by default for `--builders > 1`). Reads `<work-dir>/bits_build_stats.json`
-(per-package peaks) and the per-package traces under `SPECS/` (for average CPU
-and thread counts).
+(on by default for `--builders > 1`). Reads `<work-dir>/LOGS/<arch>/bits_build_stats.json`
+(per-package peaks; written per-architecture so concurrent builds of different
+platforms in one work area don't clobber each other) and the per-package traces
+under `SPECS/` (for average CPU and thread counts). When the architecture isn't
+specified, `bits stats` reads the most recent `LOGS/*/bits_build_stats.json`.
 
 **CPU-utilisation tuning hint.** At the end of a `--builders` run, bits estimates
 the whole-run CPU utilisation (useful core-seconds ÷ cores × wall-clock) and the
@@ -1418,6 +1449,35 @@ variables:
 A truthy value is anything except empty, `0`, `false`, `off`, or `no`. A
 `--flavour` of the same name overrides a defaults `variables:` value.
 
+##### `variables` vs `env` vs `flavours` — quick comparison
+
+These three are easy to confuse. `variables:` is **text templating only** (Python
+`%(NAME)s`, never a shell variable); `env:` is a **shell variable only** (`$NAME`,
+never `%(NAME)s`); a `flavour` is a CLI knob that feeds **both** at once. All keep
+the name **verbatim** — none of them upper-cases it.
+
+| | `variables:` | `env:` | `flavours` (`--flavour`) |
+|---|---|---|---|
+| Defined in | defaults / recipe `variables:` | defaults `env:` | CLI (repeatable) |
+| Surface in recipe | `%(NAME)s` (text) | `$NAME` (shell) | both `%(NAME)s` **and** `$NAME` |
+| Gates `(?NAME)` requires/sources/patches | yes | no | yes |
+| Exported into build shell | no | yes (via `defaults-release`) | yes |
+| In the package hash | only when the expanded text lands in a hashed field (`version`/`source`/`patches`, or the body when expansion is opted in) | yes — folded through the `defaults-release` `env` dict | yes (both paths) |
+| When evaluated | build-time text substitution, **before** hashing | exported into the shell before the recipe body runs | both |
+| Name case | verbatim | verbatim | verbatim |
+
+To use one name as *both* `%(NAME)s` and `$NAME`, pass it as a `--flavour`, or
+define it in **both** `variables:` and `env:`.
+
+> **Auto-uppercased shell variables are a separate, per-package mechanism.** For
+> every dependency, bits exports `<PKG>_ROOT`, `<PKG>_VERSION`, `<PKG>_REVISION`,
+> `<PKG>_HASH`, and `<PKG>_COMMIT`, where `<PKG>` is the package name run through
+> `pkg_to_shell_id()` (non-alphanumerics → `_`, then upper-cased): `boost` →
+> `$BOOST_ROOT`, `common.bits` → `$COMMON_BITS_ROOT`, `o2.framework` →
+> `$O2_FRAMEWORK_ROOT`. The same transform backs `%(root_dir)s` (→ `${<PKG>_ROOT}`).
+> This is keyed off the **package name**, not off any `variables`/`env`/`flavour`
+> entry — those keep whatever case you write.
+
 #### Dependencies
 
 | Field | Description |
@@ -1425,6 +1485,7 @@ A truthy value is anything except empty, `0`, `false`, `off`, or `no`. A
 | `requires` | Runtime + build-time dependencies. |
 | `build_requires` | Build-time-only dependencies (e.g. `cmake`, `ninja`). |
 | `runtime_requires` | Runtime-only dependencies. |
+| `untracked_requires` | Runtime-linked dependencies **excluded from this package's identity hash**. Editing one does **not** invalidate or rebuild this package or anything above it — only the dependency itself rebuilds (it is hashed normally). For iterating on a dependency you control without paying a full-stack rebuild. **You are responsible for ABI compatibility**: a reused consumer links the new dependency without recompiling, so an interface-breaking change can produce a broken build. Any build whose closure includes one is recorded `provenance: loose` in `.meta.json` (discoverable; still publishable). The dependency must keep a **stable install label** — set `force_revision:` on it — so its `<pkg>/<version-revision>` path does not move when it changes, or already-built consumers keep linking the previous build (bits warns if it lacks one). |
 
 Each entry in `requires` / `build_requires` is a string in one of these forms:
 
@@ -1472,6 +1533,8 @@ The bits-providers repository URL itself accepts an `@<tag>` suffix (`BITS_PROVI
 - **Memory (packages that set `mem_per_job`).** The available memory is split across the concurrent builders and divided by the per-job footprint.
 
 The result is `min(requested, requested ÷ builders, floor((available ÷ builders) × utilisation ÷ mem_per_job))`, floored at 1. With `--builders 1` the CPU cap is a no-op and behaviour is unchanged.
+
+The **final (top-level) package** is exempt from the `÷ builders` CPU split: it depends on every other package, so it builds alone once they finish, and dividing its `-j` would needlessly starve the largest compile of the run. It is computed as if `builders = 1` — i.e. the full `-j`, bounded only by the (now full-RAM) `mem_per_job` cap. Controlled by [`--unleash-final` / `--no-unleash-final`](#) and `build_unleash_final:` (default on for `--builders > 1`). `$JOBS` never enters a package hash, so this is wall-time-only build-host policy.
 
 | Field | Description |
 |-------|-------------|
@@ -2313,6 +2376,16 @@ When either `--remote-store` or `--write-store` is given, bits automatically set
 | `cvmfs://REPO/PATH` | CernVM File System | ✓ | — | None (read-only filesystem) |
 | `rsync://HOST/PATH` or `/local/path` | rsync | ✓ | ✓ | SSH keys (`~/.ssh/`) or filesystem permissions |
 
+#### Mixing a read-only remote with a separate write store
+
+A read-only `--remote-store` (`cvmfs://` or `http(s)://`) can be paired with a writable `--write-store` of a different backend, e.g. recall pre-built packages from a CVMFS release and upload newly-built ones to S3:
+
+```bash
+bits build ... --remote-store cvmfs:///cvmfs/.../bits/ --write-store b3://mybucket
+```
+
+Reads (recall) go to the remote store; uploads go to the write store. **Only freshly-built packages are uploaded** — packages recalled from the read-only store keep their original provenance and are not re-published (a CVMFS-recalled package has only a synthetic tarball of symlinks into `/cvmfs`, so uploading it would publish a stub). This is *strict* reuse only; `--reuse-policy relaxed` (loose provenance) remains barred from any write store.
+
 #### HTTP / HTTPS
 
 The HTTP backend is the simplest and most portable. It is read-only: bits fetches tarballs with automatic exponential-backoff retries (up to four attempts) but cannot upload. Use it for public artifact mirrors or CI read caches:
@@ -2590,6 +2663,44 @@ Steps to investigate:
    rm $WORK_DIR/STORE_CHECKSUMS/TARS/<arch>/store/<h2>/<hash>/<tarball>.sha256
    ```
    The next build run will re-record the current digest and warn instead of aborting.
+
+### Relaxed CVMFS reuse
+
+Strict reuse (the default) only reuses a deployed package when bits recomputes
+the **exact same content hash** — which guarantees reproducibility and keeps the
+result publishable, but means that to build one package on top of a blessed
+release (e.g. an LCG release on `/cvmfs`) you must reproduce every hashed input
+of the whole stack. **Relaxed reuse** trades that for speed in local
+development: it grafts deployed packages matched by **(name, architecture,
+`build_id`)** instead of by hash, so only the top of the stack is built and
+everything below it is symlinked from `/cvmfs`.
+
+`build_id` is the per-release coherence token bits records in each package's
+`.meta.json` (and which is identical for every package built together). Matching
+on it — together with the *combined* architecture string, which already encodes
+OS, compiler and build type — means the grafted set is ABI-consistent by
+construction, without re-verifying the dependency closure.
+
+```bash
+bits build --reuse-policy relaxed \
+           --reuse-base LCG_109-<digest> \
+           --remote-store cvmfs:///cvmfs/sft.cern.ch/lcg/releases \
+           --defaults dev4 key4hep
+```
+
+Grafted dependencies are logged as **Unpacking** (no recompilation); only the
+requested top package is **Compiling**. Use `--build-local PKG[,PKG…]` to force
+specific packages to build locally anyway (e.g. one you need patched).
+
+**Provenance.** Any package built on top of a relaxed graft is *loose* — its
+closure includes binaries adopted by name/`build_id` rather than verified hash,
+so its own hash no longer certifies reproducible inputs. bits records
+`provenance: loose` in such a package's `.meta.json`, and the **publish path
+refuses loose artifacts** (`--reuse-policy relaxed` with `--write-store` or
+`--pipeline` is rejected). Relaxed reuse is therefore strictly a dev/iteration
+accelerator; production builds use `strict`. The matcher requires a `cvmfs://`
+`--remote-store` and a `--reuse-base`; without either, relaxed reuse warns and
+falls back to a normal build.
 
 ---
 

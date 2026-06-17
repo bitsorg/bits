@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """upload_cmd.py -- upload a built package's tarball and symlinks to S3 (boto3).
 
 This is a thin CLI wrapper around Boto3RemoteSync.upload_symlinks_and_tarball()

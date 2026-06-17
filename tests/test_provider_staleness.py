@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Tests for the provider-repository staleness check.
 
 Verifies that clone_or_update_provider() always refreshes the upstream

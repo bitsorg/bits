@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 from os.path import abspath, exists, basename, dirname, join, realpath
 from os import makedirs, unlink, readlink, rmdir
 from pathlib import Path
@@ -321,6 +324,24 @@ def storeHashes(package, specs, considerRelocation):
     # subsequent calculations.
     return
 
+  # Relaxed CVMFS graft (ADR-0001): a grafted package adopts the *deployed*
+  # artifact's hash. The existing reuse path (CVMFSRemoteSync.fetch_symlinks +
+  # the reuse decision) then materialises and symlinks the deployed tree under
+  # that hash instead of building, and consumers hash against the real deployed
+  # dependency — so no separate build-skip branch is needed. Only triggers when
+  # the resolver tagged the spec from_cvmfs (relaxed mode); never in strict.
+  if spec.get("from_cvmfs") and spec.get("cvmfs_hash"):
+    _h = spec["cvmfs_hash"]
+    spec["remote_revision_hash"] = _h
+    spec["local_revision_hash"] = _h
+    spec["remote_hashes"] = [_h]
+    spec["local_hashes"] = [_h]
+    spec["hash"] = _h
+    # The grafted package has no followed dependencies; set deps_hash too (the
+    # normal path always sets it, and DEPS_HASH is read via spec.get downstream).
+    spec.setdefault("deps_hash", "")
+    return
+
   # For now, all the hashers share data -- they'll be split below.
   h_all = Hasher()
 
@@ -445,11 +466,24 @@ def storeHashes(package, specs, considerRelocation):
     for hook_name in sorted(spec.get("hook_params", {})):
       h_all("hook_params:" + hook_name + "=" + str(spec["hook_params"][hook_name]))
 
+  # untracked_requires: dependencies the user controls and links at runtime but
+  # has chosen NOT to fold into this package's identity hash, so that editing one
+  # does not invalidate (rebuild) this package or anything above it. (Empty for
+  # ordinary recipes, so their hashes are byte-identical to before.)
+  untracked = set(spec.get("untracked_requires", ()))
   dh = Hasher()
   for dep in spec.get("requires", []):
     # At this point, our dependencies have a single hash, local or remote, in
     # specs[dep]["hash"].
     hash_and_devel_hash = specs[dep]["hash"] + specs[dep].get("devel_hash", "")
+    if dep in untracked:
+      # Excluded from the identity hash entirely (not even the base hash), so a
+      # change to this dependency leaves the consumer's hash — and therefore the
+      # hashes of everything above it — unchanged. It is still fed into deps_hash
+      # below, so a *development* build of this package picks the new dependency
+      # up via an incremental rebuild.
+      dh(hash_and_devel_hash)
+      continue
     # If this package is a dev package, and it depends on another dev pkg, then
     # this package's hash shouldn't change if the other dev package was
     # changed, so that we can just rebuild this one incrementally.
@@ -572,11 +606,19 @@ def _pkg_install_path(workDir, architecture, spec):
   return join(workDir, architecture, spec["package"], ver_rev(spec))
 
 
-def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False):
+def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False,
+                       from_modules=False):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
   If post_build is true, also generate variables pointing to the package
   itself; else, only generate variables pointing at it dependencies.
+
+  If from_modules is true (the --initdotsh-from-modules build mode), the
+  post_build self-environment additionally exposes the development/build
+  variables the runtime modulefile carries but the legacy init.sh omits
+  (<PKG>_INCLUDE_DIR, Python site-packages on PYTHONPATH), generated from the
+  package root and guarded on existence. Off by default, so the generated text
+  is byte-identical to before when the mode is not active.
   """
   spec = specs[package]
   # Allow users to override BITS_ARCH_PREFIX if they manually source
@@ -718,6 +760,31 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
                  for key, value in prepend_path.items()
                  for dir in value)
 
+    if from_modules:
+      # --initdotsh-from-modules: also expose the development/build environment
+      # the runtime modulefile provides but the legacy init.sh omits — the
+      # package's own headers (<PKG>_INCLUDE_DIR) and Python site-packages on
+      # PYTHONPATH. Each package sets only its own; a consumer that sources the
+      # dependency chain therefore accumulates the whole closure, matching what
+      # loading the modulefile chain would yield. Everything is generated from
+      # the package root bits already knows and guarded on directory existence,
+      # so it is a no-op for packages that ship no headers / Python modules.
+      # CMAKE_PREFIX_PATH is set as the ':'-separated environment variable, which
+      # CMake's find_package() reads natively on Unix (in addition to any
+      # ';'-separated -D cache value). So CMakeRecipe's reconstruction is gated
+      # off under this mode (it would otherwise overwrite this with a ';'-list).
+      root = "${%s_ROOT}" % bigpackage
+      lines.append('[ ! -d "%s/include" ] || export %s_INCLUDE_DIR="%s/include"'
+                   % (root, bigpackage, root))
+      lines.append('[ ! -d "%s" ] || export '
+                   'CMAKE_PREFIX_PATH="%s${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"'
+                   % (root, root))
+      lines.append(
+        'for _bits_sp in "%s"/lib/python*/site-packages '
+        '"%s"/lib/python/site-packages; do [ -d "$_bits_sp" ] && export '
+        'PYTHONPATH="$_bits_sp${PYTHONPATH:+:$PYTHONPATH}"; done; unset _bits_sp'
+        % (root, root))
+
   # Return string without a trailing newline, since we expect call sites to
   # append that (and the obvious way to inesrt it into the build template is by
   # putting the "%(initdotsh_*)s" on its own line, which has the same effect).
@@ -740,6 +807,40 @@ def create_provenance_info(package, specs, args):
   def dependency_list(key):
     return [spec_info(specs[dep]) for dep in specs[package].get(key, ())]
 
+  # ADR-0001 additive provenance: build_id / abi_tag / reuse_policy + a repro
+  # block. Never enters the package hash and never alters behaviour (the simple
+  # aliBuild case is unaffected); all reads are defensive so a minimal build
+  # still produces a record. Stage 0: reuse_policy is always "strict" and
+  # provenance "pure" (relaxed reuse, which sets "loose", lands in a later stage).
+  from bits_helpers.provenance import (
+    compute_build_id, compute_abi_tag, recipe_tools_ref,
+  )
+  # Contagious provenance (ADR-0001): a locally-built package is "loose" when its
+  # dependency closure contains a package grafted from CVMFS (adopted by
+  # name/build_id, not verified hash). Grafted packages are not built, so this
+  # function only ever runs for local builds.
+  def _closure_grafted():
+    for _key in ("full_build_requires", "full_runtime_requires"):
+      for _dep in specs[package].get(_key, ()):
+        _ds = specs.get(_dep)
+        if isinstance(_ds, dict) and _ds.get("from_cvmfs"):
+          return True
+    return False
+  # A build is also loose if its closure decoupled a dependency via
+  # untracked_requires: this package, or one below it, was hashed as if that
+  # dependency never changed, so its identity no longer certifies its full input
+  # closure. Contagious upward like grafted provenance.
+  def _closure_untracked():
+    if specs[package].get("untracked_requires"):
+      return True
+    for _key in ("full_build_requires", "full_runtime_requires"):
+      for _dep in specs[package].get(_key, ()):
+        _ds = specs.get(_dep)
+        if isinstance(_ds, dict) and _ds.get("untracked_requires"):
+          return True
+    return False
+  _untracked = list(specs[package].get("untracked_requires", ()))
+  _provenance = "loose" if (_closure_grafted() or _closure_untracked()) else "pure"
   return json.dumps({
     "comment": args.annotate.get(package),
     "bits_version": __version__,
@@ -748,6 +849,21 @@ def create_provenance_info(package, specs, args):
     },
     "architecture": args.architecture,
     "defaults": args.defaults,
+    "build_id": compute_build_id(specs, args),
+    "abi_tag": compute_abi_tag(args),
+    # The resolved CVMFS layout (install/module/views dirs), so publish and the
+    # view client read the three tree paths from here, not by reloading defaults.
+    # None when the profile declares no layout (additive; never hashed).
+    "cvmfs_layout": getattr(args, "cvmfsLayout", None),
+    "reuse_policy": getattr(args, "reusePolicy", "strict") or "strict",
+    "provenance": _provenance,
+    # Dependencies this package linked but excluded from its identity hash.
+    "untracked_requires": _untracked,
+    "repro": {
+      "dist_commit": os.environ.get("BITS_DIST_HASH"),
+      "recipe_tools": recipe_tools_ref(specs),
+      "defaults": args.defaults,
+    },
     "package": spec_info(specs[package]),
     "dependencies": {
       "direct": {
@@ -823,17 +939,21 @@ def _extract_error_excerpt(log_path, max_match=15, tail=12, scan_limit=20000):
   return "\n".join(out)
 
 
-def write_failure_summary(work_dir, scheduler):
+def write_failure_summary(work_dir, scheduler, arch):
   """Write a concise per-run failure summary for a --builders build.
+
+  Logs are written under ``<work_dir>/LOGS/<arch>/`` so that concurrent builds
+  of *different* platforms sharing one work area do not clobber each other.
 
   The full per-package error messages collected by the scheduler are verbose
   (log paths, environment, next-steps, ...), so a whole-stack failure produces
-  an unreadable wall of text.  This distils, into ``<work_dir>/build-summary.log``:
+  an unreadable wall of text.  This distils, into
+  ``<work_dir>/LOGS/<arch>/build-summary.log``:
     * each package that *directly* failed to build, with its log path and the
       proximate error excerpt (the matched error lines);
     * the count of packages skipped only because a dependency failed.
   Also writes the full, verbose per-action errors to
-  ``<work_dir>/build-errors-full.log`` so there is a single combined log to
+  ``<work_dir>/LOGS/<arch>/build-errors-full.log`` so there is a single combined log to
   consult (the concise summary points at the individual per-package logs).
 
   Returns ``(summary_path, full_path)`` (either element may be None), or
@@ -851,7 +971,18 @@ def write_failure_summary(work_dir, scheduler):
   if not fails and not cascaded:
     return (None, None)
   _ansi = re.compile(r"\033\[[0-9;]*m")
-  full_path = os.path.join(work_dir, "build-errors-full.log")
+  # Per-architecture log directory: one shared work area may be used to build
+  # different effective platforms, and these run-level logs are not otherwise
+  # arch-scoped, so write them under LOGS/<arch>/ to avoid cross-platform
+  # clobbering. Fall back to the work-dir root if the directory can't be made.
+  log_dir = os.path.join(work_dir, "LOGS", arch or "")
+  try:
+    os.makedirs(log_dir, exist_ok=True)
+  except OSError as exc:
+    warning("Could not create log dir %s (%s); writing logs to %s instead",
+            log_dir, exc, work_dir)
+    log_dir = work_dir
+  full_path = os.path.join(log_dir, "build-errors-full.log")
   try:
     with open(full_path, "w") as fh:
       for action, msg in errors.items():
@@ -859,7 +990,7 @@ def write_failure_summary(work_dir, scheduler):
   except OSError as exc:
     warning("Could not write full error log %s: %s", full_path, exc)
     full_path = None
-  path = os.path.join(work_dir, "build-summary.log")
+  path = os.path.join(log_dir, "build-summary.log")
   try:
     with open(path, "w") as fh:
       fh.write("BUILD FAILURE SUMMARY\n=====================\n\n")
@@ -1206,6 +1337,21 @@ def doFinalSync(spec, specs, args, syncHelper):
       from bits_helpers.store_integrity import record_tarball_checksum
       record_tarball_checksum(spec, args.workDir, args.architecture)
 
+  # --aggressive-cleanup + a write store: the build script kept the tarball (it
+  # would otherwise have skipped it) only so it could be uploaded above. Now that
+  # the upload is done, reclaim the space — mirroring the in-build CAN_DELETE
+  # behaviour for the no-write-store case. Safe if it was never created.
+  if getattr(args, "aggressiveCleanup", False) and getattr(syncHelper, "writeStore", ""):
+    from bits_helpers.utilities import resolve_store_path, effective_arch, ver_rev
+    _arch = effective_arch(spec, args.architecture)
+    _tar = os.path.join(args.workDir, resolve_store_path(_arch, spec["hash"]),
+                        "{}-{}.{}.tar.gz".format(spec["package"], ver_rev(spec), _arch))
+    try:
+      os.remove(_tar)
+    except OSError as err:
+      # Best-effort cleanup: inability to remove this tarball must not fail the build.
+      debug("Skipping aggressive cleanup for %s: %s", _tar, err)
+
   # ── Manifest recording ─────────────────────────────────────────────────────
   # Record the completed package in the incremental build manifest so that a
   # partial build still yields a useful record.  The outcome is:
@@ -1465,7 +1611,30 @@ def doBuild(args, parser):
       meta.setdefault("env", _OD())
       for _k, _v in flavours.items():
         meta["env"][_k] = _v
+    # init.sh-from-modules (the default) publishes a build-mode marker through the
+    # defaults-release env. Routing it here is deliberate: the defaults env is
+    # (a) folded into every package's hash, so the mode yields a distinct,
+    # reproducible identity rather than silently colliding with legacy artifacts,
+    # and (b) exported into the build environment before each recipe is sourced, so
+    # bits_pythonpath_from_deps / CMakeRecipe can gate their now-redundant
+    # reconstruction on it. In legacy mode (--legacy-initdotsh) nothing is added,
+    # so its hashes are byte-identical to the pre-modules default (alidist tarballs
+    # stay reusable).
+    if getattr(args, "initdotshFromModules", False):
+      from collections import OrderedDict as _OD
+      meta.setdefault("env", _OD())
+      meta["env"]["BITS_INITDOTSH_FROM_MODULES"] = "1"
     return meta, body
+  # Deriving the dependency env from the dependencies' modulefiles is the default.
+  # --legacy-initdotsh (CLI) or BITS_LEGACY_INITDOTSH=1 (the environment — the
+  # aliBuild wrapper sets it) selects the legacy build-time init.sh, which injects
+  # nothing above and so hashes byte-identically to the pre-modules default (bits
+  # can still reuse alidist tarballs). Resolved here, before parseDefaults runs the
+  # reader closure above that reads args.initdotshFromModules.
+  if getattr(args, "initdotshFromModules", None) is None:
+    _legacy_env = os.environ.get("BITS_LEGACY_INITDOTSH", "").strip().lower() in (
+      "1", "true", "yes", "on")
+    args.initdotshFromModules = not _legacy_env
   (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
                                         defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)
@@ -1491,8 +1660,14 @@ def doBuild(args, parser):
   #   * reuse deployed -> --remote-store = cvmfs://<cvmfs_dir>  (with --reuse-cvmfs)
   from bits_helpers.cvmfs_layout import resolve_cvmfs_layout
   _cvmfs = resolve_cvmfs_layout(defaultsMeta, args.architecture)
+  # Stash the resolved layout so create_provenance_info can record it in each
+  # package's .meta.json — that way publish (targets) and the view client
+  # (views_dir) read the three tree paths from the package metadata without
+  # re-loading the defaults profile.
+  args.cvmfsLayout = _cvmfs
   if _cvmfs:
-    info("CVMFS layout: install=%s  modules=%s", _cvmfs["install_path"], _cvmfs["module_path"])
+    info("CVMFS layout: install=%s  modules=%s  views=%s",
+         _cvmfs["install_path"], _cvmfs["module_path"], _cvmfs["views_path"])
     if args.docker and not getattr(args, "cvmfsPrefix", None) and _cvmfs["cvmfs_dir"]:
       args.cvmfsPrefix = _cvmfs["install_path"]
       info("Defaulting --cvmfs-prefix to %s (from defaults CVMFS layout)", args.cvmfsPrefix)
@@ -1530,6 +1705,43 @@ def doBuild(args, parser):
       args.oversubscribe = float(_system_opt("build_oversubscribe", 1.0))
     except (TypeError, ValueError):
       args.oversubscribe = 1.0
+
+  # The final target builds alone (every other package is one of its
+  # already-finished dependencies), so the per-builder -j split needlessly
+  # starves the largest compile of the run. Let it use the full -j; the memory
+  # cap (mem_per_job) still applies. Non-hashed build-host policy like the knobs
+  # above — JOBS never feeds a package hash, so this changes wall time only.
+  # Precedence: --unleash-final/--no-unleash-final > system.build_unleash_final > on.
+  if getattr(args, "unleashFinal", None) is None:
+    _uf = _system_opt("build_unleash_final", True)
+    args.unleashFinal = _uf if isinstance(_uf, bool) \
+        else str(_uf).strip().lower() in ("1", "true", "yes", "on")
+
+  # Critical-path scheduling order for --builders (non-hashed; affects dispatch
+  # order only, never build output). Precedence: explicit flag >
+  # system.build_critical_path_schedule > on.
+  if getattr(args, "criticalPathSchedule", None) is None:
+    _cp = _system_opt("build_critical_path_schedule", True)
+    args.criticalPathSchedule = _cp if isinstance(_cp, bool) \
+        else str(_cp).strip().lower() in ("1", "true", "yes", "on")
+
+  # Relaxed CVMFS reuse policy (ADR-0001). Non-hashed build-host policy, like
+  # the two above. Precedence: explicit --reuse-policy/--reuse-base  >  defaults
+  # system.reuse_policy / reuse_base  >  strict / none. Default strict keeps the
+  # simple aliBuild case bit-for-bit unchanged.
+  if getattr(args, "reusePolicy", None) is None:
+    args.reusePolicy = str(_system_opt("reuse_policy", "strict")).strip().lower()
+  if args.reusePolicy not in ("strict", "relaxed"):
+    args.reusePolicy = "strict"
+  if getattr(args, "reuseBase", None) is None:
+    args.reuseBase = _system_opt("reuse_base", "") or ""
+  # Publish guard: relaxed builds are loose-provenance (their closure includes
+  # unverified deployed binaries) and must never reach a write store / publish
+  # pipeline. Refuse early and clearly.
+  if args.reusePolicy == "relaxed" and (getattr(args, "writeStore", "") or getattr(args, "pipeline", False)):
+    dieOnError(True,
+               "--reuse-policy relaxed produces loose-provenance artifacts that cannot be "
+               "published. Drop --write-store/--pipeline, or rebuild with --reuse-policy strict.")
 
   # syncHelper is constructed after defaults loading so that it receives the
   # (potentially combined) architecture string.
@@ -1600,9 +1812,15 @@ def doBuild(args, parser):
   # conservative (pre-loading a provider on every architecture) is safe and
   # avoids a chicken-and-egg where the provider's own recipes would be needed
   # to evaluate the architecture condition.
+  # Also seed with the bootstrap org-pointer recipe's own requires (e.g.
+  # alice.bits.sh ``requires: [alidist.bits]``): the recipe repo we just
+  # bootstrapped depends on those sibling provider repos for its base recipes,
+  # but they are not build-graph dependencies of the requested target, so the
+  # walk would otherwise never reach them.
   defaults_provider_seed = (
     list(defaultsMeta.get("requires", []))
     + list(defaultsMeta.get("build_requires", []))
+    + list(getattr(args, "_bootstrap_provider_requires", []) or [])
   )
 
   provider_dirs = fetch_repo_providers_iteratively(
@@ -1642,6 +1860,31 @@ def doBuild(args, parser):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
         return getstatusoutput_docker(cmd, cwd=temp_dir)
 
+    # Relaxed CVMFS graft callback (ADR-0001). Active only under --reuse-policy
+    # relaxed with a cvmfs:// remote store and a --reuse-base build_id; None in
+    # every other case → strict behaviour, no graft (simple aliBuild path
+    # unaffected). Uses the combined architecture (args.architecture) — the arch
+    # recorded in the deployed packages' .meta.json — not raw_architecture.
+    _cvmfs_match = None
+    if getattr(args, "reusePolicy", "strict") == "relaxed":
+      _base = getattr(args, "reuseBase", "") or ""
+      _store = args.remoteStore or ""
+      if not _base:
+        warning("--reuse-policy relaxed needs --reuse-base <build_id> (or defaults "
+                "reuse_base:); no packages will be grafted.")
+      elif not _store.startswith("cvmfs://"):
+        warning("--reuse-policy relaxed needs a cvmfs:// --remote-store "
+                "(or --reuse-cvmfs); no packages will be grafted.")
+      else:
+        from bits_helpers.cvmfs_reuse import graftable_match
+        _store_root = re.sub("^cvmfs://", "", _store)
+        _build_local = set(getattr(args, "buildLocal", []) or [])
+        def _cvmfs_match(spec, _root=_store_root, _bid=_base,
+                         _arch=args.architecture, _bl=_build_local):
+          if spec["package"] in _bl:
+            return None
+          return graftable_match(spec["package"], _arch, _bid, _root)
+
     systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = packages,
                      specs                   = specs,
@@ -1659,7 +1902,8 @@ def doBuild(args, parser):
                      taps                    = taps,
                      log                     = debug,
                      provider_dirs          = provider_dirs,
-                     defaults_meta           = defaultsMeta)
+                     defaults_meta           = defaultsMeta,
+                     performCvmfsMatch       = _cvmfs_match)
 
   dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
              "Specified default `%s' is not compatible with the packages you want to build.\n"
@@ -1714,9 +1958,17 @@ def doBuild(args, parser):
       builtPackages = buildOrder[:-1]
     else:
       builtPackages = buildOrder
+    # Expand %(version)s etc. in the tag for this display only. Per-spec tag
+    # resolution (resolve_tag, further below) hasn't run yet here, so a templated
+    # tag like "v%(version)s" would otherwise print raw. strict=False makes it
+    # best-effort: unknown placeholders are left as-is and it never aborts.
+    def _display_ref(pkg):
+      spec = specs[pkg]
+      return resolve_spec_data(spec, str(spec.get("tag", spec.get("version", "?"))),
+                               args.defaults, strict=False)
     if len(builtPackages) > 1:
       banner("Packages will be built in the following order:\n - %s",
-             "\n - ".join(x+" (development package)" if x in develPkgs else "{}@{}".format(x, specs[x]["tag"])
+             "\n - ".join(x+" (development package)" if x in develPkgs else "{}@{}".format(x, _display_ref(x))
                           for x in builtPackages if x != "defaults-release"))
     else:
       banner("No dependencies of package %s to build.", buildOrder[-1])
@@ -1731,6 +1983,28 @@ def doBuild(args, parser):
            "  git pull --rebase\n",
            ", ".join(develPkgs),
            os.getcwd())
+
+  # Packages pulled in by some recipe via `untracked_requires`: linked at runtime
+  # but excluded from their consumers' identity hash, so editing one does not
+  # rebuild the stack above it. List them like development packages, and warn if a
+  # target has no stable install label — a reused consumer references it by
+  # <pkg>/<version-revision>, so that path must not move when the package changes.
+  untrackedTargets = sorted({d for s in specs.values()
+                             for d in s.get("untracked_requires", ()) if d in specs})
+  if untrackedTargets:
+    banner("Untracked dependencies (%s).\n"
+           "These are linked at runtime but excluded from the identity hash of the\n"
+           "packages that require them, so editing one does NOT rebuild the packages\n"
+           "above it. Builds whose closure includes one are marked loose-provenance\n"
+           "in .meta.json. You are responsible for keeping them ABI-compatible.",
+           ", ".join(untrackedTargets))
+    for t in untrackedTargets:
+      if "force_revision" not in specs[t]:
+        warning("Untracked dependency %s has no stable install label "
+                "(force_revision): its install path moves when it changes, so "
+                "already-built consumers keep linking the previous build. Set "
+                "`force_revision:` on %s to keep <%s>/<version-revision> stable.",
+                t, t, t)
 
   for pkg, spec in specs.items():
     spec["is_devel_pkg"] = pkg in develPkgs
@@ -1973,7 +2247,7 @@ def doBuild(args, parser):
     if getattr(args, "autoResources", False):
       if not args.resources:
         from bits_helpers.build_stats import autoload_stats_path
-        _auto_stats = autoload_stats_path(workDir)
+        _auto_stats = autoload_stats_path(workDir, args.architecture)
         if _auto_stats:
           args.resources = _auto_stats
           info("Auto-loaded build resource stats from a previous run: %s", _auto_stats)
@@ -1986,7 +2260,8 @@ def doBuild(args, parser):
           debug("psutil unavailable; resource monitoring stays off")
 
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
-                          parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)))
+                          parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)),
+                          criticalPath=getattr(args, "criticalPathSchedule", True))
 
     # Collect concise per-package failures during the run so we can write a
     # readable summary at the end (write_failure_summary), instead of leaving the
@@ -2525,8 +2800,10 @@ def doBuild(args, parser):
     )
     writeAll("%s/build.sh" % scriptDir, cmd_raw % {
       "provenance": create_provenance_info(spec["package"], specs, args),
-      "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False),
-      "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True),
+      "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False,
+                                           from_modules=getattr(args, "initdotshFromModules", False)),
+      "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True,
+                                           from_modules=getattr(args, "initdotshFromModules", False)),
       "develPrefix": develPrefix,
       "workDir": workDir,
       "configDir": abspath(args.configDir),
@@ -2546,6 +2823,11 @@ def doBuild(args, parser):
       ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
       ("CACHED_TARBALL", cachedTarball),
       ("CAN_DELETE", args.aggressiveCleanup and "1" or ""),
+      # Whether a write store will need this package's tarball for upload. Under
+      # --aggressive-cleanup the build script otherwise skips creating the tarball
+      # (to save space), but doFinalSync still needs it to upload — so keep it when
+      # a write store is configured. The space is reclaimed after upload below.
+      ("BITS_HAS_WRITE_STORE", "1" if getattr(syncHelper, "writeStore", "") else ""),
       ("COMMIT_HASH", short_commit_hash(spec)),
       ("DEPS_HASH", spec.get("deps_hash", "")),
       ("DEVEL_HASH", spec.get("devel_hash", "")),
@@ -2554,8 +2836,18 @@ def doBuild(args, parser):
       ("GIT_COMMITTER_NAME", "unknown"),
       ("GIT_COMMITTER_EMAIL", "unknown"),
       ("INCREMENTAL_BUILD_HASH", spec.get("incremental_hash", "0")),
-      ("JOBS", str(effective_jobs(args.jobs, spec, builders=args.builders,
-                                  oversubscribe=getattr(args, "oversubscribe", 1.0) or 1.0))),
+      # The final (top-level) package builds alone once its dependencies finish,
+      # so give it the full -j instead of the per-builder share (builders=1).
+      # mainPackage is buildOrder[-1] (in --only-deps it is popped off and never
+      # built, so nothing matches and nothing is unleashed). No-op for
+      # --builders == 1, keeping the common path byte-identical.
+      ("JOBS", str(effective_jobs(
+        args.jobs, spec,
+        builders=(1 if (getattr(args, "unleashFinal", True)
+                        and args.builders > 1
+                        and spec["package"] == mainPackage)
+                  else args.builders),
+        oversubscribe=getattr(args, "oversubscribe", 1.0) or 1.0))),
       ("PKGFAMILY", spec.get("pkg_family", "")),
       ("PKGHASH", spec["hash"]),
       ("PKGNAME", spec["package"]),
@@ -2822,17 +3114,17 @@ def doBuild(args, parser):
     _tuning = None
     if args.resourceMonitoring and monitoredDirs:
       try:
-        from bits_helpers.build_stats import aggregate_and_write, tuning_report
+        from bits_helpers.build_stats import aggregate_and_write, tuning_report, default_stats_path
         _tuning = tuning_report(monitoredDirs, _run_wall, args.builders, args.jobs,
                                 getattr(args, "oversubscribe", 1.0) or 1.0)
-        aggregate_and_write(workDir, monitoredDirs, tuning=_tuning)
+        aggregate_and_write(workDir, monitoredDirs, tuning=_tuning, arch=args.architecture)
       except Exception as exc:  # pylint: disable=broad-except
         warning("Could not update build resource stats: %s", exc)
     for (action, error) in scheduler.errors.items():
       info("* The action \"{}\" was not completed successfully because {}".format(action, error))
     # Write a concise failure summary plus a combined full error log, and tell
     # the user where to find them and the individual per-package logs.
-    _summary_path, _full_path = write_failure_summary(workDir, scheduler)
+    _summary_path, _full_path = write_failure_summary(workDir, scheduler, args.architecture)
     if _summary_path or _full_path:
       info("=" * 70)
       info("Build finished with errors. Where to look:")
@@ -2847,7 +3139,7 @@ def doBuild(args, parser):
     # bits_build_stats.json under "tuning".
     if _tuning and _tuning.get("headroom") and not scheduler.brokenJobs:
       banner("Resource tuning (recorded in %s):\n  %s",
-             join(workDir, "bits_build_stats.json"), _tuning["recommendation"])
+             default_stats_path(workDir, args.architecture), _tuning["recommendation"])
     if scheduler.brokenJobs:
       dieOnError(True, "Please fix the above errors.")
   elif args.makeflow and buildTargets:

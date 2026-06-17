@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 from argparse import Namespace
 import os
 import os.path
@@ -355,6 +358,9 @@ class BuildTestCase(unittest.TestCase):
             noSystem=None,
             debug=True,
             dryRun=False,
+            # This fixture pins the legacy (pre-modules) build hashes, so run in
+            # legacy mode; the from-modules default is hash-tested separately.
+            initdotshFromModules=False,
             aggressiveCleanup=False,
             environment=[],
             autoCleanup=False,
@@ -477,6 +483,64 @@ class BuildTestCase(unittest.TestCase):
         self.assertEqual(len(extra["remote_hashes"]), 3)
         self.assertEqual(extra["local_hashes"][0], TEST_EXTRA_BUILD_HASH)
 
+    def test_untracked_requires_does_not_affect_consumer_hash(self) -> None:
+        """A dependency under untracked_requires is linked (stays in `requires`)
+        but excluded from the consumer's identity hash, so editing it does not
+        invalidate the consumer. deps_hash still reflects it (incremental signal).
+        """
+        def consumer_hashes(untracked, dep_hash):
+            # Fresh specs each call (storeHashes memoises onto the spec).
+            specs = {
+                "D": {"package": "D", "hash": dep_hash},
+                "E": {"package": "E", "hash": "eeee"},
+                "C": {"package": "C", "recipe": "", "version": "1",
+                      "commit_hash": "0", "is_devel_pkg": False,
+                      "requires": ["D", "E"],
+                      "untracked_requires": ["D"] if untracked else []},
+            }
+            storeHashes("C", specs, considerRelocation=False)
+            return specs["C"]["remote_revision_hash"], specs["C"]["deps_hash"]
+
+        # Tracked: changing D's hash changes the consumer's identity hash.
+        h_aaaa, _ = consumer_hashes(untracked=False, dep_hash="aaaa")
+        h_bbbb, _ = consumer_hashes(untracked=False, dep_hash="bbbb")
+        self.assertNotEqual(h_aaaa, h_bbbb)
+
+        # Untracked: D's hash change leaves the consumer's identity UNCHANGED …
+        u_aaaa, udh_aaaa = consumer_hashes(untracked=True, dep_hash="aaaa")
+        u_bbbb, udh_bbbb = consumer_hashes(untracked=True, dep_hash="bbbb")
+        self.assertEqual(u_aaaa, u_bbbb)
+        # … while deps_hash still differs, so a devel build rebuilds incrementally.
+        self.assertNotEqual(udh_aaaa, udh_bbbb)
+        # Marking D untracked is itself a distinct (but stable) identity.
+        self.assertNotEqual(h_aaaa, u_aaaa)
+
+    def test_initdotsh_from_modules_is_a_hashed_input(self) -> None:
+        """--initdotsh-from-modules must fold into the hash so the mode change is
+        reproducible (a distinct identity), while leaving off-state hashes
+        byte-identical to today (the aliBuild simple case).
+
+        The flag is published through the defaults-release env
+        (BITS_INITDOTSH_FROM_MODULES=1), which every package depends on — so a
+        change to it flows into every package's hash. This guards that wiring.
+        """
+        def _default_hash(mode_on):
+            d = self.setup_spec(TEST_DEFAULT_RELEASE)
+            d["commit_hash"] = "0"
+            d["is_devel_pkg"] = False
+            if mode_on:
+                d.setdefault("env", OrderedDict())["BITS_INITDOTSH_FROM_MODULES"] = "1"
+            specs = {d["package"]: d}
+            storeHashes("defaults-release", specs, considerRelocation=False)
+            return d["remote_revision_hash"]
+
+        # Off: byte-identical to the pinned golden hash (no rebuild for anyone).
+        self.assertEqual(_default_hash(False), TEST_DEFAULT_RELEASE_BUILD_HASH)
+        # On: a distinct identity (separate artifact tree), and deterministic.
+        on = _default_hash(True)
+        self.assertNotEqual(on, TEST_DEFAULT_RELEASE_BUILD_HASH)
+        self.assertEqual(on, _default_hash(True))
+
     def test_initdotsh(self) -> None:
         """Sanity-check the generated init.sh for a few variables."""
         specs = {
@@ -513,6 +577,70 @@ class BuildTestCase(unittest.TestCase):
         self.assertIn('export ROOT_TEST_1="root test 1"', complete_initdotsh)
         self.assertIn("export APPEND_ROOT_1=", complete_initdotsh)
         self.assertIn("export PREPEND_ROOT_1=", complete_initdotsh)
+
+    def test_initdotsh_from_modules(self) -> None:
+        """--initdotsh-from-modules adds the modulefile-equivalent dev env
+        (<PKG>_INCLUDE_DIR, PYTHONPATH site-packages) to the package's own
+        post-build section, guarded on existence, and changes nothing when off."""
+        specs = {
+            spec["package"]: dict(spec, revision="1", commit_hash="424242", hash="010101")
+            for spec in map(self.setup_spec, (
+                    TEST_DEFAULT_RELEASE, TEST_ZLIB_RECIPE,
+                    TEST_ROOT_RECIPE, TEST_EXTRA_RECIPE))
+        }
+
+        # Off-state must be byte-identical to the unflagged generator.
+        base = generate_initdotsh("ROOT", specs, "slc7_x86-64", post_build=True)
+        off = generate_initdotsh("ROOT", specs, "slc7_x86-64", post_build=True,
+                                 from_modules=False)
+        self.assertEqual(base, off)
+        self.assertNotIn("_INCLUDE_DIR", off)
+        self.assertNotIn("CMAKE_PREFIX_PATH", off)   # legacy: owned by CMakeRecipe
+
+        on = generate_initdotsh("ROOT", specs, "slc7_x86-64", post_build=True,
+                                from_modules=True)
+        # Guarded include dir + site-packages glob, keyed off the package root.
+        self.assertIn('export ROOT_INCLUDE_DIR="${ROOT_ROOT}/include"', on)
+        # CMAKE_PREFIX_PATH as a ':'-separated env var (CMake reads it natively).
+        self.assertIn('export CMAKE_PREFIX_PATH="${ROOT_ROOT}', on)
+        self.assertIn('${ROOT_ROOT}"/lib/python*/site-packages', on)
+        self.assertIn("PYTHONPATH=", on)
+        # Guarded so it is a no-op when the dir is absent.
+        self.assertIn('[ ! -d "${ROOT_ROOT}/include" ]', on)
+        # The setup (pre-build, deps-only) pass adds nothing self-referential.
+        setup_on = generate_initdotsh("ROOT", specs, "slc7_x86-64", post_build=False,
+                                      from_modules=True)
+        self.assertNotIn("ROOT_INCLUDE_DIR", setup_on)
+
+    def test_initdotsh_from_modules_shared_dependency(self) -> None:
+        """A shared (architecture: shared) dependency must be sourced from the
+        literal `$WORK_DIR/shared` tree, never `$BITS_ARCH_PREFIX`, including in
+        --initdotsh-from-modules mode; and a shared package's own _ROOT (and the
+        from-modules INCLUDE_DIR keyed off it) must use that same literal tree."""
+        base = {"revision": "1", "hash": "h", "commit_hash": "c"}
+        specs = {
+            "App":       dict(base, package="App", version="1.0",
+                              requires=["libshared", "libarch"]),
+            "libshared": dict(base, package="libshared", version="2.3",
+                              architecture="shared", requires=[]),
+            "libarch":   dict(base, package="libarch", version="4.5", requires=[]),
+        }
+
+        out = generate_initdotsh("App", specs, "slc7_x86-64",
+                                 post_build=True, from_modules=True)
+        # Shared dep: literal `shared/` tree, NOT the relocatable arch variable.
+        self.assertIn('. "$WORK_DIR/shared"/libshared/2.3-1/etc/profile.d/init.sh', out)
+        self.assertNotIn('$BITS_ARCH_PREFIX"/libshared', out)
+        # Arch-specific dep: still the relocatable arch variable, as before.
+        self.assertIn('. "$WORK_DIR/$BITS_ARCH_PREFIX"/libarch/4.5-1/etc/profile.d/init.sh', out)
+
+        # A shared package's own _ROOT, and the from-modules include dir keyed off
+        # it, use the literal tree — never $BITS_ARCH_PREFIX.
+        shared = generate_initdotsh("libshared", specs, "slc7_x86-64",
+                                    post_build=True, from_modules=True)
+        self.assertIn('export LIBSHARED_ROOT="$WORK_DIR/shared"/libshared/2.3-1', shared)
+        self.assertIn('export LIBSHARED_INCLUDE_DIR="${LIBSHARED_ROOT}/include"', shared)
+        self.assertNotIn('$BITS_ARCH_PREFIX"/libshared', shared)
 
 
 if __name__ == '__main__':

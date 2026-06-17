@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Tests for bits_helpers/checksum.py and the related changes to
 bits_helpers/download.py, bits_helpers/workarea.py, and bits_helpers/build.py.

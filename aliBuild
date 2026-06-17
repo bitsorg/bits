@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # aliBuild — backward-compatible wrapper around bits.
 #
 # Reproduces the original aliBuild behaviour and module-listing output
@@ -11,4 +14,13 @@
 export BITS_ORGANISATION="${BITS_ORGANISATION:-ALICE}"
 export BITS_PKG_PREFIX="${BITS_PKG_PREFIX:-VO_ALICE}"
 export BITS_BRANDING="${BITS_BRANDING:-aliBuild}"
+# Legacy aliBuild emulation. BITS_BRANDING=aliBuild selects the legacy path:
+#  - recipes come from a local alidist checkout (`aliBuild init`), NOT the
+#    bits-providers bootstrap (that "provider path" is the default for native
+#    `bits`). bits.bits_providers therefore defaults to empty under aliBuild;
+#    set BITS_PROVIDERS=... explicitly to opt back in.
+#  - the legacy build-time init.sh is kept (BITS_LEGACY_INITDOTSH=1): its hashes
+#    are byte-identical to the pre-modules default, so bits and aliBuild can still
+#    share tarballs. Override with BITS_LEGACY_INITDOTSH=0 / --initdotsh-from-modules.
+export BITS_LEGACY_INITDOTSH="${BITS_LEGACY_INITDOTSH:-1}"
 exec "$(dirname "$0")/bits" "$@"

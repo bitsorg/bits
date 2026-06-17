@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Tests for the async build loop enhancements.
 
 Covers:
@@ -735,8 +738,12 @@ class WriteFailureSummaryTest(unittest.TestCase):
                     "excerpt": "  Matched error lines (last 1):\n    err: boom"}],
             errors={"build:motif": "BUILD FAILED",
                     "build:foo": "The following dependencies could not complete:\nbuild:motif"})
-        path, full = write_failure_summary(self.dir, sched)
+        path, full = write_failure_summary(self.dir, sched, "el9_x86-64")
         self.assertTrue(path and os.path.exists(path))
+        # logs land under LOGS/<arch>/ so concurrent different-platform builds
+        # sharing one work area do not clobber each other
+        self.assertEqual(os.path.dirname(path),
+                         os.path.join(self.dir, "LOGS", "el9_x86-64"))
         text = open(path).read()
         self.assertIn("FAILED: motif@2.3.8", text)
         self.assertIn("err: boom", text)                       # excerpt included
@@ -750,5 +757,7 @@ class WriteFailureSummaryTest(unittest.TestCase):
 
     def test_no_failures_writes_nothing(self):
         from bits_helpers.build import write_failure_summary
-        self.assertEqual(write_failure_summary(self.dir, self._Sched([], {})), (None, None))
-        self.assertFalse(os.path.exists(os.path.join(self.dir, "build-summary.log")))
+        self.assertEqual(write_failure_summary(self.dir, self._Sched([], {}), "el9_x86-64"),
+                         (None, None))
+        self.assertFalse(os.path.exists(
+            os.path.join(self.dir, "LOGS", "el9_x86-64", "build-summary.log")))

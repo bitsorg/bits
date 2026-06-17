@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Tests for bits_helpers/build_stats.py — the self-tuning resource-stats loop
 that feeds the --builders scheduler's ResourceManager.
@@ -30,6 +33,24 @@ class TestBuildStats(unittest.TestCase):
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
+
+    def test_stats_path_is_per_arch(self):
+        # Scoped under LOGS/<arch>/ so different platforms sharing one work area
+        # don't clobber each other's (platform-specific) timing history.
+        self.assertEqual(
+            bs.default_stats_path(self.dir, "el9_x86-64"),
+            os.path.join(self.dir, "LOGS", "el9_x86-64", "bits_build_stats.json"))
+
+    def test_aggregate_creates_per_arch_dir_and_autoloads(self):
+        # On a clean build LOGS/<arch>/ may not exist yet; aggregate must create
+        # it, write there, and autoload must find the same per-arch file.
+        sd = _write_trace(self.dir, "root",
+                          [{"rss": 2_000_000_000, "cpu": 800, "time": 50}])
+        path = bs.aggregate_and_write(self.dir, {"root": sd}, arch="el9_x86-64")
+        self.assertEqual(path, bs.default_stats_path(self.dir, "el9_x86-64"))
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual(os.path.basename(os.path.dirname(path)), "el9_x86-64")
+        self.assertEqual(bs.autoload_stats_path(self.dir, "el9_x86-64"), path)
 
     def test_aggregate_takes_peaks(self):
         sd = _write_trace(self.dir, "root", [

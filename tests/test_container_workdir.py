@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Regression tests for container_workDir / --cvmfs-prefix logic in build.py.
 
 The logic that determines the in-container work-directory path and rewrites

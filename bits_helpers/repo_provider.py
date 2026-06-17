@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """
 Iterative discovery and fetching of repository-provider packages.
 
@@ -63,6 +66,7 @@ from bits_helpers.utilities import (
     getRecipeReader,
     parseRecipe,
     symlink,
+    _parse_req_matcher,
 )
 
 # Maximum provider-discovery iterations (guards against run-away recursion)
@@ -637,7 +641,69 @@ def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
     return None
 
   info("Bootstrap complete: using recipe repository at %s", checkout_dir)
+  # The org-pointer recipe (e.g. alice.bits.sh) is itself a provider recipe, and
+  # its own ``requires`` names sibling provider repositories the recipe repo
+  # depends on (e.g. alidist.bits, which supplies the base recipes). Stash them so
+  # doBuild can seed provider discovery with them — otherwise a base provider that
+  # supplies needed recipes but is not itself a build-graph dependency would never
+  # be loaded (the dependency walk starts from the build target, not the repo).
+  try:
+    args._bootstrap_provider_requires = (
+      list(default_spec.get("requires", []))
+      + list(default_spec.get("build_requires", []))
+    )
+  except Exception:  # pylint: disable=broad-except
+    pass
   return checkout_dir
+
+
+def resolve_registry_repo(args, name: str, work_dir: str, quiet: bool = False):
+  """Look up *name* (e.g. ``alice.bits``) in the bits-providers registry and
+  return the parsed registry recipe (an OrderedDict with at least ``source``;
+  also ``tag``/``version`` and any ``requires``), or ``None`` if there is no
+  registry configured or no ``<name>.sh`` entry.
+
+  Used by ``bits init <group>.bits`` to check out a recipe repository named in
+  the provider registry (the caller clones it), and by the package-init path to
+  read a checked-out group's own ``requires`` for provider-discovery seeding.
+  *quiet* suppresses the warnings, for best-effort callers.
+  """
+  def _warn(*a):
+    if not quiet:
+      warning(*a)
+
+  bits_providers_url = getattr(args, "bits_providers", None)
+  if not bits_providers_url:
+    _warn("No provider registry is configured (BITS_PROVIDERS); cannot resolve '%s'.",
+          name)
+    return None
+  reference_sources = getattr(args, "referenceSources", "")
+  fetch_repos = getattr(args, "fetchRepos", True)
+
+  url, tag = _parse_provider_url(bits_providers_url)
+  try:
+    providers_checkout, _ = clone_or_update_provider(
+      _make_bits_providers_spec(url, tag), work_dir, reference_sources, fetch_repos)
+  except SystemExit:
+    _warn("Could not fetch the provider registry from %s.", url)
+    return None
+
+  sh = join(providers_checkout, name + ".sh")
+  if not exists(sh):
+    _warn("No '%s.sh' in the provider registry %s.", name, url)
+    return None
+  try:
+    err, reg_spec, _ = parseRecipe(getRecipeReader(sh))
+  except Exception as exc:  # pylint: disable=broad-except
+    _warn("Could not parse %s.sh from the registry: %s", name, exc)
+    return None
+  if err or reg_spec is None:
+    _warn("Parse error in %s.sh from the registry: %s", name, err)
+    return None
+  if not reg_spec.get("source", ""):
+    _warn("Registry entry %s.sh has no 'source' URL.", name)
+    return None
+  return reg_spec
 
 
 # ── Iterative provider discovery ────────────────────────────────────────────
@@ -673,6 +739,11 @@ def fetch_repo_providers_iteratively(
     policy = provider_policy or {}
     # package names already cloned (avoids re-cloning on every restart)
     cloned: set = set()
+    # provider name -> tag it was actually cloned at, so we can warn when a
+    # later reference asks for a *different* version of an already-loaded
+    # provider (which is silently ignored — one version per provider per build).
+    cloned_tag: dict = {}
+    warned_version_conflicts: set = set()
     # packages we have successfully read (cache to avoid re-parsing)
     resolved: dict = {}
     # packages that couldn't be found on the most recent full walk
@@ -720,6 +791,7 @@ def fetch_repo_providers_iteratively(
                 )
                 provider_dirs[checkout_dir] = (pkg, commit_hash)
                 cloned.add(pkg)
+                cloned_tag[pkg] = spec.get("tag", spec.get("version", "HEAD"))
 
                 # Invalidate the resolved-spec cache for packages that were
                 # not previously findable; they may now be reachable via the
@@ -736,6 +808,29 @@ def fetch_repo_providers_iteratively(
                 list(spec.get("requires", []))
                 + list(spec.get("build_requires", []))
             )
+            # Warn if any dependency asks for a *specific* version of a provider
+            # repository that is already loaded at a different one. A repository
+            # provider is cloned once per build (deduped by name, at the tag from
+            # its provider recipe), so the version pin here is silently ignored —
+            # make that visible instead of mysterious.
+            for _r in deps:
+                try:
+                    _dep_name, _matcher, _pin = _parse_req_matcher(_r)
+                except Exception:  # pylint: disable=broad-except
+                    continue
+                if _pin and _dep_name in cloned and _pin != cloned_tag.get(_dep_name):
+                    _key = (_dep_name, _pin)
+                    if _key not in warned_version_conflicts:
+                        warned_version_conflicts.add(_key)
+                        warning(
+                            "%s requests provider repository '%s' at version '%s', "
+                            "but it is already loaded at '%s' (first reference wins). "
+                            "The requested version is IGNORED: a provider repo is "
+                            "loaded once per build, at the tag from its provider "
+                            "recipe. Set '%s' as that recipe's tag (or an @tag on its "
+                            "source URL) if every consumer in this build should use it.",
+                            spec.get("package", pkg), _dep_name, _pin,
+                            cloned_tag.get(_dep_name, "?"), _pin)
             queue.extend(r for r in deps if r.lower() not in visited)
 
         if not found_new_provider:
