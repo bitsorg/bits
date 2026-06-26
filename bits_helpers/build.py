@@ -1042,6 +1042,15 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       (spec["package"],
       args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
     )
+  # Report progress (no-op unless running under gitlab-runner): this package is
+  # now starting. defaults-release is excluded to match the planned total.
+  if spec["package"] != "defaults-release":
+    try:
+      from bits_helpers import progress as _progress
+      _progress.tick(spec["package"])
+    except Exception:
+      pass
+
   # Optional nice-ladder: claim a priority slot for this concurrent build so CPU
   # contention degrades gracefully (lead build at full speed, others backed off).
   # No-op unless --build-nice is set (nice_ladder stays None).
@@ -1975,6 +1984,16 @@ def doBuild(args, parser):
                           for x in builtPackages if x != "defaults-release"))
     else:
       banner("No dependencies of package %s to build.", buildOrder[-1])
+
+    # Tell the progress reporter how many packages will be built, so it can post
+    # a percentage to the GitLab commit status as each one starts (no-op unless
+    # running under gitlab-runner). defaults-release is excluded to match the
+    # plan shown above.
+    try:
+      from bits_helpers import progress as _progress
+      _progress.set_total(len([x for x in builtPackages if x != "defaults-release"]))
+    except Exception:
+      pass
 
 
   if develPkgs:
