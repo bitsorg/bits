@@ -58,7 +58,8 @@ def sentinel_path(work_dir: str, architecture: str, package: str, version: str) 
     return join(abspath(work_dir), ".packages", architecture, package, version)
 
 
-def touch_sentinel(work_dir: str, architecture: str, package: str, version: str) -> None:
+def touch_sentinel(work_dir: str, architecture: str, package: str, version: str,
+                   record_size: bool = False) -> None:
     """Create or update the sentinel for *package*/*version*.
 
     Updates the sentinel's ``mtime`` to *now* so that the cleanup command
@@ -66,15 +67,31 @@ def touch_sentinel(work_dir: str, architecture: str, package: str, version: str)
     during the touch to prevent a concurrent cleanup from evicting the
     package at the exact moment we are registering it.
 
-    Safe to call from multiple concurrent processes — the flock and the
-    ``utime`` call are both atomic at the OS level.
+    When *record_size* is true (call this from the build/install path, once),
+    the package's disk usage is computed and written as the sentinel's content
+    so that the cleanup command can read it back instead of walking the whole
+    install tree on every invocation.  Transitive "package was used" touches
+    leave *record_size* false: they only bump the mtime and preserve any
+    previously recorded size.
+
+    Safe to call from multiple concurrent processes — the flock, the optional
+    rewrite and the ``utime`` call are all done while holding the lock.
     """
     path = sentinel_path(work_dir, architecture, package, version)
     os.makedirs(dirname(path), exist_ok=True)
     try:
-        with open(path, "a") as fh:
+        with open(path, "a+") as fh:
             try:
                 fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                if record_size:
+                    # Compute du once, here, and cache it. pkg_dir mirrors the
+                    # flat <arch>/<pkg>/<ver> layout used by _list_sentinels.
+                    pkg_dir = join(abspath(work_dir), architecture, package, version)
+                    size_bytes = _du(pkg_dir) if exists(pkg_dir) else 0
+                    fh.seek(0)
+                    fh.truncate()
+                    fh.write("%d\n" % size_bytes)
+                    fh.flush()
                 os.utime(path, None)          # set mtime = now
                 fcntl.flock(fh, fcntl.LOCK_UN)
             except BlockingIOError:
@@ -87,6 +104,19 @@ def touch_sentinel(work_dir: str, architecture: str, package: str, version: str)
                 )
     except OSError as exc:
         warning("Could not update sentinel for %s/%s: %s", package, version, exc)
+
+
+def _read_cached_size(sentinel_file: str) -> Optional[int]:
+    """Return the disk usage recorded in a sentinel, or None if unavailable.
+
+    Tolerates empty / legacy / partially-written sentinels by returning None,
+    so callers fall back to computing the size on demand.
+    """
+    try:
+        with open(sentinel_file) as fh:
+            return int(fh.readline().strip())
+    except (OSError, ValueError):
+        return None
 
 
 def acquire_build_lock(work_dir: str, architecture: str, package: str,
@@ -123,10 +153,22 @@ def acquire_build_lock(work_dir: str, architecture: str, package: str,
 # ---------------------------------------------------------------------------
 
 class _SentinelEntry(NamedTuple):
-    sentinel_path: str   # full path to the sentinel file
-    pkg_dir: str         # full path to the installed package directory
-    mtime: float         # sentinel mtime (seconds since epoch)
-    size_bytes: int      # approximate disk usage of pkg_dir
+    sentinel_path: str          # full path to the sentinel file
+    pkg_dir: str                # full path to the installed package directory
+    mtime: float                # sentinel mtime (seconds since epoch)
+    size_bytes: Optional[int]   # cached disk usage, or None if not recorded yet
+
+
+def _resolve_size(entry: "_SentinelEntry") -> int:
+    """Return the package size, using the cached value or computing it on demand.
+
+    Only ever called on the eviction path, so a cache miss (legacy sentinel)
+    walks the tree for at most the handful of packages actually being evicted —
+    never for the whole inventory.
+    """
+    if entry.size_bytes is not None:
+        return entry.size_bytes
+    return _du(entry.pkg_dir) if exists(entry.pkg_dir) else 0
 
 
 def _du(path: str) -> int:
@@ -174,12 +216,14 @@ def _list_sentinels(work_dir: str, architecture: str) -> List[_SentinelEntry]:
                 mtime = os.path.getmtime(spath)
             except OSError:
                 continue
-            size = _du(pkg_dir) if exists(pkg_dir) else 0
+            # Read the size the build recorded in the sentinel. Do NOT walk the
+            # install tree here: sizes are only needed for packages we actually
+            # evict, so we defer that to _resolve_size on the eviction path.
             entries.append(_SentinelEntry(
                 sentinel_path=spath,
                 pkg_dir=pkg_dir,
                 mtime=mtime,
-                size_bytes=size,
+                size_bytes=_read_cached_size(spath),
             ))
 
     entries.sort(key=lambda e: e.mtime)
@@ -196,34 +240,35 @@ def _free_bytes(path: str) -> int:
     return st.f_frsize * st.f_bavail
 
 
-def _try_evict(entry: _SentinelEntry, dry_run: bool) -> bool:
+def _try_evict(entry: _SentinelEntry, dry_run: bool) -> Optional[int]:
     """Attempt to evict a single package.
 
-    Tries an exclusive non-blocking flock on the sentinel.  Returns True if
-    the package was (or would be, in dry-run mode) evicted, False if it is
-    currently in use by another build job or cannot be removed.
+    Tries an exclusive non-blocking flock on the sentinel.  Returns the number
+    of bytes that were (or would be, in dry-run mode) freed, or None if the
+    package is currently in use by another build job or cannot be removed.
     """
     try:
         fh = open(entry.sentinel_path, "r+")
     except OSError:
-        return False
+        return None
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         debug("Skipping %s — held by another job", entry.pkg_dir)
         fh.close()
-        return False
+        return None
 
     # We hold the exclusive lock — safe to evict.
     try:
         pkg_name = basename(dirname(entry.sentinel_path))
         pkg_ver  = basename(entry.sentinel_path)
         age_days = (time.time() - entry.mtime) / 86400
-        size_mib = entry.size_bytes / 1e6
+        size_bytes = _resolve_size(entry)
+        size_mib = size_bytes / 1e6
         if dry_run:
             info("dry-run: would evict %s/%s  (%.1f MiB, %.0f days old)",
                  pkg_name, pkg_ver, size_mib, age_days)
-            return True
+            return size_bytes
 
         info("Evicting %s/%s  (%.1f MiB, %.0f days old)",
              pkg_name, pkg_ver, size_mib, age_days)
@@ -242,7 +287,7 @@ def _try_evict(entry: _SentinelEntry, dry_run: bool) -> bool:
                 os.rmdir(d)
             except OSError:
                 pass   # not empty — fine
-        return True
+        return size_bytes
     finally:
         fcntl.flock(fh, fcntl.LOCK_UN)
         fh.close()
@@ -284,9 +329,10 @@ def doCleanup(args, parser):
             for entry in remaining:
                 if _free_bytes(work_dir) >= threshold:
                     break
-                if _try_evict(entry, dry_run):
+                freed_bytes = _try_evict(entry, dry_run)
+                if freed_bytes is not None:
                     evicted += 1
-                    freed += entry.size_bytes
+                    freed += freed_bytes
                     entries.remove(entry)
         else:
             debug("Disk OK: %.1f GiB free (threshold %.1f GiB)",
@@ -298,9 +344,10 @@ def doCleanup(args, parser):
         for entry in list(entries):
             if entry.mtime >= cutoff:
                 break   # list is sorted oldest-first; nothing older follows
-            if _try_evict(entry, dry_run):
+            freed_bytes = _try_evict(entry, dry_run)
+            if freed_bytes is not None:
                 evicted += 1
-                freed += entry.size_bytes
+                freed += freed_bytes
 
     if evicted:
         info("Evicted %d package(s), freed %.1f MiB%s",

@@ -121,18 +121,26 @@ class ListSentinelsTest(unittest.TestCase):
         self.assertEqual(packages, ["ROOT", "zlib", "Geant4"],
                          "entries should be sorted oldest → newest")
 
-    def test_size_bytes_zero_for_missing_pkg_dir(self):
+    def test_size_bytes_none_when_not_recorded(self):
+        # A plain (transitive) touch records no size; _list_sentinels must not
+        # walk the tree, so the cached size is None until resolved on demand.
         touch_sentinel(self.tmpdir, ARCH, "orphan", "1.0-1")
+        entries = _list_sentinels(self.tmpdir, ARCH)
+        self.assertIsNone(entries[0].size_bytes)
+
+    def test_size_recorded_zero_for_missing_pkg_dir(self):
+        # Recording a size for a package with no install dir yields 0.
+        touch_sentinel(self.tmpdir, ARCH, "orphan", "1.0-1", record_size=True)
         entries = _list_sentinels(self.tmpdir, ARCH)
         self.assertEqual(entries[0].size_bytes, 0)
 
     def test_pkg_dir_populated(self):
-        # Create a fake package directory so size_bytes > 0.
+        # Create a fake package directory so the recorded size > 0.
         pkg_dir = os.path.join(self.tmpdir, ARCH, "ROOT", "6.32.0-1")
         os.makedirs(pkg_dir)
         with open(os.path.join(pkg_dir, "libROOT.so"), "wb") as f:
             f.write(b"x" * 1024)
-        touch_sentinel(self.tmpdir, ARCH, "ROOT", "6.32.0-1")
+        touch_sentinel(self.tmpdir, ARCH, "ROOT", "6.32.0-1", record_size=True)
         entries = _list_sentinels(self.tmpdir, ARCH)
         self.assertGreater(entries[0].size_bytes, 0)
 
@@ -163,7 +171,7 @@ class TryEvictTest(unittest.TestCase):
     def test_evicts_package_directory(self):
         entry = self._make_entry()
         result = _try_evict(entry, dry_run=False)
-        self.assertTrue(result)
+        self.assertIsNotNone(result)   # returns freed bytes (may be 0)
         self.assertFalse(os.path.exists(entry.pkg_dir),
                          "package directory should be removed")
         self.assertFalse(os.path.exists(entry.sentinel_path),
@@ -172,7 +180,7 @@ class TryEvictTest(unittest.TestCase):
     def test_dry_run_does_not_delete(self):
         entry = self._make_entry()
         result = _try_evict(entry, dry_run=True)
-        self.assertTrue(result)
+        self.assertIsNotNone(result)   # returns bytes that would be freed
         # Neither the package dir nor the sentinel should be removed.
         self.assertTrue(os.path.exists(entry.sentinel_path),
                         "sentinel should survive dry-run")

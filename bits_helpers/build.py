@@ -1376,11 +1376,14 @@ def doFinalSync(spec, specs, args, syncHelper):
                                _tarball_path if os.path.isfile(_tarball_path) else None,
                                effective_architecture=_arch)
 
-  # Touch the sentinel so the cleanup command counts this package as recently used.
+  # Touch the sentinel so the cleanup command counts this package as recently
+  # used, and record the package's disk usage in it (computed once, here) so
+  # cleanup never has to walk the install tree to size this package.
   try:
     from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
     from bits_helpers.utilities import ver_rev as _ver_rev
-    _touch_sentinel(args.workDir, args.architecture, spec["package"], _ver_rev(spec))
+    _touch_sentinel(args.workDir, args.architecture, spec["package"], _ver_rev(spec),
+                    record_size=True)
   except Exception:
     pass
 
