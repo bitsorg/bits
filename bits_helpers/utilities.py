@@ -1480,6 +1480,39 @@ def resolveDefaultsFilename(defaults, configDir, failOnError=True):
   if failOnError:
     error("Default `%s' does not exist.\n" % (defaults or "<no defaults specified>"))
 
+# Cache of "<repository>@<commit>" identity labels keyed by recipe directory so
+# the per-recipe origin trace does not shell out to git once per package.
+_recipeSourceLabelCache = {}
+
+def recipeSourceLabel(pkgdir, provider_dirs=None):
+  """Return a short ``<repository>@<commit>`` identity for the directory a recipe
+  was resolved from, for origin tracing in the build log.
+
+  Provider checkouts already carry an authoritative ``(name, commit)`` pair in
+  *provider_dirs*; for the primary config dir and other ``BITS_PATH`` entries the
+  short git ``HEAD`` of the directory is used instead.  Results are cached per
+  directory.  Never raises — degrades to the bare directory basename when the
+  source is not a git checkout (e.g. a generated-package directory).
+  """
+  if pkgdir in _recipeSourceLabelCache:
+    return _recipeSourceLabelCache[pkgdir]
+  name = basename(pkgdir.rstrip("/")) or pkgdir
+  commit = ""
+  if provider_dirs and pkgdir in provider_dirs:
+    prov_name, prov_hash = provider_dirs[pkgdir]
+    name = prov_name or name
+    commit = (prov_hash or "")[:10]
+  if not commit:
+    try:
+      err, out = git(("rev-parse", "--short", "HEAD"), directory=pkgdir, check=False)
+      if err == 0 and out.strip():
+        commit = out.strip()
+    except Exception:
+      commit = ""
+  label = "{}@{}".format(name, commit) if commit else name
+  _recipeSourceLabelCache[pkgdir] = label
+  return label
+
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,
                    performValidateDefaults, overrides, taps, log, force_rebuild=(),
@@ -1511,6 +1544,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   validDefaults = []  # empty list: all OK; None: no valid default; non-empty list: list of valid ones
   if provider_dirs is None:
     provider_dirs = {}
+  recipe_sources = {}   # package name -> "<repository>@<commit>" origin label
   _disable_set = set(disable)
   # version_pins accumulates ``name -> version`` entries declared via the
   # ``name = version`` syntax in any spec's requires / build_requires lists.
@@ -1562,6 +1596,16 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                "{}.sh has different package field: {}".format(p, spec["package"]))
     spec["pkgdir"] = pkgdir
 
+    # Per-recipe origin trace: record which repository@commit actually supplied
+    # this recipe — for every package, not only provider-sourced ones.  This is
+    # the first thing to consult when a recipe resolves to an unexpected (e.g.
+    # stale) version: if the commit here predates an upstream change, the source
+    # checkout was out of date.
+    spec["recipe_source"] = recipeSourceLabel(pkgdir, provider_dirs)
+    recipe_sources[spec["package"]] = spec["recipe_source"]
+    debug("Recipe '%s' resolved from %s  (dir: %s)",
+          spec["package"], spec["recipe_source"], pkgdir)
+
     # Load the optional external checksum store (checksums/<pkg>.checksum)
     # and merge source/patch checksums + commit pin into the spec.
     merge_into_spec(spec, load_for_spec(spec))
@@ -1572,8 +1616,6 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
       prov_name, prov_hash = provider_dirs[pkgdir]
       spec["recipe_provider"] = prov_name
       spec["recipe_provider_hash"] = prov_hash
-      log("Recipe for '%s' comes from provider '%s' @ %s",
-          p, prov_name, prov_hash[:10])
 
     if p == "defaults-release":
       # Re-rewrite the defaults' name to "defaults-release". Everything auto-
@@ -1708,7 +1750,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
             # mandatory — without it doBuild raises KeyError: 'pkgdir' when it
             # builds the replacement (e.g. a HomebrewRecipe shim).
             for _carry in ("pkgdir", "recipe_provider", "recipe_provider_hash",
-                           "force_revision"):
+                           "recipe_source", "force_revision"):
               if _carry in spec and _carry not in replacement:
                 replacement[_carry] = spec[_carry]
             spec = replacement
@@ -1857,6 +1899,21 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
 
     specs[spec["package"]] = spec
     packages += spec["requires"]
+
+  # ── Recipe-origin summary (package@repository:commit) ───────────────────────
+  # One compact, always-on block grouping every resolved recipe by the
+  # repository@commit it was loaded from.  Complements the per-recipe debug lines
+  # above with an at-a-glance map of which source supplied which packages — the
+  # authoritative trace for diagnosing stale or unexpected recipe resolution.
+  if recipe_sources:
+    by_source = OrderedDict()
+    for _pkg, _src in sorted(recipe_sources.items()):
+      by_source.setdefault(_src, []).append(_pkg)
+    banner("Recipe origins: %d package(s) from %d source(s)",
+           len(recipe_sources), len(by_source))
+    for _src, _pkgs in by_source.items():
+      log("  %s  ←  %s", _src, ", ".join(_pkgs))
+
   return (systemPackages, ownPackages, failedRequirements, validDefaults)
 
 def getGeneratedPackages(configDir):
