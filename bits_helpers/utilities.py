@@ -1445,7 +1445,7 @@ def getConfigPaths(configDir):
         pkgDirs.append(d)
   return pkgDirs
 
-def resolveFilename(taps, pkg, configDir, generatedPackages, ext=".sh"):
+def resolveFilename(taps, pkg, configDir, generatedPackages, ext=".sh", required_by=None):
   for d in getConfigPaths(configDir):
     if d in generatedPackages and pkg in generatedPackages[d]:
       meta = generatedPackages[d][pkg]
@@ -1453,16 +1453,21 @@ def resolveFilename(taps, pkg, configDir, generatedPackages, ext=".sh"):
     filename = checkForFilename(taps, pkg, d, ext=ext)
     if exists(filename):
       return (filename, d)
+  # Name the recipe(s) that pulled this dependency in (with their origin), so the
+  # operator sees WHO required a missing package, not just that it is missing.
+  reqline = ""
+  if required_by:
+    reqline = "\nRequired by: " + ", ".join(sorted(required_by))
   dieOnError(True,
              "Package {pkg} not found on any loaded recipe path (searched "
-             "BITS_PATH, primary config dir: {cfg}).\n"
+             "BITS_PATH, primary config dir: {cfg}).{req}\n"
              "If {pkg} is provided by a repository that was not loaded, add "
              "`always_load: true` to that provider's recipe (alongside "
              "`provides_repository: true`) so it is cloned before resolution — or "
              "list it in BITS_PROVIDERS. A repository-provider is otherwise "
              "auto-loaded only when it appears as a dependency in the build graph, "
              "which a base recipe repository usually does not.".format(
-               pkg=pkg, cfg=configDir))
+               pkg=pkg, cfg=configDir, req=reqline))
 
 def resolveDefaultsFilename(defaults, configDir, failOnError=True):
   """Return the path of ``defaults-<defaults>.sh`` searched across all config paths.
@@ -1545,6 +1550,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   if provider_dirs is None:
     provider_dirs = {}
   recipe_sources = {}   # package name -> "<repository>@<commit>" origin label
+  required_by = {}      # dep name (bare, lowercased) -> set of "requirer (source)"
   _disable_set = set(disable)
   # version_pins accumulates ``name -> version`` entries declared via the
   # ``name = version`` syntax in any spec's requires / build_requires lists.
@@ -1835,6 +1841,16 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
       spec["build_requires"].append("defaults-release")
     spec["runtime_requires"] = spec["requires"]
     spec["requires"] = spec["runtime_requires"] + spec["build_requires"] + spec["untracked_requires"]
+    # Reverse-dependency trace: remember who pulled in each dependency so a later
+    # "package not found" can name the requiring recipe(s) and their origin
+    # instead of only the missing name.  Keyed by the bare dep name (version /
+    # arch qualifiers stripped) lowercased, matching how pkg_filename is derived
+    # when the dep is later resolved.
+    _req_label = "{} ({})".format(spec["package"], spec.get("recipe_source", "?"))
+    for _dep in spec["requires"]:
+      _dk = re.split(r"[:=]", _dep, 1)[0].strip().lower()
+      if _dk:
+        required_by.setdefault(_dk, set()).add(_req_label)
     # Check that version is a string
     dieOnError(not isinstance(spec["version"], str),
                "In recipe \"%s\": version must be a string" % p)
