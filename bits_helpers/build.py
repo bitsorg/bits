@@ -2973,16 +2973,28 @@ def doBuild(args, parser):
     # will perform the actual build. Otherwise build as usual using bash.
     if args.docker:
       _docker_platform = getattr(args, "dockerPlatform", None)
+      # Optional tripwire: mount the shared SOURCES tree read-only so a recipe
+      # that mutates its source in place (in-tree patching, codegen, in-tree
+      # downloads) fails loudly with EROFS instead of silently poisoning the
+      # reused tree for the next build/arch. Opt-in via BITS_READONLY_SOURCES; it
+      # overlays the read-write workdir mount and the more-specific :ro mount
+      # wins. No chmod of the host tree. A correct recipe builds out-of-source
+      # from its private rsync'd copy and is unaffected.
+      _src_dir = os.path.join(abspath(args.workDir), "SOURCES")
+      _ro_sources = ("-v %s:%s/SOURCES:ro " % (quote(_src_dir), container_workDir)
+                     if os.environ.get("BITS_READONLY_SOURCES") and os.path.isdir(_src_dir)
+                     else "")
       build_command = (
         "docker run --rm --entrypoint= --user $(id -u):$(id -g) "
         "{platformArg}"
-        "-v {workdir}:{container_workDir} -v{configDir}:/pkgdist.bits:ro "
+        "-v {workdir}:{container_workDir} {roSources}-v{configDir}:/pkgdist.bits:ro "
         "-v {scriptDir}/build.sh:/build.sh:ro "
         "-v {bits_dir}:/bits "
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
         "-e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
       ).format(
         platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
+        roSources=_ro_sources,
         image=quote(args.dockerImage),
         workdir=quote(abspath(args.workDir)),
         container_workDir=container_workDir,
