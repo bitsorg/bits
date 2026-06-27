@@ -2973,16 +2973,19 @@ def doBuild(args, parser):
     # will perform the actual build. Otherwise build as usual using bash.
     if args.docker:
       _docker_platform = getattr(args, "dockerPlatform", None)
-      # Optional tripwire: mount the shared SOURCES tree read-only so a recipe
-      # that mutates its source in place (in-tree patching, codegen, in-tree
-      # downloads) fails loudly with EROFS instead of silently poisoning the
-      # reused tree for the next build/arch. Opt-in via BITS_READONLY_SOURCES; it
-      # overlays the read-write workdir mount and the more-specific :ro mount
-      # wins. No chmod of the host tree. A correct recipe builds out-of-source
-      # from its private rsync'd copy and is unaffected.
+      # Tripwire: mount the shared SOURCES tree read-only so a recipe that mutates
+      # its source in place (in-tree patching, codegen, in-tree downloads) fails
+      # loudly with EROFS instead of silently poisoning the reused tree for the
+      # next build/arch. On by default (every bits recipe-tools recipe builds from
+      # its private rsync'd copy, so a correct recipe is unaffected); disable with
+      # BITS_READONLY_SOURCES=0 if a not-yet-migrated recipe needs to write back.
+      # It overlays the read-write workdir mount and the more-specific :ro mount
+      # wins. No chmod of the host tree.
       _src_dir = os.path.join(abspath(args.workDir), "SOURCES")
+      _ro_enabled = os.environ.get("BITS_READONLY_SOURCES", "1").strip().lower() \
+                    not in ("0", "false", "no", "off", "")
       _ro_sources = ("-v %s:%s/SOURCES:ro " % (quote(_src_dir), container_workDir)
-                     if os.environ.get("BITS_READONLY_SOURCES") and os.path.isdir(_src_dir)
+                     if _ro_enabled and os.path.isdir(_src_dir)
                      else "")
       build_command = (
         "docker run --rm --entrypoint= --user $(id -u):$(id -g) "
