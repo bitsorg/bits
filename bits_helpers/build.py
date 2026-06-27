@@ -1979,11 +1979,22 @@ def doBuild(args, parser):
       return resolve_spec_data(spec, str(spec.get("tag", spec.get("version", "?"))),
                                args.defaults, strict=False)
     if len(builtPackages) > 1:
+      # One row per package as (name/ref, source); source is the recipe origin
+      # "repo@commit" (already includes its own '@'), or the devel marker. Align
+      # the source column so a long build order is easy to scan, e.g.:
+      #   - CMake/3.30.6   [lcg.bits@c4087be6c3]
+      #   - Boost/1.90.0   [lcg.bits@c4087be6c3]
+      #   - MyPkg/feature  [development package]
+      def _build_row(pkg):
+        label = "{}/{}".format(pkg, _display_ref(pkg))
+        source = ("development package" if pkg in develPkgs
+                  else specs[pkg].get("recipe_source", "?"))
+        return label, source
+      _rows = [_build_row(x) for x in builtPackages if x != "defaults-release"]
+      _w = max((len(label) for label, _ in _rows), default=0)
       banner("Packages will be built in the following order:\n - %s",
-             "\n - ".join(x+" (development package)" if x in develPkgs
-                          else "{}/{}@{}".format(x, _display_ref(x),
-                                                 specs[x].get("recipe_source", "?"))
-                          for x in builtPackages if x != "defaults-release"))
+             "\n - ".join("{}  [{}]".format(label.ljust(_w), source)
+                          for label, source in _rows))
     else:
       banner("No dependencies of package %s to build.", buildOrder[-1])
 
