@@ -406,15 +406,18 @@ def storeHashes(package, specs, considerRelocation):
   if not spec["is_devel_pkg"] and "track_env" in spec:
     modifies_full_hash_dicts.append("track_env")
 
-  # If this recipe was sourced from a repository provider, fold the provider's
-  # commit hash into every hash variant.  This ensures that upgrading a
-  # provider (which changes its commit hash) triggers a rebuild of every
-  # package whose recipe came from that provider, even if the recipe text
-  # itself did not change.
-  if "recipe_provider_hash" in spec:
-    h_all("recipe_provider:" + spec["recipe_provider_hash"])
-    debug("Folding provider hash %s into hash for %s",
-          spec["recipe_provider_hash"][:10], package)
+  # A package's build hash is defined by its OWN inputs only — recipe text
+  # (comment-stripped), sources, patches, and the hashes of its declared
+  # dependencies — never the commit hash of the repository provider the recipe
+  # came from. By convention recipes are self-contained; anything they need from
+  # elsewhere is pulled in as an explicit package dependency (requires/
+  # build_requires) or via bits-include, both of which resolve to separately and
+  # granularly hashed packages — so cross-recipe coupling is already captured.
+  # Folding the provider's whole-repo commit hash here instead rebuilt EVERY
+  # package from that provider on ANY commit to it (even a docs/comment change);
+  # invalidation must be driven by the individual packages, not the repository.
+  # recipe_provider_hash is still set on the spec and recorded in the manifest
+  # (manifest.add_providers) for provenance — it just no longer enters the hash.
 
   for key in modifies_full_hash_dicts:
     if key not in spec:

@@ -949,7 +949,9 @@ class TestBootstrapDefaultConfig(unittest.TestCase):
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 class TestStoreHashesProviderHash(unittest.TestCase):
-    """The provider hash must affect the build hash."""
+    """The provider repo's commit hash must NOT affect the build hash: a package
+    is hashed by its own inputs, so editing one recipe rebuilds only that package
+    (+ dependents), never the whole provider repo."""
 
     # Minimal spec factory for storeHashes
     @staticmethod
@@ -974,8 +976,9 @@ class TestStoreHashesProviderHash(unittest.TestCase):
         storeHashes(spec["package"], specs, considerRelocation=False)
         return spec
 
-    def test_same_recipe_different_provider_hash_gives_different_build_hash(self):
-        """Upgrading a provider (new commit hash) must change the build hash."""
+    def test_same_recipe_different_provider_hash_gives_same_build_hash(self):
+        """A new provider commit hash must NOT change the build hash when the
+        recipe's own inputs are unchanged (no more whole-repo rebuilds)."""
         spec_a = self._make_spec(recipe_provider="my-repo",
                                  recipe_provider_hash="hash_old")
         spec_b = self._make_spec(recipe_provider="my-repo",
@@ -984,10 +987,10 @@ class TestStoreHashesProviderHash(unittest.TestCase):
         self._call_store_hashes(spec_a)
         self._call_store_hashes(spec_b)
 
-        self.assertNotEqual(
+        self.assertEqual(
             spec_a["remote_revision_hash"],
             spec_b["remote_revision_hash"],
-            "Changing provider hash did not change the package build hash",
+            "Provider commit hash leaked into the package build hash",
         )
 
     def test_same_recipe_same_provider_hash_gives_same_build_hash(self):
@@ -1012,15 +1015,16 @@ class TestStoreHashesProviderHash(unittest.TestCase):
         self.assertIn("remote_revision_hash", spec)
         self.assertIn("local_revision_hash", spec)
 
-    def test_provider_hash_changes_hash_vs_no_provider(self):
-        """A package with a provider hash must hash differently than one without."""
+    def test_provider_hash_does_not_change_hash_vs_no_provider(self):
+        """A package with a provider hash must hash IDENTICALLY to one without —
+        the provider hash is provenance only and never enters the build hash."""
         spec_with    = self._make_spec(recipe_provider="r", recipe_provider_hash="x")
         spec_without = self._make_spec()
 
         self._call_store_hashes(spec_with)
         self._call_store_hashes(spec_without)
 
-        self.assertNotEqual(
+        self.assertEqual(
             spec_with["remote_revision_hash"],
             spec_without["remote_revision_hash"],
         )
