@@ -671,8 +671,13 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
 | `--config-dir DIR` | Directory containing recipe files. |
 | `--reference-sources DIR` | Local mirror of git repositories. |
-| `--remote-store URL` | Binary store to fetch pre-built tarballs from. |
+| `--remote-store URL` | Binary store to fetch pre-built tarballs from. Append `::rw` to also upload to it. |
 | `--write-store URL` | Binary store to upload built tarballs to. |
+| `--s3-endpoint URL` | S3 endpoint for `b3://` stores. Overrides `$S3_ENDPOINT_URL` / `$AWS_ENDPOINT_URL_S3`; default `https://s3.cern.ch`. Set for a **non-CERN** bucket (AWS, MinIO, Ceph RGW). |
+| `--s3-access-key KEY` | S3 access key id. Overrides `$AWS_ACCESS_KEY_ID` (prefer the env var — a CI/CD variable or gitlab-runner `environment` entry — so the secret is not on the command line). |
+| `--s3-secret-key KEY` | S3 secret access key. Overrides `$AWS_SECRET_ACCESS_KEY`. |
+| `--s3-region REGION` | S3 region. Overrides `$AWS_DEFAULT_REGION`. |
+| `--s3-addressing-style {auto,path,virtual}` | S3 addressing style for `b3://` stores. MinIO usually needs `path`. Overrides `$S3_ADDRESSING_STYLE`. |
 | `--disable PACKAGE` | Skip PACKAGE entirely (repeatable). |
 | `--prefer-system` | Use system-installed packages where supported. |
 | `--no-system` | Never use system-installed packages. |

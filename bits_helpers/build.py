@@ -1761,7 +1761,12 @@ def doBuild(args, parser):
   # syncHelper is constructed after defaults loading so that it receives the
   # (potentially combined) architecture string.
   syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
-                               args.workDir, getattr(args, "insecure", False))
+                               args.workDir, getattr(args, "insecure", False),
+                               s3_endpoint=getattr(args, "s3Endpoint", None),
+                               s3_access_key=getattr(args, "s3AccessKey", None),
+                               s3_secret_key=getattr(args, "s3SecretKey", None),
+                               s3_region=getattr(args, "s3Region", None),
+                               s3_addressing_style=getattr(args, "s3AddressingStyle", None))
 
   # If the bits workdir contains a .sl directory (or .git/sl for git repos
   # with Sapling enabled), we use Sapling as SCM. Otherwise, we default to git

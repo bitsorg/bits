@@ -19,8 +19,59 @@ from bits_helpers.log import debug, info, error, dieOnError, ProgressPrint
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, effective_arch, ver_rev
 
 
-def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False):
+# Default S3 endpoint. Kept for backward compatibility with aliBuild: when no
+# endpoint is configured (neither CLI nor env), b3:// stores talk to CERN S3.
+DEFAULT_S3_ENDPOINT = "https://s3.cern.ch"
+
+
+def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None,
+                                 region=None, addressing_style=None):
+  """Resolve the S3 connection settings and export them to the environment.
+
+  Precedence for every setting: an explicit value (a --s3-* command-line flag)
+  wins over an environment variable (a GitLab CI/CD variable, or a gitlab-runner
+  `environment` entry — GitLab merges those into the process env before bits
+  runs), which wins over the built-in default. The resolved values are written
+  back into os.environ under their canonical names so that the boto3 client
+  (Boto3RemoteSync), and the `bits_helpers.upload_cmd` subprocess spawned by
+  --pipeline, all see the same connection without threading secrets through the
+  command line.
+
+  Backward compatible: with no --s3-* flags and no env vars, the endpoint
+  defaults to CERN S3 and credentials come from AWS_ACCESS_KEY_ID /
+  AWS_SECRET_ACCESS_KEY exactly as before (aliBuild behaviour).
+  """
+  endpoint = (endpoint
+              or os.environ.get("S3_ENDPOINT_URL")
+              or os.environ.get("AWS_ENDPOINT_URL_S3")
+              or os.environ.get("AWS_ENDPOINT_URL")
+              or DEFAULT_S3_ENDPOINT)
+  os.environ["S3_ENDPOINT_URL"] = endpoint
+  if access_key:
+    os.environ["AWS_ACCESS_KEY_ID"] = access_key
+  if secret_key:
+    os.environ["AWS_SECRET_ACCESS_KEY"] = secret_key
+  region = region or os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION")
+  if region:
+    os.environ["AWS_DEFAULT_REGION"] = region
+  addressing_style = addressing_style or os.environ.get("S3_ADDRESSING_STYLE")
+  if addressing_style:
+    os.environ["S3_ADDRESSING_STYLE"] = addressing_style
+  return {"endpoint": endpoint, "region": region, "addressing_style": addressing_style}
+
+
+def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
+                    s3_endpoint=None, s3_access_key=None, s3_secret_key=None,
+                    s3_region=None, s3_addressing_style=None):
   """Parse remote store URLs and return the correct RemoteSync instance for them."""
+  # For S3-backed stores, resolve + export the connection config before any S3
+  # backend is constructed, so boto3 and the --pipeline upload subprocess share
+  # one endpoint/credentials. No-op (and no env mutation of creds) for non-S3
+  # stores such as rsync://, cvmfs:// or the default https:// mirror.
+  if (read_url or "").startswith(("s3://", "b3://")) or \
+     (write_url or "").startswith(("s3://", "b3://")):
+    resolve_and_export_s3_config(s3_endpoint, s3_access_key, s3_secret_key,
+                                 s3_region, s3_addressing_style)
   # Read-only read stores (a CVMFS filesystem mount, an HTTP mirror) cannot
   # upload. When a separate --write-store is also given it is necessarily a
   # different backend, so pair the read-only reader with a writer built from
@@ -785,23 +836,39 @@ class Boto3RemoteSync:
       error("boto3 must be installed to use %s", Boto3RemoteSync)
       sys.exit(1)
 
+    # Connection settings, resolved by resolve_and_export_s3_config() (or taken
+    # straight from the caller's environment): the endpoint defaults to CERN S3,
+    # while an optional region and addressing style support non-CERN / self-hosted
+    # buckets (e.g. MinIO usually needs addressing_style='path').
+    endpoint = os.environ.get("S3_ENDPOINT_URL") or DEFAULT_S3_ENDPOINT
+    region = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION")
+    addressing_style = os.environ.get("S3_ADDRESSING_STYLE")
+    config_kwargs = {"s3": {"addressing_style": addressing_style}} if addressing_style else {}
     try:
       try:
         config = Config(
           request_checksum_calculation='WHEN_REQUIRED',
           response_checksum_validation='WHEN_REQUIRED',
+          **config_kwargs,
         )
       except TypeError:
-        # Older boto3 versions don't support these parameters (<1.36.0)
-        config = None
-      self.s3 = boto3.client("s3",
-                             **({"config": config} if config else {}),
-                             endpoint_url="https://s3.cern.ch",
-                             aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-                             aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"])
+        # Older boto3 versions don't support the checksum parameters (<1.36.0);
+        # still honour the addressing style if one was requested.
+        config = Config(**config_kwargs) if config_kwargs else None
+      client_kwargs = {
+        "endpoint_url": endpoint,
+        "aws_access_key_id": os.environ["AWS_ACCESS_KEY_ID"],
+        "aws_secret_access_key": os.environ["AWS_SECRET_ACCESS_KEY"],
+      }
+      if region:
+        client_kwargs["region_name"] = region
+      if config:
+        client_kwargs["config"] = config
+      self.s3 = boto3.client("s3", **client_kwargs)
     except KeyError:
-      error("you must pass the AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env "
-            "variables to bits in order to use the S3 remote store")
+      error("set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (via a CI/CD "
+            "variable, the gitlab-runner `environment`, or --s3-access-key / "
+            "--s3-secret-key) to use an S3 remote store")
       sys.exit(1)
 
   def _s3_listdir(self, dirname):

@@ -22,6 +22,39 @@ import sys
 DEFAULT_WORK_DIR = os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR") or "sw"
 
 
+def _add_s3_connection_opts(group):
+  """Add the S3 connection options to an argparse group (build and doctor).
+
+  These configure the connection for b3:// remote/write stores, so tarballs can
+  be archived to and reused from a non-CERN bucket (AWS S3, MinIO, Ceph RGW, …).
+  Each option overrides the matching environment variable, which in turn may be
+  set as a GitLab CI/CD variable or in the gitlab-runner `environment`; if
+  neither is given the aliBuild-compatible defaults apply (CERN S3, credentials
+  from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). Precedence: flag > env var >
+  default. All default to None so that, unless used, behaviour is unchanged.
+  """
+  group.add_argument("--s3-endpoint", dest="s3Endpoint", metavar="URL", default=None,
+                     help=("S3 endpoint URL for b3:// stores (e.g. "
+                           "https://s3.amazonaws.com or http://minio.local:9000). "
+                           "Overrides $S3_ENDPOINT_URL / $AWS_ENDPOINT_URL_S3. "
+                           "Default: https://s3.cern.ch. Set this to use a non-CERN bucket."))
+  group.add_argument("--s3-access-key", dest="s3AccessKey", metavar="KEY", default=None,
+                     help=("S3 access key id. Overrides $AWS_ACCESS_KEY_ID. Prefer the "
+                           "env var (a CI/CD variable or gitlab-runner `environment` entry) "
+                           "so the secret is not visible in the process list."))
+  group.add_argument("--s3-secret-key", dest="s3SecretKey", metavar="KEY", default=None,
+                     help=("S3 secret access key. Overrides $AWS_SECRET_ACCESS_KEY. "
+                           "Prefer the env var over this flag for the same reason."))
+  group.add_argument("--s3-region", dest="s3Region", metavar="REGION", default=None,
+                     help=("S3 region name (required by some non-CERN providers). "
+                           "Overrides $AWS_DEFAULT_REGION."))
+  group.add_argument("--s3-addressing-style", dest="s3AddressingStyle",
+                     choices=["auto", "path", "virtual"], default=None,
+                     help=("S3 addressing style for b3:// stores. Self-hosted S3 such "
+                           "as MinIO usually needs 'path'. Overrides $S3_ADDRESSING_STYLE; "
+                           "default lets boto3 choose."))
+
+
 def _host_online_cpus():
   """Return the kernel's online-CPU range string for use with --cpuset-cpus.
 
@@ -537,7 +570,11 @@ def doParseArgs():
   ~/.s3cfg; b3:// remotes require AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
   environment variables. A useful remote store is
   'https://s3.cern.ch/swift/v1/alibuild-repo'. It requires no credentials and
-  provides tarballs for the most common supported architectures.
+  provides tarballs for the most common supported architectures. To archive to
+  and reuse from your own bucket, use a b3://<bucket> store (append ::rw to
+  --remote-store, or add --write-store) and set the connection via the --s3-*
+  options / env vars below; a non-CERN endpoint (AWS, MinIO, Ceph) is supported
+  with --s3-endpoint.
   """)
   build_remote.add_argument("--no-remote-store", action="store_true",
                             help="Disable the use of the remote store, even if it is enabled by default.")
@@ -586,6 +623,7 @@ def doParseArgs():
                                   "except ::rw is not recognised. Implies --no-system."))
   build_remote.add_argument("--insecure", dest="insecure", action="store_true",
                             help="Don't validate TLS certificates when connecting to an https:// remote store.")
+  _add_s3_connection_opts(build_remote)
   build_remote.add_argument("--pipeline", dest="pipeline", action="store_true", default=False,
                             help="""\
                             (Requires --makeflow) Activates Options 1 and 4: split each package's Makeflow
@@ -863,6 +901,7 @@ def doParseArgs():
                                   "except ::rw is not recognised. Implies --no-system."))
   doctor_remote.add_argument("--insecure", dest="insecure", action="store_true",
                             help="Don't validate TLS certificates when connecting to an https:// remote store.")
+  _add_s3_connection_opts(doctor_remote)
 
   doctor_dirs = doctor_parser.add_argument_group(title="Customise bits directories")
   doctor_dirs.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
