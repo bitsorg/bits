@@ -25,7 +25,7 @@ import os
 import threading
 import urllib.request
 
-from bits_helpers.log import debug
+from bits_helpers.log import debug, warning
 
 _lock = threading.Lock()
 _state = {
@@ -37,6 +37,7 @@ _state = {
     "context": None,
     "pipeline_id": None,
     "ref":     None,
+    "warned":  False,  # True once we've surfaced a post failure (avoid spam)
 }
 
 
@@ -52,9 +53,9 @@ def _probe():
         _state["url"] = "{}/projects/{}/statuses/{}".format(
             env["CI_API_V4_URL"], env["CI_PROJECT_ID"], env["CI_COMMIT_SHA"])
         headers = {"Content-Type": "application/json"}
-        # A dedicated token (project/personal access token with api scope) is
-        # preferred; otherwise fall back to the job token, which recent GitLab
-        # accepts for the commit-status API.
+        # Commit-status creation needs a token with 'api' scope and >= Developer
+        # access (BITS_STATUS_TOKEN). The CI job token is rejected with 403, so
+        # without BITS_STATUS_TOKEN progress reporting is effectively off.
         if env.get("BITS_STATUS_TOKEN"):
             headers["PRIVATE-TOKEN"] = env["BITS_STATUS_TOKEN"]
         else:
@@ -85,7 +86,26 @@ def _post(state, coverage, description):
     try:
         urllib.request.urlopen(req, timeout=5).read()
     except Exception as exc:                       # never break a build over this
-        debug("progress: commit-status post failed: %s", exc)
+        code = getattr(exc, "code", None)          # urllib.error.HTTPError -> HTTP status
+        # Surface the first failure at a visible level (even without --debug) so the
+        # missing build-progress bar has an explanation in the log, then stop
+        # retrying on permission errors to avoid one failed POST per package.
+        if not _state["warned"]:
+            _state["warned"] = True
+            if code in (401, 403):
+                hint = (" -- BITS_STATUS_TOKEN must have 'api' scope and at least "
+                        "Developer access to post commit statuses (a read-only or "
+                        "Reporter token gets 403); the CI job token cannot post them")
+            elif not os.environ.get("BITS_STATUS_TOKEN"):
+                hint = " -- BITS_STATUS_TOKEN is not set (the CI job token cannot post commit statuses)"
+            else:
+                hint = ""
+            warning("progress: build-progress reporting disabled (commit-status POST "
+                    "failed: %s%s)", ("HTTP %s" % code) if code else exc, hint)
+        if code in (401, 403):
+            _state["ready"] = False                # permanent for this run; stop trying
+        else:
+            debug("progress: commit-status post failed: %s", exc)
 
 
 def set_total(total):
