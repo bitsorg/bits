@@ -708,6 +708,35 @@ The three `--*-checksums` flags are mutually exclusive. Precedence (highest → 
 
 **Build-image requirement — `procps` (for `--build-nice` straggler boosting under `--docker`).** When `--build-nice` (on by default) boosts a long-running straggler compile in a `--docker`/podman build, it locates the offending process by running `ps` *inside* the build container (`docker exec … ps`). This requires the `ps` utility — provided by the **`procps`** package (`procps-ng` on RPM distros) — to be installed in the build image. If `ps` is not present, bits prints a one-time warning and disables in-container straggler renicing for the run; the build itself is unaffected. Build images intended for `bits build --docker` should therefore include `procps`. (Native, non-`--docker` builds use `psutil` on the host instead and do not need `ps` in any image.)
 
+#### S3 store: common CI/CD config with per-runner overrides
+
+The store URL and its S3 connection can be configured entirely through the
+environment, so that a bucket is defined once as a **common GitLab CI/CD
+variable** and a specific `gitlab-runner` can **override** it locally. Because
+GitLab makes a CI/CD variable win over a same-named runner `environment` entry,
+the per-host override uses a distinct `BITS_`-prefixed name that bits consults
+first. Precedence for every setting (highest first):
+
+1. the command-line flag (`--remote-store` / `--write-store` / `--s3-*`);
+2. `BITS_<NAME>` — the per-host override, set in the gitlab-runner `config.toml`
+   `environment`;
+3. `<NAME>` — the common value, set as a GitLab CI/CD variable;
+4. the built-in default (CERN S3, public read store on supported architectures).
+
+| Setting | CLI flag | Common var (CI/CD) | Per-runner override (config.toml) |
+|---------|----------|--------------------|-----------------------------------|
+| Read store / bucket | `--remote-store` | `REMOTE_STORE` | `BITS_REMOTE_STORE` |
+| Write store | `--write-store` | `WRITE_STORE` | `BITS_WRITE_STORE` |
+| Endpoint | `--s3-endpoint` | `S3_ENDPOINT_URL` | `BITS_S3_ENDPOINT_URL` |
+| Access key | `--s3-access-key` | `AWS_ACCESS_KEY_ID` | `BITS_AWS_ACCESS_KEY_ID` |
+| Secret key | `--s3-secret-key` | `AWS_SECRET_ACCESS_KEY` | `BITS_AWS_SECRET_ACCESS_KEY` |
+| Region | `--s3-region` | `AWS_DEFAULT_REGION` | `BITS_AWS_DEFAULT_REGION` |
+| Addressing style | `--s3-addressing-style` | `S3_ADDRESSING_STYLE` | `BITS_S3_ADDRESSING_STYLE` |
+
+A store set as `REMOTE_STORE=b3://mybucket::rw` (or the flag) reads from and
+uploads to the same bucket. With no store and no env vars, behaviour is
+unchanged: the public CERN read store on supported architectures, no upload.
+
 ---
 
 ### bits deps

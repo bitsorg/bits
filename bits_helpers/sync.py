@@ -28,33 +28,47 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
                                  region=None, addressing_style=None):
   """Resolve the S3 connection settings and export them to the environment.
 
-  Precedence for every setting: an explicit value (a --s3-* command-line flag)
-  wins over an environment variable (a GitLab CI/CD variable, or a gitlab-runner
-  `environment` entry — GitLab merges those into the process env before bits
-  runs), which wins over the built-in default. The resolved values are written
-  back into os.environ under their canonical names so that the boto3 client
-  (Boto3RemoteSync), and the `bits_helpers.upload_cmd` subprocess spawned by
-  --pipeline, all see the same connection without threading secrets through the
-  command line.
+  Precedence for every setting (highest first):
+    1. an explicit value (a --s3-* command-line flag);
+    2. BITS_<NAME> -- the per-host override, typically set in the gitlab-runner
+       `environment`. It exists because GitLab makes a CI/CD variable win over a
+       same-named runner `environment` entry, so a runner cannot override the
+       common config unless bits looks at a distinct name first;
+    3. <NAME> -- the common value, typically a GitLab CI/CD variable;
+    4. the built-in default.
+  The resolved values are written back into os.environ under their canonical
+  names so that the boto3 client (Boto3RemoteSync) and the
+  `bits_helpers.upload_cmd` subprocess spawned by --pipeline all see the same
+  connection without threading secrets through the command line.
 
   Backward compatible: with no --s3-* flags and no env vars, the endpoint
   defaults to CERN S3 and credentials come from AWS_ACCESS_KEY_ID /
   AWS_SECRET_ACCESS_KEY exactly as before (aliBuild behaviour).
   """
+  def _pick(*names):
+    for n in names:
+      v = os.environ.get(n)
+      if v:
+        return v
+    return None
+
   endpoint = (endpoint
-              or os.environ.get("S3_ENDPOINT_URL")
-              or os.environ.get("AWS_ENDPOINT_URL_S3")
-              or os.environ.get("AWS_ENDPOINT_URL")
+              or _pick("BITS_S3_ENDPOINT_URL",
+                       "S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL")
               or DEFAULT_S3_ENDPOINT)
   os.environ["S3_ENDPOINT_URL"] = endpoint
+
+  access_key = access_key or _pick("BITS_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
   if access_key:
     os.environ["AWS_ACCESS_KEY_ID"] = access_key
+  secret_key = secret_key or _pick("BITS_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
   if secret_key:
     os.environ["AWS_SECRET_ACCESS_KEY"] = secret_key
-  region = region or os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION")
+
+  region = region or _pick("BITS_AWS_DEFAULT_REGION", "AWS_DEFAULT_REGION", "AWS_REGION")
   if region:
     os.environ["AWS_DEFAULT_REGION"] = region
-  addressing_style = addressing_style or os.environ.get("S3_ADDRESSING_STYLE")
+  addressing_style = addressing_style or _pick("BITS_S3_ADDRESSING_STYLE", "S3_ADDRESSING_STYLE")
   if addressing_style:
     os.environ["S3_ADDRESSING_STYLE"] = addressing_style
   return {"endpoint": endpoint, "region": region, "addressing_style": addressing_style}
