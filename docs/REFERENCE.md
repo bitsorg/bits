@@ -737,6 +737,21 @@ A store set as `REMOTE_STORE=b3://mybucket::rw` (or the flag) reads from and
 uploads to the same bucket. With no store and no env vars, behaviour is
 unchanged: the public CERN read store on supported architectures, no upload.
 
+**Client requirement — install on the build host, not in the container.** bits
+runs the remote-store sync in its own host-side Python process (the system
+`python3` that the `bits` wrapper invokes), even for `bits build --docker`; the
+container only runs the per-package compile steps. So the S3 client must be
+installed on each build (gitlab-runner) host:
+
+- `b3://` stores need **boto3**:
+  - Ubuntu/Debian: `sudo apt install python3-boto3`
+  - AlmaLinux/RHEL/Fedora: `sudo dnf install python3-boto3` (from EPEL: `sudo dnf install epel-release` first)
+  - or, respecting PEP 668: `pip3 install --break-system-packages boto3`
+- `s3://` stores need the **s3cmd** binary and an `~/.s3cfg` instead.
+
+`runner_installer.sh` installs `python3-boto3` automatically on both Ubuntu and
+AlmaLinux hosts.
+
 ---
 
 ### bits deps
