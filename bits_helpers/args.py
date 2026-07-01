@@ -582,7 +582,7 @@ def doParseArgs():
                             help="""\
                             Where to find prebuilt tarballs to reuse. See above for available remote stores.
                             End with ::rw if you want to upload (in that case, ::rw is stripped and --write-store
-                            is set to the same value). Implies --no-system. May be set to a default store on some
+                            is set to the same value). May be set to a default store on some
                             architectures; use --no-remote-store to disable it in that case.
                             """)
   build_remote.add_argument("--reuse-cvmfs", dest="reuseCvmfs", action="store_true",
@@ -620,7 +620,7 @@ def doParseArgs():
                                   "aliBuild compatibility wrapper sets it."))
   build_remote.add_argument("--write-store", dest="writeStore", metavar="STORE", default="",
                             help=("Where to upload newly built packages. Same syntax as --remote-store, "
-                                  "except ::rw is not recognised. Implies --no-system."))
+                                  "except ::rw is not recognised."))
   build_remote.add_argument("--insecure", dest="insecure", action="store_true",
                             help="Don't validate TLS certificates when connecting to an https:// remote store.")
   _add_s3_connection_opts(build_remote)
@@ -893,12 +893,12 @@ def doParseArgs():
   doctor_remote.add_argument("--remote-store", dest="remoteStore", metavar="STORE", default="", help="""\
   Where to find prebuilt tarballs to reuse. See above for available remote stores.
   End with ::rw if you want to upload (in that case, ::rw is stripped and --write-store
-  is set to the same value). Implies --no-system. May be set to a default store on some
+  is set to the same value). May be set to a default store on some
   architectures; use --no-remote-store to disable it in that case.
   """)
   doctor_remote.add_argument("--write-store", dest="writeStore", metavar="STORE", default="",
                             help=("Where to upload newly built packages. Same syntax as --remote-store, "
-                                  "except ::rw is not recognised. Implies --no-system."))
+                                  "except ::rw is not recognised."))
   doctor_remote.add_argument("--insecure", dest="insecure", action="store_true",
                             help="Don't validate TLS certificates when connecting to an https:// remote store.")
   _add_s3_connection_opts(doctor_remote)
@@ -1669,16 +1669,19 @@ def finaliseArgs(args, parser):
     if not args.writeStore:
       args.writeStore = os.environ.get("BITS_WRITE_STORE") or os.environ.get("WRITE_STORE") or ""
 
-    # On selected platforms, caching is active by default
+    # On selected platforms a public read store is enabled by default for
+    # opportunistic reuse. Unlike upstream aliBuild, activating a remote/write
+    # store does NOT force --no-system: bits keeps taking eligible packages from
+    # the system and only builds (and opportunistically uploads) the packages
+    # that must be built. Reuse is content-hash addressed, so system-package
+    # variance across hosts simply reduces reuse rather than breaking it. Pass an
+    # explicit --no-system / --always-prefer-system to opt into a fully
+    # self-contained build.
     if normalise_arch_key(args.architecture) in _S3_SUPPORTED_ARCH_KEYS and not args.preferSystem and not args.no_remote_store:
-      args.noSystem = "*"
       if not args.remoteStore:
         args.remoteStore = "https://s3.cern.ch/swift/v1/alibuild-repo"
     elif args.no_remote_store:
       args.remoteStore = ""
-
-    if args.remoteStore or args.writeStore:
-      args.noSystem = "*"
 
     if args.remoteStore.endswith("::rw") and args.writeStore:
       parser.error("cannot specify ::rw and --write-store at the same time")

@@ -54,10 +54,12 @@ CORRECT_BEHAVIOR = [
   ((), "build --force-unknown-architecture -j 10 zlib --disable gcc --disable foo,bar" , [("disable", ["gcc", "foo", "bar"])]),
   ((), "init zlib --dist master"                                                       , [("dist", {"repo": "alisw/alidist", "ver": "master"})]),
   ((), "init zlib --dist ktf/alidist@dev"                                              , [("dist", {"repo": "ktf/alidist", "ver": "dev"})]),
-  ((), "build --force-unknown-architecture zlib --remote-store rsync://test.local/"    , [("noSystem", "*"), ("remoteStore", "rsync://test.local/")]),
-  ((), "build --force-unknown-architecture zlib --remote-store rsync://test.local/::rw", [("noSystem", "*"), ("remoteStore", "rsync://test.local/"), ("writeStore", "rsync://test.local/")]),
+  # A remote/write store no longer forces --no-system: reuse is opportunistic and
+  # eligible packages are still taken from the system (noSystem stays None).
+  ((), "build --force-unknown-architecture zlib --remote-store rsync://test.local/"    , [("noSystem", None), ("remoteStore", "rsync://test.local/")]),
+  ((), "build --force-unknown-architecture zlib --remote-store rsync://test.local/::rw", [("noSystem", None), ("remoteStore", "rsync://test.local/"), ("writeStore", "rsync://test.local/")]),
   ((), "build --force-unknown-architecture zlib --no-remote-store --remote-store rsync://test.local/", [("noSystem", None), ("remoteStore", "")]),
-  ((), "build zlib --architecture slc7_x86-64"                                         , [("noSystem", "*"), ("preferSystem", False), ("remoteStore", "https://s3.cern.ch/swift/v1/alibuild-repo")]),
+  ((), "build zlib --architecture slc7_x86-64"                                         , [("noSystem", None), ("preferSystem", False), ("remoteStore", "https://s3.cern.ch/swift/v1/alibuild-repo")]),
   ((), "build zlib --architecture ubuntu1804_x86-64"                                   , [("noSystem", None), ("preferSystem", False), ("remoteStore", "")]),
   ((), "build zlib -a slc7_x86-64"                                                     , [("docker", False), ("dockerImage", None), ("docker_extra_args", ["--network=host", _MOCK_CPUSET_ARG])]),
   ((), "build zlib -a slc7_x86-64 --docker-image registry.cern.ch/alisw/some-builder"  , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/some-builder")]),
