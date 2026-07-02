@@ -1657,26 +1657,17 @@ def finaliseArgs(args, parser):
 
   if args.action in ("build", "doctor"):
 
-    # Store URL from the environment when not given on the CLI or in bits.rc, so
-    # the bucket can be configured as a common CI/CD variable (REMOTE_STORE /
-    # WRITE_STORE) and overridden per-host in the gitlab-runner `environment`
-    # (BITS_REMOTE_STORE / BITS_WRITE_STORE, which win — see the note in
-    # resolve_and_export_s3_config on why a distinct BITS_ name is needed).
-    # Precedence: CLI / bits.rc > BITS_* (runner) > plain (CI common) > built-in
-    # default. --no-remote-store below still clears it.
+    # Store URL from the environment when not set on the CLI/bits.rc. Precedence:
+    # CLI/bits.rc > BITS_REMOTE_STORE (runner env) > REMOTE_STORE (CI common) >
+    # built-in default. --no-remote-store below still clears it.
     if not args.remoteStore:
       args.remoteStore = os.environ.get("BITS_REMOTE_STORE") or os.environ.get("REMOTE_STORE") or ""
     if not args.writeStore:
       args.writeStore = os.environ.get("BITS_WRITE_STORE") or os.environ.get("WRITE_STORE") or ""
 
-    # On selected platforms a public read store is enabled by default for
-    # opportunistic reuse. Unlike upstream aliBuild, activating a remote/write
-    # store does NOT force --no-system: bits keeps taking eligible packages from
-    # the system and only builds (and opportunistically uploads) the packages
-    # that must be built. Reuse is content-hash addressed, so system-package
-    # variance across hosts simply reduces reuse rather than breaking it. Pass an
-    # explicit --no-system / --always-prefer-system to opt into a fully
-    # self-contained build.
+    # A public read store is enabled by default on selected platforms. Unlike
+    # aliBuild, activating a store does NOT force --no-system (reuse is
+    # content-hash addressed); use --no-system for a self-contained build.
     if normalise_arch_key(args.architecture) in _S3_SUPPORTED_ARCH_KEYS and not args.preferSystem and not args.no_remote_store:
       if not args.remoteStore:
         args.remoteStore = "https://s3.cern.ch/swift/v1/alibuild-repo"

@@ -79,9 +79,8 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
                     s3_region=None, s3_addressing_style=None):
   """Parse remote store URLs and return the correct RemoteSync instance for them."""
   # For S3-backed stores, resolve + export the connection config before any S3
-  # backend is constructed, so boto3 and the --pipeline upload subprocess share
-  # one endpoint/credentials. No-op (and no env mutation of creds) for non-S3
-  # stores such as rsync://, cvmfs:// or the default https:// mirror.
+  # backend is built, so boto3 and the --pipeline subprocess share one
+  # endpoint/credentials. No-op for non-S3 stores (rsync/cvmfs/https).
   if (read_url or "").startswith(("s3://", "b3://")) or \
      (write_url or "").startswith(("s3://", "b3://")):
     resolve_and_export_s3_config(s3_endpoint, s3_access_key, s3_secret_key,
@@ -850,10 +849,9 @@ class Boto3RemoteSync:
       error("boto3 must be installed to use %s", Boto3RemoteSync)
       sys.exit(1)
 
-    # Connection settings, resolved by resolve_and_export_s3_config() (or taken
-    # straight from the caller's environment): the endpoint defaults to CERN S3,
-    # while an optional region and addressing style support non-CERN / self-hosted
-    # buckets (e.g. MinIO usually needs addressing_style='path').
+    # Connection settings from the environment (resolve_and_export_s3_config sets
+    # them): endpoint defaults to CERN S3; region and addressing style support
+    # non-CERN buckets (MinIO usually needs addressing_style='path').
     endpoint = os.environ.get("S3_ENDPOINT_URL") or DEFAULT_S3_ENDPOINT
     region = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION")
     addressing_style = os.environ.get("S3_ADDRESSING_STYLE")

@@ -1029,10 +1029,9 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   spec = specs[p]
   debug("Build command: %s", build_command)
   progress = debug
-  # Human-facing reuse marker (shown even without --debug): note packages served
-  # from a prebuilt tarball instead of compiled. "[from store]" when a remote
-  # store is configured (the tarball came from the shared cache, possibly via the
-  # prefetch pool); "[cached]" for a local-only tarball with no remote store.
+  # Reuse marker (shown even without --debug): "[from store]" when a remote store
+  # is configured (tarball from the shared cache), "[cached]" for a local-only
+  # tarball. Blank when the package is compiled.
   _reuse_tag = ((" [from store]" if getattr(syncHelper, "remoteStore", "")
                  else " [cached]") if cachedTarball else "")
   if args.builders==1:
@@ -1347,10 +1346,9 @@ def doFinalSync(spec, specs, args, syncHelper):
   # produced in a previous run with a read-only remote store.
   if not spec["revision"].startswith("local"):
     syncHelper.upload_symlinks_and_tarball(spec)
-    # Note in the log (at info level, i.e. even without --debug) that a freshly
-    # built package's tarball was pushed to the write store, so operators can see
-    # reuse artefacts being published. Reused packages (cachedTarball) are already
-    # in the store and are marked "[from store]" at build time, so skip them.
+    # Log (info level) that a freshly built tarball was pushed to the write store.
+    # Reused packages (cachedTarball) are already there and were marked
+    # "[from store]" at build time, so they are skipped here.
     if getattr(syncHelper, "writeStore", "") and not spec.get("cachedTarball"):
       info("%s@%s [uploaded]", spec["package"], spec["version"])
     # Record the tarball's SHA-256 in the local integrity ledger so that
