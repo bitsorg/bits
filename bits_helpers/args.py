@@ -1061,7 +1061,7 @@ def doParseArgs():
                               help="Instead of a package, publish the merged VIEW for a release to "
                                    "<cvmfs-target>/Views/NAME-<build_id>/<arch>/. The build_id is read "
                                    "from the packages' .meta.json, not given here.")
-  publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=True, metavar="PATH",
+  publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=False, metavar="PATH",
                               help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9). With --view, the CVMFS root the Views/ tree lives under.")
   publish_parser.add_argument("--module-target", dest="moduleTarget", metavar="PATH", default=None,
                               help="CVMFS path of the separate modules tree. When given (prepub path), "
@@ -1085,6 +1085,14 @@ def doParseArgs():
                               help=("Skip the relocation step. Use this when the package was built "
                                     "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
                                     "so all embedded paths are already correct."))
+  publish_parser.add_argument("--to", dest="publishTo", default=None,
+                              choices=["s3", "cvmfs", "both"],
+                              help=("Where to publish: 's3' (upload to the write store for reuse), "
+                                    "'cvmfs' (via --spool/--prepub-url), or 'both'. Default: 'cvmfs' "
+                                    "when --cvmfs-target is given (backward compatible), else 's3'."))
+  publish_parser.add_argument("--write-store", dest="writeStore", default="", metavar="STORE",
+                              help=("S3 write store for '--to s3' (e.g. b3://<bucket> or s3://<bucket>). "
+                                    "Falls back to WRITE_STORE / BITS_WRITE_STORE in the environment."))
 
   # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
   _prepub = publish_parser.add_argument_group(

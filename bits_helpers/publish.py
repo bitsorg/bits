@@ -104,6 +104,44 @@ def _pkg_id(package, version_dir, architecture):
     return f"{pkg_tag}-{ver_tag}-{arch_tag}"
 
 
+def _load_manifest_spec(work_dir, package, version):
+    """Newest build-manifest entry for *package* (optionally pinned to *version*)."""
+    import glob as _glob
+    import json as _json
+    pats = [join(work_dir, "MANIFESTS", "bits-manifest-*.json"),
+            join(work_dir, "bits-manifest-*.json")]
+    files = sorted({f for p in pats for f in _glob.glob(p) if not f.endswith("latest.json")},
+                   key=os.path.getmtime, reverse=True)
+    for f in files:
+        try:
+            data = _json.load(open(f))
+        except Exception:
+            continue
+        for e in data.get("packages", []):
+            if e.get("package") != package:
+                continue
+            if version and e.get("version") not in (version, version.split("-")[0]):
+                continue
+            return e
+    return None
+
+
+def _publish_s3(package, version, architecture, work_dir, write_store, parser):
+    """Upload an already-built package's tarball to the S3 write store for reuse."""
+    from bits_helpers.sync import remote_from_url
+    e = _load_manifest_spec(work_dir, package, version)
+    if not e or not e.get("hash"):
+        parser.error("no built manifest entry for %s%s in %s — build it first"
+                     % (package, (" " + version) if version else "", work_dir))
+    spec = {"package": e["package"], "version": e.get("version"),
+            "revision": e.get("revision"), "hash": e["hash"]}
+    arch = e.get("effective_architecture") or architecture
+    banner("Publishing %s-%s to S3 store %s" % (spec["package"], spec.get("version"), write_store))
+    writer = remote_from_url(write_store, write_store, arch, work_dir)
+    writer.upload_symlinks_and_tarball(spec)
+    info("Uploaded %s (%s) to the S3 store.", spec["package"], spec["hash"][:12])
+
+
 def _spool_is_remote(spool):
     """Return True when *spool* is a remote ``[user@]host:path`` spec."""
     # A single colon that is not a Windows drive letter indicates remote.
@@ -274,6 +312,29 @@ def doPublish(args, parser):
     # ------------------------------------------------------------------
     # Validate: exactly one of --spool / --prepub-url must be provided.
     # ------------------------------------------------------------------
+    # ── Resolve publish target(s) ─────────────────────────────────────────────
+    # Backward-compatible default: 'cvmfs' when --cvmfs-target is given (the
+    # existing pipeline call), otherwise 's3'. --to overrides.
+    _to = getattr(args, "publishTo", None)
+    if _to == "both":
+        targets = {"s3", "cvmfs"}
+    elif _to:
+        targets = {_to}
+    else:
+        targets = {"cvmfs"} if cvmfs_target else {"s3"}
+
+    if "s3" in targets:
+        write_store = (getattr(args, "writeStore", "") or os.environ.get("BITS_WRITE_STORE")
+                       or os.environ.get("WRITE_STORE") or "")
+        if not write_store:
+            parser.error("--to s3 requires a write store (--write-store, or WRITE_STORE / BITS_WRITE_STORE).")
+        _publish_s3(package, version, architecture, work_dir, write_store, parser)
+        if "cvmfs" not in targets:
+            return
+
+    # CVMFS publish needs a target path and exactly one sink (--spool | --prepub-url).
+    if not cvmfs_target:
+        parser.error("--to cvmfs requires --cvmfs-target.")
     if prepub_url and spool:
         parser.error("--prepub-url and --spool are mutually exclusive; use one or the other.")
     if not prepub_url and not spool:
