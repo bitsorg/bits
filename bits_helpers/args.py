@@ -589,6 +589,17 @@ def doParseArgs():
                             help=("Reuse already-deployed components from the CVMFS area declared by the "
                                   "defaults `cvmfs_dir:` field. Sets --remote-store to cvmfs://<cvmfs_dir> "
                                   "when no remote store is given."))
+  build_remote.add_argument("--sign-manifest", dest="signManifest", default=None, metavar="KEY.pem",
+                            help=("After the build, sign the build manifest with this Ed25519 private key "
+                                  "(PEM) so consumers can verify it for trusted reuse. Public verification "
+                                  "keys ship in bits/keys/."))
+  build_remote.add_argument("--trust-manifest", dest="trustManifest", default=None, metavar="URL|PATH",
+                            help=("Signed release manifest to trust as the authority for remote reuse. Its "
+                                  "signature is verified against the shipped trust keys; a remote tarball is "
+                                  "reused only if its hash is listed there and its sha256 matches."))
+  build_remote.add_argument("--require-signed-reuse", dest="requireSignedReuse", action="store_true",
+                            help=("Fail-closed: only reuse remote tarballs vouched for by a verified signed "
+                                  "manifest (see --trust-manifest). Local and CVMFS artifacts are unaffected."))
   build_remote.add_argument("--reuse-policy", dest="reusePolicy", choices=["strict", "relaxed"],
                             default=None,
                             help=("CVMFS reuse strictness (ADR-0001). 'strict' (default): reuse only on "

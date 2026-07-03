@@ -149,3 +149,28 @@ def verify_manifest(manifest_path: str, sig_path=None, dirs=None):
   except Exception:
     return None
   return verify_bytes(data, envelope, load_trusted_keys(dirs))
+
+
+def trusted_index(manifest_path: str, sig_path=None, dirs=None):
+  """Verify a signed manifest and return its trusted reuse index.
+
+  Returns ``(key_id, {content_hash: tarball_sha256})`` on success, or
+  ``(None, {})`` when the signature is missing or untrusted. This is the
+  authoritative index for trusted reuse: a remote tarball is reused only when
+  its content hash is a key here AND the downloaded tarball's sha256 matches
+  the value (fail-closed).
+  """
+  kid = verify_manifest(manifest_path, sig_path, dirs)
+  if not kid:
+    return None, {}
+  try:
+    with open(manifest_path) as fh:
+      data = json.load(fh)
+  except Exception:
+    return None, {}
+  index = {}
+  for e in data.get("packages", []):
+    h, sha = e.get("hash"), e.get("tarball_sha256")
+    if h and sha:
+      index[h] = sha
+  return kid, index

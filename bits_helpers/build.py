@@ -3430,6 +3430,10 @@ def doBuild(args, parser):
   if getattr(args, "manifest", None) is not None:
     args.manifest.complete()
     banner("Build manifest written to:\n  %s", args.manifest.path)
+    if getattr(args, "signManifest", None):
+      from bits_helpers import trust
+      sig = trust.sign_manifest(args.manifest.path, args.signManifest)
+      banner("Signed build manifest for trusted reuse:\n  %s", sig)
 
   debug("Everything done")
 
