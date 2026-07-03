@@ -161,6 +161,23 @@ byte-for-byte the artifact bits would otherwise have built. `--no-remote-store`
 disables the remote tiers (CVMFS reuse and the S3/HTTP archive); the local store
 and build-from-source always remain.
 
+#### Signing and verifying the archive tier
+
+The tier-3 attestation is driven by three build flags:
+
+- `--sign-manifest KEY.pem` — after a successful build, sign the build manifest
+  (`bits-manifest-latest.json`) with an Ed25519 private key. The detached
+  signature is written next to the manifest (`.sig`). Run this on the release/CI
+  host that produced the archive; the private key never ships.
+- `--trust-manifest URL|PATH` — the signed release manifest a consumer trusts as
+  the authority for archive reuse. Its signature is verified against the public
+  keys shipped in `bits/keys/` (plus `$BITS_TRUST_KEYS` and
+  `~/.config/bits/keys`).
+- `--require-signed-reuse` — fail closed: a tarball recalled from the remote
+  store is reused only when `--trust-manifest` lists its hash **and** its sha256
+  matches. Unlisted → discard and rebuild; sha256 mismatch → fatal (tampering).
+  Local build-node and CVMFS artifacts are unaffected.
+
 ---
 
 ## 10. Setting Up a Development Environment
