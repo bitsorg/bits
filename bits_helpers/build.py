@@ -1731,6 +1731,21 @@ def doBuild(args, parser):
     except (TypeError, ValueError):
       args.oversubscribe = 1.0
 
+  # Binary store URL from the active defaults (system.remote_store). Under
+  # system: it is NOT hashed, so a stack-wide store never invalidates package
+  # hashes (unlike env:). Precedence: CLI/bits.rc/env > system.remote_store >
+  # built-in arch default. '::rw' shorthand is honoured as on the CLI.
+  if (not getattr(args, "remoteStoreExplicit", False)
+      and not getattr(args, "no_remote_store", False)):
+    _rs = _system_opt("remote_store", None)
+    if _rs:
+      _rs = str(_rs).strip()
+      if _rs.endswith("::rw"):
+        _rs = _rs[:-4]
+        if not getattr(args, "writeStore", ""):
+          args.writeStore = _rs
+      args.remoteStore = _rs
+
   # The final target builds alone (every other package is one of its
   # already-finished dependencies), so the per-builder -j split needlessly
   # starves the largest compile of the run. Let it use the full -j; the memory

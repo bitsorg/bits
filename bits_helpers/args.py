@@ -1665,6 +1665,11 @@ def finaliseArgs(args, parser):
     if not args.writeStore:
       args.writeStore = os.environ.get("BITS_WRITE_STORE") or os.environ.get("WRITE_STORE") or ""
 
+    # Explicit = came from CLI/bits.rc/env. If so it wins over a defaults
+    # `system: remote_store:` (applied later in build.py, where defaults load);
+    # otherwise system.remote_store overrides the built-in arch default below.
+    args.remoteStoreExplicit = bool(args.remoteStore)
+
     # A public read store is enabled by default on selected platforms. Unlike
     # aliBuild, activating a store does NOT force --no-system (reuse is
     # content-hash addressed); use --no-system for a self-contained build.
