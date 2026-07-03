@@ -134,6 +134,33 @@ storeHashes()                        ← compute content-addressable hash per pk
                uploadTarball()            ← push to write store (if configured)
 ```
 
+### Artifact resolution order (trust-tiered reuse)
+
+Before compiling a package, bits looks for an existing, trusted build of the
+*exact same content hash* and reuses it. Tiers are consulted in order — first hit
+wins — and each has its own root of trust:
+
+1. **Local store on the build node** (`$WORK_DIR/TARS`, already-unpacked
+   `INSTALLROOT`) — artifacts this node built or fetched earlier. Ultimately
+   trusted (produced here) and cheapest, so it is consulted first.
+2. **CVMFS**, if mounted (`--reuse-cvmfs` / `cvmfs://`) — the published read-only
+   tree. Trusted by CVMFS itself: the repository is signed at Stratum-0 and the
+   client verifies it against the repo key in `/etc/cvmfs/keys`. No extra
+   bits-level attestation is needed for these artifacts.
+3. **Remote archive (S3/HTTP), verified against a signed manifest** — content-
+   addressed tarballs. Integrity comes from the content hash + `tarball_sha256`;
+   *authenticity* comes from a signature-verified release manifest: a tarball is
+   reused only if its hash appears in a trusted signed manifest **and** its
+   sha256 matches. This is what makes a public archive safe to reuse from.
+4. **Build from source** — the fallback; the source archive is integrity-pinned
+   by the recipe's `source_checksums`. Trusted by construction.
+
+Reuse at any tier requires an exact content-hash match — the hash encodes the
+full recipe + resolved dependency closure + defaults + architecture, so a hit is
+byte-for-byte the artifact bits would otherwise have built. `--no-remote-store`
+disables the remote tiers (CVMFS reuse and the S3/HTTP archive); the local store
+and build-from-source always remain.
+
 ---
 
 ## 10. Setting Up a Development Environment
