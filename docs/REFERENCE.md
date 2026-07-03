@@ -178,6 +178,33 @@ The tier-3 attestation is driven by three build flags:
   matches. Unlisted → discard and rebuild; sha256 mismatch → fatal (tampering).
   Local build-node and CVMFS artifacts are unaffected.
 
+#### Uploads: `bits login`
+
+Reads need no credentials. Uploading to the S3 store uses short-lived, scoped
+credentials obtained from bits-console instead of a long-lived S3 secret on
+disk:
+
+1. Sign in to bits-console with CERN SSO and copy the issued *bits-token* into
+   `~/.bits/config` (mode 600):
+
+   ```ini
+   [bits]
+   console_url = https://bits-console.web.cern.ch
+   bits_token  = <token>
+   ```
+
+2. `bits login 8h` exchanges the token for scoped S3 credentials written to
+   `~/.bits/session` (mode 600), valid for the requested lifetime. `bits login
+   --status` shows the current state; `bits login --logout` clears it.
+
+The credentials are scoped to your write area (your user area, or the shared
+common area for group admins). `bits` uploads pick them up automatically. In CI,
+the pipeline injects `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+`AWS_SESSION_TOKEN`, which always take precedence over a `bits login` session, so
+no interactive login is needed there. The private manifest-signing key never
+leaves the console — it countersigns manifests on your behalf (single trust
+anchor; see `bits-console/REFERENCE.md`).
+
 ---
 
 ## 10. Setting Up a Development Environment
