@@ -1681,8 +1681,12 @@ def doBuild(args, parser):
   # When defaults declare cvmfs_dir / install_dir / module_dir (templates that
   # may use %(architecture)s), resolve them and use them to default the build/
   # reuse flags so the whole CVMFS chain can be driven from one declaration:
-  #   * docker build  -> --cvmfs-prefix = <install_path> (build in place)
   #   * reuse deployed -> --remote-store = cvmfs://<cvmfs_dir>  (with --reuse-cvmfs)
+  # Docker builds are relocatable by default (built in WORK_DIR with padded
+  # placeholders + relocate-me.sh), so the tarballs can be reused anywhere and are
+  # relocated into CVMFS on publish. Pass --cvmfs-prefix explicitly only for an
+  # in-place, non-relocatable build (skips relocation on publish, but the result
+  # is NOT reusable outside that exact CVMFS path).
   from bits_helpers.cvmfs_layout import resolve_cvmfs_layout
   _cvmfs = resolve_cvmfs_layout(defaultsMeta, args.architecture)
   # Stash the resolved layout so create_provenance_info can record it in each
@@ -1693,9 +1697,6 @@ def doBuild(args, parser):
   if _cvmfs:
     info("CVMFS layout: install=%s  modules=%s  views=%s",
          _cvmfs["install_path"], _cvmfs["module_path"], _cvmfs["views_path"])
-    if args.docker and not getattr(args, "cvmfsPrefix", None) and _cvmfs["cvmfs_dir"]:
-      args.cvmfsPrefix = _cvmfs["install_path"]
-      info("Defaulting --cvmfs-prefix to %s (from defaults CVMFS layout)", args.cvmfsPrefix)
     if getattr(args, "reuseCvmfs", False) and not args.remoteStore and _cvmfs["cvmfs_dir"]:
       args.remoteStore = "cvmfs://" + _cvmfs["cvmfs_dir"]
       info("Reusing deployed components: --remote-store %s", args.remoteStore)
