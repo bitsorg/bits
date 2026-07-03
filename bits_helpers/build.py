@@ -163,6 +163,44 @@ def readHashFile(fn):
     return "0"
 
 
+def trusted_reuse_index(args, work_dir):
+  """Return the verified {hash: tarball_sha256} index for --require-signed-reuse.
+
+  Loads and signature-verifies the --trust-manifest (local path or URL) once,
+  memoising the result on *args*. An empty map means nothing is attested, so
+  every remote reuse fails closed.
+  """
+  cached = getattr(args, "_trustedReuseIndex", None)
+  if cached is not None:
+    return cached
+  from bits_helpers import trust
+  src = getattr(args, "trustManifest", None)
+  index = {}
+  if src:
+    manifest = src
+    if "://" in src:
+      # Fetch the manifest and its detached signature next to it.
+      from bits_helpers.download import downloadUrllib2
+      dest = os.path.join(work_dir, "MANIFESTS", "trust")
+      os.makedirs(dest, exist_ok=True)
+      name = os.path.basename(src.split("?")[0]) or "trust-manifest.json"
+      downloadUrllib2(src, dest, work_dir, dest_filename=name)
+      downloadUrllib2(src + ".sig", dest, work_dir, dest_filename=name + ".sig")
+      manifest = os.path.join(dest, name)
+    kid, index = trust.trusted_index(manifest)
+    if not kid:
+      warning("--require-signed-reuse: could not verify signed manifest %s; "
+              "no remote tarball will be reused.", src)
+    else:
+      debug("Trusted reuse index from %s (signed by %s): %d entries",
+            src, kid, len(index))
+  else:
+    warning("--require-signed-reuse set without --trust-manifest; "
+            "no remote tarball will be reused.")
+  args._trustedReuseIndex = index
+  return index
+
+
 def update_git_repos(args, specs, buildOrder):
     """Update and/or fetch required git repositories in parallel.
 
@@ -2779,6 +2817,10 @@ def doBuild(args, parser):
       if _prefetch_workers > 0:
         from bits_helpers.download import _wait_for_sentinel as _wfs
         _wfs(tar_hash_dir)
+      # Tarballs already present before the remote fetch are local build-node
+      # artifacts (ultimately trusted); ones that appear only after fetch came
+      # from the remote store and are subject to --require-signed-reuse.
+      _preFetchTars = set(glob(os.path.join(tar_hash_dir, "*gz")))
       syncHelper.fetch_tarball(spec)
       tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
                   if os.path.isfile(t)]  # skip dangling symlinks
@@ -2791,6 +2833,28 @@ def doBuild(args, parser):
       if spec["cachedTarball"] and getattr(args, "storeIntegrity", False):
         from bits_helpers.store_integrity import verify_tarball_checksum
         verify_tarball_checksum(spec, workDir, args.architecture, spec["cachedTarball"])
+      # Trusted-reuse gate (--require-signed-reuse): a tarball recalled from the
+      # remote store is reused only if a verified signed manifest vouches for it
+      # (hash present AND sha256 matches). Otherwise fall through to a rebuild;
+      # a sha256 mismatch is fatal (tampering).
+      if (spec["cachedTarball"] and getattr(args, "requireSignedReuse", False)
+          and spec["cachedTarball"] not in _preFetchTars):
+        _idx = trusted_reuse_index(args, workDir)
+        _sha = _idx.get(spec["hash"])
+        if _sha is None:
+          warning("Trusted reuse: %s@%s not vouched for by the signed manifest; "
+                  "discarding remote tarball and rebuilding.",
+                  spec["package"], spec["hash"])
+          spec["cachedTarball"] = ""
+        else:
+          _actual = compute_checksum_file(spec["cachedTarball"])
+          dieOnError(_actual != _sha,
+                     "INTEGRITY FAILURE: remote tarball %s does not match the "
+                     "signed manifest.\n  Expected: %s\n  Actual:   %s\n  "
+                     "Do NOT use it." % (os.path.basename(spec["cachedTarball"]),
+                                         _sha, _actual))
+          debug("Trusted reuse: %s@%s verified against signed manifest",
+                spec["package"], spec["hash"])
 
     # The actual build script.
     
