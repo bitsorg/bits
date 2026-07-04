@@ -264,6 +264,11 @@ class HttpRemoteSync:
           # Destination specified -- file (dest) or buffer (returnResult).
           # Use requests in stream mode
           resp = get(url, stream=True, verify=not self.insecure, timeout=self.httpTimeoutSec)
+          # Never write an error body as if it were the file: a missing object
+          # (404/NoSuchKey) or any HTTP error must not be saved as the archive.
+          if resp.status_code == 404:
+            return None
+          resp.raise_for_status()
           size = int(resp.headers.get("content-length", "-1"))
           downloaded = 0
           reportTime = time.time()
