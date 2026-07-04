@@ -1671,7 +1671,9 @@ def doBuild(args, parser):
     # depends on), exactly as before.
     if flavours:
       from collections import OrderedDict as _OD
-      meta.setdefault("env", _OD())
+      # An empty `env:` block parses to None, so setdefault would keep it None.
+      if not isinstance(meta.get("env"), dict):
+        meta["env"] = _OD()
       for _k, _v in flavours.items():
         meta["env"][_k] = _v
     # init.sh-from-modules (the default) publishes a build-mode marker through the
@@ -1685,7 +1687,9 @@ def doBuild(args, parser):
     # stay reusable).
     if getattr(args, "initdotshFromModules", False):
       from collections import OrderedDict as _OD
-      meta.setdefault("env", _OD())
+      # An empty `env:` block parses to None, so setdefault would keep it None.
+      if not isinstance(meta.get("env"), dict):
+        meta["env"] = _OD()
       meta["env"]["BITS_INITDOTSH_FROM_MODULES"] = "1"
     return meta, body
   # Deriving the dependency env from the dependencies' modulefiles is the default.
