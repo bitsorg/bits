@@ -400,8 +400,11 @@ class HttpRemoteSync:
     with requests.Session() as session:
       # Fetch manifest file with initial symlinks. This file is updated
       # regularly; we use it to avoid many small network requests.
+      # The .manifest index is an optional optimisation that bits' upload paths
+      # don't generate, so a missing one (getRetry -> None) is normal: fall back
+      # to the per-symlink listing below.
       manifest = self.getRetry("{}/{}.manifest".format(self.remoteStore, links_path),
-                               returnResult=True, session=session)
+                               returnResult=True, session=session) or b""
       symlinks = {
         linkname.decode("utf-8"): target.decode("utf-8")
         for linkname, sep, target in (line.partition(b"\t")
