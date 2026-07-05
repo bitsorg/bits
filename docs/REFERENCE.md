@@ -182,6 +182,29 @@ The tier-3 attestation is driven by three build flags:
   those groups plus the always-trusted `common` base (untagged entries count as
   base). Omit it to trust every signed entry. Produce group tags at certification
   time with `bits certify --group GROUP`.
+- `--reuse-beacon URL` (or `$BITS_REUSE_BEACON`) — report the hashes this build
+  reused from the store to `<URL>/api/reuse` (best-effort, fire-and-forget in a
+  daemon thread; never blocks or fails the build). Only small references are
+  sent, never artifact data. Feeds usage-informed GC.
+
+#### Store garbage collection — `bits gc`
+
+`bits gc --trust-manifest <signed-common-manifest>` sweeps unreferenced objects
+from the shared S3 store. The roots are every content hash in the *verified*
+signed common manifest; any store object whose hash is not a root and is older
+than `--grace-days` (default 7) is removed. It is deliberately conservative:
+
+- **Fail-closed** — if the manifest does not verify, or verifies to zero roots,
+  nothing is swept (an unverifiable manifest never becomes "delete everything").
+- **Bounded namespace** — only keys matching `TARS/<arch>/store/<shard>/<hash>/<file>`
+  with `shard == hash[:2]` and no whitespace/control characters are eligible;
+  everything else is skipped.
+- **Object-by-object** — deletes individual keys (re-validated at delete time),
+  never a prefix/directory delete.
+
+Use `-n/--dry-run` to see what would be swept. Because objects are shared and
+keyed by content, dropping one build's roots never deletes an object another
+certified build still references.
 
 #### Uploads and certification
 

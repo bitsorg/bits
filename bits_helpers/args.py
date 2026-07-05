@@ -243,6 +243,16 @@ def doParseArgs():
           "is what clients trust for binary reuse (see docs/adr/0004)."
       ),
   )
+  gc_parser = subparsers.add_parser(
+      "gc",
+      help="sweep unreferenced objects from the shared S3 store (reachability GC)",
+      description=(
+          "Reachability garbage collection (ADR-0004 §6): the roots are every "
+          "content hash in the verified signed common manifest; any store object "
+          "whose hash is not a root and is older than the grace period is swept. "
+          "Fail-closed: refuses to run if the manifest does not verify."
+      ),
+  )
   status_parser = subparsers.add_parser(
       "status",
       help="show what bits build would do for each package (dry run)",
@@ -614,6 +624,10 @@ def doParseArgs():
                             help=("Comma-separated groups to trust in the signed manifest, on top of the "
                                   "always-trusted 'common' base. When omitted, every signed entry is trusted. "
                                   "Use to reuse only your own group's app layer plus the shared base."))
+  build_remote.add_argument("--reuse-beacon", dest="reuseBeacon", default=None, metavar="URL",
+                            help=("Console base URL to report reused-from-store hashes to (best-effort, "
+                                  "fire-and-forget; never blocks or fails the build). Falls back to "
+                                  "$BITS_REUSE_BEACON. Only small references are sent, never artifact data."))
   build_remote.add_argument("--reuse-policy", dest="reusePolicy", choices=["strict", "relaxed"],
                             default=None,
                             help=("CVMFS reuse strictness (ADR-0001). 'strict' (default): reuse only on "
@@ -1184,6 +1198,24 @@ def doParseArgs():
                               help="bits work directory (source of MANIFESTS when no MANIFEST is given). Default: %(default)s.")
   certify_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                               help="Architecture for store-path resolution. Default: %(default)s.")
+
+  # Options for the gc subcommand
+  gc_parser.add_argument("--trust-manifest", dest="trustManifest", required=True, metavar="PATH",
+                         help="Signed common manifest whose hashes are the GC roots. Must verify.")
+  gc_parser.add_argument("--store", dest="gcStore", metavar="URL",
+                         default="https://s3.cern.ch/lcgapp-bits-testing",
+                         help="S3 store URL/bucket to sweep. Default: %(default)s")
+  gc_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
+                         help="Architecture store tree to sweep. Default: %(default)s.")
+  gc_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
+                         help="bits work directory (for the S3 client). Default: %(default)s.")
+  gc_parser.add_argument("--grace-days", dest="graceDays", type=float, default=7.0, metavar="DAYS",
+                         help=("Never sweep an object younger than DAYS, so artifacts from an in-flight "
+                               "build not yet in any signed manifest are not raced away. Default: %(default)s."))
+  gc_parser.add_argument("--allow-empty", dest="allowEmpty", action="store_true", default=False,
+                         help="Permit sweeping when the verified manifest has zero roots (dangerous).")
+  gc_parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
+                         help="Report what would be swept without deleting anything.")
 
   # Options for the cleanup subcommand
   cleanup_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,

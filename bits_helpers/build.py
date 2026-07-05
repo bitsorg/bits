@@ -1423,6 +1423,14 @@ def doFinalSync(spec, specs, args, syncHelper):
   #                            a tarball recalled from the remote store).
   #   • "built_from_source"  — the build script ran; the tarball was produced
   #                            locally and (for non-local revisions) uploaded.
+  # Accumulate reused-from-store hashes for the best-effort reuse beacon, fired
+  # once at the end of the build (never per package, never blocking).
+  if spec.get("cachedTarball") and getattr(syncHelper, "remoteStore", ""):
+    _rh = getattr(args, "_reusedHashes", None)
+    if _rh is None:
+      _rh = args._reusedHashes = set()
+    _rh.add(spec["hash"])
+
   if getattr(args, "manifest", None) is not None:
     from bits_helpers.utilities import resolve_store_path, effective_arch, ver_rev
     _cached = spec.get("cachedTarball", "")
@@ -3506,6 +3514,15 @@ def doBuild(args, parser):
       from bits_helpers import trust
       sig = trust.sign_manifest(args.manifest.path, args.signManifest)
       banner("Signed build manifest for trusted reuse:\n  %s", sig)
+
+  # Best-effort reuse beacon: report which shared hashes this build consumed.
+  # Fire-and-forget in a daemon thread — never blocks or fails the build.
+  _beaconUrl = getattr(args, "reuseBeacon", None) or os.environ.get("BITS_REUSE_BEACON")
+  _reused = getattr(args, "_reusedHashes", None)
+  if _beaconUrl and _reused:
+    from bits_helpers.beacon import send_reuse_beacon
+    from bits_helpers.provenance import compute_build_id
+    send_reuse_beacon(_beaconUrl, compute_build_id(specs, args), sorted(_reused))
 
   debug("Everything done")
 

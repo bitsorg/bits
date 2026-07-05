@@ -123,6 +123,11 @@ def doMain(args, parser):
     doCertify(args, parser)
     sys.exit(0)
 
+  if args.action == "gc":
+    from bits_helpers.gc import doGc
+    doGc(args, parser)
+    sys.exit(0)
+
   if args.action == "verify":
     doVerify(args, parser)
     # doVerify calls sys.exit() internally, but be explicit
