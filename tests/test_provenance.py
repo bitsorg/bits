@@ -146,5 +146,49 @@ class TestProvenanceRecord(unittest.TestCase):
         self.assertEqual(self._record_specs(specs)["provenance"], "pure")
 
 
+class TestBuildIdFromManifest(unittest.TestCase):
+    """build_id_from_manifest reconstructs the canonical id from a manifest dict."""
+
+    def _manifest(self, defaults, pkgs):
+        return {"defaults": defaults, "packages": pkgs}
+
+    def test_matches_compute_build_id(self):
+        pkgs = [
+            {"package": "a", "version": "1", "revision": "1", "hash": "h1"},
+            {"package": "b", "version": "2", "revision": "3", "hash": "h2"},
+        ]
+        m = self._manifest(["release", "gcc15"], pkgs)
+        specs = {p["package"]: p for p in pkgs}
+        args = SimpleNamespace(defaults=["release", "gcc15"], architecture="x")
+        self.assertEqual(pv.build_id_from_manifest(m), pv.compute_build_id(specs, args))
+
+    def test_order_independent(self):
+        pkgs = [
+            {"package": "a", "version": "1", "revision": "1", "hash": "h1"},
+            {"package": "b", "version": "2", "revision": "3", "hash": "h2"},
+        ]
+        a = pv.build_id_from_manifest(self._manifest(["release"], pkgs))
+        b = pv.build_id_from_manifest(self._manifest(["release"], list(reversed(pkgs))))
+        self.assertEqual(a, b)
+
+    def test_label_from_defaults(self):
+        m = self._manifest(["release", "gcc15"],
+                           [{"package": "a", "hash": "h1"}])
+        self.assertTrue(pv.build_id_from_manifest(m).startswith("release_gcc15-"))
+
+    def test_hashless_packages_excluded(self):
+        with_sys = self._manifest(["release"], [
+            {"package": "a", "hash": "h1"},
+            {"package": "sys", "hash": ""},      # system pkg, no content hash
+        ])
+        without = self._manifest(["release"], [{"package": "a", "hash": "h1"}])
+        self.assertEqual(pv.build_id_from_manifest(with_sys),
+                         pv.build_id_from_manifest(without))
+
+    def test_unusable_input_never_raises(self):
+        self.assertEqual(pv.build_id_from_manifest("not a dict"), "")
+        self.assertTrue(pv.build_id_from_manifest({}).startswith("local-"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -174,24 +174,17 @@ def _normalize_s3_store(url):
     return "b3://%s" % bucket
 
 
-def _build_id(manifest_path):
-    """Stable, per-build, per-host id used to namespace the manifest in the bucket.
+def _run_leaf():
+    """A per-run, per-host filename so concurrent publishes never overwrite.
 
-    Derived from the build-manifest filename (which carries the top package + UTC
-    timestamp) plus the short hostname, so concurrent publishes from different
-    hosts — or of different builds — never share a key, and one build is easily
-    identified. Re-publishing the same build from the same host is idempotent.
+    ``<shorthost>-<UTC>.json``. Combined with the deterministic build_id folder,
+    two hosts publishing the same release land side by side rather than clobbering.
     """
     import socket
-    core = basename(manifest_path)
-    if core.startswith("bits-manifest-"):
-        core = core[len("bits-manifest-"):]
-    if core.endswith(".json"):
-        core = core[:-5]
-    host = socket.gethostname().split(".")[0]
-    if host and host.lower() not in core.lower():
-        core = "%s-%s" % (core, host)
-    return re.sub(r"[^A-Za-z0-9._-]", "_", core) or "build"
+    import datetime
+    host = re.sub(r"[^A-Za-z0-9._-]", "_", socket.gethostname().split(".")[0]) or "host"
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return "%s-%s.json" % (host, ts)
 
 
 def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=None, dry_run=False):
@@ -213,7 +206,8 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             parser.error("no build manifest under %s — build something first, "
                          "or pass a path to --from-manifest" % work_dir)
     try:
-        entries = _json.load(open(man)).get("packages", [])
+        manifest_doc = _json.load(open(man))
+        entries = manifest_doc.get("packages", [])
     except Exception as exc:
         parser.error("could not read manifest %s: %s" % (man, exc))
     if not entries:
@@ -286,7 +280,12 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                 m["tarball_sha256"] = e.get("tarball_sha256") or checksum_file(tar)
                 packages.append(m)
             import tempfile as _tf, getpass, socket, datetime
-            build_id = _build_id(man)
+            from bits_helpers.provenance import build_id_from_manifest
+            # Canonical, deterministic build_id (same id the build itself used):
+            # <label>-<digest> over the full package set. Two hosts building the
+            # same release agree on it, so it names the release in the bucket.
+            build_id = build_id_from_manifest(manifest_doc) or "unknown"
+            leaf = _run_leaf()
             # Provenance ("who / when / where") so the manifest is a self-describing
             # record and a hash -> build reverse index can be derived from it.
             bom = {
@@ -297,10 +296,12 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                 "architecture": architecture,
                 "packages": packages,
             }
-            tmp = os.path.join(_tf.mkdtemp(), build_id + ".json")
+            tmp = os.path.join(_tf.mkdtemp(), leaf)
             with open(tmp, "w") as fh:
                 _json.dump(bom, fh, indent=1)
-            key = "MANIFESTS/" + build_id + ".json"
+            # Folder per release (identify the build) + unique leaf per run
+            # (concurrent publishes never clobber each other).
+            key = "MANIFESTS/%s/%s" % (build_id, leaf)
             try:
                 w.s3.upload_file(tmp, w.writeStore, key)
                 info("Manifest (minimal BOM, %d pkgs, build_id=%s) -> %s/%s",

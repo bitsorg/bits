@@ -16,6 +16,7 @@ a near-empty environment must still produce a value, never raise.
 
 import hashlib
 import os
+from types import SimpleNamespace
 
 
 def _label(args) -> str:
@@ -77,6 +78,24 @@ def compute_build_id(specs, args) -> str:
         members = []
     digest = hashlib.sha256(repr(members).encode("utf-8")).hexdigest()[:12]
     return "%s-%s" % (_label(args), digest)
+
+
+def build_id_from_manifest(manifest) -> str:
+    """Reconstruct the canonical ``build_id`` from a build manifest dict.
+
+    The manifest carries everything ``compute_build_id`` needs: ``defaults`` (the
+    release label) and ``packages`` (the member set with content hashes). Lets the
+    publish path key a build by the *same* deterministic id the build itself used,
+    without recomputing from live specs. Returns "" if the manifest is unusable.
+    """
+    if not isinstance(manifest, dict):
+        return ""
+    specs = {}
+    for i, e in enumerate(manifest.get("packages") or []):
+        if isinstance(e, dict) and e.get("hash"):
+            specs[e.get("package", "") or i] = e
+    args = SimpleNamespace(defaults=manifest.get("defaults") or [])
+    return compute_build_id(specs, args)
 
 
 def recipe_tools_ref(specs) -> str:

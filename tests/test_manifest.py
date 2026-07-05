@@ -290,6 +290,19 @@ class TestAddPackage(unittest.TestCase):
         self.assertEqual(pkg["outcome"], "built_from_source")
         self.assertEqual(pkg["tarball_sha256"], _sha256(content))
 
+    def test_built_by_set_only_for_built_from_source(self):
+        # built_by identifies the host that compiled a hash; it is only
+        # meaningful when the package was built here.
+        m = _make_manifest(self.tmp)
+        m.add_package(_make_spec(), "built_from_source")
+        m.add_package(_make_spec(), "from_store")
+        m.add_package(_make_spec(), "already_installed")
+        pkgs = self._load(m)["packages"]
+        by_outcome = {p["outcome"]: p for p in pkgs}
+        self.assertIn("@", by_outcome["built_from_source"]["built_by"])
+        self.assertIsNone(by_outcome["from_store"]["built_by"])
+        self.assertIsNone(by_outcome["already_installed"]["built_by"])
+
     def test_patches_and_variables_recorded(self):
         # v3: patches (name + recorded checksum) and resolved variables.
         spec = _make_spec()
