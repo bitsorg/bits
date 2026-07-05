@@ -152,18 +152,6 @@ def _newest_manifest_file(work_dir):
     return files[0] if files else None
 
 
-def _all_manifest_entries(work_dir):
-    """Every package entry from the newest build manifest (empty list if none)."""
-    import json as _json
-    f = _newest_manifest_file(work_dir)
-    if not f:
-        return []
-    try:
-        return _json.load(open(f)).get("packages", [])
-    except Exception:
-        return []
-
-
 def _normalize_s3_store(url):
     """Return a write-store URL the boto3 backend understands, deriving the S3
     endpoint from an https URL when needed.
@@ -182,12 +170,29 @@ def _normalize_s3_store(url):
     return "b3://%s" % bucket
 
 
-def _publish_from_manifest(architecture, work_dir, store_url, parser):
-    """Bulk-upload every built package in the manifest to the S3 store."""
+def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=None):
+    """Bulk-upload every built package in a manifest to the S3 store.
+
+    *manifest* is a manifest file path, or 'latest'/None to use the newest under
+    WORKDIR/MANIFESTS.
+    """
+    import json as _json
     from bits_helpers.sync import remote_from_url
-    entries = _all_manifest_entries(work_dir)
+    if manifest and manifest != "latest":
+        man = os.path.abspath(os.path.expanduser(manifest))
+        if not os.path.isfile(man):
+            parser.error("manifest file not found: %s" % man)
+    else:
+        man = _newest_manifest_file(work_dir)
+        if not man:
+            parser.error("no build manifest under %s — build something first, "
+                         "or pass a path to --from-manifest" % work_dir)
+    try:
+        entries = _json.load(open(man)).get("packages", [])
+    except Exception as exc:
+        parser.error("could not read manifest %s: %s" % (man, exc))
     if not entries:
-        parser.error("no build manifest under %s — build something first" % work_dir)
+        parser.error("no packages listed in manifest %s" % man)
     write_store = _normalize_s3_store(store_url)
     banner("Publishing %d package(s) from the manifest to %s", len(entries), write_store)
     writers = {}
@@ -210,9 +215,8 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser):
             info("  [%d] %s %s", n, e["package"], h[:12])
         except Exception as exc:
             error("  FAILED %s (%s): %s", e["package"], h[:12], exc)
-    # Also upload the manifest itself under MANIFESTS/, so it can be fetched
-    # (e.g. by a CI job that signs it for trusted reuse).
-    man = _newest_manifest_file(work_dir)
+    # Also upload the manifest itself (the one we published from) under MANIFESTS/,
+    # so it can be fetched (e.g. by a CI job that signs it for trusted reuse).
     w = next(iter(writers.values()), None)
     if man and w is not None and hasattr(w, "s3") and getattr(w, "writeStore", None):
         key = "MANIFESTS/" + os.path.basename(man)
@@ -372,12 +376,18 @@ def doPublish(args, parser):
         from bits_helpers.view_publish_cmd import doPublishView
         return doPublishView(args, parser)
 
-    # Bulk S3 upload of the whole build manifest — no PACKAGE needed.
-    if getattr(args, "fromManifest", False):
+    # Bulk S3 upload of a whole build manifest. This is the DEFAULT when no
+    # PACKAGE is given; --from-manifest [PATH] selects a specific manifest,
+    # otherwise the newest under WORKDIR/MANIFESTS is used.
+    _fm = getattr(args, "fromManifest", None)
+    if _fm is None and not getattr(args, "package", None):
+        _fm = "latest"
+    if _fm is not None:
         architecture = getattr(args, "architecture", None) or detectArch()
         store_url = (getattr(args, "publishStore", None)
                      or "https://s3.cern.ch/lcgapp-bits-testing")
-        _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser)
+        _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
+                               manifest=_fm)
         return
 
     if not getattr(args, "package", None):
