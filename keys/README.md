@@ -61,6 +61,11 @@ drops entries a key wasn't authorised to vouch for, even if signed). When the
 file is absent, no per-key restriction applies (backward compatible). `key_id`
 is the value printed by rotation/verification and shown in signature envelopes.
 
+The policy restricts only the keys you **enrol**: a key not listed is
+unrestricted, unless you add a reserved `"default"` entry (`"default": []` denies
+any unlisted key, making the policy strict once every key is enrolled). An empty
+list for a specific key denies it every group.
+
 Sign a manifest and verify it:
 
 ```bash
