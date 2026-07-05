@@ -233,6 +233,16 @@ def doParseArgs():
           "for content-addressed pre-staging before the CVMFS transaction."
       ),
   )
+  certify_parser = subparsers.add_parser(
+      "certify",
+      help="merge build manifests into a signed common manifest (trust unit)",
+      description=(
+          "Merge one or more published build manifests into a single common "
+          "manifest, validate every content hash against the S3 store, and sign "
+          "the result with the release Ed25519 key. The signed common manifest "
+          "is what clients trust for binary reuse (see docs/adr/0004)."
+      ),
+  )
   status_parser = subparsers.add_parser(
       "status",
       help="show what bits build would do for each package (dry run)",
@@ -1147,6 +1157,26 @@ def doParseArgs():
   _prepub.add_argument("--prepub-no-verify-tls", dest="prepubNoVerifyTls", action="store_true",
                        default=False,
                        help="Disable TLS certificate verification (self-signed certs / dev mode only).")
+
+  # Options for the certify subcommand
+  certify_parser.add_argument("manifests", metavar="MANIFEST", nargs="*", default=None,
+                              help=("Build-manifest JSON files or directories to merge. A directory "
+                                    "is scanned recursively for *.json. Default: WORKDIR/MANIFESTS."))
+  certify_parser.add_argument("-o", "--out", dest="out", metavar="FILE", required=True,
+                              help="Path to write the merged common manifest (its .sig is written alongside).")
+  certify_parser.add_argument("--key", dest="key", metavar="PEM", required=True,
+                              help="Ed25519 private key (PEM) to sign the common manifest with.")
+  certify_parser.add_argument("--store", dest="certifyStore", metavar="URL",
+                              default="https://s3.cern.ch/lcgapp-bits-testing",
+                              help=("S3 store URL/bucket to validate hashes against. Accepts https, "
+                                    "b3://<bucket>, or s3://<bucket>. Default: %(default)s"))
+  certify_parser.add_argument("--no-store-check", dest="noStoreCheck", action="store_true", default=False,
+                              help=("Skip validating each hash against the store before signing. "
+                                    "Only for offline dry merges; a real certification must verify the store."))
+  certify_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
+                              help="bits work directory (source of MANIFESTS when no MANIFEST is given). Default: %(default)s.")
+  certify_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
+                              help="Architecture for store-path resolution. Default: %(default)s.")
 
   # Options for the cleanup subcommand
   cleanup_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
