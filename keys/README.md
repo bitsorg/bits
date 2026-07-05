@@ -42,6 +42,25 @@ Because the signed common manifest carries `expires`, an old key can be retired
 safely as soon as the last manifest it signed has lapsed — consumers fail closed
 on an expired manifest rather than trusting a stale signature.
 
+## Per-key group binding (optional)
+
+Add a `key-policy.json` here to restrict which groups each signing key may
+certify. It maps `key_id -> [groups]`; `"*"` grants a key authority over every
+group (the overall bits-admin key):
+
+```json
+{
+  "265bf1902ea0d4d9": ["*"],
+  "ab12cd34ef56gh78": ["lcg", "common"]
+}
+```
+
+When present, this is enforced both when signing (`bits certify` refuses to sign
+a group the key isn't authorised for) and by every consumer (`trusted_index`
+drops entries a key wasn't authorised to vouch for, even if signed). When the
+file is absent, no per-key restriction applies (backward compatible). `key_id`
+is the value printed by rotation/verification and shown in signature envelopes.
+
 Sign a manifest and verify it:
 
 ```bash

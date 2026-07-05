@@ -49,6 +49,63 @@ def approved_by(approvers, admins) -> bool:
     return bool(a & {str(x).lower() for x in (admins or [])})
 
 
+def load_admin_policy(source) -> dict:
+    """Parse an overall/per-group admin policy from a file path or text.
+
+    Aligns with bits-console's role model (``bits_admins`` = overall/override,
+    per-community ``admins`` = group). Line forms:
+
+        @alice                  # overall admin (bare/@handle lines, legacy flat list)
+        * @carol                # overall admin (explicit '*' group)
+        lcg @dave @erin         # group 'lcg' admins
+        common @frank           # group 'common' admins
+
+    Returns ``{"*": {overall…}, "lcg": {…}, …}`` with usernames lowercased. A
+    plain legacy ADMINS file (only ``@handle`` lines) yields all-overall admins,
+    preserving prior behaviour.
+    """
+    if isinstance(source, str) and os.path.isfile(source):
+        with open(source) as fh:
+            text = fh.read()
+    else:
+        text = source or ""
+    policy = {}
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        tokens = line.split()
+        handles = [t[1:].lower() for t in tokens if t.startswith("@")]
+        labels = [t for t in tokens if not t.startswith("@")]
+        if handles and len(labels) == 1:
+            group = "*" if labels[0] == "*" else labels[0].lower()
+            policy.setdefault(group, set()).update(handles)
+        elif handles and not labels:
+            policy.setdefault("*", set()).update(handles)
+        elif not handles and labels:
+            # bare usernames with no group -> overall (legacy one-per-line form).
+            policy.setdefault("*", set()).update(l.lower() for l in labels)
+    return policy
+
+
+def approved_for_group(approvers, policy, group) -> bool:
+    """True if an approver is an overall admin or an admin of *group*."""
+    a = {str(x).lower() for x in (approvers or [])}
+    grp = str(group).lower() if group else "common"
+    return bool(a & (policy.get("*", set()) | policy.get(grp, set())))
+
+
+def verify_group_approval(forge, policy, groups):
+    """Return ``(ok, approvers, unmet)`` for the required *groups*.
+
+    Every group must be approved by one of its admins or an overall admin;
+    *unmet* lists the groups that were not. Overall-admin approval covers all.
+    """
+    approvers = forge.list_approvers()
+    unmet = sorted(g for g in groups if not approved_for_group(approvers, policy, g))
+    return (not unmet), approvers, unmet
+
+
 class Forge:
     """Minimal forge interface: who approved the change under certification."""
 
@@ -151,6 +208,24 @@ class GitLabForge(Forge):
         if self.mr_iid:
             return "%s MR !%s" % (self.project_id, self.mr_iid)
         return "%s commit %s" % (self.project_id, (self.commit_sha or "?")[:12])
+
+
+def gitlab_identify(api_url, token, timeout=15):
+    """Resolve the GitLab username that owns *token* via ``GET /user``.
+
+    The token *is* the identity: only its owner can present it, so the returned
+    username is an authenticated, unforgeable identity for whoever initiated the
+    certification (the model bits-console already uses). Returns the username, or
+    None if the token is invalid/unusable.
+    """
+    import requests
+    try:
+        resp = requests.get("%s/user" % api_url.rstrip("/"),
+                            headers={"PRIVATE-TOKEN": token}, timeout=timeout)
+        resp.raise_for_status()
+        return (resp.json() or {}).get("username")
+    except Exception:
+        return None
 
 
 def forge_from_env(env=None):

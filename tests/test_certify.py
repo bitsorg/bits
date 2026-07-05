@@ -151,6 +151,70 @@ class TestCertifyEndToEnd(unittest.TestCase):
         self.assertIsNotNone(kid)
         self.assertEqual(index, {"h1": "sha256:aa", "h2": "sha256:bb"})
 
+    def test_certified_by_recorded_in_signed_manifest(self):
+        m = _manifest("b1", [_pkg("A", "h1", "sha256:aa")])
+        out = os.path.join(self.tmp, "out", "common.json")
+        certify.certify([m], self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa",
+                        approval_check=lambda common: ["alice", "bob"])
+        doc = json.load(open(out))
+        self.assertEqual(doc["certified_by"], ["alice", "bob"])
+        self.assertIn("certified_at", doc)
+        kid, _ = trust.trusted_index(out)          # signature still valid
+        self.assertIsNotNone(kid)
+
+    def _identity_args(self, admins_text, out, **over):
+        admins = os.path.join(self.tmp, "ADMINS")
+        with open(admins, "w") as fh:
+            fh.write(admins_text)
+        base = dict(manifests=[_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
+                    out=out, key=self.key_pem, certifyStore="", noStoreCheck=True,
+                    workDir=self.tmp, architecture="slc7_x86-64", group=None,
+                    requireApproval=True, admins=admins, validDays=None,
+                    sourceCommit=None, changedGroups=None,
+                    certifierToken="pat", apiUrl="https://gl/api/v4")
+        base.update(over)
+        return SimpleNamespace(**base)
+
+    def test_identity_token_records_authenticated_certifier(self):
+        from bits_helpers import forge
+        out = os.path.join(self.tmp, "out", "common.json")
+        args = self._identity_args("@alice\n", out)            # alice = overall admin
+
+        class _P:
+            def error(self, m):
+                raise RuntimeError(m)
+
+        with patch.object(forge, "gitlab_identify", return_value="alice"):
+            certify.doCertify(args, _P())
+        self.assertEqual(json.load(open(out))["certified_by"], ["alice"])
+
+    def test_identity_token_rejects_unauthorised_user(self):
+        from bits_helpers import forge
+        out = os.path.join(self.tmp, "out", "common.json")
+        args = self._identity_args("lcg @bob\n", out)          # only lcg admin bob
+
+        class _P(Exception):
+            pass
+
+        class _Parser:
+            def error(self, m):
+                raise _P(m)
+
+        with patch.object(forge, "gitlab_identify", return_value="alice"):
+            with self.assertRaises(_P):
+                certify.doCertify(args, _Parser())
+        self.assertFalse(os.path.exists(out))
+
+    def test_approval_check_failure_aborts_before_signing(self):
+        def _deny(common):
+            raise certify.CertifyError("not approved")
+        out = os.path.join(self.tmp, "out", "common.json")
+        with self.assertRaises(certify.CertifyError):
+            certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
+                            self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa",
+                            approval_check=_deny)
+        self.assertFalse(os.path.exists(out))
+
     def test_certify_refuses_when_store_validation_fails(self):
         m = _manifest("b1", [_pkg("A", "h1", "sha256:aa")])
         out = os.path.join(self.tmp, "out", "common.json")
@@ -405,6 +469,81 @@ class TestProbeBinding(unittest.TestCase):
             [_manifest("b1", [_pkg("A", "h1", "sha256:aa")])])
         self.assertEqual(certify.validate_against_store(common, probe), [])
         self.assertEqual(seen, ["A.tar.gz"])
+
+
+class TestKeyGroupBinding(unittest.TestCase):
+    """A signing key certifies only the groups its key-policy authorises."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        priv = Ed25519PrivateKey.generate()
+        self.key_pem = os.path.join(self.tmp, "signing.pem")
+        with open(self.key_pem, "wb") as fh:
+            fh.write(priv.private_bytes(serialization.Encoding.PEM,
+                                        serialization.PrivateFormat.PKCS8,
+                                        serialization.NoEncryption()))
+        self.kid = trust.key_id(priv.public_key())
+        self.trust_dir = os.path.join(self.tmp, "keys")
+        os.makedirs(self.trust_dir)
+        with open(os.path.join(self.trust_dir, "pub.pem"), "wb") as fh:
+            fh.write(priv.public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo))
+        self._policy_path = os.path.join(self.trust_dir, "key-policy.json")
+        self._set_policy(["lcg"])                     # authorised for lcg only
+        self._old = os.environ.get("BITS_TRUST_KEYS")
+        os.environ["BITS_TRUST_KEYS"] = self.trust_dir
+
+    def _set_policy(self, groups):
+        with open(self._policy_path, "w") as fh:
+            json.dump({self.kid: groups}, fh)
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("BITS_TRUST_KEYS", None)
+        else:
+            os.environ["BITS_TRUST_KEYS"] = self._old
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _sign_raw(self, entries):
+        """Sign a hand-built common manifest, bypassing certify's producer check."""
+        out = os.path.join(self.tmp, "common.json")
+        with open(out, "w") as fh:
+            json.dump({"schema_version": 1, "kind": "common-manifest",
+                       "packages": entries}, fh)
+        trust.sign_manifest(out, self.key_pem)
+        return out
+
+    def test_producer_refuses_unauthorised_group(self):
+        out = os.path.join(self.tmp, "o.json")
+        with self.assertRaises(certify.CertifyError):
+            certify.certify([_manifest("b", [_pkg("A", "h1", "sha256:aa", group="ship")])],
+                            self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa")
+
+    def test_producer_allows_authorised_group(self):
+        out = os.path.join(self.tmp, "o.json")
+        certify.certify([_manifest("b", [_pkg("A", "h1", "sha256:aa", group="lcg")])],
+                        self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa")
+        _, index = trust.trusted_index(out)
+        self.assertEqual(set(index), {"h1"})
+
+    def test_consumer_drops_entries_key_not_authorised_for(self):
+        out = self._sign_raw([
+            {"hash": "h1", "tarball_sha256": "sha256:aa", "group": "lcg"},
+            {"hash": "h2", "tarball_sha256": "sha256:bb", "group": "ship"},
+            {"hash": "h3", "tarball_sha256": "sha256:cc"},          # untagged -> common
+        ])
+        _, index = trust.trusted_index(out)   # even with no group filter
+        self.assertEqual(set(index), {"h1"})  # ship + common dropped by key policy
+
+    def test_overall_star_key_certifies_any_group(self):
+        self._set_policy(["*"])
+        out = self._sign_raw([
+            {"hash": "h1", "tarball_sha256": "sha256:aa", "group": "lcg"},
+            {"hash": "h2", "tarball_sha256": "sha256:bb", "group": "ship"},
+        ])
+        _, index = trust.trusted_index(out)
+        self.assertEqual(set(index), {"h1", "h2"})
 
 
 if __name__ == "__main__":

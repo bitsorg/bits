@@ -133,6 +133,36 @@ class TestGitLabForge(unittest.TestCase):
             self.assertEqual(gl.list_approvers(), set())   # fail-closed
 
 
+class TestAdminPolicy(unittest.TestCase):
+
+    def test_legacy_flat_list_is_overall(self):
+        self.assertEqual(forge.load_admin_policy("@alice\n@bob\n"),
+                         {"*": {"alice", "bob"}})
+
+    def test_overall_and_per_group(self):
+        p = forge.load_admin_policy("* @sup\nlcg @a @b\ncommon @c  # base\n")
+        self.assertEqual(p["*"], {"sup"})
+        self.assertEqual(p["lcg"], {"a", "b"})
+        self.assertEqual(p["common"], {"c"})
+
+    def test_approved_for_group_overall_covers_all(self):
+        p = {"*": {"sup"}, "lcg": {"a"}}
+        self.assertTrue(forge.approved_for_group(["sup"], p, "ship"))   # overall
+        self.assertTrue(forge.approved_for_group(["a"], p, "lcg"))      # group admin
+        self.assertFalse(forge.approved_for_group(["a"], p, "ship"))    # wrong group
+        self.assertTrue(forge.approved_for_group(["sup"], p, None))     # untagged=common
+
+    def test_verify_group_approval_reports_unmet(self):
+        policy = {"lcg": {"a"}}
+        fg = forge.StaticForge(["a"])
+        ok, _, unmet = forge.verify_group_approval(fg, policy, {"lcg", "ship"})
+        self.assertFalse(ok)
+        self.assertEqual(unmet, ["ship"])
+        ok2, _, unmet2 = forge.verify_group_approval(fg, policy, {"lcg"})
+        self.assertTrue(ok2)
+        self.assertEqual(unmet2, [])
+
+
 class TestVerifyApproval(unittest.TestCase):
 
     def test_ok_when_admin_approved(self):

@@ -151,6 +151,53 @@ def verify_manifest(manifest_path: str, sig_path=None, dirs=None):
   return verify_bytes(data, envelope, load_trusted_keys(dirs))
 
 
+def load_key_policy(dirs=None):
+  """Return the key->groups signing policy, or None if no policy is configured.
+
+  Looks for ``key-policy.json`` in the trust dirs (most-specific last wins per
+  key). The file maps ``key_id -> [groups]``; the group ``"*"`` grants a key
+  authority over every group (the overall bits-admin key). When *no* policy file
+  exists anywhere, returns None and callers impose no per-key restriction
+  (backward compatible). Example::
+
+      {"265bf1902ea0d4d9": ["*"], "ab12…": ["lcg", "common"]}
+  """
+  policy = None
+  for d in (dirs if dirs is not None else default_trust_dirs()):
+    path = os.path.join(d, "key-policy.json")
+    if not os.path.isfile(path):
+      continue
+    try:
+      with open(path) as fh:
+        data = json.load(fh)
+    except Exception:
+      continue
+    if not isinstance(data, dict):
+      continue
+    policy = policy or {}
+    for kid, groups in data.items():
+      if isinstance(groups, (list, tuple)):
+        policy[str(kid)] = {str(g) for g in groups}
+  return policy
+
+
+def key_authorized(key_id, group, policy) -> bool:
+  """Whether *key_id* may certify an entry of *group* under *policy*.
+
+  *policy* None (no policy file) -> unrestricted (True). Otherwise a key must be
+  listed; ``"*"`` authorises every group; an untagged entry counts as ``common``.
+  A key absent from the policy is authorised for nothing (fail-closed).
+  """
+  if policy is None:
+    return True
+  allowed = policy.get(str(key_id))
+  if not allowed:
+    return False
+  if "*" in allowed:
+    return True
+  return (str(group) if group else "common") in allowed
+
+
 def accepts_group(entry_group, accept_groups) -> bool:
   """Group-policy predicate for one common-manifest entry.
 
@@ -209,9 +256,13 @@ def trusted_index(manifest_path: str, sig_path=None, dirs=None, accept_groups=No
     return None, {}
   if is_expired(data, now):
     return None, {}
+  # Per-key group binding: a signing key vouches only for the groups it is
+  # authorised for (policy file opt-in; absent = no restriction).
+  policy = load_key_policy(dirs)
   index = {}
   for e in data.get("packages", []):
-    h, sha = e.get("hash"), e.get("tarball_sha256")
-    if h and sha and accepts_group(e.get("group"), accept_groups):
+    h, sha, grp = e.get("hash"), e.get("tarball_sha256"), e.get("group")
+    if (h and sha and accepts_group(grp, accept_groups)
+        and key_authorized(kid, grp, policy)):
       index[h] = sha
   return kid, index

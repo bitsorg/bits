@@ -204,6 +204,24 @@ has passed — fail-closed, so a stale manifest cannot be replayed offline. A
 manifest without `expires` never expires (backward compatible). See `keys/README.md`
 for key rotation using the multi-key trust anchor.
 
+Certifier identity and authority:
+
+- `--admins FILE` is an overall/per-group admin policy. Lines `@handle` or
+  `* @handle` are **overall** admins (can approve/override any group; mirrors
+  bits-console `bits_admins`); `<group> @handle` lines are that group's admins
+  (mirrors per-community `admins`). `--changed-groups G1,G2` scopes the check to
+  the groups changed in the MR (else every group present).
+- Identity: with `--certifier-token PAT` (or `$BITS_CERTIFIER_TOKEN`) the
+  initiating admin's own GitLab PAT authenticates them via `GET /user` — an
+  unforgeable identity — which must be an authorised admin and is recorded as
+  `certified_by` in the signed manifest. Without a certifier token, the gate
+  falls back to reading who approved the merge request (read-only bot token).
+  Either way the certifier identity travels with the signature.
+- Per-key group binding: a `keys/key-policy.json` mapping `key_id -> [groups]`
+  restricts which groups each signing key may certify (`"*"` = overall key).
+  Enforced at signing (producer) and in `trusted_index` (consumer); absent policy
+  = no restriction. See `keys/README.md`.
+
 #### Store garbage collection — `bits gc`
 
 `bits gc --trust-manifest <signed-common-manifest>` sweeps unreferenced objects

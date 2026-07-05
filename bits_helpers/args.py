@@ -1191,7 +1191,17 @@ def doParseArgs():
                               help=("Refuse to sign unless a listed group admin approved the merge request "
                                     "(read from the forge — GitLab CI env). Defence-in-depth over CODEOWNERS."))
   certify_parser.add_argument("--admins", dest="admins", metavar="FILE", default=None,
-                              help="File listing group-admin usernames (one per line, or CODEOWNERS-style @handles).")
+                              help=("Admin policy file: overall admins ('@handle' or '* @handle' lines) "
+                                    "plus per-group admins ('<group> @handle'). Overall admins can "
+                                    "approve/override any group."))
+  certify_parser.add_argument("--changed-groups", dest="changedGroups", metavar="G1,G2", default=None,
+                              help=("Restrict the approval re-check to these groups (the ones changed in "
+                                    "this MR; e.g. from a git diff). Default: every group present."))
+  certify_parser.add_argument("--certifier-token", dest="certifierToken", metavar="PAT", default=None,
+                              help=("A GitLab PAT that identifies the initiating admin (GET /user). When "
+                                    "given (or $BITS_CERTIFIER_TOKEN), that authenticated identity must be "
+                                    "an authorised admin and is recorded as certified_by, instead of "
+                                    "reading MR approvals."))
   certify_parser.add_argument("--valid-days", dest="validDays", type=int, default=None, metavar="DAYS",
                               help=("Stamp an 'expires' DAYS from now into the signed manifest; consumers "
                                     "fail closed once it is past (offline anti-replay). Default: no expiry."))

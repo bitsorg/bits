@@ -186,21 +186,42 @@ def validate_against_store(common, probe) -> list:
 
 
 def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
-            default_group=None, valid_days=None, source_commit=None) -> tuple:
-    """Merge → (store-validate) → sign. Returns ``(out_path, sig_path)``.
+            default_group=None, valid_days=None, source_commit=None,
+            approval_check=None) -> tuple:
+    """Merge → (approve) → (store-validate) → sign. Returns ``(out_path, sig_path)``.
 
     Raises :class:`CertifyConflict` on a hash/sha256 conflict and
     :class:`CertifyError` if store validation finds any problem. When *probe* is
     None the store-validation step is skipped (use only when the caller has
     already validated, e.g. a dry merge). *default_group* tags untagged entries;
     *valid_days*/*source_commit* stamp the offline-freshness fields (P5).
+    *approval_check(common) -> approvers* gates on group-admin approval and, when
+    it returns approver usernames, they are recorded as ``certified_by`` so the
+    identity that authorised the certification travels with the signature.
     """
     common = merge_common_manifest(load_build_manifests(manifests), default_group,
                                    valid_days=valid_days, source_commit=source_commit)
+    certified_by = None
+    if approval_check is not None:
+        certified_by = approval_check(common)
     if probe is not None:
         problems = validate_against_store(common, probe)
         if problems:
             raise CertifyError("store validation failed:\n  " + "\n  ".join(problems))
+    # Producer-side per-key group binding: refuse to sign groups this key is not
+    # authorised for, so an unauthorised signature is never even produced.
+    policy = trust.load_key_policy()
+    if policy is not None:
+        kid = trust.key_id(trust.load_private_key(key_pem_path).public_key())
+        bad = sorted({(p.get("group") or "common") for p in common["packages"]
+                      if not trust.key_authorized(kid, p.get("group"), policy)})
+        if bad:
+            raise CertifyError(
+                "signing key %s is not authorised to certify group(s): %s"
+                % (kid, ", ".join(bad)))
+    if certified_by:
+        common["certified_by"] = sorted(set(certified_by))
+        common["certified_at"] = _now_iso()
     # Write + sign atomically: a failed signing must never leave an *unsigned*
     # manifest sitting at out_path. Sign the temp file, then move both into place.
     out_abs = os.path.abspath(out_path)
@@ -279,39 +300,74 @@ def make_s3_probe(store_url, work_dir, default_arch):
     return probe
 
 
-def require_group_approval(args, parser):
-    """Gate: refuse to certify unless a listed group admin approved (P4).
+def _make_approval_check(args, parser):
+    """Build an ``approval_check(common) -> approvers`` gate for certify().
 
-    Reads approvals from the forge (GitLab CI env) and checks them against the
-    admins file. Aborts via *parser* on any misconfiguration or missing approval,
-    so certification never proceeds on an unapproved merge request.
+    Verifies, per group being certified, that an overall bits-admin or that
+    group's admin approved the merge request (forge identity). *unmet* groups
+    abort via *parser*. Returns the approver usernames so certify records them.
     """
     from bits_helpers import forge as _forge
-    if not getattr(args, "admins", None):
-        parser.error("--require-approval needs --admins FILE (group-admin usernames)")
-    admins = _forge.load_admins(args.admins)
-    if not admins:
-        parser.error("no admins parsed from %s" % args.admins)
-    fg = _forge.forge_from_env()
-    if fg is None:
-        parser.error("--require-approval: no forge merge-request context in the "
-                     "environment (expected GitLab CI MR variables + a token)")
-    try:
-        ok, approvers = _forge.verify_approval(fg, admins)
-    except Exception as exc:
-        parser.error("could not read approvals from the forge: %s" % exc)
-    if not ok:
-        parser.error("refusing to certify %s: no group-admin approval "
-                     "(approvers: %s)" % (fg.context(), ", ".join(sorted(approvers)) or "none"))
     from bits_helpers.log import info
-    info("Approval verified for %s (group admin among: %s)",
-         fg.context(), ", ".join(sorted(approvers)))
+    if not getattr(args, "admins", None):
+        parser.error("--require-approval needs --admins FILE (admin policy)")
+    policy = _forge.load_admin_policy(args.admins)
+    if not policy:
+        parser.error("no admins parsed from %s" % args.admins)
+    changed = [g.strip() for g in (getattr(args, "changedGroups", None) or "").split(",")
+               if g.strip()]
+    cert_token = getattr(args, "certifierToken", None) or os.environ.get("BITS_CERTIFIER_TOKEN")
+    api_url = os.environ.get("CI_API_V4_URL") or getattr(args, "apiUrl", None)
+
+    def _needed(common):
+        present = {(p.get("group") or "common") for p in common.get("packages", [])}
+        # Scope: the groups changed in this MR when known, else every group
+        # present. Overall-admin authority satisfies any group.
+        return (set(changed) & present) if changed else present
+
+    def _check(common):
+        needed = _needed(common)
+        # Preferred: the initiator's own PAT identifies them (GET /user) — an
+        # authenticated, unforgeable identity — and we require that person to be
+        # an authorised admin for the group(s) being certified.
+        if cert_token and api_url:
+            user = _forge.gitlab_identify(api_url, cert_token)
+            if not user:
+                parser.error("--require-approval: could not identify the certifier "
+                             "from the provided token (GET /user failed)")
+            unmet = sorted(g for g in needed
+                           if not _forge.approved_for_group([user], policy, g))
+            if unmet:
+                parser.error("refusing to certify: %s is not authorised for "
+                             "group(s): %s" % (user, ", ".join(unmet)))
+            info("Certification authorised by GitLab user %s", user)
+            return [user]
+        # Fallback: read who approved the merge request via a read-only bot token.
+        fg = _forge.forge_from_env()
+        if fg is None:
+            parser.error("--require-approval: no certifier token and no forge "
+                         "merge-request context in the environment")
+        try:
+            ok, approvers, unmet = _forge.verify_group_approval(fg, policy, needed)
+        except Exception as exc:
+            parser.error("could not read approvals from the forge: %s" % exc)
+        if not ok:
+            parser.error("refusing to certify %s: no authorised approval for "
+                         "group(s) %s (approvers: %s)"
+                         % (fg.context(), ", ".join(unmet),
+                            ", ".join(sorted(approvers)) or "none"))
+        info("Approval verified for %s by %s", fg.context(),
+             ", ".join(sorted(approvers)))
+        return sorted(approvers)
+
+    return _check
 
 
 def doCertify(args, parser):
     """CLI entrypoint for ``bits certify`` (forge-agnostic; CI wraps this)."""
+    approval_check = None
     if getattr(args, "requireApproval", False):
-        require_group_approval(args, parser)
+        approval_check = _make_approval_check(args, parser)
     sources = list(getattr(args, "manifests", None) or [])
     if not sources:
         sources = [os.path.join(args.workDir, "MANIFESTS")]
@@ -326,7 +382,8 @@ def doCertify(args, parser):
         out_path, sig_path = certify(sources, args.key, args.out, probe=probe,
                                      default_group=getattr(args, "group", None),
                                      valid_days=valid_days,
-                                     source_commit=source_commit)
+                                     source_commit=source_commit,
+                                     approval_check=approval_check)
     except CertifyError as exc:
         parser.error(str(exc))
     from bits_helpers.log import banner
