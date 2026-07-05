@@ -2539,6 +2539,21 @@ bits build --remote-store b3://mybucket/bits-cache \
 bits build --remote-store b3://mybucket/bits-cache::rw ROOT
 ```
 
+To keep the keys out of the environment, put them in a private file (default
+`~/.awskeys`, mode 600; override the path with `$BITS_AWS_KEYS_FILE`) instead:
+
+```ini
+# ~/.awskeys   (chmod 600)
+AWS_ACCESS_KEY_ID=your-key-id
+AWS_SECRET_ACCESS_KEY=your-secret-key
+# optional: S3_ENDPOINT_URL=https://s3.cern.ch, AWS_DEFAULT_REGION=...
+```
+
+`export`-prefixed, quoted, and `aws_access_key_id = …` (AWS credentials INI)
+forms are all accepted. Precedence is: `--s3-*` flags > environment (CI /
+`bits login`) > this file > built-in default — so CI and login sessions are
+never overridden by the file.
+
 Upload order is designed to avoid partial-artifact races: the main package symlink is written first (reserving the revision number), then all dependency-set symlinks are uploaded in parallel, and the final tarball is written last. A downloader that finds the symlink but not yet the tarball simply waits for the next build cycle.
 
 #### CernVM File System (`cvmfs://`)

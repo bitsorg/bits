@@ -23,6 +23,56 @@ from bits_helpers.utilities import resolve_store_path, resolve_links_path, symli
 # endpoint is configured (neither CLI nor env), b3:// stores talk to CERN S3.
 DEFAULT_S3_ENDPOINT = "https://s3.cern.ch"
 
+# Default private file to read S3 credentials from when they are not in the
+# environment. Override with $BITS_AWS_KEYS_FILE.
+DEFAULT_AWS_KEYS_FILE = "~/.awskeys"
+
+
+def _load_aws_keys_file(path):
+  """Read S3 credentials from a private key file (default ~/.awskeys).
+
+  Accepts simple ``KEY=VALUE`` lines (optionally ``export``-prefixed and/or
+  quoted) as well as AWS-credentials INI style (``aws_access_key_id = ...``);
+  ``#`` comments and ``[section]`` headers are ignored. Returns a dict with any
+  of: access_key, secret_key, session_token, region, endpoint (empty if the
+  file is absent). Warns — but does not fail — when the file is group/other
+  readable, since it holds a secret.
+  """
+  import stat
+  out = {}
+  if not path or not os.path.isfile(path):
+    return out
+  alias = {
+      "aws_access_key_id": "access_key", "access_key_id": "access_key",
+      "aws_secret_access_key": "secret_key", "secret_access_key": "secret_key",
+      "aws_session_token": "session_token", "session_token": "session_token",
+      "aws_default_region": "region", "aws_region": "region", "region": "region",
+      "bits_s3_endpoint_url": "endpoint", "s3_endpoint_url": "endpoint",
+      "endpoint_url": "endpoint", "endpoint": "endpoint",
+  }
+  try:
+    if os.stat(path).st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+      from bits_helpers.log import warning
+      warning("%s is group/other-readable but holds S3 credentials; run "
+              "`chmod 600 %s`", path, path)
+    with open(path) as fh:
+      for line in fh:
+        line = line.strip()
+        if not line or line[0] in "#[":
+          continue
+        if line.startswith("export "):
+          line = line[7:]
+        if "=" not in line:
+          continue
+        k, v = line.split("=", 1)
+        k = k.strip().lower()
+        v = v.strip().strip('"').strip("'")
+        if v and k in alias:
+          out[alias[k]] = v
+  except OSError:
+    pass
+  return out
+
 
 def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None,
                                  region=None, addressing_style=None):
@@ -50,6 +100,11 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
   from bits_helpers import auth
   auth.apply_session_env()
 
+  # Fallback credential source, below flags and env: a private ~/.awskeys file
+  # (override path with $BITS_AWS_KEYS_FILE). Env/CI/`bits login` still win.
+  _file = _load_aws_keys_file(os.path.expanduser(
+      os.environ.get("BITS_AWS_KEYS_FILE") or DEFAULT_AWS_KEYS_FILE))
+
   def _pick(*names):
     for n in names:
       v = os.environ.get(n)
@@ -60,20 +115,22 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
   endpoint = (endpoint
               or _pick("BITS_S3_ENDPOINT_URL",
                        "S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL")
+              or _file.get("endpoint")
               or DEFAULT_S3_ENDPOINT)
   os.environ["S3_ENDPOINT_URL"] = endpoint
 
-  access_key = access_key or _pick("BITS_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+  access_key = access_key or _pick("BITS_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID") or _file.get("access_key")
   if access_key:
     os.environ["AWS_ACCESS_KEY_ID"] = access_key
-  secret_key = secret_key or _pick("BITS_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+  secret_key = secret_key or _pick("BITS_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY") or _file.get("secret_key")
   if secret_key:
     os.environ["AWS_SECRET_ACCESS_KEY"] = secret_key
-  session_token = _pick("BITS_AWS_SESSION_TOKEN", "AWS_SESSION_TOKEN")
+  session_token = _pick("BITS_AWS_SESSION_TOKEN", "AWS_SESSION_TOKEN") or _file.get("session_token")
   if session_token:
     os.environ["AWS_SESSION_TOKEN"] = session_token
 
-  region = region or _pick("BITS_AWS_DEFAULT_REGION", "AWS_DEFAULT_REGION", "AWS_REGION")
+  region = (region or _pick("BITS_AWS_DEFAULT_REGION", "AWS_DEFAULT_REGION", "AWS_REGION")
+            or _file.get("region"))
   if region:
     os.environ["AWS_DEFAULT_REGION"] = region
   addressing_style = addressing_style or _pick("BITS_S3_ADDRESSING_STYLE", "S3_ADDRESSING_STYLE")
