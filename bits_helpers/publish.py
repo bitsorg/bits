@@ -32,7 +32,7 @@ import tarfile
 import tempfile
 from os.path import abspath, basename, exists, join
 
-from bits_helpers.log import debug, error, info, banner
+from bits_helpers.log import debug, error, info, warning, banner
 from bits_helpers.utilities import detectArch
 
 
@@ -215,8 +215,19 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                 "revision": e.get("revision"), "hash": h}
         n += 1
         if dry_run:
-            info("  [%d] %s %s %s", n, e["package"], h[:12], e.get("tarball") or "")
-            ok += 1
+            # Report what will actually be uploaded: the presence of a tarball in
+            # the LOCAL store (by hash), not the manifest's 'tarball' field (which
+            # is only recorded for packages freshly built/recalled this run).
+            from bits_helpers.utilities import resolve_store_path
+            import glob as _glob
+            sdir = os.path.join(work_dir, resolve_store_path(arch, h))
+            tars = _glob.glob(os.path.join(sdir, "*.tar.gz")) if os.path.isdir(sdir) else []
+            if tars:
+                info("  [%d] %s %s %s", n, e["package"], h[:12], basename(tars[0]))
+                ok += 1
+            else:
+                warning("  [%d] %s %s — no local store tarball (outcome=%s); nothing to upload",
+                        n, e["package"], h[:12], e.get("outcome") or "?")
             continue
         writer = writers.get(arch) or writers.setdefault(
             arch, remote_from_url(write_store, write_store, arch, work_dir))
