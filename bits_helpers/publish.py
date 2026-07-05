@@ -174,6 +174,26 @@ def _normalize_s3_store(url):
     return "b3://%s" % bucket
 
 
+def _build_id(manifest_path):
+    """Stable, per-build, per-host id used to namespace the manifest in the bucket.
+
+    Derived from the build-manifest filename (which carries the top package + UTC
+    timestamp) plus the short hostname, so concurrent publishes from different
+    hosts — or of different builds — never share a key, and one build is easily
+    identified. Re-publishing the same build from the same host is idempotent.
+    """
+    import socket
+    core = basename(manifest_path)
+    if core.startswith("bits-manifest-"):
+        core = core[len("bits-manifest-"):]
+    if core.endswith(".json"):
+        core = core[:-5]
+    host = socket.gethostname().split(".")[0]
+    if host and host.lower() not in core.lower():
+        core = "%s-%s" % (core, host)
+    return re.sub(r"[^A-Za-z0-9._-]", "_", core) or "build"
+
+
 def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=None, dry_run=False):
     """Bulk-upload every built package in a manifest to the S3 store.
 
@@ -199,58 +219,98 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
     if not entries:
         parser.error("no packages listed in manifest %s" % man)
     write_store = _normalize_s3_store(store_url)
-    banner("%s %d package(s) from %s to %s",
-           "[dry-run] would publish" if dry_run else "Publishing",
-           len(entries), basename(man), write_store)
+    from bits_helpers.utilities import resolve_store_path
+    from bits_helpers.checksum import checksum_file
+    import glob as _glob
+
+    def _store_tarball(arch, h):
+        sdir = os.path.join(work_dir, resolve_store_path(arch, h))
+        tars = _glob.glob(os.path.join(sdir, "*.tar.gz")) if os.path.isdir(sdir) else []
+        return tars[0] if tars else None
+
+    banner("%s from %s to %s",
+           "[dry-run] would publish" if dry_run else "Publishing", basename(man), write_store)
     writers = {}
     done = set()
+    published = []      # (entry, store-tarball-path) actually/would-be uploaded
     n = ok = 0
     for e in entries:
         h = e.get("hash")
+        pkg = e.get("package", "")
         if not h or h in done:
             continue
         done.add(h)
+        # defaults-* are config pseudo-packages: not reusable artifacts, and their
+        # content/metadata can leak environment specifics. Never publish them.
+        if pkg.startswith("defaults"):
+            debug("skip config package %s", pkg)
+            continue
         arch = e.get("effective_architecture") or architecture
-        spec = {"package": e["package"], "version": e.get("version"),
-                "revision": e.get("revision"), "hash": h}
+        tar = _store_tarball(arch, h)
+        # Only packages with a content-addressed store tarball can be uploaded.
+        if not tar:
+            warning("  skip %s %s — no local store tarball", pkg, h[:12])
+            continue
         n += 1
         if dry_run:
-            # Report what will actually be uploaded: the presence of a tarball in
-            # the LOCAL store (by hash), not the manifest's 'tarball' field (which
-            # is only recorded for packages freshly built/recalled this run).
-            from bits_helpers.utilities import resolve_store_path
-            import glob as _glob
-            sdir = os.path.join(work_dir, resolve_store_path(arch, h))
-            tars = _glob.glob(os.path.join(sdir, "*.tar.gz")) if os.path.isdir(sdir) else []
-            if tars:
-                info("  [%d] %s %s %s", n, e["package"], h[:12], basename(tars[0]))
-                ok += 1
-            else:
-                warning("  [%d] %s %s — no local store tarball (outcome=%s); nothing to upload",
-                        n, e["package"], h[:12], e.get("outcome") or "?")
+            info("  [%d] %s %s %s", n, pkg, h[:12], basename(tar))
+            ok += 1
+            published.append((e, tar))
             continue
         writer = writers.get(arch) or writers.setdefault(
             arch, remote_from_url(write_store, write_store, arch, work_dir))
+        spec = {"package": pkg, "version": e.get("version"),
+                "revision": e.get("revision"), "hash": h}
         try:
             writer.upload_symlinks_and_tarball(spec)
             ok += 1
-            info("  [%d] %s %s", n, e["package"], h[:12])
+            published.append((e, tar))
+            info("  [%d] %s %s", n, pkg, h[:12])
         except Exception as exc:
-            error("  FAILED %s (%s): %s", e["package"], h[:12], exc)
-    # Also upload the manifest itself (the one we published from) under MANIFESTS/,
-    # so it can be fetched (e.g. by a CI job that signs it for trusted reuse).
-    w = next(iter(writers.values()), None)
-    if not dry_run and man and w is not None and hasattr(w, "s3") and getattr(w, "writeStore", None):
-        key = "MANIFESTS/" + os.path.basename(man)
-        try:
-            w.s3.upload_file(man, w.writeStore, key)
-            info("Manifest -> %s/%s", w.writeStore, key)
-        except Exception as exc:
-            error("manifest upload failed: %s", exc)
-    banner("%s %d/%d package(s) %s %s",
-           "[dry-run] would publish" if dry_run else "Published",
-           ok, n, "to", write_store)
-    if not dry_run and ok != n:
+            error("  FAILED %s (%s): %s", pkg, h[:12], exc)
+
+    # Upload a MINIMAL BOM manifest under MANIFESTS/ (trust-relevant fields only;
+    # drop variables/patches/source_checksums, which bloat it and can leak config)
+    # so a CI job can fetch and sign it. Fill tarball/tarball_sha256 from the
+    # uploaded store tarball when the build manifest did not record them.
+    if not dry_run:
+        w = next(iter(writers.values()), None)
+        if w is not None and hasattr(w, "s3") and getattr(w, "writeStore", None):
+            # completed_at is kept per package so every hash carries "when built".
+            _keep = ("package", "version", "revision", "effective_architecture",
+                     "hash", "commit_hash", "pkg_family", "completed_at")
+            packages = []
+            for e, tar in published:
+                m = {k: e[k] for k in _keep if k in e}
+                m["tarball"] = e.get("tarball") or basename(tar)
+                m["tarball_sha256"] = e.get("tarball_sha256") or checksum_file(tar)
+                packages.append(m)
+            import tempfile as _tf, getpass, socket, datetime
+            build_id = _build_id(man)
+            # Provenance ("who / when / where") so the manifest is a self-describing
+            # record and a hash -> build reverse index can be derived from it.
+            bom = {
+                "build_id": build_id,
+                "published_by": "%s@%s" % (getpass.getuser(), socket.gethostname().split(".")[0]),
+                "published_at": datetime.datetime.now(datetime.timezone.utc)
+                                    .strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "architecture": architecture,
+                "packages": packages,
+            }
+            tmp = os.path.join(_tf.mkdtemp(), build_id + ".json")
+            with open(tmp, "w") as fh:
+                _json.dump(bom, fh, indent=1)
+            key = "MANIFESTS/" + build_id + ".json"
+            try:
+                w.s3.upload_file(tmp, w.writeStore, key)
+                info("Manifest (minimal BOM, %d pkgs, build_id=%s) -> %s/%s",
+                     len(packages), build_id, w.writeStore, key)
+            except Exception as exc:
+                error("manifest upload failed: %s", exc)
+
+    banner("%s %d package(s) to %s",
+           "[dry-run] would publish" if dry_run else "Published", ok, write_store)
+    if not dry_run and n and ok != n:
         sys.exit(1)
 
 
