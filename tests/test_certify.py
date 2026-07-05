@@ -471,6 +471,30 @@ class TestProbeBinding(unittest.TestCase):
         self.assertEqual(seen, ["A.tar.gz"])
 
 
+class TestKeyPolicySemantics(unittest.TestCase):
+    """trust.key_authorized: listed keys restricted, unlisted governed by default."""
+
+    def test_no_policy_is_unrestricted(self):
+        self.assertTrue(trust.key_authorized("anykey", "ship", None))
+
+    def test_listed_key_restricted_star_is_all(self):
+        p = {"k1": {"lcg"}, "k2": {"*"}}
+        self.assertTrue(trust.key_authorized("k1", "lcg", p))
+        self.assertFalse(trust.key_authorized("k1", "ship", p))
+        self.assertTrue(trust.key_authorized("k2", "ship", p))
+
+    def test_unlisted_key_unrestricted_without_default(self):
+        self.assertTrue(trust.key_authorized("unknown", "ship", {"k1": {"lcg"}}))
+
+    def test_default_empty_makes_strict(self):
+        p = {"k1": {"lcg"}, "default": set()}
+        self.assertFalse(trust.key_authorized("unknown", "ship", p))
+        self.assertTrue(trust.key_authorized("k1", "lcg", p))
+
+    def test_empty_list_for_key_denies_all(self):
+        self.assertFalse(trust.key_authorized("k1", "lcg", {"k1": set()}))
+
+
 class TestKeyGroupBinding(unittest.TestCase):
     """A signing key certifies only the groups its key-policy authorises."""
 

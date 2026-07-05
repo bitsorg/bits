@@ -184,15 +184,20 @@ def load_key_policy(dirs=None):
 def key_authorized(key_id, group, policy) -> bool:
   """Whether *key_id* may certify an entry of *group* under *policy*.
 
-  *policy* None (no policy file) -> unrestricted (True). Otherwise a key must be
-  listed; ``"*"`` authorises every group; an untagged entry counts as ``common``.
-  A key absent from the policy is authorised for nothing (fail-closed).
+  *policy* None (no policy file) -> unrestricted. A key listed in the policy is
+  restricted to its groups (``"*"`` = every group; an empty list = none; an
+  untagged entry counts as ``common``). A key NOT listed falls back to the
+  reserved ``"default"`` entry if present, else is unrestricted — so adding a
+  policy only restricts the keys you explicitly enrol. Set ``"default": []`` to
+  make an enrolled policy strict (deny any unlisted key).
   """
   if policy is None:
     return True
   allowed = policy.get(str(key_id))
-  if not allowed:
-    return False
+  if allowed is None:
+    allowed = policy.get("default")
+  if allowed is None:
+    return True
   if "*" in allowed:
     return True
   return (str(group) if group else "common") in allowed
