@@ -142,20 +142,26 @@ def _publish_s3(package, version, architecture, work_dir, write_store, parser):
     info("Uploaded %s (%s) to the S3 store.", spec["package"], spec["hash"][:12])
 
 
-def _all_manifest_entries(work_dir):
-    """Every package entry from the newest build manifest (empty list if none)."""
+def _newest_manifest_file(work_dir):
+    """Path to the newest build manifest (bits-manifest-*.json), or None."""
     import glob as _glob
-    import json as _json
     pats = [join(work_dir, "MANIFESTS", "bits-manifest-*.json"),
             join(work_dir, "bits-manifest-*.json")]
     files = sorted({f for p in pats for f in _glob.glob(p) if not f.endswith("latest.json")},
                    key=os.path.getmtime, reverse=True)
-    for f in files:
-        try:
-            return _json.load(open(f)).get("packages", [])
-        except Exception:
-            continue
-    return []
+    return files[0] if files else None
+
+
+def _all_manifest_entries(work_dir):
+    """Every package entry from the newest build manifest (empty list if none)."""
+    import json as _json
+    f = _newest_manifest_file(work_dir)
+    if not f:
+        return []
+    try:
+        return _json.load(open(f)).get("packages", [])
+    except Exception:
+        return []
 
 
 def _normalize_s3_store(url):
@@ -204,6 +210,17 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser):
             info("  [%d] %s %s", n, e["package"], h[:12])
         except Exception as exc:
             error("  FAILED %s (%s): %s", e["package"], h[:12], exc)
+    # Also upload the manifest itself under MANIFESTS/, so it can be fetched
+    # (e.g. by a CI job that signs it for trusted reuse).
+    man = _newest_manifest_file(work_dir)
+    w = next(iter(writers.values()), None)
+    if man and w is not None and hasattr(w, "s3") and getattr(w, "writeStore", None):
+        key = "MANIFESTS/" + os.path.basename(man)
+        try:
+            w.s3.upload_file(man, w.writeStore, key)
+            info("Manifest -> %s/%s", w.writeStore, key)
+        except Exception as exc:
+            error("manifest upload failed: %s", exc)
     banner("Published %d/%d package(s) to %s", ok, n, write_store)
     if ok != n:
         sys.exit(1)
