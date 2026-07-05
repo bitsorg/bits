@@ -2556,6 +2556,48 @@ never overridden by the file.
 
 Upload order is designed to avoid partial-artifact races: the main package symlink is written first (reserving the revision number), then all dependency-set symlinks are uploaded in parallel, and the final tarball is written last. A downloader that finds the symlink but not yet the tarball simply waits for the next build cycle.
 
+#### Publishing an existing local build to S3 (`bits publish`)
+
+Building with `--write-store` uploads each package **as it is built**. To push a
+store you already built (nothing re-uploads on a cached rebuild), use
+`bits publish` — it reads the build manifest and uploads the content tarballs
+plus their named symlink objects.
+
+```bash
+# credentials from the environment or ~/.awskeys (see above)
+
+# Bulk: upload every package in the latest manifest. This is the default when
+# no PACKAGE is given, so bare `bits publish` is the whole-stack push:
+bits publish
+bits publish --store https://s3.cern.ch/lcgapp-bits-testing   # pick the bucket
+bits publish --from-manifest /path/to/bits-manifest-XYZ.json  # a specific manifest
+
+# Single package (from its manifest entry):
+bits publish ROOT --to s3 --write-store b3://lcgapp-bits-testing
+```
+
+`--store` accepts an `https://<host>/<bucket>` URL (from which the boto3 endpoint
+and path-style addressing are derived), or `b3://<bucket>` / `s3://<bucket>`;
+default `https://s3.cern.ch/lcgapp-bits-testing`. `--from-manifest` also uploads
+the manifest itself under `MANIFESTS/`, so a CI job can fetch and sign it.
+
+Under the current posture uploading requires only valid S3 keys, and unsigned
+manifests are trusted (reuse works without signatures). Signing becomes relevant
+only when consumers build with `--require-signed-reuse` (see *Artifact resolution
+order*).
+
+#### Signing a manifest on a GitLab runner (no private server)
+
+A GitLab CI runner **dials out** to fetch jobs, so signing needs no
+inbound-reachable service. Keep the Ed25519 **private** key in a Protected +
+Masked CI/CD variable, restrict the job to **protected** refs (so fork/MR
+pipelines can never see it), and have it fetch the uploaded manifest, sign it
+with `trust.sign_manifest`, and push the `.sig` back next to it. Consumers verify
+with the **public** keys shipped in `bits/keys/`. This works on CERN's shared
+runners; if the key must never touch shared infrastructure, register one
+dedicated protected runner (it only dials out — no standing server). A ready
+template lives in `bits-console/.gitlab/sign-manifest.yml`.
+
 #### CernVM File System (`cvmfs://`)
 
 Read-only. Instead of unpacking a remote tarball, bits creates a small local tarball containing symlinks that point into the already-mounted CVMFS repository. The build environment is constructed from the CVMFS paths without copying data locally:
