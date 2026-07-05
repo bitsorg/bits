@@ -195,7 +195,14 @@ validating every hash against the S3 store (`--store`). Group tagging with
 `--group`, offline dry-merge with `--no-store-check`. In the manifests-repo CI,
 `--require-approval --admins ADMINS` refuses to sign unless a listed group admin
 approved the merge request (read from the forge — GitLab CI), defence-in-depth
-over CODEOWNERS. See `bits-manifests/` for the repo scaffolding.
+over CODEOWNERS. See the `bits-manifests` repo for the pipeline scaffolding.
+
+Offline freshness: `--valid-days N` stamps an `expires` timestamp and
+`--source-commit SHA` (default `$CI_COMMIT_SHA`) records the certified commit. A
+consumer's trust gate (`trusted_index`) rejects a signed manifest whose `expires`
+has passed — fail-closed, so a stale manifest cannot be replayed offline. A
+manifest without `expires` never expires (backward compatible). See `keys/README.md`
+for key rotation using the multi-key trust anchor.
 
 #### Store garbage collection — `bits gc`
 

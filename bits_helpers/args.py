@@ -1192,6 +1192,11 @@ def doParseArgs():
                                     "(read from the forge — GitLab CI env). Defence-in-depth over CODEOWNERS."))
   certify_parser.add_argument("--admins", dest="admins", metavar="FILE", default=None,
                               help="File listing group-admin usernames (one per line, or CODEOWNERS-style @handles).")
+  certify_parser.add_argument("--valid-days", dest="validDays", type=int, default=None, metavar="DAYS",
+                              help=("Stamp an 'expires' DAYS from now into the signed manifest; consumers "
+                                    "fail closed once it is past (offline anti-replay). Default: no expiry."))
+  certify_parser.add_argument("--source-commit", dest="sourceCommit", metavar="SHA", default=None,
+                              help="Record the certified manifests-repo commit SHA (default: $CI_COMMIT_SHA).")
   certify_parser.add_argument("--store", dest="certifyStore", metavar="URL",
                               default="https://s3.cern.ch/lcgapp-bits-testing",
                               help=("S3 store URL/bucket to validate hashes against. Accepts https, "

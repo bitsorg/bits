@@ -165,7 +165,27 @@ def accepts_group(entry_group, accept_groups) -> bool:
   return (str(entry_group) if entry_group else "common") in accept
 
 
-def trusted_index(manifest_path: str, sig_path=None, dirs=None, accept_groups=None):
+def is_expired(manifest_data, now=None) -> bool:
+  """True if the manifest carries an ``expires`` timestamp that is in the past.
+
+  Backward-compatible: a manifest without ``expires`` never expires. An
+  unparseable ``expires`` is treated as expired (fail-closed).
+  """
+  raw = (manifest_data or {}).get("expires") if isinstance(manifest_data, dict) else None
+  if not raw:
+    return False
+  import datetime
+  now = now if now is not None else datetime.datetime.now(datetime.timezone.utc)
+  try:
+    exp = datetime.datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=datetime.timezone.utc)
+  except (ValueError, TypeError):
+    return True
+  return now > exp
+
+
+def trusted_index(manifest_path: str, sig_path=None, dirs=None, accept_groups=None,
+                  now=None):
   """Verify a signed manifest and return its trusted reuse index.
 
   Returns ``(key_id, {content_hash: tarball_sha256})`` on success, or
@@ -176,7 +196,8 @@ def trusted_index(manifest_path: str, sig_path=None, dirs=None, accept_groups=No
 
   *accept_groups* applies the group trust policy (see :func:`accepts_group`):
   ``None`` (default) trusts every signed entry; a set/list keeps only entries in
-  those groups plus the always-trusted ``common`` base.
+  those groups plus the always-trusted ``common`` base. A manifest whose
+  ``expires`` has passed is rejected wholesale (fail-closed, offline anti-replay).
   """
   kid = verify_manifest(manifest_path, sig_path, dirs)
   if not kid:
@@ -185,6 +206,8 @@ def trusted_index(manifest_path: str, sig_path=None, dirs=None, accept_groups=No
     with open(manifest_path) as fh:
       data = json.load(fh)
   except Exception:
+    return None, {}
+  if is_expired(data, now):
     return None, {}
   index = {}
   for e in data.get("packages", []):

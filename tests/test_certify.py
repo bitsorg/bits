@@ -208,6 +208,35 @@ class TestCertifyEndToEnd(unittest.TestCase):
         idx = build.trusted_reuse_index(args, self.tmp)
         self.assertEqual(set(idx), {"hbase", "hlcg"})   # ship filtered out
 
+    def test_freshness_fields_and_expiry_enforced(self):
+        import datetime
+        out = os.path.join(self.tmp, "out", "common.json")
+        certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
+                        self.key_pem, out, probe=lambda a, h: "sha256:aa",
+                        valid_days=30, source_commit="cafe1234")
+        doc = json.load(open(out))
+        self.assertEqual(doc["source_commit"], "cafe1234")
+        self.assertIn("expires", doc)
+        # Fresh now -> trusted.
+        kid, index = trust.trusted_index(out)
+        self.assertIsNotNone(kid)
+        self.assertEqual(set(index), {"h1"})
+        # A moment past expiry -> fail closed, even though the signature is valid.
+        future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=31)
+        kid2, index2 = trust.trusted_index(out, now=future)
+        self.assertIsNone(kid2)
+        self.assertEqual(index2, {})
+
+    def test_no_expiry_by_default_never_expires(self):
+        out = os.path.join(self.tmp, "out", "common.json")
+        certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
+                        self.key_pem, out, probe=lambda a, h: "sha256:aa")
+        self.assertNotIn("expires", json.load(open(out)))
+        import datetime
+        far = datetime.datetime(2999, 1, 1, tzinfo=datetime.timezone.utc)
+        kid, index = trust.trusted_index(out, now=far)   # still trusted
+        self.assertIsNotNone(kid)
+
     def test_certify_group_stamps_untagged_entries(self):
         out = os.path.join(self.tmp, "out", "common.json")
         certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
@@ -243,6 +272,29 @@ class TestCertifyEndToEnd(unittest.TestCase):
         kid, index = trust.trusted_index(out)
         self.assertIsNotNone(kid)
         self.assertEqual(index, {"h1": "sha256:aa", "h2": "sha256:bb"})
+
+
+class TestIsExpired(unittest.TestCase):
+    """trust.is_expired: backward-compatible, fail-closed on garbage."""
+
+    def _now(self, y):
+        import datetime
+        return datetime.datetime(y, 6, 1, tzinfo=datetime.timezone.utc)
+
+    def test_absent_expires_never_expires(self):
+        self.assertFalse(trust.is_expired({}, now=self._now(2999)))
+        self.assertFalse(trust.is_expired({"packages": []}, now=self._now(2999)))
+
+    def test_future_expiry_not_expired(self):
+        self.assertFalse(trust.is_expired({"expires": "2100-01-01T00:00:00Z"},
+                                          now=self._now(2026)))
+
+    def test_past_expiry_expired(self):
+        self.assertTrue(trust.is_expired({"expires": "2020-01-01T00:00:00Z"},
+                                         now=self._now(2026)))
+
+    def test_unparseable_expiry_is_fail_closed(self):
+        self.assertTrue(trust.is_expired({"expires": "not-a-date"}))
 
 
 class TestCertifyApprovalGate(unittest.TestCase):

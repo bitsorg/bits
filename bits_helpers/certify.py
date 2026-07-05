@@ -23,7 +23,7 @@ a signature can never outrun what is actually in the bucket.
 import glob
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from bits_helpers import trust
 from bits_helpers.log import debug, warning
@@ -84,7 +84,16 @@ def load_build_manifests(source) -> list:
     return out
 
 
-def merge_common_manifest(manifests, default_group=None) -> dict:
+def _expiry_iso(valid_days):
+    """ISO-8601 UTC timestamp *valid_days* from now, or None to never expire."""
+    if not valid_days:
+        return None
+    when = datetime.now(timezone.utc) + timedelta(days=valid_days)
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def merge_common_manifest(manifests, default_group=None, valid_days=None,
+                          source_commit=None) -> dict:
     """Merge build manifests into one common manifest, deduped by content hash.
 
     Only packages carrying both a ``hash`` and a ``tarball_sha256`` can be
@@ -121,13 +130,22 @@ def merge_common_manifest(manifests, default_group=None) -> dict:
                     "hash %s has conflicting tarball_sha256: %s vs %s"
                     % (h, prev.get("tarball_sha256"), sha))
     packages = [by_hash[h] for h in sorted(by_hash)]
-    return {
+    common = {
         "schema_version": SCHEMA_VERSION,
         "kind": COMMON_MANIFEST_KIND,
         "created_at": _now_iso(),
         "sources": sources,
         "packages": packages,
     }
+    # Offline freshness (P5): source_commit ties the signature to a point in the
+    # manifests-repo history (anti-rollback, git-native); expires bounds how long
+    # a signed manifest is trusted so a stale one can't be replayed forever.
+    if source_commit:
+        common["source_commit"] = source_commit
+    expires = _expiry_iso(valid_days)
+    if expires:
+        common["expires"] = expires
+    return common
 
 
 def validate_against_store(common, probe) -> list:
@@ -154,15 +172,17 @@ def validate_against_store(common, probe) -> list:
 
 
 def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
-            default_group=None) -> tuple:
+            default_group=None, valid_days=None, source_commit=None) -> tuple:
     """Merge → (store-validate) → sign. Returns ``(out_path, sig_path)``.
 
     Raises :class:`CertifyConflict` on a hash/sha256 conflict and
     :class:`CertifyError` if store validation finds any problem. When *probe* is
     None the store-validation step is skipped (use only when the caller has
-    already validated, e.g. a dry merge). *default_group* tags untagged entries.
+    already validated, e.g. a dry merge). *default_group* tags untagged entries;
+    *valid_days*/*source_commit* stamp the offline-freshness fields (P5).
     """
-    common = merge_common_manifest(load_build_manifests(manifests), default_group)
+    common = merge_common_manifest(load_build_manifests(manifests), default_group,
+                                   valid_days=valid_days, source_commit=source_commit)
     if probe is not None:
         problems = validate_against_store(common, probe)
         if problems:
@@ -251,9 +271,12 @@ def doCertify(args, parser):
     probe = None
     if not getattr(args, "noStoreCheck", False):
         probe = make_s3_probe(args.certifyStore, args.workDir, args.architecture)
+    source_commit = getattr(args, "sourceCommit", None) or os.environ.get("CI_COMMIT_SHA")
     try:
         out_path, sig_path = certify(sources, args.key, args.out, probe=probe,
-                                     default_group=getattr(args, "group", None))
+                                     default_group=getattr(args, "group", None),
+                                     valid_days=getattr(args, "validDays", None),
+                                     source_commit=source_commit)
     except CertifyError as exc:
         parser.error(str(exc))
     from bits_helpers.log import banner
