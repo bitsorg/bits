@@ -3330,6 +3330,7 @@ The manifest records every input and output that could affect reproducibility:
 | `tarball` | Tarball filename (or `null`) |
 | `tarball_sha256` | `sha256:<hex>` digest of the tarball, if present |
 | `source_checksums` | List of `{url, checksum}` entries from the recipe's `sources:` list; `checksum` is `null` when none was declared |
+| `built_by` | `user@host` that compiled this hash; `null` unless `outcome` is `"built_from_source"` (recalled artifacts carry their builder in another build's manifest) |
 | `completed_at` | ISO-8601 UTC timestamp of package completion |
 
 ### Manifest location and naming

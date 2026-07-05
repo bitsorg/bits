@@ -278,7 +278,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
         if w is not None and hasattr(w, "s3") and getattr(w, "writeStore", None):
             # completed_at is kept per package so every hash carries "when built".
             _keep = ("package", "version", "revision", "effective_architecture",
-                     "hash", "commit_hash", "pkg_family", "completed_at")
+                     "hash", "commit_hash", "pkg_family", "built_by", "completed_at")
             packages = []
             for e, tar in published:
                 m = {k: e[k] for k in _keep if k in e}

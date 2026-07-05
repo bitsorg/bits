@@ -79,6 +79,7 @@ fields as additive and key off ``schema_version``.
       "source_checksums":       [SourceEntry],    # per-source archive integrity anchors
       "patches":                [PatchEntry],     # recipe patches + their checksums (v3+)
       "variables":              {str: str},       # resolved recipe variables (v3+)
+      "built_by":               str | None,       # user@host that compiled this hash; null unless built_from_source
       "completed_at":           ISO-8601
     }
 
@@ -151,6 +152,21 @@ from bits_helpers.log import debug, warning
 def _now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _builder_id() -> str:
+    """Identity of the host that built a package, as ``user@shorthost``.
+
+    Captured at build time so the "who built this hash" provenance is recorded
+    at the source, rather than inferred from whoever later publishes it.
+    """
+    import getpass
+    import socket
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = "unknown"
+    return "%s@%s" % (user, socket.gethostname().split(".")[0])
 
 
 def _git_remote_url(directory: str):
@@ -381,6 +397,11 @@ class BuildManifest:
             # recipe variables that shaped this build.
             "patches":                _patch_entries(spec),
             "variables":              dict(spec.get("variables") or {}),
+            # built_by identifies the host that actually compiled this hash.
+            # Only meaningful when the package was built here; for from_store /
+            # already_installed outcomes the real builder lives in another
+            # build's manifest, so leave it null rather than claim it.
+            "built_by":               _builder_id() if outcome == "built_from_source" else None,
             "completed_at":           _now_iso(),
         }
         with self._lock:
