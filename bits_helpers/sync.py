@@ -95,13 +95,8 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
   defaults to CERN S3 and credentials come from AWS_ACCESS_KEY_ID /
   AWS_SECRET_ACCESS_KEY exactly as before (aliBuild behaviour).
   """
-  # A `bits login` session provides scoped upload credentials; export them into
-  # the environment unless CI has already injected its own (CI always wins).
-  from bits_helpers import auth
-  auth.apply_session_env()
-
   # Fallback credential source, below flags and env: a private ~/.awskeys file
-  # (override path with $BITS_AWS_KEYS_FILE). Env/CI/`bits login` still win.
+  # (override path with $BITS_AWS_KEYS_FILE). Flags and env (CI) still win.
   _file = _load_aws_keys_file(os.path.expanduser(
       os.environ.get("BITS_AWS_KEYS_FILE") or DEFAULT_AWS_KEYS_FILE))
 
@@ -945,7 +940,7 @@ class Boto3RemoteSync:
         "aws_access_key_id": os.environ["AWS_ACCESS_KEY_ID"],
         "aws_secret_access_key": os.environ["AWS_SECRET_ACCESS_KEY"],
       }
-      # Scoped `bits login` / STS credentials carry a session token.
+      # Temporary/STS credentials (e.g. from ~/.awskeys) carry a session token.
       if os.environ.get("AWS_SESSION_TOKEN"):
         client_kwargs["aws_session_token"] = os.environ["AWS_SESSION_TOKEN"]
       if region:

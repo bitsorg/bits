@@ -224,20 +224,6 @@ def doParseArgs():
                                       description="Initialise development packages.")
   version_parser = subparsers.add_parser("version", help="display %(prog)s version",
                                          description="Display %(prog)s and architecture.")
-  login_parser = subparsers.add_parser(
-      "login",
-      help="obtain short-lived scoped credentials for uploads",
-      description=(
-          "Exchange the personal bits-token in ~/.bits/config (obtained by "
-          "logging into bits-console with CERN SSO) for time-limited, scoped "
-          "S3 upload credentials, stored in ~/.bits/session (mode 600)."))
-  login_parser.add_argument("duration", nargs="?", default="1h", metavar="DURATION",
-                            help="credential lifetime, e.g. 30m, 8h (default: 1h)")
-  login_group = login_parser.add_mutually_exclusive_group()
-  login_group.add_argument("--status", dest="loginStatus", action="store_true",
-                           help="show the current login state and exit")
-  login_group.add_argument("--logout", dest="loginLogout", action="store_true",
-                           help="remove the stored session and exit")
   publish_parser = subparsers.add_parser(
       "publish",
       help="copy, relocate, and stream a built package to a CVMFS ingestion spool",
@@ -1497,7 +1483,7 @@ def finaliseArgs(args, parser):
 
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
-  if args.action in ["version", "architecture", "verify", "stats", "login"]:
+  if args.action in ["version", "architecture", "verify", "stats"]:
     return args
 
   # Minimal finalisation for status: normalise lists and expand referenceSources.
