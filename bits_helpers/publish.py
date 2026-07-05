@@ -142,6 +142,73 @@ def _publish_s3(package, version, architecture, work_dir, write_store, parser):
     info("Uploaded %s (%s) to the S3 store.", spec["package"], spec["hash"][:12])
 
 
+def _all_manifest_entries(work_dir):
+    """Every package entry from the newest build manifest (empty list if none)."""
+    import glob as _glob
+    import json as _json
+    pats = [join(work_dir, "MANIFESTS", "bits-manifest-*.json"),
+            join(work_dir, "bits-manifest-*.json")]
+    files = sorted({f for p in pats for f in _glob.glob(p) if not f.endswith("latest.json")},
+                   key=os.path.getmtime, reverse=True)
+    for f in files:
+        try:
+            return _json.load(open(f)).get("packages", [])
+        except Exception:
+            continue
+    return []
+
+
+def _normalize_s3_store(url):
+    """Return a write-store URL the boto3 backend understands, deriving the S3
+    endpoint from an https URL when needed.
+
+      https://<host>/[swift/v1/]<bucket>[/...]  -> b3://<bucket> (+ endpoint, path-style)
+      b3://<bucket> / s3://<bucket> / rsync:...  -> passthrough
+    """
+    if url.startswith(("b3://", "s3://", "rsync:", "cvmfs://")):
+        return url
+    m = re.match(r"^https?://([^/]+)/(?:swift/v1/)?([^/?#]+)", url)
+    if not m:
+        return url
+    host, bucket = m.group(1), m.group(2)
+    os.environ.setdefault("BITS_S3_ENDPOINT_URL", "https://%s" % host)
+    os.environ.setdefault("S3_ADDRESSING_STYLE", "path")  # CERN RGW path-style
+    return "b3://%s" % bucket
+
+
+def _publish_from_manifest(architecture, work_dir, store_url, parser):
+    """Bulk-upload every built package in the manifest to the S3 store."""
+    from bits_helpers.sync import remote_from_url
+    entries = _all_manifest_entries(work_dir)
+    if not entries:
+        parser.error("no build manifest under %s — build something first" % work_dir)
+    write_store = _normalize_s3_store(store_url)
+    banner("Publishing %d package(s) from the manifest to %s", len(entries), write_store)
+    writers = {}
+    done = set()
+    n = ok = 0
+    for e in entries:
+        h = e.get("hash")
+        if not h or h in done:
+            continue
+        done.add(h)
+        arch = e.get("effective_architecture") or architecture
+        writer = writers.get(arch) or writers.setdefault(
+            arch, remote_from_url(write_store, write_store, arch, work_dir))
+        spec = {"package": e["package"], "version": e.get("version"),
+                "revision": e.get("revision"), "hash": h}
+        n += 1
+        try:
+            writer.upload_symlinks_and_tarball(spec)
+            ok += 1
+            info("  [%d] %s %s", n, e["package"], h[:12])
+        except Exception as exc:
+            error("  FAILED %s (%s): %s", e["package"], h[:12], exc)
+    banner("Published %d/%d package(s) to %s", ok, n, write_store)
+    if ok != n:
+        sys.exit(1)
+
+
 def _spool_is_remote(spool):
     """Return True when *spool* is a remote ``[user@]host:path`` spec."""
     # A single colon that is not a Windows drive letter indicates remote.
@@ -287,6 +354,14 @@ def doPublish(args, parser):
     if getattr(args, "publishView", None):
         from bits_helpers.view_publish_cmd import doPublishView
         return doPublishView(args, parser)
+
+    # Bulk S3 upload of the whole build manifest — no PACKAGE needed.
+    if getattr(args, "fromManifest", False):
+        architecture = getattr(args, "architecture", None) or detectArch()
+        store_url = (getattr(args, "publishStore", None)
+                     or "https://s3.cern.ch/lcgapp-bits-testing")
+        _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser)
+        return
 
     if not getattr(args, "package", None):
         parser.error("publish: PACKAGE is required (or use --view NAME to publish a release view).")

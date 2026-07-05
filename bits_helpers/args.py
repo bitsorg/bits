@@ -1118,6 +1118,14 @@ def doParseArgs():
   publish_parser.add_argument("--write-store", dest="writeStore", default="", metavar="STORE",
                               help=("S3 write store for '--to s3' (e.g. b3://<bucket> or s3://<bucket>). "
                                     "Falls back to WRITE_STORE / BITS_WRITE_STORE in the environment."))
+  publish_parser.add_argument("--from-manifest", dest="fromManifest", action="store_true",
+                              help=("Bulk-upload every package in the build manifest to the S3 store "
+                                    "(no PACKAGE argument needed). Use --store to pick the target."))
+  publish_parser.add_argument("--store", dest="publishStore", metavar="URL",
+                              default="https://s3.cern.ch/lcgapp-bits-testing",
+                              help=("S3 store URL/bucket for --from-manifest. Accepts an https URL "
+                                    "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>. "
+                                    "Default: %(default)s"))
 
   # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
   _prepub = publish_parser.add_argument_group(
