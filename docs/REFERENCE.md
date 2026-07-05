@@ -2574,7 +2574,13 @@ bits publish --from-manifest /path/to/bits-manifest-XYZ.json  # a specific manif
 
 # Single package (from its manifest entry):
 bits publish ROOT --to s3 --write-store b3://lcgapp-bits-testing
+
+# Preview without uploading (no credentials/network needed):
+bits publish --dry-run
 ```
+
+`--dry-run` (`-n`) lists exactly what would be uploaded and to which store,
+without contacting S3 — handy to check the package set and target before pushing.
 
 `--store` accepts an `https://<host>/<bucket>` URL (from which the boto3 endpoint
 and path-style addressing are derived), or `b3://<bucket>` / `s3://<bucket>`;

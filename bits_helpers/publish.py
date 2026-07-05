@@ -126,7 +126,7 @@ def _load_manifest_spec(work_dir, package, version):
     return None
 
 
-def _publish_s3(package, version, architecture, work_dir, write_store, parser):
+def _publish_s3(package, version, architecture, work_dir, write_store, parser, dry_run=False):
     """Upload an already-built package's tarball to the S3 write store for reuse."""
     from bits_helpers.sync import remote_from_url
     e = _load_manifest_spec(work_dir, package, version)
@@ -136,6 +136,10 @@ def _publish_s3(package, version, architecture, work_dir, write_store, parser):
     spec = {"package": e["package"], "version": e.get("version"),
             "revision": e.get("revision"), "hash": e["hash"]}
     arch = e.get("effective_architecture") or architecture
+    if dry_run:
+        banner("[dry-run] would publish %s-%s (%s) to %s"
+               % (spec["package"], spec.get("version"), spec["hash"][:12], write_store))
+        return
     banner("Publishing %s-%s to S3 store %s" % (spec["package"], spec.get("version"), write_store))
     writer = remote_from_url(write_store, write_store, arch, work_dir)
     writer.upload_symlinks_and_tarball(spec)
@@ -170,11 +174,12 @@ def _normalize_s3_store(url):
     return "b3://%s" % bucket
 
 
-def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=None):
+def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=None, dry_run=False):
     """Bulk-upload every built package in a manifest to the S3 store.
 
     *manifest* is a manifest file path, or 'latest'/None to use the newest under
-    WORKDIR/MANIFESTS.
+    WORKDIR/MANIFESTS. With *dry_run*, list what would be uploaded and touch no
+    network (no credentials needed).
     """
     import json as _json
     from bits_helpers.sync import remote_from_url
@@ -194,7 +199,9 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
     if not entries:
         parser.error("no packages listed in manifest %s" % man)
     write_store = _normalize_s3_store(store_url)
-    banner("Publishing %d package(s) from the manifest to %s", len(entries), write_store)
+    banner("%s %d package(s) from %s to %s",
+           "[dry-run] would publish" if dry_run else "Publishing",
+           len(entries), basename(man), write_store)
     writers = {}
     done = set()
     n = ok = 0
@@ -204,11 +211,15 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             continue
         done.add(h)
         arch = e.get("effective_architecture") or architecture
-        writer = writers.get(arch) or writers.setdefault(
-            arch, remote_from_url(write_store, write_store, arch, work_dir))
         spec = {"package": e["package"], "version": e.get("version"),
                 "revision": e.get("revision"), "hash": h}
         n += 1
+        if dry_run:
+            info("  [%d] %s %s %s", n, e["package"], h[:12], e.get("tarball") or "")
+            ok += 1
+            continue
+        writer = writers.get(arch) or writers.setdefault(
+            arch, remote_from_url(write_store, write_store, arch, work_dir))
         try:
             writer.upload_symlinks_and_tarball(spec)
             ok += 1
@@ -218,15 +229,17 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
     # Also upload the manifest itself (the one we published from) under MANIFESTS/,
     # so it can be fetched (e.g. by a CI job that signs it for trusted reuse).
     w = next(iter(writers.values()), None)
-    if man and w is not None and hasattr(w, "s3") and getattr(w, "writeStore", None):
+    if not dry_run and man and w is not None and hasattr(w, "s3") and getattr(w, "writeStore", None):
         key = "MANIFESTS/" + os.path.basename(man)
         try:
             w.s3.upload_file(man, w.writeStore, key)
             info("Manifest -> %s/%s", w.writeStore, key)
         except Exception as exc:
             error("manifest upload failed: %s", exc)
-    banner("Published %d/%d package(s) to %s", ok, n, write_store)
-    if ok != n:
+    banner("%s %d/%d package(s) %s %s",
+           "[dry-run] would publish" if dry_run else "Published",
+           ok, n, "to", write_store)
+    if not dry_run and ok != n:
         sys.exit(1)
 
 
@@ -387,7 +400,7 @@ def doPublish(args, parser):
         store_url = (getattr(args, "publishStore", None)
                      or "https://s3.cern.ch/lcgapp-bits-testing")
         _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
-                               manifest=_fm)
+                               manifest=_fm, dry_run=getattr(args, "dryRun", False))
         return
 
     if not getattr(args, "package", None):
@@ -430,7 +443,8 @@ def doPublish(args, parser):
                        or os.environ.get("WRITE_STORE") or "")
         if not write_store:
             parser.error("--to s3 requires a write store (--write-store, or WRITE_STORE / BITS_WRITE_STORE).")
-        _publish_s3(package, version, architecture, work_dir, write_store, parser)
+        _publish_s3(package, version, architecture, work_dir, write_store, parser,
+                    dry_run=getattr(args, "dryRun", False))
         if "cvmfs" not in targets:
             return
 
