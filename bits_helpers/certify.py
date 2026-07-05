@@ -32,9 +32,10 @@ SCHEMA_VERSION = 1
 COMMON_MANIFEST_KIND = "common-manifest"
 
 # Reuse-relevant fields carried per package into the common manifest. hash +
-# tarball_sha256 are what trusted_index() keys on; the rest aid GC/monitoring.
+# tarball_sha256 are what trusted_index() keys on; group drives the consumer
+# trust policy (own-group + common); the rest aid GC/monitoring.
 _PKG_FIELDS = ("package", "version", "revision", "effective_architecture",
-               "hash", "tarball", "tarball_sha256")
+               "hash", "tarball", "tarball_sha256", "group")
 
 
 class CertifyError(Exception):
@@ -83,13 +84,16 @@ def load_build_manifests(source) -> list:
     return out
 
 
-def merge_common_manifest(manifests) -> dict:
+def merge_common_manifest(manifests, default_group=None) -> dict:
     """Merge build manifests into one common manifest, deduped by content hash.
 
     Only packages carrying both a ``hash`` and a ``tarball_sha256`` can be
     certified for reuse; others are skipped. Two entries sharing a hash must
     agree on ``tarball_sha256`` — a mismatch means one of them is wrong about
     what those bytes are, so we refuse (fail-closed) rather than sign ambiguity.
+
+    *default_group* stamps a ``group`` on entries that don't already carry one,
+    so a per-group certification tags its batch for the consumer trust filter.
     """
     by_hash = {}
     sources = []
@@ -107,6 +111,8 @@ def merge_common_manifest(manifests) -> dict:
             if not h or not sha:
                 continue
             entry = {k: e[k] for k in _PKG_FIELDS if k in e}
+            if default_group and not entry.get("group"):
+                entry["group"] = default_group
             prev = by_hash.get(h)
             if prev is None:
                 by_hash[h] = entry
@@ -147,15 +153,16 @@ def validate_against_store(common, probe) -> list:
     return problems
 
 
-def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None) -> tuple:
+def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
+            default_group=None) -> tuple:
     """Merge → (store-validate) → sign. Returns ``(out_path, sig_path)``.
 
     Raises :class:`CertifyConflict` on a hash/sha256 conflict and
     :class:`CertifyError` if store validation finds any problem. When *probe* is
     None the store-validation step is skipped (use only when the caller has
-    already validated, e.g. a dry merge).
+    already validated, e.g. a dry merge). *default_group* tags untagged entries.
     """
-    common = merge_common_manifest(load_build_manifests(manifests))
+    common = merge_common_manifest(load_build_manifests(manifests), default_group)
     if probe is not None:
         problems = validate_against_store(common, probe)
         if problems:
@@ -214,7 +221,8 @@ def doCertify(args, parser):
     if not getattr(args, "noStoreCheck", False):
         probe = make_s3_probe(args.certifyStore, args.workDir, args.architecture)
     try:
-        out_path, sig_path = certify(sources, args.key, args.out, probe=probe)
+        out_path, sig_path = certify(sources, args.key, args.out, probe=probe,
+                                     default_group=getattr(args, "group", None))
     except CertifyError as exc:
         parser.error(str(exc))
     from bits_helpers.log import banner

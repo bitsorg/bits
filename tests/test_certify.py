@@ -89,6 +89,27 @@ class TestValidateAgainstStore(unittest.TestCase):
         self.assertIn("sha256 mismatch", problems[0])
 
 
+class TestAcceptsGroup(unittest.TestCase):
+    """The pure group-policy predicate used by trusted_index."""
+
+    def test_none_policy_trusts_everything(self):
+        for g in (None, "", "lcg", "ship"):
+            self.assertTrue(trust.accepts_group(g, None))
+
+    def test_common_and_untagged_always_trusted(self):
+        self.assertTrue(trust.accepts_group("common", ["lcg"]))
+        self.assertTrue(trust.accepts_group(None, ["lcg"]))
+        self.assertTrue(trust.accepts_group("", ["lcg"]))
+
+    def test_own_group_trusted_foreign_rejected(self):
+        self.assertTrue(trust.accepts_group("lcg", ["lcg"]))
+        self.assertFalse(trust.accepts_group("ship", ["lcg"]))
+
+    def test_empty_policy_still_trusts_base(self):
+        self.assertTrue(trust.accepts_group("common", []))
+        self.assertFalse(trust.accepts_group("lcg", []))
+
+
 class TestCertifyEndToEnd(unittest.TestCase):
 
     def setUp(self):
@@ -149,6 +170,53 @@ class TestCertifyEndToEnd(unittest.TestCase):
         kid, index = trust.trusted_index(out_path)   # fail-closed
         self.assertIsNone(kid)
         self.assertEqual(index, {})
+
+    def test_group_filter_scopes_reuse_index(self):
+        # A merged manifest spanning groups: base (untagged), lcg, ship.
+        pkgs = [_pkg("Base", "hbase", "sha256:00"),                 # untagged -> base
+                _pkg("Lcg", "hlcg", "sha256:aa", group="lcg"),
+                _pkg("Ship", "hship", "sha256:bb", group="ship")]
+        store = {("slc7_x86-64", "hbase"): "sha256:00",
+                 ("slc7_x86-64", "hlcg"): "sha256:aa",
+                 ("slc7_x86-64", "hship"): "sha256:bb"}
+        out = os.path.join(self.tmp, "out", "common.json")
+        certify.certify([_manifest("b1", pkgs)], self.key_pem, out,
+                        probe=lambda a, h: store.get((a, h)))
+        # No policy -> everything trusted.
+        _, all_idx = trust.trusted_index(out)
+        self.assertEqual(set(all_idx), {"hbase", "hlcg", "hship"})
+        # lcg policy -> base + lcg, ship dropped.
+        _, lcg_idx = trust.trusted_index(out, accept_groups=["lcg"])
+        self.assertEqual(set(lcg_idx), {"hbase", "hlcg"})
+
+    def test_build_trusted_reuse_index_honours_trust_groups(self):
+        # End-to-end through the consumer gate: --trust-groups lcg parsed and
+        # applied to the verified signed manifest.
+        from bits_helpers import build
+        pkgs = [_pkg("Base", "hbase", "sha256:00"),
+                _pkg("Lcg", "hlcg", "sha256:aa", group="lcg"),
+                _pkg("Ship", "hship", "sha256:bb", group="ship")]
+        store = {("slc7_x86-64", "hbase"): "sha256:00",
+                 ("slc7_x86-64", "hlcg"): "sha256:aa",
+                 ("slc7_x86-64", "hship"): "sha256:bb"}
+        out = os.path.join(self.tmp, "out", "common.json")
+        certify.certify([_manifest("b1", pkgs)], self.key_pem, out,
+                        probe=lambda a, h: store.get((a, h)))
+        args = SimpleNamespace(trustManifest=out, trustGroups="lcg",
+                               requireSignedReuse=True)
+        idx = build.trusted_reuse_index(args, self.tmp)
+        self.assertEqual(set(idx), {"hbase", "hlcg"})   # ship filtered out
+
+    def test_certify_group_stamps_untagged_entries(self):
+        out = os.path.join(self.tmp, "out", "common.json")
+        certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
+                        self.key_pem, out, probe=lambda a, h: "sha256:aa",
+                        default_group="lcg")
+        entry = json.load(open(out))["packages"][0]
+        self.assertEqual(entry["group"], "lcg")
+        # Consumer in a different group won't trust it (not base).
+        _, ship_idx = trust.trusted_index(out, accept_groups=["ship"])
+        self.assertEqual(ship_idx, {})
 
     def test_doCertify_cli_defaults_to_workdir_manifests(self):
         # Lay two per-build BOMs under WORKDIR/MANIFESTS/<build_id>/ and certify

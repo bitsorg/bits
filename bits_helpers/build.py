@@ -187,13 +187,17 @@ def trusted_reuse_index(args, work_dir):
       downloadUrllib2(src, dest, work_dir, dest_filename=name)
       downloadUrllib2(src + ".sig", dest, work_dir, dest_filename=name + ".sig")
       manifest = os.path.join(dest, name)
-    kid, index = trust.trusted_index(manifest)
+    raw_groups = getattr(args, "trustGroups", None)
+    accept_groups = ([g.strip() for g in raw_groups.split(",") if g.strip()]
+                     if raw_groups else None)
+    kid, index = trust.trusted_index(manifest, accept_groups=accept_groups)
     if not kid:
       warning("--require-signed-reuse: could not verify signed manifest %s; "
               "no remote tarball will be reused.", src)
     else:
-      debug("Trusted reuse index from %s (signed by %s): %d entries",
-            src, kid, len(index))
+      debug("Trusted reuse index from %s (signed by %s): %d entries%s",
+            src, kid, len(index),
+            "" if accept_groups is None else " (groups: %s + common)" % ",".join(accept_groups))
   else:
     warning("--require-signed-reuse set without --trust-manifest; "
             "no remote tarball will be reused.")

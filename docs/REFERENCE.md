@@ -177,6 +177,11 @@ The tier-3 attestation is driven by three build flags:
   store is reused only when `--trust-manifest` lists its hash **and** its sha256
   matches. Unlisted → discard and rebuild; sha256 mismatch → fatal (tampering).
   Local build-node and CVMFS artifacts are unaffected.
+- `--trust-groups G1,G2,…` — scope reuse by group. The signed common manifest may
+  tag each entry with a `group`; with `--trust-groups` a consumer trusts only
+  those groups plus the always-trusted `common` base (untagged entries count as
+  base). Omit it to trust every signed entry. Produce group tags at certification
+  time with `bits certify --group GROUP`.
 
 #### Uploads and certification
 

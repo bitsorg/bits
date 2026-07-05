@@ -610,6 +610,10 @@ def doParseArgs():
   build_remote.add_argument("--require-signed-reuse", dest="requireSignedReuse", action="store_true",
                             help=("Fail-closed: only reuse remote tarballs vouched for by a verified signed "
                                   "manifest (see --trust-manifest). Local and CVMFS artifacts are unaffected."))
+  build_remote.add_argument("--trust-groups", dest="trustGroups", default=None, metavar="G1,G2,…",
+                            help=("Comma-separated groups to trust in the signed manifest, on top of the "
+                                  "always-trusted 'common' base. When omitted, every signed entry is trusted. "
+                                  "Use to reuse only your own group's app layer plus the shared base."))
   build_remote.add_argument("--reuse-policy", dest="reusePolicy", choices=["strict", "relaxed"],
                             default=None,
                             help=("CVMFS reuse strictness (ADR-0001). 'strict' (default): reuse only on "
@@ -1166,6 +1170,9 @@ def doParseArgs():
                               help="Path to write the merged common manifest (its .sig is written alongside).")
   certify_parser.add_argument("--key", dest="key", metavar="PEM", required=True,
                               help="Ed25519 private key (PEM) to sign the common manifest with.")
+  certify_parser.add_argument("--group", dest="group", metavar="GROUP", default=None,
+                              help=("Tag entries that lack a group with GROUP, so the consumer trust filter "
+                                    "(--trust-groups) can scope reuse. Use 'common' for the shared base layer."))
   certify_parser.add_argument("--store", dest="certifyStore", metavar="URL",
                               default="https://s3.cern.ch/lcgapp-bits-testing",
                               help=("S3 store URL/bucket to validate hashes against. Accepts https, "

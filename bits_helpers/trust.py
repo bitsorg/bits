@@ -151,7 +151,21 @@ def verify_manifest(manifest_path: str, sig_path=None, dirs=None):
   return verify_bytes(data, envelope, load_trusted_keys(dirs))
 
 
-def trusted_index(manifest_path: str, sig_path=None, dirs=None):
+def accepts_group(entry_group, accept_groups) -> bool:
+  """Group-policy predicate for one common-manifest entry.
+
+  *accept_groups* is the caller's trust policy (the groups it opts into, e.g. its
+  own group). The base/``common`` layer is always trusted, and an untagged entry
+  is treated as base — so legacy single-group manifests keep working. Passing
+  ``accept_groups=None`` disables filtering entirely (trust every entry).
+  """
+  if accept_groups is None:
+    return True
+  accept = {str(g) for g in accept_groups} | {"common"}
+  return (str(entry_group) if entry_group else "common") in accept
+
+
+def trusted_index(manifest_path: str, sig_path=None, dirs=None, accept_groups=None):
   """Verify a signed manifest and return its trusted reuse index.
 
   Returns ``(key_id, {content_hash: tarball_sha256})`` on success, or
@@ -159,6 +173,10 @@ def trusted_index(manifest_path: str, sig_path=None, dirs=None):
   authoritative index for trusted reuse: a remote tarball is reused only when
   its content hash is a key here AND the downloaded tarball's sha256 matches
   the value (fail-closed).
+
+  *accept_groups* applies the group trust policy (see :func:`accepts_group`):
+  ``None`` (default) trusts every signed entry; a set/list keeps only entries in
+  those groups plus the always-trusted ``common`` base.
   """
   kid = verify_manifest(manifest_path, sig_path, dirs)
   if not kid:
@@ -171,6 +189,6 @@ def trusted_index(manifest_path: str, sig_path=None, dirs=None):
   index = {}
   for e in data.get("packages", []):
     h, sha = e.get("hash"), e.get("tarball_sha256")
-    if h and sha:
+    if h and sha and accepts_group(e.get("group"), accept_groups):
       index[h] = sha
   return kid, index
