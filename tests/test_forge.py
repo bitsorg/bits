@@ -112,6 +112,27 @@ class TestGitLabForge(unittest.TestCase):
         self.assertEqual(gl.context(), "42 MR !5")
 
 
+    def test_unmerged_mr_is_not_used_for_certification(self):
+        gl = forge.GitLabForge.from_env({
+            "CI_API_V4_URL": "https://gl/api/v4", "CI_PROJECT_ID": "42",
+            "CI_COMMIT_SHA": "deadbeef", "BITS_FORGE_TOKEN": "tok"})
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return [{"iid": 5, "state": "opened"}]      # not merged
+
+        def _fake_get(url, headers=None, timeout=None):
+            if url.endswith("/repository/commits/deadbeef/merge_requests"):
+                return _Resp()
+            raise AssertionError("must not read approvals for an unmerged MR: %s" % url)
+
+        with patch("requests.get", side_effect=_fake_get):
+            self.assertEqual(gl.list_approvers(), set())   # fail-closed
+
+
 class TestVerifyApproval(unittest.TestCase):
 
     def test_ok_when_admin_approved(self):

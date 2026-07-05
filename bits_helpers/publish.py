@@ -177,14 +177,17 @@ def _normalize_s3_store(url):
 def _run_leaf():
     """A per-run, per-host filename so concurrent publishes never overwrite.
 
-    ``<shorthost>-<UTC>.json``. Combined with the deterministic build_id folder,
-    two hosts publishing the same release land side by side rather than clobbering.
+    ``<shorthost>-<UTC>-<rand>.json``. The random suffix makes it collision-proof
+    even for two publishes on the same host within the same second; combined with
+    the deterministic build_id folder, concurrent publishes land side by side.
     """
     import socket
     import datetime
+    import binascii
     host = re.sub(r"[^A-Za-z0-9._-]", "_", socket.gethostname().split(".")[0]) or "host"
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return "%s-%s.json" % (host, ts)
+    rnd = binascii.hexlify(os.urandom(4)).decode()
+    return "%s-%s-%s.json" % (host, ts, rnd)
 
 
 def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=None, dry_run=False):
@@ -267,7 +270,12 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
     # drop variables/patches/source_checksums, which bloat it and can leak config)
     # so a CI job can fetch and sign it. Fill tarball/tarball_sha256 from the
     # uploaded store tarball when the build manifest did not record them.
-    if not dry_run:
+    # Only emit the BOM when every candidate uploaded: a partial publish must not
+    # produce a manifest that certification would treat as a complete build.
+    if not dry_run and ok != n:
+        error("%d of %d package(s) failed to upload — not writing a BOM manifest "
+              "for a partial publish", n - ok, n)
+    if not dry_run and ok == n:
         w = next(iter(writers.values()), None)
         if w is not None and hasattr(w, "s3") and getattr(w, "writeStore", None):
             # completed_at is kept per package so every hash carries "when built".
@@ -286,11 +294,15 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             # same release agree on it, so it names the release in the bucket.
             build_id = build_id_from_manifest(manifest_doc) or "unknown"
             leaf = _run_leaf()
+            try:
+                _user = getpass.getuser()
+            except Exception:
+                _user = "unknown"
             # Provenance ("who / when / where") so the manifest is a self-describing
             # record and a hash -> build reverse index can be derived from it.
             bom = {
                 "build_id": build_id,
-                "published_by": "%s@%s" % (getpass.getuser(), socket.gethostname().split(".")[0]),
+                "published_by": "%s@%s" % (_user, socket.gethostname().split(".")[0]),
                 "published_at": datetime.datetime.now(datetime.timezone.utc)
                                     .strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "architecture": architecture,

@@ -127,10 +127,11 @@ class GitLabForge(Forge):
         if not self.commit_sha:
             return None
         mrs = self._get("repository/commits/%s/merge_requests" % self.commit_sha) or []
+        # Only a *merged* MR certifies. Never fall back to an open/unmerged MR:
+        # an approval on some unrelated MR touching this commit must not count.
         merged = [m for m in mrs if (m or {}).get("state") == "merged"]
-        chosen = (merged or mrs)
-        if chosen:
-            self.mr_iid = str(chosen[0].get("iid"))
+        if merged:
+            self.mr_iid = str(merged[0].get("iid"))
         return self.mr_iid
 
     def list_approvers(self):

@@ -122,7 +122,7 @@ class TestPublishFromManifest(unittest.TestCase):
         build_id = build_id_from_manifest(self.manifest)
         self.assertTrue(build_id.startswith("release_gcc15-"))
         self.assertTrue(
-            re.fullmatch(r"MANIFESTS/%s/[^/]+-\d{8}T\d{6}Z\.json" % re.escape(build_id), key),
+            re.fullmatch(r"MANIFESTS/%s/[^/]+-\d{8}T\d{6}Z-[0-9a-f]+\.json" % re.escape(build_id), key),
             "unexpected key: %s" % key)
 
     def test_bom_has_provenance_and_excludes_config(self):
@@ -139,11 +139,27 @@ class TestPublishFromManifest(unittest.TestCase):
         self.assertTrue(top["tarball"])
         self.assertTrue(top["tarball_sha256"].startswith("sha256:"))
 
+    def test_partial_publish_writes_no_bom(self):
+        # If any package fails to upload, no BOM manifest is emitted (a partial
+        # publish must not look like a complete, certifiable build).
+        self.writer = _FakeWriter()
+
+        def _boom(spec):
+            raise RuntimeError("upload failed")
+
+        self.writer.upload_symlinks_and_tarball = _boom
+        with patch.object(sync, "remote_from_url", return_value=self.writer):
+            with self.assertRaises(SystemExit):
+                publish._publish_from_manifest(
+                    ARCH, self.work, "https://s3.example/mybucket", _Parser(),
+                    manifest=self.man_path)
+        self.assertEqual(self.writer.s3.uploads, [])   # no BOM on partial publish
+
     def test_run_leaf_is_unique_per_call(self):
         # Distinct hosts/runs must not collide: the leaf carries host + UTC stamp.
         leaves = {publish._run_leaf() for _ in range(3)}
         for leaf in leaves:
-            self.assertRegex(leaf, r"^[A-Za-z0-9._-]+-\d{8}T\d{6}Z\.json$")
+            self.assertRegex(leaf, r"^[A-Za-z0-9._-]+-\d{8}T\d{6}Z-[0-9a-f]+\.json$")
 
 
 if __name__ == "__main__":

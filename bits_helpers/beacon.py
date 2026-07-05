@@ -31,17 +31,27 @@ def send_reuse_beacon(console_url, build_id, hashes, timeout=2.0,
     """
     if not console_url or not build_id or not hashes:
         return None
+    # Only speak http(s): never let a misconfigured URL turn this into a
+    # file://, ftp:// or other local/SSRF fetch via urlopen.
+    if not str(console_url).lower().startswith(("http://", "https://")):
+        return None
     hashes = list(dict.fromkeys(hashes))          # de-dup, keep order
     base = console_url.rstrip("/") + "/api/reuse"
 
     def _worker():
         for i in range(0, len(hashes), batch):
             q = urlencode({"build": build_id, "hashes": ",".join(hashes[i:i + batch])})
+            resp = None
             try:
                 resp = urlopen(base + "?" + q, timeout=timeout)  # nosec - best-effort GET
-                resp.close()
             except Exception:
                 pass                                # never propagate; best-effort
+            finally:
+                if resp is not None:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
 
     t = threading.Thread(target=_worker, name="bits-reuse-beacon", daemon=True)
     t.start()

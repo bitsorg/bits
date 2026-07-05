@@ -1426,10 +1426,11 @@ def doFinalSync(spec, specs, args, syncHelper):
   # Accumulate reused-from-store hashes for the best-effort reuse beacon, fired
   # once at the end of the build (never per package, never blocking).
   if spec.get("cachedTarball") and getattr(syncHelper, "remoteStore", ""):
+    # args._reusedHashes is pre-created single-threaded in doBuild; set.add is
+    # safe under the GIL for concurrent builder threads.
     _rh = getattr(args, "_reusedHashes", None)
-    if _rh is None:
-      _rh = args._reusedHashes = set()
-    _rh.add(spec["hash"])
+    if _rh is not None:
+      _rh.add(spec["hash"])
 
   if getattr(args, "manifest", None) is not None:
     from bits_helpers.utilities import resolve_store_path, effective_arch, ver_rev
@@ -1631,6 +1632,10 @@ def doBuild(args, parser):
   buildOrder = []
   workDir = abspath(args.workDir)
   prunePaths(workDir)
+
+  # Pre-create the reuse-beacon hash set here (single-threaded) so the parallel
+  # per-package finalisers only ever .add() to it — no lazy-init race.
+  args._reusedHashes = set()
 
   buildTargets = " ".join(args.pkgname)
 

@@ -112,7 +112,7 @@ class TestCollectGarbageFailClosed(unittest.TestCase):
                 for i, h in enumerate(hashes)]
         out = os.path.join(self.tmp, "common.json")
         certify.certify([{"build_id": "b1", "packages": pkgs}], self.key_pem, out,
-                        probe=lambda a, h: "sha256:%s" % h)
+                        probe=lambda a, h, t=None: "sha256:%s" % h)
         return out
 
     def test_sweeps_only_unreferenced(self):

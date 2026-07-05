@@ -72,20 +72,20 @@ class TestValidateAgainstStore(unittest.TestCase):
     def test_all_present_and_matching_is_clean(self):
         store = {("slc7_x86-64", "h1"): "sha256:aa", ("slc7_x86-64", "h2"): "bb"}
         problems = certify.validate_against_store(
-            self._common(), lambda a, h: store.get((a, h)))
+            self._common(), lambda a, h, t=None: store.get((a, h)))
         self.assertEqual(problems, [])
 
     def test_missing_object_reported(self):
         store = {("slc7_x86-64", "h1"): "sha256:aa"}   # h2 absent
         problems = certify.validate_against_store(
-            self._common(), lambda a, h: store.get((a, h)))
+            self._common(), lambda a, h, t=None: store.get((a, h)))
         self.assertEqual(len(problems), 1)
         self.assertIn("missing from store", problems[0])
 
     def test_sha_mismatch_reported(self):
         store = {("slc7_x86-64", "h1"): "sha256:aa", ("slc7_x86-64", "h2"): "sha256:WRONG"}
         problems = certify.validate_against_store(
-            self._common(), lambda a, h: store.get((a, h)))
+            self._common(), lambda a, h, t=None: store.get((a, h)))
         self.assertEqual(len(problems), 1)
         self.assertIn("sha256 mismatch", problems[0])
 
@@ -144,7 +144,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         store = {("slc7_x86-64", "h1"): "sha256:aa", ("slc7_x86-64", "h2"): "sha256:bb"}
         out = os.path.join(self.tmp, "out", "common.json")
         out_path, sig_path = certify.certify(
-            [m], self.key_pem, out, probe=lambda a, h: store.get((a, h)))
+            [m], self.key_pem, out, probe=lambda a, h, t=None: store.get((a, h)))
         self.assertTrue(os.path.isfile(out_path) and os.path.isfile(sig_path))
         # The client-side trust gate must accept it and expose the reuse index.
         kid, index = trust.trusted_index(out_path)
@@ -155,7 +155,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         m = _manifest("b1", [_pkg("A", "h1", "sha256:aa")])
         out = os.path.join(self.tmp, "out", "common.json")
         with self.assertRaises(certify.CertifyError):
-            certify.certify([m], self.key_pem, out, probe=lambda a, h: None)
+            certify.certify([m], self.key_pem, out, probe=lambda a, h, t=None: None)
         self.assertFalse(os.path.exists(out))   # nothing signed on failure
 
     def test_tampering_breaks_signature(self):
@@ -163,7 +163,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         store = {("slc7_x86-64", "h1"): "sha256:aa"}
         out = os.path.join(self.tmp, "out", "common.json")
         out_path, _ = certify.certify([m], self.key_pem, out,
-                                      probe=lambda a, h: store.get((a, h)))
+                                      probe=lambda a, h, t=None: store.get((a, h)))
         data = json.load(open(out_path))
         data["packages"][0]["tarball_sha256"] = "sha256:evil"
         with open(out_path, "w") as fh:
@@ -182,7 +182,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
                  ("slc7_x86-64", "hship"): "sha256:bb"}
         out = os.path.join(self.tmp, "out", "common.json")
         certify.certify([_manifest("b1", pkgs)], self.key_pem, out,
-                        probe=lambda a, h: store.get((a, h)))
+                        probe=lambda a, h, t=None: store.get((a, h)))
         # No policy -> everything trusted.
         _, all_idx = trust.trusted_index(out)
         self.assertEqual(set(all_idx), {"hbase", "hlcg", "hship"})
@@ -202,7 +202,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
                  ("slc7_x86-64", "hship"): "sha256:bb"}
         out = os.path.join(self.tmp, "out", "common.json")
         certify.certify([_manifest("b1", pkgs)], self.key_pem, out,
-                        probe=lambda a, h: store.get((a, h)))
+                        probe=lambda a, h, t=None: store.get((a, h)))
         args = SimpleNamespace(trustManifest=out, trustGroups="lcg",
                                requireSignedReuse=True)
         idx = build.trusted_reuse_index(args, self.tmp)
@@ -212,7 +212,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         import datetime
         out = os.path.join(self.tmp, "out", "common.json")
         certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
-                        self.key_pem, out, probe=lambda a, h: "sha256:aa",
+                        self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa",
                         valid_days=30, source_commit="cafe1234")
         doc = json.load(open(out))
         self.assertEqual(doc["source_commit"], "cafe1234")
@@ -230,7 +230,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
     def test_no_expiry_by_default_never_expires(self):
         out = os.path.join(self.tmp, "out", "common.json")
         certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
-                        self.key_pem, out, probe=lambda a, h: "sha256:aa")
+                        self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa")
         self.assertNotIn("expires", json.load(open(out)))
         import datetime
         far = datetime.datetime(2999, 1, 1, tzinfo=datetime.timezone.utc)
@@ -240,7 +240,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
     def test_certify_group_stamps_untagged_entries(self):
         out = os.path.join(self.tmp, "out", "common.json")
         certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
-                        self.key_pem, out, probe=lambda a, h: "sha256:aa",
+                        self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa",
                         default_group="lcg")
         entry = json.load(open(out))["packages"][0]
         self.assertEqual(entry["group"], "lcg")
@@ -347,6 +347,64 @@ class TestCertifyApprovalGate(unittest.TestCase):
             with self.assertRaises(Exception) as ctx:
                 certify.doCertify(self._args(), self._Parser())
         self.assertNotIsInstance(ctx.exception, self._Parser._Err)  # not the gate
+
+    def test_negative_valid_days_rejected_before_signing(self):
+        args = SimpleNamespace(
+            manifests=[_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
+            out=self.out, key="unused.pem", certifyStore="", noStoreCheck=True,
+            workDir=self.tmp, architecture="slc7_x86-64", group=None,
+            requireApproval=False, admins=None, validDays=-1, sourceCommit=None)
+        with self.assertRaises(self._Parser._Err):
+            certify.doCertify(args, self._Parser())
+        self.assertFalse(os.path.exists(self.out))
+
+
+class TestGroupFromPath(unittest.TestCase):
+    """certify infers a per-entry group from the manifests/<group>/ directory."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, group, name, manifest):
+        d = os.path.join(self.tmp, "manifests", group)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, name), "w") as fh:
+            json.dump(manifest, fh)
+
+    def test_group_inferred_and_applied(self):
+        self._write("lcg", "b.json", _manifest("b-lcg", [_pkg("L", "hl", "sha256:l")]))
+        self._write("common", "b.json", _manifest("b-c", [_pkg("C", "hc", "sha256:c")]))
+        mans = certify.load_build_manifests(os.path.join(self.tmp, "manifests"))
+        self.assertEqual({m.get("_source_group") for m in mans}, {"lcg", "common"})
+        common = certify.merge_common_manifest(mans)
+        tags = {p["hash"]: p.get("group") for p in common["packages"]}
+        self.assertEqual(tags, {"hl": "lcg", "hc": "common"})
+
+    def test_explicit_entry_group_beats_directory(self):
+        self._write("lcg", "b.json",
+                    _manifest("b", [_pkg("X", "hx", "sha256:x", group="special")]))
+        common = certify.merge_common_manifest(
+            certify.load_build_manifests(os.path.join(self.tmp, "manifests")))
+        self.assertEqual(common["packages"][0]["group"], "special")
+
+
+class TestProbeBinding(unittest.TestCase):
+    """validate_against_store must ask the probe for the manifest's named tarball."""
+
+    def test_probe_receives_tarball_name(self):
+        seen = []
+
+        def probe(a, h, t=None):
+            seen.append(t)
+            return "sha256:aa"
+
+        common = certify.merge_common_manifest(
+            [_manifest("b1", [_pkg("A", "h1", "sha256:aa")])])
+        self.assertEqual(certify.validate_against_store(common, probe), [])
+        self.assertEqual(seen, ["A.tar.gz"])
 
 
 if __name__ == "__main__":

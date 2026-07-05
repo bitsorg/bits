@@ -78,9 +78,18 @@ def load_build_manifests(source) -> list:
         for p in paths:
             try:
                 with open(p) as fh:
-                    out.append(json.load(fh))
+                    man = json.load(fh)
             except Exception as exc:
                 warning("certify: skipping unreadable manifest %s (%s)", p, exc)
+                continue
+            # In a manifests repo the group is the directory:
+            # manifests/<group>/<build_id>.json. Record it so merge tags entries
+            # by their directory rather than defaulting untagged ones to 'common'.
+            if isinstance(man, dict):
+                parts = os.path.normpath(p).split(os.sep)
+                if len(parts) >= 3 and parts[-3] == "manifests":
+                    man.setdefault("_source_group", parts[-2])
+            out.append(man)
     return out
 
 
@@ -112,6 +121,10 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
         bid = man.get("build_id")
         if bid and bid not in sources:
             sources.append(bid)
+        # Group precedence: explicit entry group > the manifest's directory group
+        # (manifests/<group>/) > the run-wide --group. Prevents untagged entries
+        # from silently becoming cluster-wide 'common'.
+        man_group = man.get("_source_group") or default_group
         for e in man.get("packages") or []:
             if not isinstance(e, dict):
                 continue
@@ -120,8 +133,8 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
             if not h or not sha:
                 continue
             entry = {k: e[k] for k in _PKG_FIELDS if k in e}
-            if default_group and not entry.get("group"):
-                entry["group"] = default_group
+            if not entry.get("group") and man_group:
+                entry["group"] = man_group
             prev = by_hash.get(h)
             if prev is None:
                 by_hash[h] = entry
@@ -151,17 +164,18 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
 def validate_against_store(common, probe) -> list:
     """Check every package in *common* against the real store.
 
-    *probe* is ``probe(effective_architecture, hash) -> 'sha256:HEX' | HEX | None``
-    returning the digest computed from the *actual* stored object (None if it is
-    absent). Returns a list of human-readable problems; empty means the manifest
-    is fully backed by the store and safe to sign.
+    *probe* is ``probe(effective_architecture, hash, tarball) -> 'sha256:HEX' |
+    HEX | None`` returning the digest computed from the *actual* stored object
+    named by *tarball* (None if it is absent or ambiguous). Returns a list of
+    human-readable problems; empty means the manifest is fully backed by the
+    store and safe to sign.
     """
     problems = []
     for p in common.get("packages") or []:
         h = p.get("hash")
         arch = p.get("effective_architecture") or ""
         claimed = _norm_sha(p.get("tarball_sha256"))
-        actual = probe(arch, h)
+        actual = probe(arch, h, p.get("tarball"))
         if actual is None:
             problems.append("missing from store: %s %s" % (p.get("package", "?"), h))
         elif _norm_sha(actual) != claimed:
@@ -187,13 +201,29 @@ def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
         problems = validate_against_store(common, probe)
         if problems:
             raise CertifyError("store validation failed:\n  " + "\n  ".join(problems))
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    with open(out_path, "w") as fh:
-        json.dump(common, fh, indent=1, sort_keys=True)
-    sig_path = trust.sign_manifest(out_path, key_pem_path, sig_path)
+    # Write + sign atomically: a failed signing must never leave an *unsigned*
+    # manifest sitting at out_path. Sign the temp file, then move both into place.
+    out_abs = os.path.abspath(out_path)
+    os.makedirs(os.path.dirname(out_abs), exist_ok=True)
+    sig_path = sig_path or (out_abs + ".sig")
+    tmp = out_abs + ".tmp"
+    tmp_sig = tmp + ".sig"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(common, fh, indent=1, sort_keys=True)
+        trust.sign_manifest(tmp, key_pem_path, tmp_sig)
+        os.replace(tmp, out_abs)
+        os.replace(tmp_sig, sig_path)
+    except BaseException:
+        for stale in (tmp, tmp_sig):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+        raise
     debug("certify: signed common manifest %s (%d pkgs) -> %s",
-          out_path, len(common["packages"]), sig_path)
-    return out_path, sig_path
+          out_abs, len(common["packages"]), sig_path)
+    return out_abs, sig_path
 
 
 def make_s3_probe(store_url, work_dir, default_arch):
@@ -213,18 +243,35 @@ def make_s3_probe(store_url, work_dir, default_arch):
     bucket = getattr(writer, "remoteStore", None) or getattr(writer, "writeStore", None)
     s3 = writer.s3
 
-    def probe(arch, h):
+    def probe(arch, h, tarball=None):
         prefix = resolve_store_path(arch or default_arch, h) + "/"
-        try:
-            listing = s3.list_objects_v2(Bucket=bucket, Prefix=prefix).get("Contents", [])
-        except Exception as exc:
-            warning("certify: store list failed for %s (%s)", prefix, exc)
-            return None
-        tars = [o["Key"] for o in listing if o["Key"].endswith(".tar.gz")]
-        if not tars:
-            return None
+        key = None
+        # Prefer the exact object the manifest names, so we validate *those* bytes
+        # and never hash a different tarball that happens to share the hash dir.
+        if tarball:
+            cand = prefix + tarball
+            try:
+                s3.head_object(Bucket=bucket, Key=cand)
+                key = cand
+            except Exception:
+                key = None
+        if key is None:
+            try:
+                listing = s3.list_objects_v2(Bucket=bucket, Prefix=prefix).get("Contents", [])
+            except Exception as exc:
+                warning("certify: store list failed for %s (%s)", prefix, exc)
+                return None
+            tars = [o["Key"] for o in listing if o["Key"].endswith(".tar.gz")]
+            # Only fall back when there is exactly one tarball: an ambiguous dir
+            # must not be validated against an arbitrarily-chosen object.
+            if len(tars) != 1:
+                if tarball:
+                    warning("certify: named tarball %s absent under %s (found %d .tar.gz)",
+                            tarball, prefix, len(tars))
+                return None
+            key = tars[0]
         digest = hashlib.sha256()
-        body = s3.get_object(Bucket=bucket, Key=tars[0])["Body"]
+        body = s3.get_object(Bucket=bucket, Key=key)["Body"]
         for chunk in iter(lambda: body.read(1 << 20), b""):
             digest.update(chunk)
         return "sha256:" + digest.hexdigest()
@@ -271,11 +318,14 @@ def doCertify(args, parser):
     probe = None
     if not getattr(args, "noStoreCheck", False):
         probe = make_s3_probe(args.certifyStore, args.workDir, args.architecture)
+    valid_days = getattr(args, "validDays", None)
+    if valid_days is not None and valid_days < 0:
+        parser.error("--valid-days must be >= 0 (0 means no expiry)")
     source_commit = getattr(args, "sourceCommit", None) or os.environ.get("CI_COMMIT_SHA")
     try:
         out_path, sig_path = certify(sources, args.key, args.out, probe=probe,
                                      default_group=getattr(args, "group", None),
-                                     valid_days=getattr(args, "validDays", None),
+                                     valid_days=valid_days,
                                      source_commit=source_commit)
     except CertifyError as exc:
         parser.error(str(exc))
