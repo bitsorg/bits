@@ -187,6 +187,16 @@ The tier-3 attestation is driven by three build flags:
   daemon thread; never blocks or fails the build). Only small references are
   sent, never artifact data. Feeds usage-informed GC.
 
+#### Certification — `bits certify`
+
+`bits certify <manifests…> --key <ed25519.pem> -o common-manifest.json` merges
+published build manifests into one signed common manifest (the trust unit), after
+validating every hash against the S3 store (`--store`). Group tagging with
+`--group`, offline dry-merge with `--no-store-check`. In the manifests-repo CI,
+`--require-approval --admins ADMINS` refuses to sign unless a listed group admin
+approved the merge request (read from the forge — GitLab CI), defence-in-depth
+over CODEOWNERS. See `bits-manifests/` for the repo scaffolding.
+
 #### Store garbage collection — `bits gc`
 
 `bits gc --trust-manifest <signed-common-manifest>` sweeps unreferenced objects

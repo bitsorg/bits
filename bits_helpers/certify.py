@@ -212,8 +212,39 @@ def make_s3_probe(store_url, work_dir, default_arch):
     return probe
 
 
+def require_group_approval(args, parser):
+    """Gate: refuse to certify unless a listed group admin approved (P4).
+
+    Reads approvals from the forge (GitLab CI env) and checks them against the
+    admins file. Aborts via *parser* on any misconfiguration or missing approval,
+    so certification never proceeds on an unapproved merge request.
+    """
+    from bits_helpers import forge as _forge
+    if not getattr(args, "admins", None):
+        parser.error("--require-approval needs --admins FILE (group-admin usernames)")
+    admins = _forge.load_admins(args.admins)
+    if not admins:
+        parser.error("no admins parsed from %s" % args.admins)
+    fg = _forge.forge_from_env()
+    if fg is None:
+        parser.error("--require-approval: no forge merge-request context in the "
+                     "environment (expected GitLab CI MR variables + a token)")
+    try:
+        ok, approvers = _forge.verify_approval(fg, admins)
+    except Exception as exc:
+        parser.error("could not read approvals from the forge: %s" % exc)
+    if not ok:
+        parser.error("refusing to certify %s: no group-admin approval "
+                     "(approvers: %s)" % (fg.context(), ", ".join(sorted(approvers)) or "none"))
+    from bits_helpers.log import info
+    info("Approval verified for %s (group admin among: %s)",
+         fg.context(), ", ".join(sorted(approvers)))
+
+
 def doCertify(args, parser):
     """CLI entrypoint for ``bits certify`` (forge-agnostic; CI wraps this)."""
+    if getattr(args, "requireApproval", False):
+        require_group_approval(args, parser)
     sources = list(getattr(args, "manifests", None) or [])
     if not sources:
         sources = [os.path.join(args.workDir, "MANIFESTS")]

@@ -1187,6 +1187,11 @@ def doParseArgs():
   certify_parser.add_argument("--group", dest="group", metavar="GROUP", default=None,
                               help=("Tag entries that lack a group with GROUP, so the consumer trust filter "
                                     "(--trust-groups) can scope reuse. Use 'common' for the shared base layer."))
+  certify_parser.add_argument("--require-approval", dest="requireApproval", action="store_true", default=False,
+                              help=("Refuse to sign unless a listed group admin approved the merge request "
+                                    "(read from the forge — GitLab CI env). Defence-in-depth over CODEOWNERS."))
+  certify_parser.add_argument("--admins", dest="admins", metavar="FILE", default=None,
+                              help="File listing group-admin usernames (one per line, or CODEOWNERS-style @handles).")
   certify_parser.add_argument("--store", dest="certifyStore", metavar="URL",
                               default="https://s3.cern.ch/lcgapp-bits-testing",
                               help=("S3 store URL/bucket to validate hashes against. Accepts https, "

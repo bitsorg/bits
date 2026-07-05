@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -242,6 +243,58 @@ class TestCertifyEndToEnd(unittest.TestCase):
         kid, index = trust.trusted_index(out)
         self.assertIsNotNone(kid)
         self.assertEqual(index, {"h1": "sha256:aa", "h2": "sha256:bb"})
+
+
+class TestCertifyApprovalGate(unittest.TestCase):
+    """doCertify --require-approval refuses to sign without group-admin approval."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.admins = os.path.join(self.tmp, "ADMINS")
+        with open(self.admins, "w") as fh:
+            fh.write("@alice\n")
+        self.out = os.path.join(self.tmp, "common.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _args(self):
+        return SimpleNamespace(
+            manifests=[_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
+            out=self.out, key="unused.pem", certifyStore="", noStoreCheck=True,
+            workDir=self.tmp, architecture="slc7_x86-64", group=None,
+            requireApproval=True, admins=self.admins)
+
+    class _Parser:
+        class _Err(Exception):
+            pass
+
+        def error(self, msg):
+            raise self._Err(msg)
+
+    def test_refuses_without_admin_approval(self):
+        from bits_helpers import forge
+        with patch.object(forge, "forge_from_env",
+                          return_value=forge.StaticForge(["eve"], "proj MR !1")):
+            with self.assertRaises(self._Parser._Err):
+                certify.doCertify(self._args(), self._Parser())
+        self.assertFalse(os.path.exists(self.out))   # never signed
+
+    def test_refuses_when_no_forge_context(self):
+        from bits_helpers import forge
+        with patch.object(forge, "forge_from_env", return_value=None):
+            with self.assertRaises(self._Parser._Err):
+                certify.doCertify(self._args(), self._Parser())
+
+    def test_proceeds_past_gate_when_admin_approved(self):
+        # Approval passes; certify then fails on the (bogus) key — proving the
+        # gate was cleared and signing was attempted.
+        from bits_helpers import forge
+        with patch.object(forge, "forge_from_env",
+                          return_value=forge.StaticForge(["alice"], "proj MR !1")):
+            with self.assertRaises(Exception) as ctx:
+                certify.doCertify(self._args(), self._Parser())
+        self.assertNotIsInstance(ctx.exception, self._Parser._Err)  # not the gate
 
 
 if __name__ == "__main__":
