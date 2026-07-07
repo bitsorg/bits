@@ -193,6 +193,45 @@ class TestPublishFromManifest(unittest.TestCase):
                 publish._submit_certification_mr(self._cert_args(gitlabToken=None),
                                                  _Parser(), "b", {"packages": []})
 
+    def _dopublish_args(self, **over):
+        from types import SimpleNamespace
+        base = dict(publishView=None, fromManifest="latest", package=None,
+                    dryRun=False, workDir=self.work, architecture=ARCH,
+                    publishStore="https://s3.example/mybucket", certify=False,
+                    certifyGroup=None, manifestsRemote=None, certifyRef=None,
+                    noCertify=False)
+        base.update(over)
+        return SimpleNamespace(**base)
+
+    def test_system_defaults_imply_certify(self):
+        system = {"certify_group": "ship",
+                  "manifests_remote": "ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git"}
+        with patch.object(publish, "_publish_from_manifest",
+                          return_value=("bid", {"packages": []}, system)), \
+             patch.object(publish, "_submit_certification_mr") as sub:
+            args = self._dopublish_args()          # bare publish, nothing on CLI
+            publish.doPublish(args, _Parser())
+        sub.assert_called_once()
+        self.assertEqual(args.certifyGroup, "ship")            # from system:
+        self.assertEqual(args.manifestsRemote, system["manifests_remote"])
+
+    def test_no_certify_opts_out_of_configured_certify(self):
+        system = {"certify_group": "ship", "manifests_remote": "ssh://h/g/p.git"}
+        with patch.object(publish, "_publish_from_manifest",
+                          return_value=("bid", {"packages": []}, system)), \
+             patch.object(publish, "_submit_certification_mr") as sub:
+            publish.doPublish(self._dopublish_args(noCertify=True), _Parser())
+        sub.assert_not_called()
+
+    def test_cli_group_implies_certify_without_flag(self):
+        with patch.object(publish, "_publish_from_manifest",
+                          return_value=("bid", {"packages": []}, {})), \
+             patch.object(publish, "_submit_certification_mr") as sub:
+            publish.doPublish(self._dopublish_args(certifyGroup="lcg",
+                                                   manifestsRemote="ssh://h/g/p.git"),
+                              _Parser())
+        sub.assert_called_once()
+
     def test_run_leaf_is_unique_per_call(self):
         # Distinct hosts/runs must not collide: the leaf carries host + UTC stamp.
         leaves = {publish._run_leaf() for _ in range(3)}

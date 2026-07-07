@@ -1150,11 +1150,16 @@ def doParseArgs():
                                     "MR author is an admin, signs the common manifest, and publishes it. "
                                     "Uses the GitLab API + your PAT (works even with SSH push)."))
   publish_parser.add_argument("--certify-group", dest="certifyGroup", metavar="GROUP", default=None,
-                              help="Group directory to submit the manifest to (manifests/<group>/). Required with --certify.")
+                              help=("Group directory to submit the manifest to (manifests/<group>/). Implies "
+                                    "--certify. Defaults to `system: certify_group:` in the active defaults, "
+                                    "so a configured community can just run `bits publish`."))
+  publish_parser.add_argument("--no-certify", dest="noCertify", action="store_true", default=False,
+                              help="Never open a certification MR, even if defaults configure it.")
   publish_parser.add_argument("--manifests-remote", dest="manifestsRemote", metavar="GIT_URL", default=None,
                               help=("Git remote of the bits-manifests project, e.g. "
                                     "ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git. Only the host + "
-                                    "path are used (to build the HTTPS API URL); required with --certify."))
+                                    "path are used (to build the HTTPS API URL). Defaults to "
+                                    "`system: manifests_remote:` in the active defaults."))
   publish_parser.add_argument("--certify-ref", dest="certifyRef", metavar="REF", default="main",
                               help="Target branch of the certification MR. Default: %(default)s.")
   publish_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,

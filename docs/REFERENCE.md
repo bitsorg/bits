@@ -199,6 +199,19 @@ The MR **author is you**; CI validates that author is a group/bits admin, signs
 the merged common manifest, and publishes it to S3 (recording you as
 `certified_by`). No PAT is exposed to the CI job.
 
+`--certify-group` and `--manifests-remote` default from the active defaults'
+`system:` block, so a community that configures them can just run `bits publish`:
+
+```yaml
+system:
+  certify_group:    ship
+  manifests_remote: https://gitlab.cern.ch/buncic/bits-manifests.git
+```
+
+Giving `--certify-group` (or having both configured) implies `--certify`;
+`--no-certify` opts out. These live under `system:` because they are publish
+policy, not part of any package hash.
+
 #### Certification — `bits certify`
 
 `bits certify <manifests…> --key <ed25519.pem> -o common-manifest.json` merges

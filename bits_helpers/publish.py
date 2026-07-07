@@ -272,6 +272,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
     # uploaded store tarball when the build manifest did not record them.
     # Only emit the BOM when every candidate uploaded: a partial publish must not
     # produce a manifest that certification would treat as a complete build.
+    build_id = bom = None
     if not dry_run and ok != n:
         error("%d of %d package(s) failed to upload — not writing a BOM manifest "
               "for a partial publish", n - ok, n)
@@ -325,9 +326,32 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
            "[dry-run] would publish" if dry_run else "Published", ok, write_store)
     if not dry_run and n and ok != n:
         sys.exit(1)
-    if dry_run or ok == 0 or ok != n:
+    if dry_run or bom is None:
         return None
-    return build_id, bom
+    return build_id, bom, _system_from_manifest(manifest_doc)
+
+
+def _system_from_manifest(manifest_doc):
+    """Return the defaults ``system:`` block for this build (non-hashed policy).
+
+    Prefer a ``system`` snapshot recorded in the manifest; else load it live from
+    the build's ``config_dir`` + ``defaults`` (works on the build host without a
+    rebuild). Returns {} when unavailable. Used to default publish/certify knobs
+    (certify_group, manifests_remote) from the community's defaults.
+    """
+    if isinstance(manifest_doc.get("system"), dict):
+        return manifest_doc["system"]
+    cfg = manifest_doc.get("config_dir")
+    defs = manifest_doc.get("defaults") or []
+    if not cfg or not os.path.isdir(cfg):
+        return {}
+    try:
+        from bits_helpers.utilities import readDefaults
+        meta, _ = readDefaults(cfg, defs, lambda _m: None, None)
+        sysd = meta.get("system")
+        return sysd if isinstance(sysd, dict) else {}
+    except Exception:
+        return {}
 
 
 def _submit_certification_mr(args, parser, build_id, bom):
@@ -525,8 +549,23 @@ def doPublish(args, parser):
                      or "https://s3.cern.ch/lcgapp-bits-testing")
         _res = _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
                                       manifest=_fm, dry_run=getattr(args, "dryRun", False))
-        if _res and getattr(args, "certify", False):
-            _submit_certification_mr(args, parser, _res[0], _res[1])
+        if _res:
+            _build_id, _bom, _system = _res
+            # Resolve certify knobs: CLI flag > env > defaults `system:`. Giving
+            # --certify-group (or having both group+remote configured in defaults)
+            # implies --certify; --no-certify always opts out.
+            _group = getattr(args, "certifyGroup", None) or _system.get("certify_group")
+            _remote = (getattr(args, "manifestsRemote", None)
+                       or _system.get("manifests_remote"))
+            _ref = getattr(args, "certifyRef", None) or _system.get("certify_ref") or "main"
+            _want = (getattr(args, "certify", False)
+                     or bool(getattr(args, "certifyGroup", None))
+                     or bool(_group and _remote))
+            if getattr(args, "noCertify", False):
+                _want = False
+            if _want:
+                args.certifyGroup, args.manifestsRemote, args.certifyRef = _group, _remote, _ref
+                _submit_certification_mr(args, parser, _build_id, _bom)
         return
 
     if not getattr(args, "package", None):
