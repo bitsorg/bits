@@ -762,6 +762,13 @@ class ArchTemplateTest(unittest.TestCase):
         self.assertTrue(g(["bits", "build", "--architecture", "x"]))
         self.assertTrue(g(["bits", "build", "--architecture=x"]))
         self.assertTrue(g(["bits", "build", "-ax86_64-ubuntu2510"]))
+        # argparse accepts any unambiguous abbreviation of --architecture; the
+        # detection must too, or a caller passing --arch has its architecture
+        # silently overwritten by the defaults `architecture:` template.
+        self.assertTrue(g(["bits", "build", "--arch", "x86_64-el10", "pkg"]))
+        self.assertTrue(g(["bits", "build", "--arch=x86_64-el10"]))
+        self.assertTrue(g(["bits", "build", "--archi", "x"]))
+        self.assertFalse(g(["bits", "build", "--annotate", "pkg"]))   # not a prefix
         self.assertFalse(g(["bits", "build", "pkg"]))
 
 

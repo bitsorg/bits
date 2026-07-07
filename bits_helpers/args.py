@@ -1508,9 +1508,17 @@ def matchValidArch(architecture):
 
 def _architecture_given_on_cmdline(argv):
   """True iff -a/--architecture was passed explicitly (so a defaults
-  `architecture:` template must be ignored)."""
+  `architecture:` template must be ignored).
+
+  Must recognise the same forms argparse accepts, including any unambiguous
+  abbreviation of ``--architecture`` (``--arch``, ``--archi``, …): only
+  ``--architecture`` starts with ``--arch``, so any such prefix is unambiguous.
+  Missing this let a caller passing ``--arch VALUE`` have its architecture
+  silently overwritten by the defaults `architecture:` template.
+  """
   for tok in argv:
-    if tok in ("-a", "--architecture") or tok.startswith("--architecture="):
+    opt = tok.split("=", 1)[0]
+    if opt == "-a" or (opt.startswith("--arch") and "--architecture".startswith(opt)):
       return True
     # bundled short form: -aVALUE (but not a long option)
     if len(tok) > 2 and tok[0] == "-" and tok[1] == "a" and not tok.startswith("--"):
