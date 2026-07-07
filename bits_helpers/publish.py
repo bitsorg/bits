@@ -385,6 +385,12 @@ def _submit_certification_mr(args, parser, build_id, bom):
         except Exception:
             target = None
         target = target or "main"
+    # Record the human certifier in the committed manifest (audit trail in the
+    # manifests-repo git history). Used when a bot opens the MR on behalf of a
+    # human whose authority was already verified upstream (e.g. bits-console).
+    certifier = getattr(args, "certifier", None) or os.environ.get("GITLAB_USER_LOGIN")
+    if certifier:
+        bom = dict(bom, certified_by=[certifier])
     leaf = _run_leaf()                                   # host-UTC-rand, unique
     branch = "certify/%s-%s" % (re.sub(r"[^A-Za-z0-9._-]", "_", build_id), leaf[:-5])
     path = "manifests/%s/%s.%s" % (group, build_id, leaf)

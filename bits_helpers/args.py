@@ -1170,6 +1170,11 @@ def doParseArgs():
   publish_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
                               help=("GitLab PAT to trigger certification (default: $BITS_CERTIFIER_TOKEN / "
                                     "$GITLAB_TOKEN / ~/.bits/gitlab-token)."))
+  publish_parser.add_argument("--certifier", dest="certifier", metavar="USER", default=None,
+                              help=("Record USER as certified_by in the submitted manifest (audit trail in the "
+                                    "manifests-repo history). Use when the MR is opened by a bot on behalf of a "
+                                    "human whose authority was already verified (e.g. bits-console). Defaults to "
+                                    "$GITLAB_USER_LOGIN."))
 
   # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
   _prepub = publish_parser.add_argument_group(
