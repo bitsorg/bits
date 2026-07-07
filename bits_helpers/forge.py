@@ -355,6 +355,68 @@ def gitlab_create_pipeline(api_url, token, project, ref="main", variables=None,
     return {"id": data.get("id"), "web_url": data.get("web_url")}
 
 
+def _gl_project_url(api_url, project):
+    from urllib.parse import quote
+    return "%s/projects/%s" % (api_url.rstrip("/"), quote(str(project), safe=""))
+
+
+def gitlab_create_commit(api_url, token, project, branch, start_branch,
+                         file_path, content, message, timeout=30) -> dict:
+    """Create *branch* off *start_branch* with a single file (commits API)."""
+    import requests
+    payload = {
+        "branch": branch, "start_branch": start_branch, "commit_message": message,
+        "actions": [{"action": "create", "file_path": file_path, "content": content}],
+    }
+    resp = requests.post("%s/repository/commits" % _gl_project_url(api_url, project),
+                         headers={"PRIVATE-TOKEN": token}, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json() or {}
+
+
+def gitlab_create_merge_request(api_url, token, project, source_branch, target_branch,
+                                title, description="", timeout=30) -> dict:
+    """Open an MR; returns ``{iid, web_url}``."""
+    import requests
+    payload = {"source_branch": source_branch, "target_branch": target_branch,
+               "title": title, "description": description,
+               "remove_source_branch": True}
+    resp = requests.post("%s/merge_requests" % _gl_project_url(api_url, project),
+                         headers={"PRIVATE-TOKEN": token}, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json() or {}
+    return {"iid": data.get("iid"), "web_url": data.get("web_url")}
+
+
+def gitlab_merge_mr(api_url, token, project, iid, timeout=30) -> dict:
+    """Merge an MR (PUT …/merge). Raises on failure (e.g. not mergeable)."""
+    import requests
+    resp = requests.put("%s/merge_requests/%s/merge" % (_gl_project_url(api_url, project), iid),
+                        headers={"PRIVATE-TOKEN": token}, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json() or {}
+
+
+def gitlab_mr_author(api_url, token, project, iid, timeout=15):
+    """Return the username that opened MR *iid* (the certification initiator)."""
+    import requests
+    resp = requests.get("%s/merge_requests/%s" % (_gl_project_url(api_url, project), iid),
+                        headers={"PRIVATE-TOKEN": token}, timeout=timeout)
+    resp.raise_for_status()
+    return ((resp.json() or {}).get("author") or {}).get("username")
+
+
+def gitlab_mr_iid_for_commit(api_url, token, project, sha, timeout=15):
+    """Return the iid of the merged MR that introduced *sha*, or None."""
+    import requests
+    resp = requests.get(
+        "%s/repository/commits/%s/merge_requests" % (_gl_project_url(api_url, project), sha),
+        headers={"PRIVATE-TOKEN": token}, timeout=timeout)
+    resp.raise_for_status()
+    merged = [m for m in (resp.json() or []) if (m or {}).get("state") == "merged"]
+    return merged[0].get("iid") if merged else None
+
+
 def gitlab_group_members(api_url, token, group_ref, timeout=15) -> set:
     """Return the set of usernames in a GitLab group (incl. inherited members).
 

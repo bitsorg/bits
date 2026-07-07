@@ -263,6 +263,50 @@ class TestTriggerPrimitives(unittest.TestCase):
         self.assertEqual(seen["token"], "tok")
 
 
+class TestMRPrimitives(unittest.TestCase):
+
+    class _Resp:
+        def __init__(self, payload):
+            self._p = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._p
+
+    def test_create_commit_posts_actions(self):
+        seen = {}
+
+        def _post(url, headers=None, json=None, timeout=None):
+            seen.update(url=url, payload=json)
+            return self._Resp({"id": "abc"})
+
+        with patch("requests.post", side_effect=_post):
+            forge.gitlab_create_commit("https://gl/api/v4", "tok", "grp/proj",
+                                       "certify/x", "main", "manifests/ship/x.json",
+                                       '{"packages":[]}', "certify ship")
+        self.assertTrue(seen["url"].endswith("/projects/grp%2Fproj/repository/commits"))
+        self.assertEqual(seen["payload"]["branch"], "certify/x")
+        self.assertEqual(seen["payload"]["start_branch"], "main")
+        self.assertEqual(seen["payload"]["actions"][0]["file_path"], "manifests/ship/x.json")
+
+    def test_create_merge_request_returns_iid_url(self):
+        with patch("requests.post", return_value=self._Resp({"iid": 7, "web_url": "u"})):
+            out = forge.gitlab_create_merge_request("https://gl/api/v4", "tok", "grp/proj",
+                                                    "certify/x", "main", "Certify x")
+        self.assertEqual(out, {"iid": 7, "web_url": "u"})
+
+    def test_mr_author(self):
+        with patch("requests.get", return_value=self._Resp({"author": {"username": "buncic"}})):
+            self.assertEqual(forge.gitlab_mr_author("https://gl/api/v4", "tok", "p", 7), "buncic")
+
+    def test_mr_iid_for_commit_prefers_merged(self):
+        payload = [{"iid": 3, "state": "opened"}, {"iid": 5, "state": "merged"}]
+        with patch("requests.get", return_value=self._Resp(payload)):
+            self.assertEqual(forge.gitlab_mr_iid_for_commit("https://gl/api/v4", "t", "p", "sha"), 5)
+
+
 class TestVerifyApproval(unittest.TestCase):
 
     def test_ok_when_admin_approved(self):

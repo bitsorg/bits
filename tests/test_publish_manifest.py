@@ -155,30 +155,43 @@ class TestPublishFromManifest(unittest.TestCase):
                     manifest=self.man_path)
         self.assertEqual(self.writer.s3.uploads, [])   # no BOM on partial publish
 
-    def test_trigger_certification_creates_pipeline(self):
+    def _cert_args(self, **over):
         from types import SimpleNamespace
-        import bits_helpers.forge as forge
-        args = SimpleNamespace(
-            manifestsRemote="ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git",
-            gitlabToken="tok", certifyRef="main")
-        with patch.object(forge, "resolve_gitlab_token", return_value="tok"), \
-             patch.object(forge, "gitlab_create_pipeline",
-                          return_value={"id": 9, "web_url": "https://gl/p/9"}) as gp:
-            publish._trigger_certification(args, _Parser())
-        a, k = gp.call_args
-        self.assertEqual(a[0], "https://gitlab.cern.ch/api/v4")   # derived API URL
-        self.assertEqual(a[2], "buncic/bits-manifests")           # derived project
-        self.assertEqual(k.get("ref"), "main")
+        base = dict(manifestsRemote="ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git",
+                    gitlabToken="tok", certifyRef="main", certifyGroup="ship")
+        base.update(over)
+        return SimpleNamespace(**base)
 
-    def test_trigger_certification_needs_token(self):
-        from types import SimpleNamespace
+    def test_submit_certification_mr_opens_mr(self):
         import bits_helpers.forge as forge
-        args = SimpleNamespace(
-            manifestsRemote="ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git",
-            gitlabToken=None, certifyRef="main")
+        bom = {"build_id": "release_gcc15-abc", "packages": []}
+        with patch.object(forge, "resolve_gitlab_token", return_value="tok"), \
+             patch.object(forge, "gitlab_create_commit", return_value={"id": "c1"}) as cc, \
+             patch.object(forge, "gitlab_create_merge_request",
+                          return_value={"iid": 7, "web_url": "https://gl/mr/7"}) as mr:
+            publish._submit_certification_mr(self._cert_args(), _Parser(),
+                                             "release_gcc15-abc", bom)
+        ca, _ = cc.call_args
+        # (api_url, token, project, branch, start_branch, file_path, content, message)
+        self.assertEqual(ca[0], "https://gitlab.cern.ch/api/v4")
+        self.assertEqual(ca[2], "buncic/bits-manifests")
+        self.assertTrue(ca[5].startswith("manifests/ship/release_gcc15-abc."))
+        ma, mk = mr.call_args
+        self.assertEqual(ma[4], "main")                 # target branch
+
+    def test_submit_certification_needs_group(self):
+        import bits_helpers.forge as forge
+        with patch.object(forge, "resolve_gitlab_token", return_value="tok"):
+            with self.assertRaises(_Parser._Err):
+                publish._submit_certification_mr(self._cert_args(certifyGroup=None),
+                                                 _Parser(), "b", {"packages": []})
+
+    def test_submit_certification_needs_token(self):
+        import bits_helpers.forge as forge
         with patch.object(forge, "resolve_gitlab_token", return_value=None):
             with self.assertRaises(_Parser._Err):
-                publish._trigger_certification(args, _Parser())
+                publish._submit_certification_mr(self._cert_args(gitlabToken=None),
+                                                 _Parser(), "b", {"packages": []})
 
     def test_run_leaf_is_unique_per_call(self):
         # Distinct hosts/runs must not collide: the leaf carries host + UTC stamp.

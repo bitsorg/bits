@@ -1145,15 +1145,18 @@ def doParseArgs():
                                     "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>. "
                                     "Default: %(default)s"))
   publish_parser.add_argument("--certify", dest="certify", action="store_true", default=False,
-                              help=("After a successful upload, trigger the manifests-repo CI pipeline to "
-                                    "re-certify + sign the common manifest over ALL uploaded builds. Uses "
-                                    "the GitLab API + your PAT (works even with SSH push)."))
+                              help=("After a successful upload, open a merge request in the manifests repo "
+                                    "adding this build's manifest under manifests/<group>/. CI validates the "
+                                    "MR author is an admin, signs the common manifest, and publishes it. "
+                                    "Uses the GitLab API + your PAT (works even with SSH push)."))
+  publish_parser.add_argument("--certify-group", dest="certifyGroup", metavar="GROUP", default=None,
+                              help="Group directory to submit the manifest to (manifests/<group>/). Required with --certify.")
   publish_parser.add_argument("--manifests-remote", dest="manifestsRemote", metavar="GIT_URL", default=None,
-                              help=("Git remote of the bits-manifests project whose pipeline certifies, e.g. "
+                              help=("Git remote of the bits-manifests project, e.g. "
                                     "ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git. Only the host + "
                                     "path are used (to build the HTTPS API URL); required with --certify."))
   publish_parser.add_argument("--certify-ref", dest="certifyRef", metavar="REF", default="main",
-                              help="Branch the certification pipeline runs on. Default: %(default)s.")
+                              help="Target branch of the certification MR. Default: %(default)s.")
   publish_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
                               help=("GitLab PAT to trigger certification (default: $BITS_CERTIFIER_TOKEN / "
                                     "$GITLAB_TOKEN / ~/.bits/gitlab-token)."))

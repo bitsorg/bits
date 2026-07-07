@@ -325,17 +325,23 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
            "[dry-run] would publish" if dry_run else "Published", ok, write_store)
     if not dry_run and n and ok != n:
         sys.exit(1)
-    return not dry_run and ok == n and ok > 0
+    if dry_run or ok == 0 or ok != n:
+        return None
+    return build_id, bom
 
 
-def _trigger_certification(args, parser):
-    """Trigger the manifests-repo CI pipeline to (re)certify over all uploaded builds.
+def _submit_certification_mr(args, parser, build_id, bom):
+    """Open a merge request adding this build's manifest to the manifests repo.
 
-    Uses the GitLab REST API over HTTPS with the caller's PAT — even when the repo
-    is pushed over SSH. The PAT owner becomes the pipeline's user, so CI records
-    them as the certifier.
+    Uses the GitLab REST API with the caller's PAT (works with SSH push — only the
+    host/path are parsed from the remote). The MR *author* is the PAT owner, whose
+    admin status CI validates before signing. Records nothing locally.
     """
+    import json as _json
     from bits_helpers import forge
+    group = getattr(args, "certifyGroup", None)
+    if not group:
+        parser.error("--certify needs --certify-group <group> (the manifests/<group>/ to submit to)")
     remote = getattr(args, "manifestsRemote", None)
     if not remote:
         parser.error("--certify needs --manifests-remote <git URL of the bits-manifests project>")
@@ -344,15 +350,21 @@ def _trigger_certification(args, parser):
         parser.error("could not parse --manifests-remote: %s" % remote)
     token = forge.resolve_gitlab_token(getattr(args, "gitlabToken", None))
     if not token:
-        parser.error("no GitLab token for triggering certification — set one in "
+        parser.error("no GitLab token to open the certification MR — set one in "
                      "~/.bits/gitlab-token, $BITS_CERTIFIER_TOKEN, or pass --gitlab-token")
-    ref = getattr(args, "certifyRef", None) or "main"
+    target = getattr(args, "certifyRef", None) or "main"
+    leaf = _run_leaf()                                   # host-UTC-rand, unique
+    branch = "certify/%s-%s" % (re.sub(r"[^A-Za-z0-9._-]", "_", build_id), leaf[:-5])
+    path = "manifests/%s/%s.%s" % (group, build_id, leaf)
+    title = "Certify %s (%s)" % (build_id, group)
     try:
-        pipe = forge.gitlab_create_pipeline(api_url, token, project, ref=ref)
+        forge.gitlab_create_commit(api_url, token, project, branch, target, path,
+                                   _json.dumps(bom, indent=1), title)
+        mr = forge.gitlab_create_merge_request(api_url, token, project, branch, target, title)
     except Exception as exc:
-        parser.error("failed to trigger the certification pipeline for %s: %s" % (project, exc))
-    banner("Certification pipeline triggered on %s (%s): %s",
-           project, ref, pipe.get("web_url") or ("id %s" % pipe.get("id")))
+        parser.error("failed to open the certification MR on %s: %s" % (project, exc))
+    banner("Certification MR opened on %s: %s", project,
+           mr.get("web_url") or ("!%s" % mr.get("iid")))
 
 
 def _spool_is_remote(spool):
@@ -511,10 +523,10 @@ def doPublish(args, parser):
         architecture = getattr(args, "architecture", None) or detectArch()
         store_url = (getattr(args, "publishStore", None)
                      or "https://s3.cern.ch/lcgapp-bits-testing")
-        _ok = _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
-                                     manifest=_fm, dry_run=getattr(args, "dryRun", False))
-        if _ok and getattr(args, "certify", False):
-            _trigger_certification(args, parser)
+        _res = _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
+                                      manifest=_fm, dry_run=getattr(args, "dryRun", False))
+        if _res and getattr(args, "certify", False):
+            _submit_certification_mr(args, parser, _res[0], _res[1])
         return
 
     if not getattr(args, "package", None):

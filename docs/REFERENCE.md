@@ -189,15 +189,15 @@ The tier-3 attestation is driven by three build flags:
 
 #### Publish-triggered certification
 
-`bits publish --certify --manifests-remote <git-url>` uploads to S3 and then
-**triggers the manifests-repo CI pipeline** to re-certify + sign the common
-manifest over *all* uploaded builds. The trigger uses the GitLab REST API over
-HTTPS with your PAT (works even when you push over SSH — only the host + project
-path are taken from the remote URL). Your PAT is found via `--gitlab-token`,
-`$BITS_CERTIFIER_TOKEN`/`$GITLAB_TOKEN`, or `~/.bits/gitlab-token` (chmod 600).
-GitLab records the PAT owner as the pipeline's user, so CI reads your identity
-from `$GITLAB_USER_LOGIN` and records it as `certified_by` — no PAT is exposed to
-the CI job.
+`bits publish --certify --certify-group <group> --manifests-remote <git-url>`
+uploads to S3 and then **opens a merge request** in the manifests repo that adds
+this build's manifest under `manifests/<group>/`. The MR is created via the
+GitLab REST API with your PAT (works even when you push over SSH — only the host
++ project path are taken from the remote URL; PAT from `--gitlab-token`,
+`$BITS_CERTIFIER_TOKEN`/`$GITLAB_TOKEN`, or `~/.bits/gitlab-token`, chmod 600).
+The MR **author is you**; CI validates that author is a group/bits admin, signs
+the merged common manifest, and publishes it to S3 (recording you as
+`certified_by`). No PAT is exposed to the CI job.
 
 #### Certification — `bits certify`
 
