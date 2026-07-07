@@ -318,12 +318,23 @@ def _make_approval_check(args, parser):
                if g.strip()]
     cert_token = getattr(args, "certifierToken", None) or os.environ.get("BITS_CERTIFIER_TOKEN")
     api_url = os.environ.get("CI_API_V4_URL") or getattr(args, "apiUrl", None)
+    grouprefs = _forge.admin_policy_grouprefs(policy)
 
     def _needed(common):
         present = {(p.get("group") or "common") for p in common.get("packages", [])}
         # Scope: the groups changed in this MR when known, else every group
         # present. Overall-admin authority satisfies any group.
         return (set(changed) & present) if changed else present
+
+    def _resolved(token):
+        # Expand any &group refs in the admin policy to live GitLab members;
+        # literal usernames remain as a manual override.
+        if not grouprefs:
+            return policy
+        if not (api_url and token):
+            parser.error("--admins references GitLab group(s) %s but no API URL/token "
+                         "is available to resolve them" % ", ".join(sorted(grouprefs)))
+        return _forge.resolve_admin_policy(policy, _forge.make_group_resolver(api_url, token))
 
     def _check(common):
         needed = _needed(common)
@@ -335,8 +346,9 @@ def _make_approval_check(args, parser):
             if not user:
                 parser.error("--require-approval: could not identify the certifier "
                              "from the provided token (GET /user failed)")
+            resolved = _resolved(cert_token)
             unmet = sorted(g for g in needed
-                           if not _forge.approved_for_group([user], policy, g))
+                           if not _forge.approved_for_group([user], resolved, g))
             if unmet:
                 parser.error("refusing to certify: %s is not authorised for "
                              "group(s): %s" % (user, ", ".join(unmet)))
@@ -348,7 +360,8 @@ def _make_approval_check(args, parser):
             parser.error("--require-approval: no certifier token and no forge "
                          "merge-request context in the environment")
         try:
-            ok, approvers, unmet = _forge.verify_group_approval(fg, policy, needed)
+            ok, approvers, unmet = _forge.verify_group_approval(
+                fg, _resolved(getattr(fg, "token", None)), needed)
         except Exception as exc:
             parser.error("could not read approvals from the forge: %s" % exc)
         if not ok:

@@ -209,8 +209,12 @@ Certifier identity and authority:
 - `--admins FILE` is an overall/per-group admin policy. Lines `@handle` or
   `* @handle` are **overall** admins (can approve/override any group; mirrors
   bits-console `bits_admins`); `<group> @handle` lines are that group's admins
-  (mirrors per-community `admins`). `--changed-groups G1,G2` scopes the check to
-  the groups changed in the MR (else every group present).
+  (mirrors per-community `admins`). A `&group-path` token resolves to that GitLab
+  **group's live members** via the API at certify time (so the list never needs
+  manual syncing), while explicit `@handle` entries remain as a manual override.
+  A group ref that can't be resolved (API/permission failure) is skipped with a
+  warning, so literal admins keep working. `--changed-groups G1,G2` scopes the
+  check to the groups changed in the MR (else every group present).
 - Identity: with `--certifier-token PAT` (or `$BITS_CERTIFIER_TOKEN`) the
   initiating admin's own GitLab PAT authenticates them via `GET /user` — an
   unforgeable identity — which must be an authorised admin and is recorded as

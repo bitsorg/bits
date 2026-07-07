@@ -162,6 +162,52 @@ class TestAdminPolicy(unittest.TestCase):
         self.assertTrue(ok2)
         self.assertEqual(unmet2, [])
 
+    def test_group_refs_parsed_and_listed(self):
+        p = forge.load_admin_policy("* &cern-bits-admins @backup\nlcg &alice-egroup\n")
+        self.assertEqual(p["*"], {"&cern-bits-admins", "backup"})
+        self.assertEqual(p["lcg"], {"&alice-egroup"})
+        self.assertEqual(forge.admin_policy_grouprefs(p),
+                         {"cern-bits-admins", "alice-egroup"})
+
+    def test_resolve_expands_groups_keeps_literals(self):
+        p = forge.load_admin_policy("* &grp @backup\n")
+        resolved = forge.resolve_admin_policy(
+            p, lambda ref: {"Alice", "Bob"} if ref == "grp" else None)
+        self.assertEqual(resolved["*"], {"alice", "bob", "backup"})
+
+    def test_resolve_failure_falls_back_to_literals(self):
+        p = forge.load_admin_policy("* &grp @backup\n")
+        resolved = forge.resolve_admin_policy(p, lambda ref: None)   # API failed
+        self.assertEqual(resolved["*"], {"backup"})   # literal override still works
+
+    def test_resolved_policy_authorises_group_member(self):
+        p = forge.load_admin_policy("lcg &alice-egroup\n")
+        resolved = forge.resolve_admin_policy(p, lambda ref: {"eulisse"})
+        self.assertTrue(forge.approved_for_group(["eulisse"], resolved, "lcg"))
+        self.assertFalse(forge.approved_for_group(["mallory"], resolved, "lcg"))
+
+    def test_gitlab_group_members_paginates(self):
+        pages = {1: [{"username": "a"}, {"username": "b"}], 2: []}
+
+        class _Resp:
+            def __init__(self, page):
+                self._p = pages.get(page, [])
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._p
+
+        def _get(url, headers=None, params=None, timeout=None):
+            self.assertIn("/groups/cern%2Fadmins/members/all", url)
+            return _Resp(params["page"])
+
+        with patch("requests.get", side_effect=_get):
+            # first page has <100 -> single request returns both
+            self.assertEqual(forge.gitlab_group_members("https://gl/api/v4", "tok", "cern/admins"),
+                             {"a", "b"})
+
 
 class TestVerifyApproval(unittest.TestCase):
 

@@ -16,6 +16,8 @@ actually approved before anything is signed.
 import os
 import re
 
+from bits_helpers.log import warning
+
 
 def load_admins(source) -> set:
     """Parse group-admin usernames from a file path or text.
@@ -57,12 +59,15 @@ def load_admin_policy(source) -> dict:
 
         @alice                  # overall admin (bare/@handle lines, legacy flat list)
         * @carol                # overall admin (explicit '*' group)
-        lcg @dave @erin         # group 'lcg' admins
+        * &cern-bits-admins     # overall = live members of a GitLab group (resolved via API)
+        lcg @dave &alice-egroup # group 'lcg' admins: a user + a GitLab group's members
         common @frank           # group 'common' admins
 
-    Returns ``{"*": {overall…}, "lcg": {…}, …}`` with usernames lowercased. A
-    plain legacy ADMINS file (only ``@handle`` lines) yields all-overall admins,
-    preserving prior behaviour.
+    Member tokens: ``@user`` / bare word = a literal username (a manual override,
+    resolved offline); ``&group`` = a GitLab group path/ID whose members are
+    resolved at certify time (see :func:`resolve_admin_policy`). Returns
+    ``{"*": {tokens…}, "lcg": {…}, …}`` — usernames lowercased, group refs kept
+    as ``"&<ref>"``. A legacy flat file (only ``@handle`` lines) is all-overall.
     """
     if isinstance(source, str) and os.path.isfile(source):
         with open(source) as fh:
@@ -75,21 +80,62 @@ def load_admin_policy(source) -> dict:
         if not line:
             continue
         tokens = line.split()
-        handles = [t[1:].lower() for t in tokens if t.startswith("@")]
-        labels = [t for t in tokens if not t.startswith("@")]
-        if handles and len(labels) == 1:
-            group = "*" if labels[0] == "*" else labels[0].lower()
-            policy.setdefault(group, set()).update(handles)
-        elif handles and not labels:
-            policy.setdefault("*", set()).update(handles)
-        elif not handles and labels:
-            # bare usernames with no group -> overall (legacy one-per-line form).
-            policy.setdefault("*", set()).update(l.lower() for l in labels)
+        # A leading bare word (not @/&) is the group label; else the line is overall.
+        if not tokens[0].startswith(("@", "&")):
+            group = "*" if tokens[0] == "*" else tokens[0].lower()
+            members = tokens[1:]
+        else:
+            group, members = "*", tokens
+        bucket = policy.setdefault(group, set())
+        for m in members:
+            if m.startswith("&"):
+                bucket.add("&" + m[1:])                 # GitLab group ref, resolved later
+            else:
+                bucket.add(m[1:].lower() if m.startswith("@") else m.lower())
     return policy
 
 
+def admin_policy_grouprefs(policy) -> set:
+    """Return the set of GitLab group refs (without the ``&``) used by *policy*."""
+    refs = set()
+    for members in (policy or {}).values():
+        refs |= {m[1:] for m in members if isinstance(m, str) and m.startswith("&")}
+    return refs
+
+
+def resolve_admin_policy(policy, resolver) -> dict:
+    """Expand ``&group`` refs to member usernames via *resolver(ref) -> set|None*.
+
+    Literal usernames are kept as-is (manual override). A ref that fails to
+    resolve (``resolver`` returns None) is skipped with a warning rather than
+    aborting, so explicit admins keep working through a transient API hiccup.
+    """
+    cache, out = {}, {}
+    for group, members in (policy or {}).items():
+        users = set()
+        for m in members:
+            if isinstance(m, str) and m.startswith("&"):
+                ref = m[1:]
+                if ref not in cache:
+                    cache[ref] = resolver(ref)
+                got = cache[ref]
+                if got is None:
+                    warning("certify: could not resolve GitLab group '%s'; relying "
+                            "on explicitly listed admins", ref)
+                else:
+                    users |= {u.lower() for u in got}
+            else:
+                users.add(m)
+        out[group] = users
+    return out
+
+
 def approved_for_group(approvers, policy, group) -> bool:
-    """True if an approver is an overall admin or an admin of *group*."""
+    """True if an approver is an overall admin or an admin of *group*.
+
+    Assumes *policy* has been resolved to usernames (see resolve_admin_policy);
+    any unresolved ``&group`` token simply won't match an approver username.
+    """
     a = {str(x).lower() for x in (approvers or [])}
     grp = str(group).lower() if group else "common"
     return bool(a & (policy.get("*", set()) | policy.get(grp, set())))
@@ -226,6 +272,42 @@ def gitlab_identify(api_url, token, timeout=15):
         return (resp.json() or {}).get("username")
     except Exception:
         return None
+
+
+def gitlab_group_members(api_url, token, group_ref, timeout=15) -> set:
+    """Return the set of usernames in a GitLab group (incl. inherited members).
+
+    *group_ref* is a group path (``cern/bits-admins``) or numeric id. Paginates
+    ``GET /groups/<ref>/members/all``. Raises on API/auth failure so the caller
+    can decide (resolve_admin_policy downgrades a failure to a warning).
+    """
+    import requests
+    from urllib.parse import quote
+    base = "%s/groups/%s/members/all" % (api_url.rstrip("/"),
+                                         quote(str(group_ref), safe=""))
+    members, page = set(), 1
+    while True:
+        resp = requests.get(base, headers={"PRIVATE-TOKEN": token},
+                            params={"per_page": 100, "page": page}, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json() or []
+        for m in data:
+            u = (m or {}).get("username")
+            if u:
+                members.add(u.lower())
+        if len(data) < 100:
+            return members
+        page += 1
+
+
+def make_group_resolver(api_url, token):
+    """A ``resolver(group_ref) -> set|None`` over the GitLab API (None on error)."""
+    def _resolver(ref):
+        try:
+            return gitlab_group_members(api_url, token, ref)
+        except Exception:
+            return None
+    return _resolver
 
 
 def forge_from_env(env=None):
