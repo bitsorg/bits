@@ -199,6 +199,20 @@ def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
     it returns approver usernames, they are recorded as ``certified_by`` so the
     identity that authorised the certification travels with the signature.
     """
+    common = _prepare_common(manifests, key_pem_path, probe, default_group,
+                             valid_days, source_commit, approval_check)
+    out_abs, sig_path = _write_signed(common, key_pem_path, out_path, sig_path)
+    debug("certify: signed common manifest %s (%d pkgs) -> %s",
+          out_abs, len(common["packages"]), sig_path)
+    return out_abs, sig_path
+
+
+def _prepare_common(manifests, key_pem_path, probe, default_group, valid_days,
+                    source_commit, approval_check) -> dict:
+    """Merge → (approve) → (store-validate) → key-policy check. Returns the
+    validated common-manifest dict (with certified_by/at stamped), ready to
+    write. Raises :class:`CertifyConflict`/:class:`CertifyError` on any problem.
+    """
     common = merge_common_manifest(load_build_manifests(manifests), default_group,
                                    valid_days=valid_days, source_commit=source_commit)
     certified_by = None
@@ -222,8 +236,14 @@ def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
     if certified_by:
         common["certified_by"] = sorted(set(certified_by))
         common["certified_at"] = _now_iso()
-    # Write + sign atomically: a failed signing must never leave an *unsigned*
-    # manifest sitting at out_path. Sign the temp file, then move both into place.
+    return common
+
+
+def _write_signed(common, key_pem_path, out_path, sig_path=None) -> tuple:
+    """Atomically write *common* as JSON and sign it. A failed signing must never
+    leave an *unsigned* manifest at *out_path*: sign the temp file, then move both
+    into place. Returns ``(out_path, sig_path)``.
+    """
     out_abs = os.path.abspath(out_path)
     os.makedirs(os.path.dirname(out_abs), exist_ok=True)
     sig_path = sig_path or (out_abs + ".sig")
@@ -242,9 +262,46 @@ def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
             except OSError:
                 pass
         raise
-    debug("certify: signed common manifest %s (%d pkgs) -> %s",
-          out_abs, len(common["packages"]), sig_path)
     return out_abs, sig_path
+
+
+def _arch_stem(out_path, arch) -> str:
+    """``.../common-manifest.json`` + ``slc7_x86-64`` -> ``.../common-manifest-slc7_x86-64.json``."""
+    stem, ext = os.path.splitext(out_path)
+    return "%s-%s%s" % (stem, arch, ext or ".json")
+
+
+def certify_by_arch(manifests, key_pem_path, out_path, probe=None,
+                    default_group=None, valid_days=None, source_commit=None,
+                    approval_check=None) -> list:
+    """Certify once, then emit one signed manifest per effective_architecture.
+
+    The trust unit is validated as a whole (so a cross-arch hash conflict or a
+    missing store object still fails the *entire* certification), then the
+    packages are partitioned by ``effective_architecture`` — ``"shared"`` for
+    noarch packages is just another architecture — and each partition is written
+    and signed to ``<stem>-<arch>.json(.sig)``. A build node fetches only its own
+    arch file plus the shared one; there is no point shipping every arch to every
+    node. Returns ``[(out_path, sig_path, arch), ...]`` sorted by arch.
+    """
+    common = _prepare_common(manifests, key_pem_path, probe, default_group,
+                             valid_days, source_commit, approval_check)
+    buckets = {}
+    for p in common["packages"]:
+        buckets.setdefault(p.get("effective_architecture") or "shared", []).append(p)
+    # Always emit at least the shared file so consumers/GC have a well-formed,
+    # signed artifact to read even when a certification is (transiently) empty.
+    if not buckets:
+        buckets = {"shared": []}
+    outputs = []
+    for arch in sorted(buckets):
+        sub = dict(common)
+        sub["architecture"] = arch
+        sub["packages"] = buckets[arch]
+        op, sp = _write_signed(sub, key_pem_path, _arch_stem(out_path, arch))
+        debug("certify: signed %s manifest %s (%d pkgs)", arch, op, len(buckets[arch]))
+        outputs.append((op, sp, arch))
+    return outputs
 
 
 def make_s3_probe(store_url, work_dir, default_arch):
@@ -407,12 +464,13 @@ def doCertify(args, parser):
         parser.error("--valid-days must be >= 0 (0 means no expiry)")
     source_commit = getattr(args, "sourceCommit", None) or os.environ.get("CI_COMMIT_SHA")
     try:
-        out_path, sig_path = certify(sources, args.key, args.out, probe=probe,
-                                     default_group=getattr(args, "group", None),
-                                     valid_days=valid_days,
-                                     source_commit=source_commit,
-                                     approval_check=approval_check)
+        outputs = certify_by_arch(sources, args.key, args.out, probe=probe,
+                                  default_group=getattr(args, "group", None),
+                                  valid_days=valid_days,
+                                  source_commit=source_commit,
+                                  approval_check=approval_check)
     except CertifyError as exc:
         parser.error(str(exc))
     from bits_helpers.log import banner
-    banner("Certified common manifest -> %s (signature: %s)", out_path, sig_path)
+    for out_path, sig_path, arch in outputs:
+        banner("Certified %s manifest -> %s (signature: %s)", arch, out_path, sig_path)

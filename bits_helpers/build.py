@@ -163,52 +163,63 @@ def readHashFile(fn):
     return "0"
 
 
+def _load_trusted_index(src, work_dir, accept_groups):
+  """Verify one signed manifest (local path or URL) -> (key_id, {hash: sha256}).
+
+  Returns ``(None, {})`` on any failure (missing/unreachable/untrusted), so a
+  caller can degrade to a rebuild rather than crash — fail-closed.
+  """
+  from bits_helpers import trust
+  try:
+    manifest = src
+    if "://" in src:
+      # Fetch the manifest and its detached signature next to it.
+      from bits_helpers.download import downloadUrllib2
+      dest = os.path.join(work_dir, "MANIFESTS", "trust")
+      os.makedirs(dest, exist_ok=True)
+      name = os.path.basename(src.split("?")[0]) or "trust-manifest.json"
+      downloadUrllib2(src, dest, work_dir, dest_filename=name)
+      downloadUrllib2(src + ".sig", dest, work_dir, dest_filename=name + ".sig")
+      manifest = os.path.join(dest, name)
+    return trust.trusted_index(manifest, accept_groups=accept_groups)
+  except Exception as exc:
+    warning("--require-signed-reuse: could not fetch/verify %s (%s); those "
+            "entries will not be reused.", src, exc)
+    return None, {}
+
+
 def trusted_reuse_index(args, work_dir):
   """Return the verified {hash: tarball_sha256} index for --require-signed-reuse.
 
-  Loads and signature-verifies the --trust-manifest (local path or URL) once,
-  memoising the result on *args*. An empty map means nothing is attested, so
-  every remote reuse fails closed.
+  --trust-manifest may name several signed manifests (comma-separated): a build
+  node fetches its own ``common-manifest-<arch>.json`` plus the always-relevant
+  ``common-manifest-shared.json`` and this merges their indexes. Each is
+  signature-verified independently; content hashes are globally unique so the
+  merge is collision-free. Loaded once, memoised on *args*. An empty map means
+  nothing is attested, so every remote reuse fails closed.
   """
   cached = getattr(args, "_trustedReuseIndex", None)
   if cached is not None:
     return cached
-  from bits_helpers import trust
-  src = getattr(args, "trustManifest", None)
+  raw = getattr(args, "trustManifest", None)
+  sources = [s.strip() for s in str(raw or "").split(",") if s.strip()]
+  raw_groups = getattr(args, "trustGroups", None)
+  accept_groups = ([g.strip() for g in raw_groups.split(",") if g.strip()]
+                   if raw_groups else None)
   index = {}
-  kid = None
-  if src:
-    try:
-      manifest = src
-      if "://" in src:
-        # Fetch the manifest and its detached signature next to it.
-        from bits_helpers.download import downloadUrllib2
-        dest = os.path.join(work_dir, "MANIFESTS", "trust")
-        os.makedirs(dest, exist_ok=True)
-        name = os.path.basename(src.split("?")[0]) or "trust-manifest.json"
-        downloadUrllib2(src, dest, work_dir, dest_filename=name)
-        downloadUrllib2(src + ".sig", dest, work_dir, dest_filename=name + ".sig")
-        manifest = os.path.join(dest, name)
-      raw_groups = getattr(args, "trustGroups", None)
-      accept_groups = ([g.strip() for g in raw_groups.split(",") if g.strip()]
-                       if raw_groups else None)
-      kid, index = trust.trusted_index(manifest, accept_groups=accept_groups)
-    except Exception as exc:
-      # A missing/unreachable manifest (e.g. an uncertified store) must not crash
-      # the build: degrade to no remote reuse (rebuild), fail-closed.
-      warning("--require-signed-reuse: could not fetch/verify %s (%s); no remote "
-              "tarball will be reused.", src, exc)
-      kid, index = None, {}
-    if not kid:
-      warning("--require-signed-reuse: could not verify signed manifest %s; "
-              "no remote tarball will be reused.", src)
-    else:
-      debug("Trusted reuse index from %s (signed by %s): %d entries%s",
-            src, kid, len(index),
-            "" if accept_groups is None else " (groups: %s + common)" % ",".join(accept_groups))
-  else:
+  if not sources:
     warning("--require-signed-reuse set without --trust-manifest; "
             "no remote tarball will be reused.")
+  for src in sources:
+    kid, part = _load_trusted_index(src, work_dir, accept_groups)
+    if not kid:
+      warning("--require-signed-reuse: could not verify signed manifest %s; "
+              "its tarballs will not be reused.", src)
+      continue
+    index.update(part)
+    debug("Trusted reuse index from %s (signed by %s): %d entries%s",
+          src, kid, len(part),
+          "" if accept_groups is None else " (groups: %s + common)" % ",".join(accept_groups))
   args._trustedReuseIndex = index
   return index
 
@@ -1836,14 +1847,21 @@ def doBuild(args, parser):
     if _tg:
       args.trustGroups = str(_tg).strip()
   # If signed reuse is on but no manifest was given, derive it from the (http[s])
-  # read store: <store>/<trust_manifest_key>, i.e. where `bits certify` publishes
-  # the signed common manifest. So `require_signed_reuse: true` alone is enough.
+  # read store. The signed manifest is partitioned by architecture, so a node
+  # fetches its own arch file plus the always-shared one:
+  #   <store>/<prefix>-<arch>.json , <store>/<prefix>-shared.json
+  # (`bits certify` publishes exactly these). So `require_signed_reuse: true`
+  # alone is enough.
   if getattr(args, "requireSignedReuse", False) and not getattr(args, "trustManifest", None):
     _store = str(getattr(args, "remoteStore", "") or "")
     if _store.startswith(("http://", "https://")):
-      _key = str(_system_opt("trust_manifest_key", "MANIFESTS/common-manifest.json"))
-      args.trustManifest = _store.rstrip("/") + "/" + _key.lstrip("/")
-      info("--require-signed-reuse: trust manifest derived from store -> %s",
+      _prefix = str(_system_opt("trust_manifest_prefix", "MANIFESTS/common-manifest"))
+      _base = _store.rstrip("/") + "/" + _prefix.lstrip("/")
+      _arch = str(getattr(args, "architecture", "") or "")
+      _srcs = ["%s-%s.json" % (_base, _arch)] if _arch else []
+      _srcs.append("%s-shared.json" % _base)
+      args.trustManifest = ",".join(_srcs)
+      info("--require-signed-reuse: trust manifests derived from store -> %s",
            args.trustManifest)
 
   # The final target builds alone (every other package is one of its

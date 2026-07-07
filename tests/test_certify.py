@@ -186,7 +186,8 @@ class TestCertifyEndToEnd(unittest.TestCase):
 
         with patch.object(forge, "gitlab_identify", return_value="alice"):
             certify.doCertify(args, _P())
-        self.assertEqual(json.load(open(out))["certified_by"], ["alice"])
+        per_arch = certify._arch_stem(out, "slc7_x86-64")
+        self.assertEqual(json.load(open(per_arch))["certified_by"], ["alice"])
 
     def test_identity_token_rejects_unauthorised_user(self):
         from bits_helpers import forge
@@ -224,7 +225,8 @@ class TestCertifyEndToEnd(unittest.TestCase):
                 raise RuntimeError(m)
 
         certify.doCertify(args, _P())
-        self.assertEqual(json.load(open(out))["certified_by"], ["alice"])
+        per_arch = certify._arch_stem(out, "slc7_x86-64")
+        self.assertEqual(json.load(open(per_arch))["certified_by"], ["alice"])
 
     def test_certifier_username_rejected_when_not_admin(self):
         admins = os.path.join(self.tmp, "ADMINS")
@@ -334,6 +336,56 @@ class TestCertifyEndToEnd(unittest.TestCase):
         idx = build.trusted_reuse_index(args, self.tmp)
         self.assertEqual(idx, {})
 
+    def test_certify_by_arch_partitions_and_signs_each(self):
+        # Two build arches + a shared (noarch) package -> three signed files,
+        # partitioned by effective_architecture; 'shared' is just another arch.
+        pkgs = [_pkg("A", "h1", "sha256:aa", arch="slc7_x86-64"),
+                _pkg("B", "h2", "sha256:bb", arch="osx_arm64"),
+                _pkg("Data", "h3", "sha256:cc", arch="shared")]
+        store = {("slc7_x86-64", "h1"): "sha256:aa",
+                 ("osx_arm64", "h2"): "sha256:bb",
+                 ("shared", "h3"): "sha256:cc"}
+        out = os.path.join(self.tmp, "out", "common-manifest.json")
+        outputs = certify.certify_by_arch(
+            [_manifest("b1", pkgs)], self.key_pem, out,
+            probe=lambda a, h, t=None: store.get((a, h)))
+        got = {arch: (op, sp) for op, sp, arch in outputs}
+        self.assertEqual(set(got), {"slc7_x86-64", "osx_arm64", "shared"})
+        # Each file is named <stem>-<arch>.json, independently verifiable, and
+        # contains only its own arch's entries.
+        expect = {"slc7_x86-64": {"h1": "sha256:aa"},
+                  "osx_arm64": {"h2": "sha256:bb"},
+                  "shared": {"h3": "sha256:cc"}}
+        for arch, (op, sp) in got.items():
+            self.assertEqual(op, os.path.join(self.tmp, "out",
+                                              "common-manifest-%s.json" % arch))
+            self.assertTrue(os.path.isfile(op) and os.path.isfile(sp))
+            kid, index = trust.trusted_index(op)
+            self.assertIsNotNone(kid)
+            self.assertEqual(index, expect[arch])
+        # No monolithic common-manifest.json is written.
+        self.assertFalse(os.path.isfile(out))
+
+    def test_consumer_merges_arch_and_shared(self):
+        # A build node fetches its own arch file + shared and merges the indexes.
+        from bits_helpers import build
+        pkgs = [_pkg("A", "h1", "sha256:aa", arch="slc7_x86-64"),
+                _pkg("B", "h2", "sha256:bb", arch="osx_arm64"),
+                _pkg("Data", "h3", "sha256:cc", arch="shared")]
+        store = {("slc7_x86-64", "h1"): "sha256:aa",
+                 ("osx_arm64", "h2"): "sha256:bb",
+                 ("shared", "h3"): "sha256:cc"}
+        out = os.path.join(self.tmp, "out", "common-manifest.json")
+        certify.certify_by_arch([_manifest("b1", pkgs)], self.key_pem, out,
+                                probe=lambda a, h, t=None: store.get((a, h)))
+        base = os.path.join(self.tmp, "out", "common-manifest")
+        args = SimpleNamespace(
+            trustManifest="%s-slc7_x86-64.json,%s-shared.json" % (base, base),
+            trustGroups=None, requireSignedReuse=True)
+        idx = build.trusted_reuse_index(args, self.tmp)
+        # own arch + shared, but NOT the other arch (osx h2).
+        self.assertEqual(idx, {"h1": "sha256:aa", "h3": "sha256:cc"})
+
     def test_freshness_fields_and_expiry_enforced(self):
         import datetime
         out = os.path.join(self.tmp, "out", "common.json")
@@ -395,7 +447,9 @@ class TestCertifyEndToEnd(unittest.TestCase):
                                workDir=os.path.join(self.tmp, "sw"),
                                architecture="slc7_x86-64")
         certify.doCertify(args, _Parser())
-        kid, index = trust.trusted_index(out)
+        # Both BOMs are slc7_x86-64, so they land in one per-arch manifest.
+        per_arch = certify._arch_stem(out, "slc7_x86-64")
+        kid, index = trust.trusted_index(per_arch)
         self.assertIsNotNone(kid)
         self.assertEqual(index, {"h1": "sha256:aa", "h2": "sha256:bb"})
 
