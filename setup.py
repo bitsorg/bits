@@ -18,7 +18,7 @@ here = os.path.abspath(os.path.dirname(__file__))
 with open(os.path.join(here, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
-install_requires = ['pyyaml', 'requests', 'distro', 'jinja2', 'boto3']
+install_requires = ['pyyaml', 'requests', 'distro', 'jinja2', 'boto3', 'cryptography']
 
 setup(
     name='build-bits',

@@ -27,6 +27,7 @@ dependencies = [
   'distro',
   'jinja2',
   'boto3',
+  'cryptography',
 ]
 
 [project.optional-dependencies]
