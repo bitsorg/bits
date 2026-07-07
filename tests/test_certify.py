@@ -316,6 +316,24 @@ class TestCertifyEndToEnd(unittest.TestCase):
         idx = build.trusted_reuse_index(args, self.tmp)
         self.assertEqual(set(idx), {"hbase", "hlcg"})   # ship filtered out
 
+    def test_build_trusted_reuse_index_missing_manifest_degrades(self):
+        # Default-on safety: an unreachable/absent signed manifest (e.g. an
+        # uncertified store) must degrade to an empty index (rebuild), NOT crash.
+        from bits_helpers import build
+        args = SimpleNamespace(
+            trustManifest="https://s3.invalid/lcgapp/MANIFESTS/common-manifest.json",
+            trustGroups=None, requireSignedReuse=True)
+        idx = build.trusted_reuse_index(args, self.tmp)
+        self.assertEqual(idx, {})
+
+    def test_build_trusted_reuse_index_missing_local_file_degrades(self):
+        from bits_helpers import build
+        args = SimpleNamespace(
+            trustManifest=os.path.join(self.tmp, "does-not-exist.json"),
+            trustGroups=None, requireSignedReuse=True)
+        idx = build.trusted_reuse_index(args, self.tmp)
+        self.assertEqual(idx, {})
+
     def test_freshness_fields_and_expiry_enforced(self):
         import datetime
         out = os.path.join(self.tmp, "out", "common.json")

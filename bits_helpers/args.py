@@ -617,9 +617,14 @@ def doParseArgs():
                             help=("Signed release manifest to trust as the authority for remote reuse. Its "
                                   "signature is verified against the shipped trust keys; a remote tarball is "
                                   "reused only if its hash is listed there and its sha256 matches."))
-  build_remote.add_argument("--require-signed-reuse", dest="requireSignedReuse", action="store_true",
+  build_remote.add_argument("--require-signed-reuse", dest="requireSignedReuse", action="store_true", default=None,
                             help=("Fail-closed: only reuse remote tarballs vouched for by a verified signed "
-                                  "manifest (see --trust-manifest). Local and CVMFS artifacts are unaffected."))
+                                  "manifest (see --trust-manifest, auto-derived from the store when unset). "
+                                  "This is the DEFAULT — reusing an untrusted remote store is unsafe. Local "
+                                  "and CVMFS artifacts are unaffected."))
+  build_remote.add_argument("--no-require-signed-reuse", dest="requireSignedReuse", action="store_false",
+                            help=("Disable the signed-reuse gate and reuse any remote tarball unverified "
+                                  "(insecure; for a store with no signed manifest yet, or bootstrap)."))
   build_remote.add_argument("--trust-groups", dest="trustGroups", default=None, metavar="G1,G2,…",
                             help=("Comma-separated groups to trust in the signed manifest, on top of the "
                                   "always-trusted 'common' base. When omitted, every signed entry is trusted. "
