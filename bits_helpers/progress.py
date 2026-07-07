@@ -37,7 +37,6 @@ _state = {
     "context": None,
     "pipeline_id": None,
     "ref":     None,
-    "warned":  False,  # True once we've surfaced a post failure (avoid spam)
 }
 
 
@@ -68,6 +67,17 @@ def _probe():
     return ready
 
 
+def _do_post(headers, body):
+    """POST once. Return None on success, else the HTTP status code (or -1)."""
+    req = urllib.request.Request(
+        _state["url"], data=json.dumps(body).encode(), headers=headers, method="POST")
+    try:
+        urllib.request.urlopen(req, timeout=5).read()
+        return None
+    except Exception as exc:                        # never break a build over this
+        return getattr(exc, "code", None) or -1     # urllib.error.HTTPError -> status
+
+
 def _post(state, coverage, description):
     if not _probe():
         return
@@ -80,48 +90,27 @@ def _post(state, coverage, description):
     }
     if _state["ref"]:
         body["ref"] = _state["ref"]
-    req = urllib.request.Request(
-        _state["url"], data=json.dumps(body).encode(),
-        headers=_state["headers"], method="POST")
-    try:
-        urllib.request.urlopen(req, timeout=5).read()
-    except Exception as exc:                       # never break a build over this
-        code = getattr(exc, "code", None)          # urllib.error.HTTPError -> HTTP status
-        # Surface the first failure at a visible level (even without --debug) so the
-        # missing build-progress bar has an explanation in the log, then stop
-        # retrying on permission errors to avoid one failed POST per package.
-        if not _state["warned"]:
-            _state["warned"] = True
-            used_status_token = bool(os.environ.get("BITS_STATUS_TOKEN"))
-            target = "project %s, commit %s, ref %s" % (
-                os.environ.get("CI_PROJECT_ID", "?"),
-                (os.environ.get("CI_COMMIT_SHA", "") or "?")[:12],
-                _state.get("ref") or os.environ.get("CI_COMMIT_REF_NAME") or "?")
-            if code in (401, 403) and not used_status_token:
-                # We fell back to the CI job token, which cannot post commit
-                # statuses. The fix is to set BITS_STATUS_TOKEN, not to change roles.
-                hint = (" -- no BITS_STATUS_TOKEN in this job, so the CI job token was used "
-                        "and rejected (job tokens cannot post commit statuses). Set "
-                        "BITS_STATUS_TOKEN (api scope, >= Developer) and make sure it is "
-                        "exposed to this pipeline's ref")
-            elif code in (401, 403):
-                # The token authenticated (401 would mean invalid) but is forbidden
-                # for THIS target. Scope is fine; the role/ref is the issue.
-                hint = ((" -- BITS_STATUS_TOKEN was accepted but forbidden for %s. "
-                         "'api' scope is not enough on its own: its user needs >= Developer "
-                         "on THIS project, and posting a status on a PROTECTED branch can "
-                         "require Maintainer when push/merge is restricted. Check the role on "
-                         "this exact project + ref (403 = permission, not scope)") % target)
-            elif not os.environ.get("BITS_STATUS_TOKEN"):
-                hint = " -- BITS_STATUS_TOKEN is not set (the CI job token cannot post commit statuses)"
-            else:
-                hint = ""
-            warning("progress: build-progress reporting disabled (commit-status POST "
-                    "to %s failed: %s%s)", target, ("HTTP %s" % code) if code else exc, hint)
-        if code in (401, 403):
-            _state["ready"] = False                # permanent for this run; stop trying
-        else:
-            debug("progress: commit-status post failed: %s", exc)
+
+    code = _do_post(_state["headers"], body)
+    if code is None:
+        return                                       # posted
+
+    # Progress reporting is best-effort and must never spam a build log. On a
+    # permission failure, fall back to the CI job token once (harmless — some
+    # setups accept it), then give up quietly for the rest of the run.
+    if code in (401, 403):
+        jt = os.environ.get("CI_JOB_TOKEN")
+        used_status_token = "PRIVATE-TOKEN" in _state["headers"]
+        if used_status_token and jt:
+            fallback = {"Content-Type": "application/json", "JOB-TOKEN": jt}
+            if _do_post(fallback, body) is None:
+                _state["headers"] = fallback         # keep using it for later ticks
+                return
+        _state["ready"] = False                      # stop trying this run (quiet)
+        debug("progress: commit-status POST forbidden (HTTP %s); build-progress "
+              "reporting disabled for this run", code)
+    else:
+        debug("progress: commit-status post failed: HTTP %s", code)
 
 
 def set_total(total):
