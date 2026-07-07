@@ -276,7 +276,7 @@ certified build still references.
 #### Uploads and certification
 
 Reads need no credentials. Uploading to the S3 store is governed by possession of
-S3 credentials (see the `b3://` backend below and the `~/.awskeys` file) — any
+S3 credentials (see the `b3://` backend below and the `~/.bits/s3keys` file) — any
 user or CI job with write keys can upload artifacts and the build manifest.
 
 Certification (signing) is a separate, deliberate step performed by a **group
@@ -2620,10 +2620,10 @@ bits build --remote-store b3://mybucket/bits-cache::rw ROOT
 ```
 
 To keep the keys out of the environment, put them in a private file (default
-`~/.awskeys`, mode 600; override the path with `$BITS_AWS_KEYS_FILE`) instead:
+`~/.bits/s3keys`, mode 600; override the path with `$BITS_AWS_KEYS_FILE`) instead:
 
 ```ini
-# ~/.awskeys   (chmod 600)
+# ~/.bits/s3keys   (chmod 600)
 AWS_ACCESS_KEY_ID=your-key-id
 AWS_SECRET_ACCESS_KEY=your-secret-key
 # optional: S3_ENDPOINT_URL=https://s3.cern.ch, AWS_DEFAULT_REGION=...
@@ -2644,7 +2644,7 @@ store you already built (nothing re-uploads on a cached rebuild), use
 plus their named symlink objects.
 
 ```bash
-# credentials from the environment or ~/.awskeys (see above)
+# credentials from the environment or ~/.bits/s3keys (see above)
 
 # Bulk: upload every package in the latest manifest. This is the default when
 # no PACKAGE is given, so bare `bits publish` is the whole-stack push:

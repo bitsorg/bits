@@ -24,12 +24,13 @@ from bits_helpers.utilities import resolve_store_path, resolve_links_path, symli
 DEFAULT_S3_ENDPOINT = "https://s3.cern.ch"
 
 # Default private file to read S3 credentials from when they are not in the
-# environment. Override with $BITS_AWS_KEYS_FILE.
-DEFAULT_AWS_KEYS_FILE = "~/.awskeys"
+# environment: ~/.bits/s3keys (alongside ~/.bits/gitlab-token). Override with
+# $BITS_AWS_KEYS_FILE.
+DEFAULT_AWS_KEYS_FILE = "~/.bits/s3keys"
 
 
 def _load_aws_keys_file(path):
-  """Read S3 credentials from a private key file (default ~/.awskeys).
+  """Read S3 credentials from a private key file (default ~/.bits/s3keys).
 
   Accepts simple ``KEY=VALUE`` lines (optionally ``export``-prefixed and/or
   quoted) as well as AWS-credentials INI style (``aws_access_key_id = ...``);
@@ -95,7 +96,7 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
   defaults to CERN S3 and credentials come from AWS_ACCESS_KEY_ID /
   AWS_SECRET_ACCESS_KEY exactly as before (aliBuild behaviour).
   """
-  # Fallback credential source, below flags and env: a private ~/.awskeys file
+  # Fallback credential source, below flags and env: a private ~/.bits/s3keys file
   # (override path with $BITS_AWS_KEYS_FILE). Flags and env (CI) still win.
   _file = _load_aws_keys_file(os.path.expanduser(
       os.environ.get("BITS_AWS_KEYS_FILE") or DEFAULT_AWS_KEYS_FILE))
@@ -940,7 +941,7 @@ class Boto3RemoteSync:
         "aws_access_key_id": os.environ["AWS_ACCESS_KEY_ID"],
         "aws_secret_access_key": os.environ["AWS_SECRET_ACCESS_KEY"],
       }
-      # Temporary/STS credentials (e.g. from ~/.awskeys) carry a session token.
+      # Temporary/STS credentials (e.g. from ~/.bits/s3keys) carry a session token.
       if os.environ.get("AWS_SESSION_TOKEN"):
         client_kwargs["aws_session_token"] = os.environ["AWS_SESSION_TOKEN"]
       if region:
