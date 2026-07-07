@@ -92,16 +92,32 @@ def _post(state, coverage, description):
         # retrying on permission errors to avoid one failed POST per package.
         if not _state["warned"]:
             _state["warned"] = True
-            if code in (401, 403):
-                hint = (" -- BITS_STATUS_TOKEN must have 'api' scope and at least "
-                        "Developer access to post commit statuses (a read-only or "
-                        "Reporter token gets 403); the CI job token cannot post them")
+            used_status_token = bool(os.environ.get("BITS_STATUS_TOKEN"))
+            target = "project %s, commit %s, ref %s" % (
+                os.environ.get("CI_PROJECT_ID", "?"),
+                (os.environ.get("CI_COMMIT_SHA", "") or "?")[:12],
+                _state.get("ref") or os.environ.get("CI_COMMIT_REF_NAME") or "?")
+            if code in (401, 403) and not used_status_token:
+                # We fell back to the CI job token, which cannot post commit
+                # statuses. The fix is to set BITS_STATUS_TOKEN, not to change roles.
+                hint = (" -- no BITS_STATUS_TOKEN in this job, so the CI job token was used "
+                        "and rejected (job tokens cannot post commit statuses). Set "
+                        "BITS_STATUS_TOKEN (api scope, >= Developer) and make sure it is "
+                        "exposed to this pipeline's ref")
+            elif code in (401, 403):
+                # The token authenticated (401 would mean invalid) but is forbidden
+                # for THIS target. Scope is fine; the role/ref is the issue.
+                hint = ((" -- BITS_STATUS_TOKEN was accepted but forbidden for %s. "
+                         "'api' scope is not enough on its own: its user needs >= Developer "
+                         "on THIS project, and posting a status on a PROTECTED branch can "
+                         "require Maintainer when push/merge is restricted. Check the role on "
+                         "this exact project + ref (403 = permission, not scope)") % target)
             elif not os.environ.get("BITS_STATUS_TOKEN"):
                 hint = " -- BITS_STATUS_TOKEN is not set (the CI job token cannot post commit statuses)"
             else:
                 hint = ""
             warning("progress: build-progress reporting disabled (commit-status POST "
-                    "failed: %s%s)", ("HTTP %s" % code) if code else exc, hint)
+                    "to %s failed: %s%s)", target, ("HTTP %s" % code) if code else exc, hint)
         if code in (401, 403):
             _state["ready"] = False                # permanent for this run; stop trying
         else:
