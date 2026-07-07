@@ -1160,8 +1160,8 @@ def doParseArgs():
                                     "ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git. Only the host + "
                                     "path are used (to build the HTTPS API URL). Defaults to "
                                     "`system: manifests_remote:` in the active defaults."))
-  publish_parser.add_argument("--certify-ref", dest="certifyRef", metavar="REF", default="main",
-                              help="Target branch of the certification MR. Default: %(default)s.")
+  publish_parser.add_argument("--certify-ref", dest="certifyRef", metavar="REF", default=None,
+                              help="Target branch of the certification MR. Default: the repo's default branch.")
   publish_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
                               help=("GitLab PAT to trigger certification (default: $BITS_CERTIFIER_TOKEN / "
                                     "$GITLAB_TOKEN / ~/.bits/gitlab-token)."))

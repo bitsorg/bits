@@ -220,7 +220,7 @@ class GitLabForge(Forge):
         import requests
         resp = requests.get("%s/projects/%s/%s" % (self.api_url, self.project_id, path),
                             headers={"PRIVATE-TOKEN": self.token}, timeout=self.timeout)
-        resp.raise_for_status()
+        _gl_ok(resp)
         return resp.json()
 
     def _resolve_iid(self):
@@ -268,7 +268,7 @@ def gitlab_identify(api_url, token, timeout=15):
     try:
         resp = requests.get("%s/user" % api_url.rstrip("/"),
                             headers={"PRIVATE-TOKEN": token}, timeout=timeout)
-        resp.raise_for_status()
+        _gl_ok(resp)
         return (resp.json() or {}).get("username")
     except Exception:
         return None
@@ -350,7 +350,7 @@ def gitlab_create_pipeline(api_url, token, project, ref="main", variables=None,
     resp = requests.post(
         "%s/projects/%s/pipeline" % (api_url.rstrip("/"), quote(str(project), safe="")),
         headers={"PRIVATE-TOKEN": token}, json=payload, timeout=timeout)
-    resp.raise_for_status()
+    _gl_ok(resp)
     data = resp.json() or {}
     return {"id": data.get("id"), "web_url": data.get("web_url")}
 
@@ -358,6 +358,28 @@ def gitlab_create_pipeline(api_url, token, project, ref="main", variables=None,
 def _gl_project_url(api_url, project):
     from urllib.parse import quote
     return "%s/projects/%s" % (api_url.rstrip("/"), quote(str(project), safe=""))
+
+
+def _gl_ok(resp):
+    """raise_for_status, but include GitLab's response body (it explains 400s)."""
+    if not getattr(resp, "ok", True):
+        body = ""
+        try:
+            body = resp.text[:500]
+        except Exception:
+            pass
+        raise RuntimeError("GitLab %s %s: %s"
+                           % (resp.status_code, getattr(resp, "reason", ""), body))
+    return resp
+
+
+def gitlab_default_branch(api_url, token, project, timeout=15):
+    """Return the project's default branch (e.g. ``main`` or ``master``)."""
+    import requests
+    resp = requests.get(_gl_project_url(api_url, project),
+                        headers={"PRIVATE-TOKEN": token}, timeout=timeout)
+    _gl_ok(resp)
+    return (resp.json() or {}).get("default_branch")
 
 
 def gitlab_create_commit(api_url, token, project, branch, start_branch,
@@ -370,7 +392,7 @@ def gitlab_create_commit(api_url, token, project, branch, start_branch,
     }
     resp = requests.post("%s/repository/commits" % _gl_project_url(api_url, project),
                          headers={"PRIVATE-TOKEN": token}, json=payload, timeout=timeout)
-    resp.raise_for_status()
+    _gl_ok(resp)
     return resp.json() or {}
 
 
@@ -383,7 +405,7 @@ def gitlab_create_merge_request(api_url, token, project, source_branch, target_b
                "remove_source_branch": True}
     resp = requests.post("%s/merge_requests" % _gl_project_url(api_url, project),
                          headers={"PRIVATE-TOKEN": token}, json=payload, timeout=timeout)
-    resp.raise_for_status()
+    _gl_ok(resp)
     data = resp.json() or {}
     return {"iid": data.get("iid"), "web_url": data.get("web_url")}
 
@@ -393,7 +415,7 @@ def gitlab_merge_mr(api_url, token, project, iid, timeout=30) -> dict:
     import requests
     resp = requests.put("%s/merge_requests/%s/merge" % (_gl_project_url(api_url, project), iid),
                         headers={"PRIVATE-TOKEN": token}, timeout=timeout)
-    resp.raise_for_status()
+    _gl_ok(resp)
     return resp.json() or {}
 
 
@@ -402,7 +424,7 @@ def gitlab_mr_author(api_url, token, project, iid, timeout=15):
     import requests
     resp = requests.get("%s/merge_requests/%s" % (_gl_project_url(api_url, project), iid),
                         headers={"PRIVATE-TOKEN": token}, timeout=timeout)
-    resp.raise_for_status()
+    _gl_ok(resp)
     return ((resp.json() or {}).get("author") or {}).get("username")
 
 
@@ -412,7 +434,7 @@ def gitlab_mr_iid_for_commit(api_url, token, project, sha, timeout=15):
     resp = requests.get(
         "%s/repository/commits/%s/merge_requests" % (_gl_project_url(api_url, project), sha),
         headers={"PRIVATE-TOKEN": token}, timeout=timeout)
-    resp.raise_for_status()
+    _gl_ok(resp)
     merged = [m for m in (resp.json() or []) if (m or {}).get("state") == "merged"]
     return merged[0].get("iid") if merged else None
 
@@ -432,7 +454,7 @@ def gitlab_group_members(api_url, token, group_ref, timeout=15) -> set:
     while True:
         resp = requests.get(base, headers={"PRIVATE-TOKEN": token},
                             params={"per_page": 100, "page": page}, timeout=timeout)
-        resp.raise_for_status()
+        _gl_ok(resp)
         data = resp.json() or []
         for m in data:
             u = (m or {}).get("username")

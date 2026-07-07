@@ -376,7 +376,15 @@ def _submit_certification_mr(args, parser, build_id, bom):
     if not token:
         parser.error("no GitLab token to open the certification MR — set one in "
                      "~/.bits/gitlab-token, $BITS_CERTIFIER_TOKEN, or pass --gitlab-token")
-    target = getattr(args, "certifyRef", None) or "main"
+    # Target the repo's actual default branch unless one was given, so this works
+    # whether the manifests repo defaults to main or master.
+    target = getattr(args, "certifyRef", None)
+    if not target:
+        try:
+            target = forge.gitlab_default_branch(api_url, token, project)
+        except Exception:
+            target = None
+        target = target or "main"
     leaf = _run_leaf()                                   # host-UTC-rand, unique
     branch = "certify/%s-%s" % (re.sub(r"[^A-Za-z0-9._-]", "_", build_id), leaf[:-5])
     path = "manifests/%s/%s.%s" % (group, build_id, leaf)
@@ -557,7 +565,7 @@ def doPublish(args, parser):
             _group = getattr(args, "certifyGroup", None) or _system.get("certify_group")
             _remote = (getattr(args, "manifestsRemote", None)
                        or _system.get("manifests_remote"))
-            _ref = getattr(args, "certifyRef", None) or _system.get("certify_ref") or "main"
+            _ref = getattr(args, "certifyRef", None) or _system.get("certify_ref")
             _want = (getattr(args, "certify", False)
                      or bool(getattr(args, "certifyGroup", None))
                      or bool(_group and _remote))
