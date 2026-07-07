@@ -149,5 +149,40 @@ class TestCollectGarbageFailClosed(unittest.TestCase):
         self.assertEqual(deleted, [])           # empty roots would wipe store -> refuse
 
 
+class TestLocalizeManifest(unittest.TestCase):
+    """gc._localize_manifest: a URL --trust-manifest must be downloaded (with its
+    .sig) before verification — gc cannot open() a URL like the consumer path."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_local_path_passes_through(self):
+        p = os.path.join(self.tmp, "common-manifest-shared.json")
+        open(p, "w").close()
+        self.assertEqual(gc._localize_manifest(p, self.tmp), p)
+
+    def test_url_is_downloaded_with_sig(self):
+        from unittest.mock import patch
+        url = "https://s3.example/MANIFESTS/common-manifest-osx_arm64.json"
+        got = []
+
+        def fake_download(source, destDir, work_dir, dest_filename=None):
+            got.append(source)
+            with open(os.path.join(destDir, dest_filename), "w") as fh:
+                fh.write("{}")
+
+        with patch("bits_helpers.download.downloadUrllib2", side_effect=fake_download):
+            local = gc._localize_manifest(url, self.tmp)
+        # Both the manifest and its detached signature are fetched...
+        self.assertEqual(got, [url, url + ".sig"])
+        # ...to a real local file, with the .sig sitting next to it.
+        self.assertTrue(os.path.isfile(local))
+        self.assertTrue(os.path.isfile(local + ".sig"))
+        self.assertTrue(local.endswith("common-manifest-osx_arm64.json"))
+
+
 if __name__ == "__main__":
     unittest.main()

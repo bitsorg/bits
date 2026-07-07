@@ -16,6 +16,7 @@ unverifiable manifest into "delete everything".
 """
 
 import datetime
+import os
 import re
 
 from bits_helpers import trust
@@ -197,6 +198,23 @@ def make_s3_deleter(s3, bucket, architecture=None):
     return delete_fn
 
 
+def _localize_manifest(src, work_dir):
+    """Return a local path to the signed manifest, downloading it (and its
+    detached ``.sig``) when *src* is a URL. The signature is verified from the
+    ``.sig`` sitting next to the manifest, so both must land together. Raising on
+    a failed fetch keeps gc fail-closed (the caller refuses to sweep).
+    """
+    if "://" not in str(src):
+        return src
+    from bits_helpers.download import downloadUrllib2
+    dest = os.path.join(work_dir, "MANIFESTS", "gc")
+    os.makedirs(dest, exist_ok=True)
+    name = os.path.basename(src.split("?")[0]) or "trust-manifest.json"
+    downloadUrllib2(src, dest, work_dir, dest_filename=name)
+    downloadUrllib2(src + ".sig", dest, work_dir, dest_filename=name + ".sig")
+    return os.path.join(dest, name)
+
+
 def doGc(args, parser):
     """CLI entrypoint for ``bits gc``."""
     from bits_helpers.publish import _normalize_s3_store
@@ -208,8 +226,13 @@ def doGc(args, parser):
     bucket = getattr(writer, "remoteStore", None) or getattr(writer, "writeStore", None)
     s3 = writer.s3
     objects = gather_s3_store_objects(s3, bucket, args.architecture)
+    try:
+        manifest_path = _localize_manifest(args.trustManifest, args.workDir)
+    except Exception as exc:
+        parser.error("could not fetch trust manifest %s: %s"
+                     % (args.trustManifest, exc))
     plan = collect_garbage(
-        objects, args.trustManifest,
+        objects, manifest_path,
         grace_seconds=int(args.graceDays * 86400),
         delete_fn=make_s3_deleter(s3, bucket, args.architecture),
         dry_run=args.dryRun, allow_empty=args.allowEmpty,
