@@ -205,6 +205,50 @@ class TestCertifyEndToEnd(unittest.TestCase):
                 certify.doCertify(args, _Parser())
         self.assertFalse(os.path.exists(out))
 
+    def test_certifier_username_recorded_without_api(self):
+        # A pre-authenticated identity (e.g. GITLAB_USER_LOGIN) is trusted
+        # directly; no forge call is made. alice is an overall admin.
+        admins = os.path.join(self.tmp, "ADMINS")
+        with open(admins, "w") as fh:
+            fh.write("@alice\n")
+        out = os.path.join(self.tmp, "out", "common.json")
+        args = SimpleNamespace(
+            manifests=[_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
+            out=out, key=self.key_pem, certifyStore="", noStoreCheck=True,
+            workDir=self.tmp, architecture="slc7_x86-64", group=None,
+            requireApproval=True, admins=admins, validDays=None, sourceCommit=None,
+            changedGroups=None, certifier="alice", certifierToken=None, apiUrl=None)
+
+        class _P:
+            def error(self, m):
+                raise RuntimeError(m)
+
+        certify.doCertify(args, _P())
+        self.assertEqual(json.load(open(out))["certified_by"], ["alice"])
+
+    def test_certifier_username_rejected_when_not_admin(self):
+        admins = os.path.join(self.tmp, "ADMINS")
+        with open(admins, "w") as fh:
+            fh.write("lcg @bob\n")            # only lcg admin bob; no overall
+        out = os.path.join(self.tmp, "out", "common.json")
+        args = SimpleNamespace(
+            manifests=[_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
+            out=out, key=self.key_pem, certifyStore="", noStoreCheck=True,
+            workDir=self.tmp, architecture="slc7_x86-64", group=None,
+            requireApproval=True, admins=admins, validDays=None, sourceCommit=None,
+            changedGroups=None, certifier="alice", certifierToken=None, apiUrl=None)
+
+        class _Err(Exception):
+            pass
+
+        class _P:
+            def error(self, m):
+                raise _Err(m)
+
+        with self.assertRaises(_Err):
+            certify.doCertify(args, _P())
+        self.assertFalse(os.path.exists(out))
+
     def test_approval_check_failure_aborts_before_signing(self):
         def _deny(common):
             raise certify.CertifyError("not approved")

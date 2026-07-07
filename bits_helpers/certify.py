@@ -318,6 +318,9 @@ def _make_approval_check(args, parser):
                if g.strip()]
     cert_token = getattr(args, "certifierToken", None) or os.environ.get("BITS_CERTIFIER_TOKEN")
     api_url = os.environ.get("CI_API_V4_URL") or getattr(args, "apiUrl", None)
+    # A pre-authenticated identity: GitLab sets GITLAB_USER_LOGIN to the user who
+    # triggered an API pipeline (unforgeable inside CI), so we trust it directly.
+    certifier = getattr(args, "certifier", None) or os.environ.get("GITLAB_USER_LOGIN")
     grouprefs = _forge.admin_policy_grouprefs(policy)
 
     def _needed(common):
@@ -338,7 +341,19 @@ def _make_approval_check(args, parser):
 
     def _check(common):
         needed = _needed(common)
-        # Preferred: the initiator's own PAT identifies them (GET /user) — an
+        # Best: a pre-authenticated identity (GitLab already verified the PAT when
+        # it created the pipeline; GITLAB_USER_LOGIN is that user). No API call.
+        if certifier:
+            resolved = _resolved(cert_token or os.environ.get("BITS_FORGE_TOKEN"))
+            unmet = sorted(g for g in needed
+                           if not _forge.approved_for_group([certifier], resolved, g))
+            if unmet:
+                parser.error("refusing to certify: %s is not authorised for "
+                             "group(s): %s" % (certifier, ", ".join(unmet)))
+            info("Certification authorised by GitLab user %s (pipeline initiator)",
+                 certifier)
+            return [certifier]
+        # Otherwise the initiator's own PAT identifies them (GET /user) — an
         # authenticated, unforgeable identity — and we require that person to be
         # an authorised admin for the group(s) being certified.
         if cert_token and api_url:

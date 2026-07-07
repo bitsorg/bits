@@ -187,15 +187,30 @@ The tier-3 attestation is driven by three build flags:
   daemon thread; never blocks or fails the build). Only small references are
   sent, never artifact data. Feeds usage-informed GC.
 
+#### Publish-triggered certification
+
+`bits publish --certify --manifests-remote <git-url>` uploads to S3 and then
+**triggers the manifests-repo CI pipeline** to re-certify + sign the common
+manifest over *all* uploaded builds. The trigger uses the GitLab REST API over
+HTTPS with your PAT (works even when you push over SSH — only the host + project
+path are taken from the remote URL). Your PAT is found via `--gitlab-token`,
+`$BITS_CERTIFIER_TOKEN`/`$GITLAB_TOKEN`, or `~/.bits/gitlab-token` (chmod 600).
+GitLab records the PAT owner as the pipeline's user, so CI reads your identity
+from `$GITLAB_USER_LOGIN` and records it as `certified_by` — no PAT is exposed to
+the CI job.
+
 #### Certification — `bits certify`
 
 `bits certify <manifests…> --key <ed25519.pem> -o common-manifest.json` merges
 published build manifests into one signed common manifest (the trust unit), after
 validating every hash against the S3 store (`--store`). Group tagging with
 `--group`, offline dry-merge with `--no-store-check`. In the manifests-repo CI,
-`--require-approval --admins ADMINS` refuses to sign unless a listed group admin
-approved the merge request (read from the forge — GitLab CI), defence-in-depth
-over CODEOWNERS. See the `bits-manifests` repo for the pipeline scaffolding.
+`--require-approval --admins ADMINS` refuses to sign unless the certifier is an
+authorised admin. The identity is established in one of three ways (in order):
+`--certifier USERNAME` (default `$GITLAB_USER_LOGIN` — the pipeline initiator
+GitLab already authenticated; no API call); `--certifier-token PAT` (identify via
+`GET /user`); or, failing both, reading who approved the merge request. See the
+`bits-manifests` repo for the pipeline scaffolding.
 
 Offline freshness: `--valid-days N` stamps an `expires` timestamp and
 `--source-commit SHA` (default `$CI_COMMIT_SHA`) records the certified commit. A

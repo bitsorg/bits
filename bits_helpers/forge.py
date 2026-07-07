@@ -274,6 +274,87 @@ def gitlab_identify(api_url, token, timeout=15):
         return None
 
 
+DEFAULT_GITLAB_TOKEN_FILE = "~/.bits/gitlab-token"
+
+
+def resolve_gitlab_token(explicit=None):
+    """Find a GitLab PAT: explicit arg > env > ``~/.bits/gitlab-token``.
+
+    The file holds the token on a line (or ``key = glpat-…``); ``#`` comments are
+    ignored. Warns (does not fail) if it is group/other-readable, since it is a
+    secret. Returns the token string or None. This is the client-side identity:
+    the PAT owner is who ``bits`` acts as when triggering certification.
+    """
+    if explicit:
+        return explicit
+    for var in ("BITS_CERTIFIER_TOKEN", "BITS_GITLAB_TOKEN", "GITLAB_TOKEN"):
+        v = os.environ.get(var)
+        if v:
+            return v
+    path = os.path.expanduser(os.environ.get("BITS_GITLAB_TOKEN_FILE")
+                              or DEFAULT_GITLAB_TOKEN_FILE)
+    if not os.path.isfile(path):
+        return None
+    import stat
+    try:
+        if os.stat(path).st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            warning("%s is group/other-readable but holds a GitLab token; run "
+                    "`chmod 600 %s`", path, path)
+        with open(path) as fh:
+            for line in fh:
+                line = line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                return line.split("=", 1)[1].strip().strip('"\'') if "=" in line else line
+    except OSError:
+        return None
+    return None
+
+
+def parse_git_remote(url):
+    """Return ``(api_url, project_path)`` from a git remote URL, or ``(None, None)``.
+
+    Handles ``ssh://git@host:port/path/repo.git``, scp-style ``git@host:path/repo.git``,
+    and ``https://host/path/repo.git``. The API base is ``https://<host>/api/v4``;
+    triggering a pipeline always uses this HTTPS API + a PAT, even when the repo is
+    pushed over SSH.
+    """
+    from urllib.parse import urlparse
+    u = (url or "").strip()
+    host = path = None
+    if u.startswith(("ssh://", "http://", "https://")):
+        p = urlparse(u)
+        host, path = p.hostname, p.path.lstrip("/")
+    elif "@" in u and ":" in u:
+        hostpart, path = u.split(":", 1)
+        host = hostpart.split("@")[-1]
+    if not host or not path:
+        return (None, None)
+    if path.endswith(".git"):
+        path = path[:-4]
+    return ("https://%s/api/v4" % host, path.strip("/"))
+
+
+def gitlab_create_pipeline(api_url, token, project, ref="main", variables=None,
+                           timeout=30) -> dict:
+    """Create a pipeline on *ref* as the PAT owner. Returns ``{id, web_url}``.
+
+    GitLab records the PAT owner as the pipeline's user, so CI sees them in
+    ``GITLAB_USER_LOGIN`` — that is the authenticated certifier identity.
+    """
+    import requests
+    from urllib.parse import quote
+    payload = {"ref": ref}
+    if variables:
+        payload["variables"] = [{"key": k, "value": str(v)} for k, v in variables.items()]
+    resp = requests.post(
+        "%s/projects/%s/pipeline" % (api_url.rstrip("/"), quote(str(project), safe="")),
+        headers={"PRIVATE-TOKEN": token}, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json() or {}
+    return {"id": data.get("id"), "web_url": data.get("web_url")}
+
+
 def gitlab_group_members(api_url, token, group_ref, timeout=15) -> set:
     """Return the set of usernames in a GitLab group (incl. inherited members).
 

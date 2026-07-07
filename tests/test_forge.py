@@ -209,6 +209,60 @@ class TestAdminPolicy(unittest.TestCase):
                              {"a", "b"})
 
 
+class TestTriggerPrimitives(unittest.TestCase):
+
+    def test_parse_git_remote_forms(self):
+        api, proj = forge.parse_git_remote("ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git")
+        self.assertEqual((api, proj), ("https://gitlab.cern.ch/api/v4", "buncic/bits-manifests"))
+        self.assertEqual(forge.parse_git_remote("git@gitlab.cern.ch:buncic/bits-manifests.git"),
+                         ("https://gitlab.cern.ch/api/v4", "buncic/bits-manifests"))
+        self.assertEqual(forge.parse_git_remote("https://gitlab.cern.ch/buncic/bits-manifests.git"),
+                         ("https://gitlab.cern.ch/api/v4", "buncic/bits-manifests"))
+        self.assertEqual(forge.parse_git_remote("garbage"), (None, None))
+
+    def test_resolve_token_precedence(self):
+        with patch.dict(os.environ, {"BITS_CERTIFIER_TOKEN": "envtok"}, clear=False):
+            self.assertEqual(forge.resolve_gitlab_token(), "envtok")
+            self.assertEqual(forge.resolve_gitlab_token("explicit"), "explicit")
+
+    def test_resolve_token_from_file(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".tok", delete=False) as fh:
+            fh.write("# my token\nglpat-ABC123\n")
+            path = fh.name
+        try:
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("BITS_CERTIFIER_TOKEN", "BITS_GITLAB_TOKEN", "GITLAB_TOKEN")}
+            env["BITS_GITLAB_TOKEN_FILE"] = path
+            with patch.dict(os.environ, env, clear=True):
+                self.assertEqual(forge.resolve_gitlab_token(), "glpat-ABC123")
+        finally:
+            os.remove(path)
+
+    def test_create_pipeline_posts_ref_and_returns_url(self):
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"id": 42, "web_url": "https://gl/pipelines/42"}
+
+        seen = {}
+
+        def _post(url, headers=None, json=None, timeout=None):
+            seen["url"] = url
+            seen["ref"] = json.get("ref")
+            seen["token"] = headers["PRIVATE-TOKEN"]
+            return _Resp()
+
+        with patch("requests.post", side_effect=_post):
+            out = forge.gitlab_create_pipeline("https://gl/api/v4", "tok",
+                                               "buncic/bits-manifests", ref="main")
+        self.assertEqual(out, {"id": 42, "web_url": "https://gl/pipelines/42"})
+        self.assertTrue(seen["url"].endswith("/projects/buncic%2Fbits-manifests/pipeline"))
+        self.assertEqual(seen["ref"], "main")
+        self.assertEqual(seen["token"], "tok")
+
+
 class TestVerifyApproval(unittest.TestCase):
 
     def test_ok_when_admin_approved(self):

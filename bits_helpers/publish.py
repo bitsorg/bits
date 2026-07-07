@@ -325,6 +325,34 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
            "[dry-run] would publish" if dry_run else "Published", ok, write_store)
     if not dry_run and n and ok != n:
         sys.exit(1)
+    return not dry_run and ok == n and ok > 0
+
+
+def _trigger_certification(args, parser):
+    """Trigger the manifests-repo CI pipeline to (re)certify over all uploaded builds.
+
+    Uses the GitLab REST API over HTTPS with the caller's PAT — even when the repo
+    is pushed over SSH. The PAT owner becomes the pipeline's user, so CI records
+    them as the certifier.
+    """
+    from bits_helpers import forge
+    remote = getattr(args, "manifestsRemote", None)
+    if not remote:
+        parser.error("--certify needs --manifests-remote <git URL of the bits-manifests project>")
+    api_url, project = forge.parse_git_remote(remote)
+    if not api_url:
+        parser.error("could not parse --manifests-remote: %s" % remote)
+    token = forge.resolve_gitlab_token(getattr(args, "gitlabToken", None))
+    if not token:
+        parser.error("no GitLab token for triggering certification — set one in "
+                     "~/.bits/gitlab-token, $BITS_CERTIFIER_TOKEN, or pass --gitlab-token")
+    ref = getattr(args, "certifyRef", None) or "main"
+    try:
+        pipe = forge.gitlab_create_pipeline(api_url, token, project, ref=ref)
+    except Exception as exc:
+        parser.error("failed to trigger the certification pipeline for %s: %s" % (project, exc))
+    banner("Certification pipeline triggered on %s (%s): %s",
+           project, ref, pipe.get("web_url") or ("id %s" % pipe.get("id")))
 
 
 def _spool_is_remote(spool):
@@ -483,8 +511,10 @@ def doPublish(args, parser):
         architecture = getattr(args, "architecture", None) or detectArch()
         store_url = (getattr(args, "publishStore", None)
                      or "https://s3.cern.ch/lcgapp-bits-testing")
-        _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
-                               manifest=_fm, dry_run=getattr(args, "dryRun", False))
+        _ok = _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
+                                     manifest=_fm, dry_run=getattr(args, "dryRun", False))
+        if _ok and getattr(args, "certify", False):
+            _trigger_certification(args, parser)
         return
 
     if not getattr(args, "package", None):

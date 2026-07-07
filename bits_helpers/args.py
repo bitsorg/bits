@@ -1144,6 +1144,19 @@ def doParseArgs():
                               help=("S3 store URL/bucket for --from-manifest. Accepts an https URL "
                                     "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>. "
                                     "Default: %(default)s"))
+  publish_parser.add_argument("--certify", dest="certify", action="store_true", default=False,
+                              help=("After a successful upload, trigger the manifests-repo CI pipeline to "
+                                    "re-certify + sign the common manifest over ALL uploaded builds. Uses "
+                                    "the GitLab API + your PAT (works even with SSH push)."))
+  publish_parser.add_argument("--manifests-remote", dest="manifestsRemote", metavar="GIT_URL", default=None,
+                              help=("Git remote of the bits-manifests project whose pipeline certifies, e.g. "
+                                    "ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git. Only the host + "
+                                    "path are used (to build the HTTPS API URL); required with --certify."))
+  publish_parser.add_argument("--certify-ref", dest="certifyRef", metavar="REF", default="main",
+                              help="Branch the certification pipeline runs on. Default: %(default)s.")
+  publish_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
+                              help=("GitLab PAT to trigger certification (default: $BITS_CERTIFIER_TOKEN / "
+                                    "$GITLAB_TOKEN / ~/.bits/gitlab-token)."))
 
   # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
   _prepub = publish_parser.add_argument_group(
@@ -1197,6 +1210,10 @@ def doParseArgs():
   certify_parser.add_argument("--changed-groups", dest="changedGroups", metavar="G1,G2", default=None,
                               help=("Restrict the approval re-check to these groups (the ones changed in "
                                     "this MR; e.g. from a git diff). Default: every group present."))
+  certify_parser.add_argument("--certifier", dest="certifier", metavar="USERNAME", default=None,
+                              help=("GitLab username of the already-authenticated initiator (default: "
+                                    "$GITLAB_USER_LOGIN, which GitLab sets for an API-triggered pipeline). "
+                                    "Must be an authorised admin; recorded as certified_by. No API call."))
   certify_parser.add_argument("--certifier-token", dest="certifierToken", metavar="PAT", default=None,
                               help=("A GitLab PAT that identifies the initiating admin (GET /user). When "
                                     "given (or $BITS_CERTIFIER_TOKEN), that authenticated identity must be "

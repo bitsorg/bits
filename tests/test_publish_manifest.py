@@ -155,6 +155,31 @@ class TestPublishFromManifest(unittest.TestCase):
                     manifest=self.man_path)
         self.assertEqual(self.writer.s3.uploads, [])   # no BOM on partial publish
 
+    def test_trigger_certification_creates_pipeline(self):
+        from types import SimpleNamespace
+        import bits_helpers.forge as forge
+        args = SimpleNamespace(
+            manifestsRemote="ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git",
+            gitlabToken="tok", certifyRef="main")
+        with patch.object(forge, "resolve_gitlab_token", return_value="tok"), \
+             patch.object(forge, "gitlab_create_pipeline",
+                          return_value={"id": 9, "web_url": "https://gl/p/9"}) as gp:
+            publish._trigger_certification(args, _Parser())
+        a, k = gp.call_args
+        self.assertEqual(a[0], "https://gitlab.cern.ch/api/v4")   # derived API URL
+        self.assertEqual(a[2], "buncic/bits-manifests")           # derived project
+        self.assertEqual(k.get("ref"), "main")
+
+    def test_trigger_certification_needs_token(self):
+        from types import SimpleNamespace
+        import bits_helpers.forge as forge
+        args = SimpleNamespace(
+            manifestsRemote="ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git",
+            gitlabToken=None, certifyRef="main")
+        with patch.object(forge, "resolve_gitlab_token", return_value=None):
+            with self.assertRaises(_Parser._Err):
+                publish._trigger_certification(args, _Parser())
+
     def test_run_leaf_is_unique_per_call(self):
         # Distinct hosts/runs must not collide: the leaf carries host + UTC stamp.
         leaves = {publish._run_leaf() for _ in range(3)}
