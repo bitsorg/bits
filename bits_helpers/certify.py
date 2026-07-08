@@ -114,6 +114,7 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
     so a per-group certification tags its batch for the consumer trust filter.
     """
     by_hash = {}
+    src_by_hash = {}          # hash -> build_id that first supplied it (for conflicts)
     sources = []
     for man in manifests:
         if not isinstance(man, dict):
@@ -138,10 +139,16 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
             prev = by_hash.get(h)
             if prev is None:
                 by_hash[h] = entry
+                src_by_hash[h] = bid
             elif _norm_sha(prev.get("tarball_sha256")) != _norm_sha(sha):
                 raise CertifyConflict(
-                    "hash %s has conflicting tarball_sha256: %s vs %s"
-                    % (h, prev.get("tarball_sha256"), sha))
+                    "package %s (hash %s) has conflicting tarball_sha256 between "
+                    "builds %r and %r: %s vs %s. The same package hash was built to "
+                    "different bytes (e.g. native vs --docker, or a non-reproducible "
+                    "build). Remove one of the two build manifests from manifests/ "
+                    "and re-certify."
+                    % (e.get("package", "?"), h, src_by_hash.get(h) or "?",
+                       bid or "?", prev.get("tarball_sha256"), sha))
     packages = [by_hash[h] for h in sorted(by_hash)]
     common = {
         "schema_version": SCHEMA_VERSION,
