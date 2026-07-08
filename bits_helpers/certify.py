@@ -113,8 +113,20 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
     *default_group* stamps a ``group`` on entries that don't already carry one,
     so a per-group certification tags its batch for the consumer trust filter.
     """
-    by_hash = {}
-    src_by_hash = {}          # hash -> build_id that first supplied it (for conflicts)
+    # The store is content-addressed *per architecture*: a package's tarball
+    # lives at TARS/<effective_architecture>/store/<hash>/... So the identity of
+    # a stored object is (effective_architecture, hash), NOT the hash alone. Two
+    # builds that share a hash but differ in effective_architecture are two
+    # distinct objects in two distinct trees and must NOT be treated as a
+    # conflict — that includes the common case where the package's hash does not
+    # depend on the architecture (e.g. a package taken partly from the host, or
+    # the same recipe/deps on two platforms). We therefore key dedup and conflict
+    # detection on (effective_architecture, hash). Within a single tree the
+    # mapping hash -> bytes must stay 1:1, so a genuine same-arch/same-hash but
+    # different-sha collision (including a noarch "shared" package packaged
+    # non-reproducibly on two platforms into the one shared tree) is still fatal.
+    by_key = {}
+    src_by_key = {}           # (arch, hash) -> build_id that first supplied it
     sources = []
     for man in manifests:
         if not isinstance(man, dict):
@@ -133,23 +145,28 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
             sha = e.get("tarball_sha256")
             if not h or not sha:
                 continue
+            arch = e.get("effective_architecture") or ""
+            key = (arch, h)
             entry = {k: e[k] for k in _PKG_FIELDS if k in e}
             if not entry.get("group") and man_group:
                 entry["group"] = man_group
-            prev = by_hash.get(h)
+            prev = by_key.get(key)
             if prev is None:
-                by_hash[h] = entry
-                src_by_hash[h] = bid
+                by_key[key] = entry
+                src_by_key[key] = bid
             elif _norm_sha(prev.get("tarball_sha256")) != _norm_sha(sha):
                 raise CertifyConflict(
-                    "package %s (hash %s) has conflicting tarball_sha256 between "
-                    "builds %r and %r: %s vs %s. The same package hash was built to "
-                    "different bytes (e.g. native vs --docker, or a non-reproducible "
-                    "build). Remove one of the two build manifests from manifests/ "
-                    "and re-certify."
-                    % (e.get("package", "?"), h, src_by_hash.get(h) or "?",
-                       bid or "?", prev.get("tarball_sha256"), sha))
-    packages = [by_hash[h] for h in sorted(by_hash)]
+                    "package %s (hash %s, architecture %r) has conflicting "
+                    "tarball_sha256 between builds %r and %r: %s vs %s. The same "
+                    "package hash was built to different bytes within one "
+                    "architecture tree — a non-reproducible build, or a differing "
+                    "host toolchain/system library on the two build nodes for this "
+                    "architecture. Remove one of the two build manifests from "
+                    "manifests/ and re-certify."
+                    % (e.get("package", "?"), h, arch or "shared",
+                       src_by_key.get(key) or "?", bid or "?",
+                       prev.get("tarball_sha256"), sha))
+    packages = [by_key[k] for k in sorted(by_key)]
     common = {
         "schema_version": SCHEMA_VERSION,
         "kind": COMMON_MANIFEST_KIND,

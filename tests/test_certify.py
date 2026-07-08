@@ -39,9 +39,30 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(common["sources"], ["b1", "b2"])
         self.assertEqual(common["kind"], certify.COMMON_MANIFEST_KIND)
 
-    def test_conflicting_sha_fails_closed(self):
-        m1 = _manifest("b1", [_pkg("A", "h1", "sha256:aa")])
-        m2 = _manifest("b2", [_pkg("A", "h1", "sha256:DIFFERENT")])
+    def test_conflicting_sha_same_arch_fails_closed(self):
+        # Same hash + same architecture => same store path => must be same bytes.
+        m1 = _manifest("b1", [_pkg("A", "h1", "sha256:aa", arch="slc7_x86-64")])
+        m2 = _manifest("b2", [_pkg("A", "h1", "sha256:DIFFERENT", arch="slc7_x86-64")])
+        with self.assertRaises(certify.CertifyConflict):
+            certify.merge_common_manifest([m1, m2])
+
+    def test_same_hash_different_arch_not_conflict(self):
+        # A hash that does not depend on the architecture (e.g. a package taken
+        # partly from the host) lands in two SEPARATE arch trees. Different bytes
+        # there are two distinct objects, not a collision — keep both entries.
+        m1 = _manifest("b1", [_pkg("A", "h1", "sha256:aa", arch="osx_arm64")])
+        m2 = _manifest("b2", [_pkg("A", "h1", "sha256:bb", arch="x86_64-el9")])
+        common = certify.merge_common_manifest([m1, m2])
+        self.assertEqual(len(common["packages"]), 2)
+        self.assertEqual(
+            sorted(p["effective_architecture"] for p in common["packages"]),
+            ["osx_arm64", "x86_64-el9"])
+
+    def test_shared_noarch_nonreproducible_still_conflicts(self):
+        # A noarch "shared" package built non-reproducibly on two platforms maps
+        # to the ONE shared tree — same (arch, hash), different bytes => fatal.
+        m1 = _manifest("b1", [_pkg("A", "h1", "sha256:aa", arch="shared")])
+        m2 = _manifest("b2", [_pkg("A", "h1", "sha256:bb", arch="shared")])
         with self.assertRaises(certify.CertifyConflict):
             certify.merge_common_manifest([m1, m2])
 
