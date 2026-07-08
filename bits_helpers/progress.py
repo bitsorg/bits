@@ -23,6 +23,7 @@ always runs and knows the final job result.
 import json
 import os
 import threading
+import urllib.error
 import urllib.request
 
 from bits_helpers.log import debug, warning
@@ -68,14 +69,25 @@ def _probe():
 
 
 def _do_post(headers, body):
-    """POST once. Return None on success, else the HTTP status code (or -1)."""
+    """POST once. Return (None, "") on success, else (status_code, response_body).
+
+    The response body carries GitLab's own reason for a 4xx (e.g. an invalid
+    state transition, a protected-ref rule, or a token restriction) — far more
+    useful than the bare status code, so we capture and surface it.
+    """
     req = urllib.request.Request(
         _state["url"], data=json.dumps(body).encode(), headers=headers, method="POST")
     try:
         urllib.request.urlopen(req, timeout=5).read()
-        return None
-    except Exception as exc:                        # never break a build over this
-        return getattr(exc, "code", None) or -1     # urllib.error.HTTPError -> status
+        return (None, "")
+    except urllib.error.HTTPError as exc:            # never break a build over this
+        try:
+            detail = exc.read().decode("utf-8", "replace").strip()[:400]
+        except Exception:
+            detail = ""
+        return (exc.code, detail)
+    except Exception as exc:
+        return (-1, str(exc))
 
 
 def _post(state, coverage, description):
@@ -91,26 +103,30 @@ def _post(state, coverage, description):
     if _state["ref"]:
         body["ref"] = _state["ref"]
 
-    code = _do_post(_state["headers"], body)
+    code, detail = _do_post(_state["headers"], body)
     if code is None:
         return                                       # posted
 
-    # Progress reporting is best-effort and must never spam a build log. On a
-    # permission failure, fall back to the CI job token once (harmless — some
-    # setups accept it), then give up quietly for the rest of the run.
+    # Progress reporting is best-effort. On a permission failure, fall back to the
+    # CI job token once (harmless — some setups accept it), then give up for the
+    # run — but surface GitLab's own reason ONCE so a real cause isn't hidden.
     if code in (401, 403):
         jt = os.environ.get("CI_JOB_TOKEN")
         used_status_token = "PRIVATE-TOKEN" in _state["headers"]
         if used_status_token and jt:
-            fallback = {"Content-Type": "application/json", "JOB-TOKEN": jt}
-            if _do_post(fallback, body) is None:
-                _state["headers"] = fallback         # keep using it for later ticks
-                return
-        _state["ready"] = False                      # stop trying this run (quiet)
-        debug("progress: commit-status POST forbidden (HTTP %s); build-progress "
-              "reporting disabled for this run", code)
+            c2, _d2 = _do_post({"Content-Type": "application/json", "JOB-TOKEN": jt}, body)
+            if c2 is None:
+                _state["headers"] = {"Content-Type": "application/json", "JOB-TOKEN": jt}
+                return                               # job token worked; keep using it
+        _state["ready"] = False                      # stop trying this run
+        if not _state.get("warned"):
+            _state["warned"] = True
+            warning("progress: commit-status POST to %s returned HTTP %s%s; "
+                    "build-progress reporting disabled for this run",
+                    _state["url"], code,
+                    (" — GitLab: %s" % detail) if detail else "")
     else:
-        debug("progress: commit-status post failed: HTTP %s", code)
+        debug("progress: commit-status post failed: HTTP %s %s", code, detail)
 
 
 def set_total(total):
