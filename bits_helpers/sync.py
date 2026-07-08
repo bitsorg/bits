@@ -1125,10 +1125,44 @@ class Boto3RemoteSync:
     if tar_exists and link_exists:
       debug("%s exists on S3 already, not uploading", tarball)
       return
-    dieOnError(tar_exists or link_exists,
-               "%s already exists on S3 but %s does not, aborting!" %
-               (tar_path if tar_exists else link_path,
-                link_path if tar_exists else tar_path))
+    # A one-sided state — the content object XOR its version-named link — is a
+    # partial upload or a half-cleaned store (store/<hash>/ objects deleted but
+    # the version-named links left behind, or the reverse). The content object
+    # is addressed by hash, so (re)uploading it is idempotent and safe, and the
+    # code below re-creates whichever side is missing. So repair automatically
+    # instead of aborting. Abort ONLY on a genuine conflict: a surviving link
+    # that points at a DIFFERENT build, which must not be silently remapped to
+    # these bytes.
+    if link_exists and not tar_exists:
+      try:
+        pointer = self.s3.get_object(Bucket=self.writeStore, Key=link_path) \
+                      ["Body"].read().decode("utf-8", "replace").strip()
+      except Exception:
+        pointer = ""
+      hash_seg = "store/%s/%s/" % (spec["hash"][:2], spec["hash"])
+      if hash_seg not in pointer:
+        # The link points at a DIFFERENT build (e.g. a leftover from before a
+        # recipe change). It is a genuine conflict ONLY if that other build's
+        # object is still present — re-pointing would then remap the version to
+        # different live bytes, so abort. If the old target is also gone (the
+        # usual half-cleaned / rebuild case), the link is simply stale: re-point
+        # it to the freshly built object. The link body is the store key from
+        # "<arch>/store/..." onward; rebuild the full key robustly from that.
+        idx = pointer.find(arch + "/store/")
+        target_key = "TARS/" + pointer[idx:] if idx >= 0 else ""
+        dieOnError(bool(target_key) and self._s3_key_exists(target_key),
+                   "%s already exists and points at a different, still-present "
+                   "build than %s (link target: %r) — refusing to remap this "
+                   "version to new bytes. Remove the stale link to re-point it."
+                   % (link_path, tar_path, pointer))
+        warning("Re-pointing stale link %s (its target %r no longer exists) to "
+                "the freshly built %s.", link_path, pointer, tar_path)
+      else:
+        warning("Repairing store: %s exists but its content object was missing "
+                "(half-cleaned store); re-uploading %s.", link_path, tar_path)
+    elif tar_exists and not link_exists:
+      warning("Repairing store: %s exists but its named link was missing; "
+              "re-creating %s.", tar_path, link_path)
 
     debug("Uploading tarball and symlinks for %s %s-%s (%s) to S3",
           spec["package"], spec["version"], spec["revision"], spec["hash"])
