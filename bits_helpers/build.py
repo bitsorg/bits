@@ -2960,14 +2960,19 @@ def doBuild(args, parser):
     # for freshly-built packages, fetched by fetch_symlinks for reused ones. With
     # the store keeping only hash-keyed tarballs (Phase 2d) it is reconstructed
     # locally instead, so the single local artefact the CVMFS publish step reads
-    # is present for BOTH built and reused packages. Makeflow mode has its own
-    # link-creation rules (see doFinalSync), so skip it there. Best-effort: never
-    # abort the build over a link (a genuine miss surfaces as a publish skip).
-    if not (getattr(args, "pipeline", False) and getattr(args, "makeflow", False)):
-      try:
-        create_version_link(spec, args.architecture, workDir)
-      except Exception as exc:
-        debug("Could not reconstruct version link for %s: %s", spec["package"], exc)
+    # is present for BOTH built and reused packages.
+    #
+    # Done for every package regardless of makeflow: makeflow's tar_template.sh
+    # only writes the link for FRESHLY-BUILT packages, so a makeflow *reused*
+    # package would otherwise get no local link now that the S3 version link is
+    # gone (upload is hash-only and fetch_symlinks finds nothing). Recreating it
+    # here is idempotent for the built case (same symlink, same target).
+    # Best-effort: never abort the build over a link (a genuine miss surfaces as a
+    # publish skip, exactly as a system-provided package does).
+    try:
+      create_version_link(spec, args.architecture, workDir)
+    except Exception as exc:
+      debug("Could not reconstruct version link for %s: %s", spec["package"], exc)
 
     # We do not use the override for devel packages, because we
     # want to avoid having to rebuild things when the /tmp gets cleaned.
