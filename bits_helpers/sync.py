@@ -227,6 +227,12 @@ class DualRemoteSync:
   def fetch_symlinks(self, spec):
     return self.reader.fetch_symlinks(spec)
 
+  def read_rev_markers(self, *args, **kwargs):
+    # Rev-index markers (ADR-0005) live on the read store; delegate to the reader
+    # when it supports them, else report none (best-effort supplement).
+    reader = getattr(self.reader, "read_rev_markers", None)
+    return reader(*args, **kwargs) if reader else {}
+
   def fetch_source(self, *args, **kwargs):
     return self.reader.fetch_source(*args, **kwargs)
 
@@ -1119,6 +1125,12 @@ class Boto3RemoteSync:
   def upload_symlinks_and_tarball(self, spec) -> None:
     if not self.writeStore:
       return
+
+    # Record this build's revision in the rev-index (ADR-0005). Done first and
+    # unconditionally (idempotent HEAD-skip) so the marker is written even when
+    # the content tarball already exists and the upload below short-circuits —
+    # the revision counter reads these markers once the version links are gone.
+    self.write_rev_marker(spec)
 
     arch = effective_arch(spec, self.architecture)
     dist_symlinks = {}

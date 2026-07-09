@@ -331,6 +331,20 @@ class Boto3TestCase(unittest.TestCase):
         b3sync.s3.upload_file.assert_not_called()
 
     @patch("os.listdir", new=lambda path: (
+        [] if path.endswith("-" + MISSING_SPEC["revision"]) else NotImplemented))
+    @patch("os.readlink", new=MagicMock(return_value="dummy path"))
+    @patch("os.path.islink", new=MagicMock(return_value=True))
+    @patch("bits_helpers.sync.Boto3RemoteSync.write_rev_marker")
+    def test_upload_writes_rev_marker(self, mock_marker) -> None:
+        """Every upload records the build's rev-index marker (ADR-0005 P2d)."""
+        b3sync = sync.Boto3RemoteSync(
+            remoteStore="b3://localhost", writeStore="b3://localhost",
+            architecture=ARCHITECTURE, workdir="/sw")
+        b3sync.s3 = self.mock_s3()
+        b3sync.upload_symlinks_and_tarball(MISSING_SPEC)
+        mock_marker.assert_called_once_with(MISSING_SPEC)
+
+    @patch("os.listdir", new=lambda path: (
         [] if path.endswith("-" + MISSING_SPEC["revision"]) else NotImplemented
     ))
     @patch("os.readlink", new=MagicMock(return_value="dummy path"))

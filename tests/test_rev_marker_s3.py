@@ -125,5 +125,24 @@ class RevMarkerS3TestCase(unittest.TestCase):
             self._syncer(s3).read_rev_markers("fftw", "3.3.10", ARCH), {})
 
 
+class DualDelegationTestCase(unittest.TestCase):
+    """DualRemoteSync routes rev-marker reads to its reader (ADR-0005 P2d)."""
+
+    def test_delegates_read_rev_markers_to_reader(self):
+        reader = MagicMock()
+        reader.read_rev_markers.return_value = {"2": "bb"}
+        dual = sync.DualRemoteSync(reader=reader, writer=MagicMock())
+        self.assertEqual(dual.read_rev_markers("fftw", "3.3.10", ARCH), {"2": "bb"})
+        reader.read_rev_markers.assert_called_once_with("fftw", "3.3.10", ARCH)
+
+    def test_empty_when_reader_lacks_method(self):
+        # A reader backend without markers (e.g. CVMFS/rsync) -> no markers.
+        class _Reader:
+            architecture = ARCH
+            workdir = "/sw"
+        dual = sync.DualRemoteSync(reader=_Reader(), writer=MagicMock())
+        self.assertEqual(dual.read_rev_markers("fftw", "3.3.10", ARCH), {})
+
+
 if __name__ == "__main__":
     unittest.main()
