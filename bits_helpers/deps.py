@@ -3,12 +3,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # Standard library
+import os
 from os import remove, path
 from tempfile import NamedTemporaryFile
 
 # Internal
 from bits_helpers.cmd import DockerRunner, execute, getstatusoutput
 from bits_helpers.log import debug, dieOnError, error, info
+from bits_helpers.repo_provider import (
+    fetch_repo_providers_iteratively, load_always_on_providers)
 from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults, resolve_variables
 
 def doDeps(args, parser):
@@ -28,10 +31,36 @@ def doDeps(args, parser):
     meta["variables"] = resolve_variables(meta.get("variables"), {}, args.architecture, args.defaults)
     return meta, body
   (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable, defaultsReader, debug)
- 
+
+  # Repository-provider discovery — mirror the build path (doBuild). Without it,
+  # packages provided by repository providers are not on BITS_PATH and resolution
+  # fails with "not found". In particular the walk is seeded with the active
+  # defaults' own requires, so a provider pulled in that way — e.g.
+  # ``defaults-release: requires: [lcg.bits]`` — is cloned before resolution,
+  # exactly as `bits build` does it. Same clone cache (<work_dir>/REPOS) as build.
+  _prov = dict(
+      config_dir        = args.configDir,
+      work_dir          = getattr(args, "workDir", None) or os.environ.get("BITS_WORK_DIR", "sw"),
+      reference_sources = getattr(args, "referenceSources", None),
+      fetch_repos       = getattr(args, "fetchRepos", True),
+      taps              = taps,
+      provider_policy   = getattr(args, "provider_policy", {}) or {},
+  )
+  # Always-on providers first (e.g. bits-providers, which itself carries the
+  # `lcg.bits` provider recipe): cloning them extends BITS_PATH so the iterative
+  # walk below can then see and clone the providers they declare.
+  always_on_dirs = load_always_on_providers(
+      bits_providers = getattr(args, "bits_providers", None), **_prov)
+  provider_dirs = fetch_repo_providers_iteratively(
+      packages = [args.package]
+                 + list(defaultsMeta.get("requires", []))
+                 + list(defaultsMeta.get("build_requires", [])),
+      **_prov)
+  provider_dirs.update(always_on_dirs)
+
   def performCheck(pkg, cmd):
     return getstatusoutput(cmd)
-    
+
   systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = [args.package],
                      specs                   = specs,
@@ -47,6 +76,7 @@ def doDeps(args, parser):
                      overrides               = overrides,
                      taps                    = taps,
                      log                     = debug,
+                     provider_dirs           = provider_dirs,
                      defaults_meta           = defaultsMeta)
   
   dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
