@@ -38,10 +38,14 @@ def doDeps(args, parser):
   # defaults' own requires, so a provider pulled in that way — e.g.
   # ``defaults-release: requires: [lcg.bits]`` — is cloned before resolution,
   # exactly as `bits build` does it. Same clone cache (<work_dir>/REPOS) as build.
+  _work_dir = getattr(args, "workDir", None) or os.environ.get("BITS_WORK_DIR", "sw")
   _prov = dict(
       config_dir        = args.configDir,
-      work_dir          = getattr(args, "workDir", None) or os.environ.get("BITS_WORK_DIR", "sw"),
-      reference_sources = getattr(args, "referenceSources", None),
+      work_dir          = _work_dir,
+      # updateReferenceRepo() does os.path.abspath() on this, so it must be a
+      # path, never None — mirror build's "%(workDir)s/MIRROR" default (the deps
+      # parser doesn't define --reference-sources).
+      reference_sources = getattr(args, "referenceSources", None) or os.path.join(_work_dir, "MIRROR"),
       fetch_repos       = getattr(args, "fetchRepos", True),
       taps              = taps,
       provider_policy   = getattr(args, "provider_policy", {}) or {},
