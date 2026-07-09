@@ -251,23 +251,54 @@ def trusted_index(manifest_path: str, sig_path=None, dirs=None, accept_groups=No
   those groups plus the always-trusted ``common`` base. A manifest whose
   ``expires`` has passed is rejected wholesale (fail-closed, offline anti-replay).
   """
-  kid = verify_manifest(manifest_path, sig_path, dirs)
+  kid, entries = _verified_entries(manifest_path, sig_path, dirs,
+                                   accept_groups, now)
   if not kid:
     return None, {}
+  index = {}
+  for e in entries:
+    h, sha = e.get("hash"), e.get("tarball_sha256")
+    if h and sha:
+      index[h] = sha
+  return kid, index
+
+
+def _verified_entries(manifest_path, sig_path, dirs, accept_groups, now):
+  """Verify a signed manifest and return ``(key_id, [accepted package entries])``.
+
+  Shared gate for :func:`trusted_index` and :func:`trusted_records`: the
+  signature must verify, the manifest must not be expired, and each returned
+  entry has passed the group-acceptance and per-key group-binding policy.
+  Returns ``(None, [])`` on any verification failure (fail-closed).
+  """
+  kid = verify_manifest(manifest_path, sig_path, dirs)
+  if not kid:
+    return None, []
   try:
     with open(manifest_path) as fh:
       data = json.load(fh)
   except Exception:
-    return None, {}
+    return None, []
   if is_expired(data, now):
-    return None, {}
+    return None, []
   # Per-key group binding: a signing key vouches only for the groups it is
   # authorised for (policy file opt-in; absent = no restriction).
   policy = load_key_policy(dirs)
-  index = {}
-  for e in data.get("packages", []):
-    h, sha, grp = e.get("hash"), e.get("tarball_sha256"), e.get("group")
-    if (h and sha and accepts_group(grp, accept_groups)
-        and key_authorized(kid, grp, policy)):
-      index[h] = sha
-  return kid, index
+  entries = [e for e in data.get("packages", [])
+             if accepts_group(e.get("group"), accept_groups)
+             and key_authorized(kid, e.get("group"), policy)]
+  return kid, entries
+
+
+def trusted_records(manifest_path, sig_path=None, dirs=None, accept_groups=None,
+                    now=None):
+  """Like :func:`trusted_index`, but return ``(key_id, [package entries])``.
+
+  Same verification gate, but the full accepted package entries are returned
+  (each carrying ``package/version/revision/effective_architecture/hash``) so
+  callers can rebuild the revision index (ADR-0005) rather than only the
+  ``{hash: tarball_sha256}`` reuse map. ``(None, [])`` on failure.
+  """
+  kid, entries = _verified_entries(manifest_path, sig_path, dirs,
+                                   accept_groups, now)
+  return (kid, entries) if kid else (None, [])

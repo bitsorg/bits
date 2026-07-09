@@ -163,6 +163,24 @@ def readHashFile(fn):
     return "0"
 
 
+def _localize_manifest(src, work_dir):
+  """Return a local filesystem path for a manifest *src*.
+
+  A local path is returned unchanged; a URL is downloaded (with its detached
+  ``.sig``) into ``MANIFESTS/trust`` and the local path returned. Idempotent
+  enough to be called from several loaders in one build (re-download overwrites).
+  """
+  if "://" not in src:
+    return src
+  from bits_helpers.download import downloadUrllib2
+  dest = os.path.join(work_dir, "MANIFESTS", "trust")
+  os.makedirs(dest, exist_ok=True)
+  name = os.path.basename(src.split("?")[0]) or "trust-manifest.json"
+  downloadUrllib2(src, dest, work_dir, dest_filename=name)
+  downloadUrllib2(src + ".sig", dest, work_dir, dest_filename=name + ".sig")
+  return os.path.join(dest, name)
+
+
 def _load_trusted_index(src, work_dir, accept_groups):
   """Verify one signed manifest (local path or URL) -> (key_id, {hash: sha256}).
 
@@ -171,17 +189,8 @@ def _load_trusted_index(src, work_dir, accept_groups):
   """
   from bits_helpers import trust
   try:
-    manifest = src
-    if "://" in src:
-      # Fetch the manifest and its detached signature next to it.
-      from bits_helpers.download import downloadUrllib2
-      dest = os.path.join(work_dir, "MANIFESTS", "trust")
-      os.makedirs(dest, exist_ok=True)
-      name = os.path.basename(src.split("?")[0]) or "trust-manifest.json"
-      downloadUrllib2(src, dest, work_dir, dest_filename=name)
-      downloadUrllib2(src + ".sig", dest, work_dir, dest_filename=name + ".sig")
-      manifest = os.path.join(dest, name)
-    return trust.trusted_index(manifest, accept_groups=accept_groups)
+    return trust.trusted_index(_localize_manifest(src, work_dir),
+                               accept_groups=accept_groups)
   except Exception as exc:
     warning("--require-signed-reuse: could not fetch/verify %s (%s); those "
             "entries will not be reused.", src, exc)
@@ -222,6 +231,76 @@ def trusted_reuse_index(args, work_dir):
           "" if accept_groups is None else " (groups: %s + common)" % ",".join(accept_groups))
   args._trustedReuseIndex = index
   return index
+
+
+def trusted_reuse_records(args, work_dir):
+  """Verified common-manifest package entries — the primary rev-index source.
+
+  ADR-0005: once the S3 store keeps only hash-keyed tarballs (no version links),
+  the revision counter derives its ``(version, revision, hash)`` history from the
+  signed common manifest instead of scanning ``TARS/<arch>/<pkg>/``. This returns
+  the accepted package entries of every configured --trust-manifest (same sources
+  and group policy as :func:`trusted_reuse_index`), each carrying
+  ``package/version/revision/effective_architecture/hash``. Memoised on *args*;
+  empty when signed reuse is off, in which case the counter falls back to the
+  rev-index markers (and, until Phase 2d, the local version links).
+  """
+  cached = getattr(args, "_trustedReuseRecords", None)
+  if cached is not None:
+    return cached
+  from bits_helpers import trust
+  raw = getattr(args, "trustManifest", None)
+  sources = [s.strip() for s in str(raw or "").split(",") if s.strip()]
+  raw_groups = getattr(args, "trustGroups", None)
+  accept_groups = ([g.strip() for g in raw_groups.split(",") if g.strip()]
+                   if raw_groups else None)
+  records = []
+  for src in sources:
+    try:
+      kid, entries = trust.trusted_records(
+        _localize_manifest(src, work_dir), accept_groups=accept_groups)
+      if kid:
+        records.extend(entries)
+    except Exception as exc:
+      debug("rev-index: could not load records from %s (%s)", src, exc)
+  args._trustedReuseRecords = records
+  return records
+
+
+def _revision_index_records(spec, spec_arch, args, work_dir, sync_helper):
+  """``{revision: hash}`` candidates for (pkg, version, arch), ADR-0005 P2c.
+
+  Union of the certified common-manifest records (primary) and the S3 rev-index
+  markers (supplement, for uncertified rebuilds). Best-effort: an empty map just
+  means the counter relies on whatever local version links are present.
+  """
+  from bits_helpers import rev_index
+  manifest_recs = rev_index.manifest_records(
+    trusted_reuse_records(args, work_dir),
+    spec["package"], spec["version"], spec_arch)
+  markers = {}
+  reader = getattr(sync_helper, "read_rev_markers", None)
+  if reader:
+    markers = reader(spec["package"], spec["version"], spec_arch)
+  return rev_index.merge_records(manifest_recs, markers)
+
+
+def _fold_revision_records(records, spec, candidate, busy_revisions, revision_prefix):
+  """Fold rev-index ``{revision: hash}`` records into the revision counter state.
+
+  Mirrors the version-link scan exactly (ADR-0005 P2c): a record whose hash
+  matches this build becomes a reuse candidate (via :func:`better_tarball`); any
+  other reserves its revision number in *busy_revisions*. Records are remote-only
+  — local revisions are never published, so they never appear here. Idempotent:
+  a record duplicating a still-present version link changes nothing. Returns the
+  updated ``(candidate, busy_revisions)``.
+  """
+  for rev, rev_hash in (records or {}).items():
+    if rev_hash in spec["remote_hashes"]:
+      candidate = better_tarball(spec, candidate, (rev, rev_hash, None))
+    elif rev.startswith(revision_prefix) and rev[len(revision_prefix):].isdigit():
+      busy_revisions.add(int(rev[len(revision_prefix):]))
+  return candidate, busy_revisions
 
 
 def derive_trust_manifest_srcs(store, prefix, arch, endpoint=None):
@@ -2810,6 +2889,19 @@ def doBuild(args, parser):
         # revisions, only store a local revision if there is no other candidate
         # for reuse yet.
         candidate = better_tarball(spec, candidate, (revision, rev_hash, symlink_path))
+
+      # ADR-0005 P2c: additionally fold in the revisions recorded by the
+      # certified common manifest and the S3 rev-index markers, so the same
+      # reuse/assign decision survives once the S3 version links are dropped
+      # (Phase 2d). Additive and idempotent — for a non-devel package this only
+      # *adds* reuse candidates and busy revisions and mirrors the scan above,
+      # so records duplicating a still-present version link change nothing.
+      # Skipped for devel packages, which are always built locally and never
+      # appear in the remote manifest/markers.
+      if not spec["is_devel_pkg"]:
+        candidate, busyRevisions = _fold_revision_records(
+          _revision_index_records(spec, spec_arch, args, workDir, syncHelper),
+          spec, candidate, busyRevisions, revisionPrefix)
 
       try:
         revision, rev_hash, symlink_path = candidate
