@@ -2953,6 +2953,22 @@ def doBuild(args, parser):
       else:
         spec["hash"] = spec["remote_revision_hash"]
 
+    # ADR-0005: rebuild this package's local version link from the graph now that
+    # its revision and hash are final. The version link
+    # (TARS/<eff>/<pkg>/<pkg>-<verrev>.<eff>.tar.gz -> the content-addressed
+    # store) used to come from the S3 version-link object — written by the upload
+    # for freshly-built packages, fetched by fetch_symlinks for reused ones. With
+    # the store keeping only hash-keyed tarballs (Phase 2d) it is reconstructed
+    # locally instead, so the single local artefact the CVMFS publish step reads
+    # is present for BOTH built and reused packages. Makeflow mode has its own
+    # link-creation rules (see doFinalSync), so skip it there. Best-effort: never
+    # abort the build over a link (a genuine miss surfaces as a publish skip).
+    if not (getattr(args, "pipeline", False) and getattr(args, "makeflow", False)):
+      try:
+        create_version_link(spec, args.architecture, workDir)
+      except Exception as exc:
+        debug("Could not reconstruct version link for %s: %s", spec["package"], exc)
+
     # We do not use the override for devel packages, because we
     # want to avoid having to rebuild things when the /tmp gets cleaned.
     if spec["is_devel_pkg"]:
