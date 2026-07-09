@@ -18,7 +18,7 @@ from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksu
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.sandbox import wrap_build_command
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
-from bits_helpers.utilities import resolve_store_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id, ver_rev
+from bits_helpers.utilities import resolve_store_path, resolve_links_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id, ver_rev
 from bits_helpers.utilities import parseDefaults, readDefaults, resolve_variables
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
@@ -317,28 +317,82 @@ def update_git_repos(args, specs, buildOrder):
 
 # Creates a directory in the store which contains symlinks to the package
 # and its direct / indirect dependencies
-def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
-  # At the point we call this function, spec has a single, definitive hash.
-  # Use the caller's real architecture for the dist-link directory: dist links
-  # are per-build-platform even when the package itself is shared.
-  #
-  # ver_rev() is used here (and for each dependency below) so that packages
-  # with force_revision set in the defaults profile produce dist-tree directory
-  # names and tarball symlink targets that match the actual install paths.
+# The dependency-closure field that drives each dist* tree (graph -> symlinks).
+#   dist         -> full build+runtime closure
+#   dist-direct  -> direct requires only
+#   dist-runtime -> full runtime closure
+DIST_LINK_TYPES = (
+    ("dist",         "full_requires"),
+    ("dist-direct",  "requires"),
+    ("dist-runtime", "full_runtime_requires"),
+)
+
+
+def _dist_links(spec, specs, arch, work_dir, repo_type, requires_key):
+  """Rebuild one dist* tree for *spec* purely from the resolved *specs* graph.
+
+  Writes ``TARS/<arch>/<repo_type>/<pkg>/<pkg>-<verrev>/`` with one symlink per
+  (the package itself + its dependencies named in *requires_key*), each pointing
+  at that dependency's content-addressed store tarball. Reads only the graph — no
+  S3, no filenames — so it is the pure core of ``createDistLinks``.
+
+  dist links are per-build-platform even when a package is ``shared``, so the
+  tree arch is *arch* while each symlink target uses the dependency's own
+  ``effective_arch``.  ``ver_rev()`` honours per-package ``force_revision``.
+  """
   target_dir = "{work_dir}/TARS/{arch}/{repo}/{package}/{package}-{ver_rev}" \
-    .format(work_dir=args.workDir, arch=args.architecture, repo=repoType,
+    .format(work_dir=work_dir, arch=arch, repo=repo_type,
             ver_rev=ver_rev(spec), **spec)
   shutil.rmtree(target_dir.encode("utf-8"), ignore_errors=True)
   makedirs(target_dir, exist_ok=True)
-  for pkg in [spec["package"]] + list(spec[requiresType]):
+  for pkg in [spec["package"]] + list(spec[requires_key]):
     dep_spec = specs[pkg]
-    dep_arch = effective_arch(dep_spec, args.architecture)
-    # ver_rev(dep_spec) accounts for each dependency's own force_revision
-    # setting, which may differ from the top-level package's setting.
+    dep_arch = effective_arch(dep_spec, arch)
     dep_tarball = "../../../../../TARS/{arch}/store/{short_hash}/{hash}/{package}-{ver_rev}.{arch}.tar.gz" \
       .format(arch=dep_arch, short_hash=dep_spec["hash"][:2],
               ver_rev=ver_rev(dep_spec), **dep_spec)
     symlink(dep_tarball, target_dir)
+
+
+def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
+  # At the point we call this function, spec has a single, definitive hash.
+  # Thin wrapper over the pure graph->symlink core (kept for the existing call
+  # sites' signature; syncHelper is unused — dist links come from the graph).
+  _dist_links(spec, specs, args.architecture, args.workDir, repoType, requiresType)
+
+
+def create_version_link(spec, arch, work_dir):
+  """Rebuild the version link from the graph (no S3 fetch).
+
+  ``TARS/<eff>/<pkg>/<pkg>-<verrev>.<eff>.tar.gz`` -> the content-addressed store
+  tarball, where ``eff = effective_arch(spec, arch)`` (``shared`` for noarch).
+  Produces the exact link string the build/reuse paths write today
+  (``../../<eff>/store/<h2>/<hash>/<file>``), so it is a drop-in for what
+  ``fetch_symlinks`` currently downloads from S3.
+  """
+  eff = effective_arch(spec, arch)
+  links_dir = os.path.join(work_dir, resolve_links_path(eff, spec["package"]))
+  makedirs(links_dir, exist_ok=True)
+  tarball = "{package}-{ver_rev}.{arch}.tar.gz".format(
+      package=spec["package"], ver_rev=ver_rev(spec), arch=eff)
+  target = "../../{arch}/store/{short_hash}/{hash}/{tarball}".format(
+      arch=eff, short_hash=spec["hash"][:2], hash=spec["hash"], tarball=tarball)
+  symlink(target, os.path.join(links_dir, tarball))
+
+
+def reconstruct_local_layout(spec, specs, arch, work_dir):
+  """Rebuild a package's local version + dist*/closure symlinks from the graph.
+
+  Foundation for ADR-0005: the S3 store keeps only the content-addressed
+  tarballs, and this rebuilds the version/dist symlink layout on the node from
+  the resolved dependency graph instead of fetching it from S3. Pure graph ->
+  symlinks — no S3 access, and it does NOT change the upload/fetch paths yet
+  (Phase 1). It reproduces what ``create_version_link`` + ``createDistLinks``
+  (hence the build/reuse paths) produce today.
+  """
+  create_version_link(spec, arch, work_dir)
+  for repo_type, requires_key in DIST_LINK_TYPES:
+    _dist_links(spec, specs, arch, work_dir, repo_type, requires_key)
 
 def storeHook(package, specs, defaults) -> bool:
     spec = specs.get(package)
