@@ -107,22 +107,25 @@ def _post(state, coverage, description):
     if code is None:
         return                                       # posted
 
-    # Progress reporting is best-effort. On a permission failure, fall back to the
-    # CI job token once (harmless — some setups accept it), then give up for the
-    # run — but surface GitLab's own reason ONCE so a real cause isn't hidden.
+    # Progress reporting is best-effort. On a permission failure, DISABLE it for
+    # the run — do NOT retry with the CI job token.
+    #
+    # GitLab updates an existing commit status only when it matches on
+    # (name, USER, sha); otherwise it creates a NEW status. The terminal state is
+    # posted by the CI after_script as the BITS_STATUS_TOKEN user. If the running
+    # status here were posted as a *different* user (the job token), that terminal
+    # POST would not match it — GitLab would add a second, terminal status and the
+    # running one would never close, leaving the pipeline stuck "running" (and the
+    # job, in GitLab and the console). So we only ever post as the
+    # BITS_STATUS_TOKEN user, or not at all. Surface GitLab's reason once.
     if code in (401, 403):
-        jt = os.environ.get("CI_JOB_TOKEN")
-        used_status_token = "PRIVATE-TOKEN" in _state["headers"]
-        if used_status_token and jt:
-            c2, _d2 = _do_post({"Content-Type": "application/json", "JOB-TOKEN": jt}, body)
-            if c2 is None:
-                _state["headers"] = {"Content-Type": "application/json", "JOB-TOKEN": jt}
-                return                               # job token worked; keep using it
         _state["ready"] = False                      # stop trying this run
         if not _state.get("warned"):
             _state["warned"] = True
             warning("progress: commit-status POST to %s returned HTTP %s%s; "
-                    "build-progress reporting disabled for this run",
+                    "build-progress reporting disabled for this run (not falling "
+                    "back to the job token: that posts as a different user and "
+                    "would leave the pipeline stuck 'running')",
                     _state["url"], code,
                     (" — GitLab: %s" % detail) if detail else "")
     else:
