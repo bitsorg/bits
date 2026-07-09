@@ -117,21 +117,34 @@ BEFORE the upload stops writing version links.
 
 ### Local reconstruction (build node)
 
-- After fetch/build, bits materialises the local `dist*` symlinks and version
-  names from the in-memory dependency graph (it just resolved it) — no S3 read.
+- After the revision counter finalises a package's revision+hash, bits
+  materialises the local version link from the graph (`create_version_link`,
+  wired in `build.py` for every package on the non-makeflow path) and the
+  `dist*` closure (`createDistLinks` in `doFinalSync`) — no S3 read. This makes
+  local reconstruction the single source of the version link that used to come
+  from the S3 version-link object (upload for built packages, `fetch_symlinks`
+  for reused ones).
 
-### CVMFS publish (`bits-console/.gitlab/cvmfs-*-publish.yml`)
+### CVMFS publish (`bits-console/.gitlab/cvmfs-*-publish.yml`) — UNCHANGED
 
-- The publish loop stops walking `TARS/<arch>/<pkg>/…` and the dist symlinks.
-  Instead it reads the build manifest and, for each package, fetches
-  `store/<arch>/<h2>/<hash>.tar.gz` (hash from the manifest).
+- **Finding (during P2d):** the publish loop does not read S3. It runs in the
+  same job as the build and reads the **local** per-package tarball
+  `BITS_WORK_DIR/TARS/<arch>/<pkg>/<pkg>-<verrev>.<arch>.tar.gz` (a symlink into
+  the local content store), driven by the build manifest it already parses.
+- Because local reconstruction (above) recreates that local version link for
+  BOTH built and reused packages, the publish YAML/shell needs **no change**.
+  A missing local tarball is already handled (`[[ -f ]]` → SKIP), so a dangling
+  link degrades to a skip, not a crash. This is why the original "rewrite the
+  publish loop to fetch `store/<hash>` by hash" is unnecessary — keeping local
+  reconstruction is smaller and lower-risk and still removes the S3 pointer
+  objects (the actual bug source).
 - **Relocation is mandatory and must be preserved.** Store tarballs are built
   relocatable — their contents embed a placeholder/build prefix and an
   `@@PKGREVISION@@` marker — so a fetched tarball CANNOT be posted to CVMFS as-is.
-  The step is unchanged from today's template mode and must survive the rewrite:
-  `untar → run relocate-me.sh with INSTALL_BASE = the final CVMFS path → re-tar →
-  POST to prepub` (plus the module-file second job). Skipping relocation would
-  publish binaries with wrong embedded paths.
+  The step is unchanged (today's template mode): `untar → run relocate-me.sh with
+  INSTALL_BASE = the final CVMFS path → re-tar → POST to prepub` (plus the
+  module-file second job). Because publish is left untouched (above), this simply
+  keeps working. Skipping relocation would publish binaries with wrong paths.
 - `INSTALL_BASE` and the CVMFS target path (prefix / version-revision /
   install-dir / family) come from the **manifest**, not from the tarball name or
   the old dist symlinks, so nothing is lost by dropping the pointer objects.
@@ -151,11 +164,19 @@ BEFORE the upload stops writing version links.
   become unnecessary; the code they touched is deleted, not maintained).
 - Simpler mental model, simpler GC, simpler cleanup, no per-slot upload locks for
   the store side.
-- Cost: a **rewrite of the CVMFS publish loop** (currently reads links/dist) and
-  the local-reconstruction step; plus a store **migration / flag day**.
+- Cost: wiring the local-reconstruction step (`create_version_link`) so both
+  built and reused packages have their local version link; the CVMFS publish loop
+  is **not** rewritten (it reads local files — see above). Plus a store
+  **migration / flag day** for existing pointer objects.
 - Loses in-bucket browsability by package/version and the in-bucket dependency
   closure. Both are recoverable from manifests; confirm no external consumer
   relies on the S3-side closure (see Open questions).
+- Scope actually implemented (P2a–P2d): the content object KEEPS its current
+  path/name `store/<h2>/<hash>/<pkg>-<verrev>.<arch>.tar.gz` — only the pointer
+  objects (version links + dist symlinks) are dropped. The `<hash>.tar.gz` rename
+  and the single-`store/<arch>/` root are a separate, optional later change (they
+  touch `resolve_store_path`, the certify probe, and `manageStore`); the
+  bug-source removal does not depend on them.
 
 ## Implementation order (phased, each independently shippable + tested)
 
