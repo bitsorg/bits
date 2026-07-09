@@ -30,7 +30,7 @@ store bug we have hit:
 - one-sided state: version link exists but the content object was deleted
   (`sync.py` self-heal, commit `b00477e`);
 - partial dist sets aborting as "Conflicts detected" (commit `8de7ebb`);
-- half-cleaned stores, `manageStore --broken-links`, per-slot locks, orphan GC.
+- half-cleaned stores, `bitsStore --broken-links`, per-slot locks, orphan GC.
 
 These are all *pointer-consistency* problems. Content-addressed objects have none
 of them: an object either exists at its hash or it does not.
@@ -54,7 +54,7 @@ MANIFESTS/<...>                                # unchanged (BOMs + signed common
   ADR context / certify per-arch fix `484…`), so arch must stay a path component
   to keep the two arch trees separate. `store/<arch>/<h2>/<hash>.tar.gz`.
 - Keep the `<h2>` two-hex-char shard under the arch: a single flat `<arch>/`
-  prefix with tens of thousands of objects is slow to list, and GC / `manageStore`
+  prefix with tens of thousands of objects is slow to list, and GC / `bitsStore`
   list often.
 - Filename is `<hash>.tar.gz` (drop the `<pkg>-<verrev>.<arch>` decoration). bits
   keys on hash + spec, not the filename — **to verify**: nothing parses pkg/verrev
@@ -151,12 +151,18 @@ BEFORE the upload stops writing version links.
   (Confirm the fetched object still contains `relocate-me.sh`; it is part of the
   build output captured in the tarball, so hash-only storage keeps it.)
 
-### GC + manageStore
+### GC + bitsStore  (renamed from `manageStore`; invoked as `bits store …`)
 
-- GC becomes: **keep every `<hash>.tar.gz` referenced by a signed/build manifest,
-  delete the rest.** No reachability through link/dist objects.
-- `manageStore` loses `--broken-links` / orphan-link concepts; `ls`/`rm`/`verify`
-  operate on hash objects vs manifest references only.
+- GC (`gc.py`) already **is** hash-vs-manifest: it only ever deletes keys under
+  `TARS/<arch>/store/<h2>/<hash>/…` sourced by hash from the *verified* signed
+  manifest (`safe_store_key`, `_STORE_KEY_RE`). Dropping the pointer objects
+  needs no GC change.
+- `bitsStore`'s content-object operations (`ls`/`rm`/`verify`/`--orphans`) are
+  unchanged — they already work against the content objects vs the manifests.
+- The `--links` / `--broken-links` selectors are **kept**, but now only match the
+  LEGACY pointer objects left by pre-ADR-0005 builds. They are the one-time
+  migration tool: `bits store rm --links` (and `--broken-links`) purge the stale
+  version/dist objects from an existing store. New builds never create them.
 
 ## Consequences
 
@@ -175,7 +181,7 @@ BEFORE the upload stops writing version links.
   path/name `store/<h2>/<hash>/<pkg>-<verrev>.<arch>.tar.gz` — only the pointer
   objects (version links + dist symlinks) are dropped. The `<hash>.tar.gz` rename
   and the single-`store/<arch>/` root are a separate, optional later change (they
-  touch `resolve_store_path`, the certify probe, and `manageStore`); the
+  touch `resolve_store_path`, the certify probe, and `bitsStore`); the
   bug-source removal does not depend on them.
 
 ## Implementation order (phased, each independently shippable + tested)
@@ -196,15 +202,17 @@ BEFORE the upload stops writing version links.
    **keeping the relocate-me.sh step** (untar → relocate to the final CVMFS
    INSTALL_BASE → re-tar → POST). Test against a real manifest; verify the
    published tree has correct embedded paths (no build-prefix leakage).
-4. **GC + manageStore**: `manageStore` is the **only external tool that reads the
-   store** (confirmed). Adapt it to the new layout: `ls`/`rm`/`verify` operate on
-   `store/<arch>/<h2>/<hash>.tar.gz` vs manifest references; drop `--orphans` link
-   logic, `--broken-links`, and the link/dist selectors entirely. GC reachability
-   becomes hash-vs-manifest.
-5. **Migration**: new builds write the new layout; a one-time `manageStore migrate`
-   (or just rebuild, since the store is being rebuilt anyway) drops the old
-   link/dist trees. Old hash-keyed tarballs under `store/<h2>/<hash>/<name>` can be
-   left, ignored, or copied to `store/<h2>/<hash>.tar.gz`.
+4. **GC + bitsStore** — *done (rename + no-op adaptation)*: the tool moved into the
+   bits repo as `bitsStore` and is invoked as `bits store …`. GC (`gc.py`) was
+   already hash-vs-manifest, and `bitsStore`'s content-object operations
+   (`ls`/`rm`/`verify`/`--orphans`) already operate on `store/…/<hash>/…` vs the
+   manifests, so no logic change was needed. The `--links`/`--broken-links`
+   selectors are retained as the migration tool (see Migration).
+5. **Migration**: new builds write hash-only; the old link/dist objects in an
+   existing store are simply no longer created. Purge the stale ones with
+   `bits store rm --links` / `bits store rm --broken-links` (or just rebuild the
+   store). There is no `migrate` subcommand — the content objects keep their path,
+   so nothing needs moving; only the pointer objects are swept.
 
 ## Open questions (resolve before Phase 2)
 
@@ -216,7 +224,7 @@ BEFORE the upload stops writing version links.
    Nothing parses pkg/verrev out of a filename. Consequence: renaming the stored
    object to `<hash>.tar.gz` loses no information — only those constructors (and
    `resolve_store_path`) change to emit `store/<arch>/<h2>/<hash>.tar.gz`.
-2. **External closure consumers** — *resolved*: `manageStore` is the only external
+2. **External closure consumers** — *resolved*: `bitsStore` is the only external
    tool that reads the store; it is adapted in Phase 4. No other tool (and not the
    CVMFS-graft path) reads the S3 dist closure directly, so nothing else needs a
    reconstruct-from-manifest change.
