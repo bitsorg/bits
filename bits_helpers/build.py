@@ -2910,9 +2910,15 @@ def doBuild(args, parser):
       # - devel packages are always built locally and never appear in the remote
       #   manifest/markers.
       if candidate is None and not spec["is_devel_pkg"]:
-        candidate, busyRevisions = _fold_revision_records(
-          _revision_index_records(spec, spec_arch, args, workDir, syncHelper),
-          spec, candidate, busyRevisions, revisionPrefix)
+        try:
+          candidate, busyRevisions = _fold_revision_records(
+            _revision_index_records(spec, spec_arch, args, workDir, syncHelper),
+            spec, candidate, busyRevisions, revisionPrefix)
+        except Exception as exc:
+          # The rev-index is a best-effort supplement; never let a manifest/marker
+          # read (network, S3, parse) abort or misdirect a build. Fall back to the
+          # local scan's result.
+          debug("rev-index fold failed for %s: %s", spec["package"], exc)
 
       try:
         revision, rev_hash, symlink_path = candidate
