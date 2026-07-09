@@ -1,0 +1,667 @@
+#!/usr/bin/env bash
+# bitsStore — inspect, verify and clean up the bits S3 store.
+# Invoke as `bits store …` (passthrough) or directly as `bitsStore …`.
+#
+#   bits store ls     [selection]        present the selection (default verb)
+#   bits store verify [--arch A] [--deep] [--orphans]
+#   bits store rm     [selection] [-n]   delete the objects in the selection
+#
+# Selection (shared by ls and rm):
+#   Manifest-aware (default): reads the store's manifests and lets you narrow by
+#     --arch --group --package --version --certified-by --build --expired
+#   Views / expansion:
+#     --objects          resolve the selection to raw store objects (tarballs)
+#     --links            with --objects, also include the named/dist symlinks
+#     --orphans          store tarballs NOT referenced by any manifest
+#     --broken-links     named/dist links whose backing store object is missing
+#                          (half-cleaned store); `rm --broken-links` clears them
+#                          so bits will re-upload instead of aborting the upload
+#     --raw PATTERN...   select raw store keys by prefix or glob (bypass manifests)
+#     --older-than DAYS  keep only objects older than DAYS (raw/orphans/objects)
+#
+# NOTE (ADR-0005, hash-only store): new builds write ONLY the content-addressed
+# tarball under TARS/<arch>/store/<h2>/<hash>/… — no version-link or dist-symlink
+# objects. So `ls`/`rm`/`verify`/`--orphans` operate on the content objects vs
+# the signed manifests (the primary model). The `--links` and `--broken-links`
+# selectors now only match LEGACY pointer objects left by pre-ADR-0005 builds and
+# are retained for one-time migration cleanup (`bits store rm --links …`).
+#
+# Credentials: ~/.bits/s3keys (override $BITS_AWS_KEYS_FILE).
+# Store:       CERN S3 by default  (override $BITS_S3_STORE).
+set -euo pipefail
+
+PROG=$(basename "$0")
+STORE="${BITS_S3_STORE:-https://s3.cern.ch/lcgapp-bits-testing}"
+S3KEYS="${BITS_AWS_KEYS_FILE:-$HOME/.bits/s3keys}"
+
+# bitsStore lives next to the bits_helpers package (bits/), so it imports the
+# helpers from its own directory — no dependency on `bits` being on PATH.
+SELFDIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Load creds if present; a missing file is not fatal here (--help needs no S3).
+# The Python side checks for credentials before it actually touches S3.
+if [ -f "$S3KEYS" ]; then
+  set +u                     # a creds file may reference vars we don't set
+  # shellcheck disable=SC1090
+  . "$S3KEYS"
+  set -u
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+  [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN || true
+fi
+
+BITSSTORE_STORE="$STORE" \
+  PYTHONPATH="${SELFDIR}${PYTHONPATH:+:$PYTHONPATH}" \
+  exec python3 - "$@" <<'PY'
+import argparse, datetime, fnmatch, hashlib, json, os, sys, tempfile
+
+from bits_helpers.publish import _normalize_s3_store
+from bits_helpers.sync import remote_from_url
+from bits_helpers.utilities import resolve_store_path, resolve_links_path
+try:
+    from bits_helpers import trust
+except Exception:
+    trust = None
+
+STORE = os.environ["BITSSTORE_STORE"]
+PROG = "bitsStore"
+NOW = datetime.datetime.now(datetime.timezone.utc)
+
+
+# ── S3 helpers ────────────────────────────────────────────────────────────────
+def make_s3():
+    su = _normalize_s3_store(STORE)
+    w = remote_from_url(su, su, "x86_64", "sw")     # arch only builds the client
+    s3 = getattr(w, "s3", None)
+    if s3 is None:
+        sys.exit(f"{PROG}: {STORE!r} is not an S3 endpoint. Set $BITS_S3_STORE to an "
+                 "https://s3.../<bucket> or b3://<bucket> URL.")
+    return s3, (getattr(w, "remoteStore", None) or getattr(w, "writeStore", None))
+
+
+def list_objs(s3, bucket, prefix=""):
+    """Yield (key, size, last_modified) under prefix."""
+    for pg in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        for o in pg.get("Contents", []):
+            yield o["Key"], o.get("Size", 0), o.get("LastModified")
+
+
+def get_bytes(s3, bucket, key):
+    return s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+
+
+def human(n):
+    if n is None:
+        return ""
+    n = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024 or unit == "TiB":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024.0
+
+
+def csv(vals):
+    out = []
+    for v in vals or []:
+        out.extend(x.strip() for x in str(v).split(",") if x.strip())
+    return out
+
+
+def norm_sha(v):
+    s = str(v or "").strip().lower()
+    return s.split(":", 1)[1] if ":" in s else s
+
+
+def parse_iso(s):
+    if not s or s == "-":
+        return None
+    try:
+        return datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+# ── manifest model ────────────────────────────────────────────────────────────
+class Store:
+    def __init__(self, s3, bucket):
+        self.s3, self.bucket = s3, bucket
+        self.signed = []
+        self.boms = []
+        self._loaded = False
+
+    def load(self):
+        if self._loaded:
+            return
+        self._loaded = True
+        for key, _size, _lm in list_objs(self.s3, self.bucket, "MANIFESTS/"):
+            if not key.endswith(".json") or key.endswith(".sig"):
+                continue
+            try:
+                doc = json.loads(get_bytes(self.s3, self.bucket, key))
+            except Exception as exc:
+                print(f"{PROG}: warning: cannot read {key} ({exc})", file=sys.stderr)
+                continue
+            if not isinstance(doc, dict):
+                continue
+            pkgs = [p for p in (doc.get("packages") or []) if isinstance(p, dict)]
+            if doc.get("kind") == "common-manifest":
+                verified, key_id = self._verify(key)
+                exp = doc.get("expires")
+                exp_dt = parse_iso(exp)
+                self.signed.append({
+                    "key": key, "arch": doc.get("architecture") or arch_of(pkgs),
+                    "key_id": key_id, "verified": verified,
+                    "certified_by": ", ".join(doc.get("certified_by") or []) or "-",
+                    "expires": exp or "-",
+                    "expired": bool(exp_dt and exp_dt < NOW),
+                    "packages": pkgs,
+                })
+            else:
+                self.boms.append({"key": key,
+                                  "build_id": doc.get("build_id") or basename(key),
+                                  "packages": pkgs})
+
+    def _verify(self, manifest_key):
+        if trust is None:
+            return (None, "?")
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                mp = os.path.join(d, "m.json")
+                with open(mp, "wb") as fh:
+                    fh.write(get_bytes(self.s3, self.bucket, manifest_key))
+                try:
+                    with open(mp + ".sig", "wb") as fh:
+                        fh.write(get_bytes(self.s3, self.bucket, manifest_key + ".sig"))
+                except Exception:
+                    return (False, "unsigned")
+                kid = trust.verify_manifest(mp, mp + ".sig")
+                return (bool(kid), kid or "untrusted")
+        except Exception:
+            return (None, "?")
+
+    def manifests(self, f):
+        """Manifests to consider, honouring --only-signed/--only-boms."""
+        self.load()
+        out = []
+        if not f.only_boms:
+            out += self.signed
+        if not f.only_signed:
+            out += self.boms
+        return out
+
+    def referenced_keys(self, verified_only=False):
+        self.load()
+        out = set()
+        pool = self.signed if verified_only else self.signed + self.boms
+        for m in pool:
+            if verified_only and not m.get("verified"):
+                continue
+            for p in m["packages"]:
+                k = pkg_key(p)
+                if k:
+                    out.add(k)
+        return out
+
+
+def basename(key):
+    return key.rsplit("/", 1)[-1]
+
+
+def arch_of(pkgs):
+    for p in pkgs:
+        if p.get("effective_architecture"):
+            return p["effective_architecture"]
+    return "?"
+
+
+def pkg_key(pkg):
+    arch, h, tar = (pkg.get("effective_architecture"), pkg.get("hash"), pkg.get("tarball"))
+    if not (arch and h and tar):
+        return None
+    return resolve_store_path(arch, h) + "/" + tar
+
+
+def match_pkg(pkg, f):
+    if f.arch and pkg.get("effective_architecture") not in f.arch:
+        return False
+    if f.group and (pkg.get("group") or "") not in f.group:
+        return False
+    if f.package and pkg.get("package") not in f.package:
+        return False
+    if f.version and pkg.get("version") not in f.version:
+        return False
+    return True
+
+
+def manifest_matches(m, f):
+    if f.build and f.build not in (m.get("build_id") or m.get("key", "")):
+        return False
+    if f.certified_by and f.certified_by not in m.get("certified_by", ""):
+        return False
+    if f.expired and not m.get("expired"):     # only meaningful for signed manifests
+        return False
+    return True
+
+
+# ── selection ────────────────────────────────────────────────────────────────
+def select_objects(store, s3, bucket, f):
+    keys = {}
+    linkspecs = []
+    for m in store.manifests(f):
+        if not manifest_matches(m, f):
+            continue
+        for p in m["packages"]:
+            if not match_pkg(p, f):
+                continue
+            k = pkg_key(p)
+            if k:
+                keys[k] = None
+                linkspecs.append((p.get("effective_architecture"), p.get("package"),
+                                  p.get("version"), p.get("revision")))
+    if f.links:
+        add_link_objects(s3, bucket, keys, linkspecs)
+    apply_age(s3, bucket, keys, f)
+    return keys
+
+
+def add_link_objects(s3, bucket, keys, linkspecs):
+    """Include named/dist symlink objects for each selected package version."""
+    seen_dirs = {}
+    for arch, package, version, revision in linkspecs:
+        if not (arch and package):
+            continue
+        d = resolve_links_path(arch, package) + "/"
+        if d not in seen_dirs:
+            seen_dirs[d] = list(list_objs(s3, bucket, d))
+        # Match a symlink for THIS version: "<version>-<revision>" (or the
+        # version alone) to avoid pulling in sibling versions of the package.
+        tag = f"{version}-{revision}" if (version and revision) else (version or "")
+        for key, size, _lm in seen_dirs[d]:
+            if tag and tag in key:
+                keys.setdefault(key, size)
+
+
+def select_orphans(store, s3, bucket, f):
+    referenced = store.referenced_keys()
+    orphans = {}
+    prefixes = ["TARS/%s/store/" % a for a in f.arch] if f.arch else ["TARS/"]
+    for prefix in prefixes:
+        for key, size, lm in list_objs(s3, bucket, prefix):
+            if "/store/" not in key or not key.endswith(".tar.gz"):
+                continue
+            if key not in referenced and age_ok(lm, f):
+                orphans[key] = size
+    return orphans
+
+
+def select_broken_links(store, s3, bucket, f):
+    """Named/dist link objects whose backing content object is gone.
+
+    A link (``TARS/<arch>/<pkg>/<file>.tar.gz`` — i.e. NOT under ``/store/``) is
+    a small S3 object whose body points at ``TARS/<arch>/store/<h2>/<hash>/…``.
+    When the target content object has been removed (a half-cleaned store), the
+    link dangles and bits' uploader refuses to re-upload the package. This finds
+    those dangling links so ``rm --broken-links`` can clear them.
+
+    Content objects are addressed by hash and are indexed here in one listing
+    pass, so each link is resolved by set-membership rather than a per-link HEAD.
+    """
+    prefixes = ["TARS/%s/" % a for a in f.arch] if f.arch else ["TARS/"]
+    broken = {}
+    for prefix in prefixes:
+        store_keys, links = set(), []
+        for key, size, lm in list_objs(s3, bucket, prefix):
+            if not key.endswith(".tar.gz"):
+                continue
+            if "/store/" in key:
+                store_keys.add(key)
+            else:
+                links.append((key, size, lm))
+        for key, size, lm in links:
+            try:
+                body = get_bytes(s3, bucket, key).decode("utf-8", "replace").strip()
+            except Exception:
+                body = ""
+            parts = key.split("/")
+            arch = parts[1] if len(parts) > 1 else ""
+            idx = body.find("store/")
+            target = "TARS/%s/%s" % (arch, body[idx:]) if (arch and idx >= 0) else ""
+            if (not target or target not in store_keys) and age_ok(lm, f):
+                broken[key] = size
+    return broken
+
+
+def select_raw(s3, bucket, f):
+    out = {}
+    for pat in f.raw:
+        if any(c in pat for c in "*?["):
+            base = pat.split("*", 1)[0].split("?", 1)[0].split("[", 1)[0]
+            for key, size, lm in list_objs(s3, bucket, base):
+                if fnmatch.fnmatchcase(key, pat) and age_ok(lm, f):   # case-sensitive
+                    out[key] = size
+        else:                                          # plain prefix
+            for key, size, lm in list_objs(s3, bucket, pat):
+                if age_ok(lm, f):
+                    out[key] = size
+    return out
+
+
+def age_ok(last_modified, f):
+    if not f.older_than:
+        return True
+    if last_modified is None:
+        return False
+    return last_modified < (NOW - datetime.timedelta(days=f.older_than))
+
+
+def apply_age(s3, bucket, keys, f):
+    """Drop manifest-derived keys newer than --older-than (HEAD each). No-op when
+    --older-than is unset (the common case)."""
+    if not f.older_than:
+        return
+    for k in list(keys):
+        try:
+            lm = s3.head_object(Bucket=bucket, Key=k).get("LastModified")
+        except Exception:
+            keys.pop(k, None)                          # gone → not a delete target
+            continue
+        if not age_ok(lm, f):
+            keys.pop(k, None)
+
+
+# ── presentation ─────────────────────────────────────────────────────────────
+def present_manifests(store, f):
+    store.load()
+    signed = [m for m in store.signed
+              if (not f.arch or m["arch"] in f.arch) and manifest_matches(m, f)]
+
+    if signed:
+        print("SIGNED COMMON MANIFESTS")
+        print("  %-20s %-8s %-8s %-12s %-5s  %s" %
+              ("arch", "verified", "state", "certified_by", "pkgs", "manifest"))
+        for m in sorted(signed, key=lambda x: (x["arch"], x["key"])):
+            pkgs = [p for p in m["packages"] if match_pkg(p, f)]
+            ver = {True: "yes", False: "NO", None: "?"}[m["verified"]]
+            state = "EXPIRED" if m["expired"] else "live"
+            b = basename(m["key"])
+            tag = "  (legacy monolith)" if b == "common-manifest.json" else ""
+            print("  %-20s %-8s %-8s %-12s %-5d  %s%s" %
+                  (m["arch"], ver, state, m["certified_by"], len(pkgs), b, tag))
+            if f.long:
+                for p in sorted(pkgs, key=lambda x: x.get("package", "")):
+                    print("        %-24s %-14s %s" % (p.get("package", "?"),
+                          p.get("version", ""), (p.get("hash", "") or "")[:12]))
+
+    rows = []
+    for b in ([] if f.only_signed else store.boms):
+        if not manifest_matches(b, f):
+            continue
+        pkgs = [p for p in b["packages"] if match_pkg(p, f)]
+        if not pkgs and (f.arch or f.group or f.package or f.version):
+            continue
+        arches = sorted({p.get("effective_architecture", "?") for p in pkgs}) or ["?"]
+        groups = sorted({p.get("group") or "-" for p in pkgs}) or ["-"]
+        rows.append((b["build_id"], ",".join(arches), ",".join(groups), len(pkgs), b["key"]))
+    if rows:
+        print("\nBUILD MANIFESTS (per-build BOMs)")
+        print("  %-30s %-18s %-8s %-5s %s" % ("build_id", "arch", "group", "pkgs", "manifest key"))
+        for bid, arch, grp, n, key in sorted(rows):
+            print("  %-30s %-18s %-8s %-5d %s" % (bid[:30], arch[:18], grp[:8], n, key))
+
+    if not signed and not rows:
+        print("No manifests matched under MANIFESTS/.")
+
+    store_overview(store.s3, store.bucket)
+    print("\n(--objects: backing store objects · --orphans: unreferenced tarballs · "
+          "--raw PATTERN: raw keys · verify: check signatures/checksums)")
+
+
+def store_overview(s3, bucket):
+    """Summarise TARS/<arch>/ trees, split into content tarballs vs symlinks/other.
+    A tree with 0 content tarballs but many small objects is just symlink
+    scaffolding (e.g. from a build that failed before uploading real tarballs)."""
+    stats = {}   # arch -> [tar_n, tar_b, other_n, other_b]
+    for key, size, _lm in list_objs(s3, bucket, "TARS/"):
+        parts = key.split("/")
+        if len(parts) < 2 or not parts[1]:
+            continue
+        row = stats.setdefault(parts[1], [0, 0, 0, 0])
+        if "/store/" in key and key.endswith(".tar.gz"):
+            row[0] += 1; row[1] += size or 0
+        else:
+            row[2] += 1; row[3] += size or 0
+    if stats:
+        print("\nSTORE (TARS/) BY ARCHITECTURE      content tarballs | symlinks/other")
+        for a in sorted(stats):
+            tn, tb, on, ob = stats[a]
+            print("  %-22s  %5d  %9s  |  %5d  %9s" % (a, tn, human(tb), on, human(ob)))
+
+
+def present_objects(keys, title):
+    total = 0
+    have_size = False
+    for k in sorted(keys):
+        sz = keys[k]
+        if isinstance(sz, int):
+            total += sz; have_size = True
+            print(f"{human(sz):>10}  {k}")
+        else:
+            print(f"    {k}")
+    print(f"# {title}: {len(keys)} object(s)" + (f", {human(total)}" if have_size else ""))
+
+
+# ── verify ────────────────────────────────────────────────────────────────────
+def sha256_of(s3, bucket, key):
+    try:
+        h = hashlib.sha256()
+        body = s3.get_object(Bucket=bucket, Key=key)["Body"]
+        for chunk in iter(lambda: body.read(1 << 20), b""):
+            h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def do_verify(store, s3, bucket, f):
+    store.load()
+    signed = [m for m in store.signed if (not f.arch or m["arch"] in f.arch)]
+    if not signed:
+        print("No signed common manifests found.")
+    rc = 0
+    for m in sorted(signed, key=lambda x: x["arch"]):
+        ver = {True: "yes", False: "NO", None: "?"}[m["verified"]]
+        state = "EXPIRED" if m["expired"] else "live"
+        b = basename(m["key"])
+        legacy = "  (legacy monolith — superseded by per-arch, safe to delete)" \
+                 if b == "common-manifest.json" else ""
+        print(f"{m['arch']}: signature={ver} state={state} signer={m['key_id'][:16]} "
+              f"certified_by={m['certified_by']} expires={str(m['expires'])[:10]} "
+              f"packages={len(m['packages'])} manifest={b}{legacy}")
+        if m["verified"] is not True or m["expired"]:
+            rc = 1
+        missing, mismatch = [], []
+        for p in m["packages"]:
+            k = pkg_key(p)
+            if not k:
+                continue
+            try:
+                s3.head_object(Bucket=bucket, Key=k)
+            except Exception:
+                missing.append(k); continue
+            if f.deep:
+                claimed = norm_sha(p.get("tarball_sha256"))
+                actual = sha256_of(s3, bucket, k)
+                if claimed and actual and claimed != actual:
+                    mismatch.append(k)
+        for label, lst in (("MISSING from store", missing), ("SHA256 MISMATCH", mismatch)):
+            if lst:
+                rc = 1
+                print(f"  {label}: {len(lst)}")
+                for x in lst[:10]:
+                    print("    ", x)
+                if len(lst) > 10:
+                    print(f"     ... and {len(lst)-10} more")
+    if f.orphans:
+        orph = select_orphans(store, s3, bucket, f)
+        print(f"\norphans (tarballs referenced by no manifest): {len(orph)}"
+              + (f", {human(sum(orph.values()))}" if orph else ""))
+    return rc
+
+
+# ── delete ───────────────────────────────────────────────────────────────────
+def do_delete(s3, bucket, keys, store, f):
+    if not keys:
+        print("Nothing matched; nothing to delete.")
+        return 0
+    protected = set() if f.force else store.referenced_keys(verified_only=True)
+    hits = sorted(keys)
+    blocked = [k for k in hits if k in protected]
+    deletable = [k for k in hits if k not in protected]
+    if blocked:
+        print(f"{PROG}: {len(blocked)} object(s) are referenced by a VERIFIED signed "
+              f"manifest — protected (use --force to override):", file=sys.stderr)
+        for k in blocked[:10]:
+            print("   ", k, file=sys.stderr)
+        if len(blocked) > 10:
+            print(f"    ... and {len(blocked)-10} more", file=sys.stderr)
+    total = sum(v for v in (keys[k] for k in deletable) if isinstance(v, int))
+    print(f"Selected {len(deletable)} object(s)"
+          + (f", {human(total)}" if total else "") + " for deletion.")
+    for k in deletable[:20]:
+        print("   ", k)
+    if len(deletable) > 20:
+        print(f"    ... and {len(deletable)-20} more")
+    if not deletable:
+        return 0
+    if f.dry_run:
+        print(f"[dry-run] would delete {len(deletable)} object(s) (nothing deleted)")
+        return 0
+    if not f.yes:
+        try:
+            with open("/dev/tty") as tty:
+                sys.stderr.write(f"Delete {len(deletable)} object(s) from s3://{bucket}? [y/N] ")
+                sys.stderr.flush()
+                if tty.readline().strip().lower() not in ("y", "yes"):
+                    print("Aborted."); return 1
+        except OSError:
+            print("Refusing to delete without confirmation (no tty). Use --yes.", file=sys.stderr)
+            return 1
+    deleted = 0
+    for i in range(0, len(deletable), 1000):
+        batch = [{"Key": k} for k in deletable[i:i + 1000]]
+        resp = s3.delete_objects(Bucket=bucket, Delete={"Objects": batch, "Quiet": True})
+        errs = resp.get("Errors") or []
+        for e in errs:
+            print("ERROR deleting", e.get("Key"), "-", e.get("Message"), file=sys.stderr)
+        deleted += len(batch) - len(errs)
+        print(f"deleted {min(i + 1000, len(deletable))}/{len(deletable)}")
+    print(f"Done: deleted {deleted}/{len(deletable)} object(s).")
+    return 0 if deleted == len(deletable) else 1
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+def add_selection(p):
+    p.add_argument("--arch", action="append", metavar="ARCH", help="filter by architecture (repeatable/comma)")
+    p.add_argument("--group", action="append", metavar="GROUP", help="filter by group")
+    p.add_argument("--package", action="append", metavar="PKG", help="filter by package")
+    p.add_argument("--version", action="append", metavar="VER", help="filter by version")
+    p.add_argument("--certified-by", dest="certified_by", metavar="USER", help="filter by certifier")
+    p.add_argument("--build", metavar="ID", help="filter by build-id substring")
+    p.add_argument("--expired", action="store_true", help="only expired signed manifests")
+    p.add_argument("--objects", action="store_true", help="resolve selection to raw store objects")
+    p.add_argument("--links", action="store_true", help="with --objects, include named/dist symlinks")
+    p.add_argument("--orphans", action="store_true", help="store tarballs not referenced by any manifest")
+    p.add_argument("--broken-links", dest="broken_links", action="store_true",
+                   help="named/dist links whose backing store object is missing")
+    p.add_argument("--raw", nargs="+", metavar="PATTERN", help="select raw keys by prefix or glob")
+    p.add_argument("--older-than", dest="older_than", type=float, metavar="DAYS",
+                   help="keep only objects older than DAYS")
+    p.add_argument("--only-signed", action="store_true", help="consider only signed common manifests")
+    p.add_argument("--only-boms", action="store_true", help="consider only per-build BOMs")
+    p.add_argument("-l", "--long", action="store_true", help="show more detail (ls)")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog=PROG, description="Inspect, verify and clean the bits S3 store.")
+    sub = ap.add_subparsers(dest="verb")
+    for verb in ("ls", "rm"):
+        sp = sub.add_parser(verb, help="list" if verb == "ls" else "delete")
+        add_selection(sp)
+        if verb == "rm":
+            sp.add_argument("-n", "--dry-run", action="store_true", help="show what would be deleted")
+            sp.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+            sp.add_argument("--force", action="store_true",
+                            help="allow deleting verified-manifest objects / catch-all patterns")
+    vp = sub.add_parser("verify", help="verify signed manifests against the store")
+    vp.add_argument("--arch", action="append", metavar="ARCH", help="limit to architecture(s)")
+    vp.add_argument("--deep", action="store_true", help="also re-hash every tarball (slow)")
+    vp.add_argument("--orphans", action="store_true", help="also report unreferenced tarballs")
+
+    argv = sys.argv[1:]
+    if not argv or argv[0] not in ("ls", "rm", "verify", "-h", "--help"):
+        argv = ["ls"] + argv                          # default verb
+    args = ap.parse_args(argv)
+
+    # Normalise multi-value filters; give safe defaults for attrs absent on a verb.
+    for name in ("arch", "group", "package", "version"):
+        setattr(args, name, csv(getattr(args, name, None)))
+    for name, dflt in (("certified_by", None), ("build", None), ("expired", False),
+                       ("objects", False), ("links", False), ("orphans", False),
+                       ("broken_links", False),
+                       ("raw", None), ("older_than", None), ("only_signed", False),
+                       ("only_boms", False), ("long", False), ("dry_run", False),
+                       ("yes", False), ("force", False), ("deep", False)):
+        if not hasattr(args, name):
+            setattr(args, name, dflt)
+
+    if not os.environ.get("AWS_ACCESS_KEY_ID"):
+        sys.exit(f"{PROG}: no S3 credentials — put them in ~/.bits/s3keys "
+                 "(or set $BITS_AWS_KEYS_FILE / AWS_ACCESS_KEY_ID).")
+
+    # rm pre-flight guards (before touching S3).
+    if args.verb == "rm":
+        narrowed = any([args.raw, args.orphans, args.broken_links, args.arch, args.group,
+                        args.package, args.version, args.certified_by, args.build, args.expired])
+        if not narrowed and not args.force:
+            print(f"{PROG}: refusing to select the whole store for rm. Narrow it with a "
+                  "filter (--arch/--package/…), --orphans, --broken-links, or --raw (or --force).",
+                  file=sys.stderr)
+            return 2
+        for pat in (args.raw or []):
+            p = pat.strip()
+            if not args.force and (p in ("", "*", "/", "TARS", "TARS/", "MANIFESTS", "MANIFESTS/")
+                                   or p.startswith("*")):
+                print(f"{PROG}: refusing catch-all raw pattern {pat!r} without --force", file=sys.stderr)
+                return 2
+
+    s3, bucket = make_s3()
+    print(f"# store: {STORE}  (bucket: {bucket})", file=sys.stderr)
+    store = Store(s3, bucket)
+
+    if args.verb == "verify":
+        return do_verify(store, s3, bucket, args)
+
+    # Resolve the object set for the chosen view.
+    if args.raw:
+        keys, title = select_raw(s3, bucket, args), "raw"
+    elif args.broken_links:
+        keys, title = select_broken_links(store, s3, bucket, args), "broken-links"
+    elif args.orphans:
+        keys, title = select_orphans(store, s3, bucket, args), "orphans"
+    elif args.objects or args.verb == "rm":
+        keys, title = select_objects(store, s3, bucket, args), "objects"
+    else:
+        keys, title = None, None                      # manifest summary view
+
+    if args.verb == "rm":
+        return do_delete(s3, bucket, keys or {}, store, args)
+
+    if keys is None:
+        present_manifests(store, args)
+    else:
+        present_objects(keys, title)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+PY

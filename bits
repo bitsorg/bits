@@ -83,6 +83,7 @@ Usage: $0 \\
     ${EM}deps${EZ}    Show dependency tree. Use ${ET}bits deps --help${EZ} for details.
     ${EM}doctor${EZ}  Verify build environment. Use ${ET}bits doctor --help${EZ} for details.
     ${EM}init${EZ}    Initialise a local package. Use ${ET}bits init --help${EZ} for details.
+    ${EM}store${EZ}   Inspect/verify/clean the S3 content store. Use ${ET}bits store --help${EZ} for details.
     ${EM}version${EZ} Display bits version.
 
 EoF
@@ -363,6 +364,15 @@ done
 configBits "$config_file"
 
 set -- "${new_args[@]}"
+
+# `bits store …` → bitsStore (S3 content-store inspection, verification, cleanup).
+# Handled before work-dir/module setup: the store tool talks to S3, not the local
+# install tree, so it needs neither a work dir nor an architecture. The leading
+# "store" token is dropped; everything after it is passed through verbatim.
+if [[ "${1:-}" == "store" ]]; then
+  shift
+  exec "$BITSDIR/bitsStore" "$@"
+fi
 
 for arg in "$@"
 do
