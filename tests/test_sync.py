@@ -299,36 +299,30 @@ class Boto3TestCase(unittest.TestCase):
     ))
     @patch("os.readlink", new=MagicMock(return_value="dummy path"))
     @patch("os.path.islink", new=MagicMock(return_value=True))
+    @patch("bits_helpers.sync.Boto3RemoteSync.write_rev_marker", new=MagicMock())
     def test_tarball_upload(self) -> None:
-        """Test boto3 behaviour when building packages for upload locally."""
+        """Hash-only upload (ADR-0005): a fresh content tarball is uploaded once;
+        an already-present one is skipped; NO version-link or dist-symlink objects
+        are written any more (put_object must never be called)."""
         b3sync = sync.Boto3RemoteSync(
             remoteStore="b3://localhost", writeStore="b3://localhost",
             architecture=ARCHITECTURE, workdir="/sw")
         b3sync.s3 = self.mock_s3()
 
-        # Make sure upload of a fresh, new tarball works fine.
+        # Fresh build: the content object is absent -> upload it. The store keeps
+        # only the hash-keyed tarball, so no put_object (link/dist) is issued.
         b3sync.s3.put_object.reset_mock()
         b3sync.s3.upload_file.reset_mock()
         b3sync.upload_symlinks_and_tarball(MISSING_SPEC)
-        # We simulated local builds, so we should upload the tarballs to
-        # the remote.
-        b3sync.s3.put_object.assert_called()
         b3sync.s3.upload_file.assert_called()
+        b3sync.s3.put_object.assert_not_called()
 
+        # Already in the store (content-addressed dedup by hash): skip re-upload.
         b3sync.s3.put_object.reset_mock()
         b3sync.s3.upload_file.reset_mock()
         b3sync.upload_symlinks_and_tarball(GOOD_SPEC)
-        # We simulated downloading tarballs from the remote, so we mustn't
-        # upload them again and overwrite the remote.
-        b3sync.s3.put_object.assert_not_called()
         b3sync.s3.upload_file.assert_not_called()
-
-        # Make sure conflict detection is working for tarball sync.
-        b3sync.s3.put_object.reset_mock()
-        b3sync.s3.upload_file.reset_mock()
-        self.assertRaises(SystemExit, b3sync.upload_symlinks_and_tarball, BAD_SPEC)
         b3sync.s3.put_object.assert_not_called()
-        b3sync.s3.upload_file.assert_not_called()
 
     @patch("os.listdir", new=lambda path: (
         [] if path.endswith("-" + MISSING_SPEC["revision"]) else NotImplemented))

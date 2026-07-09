@@ -10,7 +10,6 @@ import re
 import sys
 import time
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.exceptions import RequestException
 from urllib.parse import quote
 
@@ -1133,174 +1132,27 @@ class Boto3RemoteSync:
     self.write_rev_marker(spec)
 
     arch = effective_arch(spec, self.architecture)
-    dist_symlinks = {}
-    for link_dir in ("dist", "dist-direct", "dist-runtime"):
-      # ver_rev(spec) ensures the dist-symlink directory name matches what
-      # build_template.sh created; with force_revision="" the name has no
-      # revision suffix (e.g. "pkg-1.2.3" instead of "pkg-1.2.3-1").
-      link_dir = "TARS/{arch}/{link_dir}/{package}/{package}-{ver_rev}" \
-        .format(arch=self.architecture, link_dir=link_dir,
-                ver_rev=ver_rev(spec), **spec)
 
-      debug("Comparing dist symlinks against S3 from %s", link_dir)
-
-      symlinks = []
-      for fname in os.listdir(os.path.join(self.workdir, link_dir)):
-        link_key = os.path.join(link_dir, fname)
-        path = os.path.join(self.workdir, link_key)
-        if os.path.islink(path):
-          hash_path = re.sub(r"^(\.\./)*", "", os.readlink(path))
-          symlinks.append((link_key, hash_path))
-
-      # To make sure there are no conflicts, see if anything already exists in
-      # our symlink directory.
-      symlinks_existing = frozenset(self._s3_listdir(link_dir))
-
-      # If all the symlinks we would upload already exist, skip uploading. We
-      # probably just downloaded a prebuilt package earlier, and it already has
-      # symlinks available.
-      our_keys = {link_key for link_key, _ in symlinks}
-      if symlinks_existing >= our_keys:
-        debug("All %s symlinks already exist on S3, skipping upload", link_dir)
-        continue
-
-      # Abort ONLY on genuinely FOREIGN objects — keys in our dist dir that are
-      # not part of the closure we are about to upload. A partial subset of our
-      # OWN symlinks is not a conflict: it is a resumable/interrupted upload (or a
-      # concurrent build of the *same* package writing identical symlinks), so we
-      # just complete the set below (put_object is idempotent for the ones already
-      # present). This dir is keyed by package + ver-rev, so a foreign key really
-      # does mean something else claimed it — that still fails closed.
-      _foreign = symlinks_existing - our_keys
-      dieOnError(_foreign,
-                 "Conflicts detected in %s on S3; aborting: %s" %
-                 (link_dir, ", ".join(sorted(_foreign))))
-
-      dist_symlinks[link_dir] = symlinks
-
-    # ver_rev(spec) keeps the filename consistent with what build_template.sh
-    # wrote: PACKAGE_WITH_REV=$PKGNAME-$VERREV.$EFFECTIVE_ARCHITECTURE.tar.gz.
-    # `arch` is already effective_arch(spec, self.architecture) — i.e. "shared"
-    # for shared packages, else the build arch — matching EFFECTIVE_ARCHITECTURE
-    # and the store/link paths below, exactly like the rsync backend's eff_arch.
-    # The fields are passed explicitly: a bare **spec collides with the
-    # architecture= keyword whenever the spec carries an "architecture" key
-    # (shared packages, or any recipe that sets the field), raising
-    # "TypeError: got multiple values for keyword argument 'architecture'".
-    # The content-addressed store key (store/<h2>/<hash>/) is unaffected; it
-    # always uses the package hash rather than the version-revision label.
+    # Hash-only store (ADR-0005): the store keeps ONLY the content-addressed
+    # tarball. No version-link or dist-symlink objects are written any more — the
+    # local version/dist layout is reconstructed on the node from the graph
+    # (build.py create_version_link / createDistLinks) and the revision history
+    # comes from the signed common manifest + the rev-index marker written above.
+    # This removes the whole class of pointer-consistency bugs (one-sided state,
+    # dist "Conflicts detected", orphan links) outright: an object either exists
+    # at its hash or it does not.
     tarball = "{package}-{ver_rev}.{architecture}.tar.gz".format(
         package=spec["package"], ver_rev=ver_rev(spec), architecture=arch)
-    tar_path = os.path.join(resolve_store_path(arch, spec["hash"]),
-                            tarball)
-    link_path = os.path.join(resolve_links_path(arch, spec["package"]),
-                             tarball)
-    tar_exists = self._s3_key_exists(tar_path)
-    link_exists = self._s3_key_exists(link_path)
-    if tar_exists and link_exists:
+    tar_path = os.path.join(resolve_store_path(arch, spec["hash"]), tarball)
+
+    # Content-addressed dedup: the same hash on the same arch is byte-identical,
+    # so an object already present never needs re-uploading.
+    if self._s3_key_exists(tar_path):
       debug("%s exists on S3 already, not uploading", tarball)
       return
-    # A one-sided state — the content object XOR its version-named link — is a
-    # partial upload or a half-cleaned store (store/<hash>/ objects deleted but
-    # the version-named links left behind, or the reverse). The content object
-    # is addressed by hash, so (re)uploading it is idempotent and safe, and the
-    # code below re-creates whichever side is missing. So repair automatically
-    # instead of aborting. Abort ONLY on a genuine conflict: a surviving link
-    # that points at a DIFFERENT build, which must not be silently remapped to
-    # these bytes.
-    if link_exists and not tar_exists:
-      try:
-        pointer = self.s3.get_object(Bucket=self.writeStore, Key=link_path) \
-                      ["Body"].read().decode("utf-8", "replace").strip()
-      except Exception:
-        pointer = ""
-      hash_seg = "store/%s/%s/" % (spec["hash"][:2], spec["hash"])
-      if hash_seg not in pointer:
-        # The link points at a DIFFERENT build (e.g. a leftover from before a
-        # recipe change). It is a genuine conflict ONLY if that other build's
-        # object is still present — re-pointing would then remap the version to
-        # different live bytes, so abort. If the old target is also gone (the
-        # usual half-cleaned / rebuild case), the link is simply stale: re-point
-        # it to the freshly built object. The link body is the store key from
-        # "<arch>/store/..." onward; rebuild the full key robustly from that.
-        idx = pointer.find(arch + "/store/")
-        target_key = "TARS/" + pointer[idx:] if idx >= 0 else ""
-        dieOnError(bool(target_key) and self._s3_key_exists(target_key),
-                   "%s already exists and points at a different, still-present "
-                   "build than %s (link target: %r) — refusing to remap this "
-                   "version to new bytes. Remove the stale link to re-point it."
-                   % (link_path, tar_path, pointer))
-        warning("Re-pointing stale link %s (its target %r no longer exists) to "
-                "the freshly built %s.", link_path, pointer, tar_path)
-      else:
-        warning("Repairing store: %s exists but its content object was missing "
-                "(half-cleaned store); re-uploading %s.", link_path, tar_path)
-    elif tar_exists and not link_exists:
-      warning("Repairing store: %s exists but its named link was missing; "
-              "re-creating %s.", tar_path, link_path)
 
-    debug("Uploading tarball and symlinks for %s %s-%s (%s) to S3",
+    debug("Uploading content tarball for %s %s-%s (%s) to S3",
           spec["package"], spec["version"], spec["revision"], spec["hash"])
-
-    # Upload the smaller file first, so that any parallel uploads are more
-    # likely to find it and fail.
-    try:
-      os.readlink(os.path.join(self.workdir, link_path))
-    except FileNotFoundError:
-      # ver_rev(spec) keeps the symlink target consistent with the on-disk
-      # tarball name created by build_template.sh (which uses $_VERREV).
-      os.symlink(
-        os.path.join('../..', arch, 'store', spec["hash"][:2], spec["hash"],
-                     f"{spec['package']}-{ver_rev(spec)}.{arch}.tar.gz"),
-        os.path.join(self.workdir, link_path)
-      )
-
-    self.s3.put_object(Bucket=self.writeStore, Key=link_path,
-                       Body=os.readlink(os.path.join(self.workdir, link_path))
-                              .lstrip("./").encode("utf-8"))
-
-    # Second, upload dist symlinks. These should be in place before the main
-    # tarball, to avoid races in the publisher.
-    start_time = time.time()
-    total_symlinks = 0
-
-    # Limit concurrency to avoid overwhelming S3 with too many simultaneous requests
-    max_workers = min(32, (len(dist_symlinks) * 10) or 1)
-
-    def _upload_single_symlink(link_key, hash_path):
-      self.s3.put_object(Bucket=self.writeStore,
-                         Key=link_key,
-                         Body=os.fsencode(hash_path),
-                         ACL="public-read",
-                         WebsiteRedirectLocation=hash_path)
-      return link_key
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-      future_to_info = {}
-      for link_dir, symlinks in dist_symlinks.items():
-        for link_key, hash_path in symlinks:
-          future = executor.submit(_upload_single_symlink, link_key, hash_path)
-          future_to_info[future] = (link_dir, link_key)
-          total_symlinks += 1
-
-      dir_counts = {link_dir: 0 for link_dir in dist_symlinks.keys()}
-      for future in as_completed(future_to_info):
-        link_dir, link_key = future_to_info[future]
-        try:
-          future.result()
-          dir_counts[link_dir] += 1
-        except Exception as e:
-          error("Failed to upload symlink %s: %s", link_key, e)
-          raise
-
-      for link_dir, count in dir_counts.items():
-        if count > 0:
-          debug("Uploaded %d dist symlinks to S3 from %s", count, link_dir)
-
-    end_time = time.time()
-    debug("Uploaded %d dist symlinks in %.2f seconds",
-          total_symlinks, end_time - start_time)
-
     self.s3.upload_file(Bucket=self.writeStore, Key=tar_path,
                         Filename=os.path.join(self.workdir, tar_path))
 
