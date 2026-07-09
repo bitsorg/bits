@@ -717,7 +717,7 @@ def doParseArgs():
   build_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
                           help=("The toplevel directory under which builds should be done and build results "
                                 "should be installed. Default '%(default)s'."))
-  build_dirs.add_argument("-c", "--config-dir", dest="configDir", default=os.environ.get("BITS_REPO_DIR","alidist"),
+  build_dirs.add_argument("-c", "--config-dir", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
                           help="The directory containing build recipes. Default '%(default)s'.")
   build_dirs.add_argument("--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
                           default="%(workDir)s/MIRROR",
@@ -875,7 +875,7 @@ def doParseArgs():
                                  "with spaces, and make sure quoting is correct! Implies --docker."))
 
   deps_parser.add_argument_group(title="Customise bits directories") \
-             .add_argument("-c", "--config-dir", dest="configDir", default=os.environ.get("BITS_REPO_DIR","alidist"),
+             .add_argument("-c", "--config-dir", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
                            help="The directory containing build recipes. Default '%(default)s'.")
 
   deps_system = deps_parser.add_mutually_exclusive_group()
@@ -954,7 +954,7 @@ def doParseArgs():
   doctor_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,  # TODO: previous default was "workDir".
                            help=("The toplevel directory under which builds should be done and build results "
                                  "should be installed. Default '%(default)s'."))
-  doctor_dirs.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","alidist"),
+  doctor_dirs.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
                            help="The directory containing build recipes. Default '%(default)s'.")
 
   # Mode flags — apply to --runner, --check-store, and future modes
@@ -1023,7 +1023,7 @@ def doParseArgs():
   brew_parser.add_argument("--check", dest="check", action="store_true", default=False,
                            help=("Do not write; exit non-zero if FILE is missing or differs from what "
                                  "would be generated (for CI / pre-commit)."))
-  brew_parser.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR", "alidist"),
+  brew_parser.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR", "."),
                            help="The directory containing build recipes. Default '%(default)s'.")
   brew_parser.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
                            help=("Change to the specified directory before doing anything. "
@@ -1339,7 +1339,7 @@ def doParseArgs():
   )
   status_parser.add_argument(
       "-c", "--config", dest="configDir",
-      default=os.environ.get("BITS_REPO_DIR", "alidist"),
+      default=os.environ.get("BITS_REPO_DIR", "."),
       help="The directory containing build recipes. Default '%(default)s'.",
   )
   status_parser.add_argument(

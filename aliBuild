@@ -23,4 +23,9 @@ export BITS_BRANDING="${BITS_BRANDING:-aliBuild}"
 #    are byte-identical to the pre-modules default, so bits and aliBuild can still
 #    share tarballs. Override with BITS_LEGACY_INITDOTSH=0 / --initdotsh-from-modules.
 export BITS_LEGACY_INITDOTSH="${BITS_LEGACY_INITDOTSH:-1}"
+# Config-dir default: aliBuild keeps the legacy `alidist` convention (recipes in
+# a local alidist checkout), whereas plain `bits` defaults to the current
+# directory (you are normally inside a recipe repo). BITS_REPO_DIR seeds the
+# --config-dir default in args.py; an explicit --config-dir still overrides it.
+export BITS_REPO_DIR="${BITS_REPO_DIR:-alidist}"
 exec "$(dirname "$0")/bits" "$@"

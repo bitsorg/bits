@@ -72,7 +72,7 @@ CORRECT_BEHAVIOR = [
   ((), "build --force-unknown-architecture --force-rebuild O2 --force-rebuild O2Physics --defaults o2 O2Physics", [("action", "build"), ("force_rebuild", ["O2", "O2Physics"]), ("defaults", ["release", "o2"]), ("pkgname", ["O2Physics"])]),
   ((), "build --force-unknown-architecture --force-rebuild O2,O2Physics --defaults o2 O2Physics", [("action", "build"), ("force_rebuild", ["O2", "O2Physics"]), ("defaults", ["release", "o2"]), ("pkgname", ["O2Physics"])]),
   ((), "init -z test zlib"                                                             , [("configDir", "test/alidist")]),
-  ((), "build --force-unknown-architecture -z test zlib"                               , [("configDir", "alidist")]),
+  ((), "build --force-unknown-architecture -z test zlib"                               , [("configDir", ".")]),
   # ((), "analytics off"                                                                 , [("state", "off")]),
   # ((), "analytics on"                                                                  , [("state", "on")]),
 
