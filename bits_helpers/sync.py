@@ -1091,15 +1091,22 @@ class Boto3RemoteSync:
       # If all the symlinks we would upload already exist, skip uploading. We
       # probably just downloaded a prebuilt package earlier, and it already has
       # symlinks available.
-      if all(link_key in symlinks_existing for link_key, _ in symlinks):
+      our_keys = {link_key for link_key, _ in symlinks}
+      if symlinks_existing >= our_keys:
         debug("All %s symlinks already exist on S3, skipping upload", link_dir)
         continue
 
-      # Excluding our own symlinks (above), if there is anything in our link_dir
-      # on the remote, something else is uploading symlinks (or already has)!
-      dieOnError(symlinks_existing,
+      # Abort ONLY on genuinely FOREIGN objects — keys in our dist dir that are
+      # not part of the closure we are about to upload. A partial subset of our
+      # OWN symlinks is not a conflict: it is a resumable/interrupted upload (or a
+      # concurrent build of the *same* package writing identical symlinks), so we
+      # just complete the set below (put_object is idempotent for the ones already
+      # present). This dir is keyed by package + ver-rev, so a foreign key really
+      # does mean something else claimed it — that still fails closed.
+      _foreign = symlinks_existing - our_keys
+      dieOnError(_foreign,
                  "Conflicts detected in %s on S3; aborting: %s" %
-                 (link_dir, ", ".join(sorted(symlinks_existing))))
+                 (link_dir, ", ".join(sorted(_foreign))))
 
       dist_symlinks[link_dir] = symlinks
 
