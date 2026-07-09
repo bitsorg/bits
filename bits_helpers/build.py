@@ -166,9 +166,11 @@ def readHashFile(fn):
 def _localize_manifest(src, work_dir):
   """Return a local filesystem path for a manifest *src*.
 
-  A local path is returned unchanged; a URL is downloaded (with its detached
-  ``.sig``) into ``MANIFESTS/trust`` and the local path returned. Idempotent
-  enough to be called from several loaders in one build (re-download overwrites).
+  A local path is returned unchanged; a URL is fetched (with its detached
+  ``.sig``) into ``MANIFESTS/trust`` and the local path returned. Note
+  ``downloadUrllib2`` keeps a pre-existing file of the same name, so repeated
+  calls within one build (e.g. from both trust-index and trust-records loaders)
+  resolve to the same local manifest.
   """
   if "://" not in src:
     return src
@@ -288,12 +290,15 @@ def _revision_index_records(spec, spec_arch, args, work_dir, sync_helper):
 def _fold_revision_records(records, spec, candidate, busy_revisions, revision_prefix):
   """Fold rev-index ``{revision: hash}`` records into the revision counter state.
 
-  Mirrors the version-link scan exactly (ADR-0005 P2c): a record whose hash
-  matches this build becomes a reuse candidate (via :func:`better_tarball`); any
-  other reserves its revision number in *busy_revisions*. Records are remote-only
-  — local revisions are never published, so they never appear here. Idempotent:
-  a record duplicating a still-present version link changes nothing. Returns the
-  updated ``(candidate, busy_revisions)``.
+  Mirrors the version-link scan (ADR-0005 P2c): a record whose hash matches this
+  build becomes a reuse candidate (via :func:`better_tarball`); any other reserves
+  its revision number in *busy_revisions*. Records are remote-only — local
+  revisions are never published, so they never appear here. Returns the updated
+  ``(candidate, busy_revisions)``.
+
+  Invoked by the counter only as a gap-fill, i.e. with *candidate* ``None`` (the
+  local scan found nothing to reuse), so it never overrides a link-derived reuse
+  choice.
   """
   for rev, rev_hash in (records or {}).items():
     if rev_hash in spec["remote_hashes"]:
@@ -2890,15 +2895,21 @@ def doBuild(args, parser):
         # for reuse yet.
         candidate = better_tarball(spec, candidate, (revision, rev_hash, symlink_path))
 
-      # ADR-0005 P2c: additionally fold in the revisions recorded by the
-      # certified common manifest and the S3 rev-index markers, so the same
-      # reuse/assign decision survives once the S3 version links are dropped
-      # (Phase 2d). Additive and idempotent — for a non-devel package this only
-      # *adds* reuse candidates and busy revisions and mirrors the scan above,
-      # so records duplicating a still-present version link change nothing.
-      # Skipped for devel packages, which are always built locally and never
-      # appear in the remote manifest/markers.
-      if not spec["is_devel_pkg"]:
+      # ADR-0005 P2c: if the local version-link scan found NO reuse candidate,
+      # fall back to the revision history recorded by the certified common
+      # manifest and the S3 rev-index markers. This is what lets the reuse/assign
+      # decision survive once the version links are dropped (Phase 2d): the fold
+      # can then supply the reuse candidate (fetched by hash later) and reserve
+      # the revision numbers already taken remotely.
+      #
+      # We deliberately fold ONLY when the scan is empty-handed:
+      # - when the scan already found a candidate we reuse it and never consult
+      #   busyRevisions, so folding could not change the outcome — skipping keeps
+      #   the decision (and the per-package S3 read) identical to before whenever
+      #   the local links are present;
+      # - devel packages are always built locally and never appear in the remote
+      #   manifest/markers.
+      if candidate is None and not spec["is_devel_pkg"]:
         candidate, busyRevisions = _fold_revision_records(
           _revision_index_records(spec, spec_arch, args, workDir, syncHelper),
           spec, candidate, busyRevisions, revisionPrefix)

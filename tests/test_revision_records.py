@@ -93,14 +93,23 @@ class TestTrustedRecords(unittest.TestCase):
 
 
 class TestFoldRevisionRecords(unittest.TestCase):
-    """build._fold_revision_records mirrors the version-link scan."""
+    """build._fold_revision_records — invoked by the counter only as a gap-fill,
+    i.e. with candidate=None (the local version-link scan found nothing)."""
 
-    def test_hash_match_becomes_reuse_candidate(self):
-        # rev 2 -> hash "bb", which this build wants (remote_hashes) -> reuse it.
+    def test_gap_fill_reuse_when_no_symlink_candidate(self):
+        # rev 2 -> hash "bb", which this build wants (remote_hashes) and which the
+        # local scan did not surface -> the record supplies the reuse candidate.
         cand, busy = build._fold_revision_records(
             {"2": "bb"}, _spec(), None, set(), "")
         self.assertEqual(cand, ("2", "bb", None))
         self.assertEqual(busy, set())
+
+    def test_picks_best_hash_among_records(self):
+        # Multiple matching records: better_tarball prefers the hash earliest in
+        # remote_hashes ("bb" before "aa"), regardless of revision number.
+        cand, _ = build._fold_revision_records(
+            {"9": "aa", "5": "bb"}, _spec(remote=("bb", "aa")), None, set(), "")
+        self.assertEqual(cand, ("5", "bb", None))
 
     def test_mismatch_reserves_revision_number(self):
         # rev 3 -> some other hash -> not reusable, but its number is taken.
@@ -108,21 +117,6 @@ class TestFoldRevisionRecords(unittest.TestCase):
             {"3": "ffff"}, _spec(), None, set(), "")
         self.assertIsNone(cand)
         self.assertEqual(busy, {3})
-
-    def test_idempotent_with_existing_symlink_candidate(self):
-        # A record duplicating an already-found symlink candidate is a no-op.
-        existing = ("2", "bb", "/sw/TARS/.../fftw-3.3.10-2.x86_64-el9.tar.gz")
-        cand, busy = build._fold_revision_records(
-            {"2": "bb"}, _spec(), existing, set(), "")
-        self.assertEqual(cand[:2], ("2", "bb"))   # unchanged winner
-        self.assertEqual(busy, set())
-
-    def test_prefers_remote_record_over_local_symlink_candidate(self):
-        # A local candidate must yield to a matching remote record.
-        local_cand = ("local1", "bb", "/sw/.../fftw-3.3.10-local1...")
-        cand, _ = build._fold_revision_records(
-            {"2": "bb"}, _spec(), local_cand, set(), "")
-        self.assertEqual(cand, ("2", "bb", None))
 
     def test_local_mode_does_not_reserve_remote_numbers(self):
         # Read-only store: we assign localN, so plain remote ints are NOT busy

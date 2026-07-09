@@ -25,7 +25,18 @@ This module is pure (no S3, no filesystem). The S3 list/get/put and the revision
 counter wiring live in sync.py / build.py respectively.
 """
 
+import re
+
 REV_INDEX_ROOT = "MANIFESTS/rev-index"
+
+# A revision label is a plain integer, optionally "local"-prefixed for
+# build-node-local revisions. Markers are only written for remote (numeric)
+# revisions, but "local" is accepted here so the parse round-trips symmetrically
+# with marker_key. Anything else after the "<version>-" prefix is not a revision
+# (e.g. a hyphenated *sibling* version whose own marker shares the prefix, or a
+# nested sub-path), and must be rejected so the prefix LIST cannot leak entries
+# from a different version into (version -> {revision -> hash}).
+_REVISION_RE = re.compile(r"(?:local)?[0-9]+")
 
 
 def marker_prefix(arch, package, version):
@@ -46,14 +57,17 @@ def marker_key(arch, package, version, revision):
 def revision_of(key, arch, package, version):
   """Return the revision encoded in *key*, or None if *key* is not such a marker.
 
-  The revision is exactly the part after the ``<version>-`` prefix; a revision
-  never contains ``/`` so a key that dives into a sub-path is rejected.
+  The revision is exactly the part after the ``<version>-`` prefix and must be a
+  valid revision token (``[0-9]+`` or ``local[0-9]+``). This rejects both nested
+  sub-paths (which contain ``/``) and hyphenated *sibling* versions whose markers
+  share the ``<version>-`` prefix (e.g. ``v14.2.0-alice2-3`` when listing
+  ``v14.2.0``), so a prefix LIST never leaks another version's revisions in.
   """
   prefix = marker_prefix(arch, package, version)
   if not key.startswith(prefix):
     return None
   rev = key[len(prefix):]
-  return rev if (rev and "/" not in rev) else None
+  return rev if _REVISION_RE.fullmatch(rev) else None
 
 
 def manifest_records(entries, package, version, arch):

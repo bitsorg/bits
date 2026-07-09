@@ -35,6 +35,16 @@ class TestRevIndex(unittest.TestCase):
         self.assertIsNone(ri.revision_of(ri.marker_prefix(A, P, V) + "2/extra", A, P, V))
         self.assertIsNone(ri.revision_of(ri.marker_prefix(A, P, V), A, P, V))  # empty revision
 
+    def test_revision_of_rejects_hyphenated_sibling_version(self):
+        # Listing "v14.2.0" must NOT pick up the marker of the *sibling* version
+        # "v14.2.0-alice2", whose key shares the "v14.2.0-" prefix.
+        A = "x86_64-el9"
+        sibling = ri.marker_key(A, "GCC-Toolchain", "v14.2.0-alice2", "3")
+        self.assertIsNone(ri.revision_of(sibling, A, "GCC-Toolchain", "v14.2.0"))
+        # ...but the sibling itself still parses correctly under its own version.
+        self.assertEqual(
+            ri.revision_of(sibling, A, "GCC-Toolchain", "v14.2.0-alice2"), "3")
+
     def test_manifest_records_filters_by_pkg_version_arch(self):
         entries = [
             {"package": "fftw", "version": "3.3.10", "revision": "1",
