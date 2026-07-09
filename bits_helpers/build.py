@@ -224,6 +224,37 @@ def trusted_reuse_index(args, work_dir):
   return index
 
 
+def derive_trust_manifest_srcs(store, prefix, arch, endpoint=None):
+  """Derive the signed common-manifest source URLs from a remote store.
+
+  Returns a list of http(s) sources (own-arch first, then the always-shared one)
+  so a bare ``bits build`` gets signed reuse without an explicit --trust-manifest;
+  [] if the store form is unsupported.
+
+  * ``http(s)://…`` read stores host the manifest directly beneath them.
+  * ``b3://<bucket>[::rw]`` / ``s3://<bucket>`` map to the bucket's ANONYMOUS S3
+    read URL — ``<endpoint>/swift/v1/<bucket>`` — because the manifest is fetched
+    over http (urllib): it is the same public object an http store would serve.
+    ``endpoint`` defaults to CERN S3; non-swift/non-CERN S3 should pass an
+    explicit --trust-manifest.
+  """
+  store = str(store or "")
+  prefix = str(prefix or "MANIFESTS/common-manifest").lstrip("/")
+  base = None
+  if store.startswith(("http://", "https://")):
+    base = store.rstrip("/") + "/" + prefix
+  elif store.startswith(("b3://", "s3://")):
+    bucket = store.split("://", 1)[1].split("/", 1)[0].split("::", 1)[0]
+    ep = str(endpoint or "https://s3.cern.ch").rstrip("/")
+    if bucket:
+      base = "%s/swift/v1/%s/%s" % (ep, bucket, prefix)
+  if not base:
+    return []
+  srcs = ["%s-%s.json" % (base, arch)] if arch else []
+  srcs.append("%s-shared.json" % base)
+  return srcs
+
+
 def update_git_repos(args, specs, buildOrder):
     """Update and/or fetch required git repositories in parallel.
 
@@ -1853,13 +1884,15 @@ def doBuild(args, parser):
   # (`bits certify` publishes exactly these). So `require_signed_reuse: true`
   # alone is enough.
   if getattr(args, "requireSignedReuse", False) and not getattr(args, "trustManifest", None):
-    _store = str(getattr(args, "remoteStore", "") or "")
-    if _store.startswith(("http://", "https://")):
-      _prefix = str(_system_opt("trust_manifest_prefix", "MANIFESTS/common-manifest"))
-      _base = _store.rstrip("/") + "/" + _prefix.lstrip("/")
-      _arch = str(getattr(args, "architecture", "") or "")
-      _srcs = ["%s-%s.json" % (_base, _arch)] if _arch else []
-      _srcs.append("%s-shared.json" % _base)
+    # Endpoint precedence matches the S3 client: --s3-endpoint > env > CERN S3.
+    _ep = (getattr(args, "s3Endpoint", None)
+           or os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
+           or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
+    _srcs = derive_trust_manifest_srcs(
+        getattr(args, "remoteStore", ""),
+        _system_opt("trust_manifest_prefix", "MANIFESTS/common-manifest"),
+        str(getattr(args, "architecture", "") or ""), _ep)
+    if _srcs:
       args.trustManifest = ",".join(_srcs)
       info("--require-signed-reuse: trust manifests derived from store -> %s",
            args.trustManifest)
