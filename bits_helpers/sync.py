@@ -973,6 +973,62 @@ class Boto3RemoteSync:
       raise
     return True
 
+  def write_rev_marker(self, spec):
+    """Record this build's revision in the rev-index (ADR-0005).
+
+    A write-once marker ``MANIFESTS/rev-index/<arch>/<pkg>/<version>-<revision>``
+    whose body is the package hash. Best-effort and idempotent (HEAD-skip), so
+    concurrent builds — which each write their OWN key — never race. No-op without
+    a write store, or for a missing/empty or ``local`` revision (local revisions
+    are never shared with the remote store).
+    """
+    if not self.writeStore:
+      return
+    rev = str(spec.get("revision", "") or "")
+    if not rev or rev.startswith("local"):
+      return
+    from bits_helpers import rev_index
+    key = rev_index.marker_key(effective_arch(spec, self.architecture),
+                               spec["package"], spec["version"], rev)
+    try:
+      if self._s3_key_exists(key):
+        return
+      self.s3.put_object(Bucket=self.writeStore, Key=key,
+                         Body=spec["hash"].encode("utf-8"))
+    except Exception as exc:
+      debug("rev-index: could not write marker %s (%s)", key, exc)
+
+  def read_rev_markers(self, package, version, arch):
+    """Return ``{revision: hash}`` from the rev-index markers for (arch, pkg,
+    version) in the read store.
+
+    Best-effort: returns {} on any error, because the common manifest is the
+    primary revision source and the markers only supplement uncertified rebuilds.
+    """
+    from bits_helpers import rev_index
+    prefix = rev_index.marker_prefix(arch, package, version)
+    out = {}
+    try:
+      pages = self.s3.get_paginator("list_objects_v2") \
+                     .paginate(Bucket=self.remoteStore, Prefix=prefix)
+      keys = [item["Key"] for pg in pages for item in pg.get("Contents", ())]
+    except Exception as exc:
+      debug("rev-index: list failed for %s (%s)", prefix, exc)
+      return out
+    for key in keys:
+      rev = rev_index.revision_of(key, arch, package, version)
+      if not rev:
+        continue
+      try:
+        h = self.s3.get_object(Bucket=self.remoteStore, Key=key)["Body"] \
+                .read().decode("utf-8", "replace").strip()
+      except Exception as exc:
+        debug("rev-index: get failed for %s (%s)", key, exc)
+        continue
+      if h:
+        out[rev] = h
+    return out
+
   def fetch_tarball(self, spec) -> None:
     arch = effective_arch(spec, self.architecture)
     debug("Updating remote store for package %s with hashes %s", spec["package"],
