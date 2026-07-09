@@ -92,23 +92,24 @@ class TestValidateAgainstStore(unittest.TestCase):
 
     def test_all_present_and_matching_is_clean(self):
         store = {("slc7_x86-64", "h1"): "sha256:aa", ("slc7_x86-64", "h2"): "bb"}
-        problems = certify.validate_against_store(
+        fatal, missing = certify.validate_against_store(
             self._common(), lambda a, h, t=None: store.get((a, h)))
-        self.assertEqual(problems, [])
+        self.assertEqual((fatal, missing), ([], []))
 
-    def test_missing_object_reported(self):
+    def test_missing_object_is_droppable_not_fatal(self):
         store = {("slc7_x86-64", "h1"): "sha256:aa"}   # h2 absent
-        problems = certify.validate_against_store(
+        fatal, missing = certify.validate_against_store(
             self._common(), lambda a, h, t=None: store.get((a, h)))
-        self.assertEqual(len(problems), 1)
-        self.assertIn("missing from store", problems[0])
+        self.assertEqual(fatal, [])                    # absence is not fatal
+        self.assertEqual([p["hash"] for p in missing], ["h2"])
 
-    def test_sha_mismatch_reported(self):
+    def test_sha_mismatch_is_fatal(self):
         store = {("slc7_x86-64", "h1"): "sha256:aa", ("slc7_x86-64", "h2"): "sha256:WRONG"}
-        problems = certify.validate_against_store(
+        fatal, missing = certify.validate_against_store(
             self._common(), lambda a, h, t=None: store.get((a, h)))
-        self.assertEqual(len(problems), 1)
-        self.assertIn("sha256 mismatch", problems[0])
+        self.assertEqual(missing, [])
+        self.assertEqual(len(fatal), 1)
+        self.assertIn("sha256 mismatch", fatal[0])
 
 
 class TestAcceptsGroup(unittest.TestCase):
@@ -171,6 +172,27 @@ class TestCertifyEndToEnd(unittest.TestCase):
         kid, index = trust.trusted_index(out_path)
         self.assertIsNotNone(kid)
         self.assertEqual(index, {"h1": "sha256:aa", "h2": "sha256:bb"})
+
+    def test_certify_drops_missing_and_signs_the_rest(self):
+        # B's object is gone from the store (wiped/GC'd). certify must NOT fail
+        # the whole group — it drops B and still signs A (graceful drift handling).
+        m = _manifest("b1", [_pkg("A", "h1", "sha256:aa"), _pkg("B", "h2", "sha256:bb")])
+        store = {("slc7_x86-64", "h1"): "sha256:aa"}      # h2 absent
+        out = os.path.join(self.tmp, "out", "common.json")
+        out_path, _ = certify.certify(
+            [m], self.key_pem, out, probe=lambda a, h, t=None: store.get((a, h)))
+        kid, index = trust.trusted_index(out_path)
+        self.assertIsNotNone(kid)
+        self.assertEqual(index, {"h1": "sha256:aa"})       # B dropped, A signed
+
+    def test_certify_still_fatal_on_sha_mismatch(self):
+        # A tampered/corrupt object (bytes != manifest claim) must stay fatal.
+        m = _manifest("b1", [_pkg("A", "h1", "sha256:aa")])
+        store = {("slc7_x86-64", "h1"): "sha256:TAMPERED"}
+        out = os.path.join(self.tmp, "out", "common.json")
+        with self.assertRaises(certify.CertifyError):
+            certify.certify([m], self.key_pem, out,
+                            probe=lambda a, h, t=None: store.get((a, h)))
 
     def test_certified_by_recorded_in_signed_manifest(self):
         m = _manifest("b1", [_pkg("A", "h1", "sha256:aa")])
@@ -282,12 +304,20 @@ class TestCertifyEndToEnd(unittest.TestCase):
                             approval_check=_deny)
         self.assertFalse(os.path.exists(out))
 
-    def test_certify_refuses_when_store_validation_fails(self):
+    def test_certify_drops_all_missing_and_signs_empty(self):
+        # A fully-absent store (e.g. freshly wiped): rather than failing the whole
+        # certification, certify drops every unbacked entry and signs a
+        # well-formed EMPTY manifest. The trusted index is simply empty and
+        # self-heals as builds repopulate the store — graceful corner-case
+        # handling, not a hard error. (A sha256 MISMATCH stays fatal; see
+        # test_certify_still_fatal_on_sha_mismatch.)
         m = _manifest("b1", [_pkg("A", "h1", "sha256:aa")])
         out = os.path.join(self.tmp, "out", "common.json")
-        with self.assertRaises(certify.CertifyError):
-            certify.certify([m], self.key_pem, out, probe=lambda a, h, t=None: None)
-        self.assertFalse(os.path.exists(out))   # nothing signed on failure
+        out_path, _ = certify.certify(
+            [m], self.key_pem, out, probe=lambda a, h, t=None: None)
+        kid, index = trust.trusted_index(out_path)
+        self.assertIsNotNone(kid)
+        self.assertEqual(index, {})             # nothing vouched, but validly signed
 
     def test_tampering_breaks_signature(self):
         m = _manifest("b1", [_pkg("A", "h1", "sha256:aa")])
@@ -604,7 +634,7 @@ class TestProbeBinding(unittest.TestCase):
 
         common = certify.merge_common_manifest(
             [_manifest("b1", [_pkg("A", "h1", "sha256:aa")])])
-        self.assertEqual(certify.validate_against_store(common, probe), [])
+        self.assertEqual(certify.validate_against_store(common, probe), ([], []))
         self.assertEqual(seen, ["A.tar.gz"])
 
 

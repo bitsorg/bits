@@ -185,28 +185,45 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
     return common
 
 
-def validate_against_store(common, probe) -> list:
+def validate_against_store(common, probe):
     """Check every package in *common* against the real store.
 
     *probe* is ``probe(effective_architecture, hash, tarball) -> 'sha256:HEX' |
     HEX | None`` returning the digest computed from the *actual* stored object
-    named by *tarball* (None if it is absent or ambiguous). Returns a list of
-    human-readable problems; empty means the manifest is fully backed by the
-    store and safe to sign.
+    named by *tarball* (None if it is absent or ambiguous).
+
+    Returns ``(fatal, missing)``:
+
+    - *fatal* — human-readable sha256-mismatch problems: the object exists but
+      its bytes differ from the manifest's claim. Never sign such a manifest.
+    - *missing* — the package dicts whose store object is absent. They cannot be
+      vouched for, but a missing object is not the manifest lying about existing
+      bytes, so the caller may DROP them and sign the rest (graceful handling of
+      a store that has been GC'd, wiped, partially uploaded, or migrated).
+
+    ``([], [])`` means the manifest is fully backed by the store and safe to sign.
     """
-    problems = []
+    fatal, missing = [], []
     for p in common.get("packages") or []:
         h = p.get("hash")
         arch = p.get("effective_architecture") or ""
         claimed = _norm_sha(p.get("tarball_sha256"))
         actual = probe(arch, h, p.get("tarball"))
         if actual is None:
-            problems.append("missing from store: %s %s" % (p.get("package", "?"), h))
+            # The store has no object for this hash. We cannot vouch for it, but
+            # its ABSENCE is not the manifest lying about existing bytes — a
+            # store can legitimately lose objects (GC, cleanup/wipe, a partial
+            # upload, a layout migration). So this is DROPPABLE, not fatal: the
+            # caller removes the entry and signs the rest.
+            missing.append(p)
         elif _norm_sha(actual) != claimed:
-            problems.append(
+            # The object exists but its bytes differ from what the manifest
+            # claims. This IS the manifest lying about the store — corruption or
+            # tampering — and must never be signed. Fatal.
+            fatal.append(
                 "sha256 mismatch for %s %s: manifest=%s store=%s"
                 % (p.get("package", "?"), h, claimed, _norm_sha(actual)))
-    return problems
+    return fatal, missing
 
 
 def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
@@ -243,9 +260,23 @@ def _prepare_common(manifests, key_pem_path, probe, default_group, valid_days,
     if approval_check is not None:
         certified_by = approval_check(common)
     if probe is not None:
-        problems = validate_against_store(common, probe)
-        if problems:
-            raise CertifyError("store validation failed:\n  " + "\n  ".join(problems))
+        fatal, missing = validate_against_store(common, probe)
+        if missing:
+            # Graceful handling of store/manifest drift (e.g. a wiped or GC'd
+            # store): a package whose object is gone cannot be certified, so drop
+            # it and sign the rest rather than failing the WHOLE group. Loud, so
+            # an operator notices, but never fatal.
+            drop = {id(p) for p in missing}
+            for p in missing:
+                warning("certify: %s@%s (hash %s, %s) is not in the store — "
+                        "dropping it from the signed manifest (it is not reusable); "
+                        "certifying the remaining packages.",
+                        p.get("package", "?"), p.get("version", "?"), p.get("hash"),
+                        p.get("effective_architecture") or "shared")
+            common["packages"] = [p for p in common["packages"] if id(p) not in drop]
+        if fatal:
+            # A byte-level lie about the store — corruption/tampering. Fail closed.
+            raise CertifyError("store validation failed:\n  " + "\n  ".join(fatal))
     # Producer-side per-key group binding: refuse to sign groups this key is not
     # authorised for, so an unauthorised signature is never even produced.
     policy = trust.load_key_policy()
@@ -300,9 +331,10 @@ def certify_by_arch(manifests, key_pem_path, out_path, probe=None,
                     approval_check=None) -> list:
     """Certify once, then emit one signed manifest per effective_architecture.
 
-    The trust unit is validated as a whole (so a cross-arch hash conflict or a
-    missing store object still fails the *entire* certification), then the
-    packages are partitioned by ``effective_architecture`` — ``"shared"`` for
+    The trust unit is validated as a whole (a cross-arch hash conflict or a
+    sha256 mismatch still fails the *entire* certification; a package merely
+    absent from the store is dropped, not fatal — see ``_prepare_common``), then
+    the packages are partitioned by ``effective_architecture`` — ``"shared"`` for
     noarch packages is just another architecture — and each partition is written
     and signed to ``<stem>-<arch>.json(.sig)``. A build node fetches only its own
     arch file plus the shared one; there is no point shipping every arch to every
