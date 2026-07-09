@@ -14,7 +14,9 @@ Two layers are checked:
 import os
 import shutil
 import tempfile
+import types
 import unittest
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -90,6 +92,36 @@ class TestTrustedRecords(unittest.TestCase):
         kid, entries = trust.trusted_records(out_path)
         self.assertIsNone(kid)
         self.assertEqual(entries, [])
+
+
+class TestTrustUnavailable(unittest.TestCase):
+    """When the signing library (cryptography) can't be imported, the reuse paths
+    must fail CLOSED, not crash the build (regression for the ModuleNotFoundError
+    that P2c's early trust import surfaced on runners without cryptography)."""
+
+    def _no_trust(self):
+        import builtins
+        real = builtins.__import__
+
+        def fake(name, *a, **k):
+            if name == "bits_helpers.trust" or name == "cryptography" \
+                    or name.startswith("cryptography."):
+                raise ModuleNotFoundError("No module named 'cryptography'")
+            return real(name, *a, **k)
+        return patch.object(builtins, "__import__", side_effect=fake)
+
+    def test_trusted_reuse_records_empty_and_cached(self):
+        build._TRUST_IMPORT_WARNED = True  # silence the one-time warning in tests
+        args = types.SimpleNamespace()
+        with self._no_trust():
+            self.assertEqual(build.trusted_reuse_records(args, "/tmp"), [])
+        # cached miss -> a second call must not re-import (and stays empty)
+        self.assertEqual(build.trusted_reuse_records(args, "/tmp"), [])
+
+    def test_load_trusted_index_fails_closed(self):
+        build._TRUST_IMPORT_WARNED = True
+        with self._no_trust():
+            self.assertEqual(build._load_trusted_index("s", "/tmp", None), (None, {}))
 
 
 class TestFoldRevisionRecords(unittest.TestCase):

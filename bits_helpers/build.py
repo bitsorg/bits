@@ -183,13 +183,42 @@ def _localize_manifest(src, work_dir):
   return os.path.join(dest, name)
 
 
+_TRUST_IMPORT_WARNED = False
+
+
+def _try_import_trust():
+  """Return the ``bits_helpers.trust`` module, or ``None`` if it can't be imported.
+
+  ``trust`` hard-depends on the optional ``cryptography`` package. When it (or any
+  other import dependency) is absent, signed-reuse verification is simply
+  unavailable: every caller here fails CLOSED (no reuse -> rebuild) rather than
+  letting an ``ImportError`` abort the build. Warns once so the operator knows to
+  install ``cryptography`` to re-enable signed reuse.
+  """
+  global _TRUST_IMPORT_WARNED
+  try:
+    from bits_helpers import trust
+    return trust
+  except Exception as exc:  # ImportError (cryptography missing) or anything else
+    if not _TRUST_IMPORT_WARNED:
+      warning("Signed-reuse support is unavailable (%s). Install the "
+              "'cryptography' package in the bits environment to enable "
+              "--require-signed-reuse; until then remote tarballs are not "
+              "verified and will be rebuilt instead of reused.", exc)
+      _TRUST_IMPORT_WARNED = True
+    return None
+
+
 def _load_trusted_index(src, work_dir, accept_groups):
   """Verify one signed manifest (local path or URL) -> (key_id, {hash: sha256}).
 
-  Returns ``(None, {})`` on any failure (missing/unreachable/untrusted), so a
-  caller can degrade to a rebuild rather than crash — fail-closed.
+  Returns ``(None, {})`` on any failure (missing/unreachable/untrusted, or the
+  signing library not installed), so a caller can degrade to a rebuild rather
+  than crash — fail-closed.
   """
-  from bits_helpers import trust
+  trust = _try_import_trust()
+  if trust is None:
+    return None, {}
   try:
     return trust.trusted_index(_localize_manifest(src, work_dir),
                                accept_groups=accept_groups)
@@ -250,7 +279,10 @@ def trusted_reuse_records(args, work_dir):
   cached = getattr(args, "_trustedReuseRecords", None)
   if cached is not None:
     return cached
-  from bits_helpers import trust
+  trust = _try_import_trust()
+  if trust is None:
+    args._trustedReuseRecords = []      # cache the miss: don't retry per package
+    return []
   raw = getattr(args, "trustManifest", None)
   sources = [s.strip() for s in str(raw or "").split(",") if s.strip()]
   raw_groups = getattr(args, "trustGroups", None)
