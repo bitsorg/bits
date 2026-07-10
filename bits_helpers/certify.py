@@ -248,6 +248,38 @@ def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
     return out_abs, sig_path
 
 
+def _drop_local_revisions(common) -> list:
+    """Remove ``local*``-revision packages from *common* (in place); return them.
+
+    bits assigns a ``localN`` revision exactly when there is no write store, and
+    ``doFinalSync`` never uploads such a tarball. A local-revision package is
+    therefore, by construction, NOT in the shared store and can never be
+    certified — it is not drift, it is a category error. Filtering here (before
+    the store probe) keeps laptop/no-write-store BOMs from turning every
+    certification into hundreds of "absent from store" warnings, and keeps
+    unreusable entries out of the signed manifest.
+    """
+    pkgs = common.get("packages") or []
+    local = [p for p in pkgs
+             if str(p.get("revision") or "").startswith("local")]
+    if not local:
+        return []
+    common["packages"] = [p for p in pkgs
+                          if not str(p.get("revision") or "").startswith("local")]
+    warning("certify: skipping %d local-revision package(s) — a 'localN' revision "
+            "is only assigned when there is no write store, so the tarball was "
+            "never uploaded and can never be certified. First few: %s%s",
+            len(local),
+            ", ".join("%s@%s-%s" % (p.get("package", "?"), p.get("version", "?"),
+                                    p.get("revision")) for p in local[:5]),
+            " …" if len(local) > 5 else "")
+    for p in local:
+        debug("certify: skipping local revision: %s@%s-%s (%s)",
+              p.get("package", "?"), p.get("version", "?"), p.get("revision"),
+              p.get("effective_architecture") or "shared")
+    return local
+
+
 def _prepare_common(manifests, key_pem_path, probe, default_group, valid_days,
                     source_commit, approval_check) -> dict:
     """Merge → (approve) → (store-validate) → key-policy check. Returns the
@@ -256,6 +288,7 @@ def _prepare_common(manifests, key_pem_path, probe, default_group, valid_days,
     """
     common = merge_common_manifest(load_build_manifests(manifests), default_group,
                                    valid_days=valid_days, source_commit=source_commit)
+    _drop_local_revisions(common)
     certified_by = None
     if approval_check is not None:
         certified_by = approval_check(common)
@@ -264,15 +297,21 @@ def _prepare_common(manifests, key_pem_path, probe, default_group, valid_days,
         if missing:
             # Graceful handling of store/manifest drift (e.g. a wiped or GC'd
             # store): a package whose object is gone cannot be certified, so drop
-            # it and sign the rest rather than failing the WHOLE group. Loud, so
-            # an operator notices, but never fatal.
+            # it and sign the rest rather than failing the WHOLE group. Reported as
+            # ONE summary (a drifted group can be hundreds of packages), with the
+            # per-package detail at debug level. Never fatal.
             drop = {id(p) for p in missing}
+            warning("certify: %d package(s) are not in the store — dropping them "
+                    "from the signed manifest (they are not reusable) and certifying "
+                    "the remaining %d. First few: %s%s",
+                    len(missing), len(common["packages"]) - len(missing),
+                    ", ".join("%s@%s" % (p.get("package", "?"), p.get("version", "?"))
+                              for p in missing[:5]),
+                    " …" if len(missing) > 5 else "")
             for p in missing:
-                warning("certify: %s@%s (hash %s, %s) is not in the store — "
-                        "dropping it from the signed manifest (it is not reusable); "
-                        "certifying the remaining packages.",
-                        p.get("package", "?"), p.get("version", "?"), p.get("hash"),
-                        p.get("effective_architecture") or "shared")
+                debug("certify: not in store: %s@%s (hash %s, %s)",
+                      p.get("package", "?"), p.get("version", "?"), p.get("hash"),
+                      p.get("effective_architecture") or "shared")
             common["packages"] = [p for p in common["packages"] if id(p) not in drop]
         if fatal:
             # A byte-level lie about the store — corruption/tampering. Fail closed.
@@ -400,8 +439,10 @@ def make_s3_probe(store_url, work_dir, default_arch):
             # must not be validated against an arbitrarily-chosen object.
             if len(tars) != 1:
                 if tarball:
-                    warning("certify: named tarball %s absent under %s (found %d .tar.gz)",
-                            tarball, prefix, len(tars))
+                    # Detail only: _prepare_common reports one summary for all the
+                    # packages it drops, so this must not be a per-package warning.
+                    debug("certify: named tarball %s absent under %s (found %d .tar.gz)",
+                          tarball, prefix, len(tars))
                 return None
             key = tars[0]
         digest = hashlib.sha256()

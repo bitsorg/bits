@@ -17,7 +17,9 @@ from bits_helpers import certify, trust
 
 
 def _pkg(package, h, sha, arch="slc7_x86-64", **kw):
-    e = {"package": package, "version": "1", "revision": "local1",
+    # Default to a REAL revision: a "localN" revision is never uploaded to the
+    # shared store, so certify deliberately skips it (see _drop_local_revisions).
+    e = {"package": package, "version": "1", "revision": "1",
          "effective_architecture": arch, "hash": h, "tarball_sha256": sha,
          "tarball": "%s.tar.gz" % package}
     e.update(kw)
@@ -184,6 +186,24 @@ class TestCertifyEndToEnd(unittest.TestCase):
         kid, index = trust.trusted_index(out_path)
         self.assertIsNotNone(kid)
         self.assertEqual(index, {"h1": "sha256:aa"})       # B dropped, A signed
+
+    def test_certify_skips_local_revisions(self):
+        # localN revisions are only assigned when there is no write store, so the
+        # tarball was never uploaded: they must never be probed or certified.
+        probed = []
+
+        def probe(a, h, t=None):
+            probed.append(h)
+            return "sha256:aa"
+
+        m = _manifest("b1", [_pkg("A", "h1", "sha256:aa"),                    # revision 1
+                             _pkg("L", "h2", "sha256:bb", revision="local1")])
+        out = os.path.join(self.tmp, "out", "common.json")
+        out_path, _ = certify.certify([m], self.key_pem, out, probe=probe)
+        kid, index = trust.trusted_index(out_path)
+        self.assertIsNotNone(kid)
+        self.assertEqual(index, {"h1": "sha256:aa"})   # only the real revision
+        self.assertEqual(probed, ["h1"])               # local one never probed
 
     def test_certify_still_fatal_on_sha_mismatch(self):
         # A tampered/corrupt object (bytes != manifest claim) must stay fatal.
