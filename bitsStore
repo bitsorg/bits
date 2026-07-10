@@ -345,18 +345,65 @@ def select_raw(s3, bucket, f):
     return out
 
 
+def resolve_before(s3, bucket, value):
+    """Turn the --before VALUE into an absolute UTC cutoff datetime.
+
+    Accepts, in order: an ISO-8601 timestamp; a compact build-id / manifest-name
+    stamp ``YYYYMMDDTHHMMSSZ``; or an S3 key (or unique substring of one, e.g. a
+    manifest/BOM name or build_id) whose own upload time is used. The last form is
+    the point of this: to purge "this publication and earlier", pass the manifest
+    that was published and let its upload time bound the deletion.
+
+    Returns a tz-aware datetime, or None if VALUE cannot be resolved (the caller
+    treats that as a hard error rather than silently widening the selection).
+    """
+    if not value:
+        return None
+    dt = parse_iso(value)
+    if dt is None:
+        try:
+            dt = datetime.datetime.strptime(value, "%Y%m%dT%H%M%SZ")
+        except ValueError:
+            dt = None
+    if dt is not None:
+        return dt if dt.tzinfo else dt.replace(tzinfo=datetime.timezone.utc)
+    # Not a timestamp — treat as an S3 object (exact key first, then substring).
+    try:
+        lm = s3.head_object(Bucket=bucket, Key=value).get("LastModified")
+        if lm:
+            return lm
+    except Exception:
+        pass
+    try:
+        cands = [lm for k, _s, lm in list_objs(s3, bucket, "MANIFESTS/")
+                 if value in k and lm]
+    except Exception:
+        return None
+    return max(cands) if cands else None
+
+
 def age_ok(last_modified, f):
-    if not f.older_than:
+    """True if the object passes the age filters. --older-than is a relative
+    window (older than N days); --before is an absolute cutoff (uploaded at or
+    before a fixed instant, e.g. a publication's timestamp). Both, when set, must
+    hold. An object with no known LastModified fails any active filter."""
+    older = getattr(f, "older_than", None)
+    before = getattr(f, "before_dt", None)
+    if not older and not before:
         return True
     if last_modified is None:
         return False
-    return last_modified < (NOW - datetime.timedelta(days=f.older_than))
+    if older and not (last_modified < (NOW - datetime.timedelta(days=older))):
+        return False
+    if before and not (last_modified <= before):
+        return False
+    return True
 
 
 def apply_age(s3, bucket, keys, f):
-    """Drop manifest-derived keys newer than --older-than (HEAD each). No-op when
-    --older-than is unset (the common case)."""
-    if not f.older_than:
+    """Drop manifest-derived keys outside the age filters (HEAD each). No-op when
+    neither --older-than nor --before is set (the common case)."""
+    if not getattr(f, "older_than", None) and not getattr(f, "before_dt", None):
         return
     for k in list(keys):
         try:
@@ -575,6 +622,11 @@ def add_selection(p):
     p.add_argument("--raw", nargs="+", metavar="PATTERN", help="select raw keys by prefix or glob")
     p.add_argument("--older-than", dest="older_than", type=float, metavar="DAYS",
                    help="keep only objects older than DAYS")
+    p.add_argument("--before", dest="before", metavar="WHEN",
+                   help="keep only objects uploaded at or before WHEN — an ISO-8601 "
+                        "time, a compact stamp YYYYMMDDTHHMMSSZ, or a manifest/BOM key "
+                        "(or build_id) whose upload time is used. Purges a publication "
+                        "'and earlier'; combine with --arch/--raw to scope the trees.")
     p.add_argument("--only-signed", action="store_true", help="consider only signed common manifests")
     p.add_argument("--only-boms", action="store_true", help="consider only per-build BOMs")
     p.add_argument("-l", "--long", action="store_true", help="show more detail (ls)")
@@ -607,11 +659,13 @@ def main():
     for name, dflt in (("certified_by", None), ("build", None), ("expired", False),
                        ("objects", False), ("links", False), ("orphans", False),
                        ("broken_links", False),
-                       ("raw", None), ("older_than", None), ("only_signed", False),
+                       ("raw", None), ("older_than", None), ("before", None),
+                       ("only_signed", False),
                        ("only_boms", False), ("long", False), ("dry_run", False),
                        ("yes", False), ("force", False), ("deep", False)):
         if not hasattr(args, name):
             setattr(args, name, dflt)
+    args.before_dt = None
 
     if not os.environ.get("AWS_ACCESS_KEY_ID"):
         sys.exit(f"{PROG}: no S3 credentials — put them in ~/.bits/s3keys "
@@ -636,6 +690,16 @@ def main():
     s3, bucket = make_s3()
     print(f"# store: {STORE}  (bucket: {bucket})", file=sys.stderr)
     store = Store(s3, bucket)
+
+    # Resolve the absolute --before cutoff now that S3 is reachable (it may name a
+    # manifest whose upload time we look up). Fail CLOSED: an unresolved cutoff
+    # must never fall through to "no age filter" and widen a delete.
+    if args.before:
+        args.before_dt = resolve_before(s3, bucket, args.before)
+        if args.before_dt is None:
+            sys.exit(f"{PROG}: could not resolve --before {args.before!r} to a time "
+                     "(expected ISO-8601, YYYYMMDDTHHMMSSZ, or an existing manifest key/build_id).")
+        print(f"# --before {args.before!r} -> {args.before_dt.isoformat()}", file=sys.stderr)
 
     if args.verb == "verify":
         return do_verify(store, s3, bucket, args)
