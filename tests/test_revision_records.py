@@ -178,5 +178,189 @@ class TestFoldRevisionRecords(unittest.TestCase):
         self.assertEqual(nxt, 2)
 
 
+class TestStoreRevisionRecords(unittest.TestCase):
+    """build._store_revision_records — the store's own content-object NAMES.
+
+    The name of TARS/<arch>/store/<h2>/<hash>/<pkg>-<ver>-<rev>.<arch>.tar.gz is
+    the authoritative hash -> revision mapping, and the only source that can say
+    what revision the store already gave to OUR hash.
+    """
+
+    ARCH = "x86_64-el10"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _spec(self, hashes=("a888a899",)):
+        return {"package": "bzip2", "version": "1.0.6", "is_devel_pkg": False,
+                "remote_hashes": list(hashes), "local_hashes": []}
+
+    def _seed_local(self, pkg_hash, name):
+        from bits_helpers.utilities import resolve_store_path
+        d = os.path.join(self.tmp, resolve_store_path(self.ARCH, pkg_hash))
+        os.makedirs(d, exist_ok=True)
+        if name:
+            open(os.path.join(d, name), "w").close()
+        return d
+
+    def test_reads_revision_from_local_object_name(self):
+        self._seed_local("a888a899", "bzip2-1.0.6-1.%s.tar.gz" % self.ARCH)
+        recs = build._store_revision_records(
+            self._spec(), self.ARCH, self.tmp, types.SimpleNamespace())
+        self.assertEqual(recs, [("1", "a888a899")])
+
+    def test_empty_local_dir_does_not_suppress_remote_lookup(self):
+        # REGRESSION: _prefetch_package makes the hash dir BEFORE downloading into
+        # it. An empty local listing means "unknown", not "absent" -- if it short-
+        # circuited the remote lookup, the counter would fall back to the stale
+        # manifest pair and assign a fresh revision.
+        self._seed_local("a888a899", None)          # dir exists, is empty
+        helper = types.SimpleNamespace(
+            list_store_tarballs=lambda a, h: ["bzip2-1.0.6-1.%s.tar.gz" % a])
+        self.assertEqual(
+            build._store_revision_records(self._spec(), self.ARCH, self.tmp, helper),
+            [("1", "a888a899")])
+
+    def test_missing_local_dir_falls_back_to_remote(self):
+        helper = types.SimpleNamespace(
+            list_store_tarballs=lambda a, h: ["bzip2-1.0.6-2.%s.tar.gz" % a])
+        self.assertEqual(
+            build._store_revision_records(self._spec(), self.ARCH, self.tmp, helper),
+            [("2", "a888a899")])
+
+    def test_stops_at_first_hash_in_preference_order(self):
+        seen = []
+
+        def _list(a, h):
+            seen.append(h)
+            return ["bzip2-1.0.6-1.%s.tar.gz" % a] if h == "PRIMARY" else []
+        helper = types.SimpleNamespace(list_store_tarballs=_list)
+        recs = build._store_revision_records(
+            self._spec(("PRIMARY", "ALT")), self.ARCH, self.tmp, helper)
+        self.assertEqual(recs, [("1", "PRIMARY")])
+        self.assertEqual(seen, ["PRIMARY"])          # ALT never probed
+
+    def test_two_revisions_under_one_hash_picks_lowest(self):
+        # The upload HEAD-skip is keyed on the FULL key (hash + file name), so one
+        # hash dir can hold two revision labels. Pick deterministically: the lowest
+        # is the label that landed first, and the one earlier builds installed.
+        self._seed_local("a888a899", "bzip2-1.0.6-3.%s.tar.gz" % self.ARCH)
+        self._seed_local("a888a899", "bzip2-1.0.6-1.%s.tar.gz" % self.ARCH)
+        recs = build._store_revision_records(
+            self._spec(), self.ARCH, self.tmp, types.SimpleNamespace())
+        self.assertEqual(recs, [("1", "a888a899")])
+
+    def test_local_revision_objects_are_ignored(self):
+        self._seed_local("a888a899", "bzip2-1.0.6-local2.%s.tar.gz" % self.ARCH)
+        self.assertEqual(
+            build._store_revision_records(self._spec(), self.ARCH, self.tmp,
+                                          types.SimpleNamespace()), [])
+
+    def test_no_lister_and_no_local_yields_nothing(self):
+        self.assertEqual(
+            build._store_revision_records(self._spec(), self.ARCH, self.tmp,
+                                          types.SimpleNamespace()), [])
+
+    def test_revisionless_object_is_not_a_reuse_record(self):
+        self._seed_local("a888a899", "bzip2-1.0.6.%s.tar.gz" % self.ARCH)
+        self.assertEqual(
+            build._store_revision_records(self._spec(), self.ARCH, self.tmp,
+                                          types.SimpleNamespace()), [])
+
+    def test_store_name_beats_stale_marker_for_same_revision(self):
+        # The bzip2 failure, end to end. The store holds bzip2-1.0.6-1.tar.gz under
+        # hash a888a899; the write-once rev-index marker for revision 1 still holds
+        # an older hash 07cbfa40 (a different dep closure). Without the store record
+        # the fold sees only ("1", 07cbfa40) -> busy={1} -> revision 2 -> and then
+        # fetch_tarball, which matches by HASH, unpacks the -1 tarball into -2.
+        self._seed_local("a888a899", "bzip2-1.0.6-1.%s.tar.gz" % self.ARCH)
+        spec = self._spec()
+        store_recs = build._store_revision_records(
+            spec, self.ARCH, self.tmp, types.SimpleNamespace())
+        stale = [("1", "07cbfa40")]                  # from marker/manifest
+        cand, _busy = build._fold_revision_records(
+            store_recs + stale, spec, None, set(), "")
+        self.assertEqual(cand, ("1", "a888a899", None))   # reuse rev 1, never assign 2
+
+    def test_same_hash_stale_pair_cannot_outrank_the_object_name(self):
+        # REGRESSION, and the reason ORDER alone is not enough: better_tarball
+        # tie-breaks on the position of the hash in remote_hashes, so for two
+        # records carrying the SAME hash the one folded LAST wins. Putting store
+        # records first therefore makes them LOSE. _revision_index_records must
+        # instead DROP manifest/marker pairs for any hash the store covers.
+        spec = self._spec()
+        store = [("1", "a888a899")]
+        stale = [("2", "a888a899")]                  # same hash, wrong revision
+        cand, _ = build._fold_revision_records(store + stale, spec, None, set(), "")
+        self.assertEqual(cand[0], "2", "precondition: naive ordering loses the tie")
+
+        with patch.object(build, "_store_revision_records", return_value=store), \
+             patch.object(build, "trusted_reuse_records", return_value=[
+                 {"package": "bzip2", "version": "1.0.6", "revision": "2",
+                  "effective_architecture": self.ARCH, "hash": "a888a899"}]):
+            helper = types.SimpleNamespace(
+                read_rev_markers=lambda p, v, a: {"2": "a888a899",
+                                                  "5": "OTHERHASH"})
+            recs = build._revision_index_records(
+                spec, self.ARCH, types.SimpleNamespace(), self.tmp, helper)
+        # every pair mentioning our hash but the store's own name is gone...
+        self.assertEqual([r for r in recs if r[1] == "a888a899"], [("1", "a888a899")])
+        # ...while other hashes still reserve their revision numbers.
+        self.assertIn(("5", "OTHERHASH"), recs)
+
+        cand, _ = build._fold_revision_records(recs, spec, None, set(), "")
+        self.assertEqual(cand, ("1", "a888a899", None))
+
+
+class TestSelectCachedTarball(unittest.TestCase):
+    """build._select_cached_tarball — the unpacked tarball must be the one whose
+    NAME matches the revision the counter assigned. fetch_tarball matches purely
+    by hash, so without this guard a `-1` tarball is unpacked into a `-2` tree and
+    build_template.sh's `mv TMP/<hash>/<pkg>/<ver>-<rev>` finds nothing."""
+
+    ARCH = "x86_64-el10"
+
+    def _spec(self, rev):
+        return {"package": "bzip2", "version": "1.0.6", "revision": rev}
+
+    def _t(self, name):
+        return "/sw/TARS/%s/store/a8/a888a899/%s" % (self.ARCH, name)
+
+    def test_picks_the_matching_revision(self):
+        tars = [self._t("bzip2-1.0.6-1.%s.tar.gz" % self.ARCH),
+                self._t("bzip2-1.0.6-2.%s.tar.gz" % self.ARCH)]
+        self.assertEqual(
+            build._select_cached_tarball(tars, self._spec("2"), self.ARCH), tars[1])
+
+    def test_rejects_a_mismatched_revision_rather_than_unpacking_it(self):
+        tars = [self._t("bzip2-1.0.6-1.%s.tar.gz" % self.ARCH)]
+        with patch.object(build, "warning") as warn:
+            self.assertEqual(
+                build._select_cached_tarball(tars, self._spec("2"), self.ARCH), "")
+        self.assertTrue(warn.called)
+
+    def test_accepts_revisionless_tarball(self):
+        tars = [self._t("bzip2-1.0.6.%s.tar.gz" % self.ARCH)]
+        self.assertEqual(
+            build._select_cached_tarball(tars, self._spec("2"), self.ARCH), tars[0])
+
+    def test_exact_revision_preferred_over_revisionless(self):
+        tars = [self._t("bzip2-1.0.6.%s.tar.gz" % self.ARCH),
+                self._t("bzip2-1.0.6-2.%s.tar.gz" % self.ARCH)]
+        self.assertEqual(
+            build._select_cached_tarball(tars, self._spec("2"), self.ARCH), tars[1])
+
+    def test_local_revision_matches(self):
+        tars = [self._t("bzip2-1.0.6-local1.%s.tar.gz" % self.ARCH)]
+        self.assertEqual(
+            build._select_cached_tarball(tars, self._spec("local1"), self.ARCH), tars[0])
+
+    def test_empty(self):
+        self.assertEqual(build._select_cached_tarball([], self._spec("1"), self.ARCH), "")
+
+
 if __name__ == "__main__":
     unittest.main()

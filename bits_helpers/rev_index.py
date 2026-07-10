@@ -100,6 +100,33 @@ def manifest_records(entries, package, version, arch):
   return out
 
 
+def revision_from_tarball(name, package, version, arch):
+  """Return the revision encoded in a content-object file *name*, else None.
+
+  Content objects are stored as ``TARS/<arch>/store/<h2>/<hash>/<pkg>-<ver>-<rev>.<arch>.tar.gz``,
+  so the object's own NAME records which revision the uploader assigned to that
+  hash. That is the authoritative ``hash -> revision`` direction.
+
+  The rev-index markers record the opposite direction (``revision -> hash``) and
+  are write-once, so they cannot represent a revision that legitimately carries
+  two hashes. Only the object name can answer "what revision is *my* hash?".
+
+  Note the uploader's HEAD-skip is keyed on the full object key — hash AND file
+  name — so a hash dir can hold more than one revision label if the same content
+  was ever uploaded under two. Callers must therefore pick deterministically (see
+  ``build._store_revision_records``, which takes the lowest).
+
+  A revision-less name (``force_revision=""``) yields ``""``.
+  """
+  m = re.fullmatch(
+      r"{pkg}-{ver}(?:-((?:local)?[0-9]+))?\.{arch}\.tar\.gz".format(
+          pkg=re.escape(package), ver=re.escape(version), arch=re.escape(arch)),
+      name)
+  if not m:
+    return None
+  return m.group(1) or ""
+
+
 def merge_records(manifest_recs, marker_recs):
   """Union of the manifest pairs and the marker map -> ``[(revision, hash), …]``.
 

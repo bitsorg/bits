@@ -301,14 +301,121 @@ def trusted_reuse_records(args, work_dir):
   return records
 
 
+def _store_revision_records(spec, spec_arch, work_dir, sync_helper):
+  """``[(revision, hash), …]`` read from the NAMES of our own content objects.
+
+  This is the authoritative ``hash -> revision`` direction, and the only source
+  that can answer "what revision does the store already use for *my* hash?".
+
+  Both other sources answer the opposite question. The rev-index markers are
+  keyed ``revision -> hash`` and are write-once, so once revision 1 is claimed by
+  hash A, a later build of hash B at revision 1 cannot record itself; the manifest
+  likewise only lists revisions that were certified. When a hash is missing from
+  both, the counter sees its revision as "busy", assigns N+1, and then
+  ``fetch_tarball`` — which matches purely by hash — happily unpacks the tarball
+  named ``-N`` into the ``-(N+1)`` install root. Every reused package then fails.
+
+  Reading the name back makes the counter self-correcting, and keeps a wiped or
+  diverged rev-index from ever desynchronising the install directory from the
+  tarball it contains.
+
+  A hash dir *should* hold exactly one object, but the upload HEAD-skip is keyed
+  on the full key (hash AND file name, see ``upload_symlinks_and_tarball``), so a
+  hash that was once uploaded under two revision labels keeps both. We therefore
+  pick the LOWEST numeric revision — the label that landed first — which is stable
+  across builders and matches what an earlier build would already have installed.
+
+  Hashes are probed in ``remote_hashes`` preference order and we stop at the first
+  that yields a record: that hash is the one ``better_tarball`` would pick anyway.
+  Local files (already prefetched) are consulted before the network.
+
+  Returns at most one ``(revision, hash)`` pair, so the fold cannot tie against
+  itself.
+  """
+  from bits_helpers import rev_index
+  lister = getattr(sync_helper, "list_store_tarballs", None)
+
+  def _revs(names):
+    # Skip revision-less objects (force_revision="" -> ""), and localN objects:
+    # _fold_revision_records only ever matches against remote_hashes, and local
+    # revisions are never published, so a localN record here could only mislabel
+    # a remote tarball. Mirrors the version-link scan's own local/remote split.
+    return sorted(int(rev) for rev in
+                  (rev_index.revision_from_tarball(n, spec["package"],
+                                                   spec["version"], spec_arch)
+                   for n in names or ())
+                  if rev and not rev.startswith("local"))
+
+  for pkg_hash in spec["remote_hashes"]:
+    try:
+      local = os.listdir(os.path.join(work_dir,
+                                      resolve_store_path(spec_arch, pkg_hash)))
+    except OSError:
+      local = []
+    # The local hash dir may exist but be EMPTY: _prefetch_package makes it before
+    # downloading. Never let that suppress the remote lookup — an empty local
+    # listing is "unknown", not "absent".
+    revs = _revs(local)
+    if not revs and lister:
+      revs = _revs(lister(spec_arch, pkg_hash))
+    if revs:
+      if len(revs) > 1:
+        warning("Store holds %s revisions %s for %s %s under one hash (%s); "
+                "using the lowest.", len(revs), ", ".join(map(str, revs)),
+                spec["package"], spec["version"], pkg_hash)
+      # preference order: the first hash that exists is the one better_tarball
+      # would pick anyway, so stop here.
+      return [(str(revs[0]), pkg_hash)]
+  return []
+
+
+def _select_cached_tarball(tarballs, spec, spec_arch):
+  """Pick the tarball to unpack, or "" to force a rebuild.
+
+  ``fetch_tarball`` matches purely by HASH, and its name regex makes the revision
+  group optional, so it happily hands back an object named ``-1`` when the counter
+  assigned revision 2. build_template.sh then extracts the archive and moves
+  ``TMP/<hash>/<pkg>/<version>-<revision>`` into INSTALLROOT — a path that does not
+  exist in the ``-1`` tree — and the reused package fails with no useful error.
+
+  So require the name to agree with ``spec["revision"]``. A revision-less object
+  (``force_revision=""``) is still accepted, since it has no revision to disagree
+  with. Anything else is discarded: rebuilding is always safe, unpacking the wrong
+  revision never is.
+  """
+  if not tarballs:
+    return ""
+  want = "{pkg}-{ver}-{rev}.{arch}.tar.gz".format(
+    pkg=spec["package"], ver=spec["version"], rev=spec["revision"], arch=spec_arch)
+  revless = "{pkg}-{ver}.{arch}.tar.gz".format(
+    pkg=spec["package"], ver=spec["version"], arch=spec_arch)
+  for name in (want, revless):
+    for tarball in tarballs:
+      if os.path.basename(tarball) == name:
+        return tarball
+  warning("Ignoring cached tarball(s) %s for %s: none matches the assigned "
+          "revision %s. Rebuilding instead of unpacking a mismatched tree.",
+          ", ".join(sorted(os.path.basename(t) for t in tarballs)),
+          spec["package"], spec["revision"])
+  return ""
+
+
 def _revision_index_records(spec, spec_arch, args, work_dir, sync_helper):
   """``[(revision, hash), …]`` candidates for (pkg, version, arch), ADR-0005 P2c.
 
-  Union of the certified common-manifest records (primary) and the S3 rev-index
-  markers (supplement, for uncertified rebuilds). A LIST of pairs, because one
-  revision can legitimately carry several hashes (rebuilt after a recipe change).
-  Best-effort: an empty list just means the counter relies on whatever local
-  version links are present.
+  Union of the store's own content-object names (authoritative for OUR hash), the
+  certified common-manifest records, and the S3 rev-index markers (supplement, for
+  uncertified rebuilds). A LIST of pairs, because one revision can legitimately
+  carry several hashes (rebuilt after a recipe change). Best-effort: an empty list
+  just means the counter relies on whatever local version links are present.
+
+  For any hash the store has an object for, the object's NAME is definitive, so we
+  drop every manifest/marker pair that mentions that same hash. Ordering alone
+  would NOT achieve this: ``better_tarball`` tie-breaks on the position of the hash
+  in ``remote_hashes``, and for two records with the SAME hash the tie resolves in
+  favour of whichever is folded LAST. Filtering removes the tie entirely, so a
+  stale ``(revision, our-hash)`` pairing can never out-rank the real object name.
+  Pairs for other hashes are kept: they still reserve their revision numbers.
   """
   from bits_helpers import rev_index
   manifest_recs = rev_index.manifest_records(
@@ -318,7 +425,13 @@ def _revision_index_records(spec, spec_arch, args, work_dir, sync_helper):
   reader = getattr(sync_helper, "read_rev_markers", None)
   if reader:
     markers = reader(spec["package"], spec["version"], spec_arch)
-  return rev_index.merge_records(manifest_recs, markers)
+
+  store_recs = _store_revision_records(spec, spec_arch, work_dir, sync_helper)
+  covered = {h for _, h in store_recs}
+  if covered:
+    manifest_recs = [(r, h) for r, h in manifest_recs if h not in covered]
+    markers = {r: h for r, h in markers.items() if h not in covered}
+  return rev_index.merge_records(store_recs + manifest_recs, markers)
 
 
 def _fold_revision_records(records, spec, candidate, busy_revisions, revision_prefix):
@@ -3165,7 +3278,8 @@ def doBuild(args, parser):
       syncHelper.fetch_tarball(spec)
       tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
                   if os.path.isfile(t)]  # skip dangling symlinks
-      spec["cachedTarball"] = tarballs[0] if len(tarballs) else ""
+      spec["cachedTarball"] = _select_cached_tarball(
+        tarballs, spec, effective_arch(spec, args.architecture))
       debug("Found tarball in %s" % spec["cachedTarball"]
             if spec["cachedTarball"] else "No cache tarballs found")
       # Verify the recalled tarball against the local integrity ledger.

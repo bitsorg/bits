@@ -84,6 +84,29 @@ class TestRevIndex(unittest.TestCase):
         self.assertEqual(ri.manifest_records(None, "p", "v", "a"), [])
         self.assertEqual(ri.manifest_records(["notadict"], "p", "v", "a"), [])
 
+    def test_revision_from_tarball(self):
+        A = "x86_64-el10"
+        self.assertEqual(
+            ri.revision_from_tarball("bzip2-1.0.6-1.%s.tar.gz" % A, "bzip2", "1.0.6", A), "1")
+        self.assertEqual(
+            ri.revision_from_tarball("bzip2-1.0.6-local3.%s.tar.gz" % A, "bzip2", "1.0.6", A),
+            "local3")
+        # hyphenated version parses against its own version, not a sibling's
+        self.assertEqual(
+            ri.revision_from_tarball("GCC-Toolchain-v14.2.0-alice2-3.%s.tar.gz" % A,
+                                     "GCC-Toolchain", "v14.2.0-alice2", A), "3")
+        self.assertIsNone(
+            ri.revision_from_tarball("GCC-Toolchain-v14.2.0-alice2-3.%s.tar.gz" % A,
+                                     "GCC-Toolchain", "v14.2.0", A))
+        # force_revision="" -> revision-less name -> "" (falsy, nothing to reuse)
+        self.assertEqual(
+            ri.revision_from_tarball("bzip2-1.0.6.%s.tar.gz" % A, "bzip2", "1.0.6", A), "")
+        # foreign names
+        for bad in ("GSL-2.8-1.%s.tar.gz" % A, "bzip2-1.0.7-1.%s.tar.gz" % A,
+                    "bzip2-1.0.6-1.slc7_x86-64.tar.gz", "bzip2-1.0.6-1.%s.tar.bz2" % A,
+                    "x/bzip2-1.0.6-1.%s.tar.gz" % A):
+            self.assertIsNone(ri.revision_from_tarball(bad, "bzip2", "1.0.6", A), bad)
+
     def test_merge_unions_pairs_without_overwriting(self):
         manifest = [("1", "hM"), ("2", "h2")]
         markers = {"1": "hMARKER", "3": "h3"}   # rev 1 has another hash; adds rev 3

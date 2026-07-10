@@ -226,11 +226,36 @@ class DualRemoteSync:
   def fetch_symlinks(self, spec):
     return self.reader.fetch_symlinks(spec)
 
+  def _first_supporting(self, method, default, *args, **kwargs):
+    """Call *method* on the first backend that implements it, reader before writer.
+
+    Store metadata (ADR-0005 rev-index markers, content-object listings) lives in
+    the STORE, and a read-only reader (HttpRemoteSync, CVMFSRemoteSync) may not
+    implement the lookup at all. In the common ``--remote-store https://…::rw``
+    setup both sides are the very same bucket (http read URL + b3 writer); in the
+    cvmfs-read/s3-write setup the metadata only ever exists on the writer.
+
+    Delegating to the reader alone silently returned the empty default, so the
+    revision counter never saw the markers: it could not reuse the recorded
+    revision, took a stale (revision, hash) pair from the signed manifest as
+    "revision busy", assigned a fresh revision N+1, and then unpacked revision N's
+    tarball into the N+1 install root — failing every reused package.
+    """
+    for backend in (self.reader, self.writer):
+      fn = getattr(backend, method, None)
+      if fn is None:
+        continue
+      try:
+        return fn(*args, **kwargs)
+      except Exception as exc:   # best-effort supplement; try the other backend
+        debug("%s failed on %s (%s)", method, type(backend).__name__, exc)
+    return default
+
   def read_rev_markers(self, *args, **kwargs):
-    # Rev-index markers (ADR-0005) live on the read store; delegate to the reader
-    # when it supports them, else report none (best-effort supplement).
-    reader = getattr(self.reader, "read_rev_markers", None)
-    return reader(*args, **kwargs) if reader else {}
+    return self._first_supporting("read_rev_markers", {}, *args, **kwargs)
+
+  def list_store_tarballs(self, *args, **kwargs):
+    return self._first_supporting("list_store_tarballs", [], *args, **kwargs)
 
   def fetch_source(self, *args, **kwargs):
     return self.reader.fetch_source(*args, **kwargs)
@@ -386,6 +411,28 @@ class HttpRemoteSync:
           except Exception:
             pass
     return None
+
+  def list_store_tarballs(self, arch, pkg_hash):
+    """Basenames of the content objects stored under *pkg_hash* (ADR-0005).
+
+    The object name carries ``<pkg>-<version>-<revision>``, i.e. the authoritative
+    ``hash -> revision`` mapping. Best-effort: [] on any error.
+
+    The listing is untrusted remote JSON, so take only string ``name`` fields off
+    dicts and reduce each to its basename. (The caller matches every name against
+    an anchored regex before it can become a path component, but this must not be
+    the only line of defence, and must not raise on a malformed listing.)
+    """
+    try:
+      listing = self.getRetry("{}/{}/".format(
+          self.remoteStore, resolve_store_path(arch, pkg_hash)), log=False)
+    except Exception as exc:
+      debug("store listing failed for %s/%s (%s)", arch, pkg_hash, exc)
+      return []
+    if not isinstance(listing, (list, tuple)):
+      return []
+    return [os.path.basename(x["name"]) for x in listing
+            if isinstance(x, dict) and isinstance(x.get("name"), str)]
 
   def fetch_tarball(self, spec) -> None:
     arch = effective_arch(spec, self.architecture)
@@ -1033,6 +1080,19 @@ class Boto3RemoteSync:
       if h:
         out[rev] = h
     return out
+
+  def list_store_tarballs(self, arch, pkg_hash):
+    """Basenames of the content objects stored under *pkg_hash* (ADR-0005).
+
+    The object name carries ``<pkg>-<version>-<revision>``, i.e. the authoritative
+    ``hash -> revision`` mapping. Best-effort: [] on any error.
+    """
+    try:
+      return [os.path.basename(k)
+              for k in self._s3_listdir(resolve_store_path(arch, pkg_hash))]
+    except Exception as exc:
+      debug("store listing failed for %s/%s (%s)", arch, pkg_hash, exc)
+      return []
 
   def fetch_tarball(self, spec) -> None:
     arch = effective_arch(spec, self.architecture)

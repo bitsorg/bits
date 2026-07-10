@@ -125,23 +125,113 @@ class RevMarkerS3TestCase(unittest.TestCase):
             self._syncer(s3).read_rev_markers("fftw", "3.3.10", ARCH), {})
 
 
+class HttpListStoreTarballsTestCase(unittest.TestCase):
+    """HttpRemoteSync.list_store_tarballs: the object NAME carries the revision.
+
+    The listing is untrusted remote JSON, so it must not raise and must not let a
+    path component escape.
+    """
+
+    def _syncer(self, listing):
+        s = sync.HttpRemoteSync.__new__(sync.HttpRemoteSync)
+        s.remoteStore = "https://s3.cern.ch/swift/v1/bucket"
+        s.getRetry = MagicMock(return_value=listing)
+        return s
+
+    def test_returns_names(self):
+        s = self._syncer([{"name": "fftw-3.3.10-1.%s.tar.gz" % ARCH, "type": "file"}])
+        self.assertEqual(s.list_store_tarballs(ARCH, "aa" * 20),
+                         ["fftw-3.3.10-1.%s.tar.gz" % ARCH])
+        self.assertIn("TARS/%s/store/aa/" % ARCH, s.getRetry.call_args[0][0])
+
+    def test_hostile_or_malformed_listing_is_survivable(self):
+        for listing in (None, "not-a-list", 42, [None], ["bare-string"],
+                        [{"type": "file"}], [{"name": 7}], [{}]):
+            self.assertEqual(self._syncer(listing).list_store_tarballs(ARCH, "aa"), [],
+                             repr(listing))
+
+    def test_names_are_basenamed(self):
+        s = self._syncer([{"name": "../../../etc/passwd"},
+                          {"name": "/abs/fftw-3.3.10-2.%s.tar.gz" % ARCH}])
+        self.assertEqual(s.list_store_tarballs(ARCH, "aa"),
+                         ["passwd", "fftw-3.3.10-2.%s.tar.gz" % ARCH])
+
+    def test_getretry_errors_are_swallowed(self):
+        s = self._syncer(None)
+        s.getRetry = MagicMock(side_effect=RuntimeError("boom"))
+        self.assertEqual(s.list_store_tarballs(ARCH, "aa"), [])
+
+
+class Boto3ListStoreTarballsTestCase(unittest.TestCase):
+
+    def _syncer(self, keys):
+        s = sync.Boto3RemoteSync.__new__(sync.Boto3RemoteSync)
+        s._s3_listdir = MagicMock(return_value=iter(keys))
+        return s
+
+    def test_returns_basenames(self):
+        s = self._syncer(["TARS/%s/store/aa/aabb/fftw-3.3.10-1.%s.tar.gz" % (ARCH, ARCH)])
+        self.assertEqual(s.list_store_tarballs(ARCH, "aabb"),
+                         ["fftw-3.3.10-1.%s.tar.gz" % ARCH])
+
+    def test_list_errors_are_swallowed(self):
+        s = sync.Boto3RemoteSync.__new__(sync.Boto3RemoteSync)
+        s._s3_listdir = MagicMock(side_effect=RuntimeError("boom"))
+        self.assertEqual(s.list_store_tarballs(ARCH, "aabb"), [])
+
+
+class _BareReader:
+    """A read-only backend with no store-metadata support (CVMFS, rsync, http)."""
+    architecture = ARCH
+    workdir = "/sw"
+
+
 class DualDelegationTestCase(unittest.TestCase):
-    """DualRemoteSync routes rev-marker reads to its reader (ADR-0005 P2d)."""
+    """DualRemoteSync routes store-metadata reads to reader, then writer (ADR-0005 P2d)."""
 
     def test_delegates_read_rev_markers_to_reader(self):
         reader = MagicMock()
         reader.read_rev_markers.return_value = {"2": "bb"}
-        dual = sync.DualRemoteSync(reader=reader, writer=MagicMock())
+        writer = MagicMock()
+        dual = sync.DualRemoteSync(reader=reader, writer=writer)
         self.assertEqual(dual.read_rev_markers("fftw", "3.3.10", ARCH), {"2": "bb"})
         reader.read_rev_markers.assert_called_once_with("fftw", "3.3.10", ARCH)
+        writer.read_rev_markers.assert_not_called()
 
-    def test_empty_when_reader_lacks_method(self):
-        # A reader backend without markers (e.g. CVMFS/rsync) -> no markers.
-        class _Reader:
-            architecture = ARCH
-            workdir = "/sw"
-        dual = sync.DualRemoteSync(reader=_Reader(), writer=MagicMock())
+    def test_falls_back_to_writer_when_reader_lacks_method(self):
+        # REGRESSION: `--remote-store https://…::rw` builds DualRemoteSync(Http, Boto3).
+        # HttpRemoteSync had no read_rev_markers, and delegating to the reader ALONE
+        # returned {} — so the counter never saw the markers, treated the revision as
+        # free, and a second hash was uploaded under the same revision number. The
+        # markers live in the writer's bucket (the same bucket, here); use it.
+        writer = MagicMock()
+        writer.read_rev_markers.return_value = {"1": "aa"}
+        dual = sync.DualRemoteSync(reader=_BareReader(), writer=writer)
+        self.assertEqual(dual.read_rev_markers("fftw", "3.3.10", ARCH), {"1": "aa"})
+        writer.read_rev_markers.assert_called_once_with("fftw", "3.3.10", ARCH)
+
+    def test_falls_back_to_writer_when_reader_raises(self):
+        reader = MagicMock()
+        reader.read_rev_markers.side_effect = RuntimeError("network")
+        writer = MagicMock()
+        writer.read_rev_markers.return_value = {"1": "aa"}
+        dual = sync.DualRemoteSync(reader=reader, writer=writer)
+        self.assertEqual(dual.read_rev_markers("fftw", "3.3.10", ARCH), {"1": "aa"})
+
+    def test_empty_when_neither_backend_supports_markers(self):
+        dual = sync.DualRemoteSync(reader=_BareReader(), writer=_BareReader())
         self.assertEqual(dual.read_rev_markers("fftw", "3.3.10", ARCH), {})
+
+    def test_list_store_tarballs_delegates_and_defaults(self):
+        reader = MagicMock()
+        reader.list_store_tarballs.return_value = ["fftw-3.3.10-1.%s.tar.gz" % ARCH]
+        dual = sync.DualRemoteSync(reader=reader, writer=MagicMock())
+        self.assertEqual(dual.list_store_tarballs(ARCH, "aa"),
+                         ["fftw-3.3.10-1.%s.tar.gz" % ARCH])
+        self.assertEqual(
+            sync.DualRemoteSync(reader=_BareReader(),
+                                writer=_BareReader()).list_store_tarballs(ARCH, "aa"),
+            [])
 
 
 if __name__ == "__main__":

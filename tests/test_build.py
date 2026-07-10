@@ -418,7 +418,10 @@ class BuildTestCase(unittest.TestCase):
         doBuild(args, mock_parser)
         mock_warning.assert_called_with("%s.sh contains a recipe, which will be ignored", "defaults-release")
         mock_debug.assert_called_with("Everything done")
-        mock_listdir.assert_called_with(f"/sw/TARS/{TEST_ARCHITECTURE}/ROOT")
+        # assert_any_call, not assert_called_with: the revision counter's gap-fill
+        # (_store_revision_records) legitimately lists the content-object hash dir
+        # afterwards, so the version-link scan is no longer the LAST listdir call.
+        mock_listdir.assert_any_call(f"/sw/TARS/{TEST_ARCHITECTURE}/ROOT")
         # We can't compare directly against the list of calls here as they
         # might happen in any order.
         mock_git_git.assert_has_calls(common_calls + [
