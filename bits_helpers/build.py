@@ -111,11 +111,25 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch) -> None:
   Sentinels for source archives: ``<source_file>.downloading`` (managed inside
   ``download()`` via ``_acquire_download``/``_wait_for_sentinel``).
 
-  This function is designed to be run in a thread pool; any exception is
-  propagated to the executor framework.
+  This function is designed to be run in a thread pool; its result is never
+  collected, so any exception it raises is silently swallowed by the executor.
+  It must therefore not depend on state the main loop has not yet produced.
+
+  In particular ``spec["hash"]`` is assigned per package inside the build loop
+  (``storeHashes`` / the revision counter), in topological order because a hash
+  folds in its dependencies' hashes. The prefetch pool, however, is submitted
+  BEFORE that loop starts, so for any package not yet processed ``spec["hash"]``
+  does not exist yet. Return quietly in that case instead of raising a swallowed
+  KeyError: prefetch is a best-effort speedup, the main loop fetches the tarball
+  synchronously anyway, and a security gate (``--require-signed-reuse``) keys off
+  ``spec["prefetched_tarballs"]`` which we simply leave unset here.
   """
   from bits_helpers.download import _acquire_download, _wait_for_sentinel, download
   from bits_helpers.checksum import parse_entry as _pe
+
+  if not spec.get("hash"):
+    debug("Prefetch skipped for %s: hash not computed yet", spec.get("package"))
+    return
 
   arch = effective_arch(spec, build_arch)
   tar_hash_dir = os.path.join(work_dir, resolve_store_path(arch, spec["hash"]))
@@ -127,7 +141,14 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch) -> None:
     if _acquire_download(tar_hash_dir):
       try:
         os.makedirs(tar_hash_dir, exist_ok=True)
+        _before = set(glob(os.path.join(tar_hash_dir, "*gz")))
         sync_helper.fetch_tarball(spec)
+        # Record what came from the REMOTE store. doBuild treats tarballs that
+        # predate its own fetch_tarball call as trusted local build-node
+        # artifacts and exempts them from --require-signed-reuse; a prefetched
+        # tarball also predates that call, but is remote and must stay gated.
+        spec["prefetched_tarballs"] = sorted(
+          set(glob(os.path.join(tar_hash_dir, "*gz"))) - _before)
       finally:
         # Always remove the sentinel so the main loop is never left waiting.
         sentinel = tar_hash_dir + ".downloading"
@@ -3274,7 +3295,11 @@ def doBuild(args, parser):
       # Tarballs already present before the remote fetch are local build-node
       # artifacts (ultimately trusted); ones that appear only after fetch came
       # from the remote store and are subject to --require-signed-reuse.
-      _preFetchTars = set(glob(os.path.join(tar_hash_dir, "*gz")))
+      # A prefetch worker (above) may already have pulled the REMOTE tarball into
+      # this directory, and _wait_for_sentinel just blocked until it finished --
+      # so subtract whatever it downloaded, or the gate would exempt it.
+      _preFetchTars = (set(glob(os.path.join(tar_hash_dir, "*gz")))
+                       - set(spec.get("prefetched_tarballs", ())))
       syncHelper.fetch_tarball(spec)
       tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
                   if os.path.isfile(t)]  # skip dangling symlinks

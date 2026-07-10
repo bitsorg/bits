@@ -315,6 +315,47 @@ class TestStoreRevisionRecords(unittest.TestCase):
         self.assertEqual(cand, ("1", "a888a899", None))
 
 
+class TestPrefetchPackage(unittest.TestCase):
+    """build._prefetch_package runs in a pool whose results are never collected,
+    so it must not raise on state the main loop has not produced yet, and it must
+    record what it pulled from the REMOTE store so --require-signed-reuse still
+    gates it (a prefetched tarball predates doBuild's own fetch_tarball call and
+    would otherwise be mistaken for a trusted local artifact)."""
+
+    ARCH = "x86_64-el10"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_missing_hash_is_a_clean_skip_not_a_keyerror(self):
+        # The pool is submitted BEFORE the loop that assigns spec["hash"].
+        spec = {"package": "bzip2", "is_devel_pkg": False}   # no "hash"
+        helper = types.SimpleNamespace(
+            fetch_tarball=lambda s: self.fail("must not fetch without a hash"))
+        build._prefetch_package(spec, helper, self.tmp, self.ARCH)   # no raise
+        self.assertNotIn("prefetched_tarballs", spec)
+
+    def test_records_remotely_fetched_tarball(self):
+        from bits_helpers.utilities import resolve_store_path
+        h = "a888a899"
+        spec = {"package": "bzip2", "version": "1.0.6", "hash": h,
+                "is_devel_pkg": False}
+        name = "bzip2-1.0.6-1.%s.tar.gz" % self.ARCH
+        d = os.path.join(self.tmp, resolve_store_path(self.ARCH, h))
+        os.makedirs(os.path.dirname(d), exist_ok=True)  # h2 prefix exists in real stores
+
+        def _fetch(s):
+            os.makedirs(d, exist_ok=True)
+            open(os.path.join(d, name), "w").close()   # "download"
+        helper = types.SimpleNamespace(fetch_tarball=_fetch)
+        build._prefetch_package(spec, helper, self.tmp, self.ARCH)
+        self.assertEqual([os.path.basename(t) for t in spec["prefetched_tarballs"]],
+                         [name])
+
+
 class TestSelectCachedTarball(unittest.TestCase):
     """build._select_cached_tarball — the unpacked tarball must be the one whose
     NAME matches the revision the counter assigned. fetch_tarball matches purely
