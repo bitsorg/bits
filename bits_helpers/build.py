@@ -302,11 +302,13 @@ def trusted_reuse_records(args, work_dir):
 
 
 def _revision_index_records(spec, spec_arch, args, work_dir, sync_helper):
-  """``{revision: hash}`` candidates for (pkg, version, arch), ADR-0005 P2c.
+  """``[(revision, hash), …]`` candidates for (pkg, version, arch), ADR-0005 P2c.
 
   Union of the certified common-manifest records (primary) and the S3 rev-index
-  markers (supplement, for uncertified rebuilds). Best-effort: an empty map just
-  means the counter relies on whatever local version links are present.
+  markers (supplement, for uncertified rebuilds). A LIST of pairs, because one
+  revision can legitimately carry several hashes (rebuilt after a recipe change).
+  Best-effort: an empty list just means the counter relies on whatever local
+  version links are present.
   """
   from bits_helpers import rev_index
   manifest_recs = rev_index.manifest_records(
@@ -331,8 +333,16 @@ def _fold_revision_records(records, spec, candidate, busy_revisions, revision_pr
   Invoked by the counter only as a gap-fill, i.e. with *candidate* ``None`` (the
   local scan found nothing to reuse), so it never overrides a link-derived reuse
   choice.
+
+  *records* is a list of ``(revision, hash)`` PAIRS, not a map: one revision may
+  carry several hashes (rebuilt after a recipe change), and collapsing them would
+  hide the very hash we are about to reuse — the counter would then mark that
+  revision busy, assign a fresh one, and still unpack the old revision's tarball.
+  A revision that matches on ANY of its hashes is reused; `busy` only collects
+  revisions none of whose hashes we can use (and is ignored anyway once a
+  candidate exists, since we then reuse instead of assigning).
   """
-  for rev, rev_hash in (records or {}).items():
+  for rev, rev_hash in (records or ()):
     if rev_hash in spec["remote_hashes"]:
       candidate = better_tarball(spec, candidate, (rev, rev_hash, None))
     elif rev.startswith(revision_prefix) and rev[len(revision_prefix):].isdigit():

@@ -62,20 +62,38 @@ class TestRevIndex(unittest.TestCase):
         ]
         self.assertEqual(
             ri.manifest_records(entries, "fftw", "3.3.10", "x86_64-el9"),
-            {"1": "h1", "2": "h2"})
+            [("1", "h1"), ("2", "h2")])
+
+    def test_manifest_records_keeps_same_revision_with_different_hashes(self):
+        # REGRESSION: merge_common_manifest dedups by (arch, hash), so one manifest
+        # can hold revision 1 twice with different hashes (rebuilt after a recipe
+        # change). Collapsing to {rev: hash} dropped the hash we were about to
+        # reuse -> the counter marked rev 1 busy, assigned rev 2, and then unpacked
+        # the rev-1 tarball into the rev-2 directory.
+        entries = [
+            {"package": "bzip2", "version": "1.0.6", "revision": "1",
+             "effective_architecture": "x86_64-el10", "hash": "hOLD"},
+            {"package": "bzip2", "version": "1.0.6", "revision": "1",
+             "effective_architecture": "x86_64-el10", "hash": "hNEW"},
+        ]
+        self.assertEqual(
+            ri.manifest_records(entries, "bzip2", "1.0.6", "x86_64-el10"),
+            [("1", "hOLD"), ("1", "hNEW")])       # BOTH kept
 
     def test_manifest_records_empty_and_malformed(self):
-        self.assertEqual(ri.manifest_records(None, "p", "v", "a"), {})
-        self.assertEqual(ri.manifest_records(["notadict"], "p", "v", "a"), {})
+        self.assertEqual(ri.manifest_records(None, "p", "v", "a"), [])
+        self.assertEqual(ri.manifest_records(["notadict"], "p", "v", "a"), [])
 
-    def test_merge_manifest_wins(self):
-        manifest = {"1": "hM", "2": "h2"}
-        markers = {"1": "hMARKER", "3": "h3"}   # rev 1 conflicts; markers add rev 3
+    def test_merge_unions_pairs_without_overwriting(self):
+        manifest = [("1", "hM"), ("2", "h2")]
+        markers = {"1": "hMARKER", "3": "h3"}   # rev 1 has another hash; adds rev 3
         self.assertEqual(ri.merge_records(manifest, markers),
-                         {"1": "hM", "2": "h2", "3": "h3"})
+                         [("1", "hM"), ("2", "h2"), ("1", "hMARKER"), ("3", "h3")])
+        # identical (rev, hash) pairs are deduped
+        self.assertEqual(ri.merge_records([("1", "h")], {"1": "h"}), [("1", "h")])
         # empties
-        self.assertEqual(ri.merge_records({}, {"5": "h5"}), {"5": "h5"})
-        self.assertEqual(ri.merge_records(None, None), {})
+        self.assertEqual(ri.merge_records([], {"5": "h5"}), [("5", "h5")])
+        self.assertEqual(ri.merge_records(None, None), [])
 
 
 if __name__ == "__main__":

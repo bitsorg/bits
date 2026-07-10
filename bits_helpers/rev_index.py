@@ -71,31 +71,55 @@ def revision_of(key, arch, package, version):
 
 
 def manifest_records(entries, package, version, arch):
-  """``{revision: hash}`` for (package, version, arch) from common-manifest entries.
+  """``[(revision, hash), …]`` for (package, version, arch) from manifest entries.
 
   *entries* is the ``packages`` list of a loaded common manifest (dicts). Only
   entries matching the package, version and effective_architecture are kept, and
   only those carrying both a revision and a hash.
+
+  A LIST of pairs, not a ``{revision: hash}`` map: revision -> hash is **not
+  injective**. ``merge_common_manifest`` dedups by ``(arch, hash)``, so one
+  certified manifest legitimately holds several entries for the same
+  ``(package, version, revision)`` with DIFFERENT hashes — e.g. revision 1 built
+  before and after a recipe change. Collapsing them into a map silently dropped
+  all but the last, so the counter could miss the hash it was about to reuse,
+  mark that revision "busy", assign a fresh revision, and then still unpack the
+  old revision's tarball into the new revision's directory.
   """
-  out = {}
+  out = []
+  seen = set()
   for e in entries or ():
     if not isinstance(e, dict):
       continue
     if (e.get("package") == package and e.get("version") == version
             and (e.get("effective_architecture") or "") == arch):
       rev, h = e.get("revision"), e.get("hash")
-      if rev and h:
-        out[str(rev)] = h
+      if rev and h and (str(rev), h) not in seen:
+        seen.add((str(rev), h))
+        out.append((str(rev), h))
   return out
 
 
 def merge_records(manifest_recs, marker_recs):
-  """Union of the two ``{revision: hash}`` maps; the manifest is authoritative.
+  """Union of the manifest pairs and the marker map -> ``[(revision, hash), …]``.
 
-  Markers supplement revisions the (certified) manifest hasn't recorded yet; on a
-  same-revision conflict the manifest wins, since it is the signed, deduplicated
-  source of truth.
+  *manifest_recs* is a list of ``(revision, hash)`` pairs (see
+  :func:`manifest_records`); *marker_recs* is the ``{revision: hash}`` map read
+  from the rev-index markers (write-once, so one hash per revision there).
+
+  Both are UNIONED rather than one overwriting the other: a revision may legally
+  carry several hashes (a rebuild after a recipe change), and the counter must
+  see every ``(revision, hash)`` pair so it can spot the one it is about to
+  reuse. Manifest pairs come first (certified, preferred on equal footing);
+  duplicates are dropped.
   """
-  merged = dict(marker_recs or {})
-  merged.update(manifest_recs or {})
-  return merged
+  out, seen = [], set()
+  for rev, h in (manifest_recs or ()):
+    if (str(rev), h) not in seen:
+      seen.add((str(rev), h))
+      out.append((str(rev), h))
+  for rev, h in (marker_recs or {}).items():
+    if (str(rev), h) not in seen:
+      seen.add((str(rev), h))
+      out.append((str(rev), h))
+  return out

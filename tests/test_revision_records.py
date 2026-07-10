@@ -132,21 +132,32 @@ class TestFoldRevisionRecords(unittest.TestCase):
         # rev 2 -> hash "bb", which this build wants (remote_hashes) and which the
         # local scan did not surface -> the record supplies the reuse candidate.
         cand, busy = build._fold_revision_records(
-            {"2": "bb"}, _spec(), None, set(), "")
+            [("2", "bb")], _spec(), None, set(), "")
         self.assertEqual(cand, ("2", "bb", None))
         self.assertEqual(busy, set())
+
+    def test_same_revision_two_hashes_reuses_the_matching_one(self):
+        # REGRESSION: revision 1 recorded twice (rebuilt after a recipe change).
+        # The stale hash must NOT mask the usable one: reuse rev 1, do not assign
+        # a fresh revision (which would unpack rev 1's tarball into rev 2's dir).
+        cand, busy = build._fold_revision_records(
+            [("1", "STALE"), ("1", "bb")], _spec(), None, set(), "")
+        self.assertEqual(cand, ("1", "bb", None))
+        # busy may hold 1 from the stale pair, but a candidate means we reuse,
+        # never assign — so the revision stays 1.
+        self.assertEqual(cand[0], "1")
 
     def test_picks_best_hash_among_records(self):
         # Multiple matching records: better_tarball prefers the hash earliest in
         # remote_hashes ("bb" before "aa"), regardless of revision number.
         cand, _ = build._fold_revision_records(
-            {"9": "aa", "5": "bb"}, _spec(remote=("bb", "aa")), None, set(), "")
+            [("9", "aa"), ("5", "bb")], _spec(remote=("bb", "aa")), None, set(), "")
         self.assertEqual(cand, ("5", "bb", None))
 
     def test_mismatch_reserves_revision_number(self):
         # rev 3 -> some other hash -> not reusable, but its number is taken.
         cand, busy = build._fold_revision_records(
-            {"3": "ffff"}, _spec(), None, set(), "")
+            [("3", "ffff")], _spec(), None, set(), "")
         self.assertIsNone(cand)
         self.assertEqual(busy, {3})
 
@@ -154,7 +165,7 @@ class TestFoldRevisionRecords(unittest.TestCase):
         # Read-only store: we assign localN, so plain remote ints are NOT busy
         # (revision_prefix="local"), matching the symlink loop's guard exactly.
         cand, busy = build._fold_revision_records(
-            {"3": "ffff"}, _spec(), None, set(), "local")
+            [("3", "ffff")], _spec(), None, set(), "local")
         self.assertIsNone(cand)
         self.assertEqual(busy, set())
 
@@ -162,7 +173,7 @@ class TestFoldRevisionRecords(unittest.TestCase):
         # End-to-end of the counter's assignment arithmetic: rev 1 taken by an
         # unrelated hash -> next free revision is 2.
         _, busy = build._fold_revision_records(
-            {"1": "ffff"}, _spec(), None, set(), "")
+            [("1", "ffff")], _spec(), None, set(), "")
         nxt = min(set(range(1, max(busy) + 2)) - busy) if busy else 1
         self.assertEqual(nxt, 2)
 
