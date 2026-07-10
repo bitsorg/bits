@@ -2197,6 +2197,9 @@ def doBuild(args, parser):
     fetch_repos       = args.fetchRepos,
     taps              = taps,
     provider_policy   = getattr(args, "provider_policy", {}),
+    overrides         = overrides,
+    defaults          = args.defaults,
+    default_vars      = defaultsMeta.get("variables"),
   )
   provider_dirs.update(always_on_dirs)
 

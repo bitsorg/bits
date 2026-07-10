@@ -59,6 +59,9 @@ def doDeps(args, parser):
       packages = [args.package]
                  + list(defaultsMeta.get("requires", []))
                  + list(defaultsMeta.get("build_requires", [])),
+      overrides    = overrides,
+      defaults     = args.defaults,
+      default_vars = defaultsMeta.get("variables"),
       **_prov)
   provider_dirs.update(always_on_dirs)
 

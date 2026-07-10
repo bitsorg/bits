@@ -65,6 +65,7 @@ from bits_helpers.utilities import (
     getGeneratedPackages,
     getRecipeReader,
     parseRecipe,
+    resolve_spec_data,
     symlink,
     _parse_req_matcher,
 )
@@ -210,6 +211,44 @@ def _add_to_bits_path(
         parts.append(directory)
     os.environ["BITS_PATH"] = ",".join(parts)
     debug("BITS_PATH updated (%s): %s", position, os.environ["BITS_PATH"])
+
+
+def _apply_provider_override(spec, pkg, overrides, defaults, default_vars):
+    """Apply the defaults ``overrides:`` for a repository provider onto its spec.
+
+    Repository providers are cloned on this early path, *before* getPackageList's
+    override pass runs, so a ``overrides: <provider>: {source, tag}`` in the
+    active defaults would otherwise be silently ignored. Honour the clone-relevant
+    fields (``source``, ``tag``) here so e.g. a stacks-style config can point a
+    provider at a fork or branch::
+
+        variables: {lcgversion: main}
+        overrides:
+          lcg.bits:
+            source: https://gitlab.cern.ch/sft/stacks/bits/lcg.bits
+            tag: "%(lcgversion)s"
+
+    ``%(var)s`` in the override value is expanded from the defaults ``variables:``
+    (same engine recipes use). No-op when there is no override for *pkg*.
+    """
+    if not spec or not overrides:
+        return spec
+    ov = overrides.get((pkg or "").lower())
+    if not ov:
+        return spec
+    for field in ("source", "tag"):
+        if ov.get(field) is None:
+            continue
+        val = str(ov[field])
+        if "%(" in val:
+            try:
+                val = resolve_spec_data(spec, val, defaults or ["release"],
+                                        default_vars=default_vars, strict=True)
+            except Exception as exc:   # pylint: disable=broad-except
+                debug("provider override: could not expand %r for '%s' (%s)",
+                      val, pkg, exc)
+        spec[field] = val
+    return spec
 
 
 def _try_read_spec(pkg_lower: str, config_dir: str, taps: dict):
@@ -716,6 +755,9 @@ def fetch_repo_providers_iteratively(
     fetch_repos: bool,
     taps: dict,
     provider_policy: dict = None,
+    overrides: dict = None,
+    defaults: list = None,
+    default_vars: dict = None,
 ) -> dict:
     """Discover, clone, and register all repository-provider packages
     reachable from the *packages* list.
@@ -775,6 +817,11 @@ def fetch_repo_providers_iteratively(
                 if spec is None:
                     not_found.add(pkg)
                     continue
+                # Honour `overrides: <provider>: {source, tag}` from the active
+                # defaults — this early path predates getPackageList's override
+                # pass, so without this a provider fork/branch could not be
+                # selected from defaults.
+                _apply_provider_override(spec, pkg, overrides, defaults, default_vars)
                 resolved[pkg] = spec
                 not_found.discard(pkg)
 

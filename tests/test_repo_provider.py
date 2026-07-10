@@ -1030,5 +1030,38 @@ class TestStoreHashesProviderHash(unittest.TestCase):
         )
 
 
+class TestApplyProviderOverride(unittest.TestCase):
+    """Defaults `overrides: <provider>: {source, tag}` reach the provider clone."""
+
+    def test_override_source_and_tag_with_variable(self):
+        spec = {"package": "lcg.bits", "version": "1", "tag": "main",
+                "source": "https://github.com/bitsorg/lcg.bits",
+                "provides_repository": True}
+        overrides = {"lcg.bits": {
+            "source": "https://gitlab.cern.ch/sft/stacks/bits/lcg.bits",
+            "tag": "%(lcgversion)s"}}
+        rp._apply_provider_override(spec, "lcg.bits", overrides,
+                                    ["release"], {"lcgversion": "v42"})
+        self.assertEqual(spec["source"],
+                         "https://gitlab.cern.ch/sft/stacks/bits/lcg.bits")
+        self.assertEqual(spec["tag"], "v42")           # %(lcgversion)s expanded
+
+    def test_override_matches_case_insensitively(self):
+        # override keys are lowercased by parseDefaults; the require may be mixed.
+        spec = {"package": "LCG.bits", "tag": "main", "source": "orig"}
+        rp._apply_provider_override(spec, "LCG.bits", {"lcg.bits": {"tag": "x"}},
+                                    ["release"], {})
+        self.assertEqual(spec["tag"], "x")
+
+    def test_noop_without_matching_override(self):
+        spec = {"package": "lcg.bits", "tag": "main", "source": "orig"}
+        rp._apply_provider_override(spec, "lcg.bits", {"other": {"tag": "z"}},
+                                    ["release"], {})
+        self.assertEqual((spec["source"], spec["tag"]), ("orig", "main"))
+        # also a no-op when overrides is None
+        rp._apply_provider_override(spec, "lcg.bits", None, ["release"], {})
+        self.assertEqual((spec["source"], spec["tag"]), ("orig", "main"))
+
+
 if __name__ == "__main__":
     unittest.main()
