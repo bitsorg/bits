@@ -188,13 +188,27 @@ class Store:
             out += self.boms
         return out
 
-    def referenced_keys(self, verified_only=False):
+    def referenced_keys(self, verified_only=False, only_signed=False, only_boms=False):
+        """Store object keys named by manifests. The pool is, in precedence:
+        only_boms (per-build BOMs only) · only_signed (signed common manifests
+        only, regardless of signature state) · verified_only (signed AND
+        signature-verified) · default (signed + BOMs, i.e. referenced anywhere).
+
+        only_signed is what "has a PROPER manifest" means: a signed common
+        manifest, not a throwaway per-build BOM. It deliberately does NOT require
+        a good signature, so a runner without the trust key (verified is None)
+        cannot turn every object into an orphan and trigger a mass delete."""
         self.load()
+        if only_boms:
+            pool = self.boms
+        elif only_signed:
+            pool = self.signed
+        elif verified_only:
+            pool = [m for m in self.signed if m.get("verified")]
+        else:
+            pool = self.signed + self.boms
         out = set()
-        pool = self.signed if verified_only else self.signed + self.boms
         for m in pool:
-            if verified_only and not m.get("verified"):
-                continue
             for p in m["packages"]:
                 k = pkg_key(p)
                 if k:
@@ -281,7 +295,13 @@ def add_link_objects(s3, bucket, keys, linkspecs):
 
 
 def select_orphans(store, s3, bucket, f):
-    referenced = store.referenced_keys()
+    # An orphan is a content tarball no manifest names. By default any manifest
+    # counts (signed common manifests + per-build BOMs). --only-signed narrows the
+    # reference set to signed common manifests, so a tarball that only ever
+    # appeared in a throwaway BOM (or in nothing) counts as an orphan too — i.e.
+    # "has no PROPER manifest". --only-boms is the mirror.
+    referenced = store.referenced_keys(only_signed=f.only_signed,
+                                       only_boms=f.only_boms)
     orphans = {}
     prefixes = ["TARS/%s/store/" % a for a in f.arch] if f.arch else ["TARS/"]
     for prefix in prefixes:
