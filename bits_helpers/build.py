@@ -1264,6 +1264,11 @@ def create_provenance_info(package, specs, args):
     # view client read the three tree paths from here, not by reloading defaults.
     # None when the profile declares no layout (additive; never hashed).
     "cvmfs_layout": getattr(args, "cvmfsLayout", None),
+    # The group's CVMFS path templates (system.cvmfs_path_template / _modules_ /
+    # _shared_), so the publish pipeline resolves the final path from the group's
+    # own declaration instead of re-defining it. None when undeclared (additive;
+    # never hashed — declared under system:, which is not part of any pkg hash).
+    "cvmfs_templates": getattr(args, "cvmfsTemplates", None),
     "reuse_policy": getattr(args, "reusePolicy", "strict") or "strict",
     "provenance": _provenance,
     # Dependencies this package linked but excluded from its identity hash.
@@ -2134,6 +2139,30 @@ def doBuild(args, parser):
     if key in _system:
       return _system[key]
     return defaultsMeta.get(key, top_default)
+
+  # CVMFS path config declared by the group (under system:, so it never affects
+  # a package hash). Recorded verbatim in each package's .meta.json
+  # (cvmfs_templates) so the publish pipeline resolves the WHOLE path from the
+  # group's own declaration — including the CVMFS root ({prefix}). prefix is the
+  # group/admin root; user_prefix is the base for per-user publishing
+  # (<user_prefix>/<login>). The three templates spell out the structure with
+  # {prefix}/{platform}/{pkg}/{tag}/... placeholders resolved at publish time.
+  _cvmfs_root = _system_opt("prefix", None) or _system_opt("cvmfs_prefix", None)
+  _cvmfs_user = _system_opt("cvmfs_user_prefix", None)
+  # {prefix} inside cvmfs_user_prefix is a convenience back-reference to the base
+  # prefix (e.g. "{prefix}/user"); resolve it here so publish sees a plain path.
+  # {prefix} in the three *templates* is left intact — it is resolved at publish
+  # time to the admin (prefix) or user (user_prefix/<login>) root.
+  if _cvmfs_user and _cvmfs_root:
+    _cvmfs_user = _cvmfs_user.replace("{prefix}", _cvmfs_root)
+  _tmpls = {
+    "prefix":      _cvmfs_root,
+    "user_prefix": _cvmfs_user,
+    "path":        _system_opt("cvmfs_path_template",        None),
+    "modules":     _system_opt("cvmfs_modules_template",     None),
+    "shared":      _system_opt("cvmfs_shared_path_template", None),
+  }
+  args.cvmfsTemplates = _tmpls if any(_tmpls.values()) else None
 
   # Global build-time network policy for the recipe sandbox. Precedence:
   #   explicit --sandbox-network  >  defaults system.sandbox_network  >  "on".
