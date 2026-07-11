@@ -35,9 +35,18 @@ class CvmfsLayoutTest(unittest.TestCase):
         layout = R({"cvmfs_dir": "/cvmfs/x"}, ARCH)
         self.assertEqual(layout["install_dir"], ARCH)
         self.assertEqual(layout["module_dir"], "%s/modules" % ARCH)
+        self.assertEqual(layout["shared_dir"], "noarch")        # default, NOT arch-scoped
         self.assertEqual(layout["views_dir"], "Views")          # default views dir
         self.assertEqual(layout["install_path"], "/cvmfs/x/" + ARCH)
+        self.assertEqual(layout["shared_path"], "/cvmfs/x/noarch")
         self.assertEqual(layout["views_path"], "/cvmfs/x/Views")
+
+    def test_shared_dir_override_and_triggers_layout(self):
+        # shared_dir alone is enough to opt in, and is overridable; it is NOT
+        # arch-scoped by default (noarch packages live in one place).
+        layout = R({"cvmfs_dir": "/cvmfs/x", "shared_dir": "any"}, ARCH)
+        self.assertEqual(layout["shared_path"], "/cvmfs/x/any")
+        self.assertIsNotNone(R({"shared_dir": "noarch"}, ARCH))
 
     def test_views_dir_override_and_triggers_layout(self):
         # views_dir alone is enough to opt in, and is overridable
