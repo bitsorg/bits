@@ -387,6 +387,30 @@ if [[ $PKGNAME != defaults-* ]]; then
   run_hooks "POST_INSTALL"
 fi
 
+# Relativise in-tree absolute symlinks so the artefact is relocatable.
+# A build can install an absolute symlink into its own INSTALLROOT (e.g. bzip2's
+# bin/bzless -> $INSTALLROOT/bin/bzmore). That target is a build-time path: it
+# dangles once the tree is unpacked anywhere else, and CVMFS refuses absolute
+# symlink targets outright. Rewrite any symlink whose target is absolute AND
+# lands inside this build tree to a path relative to the link's own directory, so
+# BOTH the tarball and the rsynced local install are relocatable everywhere — S3
+# reuse and `bits publish` to CVMFS from the command line, not just the console
+# publish loop. System / cross-tree symlinks (target outside this tree) are left
+# untouched. Done here, before the rsync + tar below, so both see the fix.
+_pack_root="$WORK_DIR/INSTALLROOT/$PKGHASH"
+find "$_pack_root" -type l | while IFS= read -r _lnk; do
+  _tgt="$(readlink "$_lnk")"
+  case "$_tgt" in
+    "$_pack_root"/*)
+      if _rel="$(realpath -m --relative-to="$(dirname "$_lnk")" "$_tgt" 2>/dev/null)" \
+         && [ -n "$_rel" ]; then
+        ln -sfn "$_rel" "$_lnk"
+      fi
+      ;;
+  esac
+done
+unset _pack_root
+
 # Archive creation
 # B7 FIX: replace backtick with $(...) and quote $PKGHASH; use -c (chars) consistently.
 HASHPREFIX=$(echo "$PKGHASH" | cut -c1,2)
