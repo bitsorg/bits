@@ -1,13 +1,26 @@
 #!/bin/bash -e
 THISDIR="$(cd -P "$(dirname "$0")" && pwd)"
 . ${THISDIR}/etc/profile.d/.bits-pkginfo
-INSTALL_BASE=$(echo "$THISDIR" | sed "s|/$PP$||")
+# Default INSTALL_BASE to where the package is unpacked (THISDIR minus the
+# arch/pkg/ver suffix) — correct for a local install. A caller that stages the
+# tree in a temp dir but wants the files to reference their FINAL location (the
+# CI CVMFS publish, which unpacks to a scratch dir but must bake the CVMFS path)
+# exports INSTALL_BASE explicitly; honour it instead of the scratch path.
+INSTALL_BASE="${INSTALL_BASE:-$(echo "$THISDIR" | sed "s|/$PP$||")}"
 if [[ -s ${THISDIR}/etc/profile.d/.bits-relocate ]] ; then
   # R1 FIX: use 'while IFS= read -r' instead of 'for f in $(cat …)' so that
   # filenames containing spaces, tabs, or glob characters are handled correctly.
+  # Local install keeps the arch/pkg/ver ($PP) suffix — the package lives at
+  # INSTALL_BASE/$PP — so only the …/INSTALLROOT/$PH prefix is rewritten. A caller
+  # deploying to a layout that does NOT preserve $PP (the CI CVMFS publish: content
+  # goes to <pkg_path> directly, no arch/pkg/ver wrapper) sets
+  # BITS_RELOCATE_STRIP_PP=1 so the full …/INSTALLROOT/$PH/$PP prefix collapses to
+  # INSTALL_BASE and the paths don't gain a doubled $PP.
+  _pp_strip=""
+  [ -n "${BITS_RELOCATE_STRIP_PP:-}" ] && _pp_strip="s|${PKG_DIR}/INSTALLROOT/$PH/$PP|$INSTALL_BASE|g;"
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    sed -i.unrelocated -e "s|${PKG_DIR}/INSTALLROOT/$PH|$INSTALL_BASE|g;s|${PKG_DIR}|$INSTALL_BASE|g" "${THISDIR}/$f"
+    sed -i.unrelocated -e "${_pp_strip}s|${PKG_DIR}/INSTALLROOT/$PH|$INSTALL_BASE|g;s|${PKG_DIR}|$INSTALL_BASE|g" "${THISDIR}/$f"
     rm -f "${THISDIR}/${f}.unrelocated"
   done < "${THISDIR}/etc/profile.d/.bits-relocate"
 fi
