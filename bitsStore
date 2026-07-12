@@ -243,6 +243,20 @@ def match_pkg(pkg, f):
         return False
     if f.version and pkg.get("version") not in f.version:
         return False
+    # Provenance filters (from the fields certify now carries into each entry).
+    if getattr(f, "bits_version", None) and pkg.get("bits_version") not in f.bits_version:
+        return False
+    if getattr(f, "bits_dist", None):
+        bd = pkg.get("bits_dist_hash") or ""
+        if not (bd and any(bd.startswith(x) for x in f.bits_dist)):
+            return False
+    if getattr(f, "built_before_dt", None):
+        # Fail-safe: an object whose completed_at is absent/unparseable is NOT
+        # selected by a build-date filter, so a delete never removes an object we
+        # cannot date. (Combine with --before to also catch undated old objects.)
+        ca = parse_iso(pkg.get("completed_at"))
+        if ca is None or not (ca <= f.built_before_dt):
+            return False
     return True
 
 
@@ -631,6 +645,15 @@ def add_selection(p):
     p.add_argument("--group", action="append", metavar="GROUP", help="filter by group")
     p.add_argument("--package", action="append", metavar="PKG", help="filter by package")
     p.add_argument("--version", action="append", metavar="VER", help="filter by version")
+    p.add_argument("--bits-version", dest="bits_version", action="append", metavar="VER",
+                   help="filter by the bits version that built the object (repeatable/comma)")
+    p.add_argument("--bits-dist", dest="bits_dist", action="append", metavar="HASH",
+                   help="filter by bits dist fingerprint (BITS_DIST_HASH); prefix match (repeatable/comma)")
+    p.add_argument("--built-before", dest="built_before", metavar="WHEN",
+                   help="keep only objects BUILT at or before WHEN (the recorded completed_at) — "
+                        "an ISO-8601 time or a YYYY-MM-DD date. Unlike --before (which uses the S3 "
+                        "upload time) this uses build provenance, so it purges a whole bits "
+                        "generation regardless of when objects were (re-)uploaded.")
     p.add_argument("--certified-by", dest="certified_by", metavar="USER", help="filter by certifier")
     p.add_argument("--build", metavar="ID", help="filter by build-id substring")
     p.add_argument("--expired", action="store_true", help="only expired signed manifests")
@@ -674,18 +697,20 @@ def main():
     args = ap.parse_args(argv)
 
     # Normalise multi-value filters; give safe defaults for attrs absent on a verb.
-    for name in ("arch", "group", "package", "version"):
+    for name in ("arch", "group", "package", "version", "bits_version", "bits_dist"):
         setattr(args, name, csv(getattr(args, name, None)))
     for name, dflt in (("certified_by", None), ("build", None), ("expired", False),
                        ("objects", False), ("links", False), ("orphans", False),
                        ("broken_links", False),
                        ("raw", None), ("older_than", None), ("before", None),
+                       ("bits_version", None), ("bits_dist", None), ("built_before", None),
                        ("only_signed", False),
                        ("only_boms", False), ("long", False), ("dry_run", False),
                        ("yes", False), ("force", False), ("deep", False)):
         if not hasattr(args, name):
             setattr(args, name, dflt)
     args.before_dt = None
+    args.built_before_dt = None
 
     if not os.environ.get("AWS_ACCESS_KEY_ID"):
         sys.exit(f"{PROG}: no S3 credentials — put them in ~/.bits/s3keys "
@@ -694,7 +719,8 @@ def main():
     # rm pre-flight guards (before touching S3).
     if args.verb == "rm":
         narrowed = any([args.raw, args.orphans, args.broken_links, args.arch, args.group,
-                        args.package, args.version, args.certified_by, args.build, args.expired])
+                        args.package, args.version, args.certified_by, args.build, args.expired,
+                        args.bits_version, args.bits_dist, args.built_before])
         if not narrowed and not args.force:
             print(f"{PROG}: refusing to select the whole store for rm. Narrow it with a "
                   "filter (--arch/--package/…), --orphans, --broken-links, or --raw (or --force).",
@@ -720,6 +746,25 @@ def main():
             sys.exit(f"{PROG}: could not resolve --before {args.before!r} to a time "
                      "(expected ISO-8601, YYYYMMDDTHHMMSSZ, or an existing manifest key/build_id).")
         print(f"# --before {args.before!r} -> {args.before_dt.isoformat()}", file=sys.stderr)
+
+    # Resolve the --built-before cutoff (build provenance, not S3 upload time).
+    # Fail CLOSED like --before: an unparseable value must not silently widen a
+    # delete. Accept an ISO-8601 timestamp or a YYYY-MM-DD / compact date.
+    if args.built_before:
+        bb = parse_iso(args.built_before)
+        if bb is None:
+            for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y%m%dT%H%M%SZ"):
+                try:
+                    bb = datetime.datetime.strptime(args.built_before, fmt)
+                    break
+                except ValueError:
+                    bb = None
+        if bb is None:
+            sys.exit(f"{PROG}: could not parse --built-before {args.built_before!r} "
+                     "(expected ISO-8601 or YYYY-MM-DD).")
+        args.built_before_dt = bb if bb.tzinfo else bb.replace(tzinfo=datetime.timezone.utc)
+        print(f"# --built-before {args.built_before!r} -> {args.built_before_dt.isoformat()}",
+              file=sys.stderr)
 
     if args.verb == "verify":
         return do_verify(store, s3, bucket, args)
