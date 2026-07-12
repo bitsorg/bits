@@ -327,6 +327,25 @@ def select_orphans(store, s3, bucket, f):
     return orphans
 
 
+def orphan_markers(s3, bucket, orphan_keys):
+    """rev-index markers (MANIFESTS/rev-index/<arch>/<pkg>/<ver-rev>, body = hash)
+    whose (pkg, ver-rev, arch) matches an orphan tarball. Included with --orphans
+    so `rm --orphans` clears the dangling metadata pointer alongside the
+    unreferenced content object — otherwise a stale marker makes bits think the
+    package still exists at that hash. Matched by the marker key (which separates
+    pkg from ver-rev unambiguously) against orphan tarball basenames."""
+    basenames = {k.rsplit("/", 1)[-1] for k in orphan_keys}
+    markers = {}
+    for key, size, _lm in list_objs(s3, bucket, "MANIFESTS/rev-index/"):
+        parts = key.split("/")          # MANIFESTS / rev-index / <arch> / <pkg> / <ver-rev>
+        if len(parts) < 5:
+            continue
+        arch, pkg, verrev = parts[2], parts[3], parts[4]
+        if f"{pkg}-{verrev}.{arch}.tar.gz" in basenames:
+            markers[key] = size
+    return markers
+
+
 def select_broken_links(store, s3, bucket, f):
     """Named/dist link objects whose backing content object is gone.
 
@@ -589,6 +608,24 @@ def do_verify(store, s3, bucket, f):
 
 
 # ── delete ───────────────────────────────────────────────────────────────────
+def do_cat(s3, bucket, key):
+    """Dump a store object's bytes to stdout — handy to inspect a rev-index
+    marker (its hash), a signed manifest, or any small object without a browser.
+    Written verbatim so binary content (e.g. a tarball) can be piped onward."""
+    try:
+        data = get_bytes(s3, bucket, key)
+    except Exception as exc:
+        if "NoSuchKey" in str(exc) or "404" in str(exc):
+            sys.exit(f"{PROG}: no such object: {key}")
+        sys.exit(f"{PROG}: cannot read {key!r}: {exc}")
+    try:
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    except BrokenPipeError:
+        pass
+    return 0
+
+
 def do_delete(s3, bucket, keys, store, f):
     if not keys:
         print("Nothing matched; nothing to delete.")
@@ -690,9 +727,13 @@ def main():
     vp.add_argument("--arch", action="append", metavar="ARCH", help="limit to architecture(s)")
     vp.add_argument("--deep", action="store_true", help="also re-hash every tarball (slow)")
     vp.add_argument("--orphans", action="store_true", help="also report unreferenced tarballs")
+    cp = sub.add_parser("cat", help="dump a store object's bytes to stdout")
+    cp.add_argument("key", metavar="KEY",
+                    help="S3 object key, e.g. MANIFESTS/rev-index/<arch>/<pkg>/<ver-rev> "
+                         "or TARS/<arch>/store/<h2>/<hash>/<file>")
 
     argv = sys.argv[1:]
-    if not argv or argv[0] not in ("ls", "rm", "verify", "-h", "--help"):
+    if not argv or argv[0] not in ("ls", "rm", "verify", "cat", "-h", "--help"):
         argv = ["ls"] + argv                          # default verb
     args = ap.parse_args(argv)
 
@@ -737,6 +778,9 @@ def main():
     print(f"# store: {STORE}  (bucket: {bucket})", file=sys.stderr)
     store = Store(s3, bucket)
 
+    if args.verb == "cat":
+        return do_cat(s3, bucket, args.key)
+
     # Resolve the absolute --before cutoff now that S3 is reachable (it may name a
     # manifest whose upload time we look up). Fail CLOSED: an unresolved cutoff
     # must never fall through to "no age filter" and widen a delete.
@@ -775,7 +819,9 @@ def main():
     elif args.broken_links:
         keys, title = select_broken_links(store, s3, bucket, args), "broken-links"
     elif args.orphans:
-        keys, title = select_orphans(store, s3, bucket, args), "orphans"
+        keys = select_orphans(store, s3, bucket, args)
+        keys.update(orphan_markers(s3, bucket, keys))   # + their dangling rev-index markers
+        title = "orphans"
     elif args.objects or args.verb == "rm":
         keys, title = select_objects(store, s3, bucket, args), "objects"
     else:
