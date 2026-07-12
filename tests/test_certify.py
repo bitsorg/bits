@@ -41,6 +41,21 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(common["sources"], ["b1", "b2"])
         self.assertEqual(common["kind"], certify.COMMON_MANIFEST_KIND)
 
+    def test_provenance_fields_carried_into_common_manifest(self):
+        # completed_at/built_by come from the package entry; bits_version/
+        # bits_dist_hash are injected from the manifest level — so store
+        # lifecycle tooling can prune by build date / bits fingerprint.
+        m = _manifest("b1", [_pkg("A", "h1", "sha256:aa",
+                                  completed_at="2026-07-12T00:00:00Z",
+                                  built_by="user@host")])
+        m["bits_version"] = "1.2.3"
+        m["bits_dist_hash"] = "deadbeefcafe"
+        e = certify.merge_common_manifest([m])["packages"][0]
+        self.assertEqual(e["completed_at"], "2026-07-12T00:00:00Z")
+        self.assertEqual(e["built_by"], "user@host")
+        self.assertEqual(e["bits_version"], "1.2.3")
+        self.assertEqual(e["bits_dist_hash"], "deadbeefcafe")
+
     def test_conflicting_sha_same_arch_fails_closed(self):
         # Same hash + same architecture => same store path => must be same bytes.
         m1 = _manifest("b1", [_pkg("A", "h1", "sha256:aa", arch="slc7_x86-64")])

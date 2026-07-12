@@ -35,7 +35,14 @@ COMMON_MANIFEST_KIND = "common-manifest"
 # tarball_sha256 are what trusted_index() keys on; group drives the consumer
 # trust policy (own-group + common); the rest aid GC/monitoring.
 _PKG_FIELDS = ("package", "version", "revision", "effective_architecture",
-               "hash", "tarball", "tarball_sha256", "group")
+               "hash", "tarball", "tarball_sha256", "group",
+               # Provenance carried through for store lifecycle management: the
+               # build timestamp and the builder host of the object. Combined
+               # with the bits fingerprint injected from the manifest level
+               # (bits_version / bits_dist_hash), these let `bits store` prune by
+               # "built with bits version/dist < X" or "built before <date>"
+               # rather than only by S3 upload time (LastModified).
+               "completed_at", "built_by")
 
 
 class CertifyError(Exception):
@@ -150,6 +157,14 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
             entry = {k: e[k] for k in _PKG_FIELDS if k in e}
             if not entry.get("group") and man_group:
                 entry["group"] = man_group
+            # Stamp the bits fingerprint of the build that produced this object.
+            # These live at the manifest level (one bits version per build), so
+            # copy them onto the per-package entry — the common manifest merges
+            # many builds, and each object must carry its own provenance for
+            # store lifecycle tooling to prune by bits version/date.
+            for _fld in ("bits_version", "bits_dist_hash"):
+                if man.get(_fld) and _fld not in entry:
+                    entry[_fld] = man[_fld]
             prev = by_key.get(key)
             if prev is None:
                 by_key[key] = entry
