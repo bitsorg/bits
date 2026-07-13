@@ -115,6 +115,20 @@ class CvmfsTemplatesTest(unittest.TestCase):
         t = RT({"system": {"cvmfs_prefix": "/cvmfs/x.io"}})
         self.assertEqual(t["prefix"], "/cvmfs/x.io")
 
+    def test_fallback_prefix_used_when_recipe_has_none(self):
+        # A recipe set with no system.prefix + a fallback → default layout.
+        t = RT({"system": {}}, fallback_prefix="/cvmfs/y.io/cms/releases")
+        self.assertEqual(t["prefix"], "/cvmfs/y.io/cms/releases")
+        self.assertEqual(t["path"], "{prefix}/{platform}/Packages/{pkg}/{tag}")
+
+    def test_recipe_prefix_wins_over_fallback(self):
+        t = RT({"system": {"prefix": "/cvmfs/recipe"}}, fallback_prefix="/cvmfs/fb")
+        self.assertEqual(t["prefix"], "/cvmfs/recipe")
+
+    def test_no_prefix_no_fallback_is_none(self):
+        self.assertIsNone(RT({"system": {}}, fallback_prefix=None))
+        self.assertIsNone(RT({"system": {}}, fallback_prefix=""))
+
 
 if __name__ == "__main__":
     unittest.main()

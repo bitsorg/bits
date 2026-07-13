@@ -104,6 +104,13 @@ class CvmfsPathHandlerTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._run(admin=True)
 
+    def test_prefix_fallback_when_recipe_has_none(self):
+        # Recipe declares no prefix; --prefix supplies it, templates default.
+        CP.parseDefaults = lambda *a, **k: ("", {}, {}, {"system": {}})
+        self.assertEqual(
+            self._run(admin=True, prefix="/cvmfs/y.io/cms/releases"),
+            "/cvmfs/y.io/cms/releases/x86_64-el9/Packages/GENIE/R-3_06_02")
+
 
 if __name__ == "__main__":
     unittest.main()

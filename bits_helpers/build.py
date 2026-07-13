@@ -2146,8 +2146,11 @@ def doBuild(args, parser):
   # Recorded in .meta.json.cvmfs_templates so the publish pipeline resolves the
   # WHOLE path from the group's declaration; `bits cvmfs-path` resolves the same
   # templates for the pre-build reserve. Shared resolver so the two never drift.
+  # BITS_CVMFS_PREFIX is a fallback root for recipe sets that cannot declare
+  # system.prefix themselves (bits-console supplies it); a recipe prefix wins.
   from bits_helpers.cvmfs_layout import resolve_cvmfs_templates
-  args.cvmfsTemplates = resolve_cvmfs_templates(defaultsMeta)
+  args.cvmfsTemplates = resolve_cvmfs_templates(
+      defaultsMeta, os.environ.get("BITS_CVMFS_PREFIX") or None)
 
   # Global build-time network policy for the recipe sandbox. Precedence:
   #   explicit --sandbox-network  >  defaults system.sandbox_network  >  "on".

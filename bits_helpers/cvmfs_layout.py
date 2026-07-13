@@ -95,17 +95,23 @@ def resolve_cvmfs_layout(defaults_meta, architecture):
 # templates fall back to a conventional layout. Recorded verbatim in each
 # package's .meta.json (cvmfs_templates); `bits cvmfs-path` resolves the same
 # templates pre-build so the reserve and the publish cannot diverge.
-def resolve_cvmfs_templates(defaults_meta):
+def resolve_cvmfs_templates(defaults_meta, fallback_prefix=None):
     """Resolve the group's CVMFS publish-path templates from the defaults.
 
     Returns a dict {prefix, user_prefix, path, modules, shared} — templates with
     {prefix} left intact (resolved at publish time to the admin `prefix` or the
     user `user_prefix`/<login> root), except user_prefix whose own {prefix}
     back-reference is resolved to the base prefix. Returns None when the group
-    declares no CVMFS root.
+    declares no CVMFS root and no fallback is given.
 
-    Only `prefix` is required; a group that sets any template without a prefix
-    is misconfigured and the build aborts early (dieOnError).
+    The root prefix comes from the group's defaults-release.sh (system.prefix)
+    when declared; otherwise `fallback_prefix` is used. The fallback exists for
+    groups whose recipe repo cannot declare a prefix (e.g. a third-party recipe
+    set): bits-console supplies the prefix and the templates take the built-in
+    defaults. A recipe-declared prefix always wins over the fallback.
+
+    Only a prefix (recipe or fallback) is required; a group that sets any
+    template but has no prefix at all is misconfigured (dieOnError).
     """
     from bits_helpers.log import dieOnError
     system = (defaults_meta or {}).get("system", {}) or {}
@@ -116,7 +122,9 @@ def resolve_cvmfs_templates(defaults_meta):
             return system[key]
         return (defaults_meta or {}).get(key, None)
 
-    root = opt("prefix") or opt("cvmfs_prefix")
+    # Recipe prefix wins; else the bits-console fallback (for recipe sets that
+    # cannot declare their own prefix).
+    root = opt("prefix") or opt("cvmfs_prefix") or (fallback_prefix or None)
     # cvmfs_releases_template is the current name; cvmfs_path_template is the
     # legacy alias, still accepted.
     rel = opt("cvmfs_releases_template") or opt("cvmfs_path_template")

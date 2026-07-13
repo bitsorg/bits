@@ -1439,6 +1439,10 @@ def doParseArgs():
       "--login", dest="login", metavar="USER", default="",
       help="User login for a non-admin path ({user}; appended to user_prefix).")
   cvmfs_path_parser.add_argument(
+      "--prefix", dest="prefix", metavar="ROOT", default="",
+      help="Fallback CVMFS root used only when the loaded defaults declare no "
+           "system.prefix (for recipe sets that cannot declare their own).")
+  cvmfs_path_parser.add_argument(
       "--defaults", dest="defaults", default="release", metavar="DEFAULT",
       help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
   cvmfs_path_parser.add_argument(

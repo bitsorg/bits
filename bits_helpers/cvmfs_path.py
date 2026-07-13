@@ -63,10 +63,11 @@ def doCvmfsPath(args, parser):
         args.disable, defaults_reader, debug, args.architecture, args.configDir)
     dieOnError(err, err)
 
-    tmpls = resolve_cvmfs_templates(defaults_meta)
+    tmpls = resolve_cvmfs_templates(
+        defaults_meta, getattr(args, "prefix", None) or None)
     dieOnError(tmpls is None,
-               "the loaded defaults declare no CVMFS root (system.prefix); "
-               "cannot resolve a publish path")
+               "no CVMFS root: the loaded defaults declare no system.prefix and "
+               "no --prefix fallback was given; cannot resolve a publish path")
 
     # Effective root: admins publish under the group prefix; users publish under
     # <user_prefix>/<login>. This mirrors the publish loop (IS_ADMIN + user_prefix).
