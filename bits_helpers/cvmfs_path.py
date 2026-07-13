@@ -94,9 +94,10 @@ def doCvmfsPath(args, parser):
         "user":        args.login or "",
         "family":      "",
     }
+    # Expand literally — do NOT normalise/collapse slashes: the publish pipeline
+    # expands the same .meta.json template literally (no collapse), so the reserve
+    # path this produces must match it byte-for-byte. (A template that yields a
+    # double slash is a recipe bug to fix in defaults-release.sh, not here.)
     path = _expand(tmpl, subst)
-    # Collapse any doubled slashes from empty segments, keep a single leading /.
-    while "//" in path:
-        path = path.replace("//", "/")
     print(path)
     return True
