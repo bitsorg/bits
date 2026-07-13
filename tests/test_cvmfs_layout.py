@@ -10,6 +10,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bits_helpers.cvmfs_layout import resolve_cvmfs_layout as R
+from bits_helpers.cvmfs_layout import resolve_cvmfs_templates as RT
 
 ARCH = "ubuntu2510_x86-64-gcc15-dbg"
 
@@ -64,6 +65,55 @@ class CvmfsLayoutTest(unittest.TestCase):
         layout = R({"install_dir": "%(architecture)s/Packages"}, ARCH)
         self.assertEqual(layout["cvmfs_dir"], "")
         self.assertEqual(layout["install_path"], "%s/Packages" % ARCH)
+
+
+class CvmfsTemplatesTest(unittest.TestCase):
+    """resolve_cvmfs_templates: publish-path templates from defaults-release."""
+
+    def test_none_when_no_prefix_and_no_templates(self):
+        # A group that opts out entirely gets None (unaffected).
+        self.assertIsNone(RT({}))
+        self.assertIsNone(RT(None))
+        self.assertIsNone(RT({"system": {}}))
+
+    def test_prefix_only_uses_default_layout(self):
+        t = RT({"system": {"prefix": "/cvmfs/x.io"}})
+        self.assertEqual(t["prefix"], "/cvmfs/x.io")
+        self.assertEqual(t["path"], "{prefix}/{platform}/Packages/{pkg}/{tag}")
+        self.assertEqual(t["modules"], "{prefix}/{platform}/Modules/modulefiles/{pkg}")
+        self.assertEqual(t["shared"], "{prefix}/noarch/{pkg}/{tag}")
+        # user_prefix's own {prefix} back-reference is resolved to the base.
+        self.assertEqual(t["user_prefix"], "/cvmfs/x.io/user")
+
+    def test_explicit_templates_win(self):
+        t = RT({"system": {
+            "prefix": "/cvmfs/test.cvmfs.io",
+            "cvmfs_releases_template": "{prefix}/releases/{platform}/Packages/{pkg}/{tag}",
+            "cvmfs_modules_template": "{prefix}/{platform}/Modules/modulefiles/{pkg}",
+            "cvmfs_shared_path_template": "{prefix}/noarch/{pkg}/{tag}",
+            "cvmfs_user_prefix": "{prefix}/user",
+        }})
+        self.assertEqual(t["path"], "{prefix}/releases/{platform}/Packages/{pkg}/{tag}")
+
+    def test_legacy_alias_cvmfs_path_template(self):
+        # cvmfs_path_template is the legacy name for cvmfs_releases_template.
+        t = RT({"system": {"prefix": "/cvmfs/x.io",
+                           "cvmfs_path_template": "{prefix}/LEG/{pkg}"}})
+        self.assertEqual(t["path"], "{prefix}/LEG/{pkg}")
+
+    def test_template_without_prefix_aborts(self):
+        # Any template but no prefix -> misconfigured -> dieOnError (SystemExit).
+        with self.assertRaises(SystemExit):
+            RT({"system": {"cvmfs_releases_template": "{prefix}/x"}})
+
+    def test_bare_top_level_key_honoured(self):
+        # A bare top-level prefix (not under system:) is still accepted.
+        t = RT({"prefix": "/cvmfs/x.io"})
+        self.assertEqual(t["prefix"], "/cvmfs/x.io")
+
+    def test_cvmfs_prefix_alias(self):
+        t = RT({"system": {"cvmfs_prefix": "/cvmfs/x.io"}})
+        self.assertEqual(t["prefix"], "/cvmfs/x.io")
 
 
 if __name__ == "__main__":

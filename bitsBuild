@@ -137,6 +137,10 @@ def doMain(args, parser):
     doStatus(args, parser)
     sys.exit(0)
 
+  if args.action == "cvmfs-path":
+    from bits_helpers.cvmfs_path import doCvmfsPath
+    sys.exit(0 if doCvmfsPath(args, parser) else 1)
+
   if args.action == "stats":
     doStats(args, parser)
     sys.exit(0)

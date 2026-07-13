@@ -85,3 +85,61 @@ def resolve_cvmfs_layout(defaults_meta, architecture):
         "shared_path": _abs(shared_dir),
         "views_path": _abs(views_dir),
     }
+
+
+# CVMFS *publish* path templates. Distinct from resolve_cvmfs_layout above:
+# that resolves the build/reuse trees (arch-scoped dirs under a cvmfs_dir);
+# this resolves the publish-target templates (per-package paths the publish
+# pipeline expands and the pre-build reserve checks). A group declares them in
+# defaults-release.sh under system:, and only `prefix` is required — the four
+# templates fall back to a conventional layout. Recorded verbatim in each
+# package's .meta.json (cvmfs_templates); `bits cvmfs-path` resolves the same
+# templates pre-build so the reserve and the publish cannot diverge.
+def resolve_cvmfs_templates(defaults_meta):
+    """Resolve the group's CVMFS publish-path templates from the defaults.
+
+    Returns a dict {prefix, user_prefix, path, modules, shared} — templates with
+    {prefix} left intact (resolved at publish time to the admin `prefix` or the
+    user `user_prefix`/<login> root), except user_prefix whose own {prefix}
+    back-reference is resolved to the base prefix. Returns None when the group
+    declares no CVMFS root.
+
+    Only `prefix` is required; a group that sets any template without a prefix
+    is misconfigured and the build aborts early (dieOnError).
+    """
+    from bits_helpers.log import dieOnError
+    system = (defaults_meta or {}).get("system", {}) or {}
+
+    def opt(key):
+        # system: wins; a bare top-level key is still honoured (never hashed).
+        if key in system:
+            return system[key]
+        return (defaults_meta or {}).get(key, None)
+
+    root = opt("prefix") or opt("cvmfs_prefix")
+    # cvmfs_releases_template is the current name; cvmfs_path_template is the
+    # legacy alias, still accepted.
+    rel = opt("cvmfs_releases_template") or opt("cvmfs_path_template")
+    mod = opt("cvmfs_modules_template")
+    shr = opt("cvmfs_shared_path_template")
+    usr = opt("cvmfs_user_prefix")
+
+    dieOnError(bool(rel or mod or shr or usr) and not root,
+               "system.prefix is required for CVMFS publishing "
+               "(a cvmfs_*_template is set but prefix is not)")
+    if not root:
+        return None
+
+    # Built-in default layout; a group overrides any of these under system:.
+    rel = rel or "{prefix}/{platform}/Packages/{pkg}/{tag}"
+    mod = mod or "{prefix}/{platform}/Modules/modulefiles/{pkg}"
+    shr = shr or "{prefix}/noarch/{pkg}/{tag}"
+    usr = usr or "{prefix}/user"
+    usr = usr.replace("{prefix}", root)
+    return {
+        "prefix":      root,
+        "user_prefix": usr,
+        "path":        rel,   # the .path key is fed by cvmfs_releases_template
+        "modules":     mod,
+        "shared":      shr,
+    }

@@ -2140,46 +2140,14 @@ def doBuild(args, parser):
       return _system[key]
     return defaultsMeta.get(key, top_default)
 
-  # CVMFS path config declared by the group under system: (never affects a package
-  # hash). Only `prefix` is required for CVMFS publishing; the four templates fall
-  # back to a conventional layout when the group does not override them, so a group
-  # normally only needs to set `prefix`. Recorded in .meta.json.cvmfs_templates so
-  # the publish pipeline resolves the WHOLE path from the group's declaration —
-  # {prefix} in the templates is resolved at publish time (admin `prefix` or
-  # `user_prefix`/<login>).
-  _cvmfs_root = _system_opt("prefix", None) or _system_opt("cvmfs_prefix", None)
-  # cvmfs_releases_template is the current name; cvmfs_path_template is the legacy
-  # alias. Any template may be overridden under system:; unset ones use the
-  # built-in defaults below.
-  _rel_tmpl = (_system_opt("cvmfs_releases_template", None)
-               or _system_opt("cvmfs_path_template", None))
-  _mod_tmpl = _system_opt("cvmfs_modules_template",     None)
-  _shr_tmpl = _system_opt("cvmfs_shared_path_template", None)
-  _usr_tmpl = _system_opt("cvmfs_user_prefix",          None)
-  # A group that declares any CVMFS template but no prefix is misconfigured:
-  # publishing cannot resolve a root, so fail the build early.
-  dieOnError(bool(_rel_tmpl or _mod_tmpl or _shr_tmpl or _usr_tmpl) and not _cvmfs_root,
-             "system.prefix is required for CVMFS publishing "
-             "(a cvmfs_*_template is set but prefix is not)")
-  if _cvmfs_root:
-    # Built-in default layout; a group overrides any of these under system:.
-    _rel_tmpl = _rel_tmpl or "{prefix}/{platform}/Packages/{pkg}/{tag}"
-    _mod_tmpl = _mod_tmpl or "{prefix}/{platform}/Modules/modulefiles/{pkg}"
-    _shr_tmpl = _shr_tmpl or "{prefix}/noarch/{pkg}/{tag}"
-    _usr_tmpl = _usr_tmpl or "{prefix}/user"
-    # {prefix} inside user_prefix is a back-reference to the base prefix; resolve
-    # it now. {prefix} in the three path templates is left intact — resolved at
-    # publish time to the admin (prefix) or user (user_prefix/<login>) root.
-    _usr_tmpl = _usr_tmpl.replace("{prefix}", _cvmfs_root)
-    args.cvmfsTemplates = {
-      "prefix":      _cvmfs_root,
-      "user_prefix": _usr_tmpl,
-      "path":        _rel_tmpl,   # keep the .path key (fed by cvmfs_releases_template)
-      "modules":     _mod_tmpl,
-      "shared":      _shr_tmpl,
-    }
-  else:
-    args.cvmfsTemplates = None
+  # CVMFS publish-path templates declared by the group under system: (never
+  # affect a package hash). Only `prefix` is required; the four templates fall
+  # back to a conventional layout, so a group normally only sets `prefix`.
+  # Recorded in .meta.json.cvmfs_templates so the publish pipeline resolves the
+  # WHOLE path from the group's declaration; `bits cvmfs-path` resolves the same
+  # templates for the pre-build reserve. Shared resolver so the two never drift.
+  from bits_helpers.cvmfs_layout import resolve_cvmfs_templates
+  args.cvmfsTemplates = resolve_cvmfs_templates(defaultsMeta)
 
   # Global build-time network policy for the recipe sandbox. Precedence:
   #   explicit --sandbox-network  >  defaults system.sandbox_network  >  "on".

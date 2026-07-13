@@ -1398,6 +1398,65 @@ def doParseArgs():
       help="Emit a machine-readable JSON report instead of the human-readable table.",
   )
 
+  # ── cvmfs-path ────────────────────────────────────────────────────────────
+  # Resolve a package's CVMFS publish path from the group's templates
+  # (defaults-release.sh) without building. Used by the publish pipeline's
+  # pre-build namespace reserve so the reserved path matches what the build
+  # will record in .meta.json. Authorization stays in the pipeline (it passes
+  # --admin/--login); this command only expands templates.
+  cvmfs_path_parser = subparsers.add_parser(
+      "cvmfs-path",
+      help="resolve a package's CVMFS publish path from the group's templates",
+      description=(
+          "Resolve the CVMFS publish path for a package from the group's path "
+          "templates (declared in defaults-release.sh under system:), without "
+          "building. Prints the absolute /cvmfs/<repo>/<path>. The publish "
+          "pipeline's pre-build reserve uses this so the reserved namespace and "
+          "the published path derive from the same single source."
+      ),
+  )
+  cvmfs_path_parser.add_argument(
+      "--package", dest="package", metavar="NAME", required=True,
+      help="Package name ({pkg} in the template).")
+  cvmfs_path_parser.add_argument(
+      "--version", dest="version", metavar="VER", default="",
+      help="Version/tag segment ({tag}/{version} in the template).")
+  cvmfs_path_parser.add_argument(
+      "--platform", dest="platform", metavar="PLAT", default="",
+      help="Platform ({platform} in the template).")
+  cvmfs_path_parser.add_argument(
+      "--install-dir", dest="installDir", metavar="DIR", default="",
+      help="CVMFS install-dir ({install_dir} in the template).")
+  cvmfs_path_parser.add_argument(
+      "--kind", dest="kind", choices=["releases", "modules", "shared"],
+      default="releases",
+      help="Which template to resolve (default: %(default)s).")
+  cvmfs_path_parser.add_argument(
+      "--admin", dest="admin", action="store_true", default=False,
+      help="Resolve the admin (group-prefix) path. Without it, a user path "
+           "under <user_prefix>/<login> is resolved (requires --login).")
+  cvmfs_path_parser.add_argument(
+      "--login", dest="login", metavar="USER", default="",
+      help="User login for a non-admin path ({user}; appended to user_prefix).")
+  cvmfs_path_parser.add_argument(
+      "--defaults", dest="defaults", default="release", metavar="DEFAULT",
+      help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  cvmfs_path_parser.add_argument(
+      "-a", "--architecture", dest="architecture", metavar="ARCH",
+      default=detectedArch,
+      help="Target architecture used to load the defaults. Default '%(default)s'.")
+  cvmfs_path_parser.add_argument(
+      "-c", "--config", dest="configDir",
+      default=os.environ.get("BITS_REPO_DIR", "."),
+      help="The directory containing build recipes. Default '%(default)s'.")
+  cvmfs_path_parser.add_argument(
+      "-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
+      help="Change to the specified directory before doing anything. "
+           "Default '%(default)s'.")
+  cvmfs_path_parser.add_argument(
+      "--disable", dest="disable", metavar="PACKAGE", default=[], action="append",
+      help="Disable the given package(s) when loading defaults. May be repeated.")
+
   # Apply bits.rc values as default overrides so that persistent settings written
   # by "bits init" (config mode) take effect on every subsequent invocation.
   # CLI flags still win: set_defaults only fills gaps not covered by the user.
@@ -1616,6 +1675,15 @@ def finaliseArgs(args, parser):
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
   if args.action in ["version", "architecture", "verify", "stats"]:
+    return args
+
+  # Minimal finalisation for cvmfs-path: only the defaults profile is loaded
+  # (no package/version resolution), so just normalise the defaults + disable
+  # lists into the shapes parseDefaults expects.
+  if args.action == "cvmfs-path":
+    if hasattr(args, "defaults"):
+      args.defaults = _with_release_base(args.defaults.split("::"))
+    args.disable = normalise_multiple_options(args.disable)
     return args
 
   # Minimal finalisation for status: normalise lists and expand referenceSources.
