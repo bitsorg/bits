@@ -387,6 +387,10 @@ class BuildManifest:
             # pipeline uses this to locate the tarball under TARS/<eff_arch>/
             # and to select the appropriate CVMFS path template.
             "effective_architecture": effective_architecture,
+            # Repository packages (provides_repository: true, e.g. lcg.bits) only
+            # trigger recipe-repo loading and carry no publishable artifacts. The
+            # publish pipeline skips them so they never reach the store or CVMFS.
+            "provides_repository":    bool(spec.get("provides_repository", False)),
             "hash":                   spec.get("hash", ""),
             "commit_hash":            spec.get("commit_hash", ""),
             "outcome":                outcome,

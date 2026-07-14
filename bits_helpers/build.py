@@ -1755,7 +1755,12 @@ def doFinalSync(spec, specs, args, syncHelper):
 
   # Make sure not to upload local-only packages! These might have been
   # produced in a previous run with a read-only remote store.
-  if not spec["revision"].startswith("local"):
+  #
+  # Repository packages (provides_repository: true, e.g. lcg.bits) exist only to
+  # trigger recipe-repo loading during resolution; they carry no publishable
+  # artifacts and must NOT be pushed to the store (nor published to CVMFS). Skip
+  # their upload the same way local-only builds are skipped.
+  if not spec["revision"].startswith("local") and not spec.get("provides_repository"):
     syncHelper.upload_symlinks_and_tarball(spec)
     # Log (info level) that a freshly built tarball was pushed to the write store.
     # Reused packages (cachedTarball) are already there and were marked
