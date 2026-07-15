@@ -88,17 +88,15 @@ def doCvmfsPath(args, parser):
 
     # {release} is resolved exactly as the build does, so the reserved namespace
     # matches the published path. It is derived from the same inputs: an explicit
-    # non-trunk release: in the defaults, else the recipe dir's branch, else main
-    # (which collapses out of the path). We read the branch from the recipe dir the
-    # same way build.py does (empty when detached/no branch, e.g. in CI).
+    # non-trunk release: in the defaults, else the recipe dir's branch name, else
+    # main (which collapses out of the path). We read the branch the same way
+    # build.py does (empty when detached / no branch, e.g. in CI) and hand the raw
+    # basename to resolve_release, which strips -patches and applies the trunk rule.
     _, _value = git(("symbolic-ref", "-q", "HEAD"),
                     directory=args.configDir, check=False)
     _branch_basename = re.sub("refs/heads/", "", _value)
-    _branch_stream = re.sub("-patches$", "", _branch_basename)
-    if _branch_stream == _branch_basename:
-        _branch_stream = ""
     tmpl = bake_release(
-        tmpl, path_release(resolve_release(defaults_meta, _branch_stream)))
+        tmpl, path_release(resolve_release(defaults_meta, _branch_basename)))
 
     # {family} is per-package and unknown before the build, so it collapses to
     # empty — the templates use the trailing-slash form {family}{pkg}.

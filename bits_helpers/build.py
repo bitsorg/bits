@@ -2069,7 +2069,7 @@ def doBuild(args, parser):
     from bits_helpers.cvmfs_layout import (
         resolve_release as _resolve_release, _declared_release as _declared)
     if isinstance(meta.get("variables"), dict) and _declared(meta):
-      meta["variables"]["release"] = _resolve_release(meta, branch_stream)
+      meta["variables"]["release"] = _resolve_release(meta, branch_basename)
     # Flavours are ALSO exported into the build environment + package hash (via
     # the `env:` map, which becomes the defaults-release env every package
     # depends on), exactly as before.
@@ -2178,7 +2178,7 @@ def doBuild(args, parser):
   # `bits cvmfs-path` bakes the identical value for the reserve.
   # {family}/{pkg}/{tag}/{platform} stay as tokens (resolved per package).
   if args.cvmfsTemplates:
-    _release_path = path_release(resolve_release(defaultsMeta, branch_stream))
+    _release_path = path_release(resolve_release(defaultsMeta, branch_basename))
     for _k in ("path", "modules", "shared", "prefix", "user_prefix"):
       if args.cvmfsTemplates.get(_k):
         args.cvmfsTemplates[_k] = bake_release(args.cvmfsTemplates[_k], _release_path)

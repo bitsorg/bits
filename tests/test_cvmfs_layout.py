@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bits_helpers.cvmfs_layout import resolve_cvmfs_layout as R
 from bits_helpers.cvmfs_layout import resolve_cvmfs_templates as RT
+from bits_helpers.cvmfs_layout import (
+    resolve_release, path_release, bake_release, _declared_release)
 
 ARCH = "ubuntu2510_x86-64-gcc15-dbg"
 
@@ -128,6 +130,104 @@ class CvmfsTemplatesTest(unittest.TestCase):
     def test_no_prefix_no_fallback_is_none(self):
         self.assertIsNone(RT({"system": {}}, fallback_prefix=None))
         self.assertIsNone(RT({"system": {}}, fallback_prefix=""))
+
+
+class ResolveReleaseTest(unittest.TestCase):
+    """resolve_release / path_release / bake_release: the {release} slot + the
+    lcg.bits branch label (one value drives both)."""
+
+    # ── _declared_release: where an explicit release: is read from ──────────
+    def test_declared_from_variables_then_system_then_toplevel(self):
+        self.assertEqual(_declared_release({"variables": {"release": "dev3"}}), "dev3")
+        self.assertEqual(_declared_release({"system": {"release": "dev4"}}), "dev4")
+        self.assertEqual(_declared_release({"release": "LCG_108"}), "LCG_108")
+        # variables win over system/top-level
+        self.assertEqual(_declared_release(
+            {"variables": {"release": "v"}, "system": {"release": "s"}}), "v")
+        self.assertEqual(_declared_release({}), "")
+        self.assertEqual(_declared_release(None), "")
+        self.assertEqual(_declared_release({"variables": {"release": "  x  "}}), "x")
+
+    # ── precedence: explicit non-trunk > branch > main ─────────────────────
+    def test_explicit_nontrunk_wins_over_branch(self):
+        self.assertEqual(resolve_release({"variables": {"release": "dev3"}}, "feature-x"), "dev3")
+
+    def test_declared_trunk_does_not_block_branch(self):
+        # The base declares release: main (trunk sentinel) — a branch still derives.
+        self.assertEqual(resolve_release({"variables": {"release": "main"}}, "feature-x"), "feature-x")
+        self.assertEqual(resolve_release({"variables": {"release": "main"}}, ""), "main")
+
+    def test_branch_derivation_plain_branch(self):
+        # THE regression this guards: a plain (non -patches) branch must derive,
+        # not fall through to main. (Passing the emptied branch_stream broke this.)
+        self.assertEqual(resolve_release({}, "feature-x"), "feature-x")
+        self.assertEqual(resolve_release({}, "LCG_107"), "LCG_107")
+
+    def test_branch_patches_stripped_to_stream(self):
+        # LCG release branches are named <release>-patches; the release is the stream.
+        self.assertEqual(resolve_release({}, "LCG_107-patches"), "LCG_107")
+        # -patches only stripped as a suffix, not mid-name
+        self.assertEqual(resolve_release({}, "my-patches-thing"), "my-patches-thing")
+
+    def test_trunk_branches_and_empty_fall_to_main(self):
+        for b in ("main", "master", "HEAD", "Main", "", None):
+            self.assertEqual(resolve_release({}, b), "main")
+
+    def test_default_is_main(self):
+        self.assertEqual(resolve_release({}), "main")
+        self.assertEqual(resolve_release(None), "main")
+
+    # ── path_release: trunk collapses to "", else the value ────────────────
+    def test_path_release_collapses_trunk(self):
+        for trunk in ("main", "master", "HEAD", "", "  main  ", None):
+            self.assertEqual(path_release(trunk), "")
+        self.assertEqual(path_release("dev3"), "dev3")
+        self.assertEqual(path_release("LCG_107"), "LCG_107")
+
+    # ── bake_release: substitute, or drop the whole {release}/ segment ─────
+    def test_bake_substitutes_when_release_set(self):
+        self.assertEqual(
+            bake_release("/p/releases/{release}/{family}{pkg}/{tag}/{platform}", "dev3"),
+            "/p/releases/dev3/{family}{pkg}/{tag}/{platform}")
+
+    def test_bake_collapses_cleanly_when_empty(self):
+        # No stray double slash — the segment is removed, not blanked.
+        self.assertEqual(
+            bake_release("/p/releases/{release}/{family}{pkg}/{tag}/{platform}", ""),
+            "/p/releases/{family}{pkg}/{tag}/{platform}")
+        self.assertEqual(
+            bake_release("/p/releases/{release}/noarch/{pkg}/{tag}", ""),
+            "/p/releases/noarch/{pkg}/{tag}")
+        # trailing {release} (no following slash) also collapses
+        self.assertEqual(bake_release("/p/foo/{release}", ""), "/p/foo")
+        # leading {release}/ collapses
+        self.assertEqual(bake_release("{release}/foo", ""), "foo")
+
+    def test_bake_noop_without_token_or_template(self):
+        self.assertEqual(bake_release("/p/{pkg}/{tag}", ""), "/p/{pkg}/{tag}")
+        self.assertEqual(bake_release("/p/{pkg}/{tag}", "dev3"), "/p/{pkg}/{tag}")
+        self.assertEqual(bake_release("", "dev3"), "")
+        self.assertIsNone(bake_release(None, "dev3"))
+
+    # ── end-to-end: the three canonical cases ──────────────────────────────
+    def test_end_to_end_default_main_collapses(self):
+        # base on main / no branch -> "main" -> collapsed path (pre-release layout)
+        rel = path_release(resolve_release({"variables": {"release": "main"}}, "main"))
+        self.assertEqual(rel, "")
+        self.assertEqual(
+            bake_release("/lcg/releases/{release}/{family}{pkg}/{tag}/{platform}", rel),
+            "/lcg/releases/{family}{pkg}/{tag}/{platform}")
+
+    def test_end_to_end_branch_appears(self):
+        rel = path_release(resolve_release({"variables": {"release": "main"}}, "LCG_107-patches"))
+        self.assertEqual(rel, "LCG_107")
+        self.assertEqual(
+            bake_release("/lcg/releases/{release}/{family}{pkg}/{tag}/{platform}", rel),
+            "/lcg/releases/LCG_107/{family}{pkg}/{tag}/{platform}")
+
+    def test_end_to_end_explicit_release(self):
+        rel = path_release(resolve_release({"variables": {"release": "dev3"}}, "main"))
+        self.assertEqual(rel, "dev3")
 
 
 if __name__ == "__main__":

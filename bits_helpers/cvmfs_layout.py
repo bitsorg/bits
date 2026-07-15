@@ -116,7 +116,7 @@ def _declared_release(defaults_meta):
     return str(val).strip() if val else ""
 
 
-def resolve_release(defaults_meta, branch_stream=None):
+def resolve_release(defaults_meta, branch=None):
     """Resolve the release LABEL — the SINGLE value that names both the lcg.bits
     recipe branch (via ``overrides: lcg.bits: tag: "%(release)s"``) and the CVMFS
     {release} path slot. Tagging stacks.bits pins it, so the tag pins the recipe
@@ -125,22 +125,27 @@ def resolve_release(defaults_meta, branch_stream=None):
     Precedence — highest first:
       1. an explicitly declared, non-trunk ``release`` (dev3/dev4/LCG_NNN): the
          deliberate choice of a dedicated release.
-      2. the working-directory branch (``branch_stream``, ``-patches`` stripped),
-         when it is not a trunk name: a build on a recipe branch tracks the
-         matching lcg.bits branch and publishes under that branch's namespace.
+      2. the working-directory branch name, when it is not a trunk name: a build
+         on a recipe branch tracks the matching lcg.bits branch and publishes
+         under that branch's namespace. A trailing ``-patches`` is stripped, so a
+         ``LCG_107-patches`` branch resolves to the ``LCG_107`` release (the
+         aliBuild/LCG "stream"); a plain branch name is used verbatim.
       3. ``"main"`` — the default. Reproduces the old behaviour: the lcg.bits
          ``main`` branch, and (because ``main`` collapses out of the path, see
          ``path_release``) no ``/{release}/`` segment.
 
     A declared ``main``/``master``/``HEAD`` is a trunk sentinel (means "no
-    dedicated release"), so it does NOT block branch derivation.
+    dedicated release"), so it does NOT block branch derivation. ``branch`` is the
+    raw branch name (as read from ``git symbolic-ref``); pass the basename, NOT the
+    already-emptied ``branch_stream`` (which is blank for non-``-patches`` branches
+    and would suppress derivation for a plain branch).
     """
     declared = _declared_release(defaults_meta)
     if declared and declared.lower() not in _TRUNK_RELEASES:
         return declared
-    bs = (branch_stream or "").strip()
-    if bs and bs.lower() not in _TRUNK_RELEASES:
-        return bs
+    b = re.sub(r"-patches$", "", (branch or "").strip())
+    if b and b.lower() not in _TRUNK_RELEASES:
+        return b
     return "main"
 
 
