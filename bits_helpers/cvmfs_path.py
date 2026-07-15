@@ -24,7 +24,7 @@ from os.path import exists
 
 from bits_helpers.log import debug, dieOnError
 from bits_helpers.utilities import parseDefaults, readDefaults
-from bits_helpers.cvmfs_layout import resolve_cvmfs_templates
+from bits_helpers.cvmfs_layout import resolve_cvmfs_templates, resolve_release
 
 
 # The placeholder set the publish pipeline's _expand_tmpl understands. {commit}
@@ -83,6 +83,11 @@ def doCvmfsPath(args, parser):
             "modules":  tmpls["modules"],
             "shared":   tmpls["shared"]}[kind]
 
+    # {release} is a build-level constant; resolve it the same way the build does
+    # (env / defaults.release — the branch is a detached HEAD in CI, so it is not
+    # consulted here). {family} is per-package and unknown before the build, so it
+    # collapses to empty — the templates use the trailing-slash form {family}{pkg}.
+    _fam = getattr(args, "family", None)
     subst = {
         "prefix":      root,
         "pkg":         args.package or "",
@@ -93,7 +98,8 @@ def doCvmfsPath(args, parser):
         "install_dir": args.installDir or "",
         "commit":      "",
         "user":        args.login or "",
-        "family":      "",
+        "release":     resolve_release(defaults_meta, explicit=getattr(args, "release", None)),
+        "family":      (_fam + "/") if _fam else "",
     }
     # Expand literally — do NOT normalise/collapse slashes: the publish pipeline
     # expands the same .meta.json template literally (no collapse), so the reserve

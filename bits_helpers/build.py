@@ -2153,9 +2153,19 @@ def doBuild(args, parser):
   # templates for the pre-build reserve. Shared resolver so the two never drift.
   # BITS_CVMFS_PREFIX is a fallback root for recipe sets that cannot declare
   # system.prefix themselves (bits-console supplies it); a recipe prefix wins.
-  from bits_helpers.cvmfs_layout import resolve_cvmfs_templates
+  from bits_helpers.cvmfs_layout import resolve_cvmfs_templates, resolve_release
   args.cvmfsTemplates = resolve_cvmfs_templates(
       defaultsMeta, os.environ.get("BITS_CVMFS_PREFIX") or None)
+  # {release} is a build-level constant (the LCG-style release/version slot): the
+  # explicit BITS_RELEASE, else the defaults `release:` field, else the recipe
+  # branch stream. Bake it into the recorded templates so the publish pipeline (and
+  # the per-package .meta.json) carry a concrete release; `bits cvmfs-path` resolves
+  # the same value for the reserve. {family}/{pkg}/{tag}/{platform} stay as tokens.
+  if args.cvmfsTemplates:
+    _release = resolve_release(defaultsMeta, branch_stream)
+    for _k in ("path", "modules", "shared", "prefix", "user_prefix"):
+      if args.cvmfsTemplates.get(_k):
+        args.cvmfsTemplates[_k] = args.cvmfsTemplates[_k].replace("{release}", _release)
 
   # Global build-time network policy for the recipe sandbox. Precedence:
   #   explicit --sandbox-network  >  defaults system.sandbox_network  >  "on".
