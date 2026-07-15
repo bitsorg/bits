@@ -2057,6 +2057,19 @@ def doBuild(args, parser):
     flavours = getattr(args, "flavours", None) or {}
     meta["variables"] = resolve_variables(
         meta.get("variables"), flavours, args.architecture, args.defaults)
+    # Resolve the release LABEL and write it back into `release`, so that
+    # %(release)s (which the defaults feed to the lcg.bits branch override)
+    # follows the same rule as the CVMFS {release} slot: an explicit non-trunk
+    # release: wins, else the working-dir branch, else "main". This is what makes
+    # a build on a recipe branch fetch the matching lcg.bits branch, while the
+    # default/main line keeps building lcg.bits `main` exactly as before.
+    # Only groups that OPT IN by declaring a `release` are touched — a group using
+    # a different convention (e.g. %(lcgversion)s) is left untouched, so no extra
+    # variable is introduced and its package hashes are unchanged.
+    from bits_helpers.cvmfs_layout import (
+        resolve_release as _resolve_release, _declared_release as _declared)
+    if isinstance(meta.get("variables"), dict) and _declared(meta):
+      meta["variables"]["release"] = _resolve_release(meta, branch_stream)
     # Flavours are ALSO exported into the build environment + package hash (via
     # the `env:` map, which becomes the defaults-release env every package
     # depends on), exactly as before.
@@ -2153,19 +2166,22 @@ def doBuild(args, parser):
   # templates for the pre-build reserve. Shared resolver so the two never drift.
   # BITS_CVMFS_PREFIX is a fallback root for recipe sets that cannot declare
   # system.prefix themselves (bits-console supplies it); a recipe prefix wins.
-  from bits_helpers.cvmfs_layout import resolve_cvmfs_templates, resolve_release
+  from bits_helpers.cvmfs_layout import (
+      resolve_cvmfs_templates, resolve_release, path_release, bake_release)
   args.cvmfsTemplates = resolve_cvmfs_templates(
       defaultsMeta, os.environ.get("BITS_CVMFS_PREFIX") or None)
-  # {release} is a build-level constant (the LCG-style release/version slot): the
-  # explicit BITS_RELEASE, else the defaults `release:` field, else the recipe
-  # branch stream. Bake it into the recorded templates so the publish pipeline (and
-  # the per-package .meta.json) carry a concrete release; `bits cvmfs-path` resolves
-  # the same value for the reserve. {family}/{pkg}/{tag}/{platform} stay as tokens.
+  # {release} is a build-level constant — the release LABEL resolved from the same
+  # inputs that pick the lcg.bits branch (explicit non-trunk release: → recipe
+  # branch → "main"). Bake its PATH form into the recorded templates so the publish
+  # pipeline (and each .meta.json) carry a concrete slot; a trunk/main release
+  # collapses the {release}/ segment out entirely (pre-release layout preserved).
+  # `bits cvmfs-path` bakes the identical value for the reserve.
+  # {family}/{pkg}/{tag}/{platform} stay as tokens (resolved per package).
   if args.cvmfsTemplates:
-    _release = resolve_release(defaultsMeta, branch_stream)
+    _release_path = path_release(resolve_release(defaultsMeta, branch_stream))
     for _k in ("path", "modules", "shared", "prefix", "user_prefix"):
       if args.cvmfsTemplates.get(_k):
-        args.cvmfsTemplates[_k] = args.cvmfsTemplates[_k].replace("{release}", _release)
+        args.cvmfsTemplates[_k] = bake_release(args.cvmfsTemplates[_k], _release_path)
 
   # Global build-time network policy for the recipe sandbox. Precedence:
   #   explicit --sandbox-network  >  defaults system.sandbox_network  >  "on".

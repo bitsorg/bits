@@ -95,46 +95,79 @@ def resolve_cvmfs_layout(defaults_meta, architecture):
 # templates fall back to a conventional layout. Recorded verbatim in each
 # package's .meta.json (cvmfs_templates); `bits cvmfs-path` resolves the same
 # templates pre-build so the reserve and the publish cannot diverge.
-def resolve_release(defaults_meta, branch_stream=None, explicit=None):
-    """Resolve the {release} path slot (the LCG-style release/version namespace).
+# Trunk names: a release equal to one of these means "no dedicated release" — it
+# selects the lcg.bits trunk branch and collapses out of the install path (so the
+# default/main line keeps the pre-release layout).
+_TRUNK_RELEASES = ("main", "master", "head")
 
-    The release is a SINGLE source of truth: the same value names the CVMFS
-    {release} slot AND (via ``overrides: lcg.bits: tag: "%(release)s"`` in the
-    defaults) the lcg.bits recipe branch. Tagging stacks.bits therefore pins the
-    release, which pins the recipe pool — the tag fully defines the build content.
 
-    Precedence — highest first:
-      1. explicit value (a ``--release`` override), when given.
-      2. the ``release`` variable (``variables.release``) — the authoritative
-         source, because it is the very value ``%(release)s`` feeds to the
-         lcg.bits branch override; keeping the slot and the branch on one value
-         is what makes them consistent. dev3/dev4 override this variable.
-      3. a ``release:`` field under ``system:`` (or bare top-level) — accepted as
-         a fallback for defaults that set it there instead of as a variable.
-      4. ``branch_stream`` — the recipe repo's branch (minus ``-patches``), but
-         ONLY when it is a real release name. ``master``/``main``/``HEAD``/empty
-         are the development trunk (and CI is a detached HEAD → empty), so they
-         are ignored rather than published as a literal ``master`` slot.
-      5. ``"dev"`` — safe default so a build always has a slot.
+def _declared_release(defaults_meta):
+    """The release explicitly declared in the defaults, or "" if none.
 
-    ``BITS_RELEASE`` env is intentionally NOT read here: overriding only the slot
-    without also moving the lcg.bits branch would split the two apart. To build a
-    different release, select the defaults that set ``release`` (e.g. dev3/dev4),
-    so the branch and the slot move together.
+    Looked up as the ``release`` variable first (the value ``%(release)s`` feeds
+    to the lcg.bits branch override), then a ``release:`` field under ``system:``
+    or bare top-level. dev3/dev4 set this; the base sets ``release: main``.
     """
-    if explicit and str(explicit).strip():
-        return str(explicit).strip()
     variables = (defaults_meta or {}).get("variables", {}) or {}
     val = variables.get("release")
     if not val:
         system = (defaults_meta or {}).get("system", {}) or {}
         val = system.get("release") or (defaults_meta or {}).get("release")
-    if val:
-        return str(val).strip()
+    return str(val).strip() if val else ""
+
+
+def resolve_release(defaults_meta, branch_stream=None):
+    """Resolve the release LABEL — the SINGLE value that names both the lcg.bits
+    recipe branch (via ``overrides: lcg.bits: tag: "%(release)s"``) and the CVMFS
+    {release} path slot. Tagging stacks.bits pins it, so the tag pins the recipe
+    pool and the publish location together.
+
+    Precedence — highest first:
+      1. an explicitly declared, non-trunk ``release`` (dev3/dev4/LCG_NNN): the
+         deliberate choice of a dedicated release.
+      2. the working-directory branch (``branch_stream``, ``-patches`` stripped),
+         when it is not a trunk name: a build on a recipe branch tracks the
+         matching lcg.bits branch and publishes under that branch's namespace.
+      3. ``"main"`` — the default. Reproduces the old behaviour: the lcg.bits
+         ``main`` branch, and (because ``main`` collapses out of the path, see
+         ``path_release``) no ``/{release}/`` segment.
+
+    A declared ``main``/``master``/``HEAD`` is a trunk sentinel (means "no
+    dedicated release"), so it does NOT block branch derivation.
+    """
+    declared = _declared_release(defaults_meta)
+    if declared and declared.lower() not in _TRUNK_RELEASES:
+        return declared
     bs = (branch_stream or "").strip()
-    if bs and bs.lower() not in ("master", "main", "head"):
+    if bs and bs.lower() not in _TRUNK_RELEASES:
         return bs
-    return "dev"
+    return "main"
+
+
+def path_release(release):
+    """The {release} value for the install PATH. The resolved release drives the
+    path, except a trunk value (main/master/head) collapses to "" so the path has
+    no release level — preserving the pre-release layout for the default/main line
+    while branch- and explicitly-named releases get their own ``/{release}/``.
+    """
+    r = (release or "").strip()
+    return "" if r.lower() in _TRUNK_RELEASES else r
+
+
+def bake_release(template, release):
+    """Substitute {release} in a path template. When ``release`` is empty, remove
+    the whole ``{release}/`` segment so the path collapses cleanly (``…/releases/
+    {pkg}/…``) instead of leaving a stray double slash — this is what makes the
+    default/main layout byte-identical between the build's baked template and the
+    pre-build reserve.
+    """
+    if not template:
+        return template
+    if release:
+        return template.replace("{release}", release)
+    return (template.replace("{release}/", "")
+                    .replace("/{release}", "")
+                    .replace("{release}", ""))
 
 
 def resolve_cvmfs_templates(defaults_meta, fallback_prefix=None):

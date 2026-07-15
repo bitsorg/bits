@@ -22,9 +22,12 @@ import os
 import sys
 from os.path import exists
 
+import re
+
 from bits_helpers.log import debug, dieOnError
-from bits_helpers.utilities import parseDefaults, readDefaults
-from bits_helpers.cvmfs_layout import resolve_cvmfs_templates, resolve_release
+from bits_helpers.utilities import parseDefaults, readDefaults, git
+from bits_helpers.cvmfs_layout import (
+    resolve_cvmfs_templates, resolve_release, path_release, bake_release)
 
 
 # The placeholder set the publish pipeline's _expand_tmpl understands. {commit}
@@ -83,10 +86,22 @@ def doCvmfsPath(args, parser):
             "modules":  tmpls["modules"],
             "shared":   tmpls["shared"]}[kind]
 
-    # {release} is a build-level constant; resolve it the same way the build does
-    # (env / defaults.release — the branch is a detached HEAD in CI, so it is not
-    # consulted here). {family} is per-package and unknown before the build, so it
-    # collapses to empty — the templates use the trailing-slash form {family}{pkg}.
+    # {release} is resolved exactly as the build does, so the reserved namespace
+    # matches the published path. It is derived from the same inputs: an explicit
+    # non-trunk release: in the defaults, else the recipe dir's branch, else main
+    # (which collapses out of the path). We read the branch from the recipe dir the
+    # same way build.py does (empty when detached/no branch, e.g. in CI).
+    _, _value = git(("symbolic-ref", "-q", "HEAD"),
+                    directory=args.configDir, check=False)
+    _branch_basename = re.sub("refs/heads/", "", _value)
+    _branch_stream = re.sub("-patches$", "", _branch_basename)
+    if _branch_stream == _branch_basename:
+        _branch_stream = ""
+    tmpl = bake_release(
+        tmpl, path_release(resolve_release(defaults_meta, _branch_stream)))
+
+    # {family} is per-package and unknown before the build, so it collapses to
+    # empty — the templates use the trailing-slash form {family}{pkg}.
     _fam = getattr(args, "family", None)
     subst = {
         "prefix":      root,
@@ -98,13 +113,12 @@ def doCvmfsPath(args, parser):
         "install_dir": args.installDir or "",
         "commit":      "",
         "user":        args.login or "",
-        "release":     resolve_release(defaults_meta, explicit=getattr(args, "release", None)),
         "family":      (_fam + "/") if _fam else "",
     }
-    # Expand literally — do NOT normalise/collapse slashes: the publish pipeline
-    # expands the same .meta.json template literally (no collapse), so the reserve
-    # path this produces must match it byte-for-byte. (A template that yields a
-    # double slash is a recipe bug to fix in defaults-release.sh, not here.)
+    # Expand the remaining tokens literally — do NOT normalise/collapse slashes:
+    # the publish pipeline expands the same .meta.json template literally, so the
+    # reserve path this produces must match it byte-for-byte. ({release} is already
+    # baked/collapsed above by the shared bake_release, exactly as the build does.)
     path = _expand(tmpl, subst)
     print(path)
     return True
