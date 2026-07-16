@@ -200,11 +200,16 @@ def _tarball_sha256(tarball_path: str):
 
 
 def _source_entries(spec: dict) -> list:
-    """Parse ``spec['sources']`` and return ``[{url, checksum}]`` for each entry.
+    """Parse ``spec['sources']`` and return ``[{url, checksum, store_path}]``.
 
     Uses ``parse_entry()`` from the checksum module to separate the URL from any
     declared checksum suffix (``algo:hexdigest``).  The returned list is empty for
     git-sourced packages — their integrity is already captured by ``commit_hash``.
+
+    ``store_path`` is the archive's location in the bits source store
+    (``SOURCES/cache/<h2>/<url_md5>/<file>``), computed here where bits already owns
+    the addressing scheme — so consumers (e.g. the per-release SOURCES file) read a
+    ready-made path instead of re-deriving it. Omitted if the helpers are absent.
 
     No file I/O is performed: the checksum value is whatever was declared in the
     recipe, exactly as the checksum system already verified (or would verify) at
@@ -214,13 +219,25 @@ def _source_entries(spec: dict) -> list:
         from bits_helpers.checksum import parse_entry
     except ImportError:
         return []
+    try:
+        from os.path import basename
+        from bits_helpers.download import getUrlChecksum
+        from bits_helpers.sync import _source_remote_path
+    except Exception:  # noqa: BLE001
+        getUrlChecksum = _source_remote_path = None
     sources = spec.get("sources") or []
     result = []
     for raw in sources:
         if not isinstance(raw, str):
             continue
         url, checksum = parse_entry(raw)
-        result.append({"url": url, "checksum": checksum})
+        entry = {"url": url, "checksum": checksum}
+        if url and getUrlChecksum and _source_remote_path:
+            try:
+                entry["store_path"] = _source_remote_path(getUrlChecksum(url), basename(url))
+            except Exception:  # noqa: BLE001
+                pass
+        result.append(entry)
     return result
 
 
