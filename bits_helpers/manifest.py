@@ -391,6 +391,14 @@ class BuildManifest:
             # trigger recipe-repo loading and carry no publishable artifacts. The
             # publish pipeline skips them so they never reach the store or CVMFS.
             "provides_repository":    bool(spec.get("provides_repository", False)),
+            # Publish policy (hash-excluded metadata). A package with
+            # redistributable: false (e.g. the Oracle client, qgraf) is still built
+            # and kept in the S3 store for reuse, but the publish pipeline skips it
+            # from the public CVMFS tree. Default true = published as normal.
+            "redistributable":        bool(spec.get("redistributable", True)),
+            # SPDX license id (hash-excluded metadata). Carried so the publish step
+            # can aggregate a per-release NOTICE / attribution file.
+            "license":                (spec.get("license") or ""),
             "hash":                   spec.get("hash", ""),
             "commit_hash":            spec.get("commit_hash", ""),
             "outcome":                outcome,
