@@ -175,23 +175,25 @@ def bake_release(template, release):
                     .replace("{release}", ""))
 
 
-def resolve_cvmfs_templates(defaults_meta, fallback_prefix=None):
+def resolve_cvmfs_templates(defaults_meta, injected_prefix=None):
     """Resolve the group's CVMFS publish-path templates from the defaults.
 
     Returns a dict {prefix, user_prefix, path, modules, shared} — templates with
     {prefix} left intact (resolved at publish time to the admin `prefix` or the
     user `user_prefix`/<login> root), except user_prefix whose own {prefix}
-    back-reference is resolved to the base prefix. Returns None when the group
-    declares no CVMFS root and no fallback is given.
+    back-reference is resolved to the base prefix. Returns None when no CVMFS root
+    is available at all.
 
-    The root prefix comes from the group's defaults-release.sh (system.prefix)
-    when declared; otherwise `fallback_prefix` is used. The fallback exists for
-    groups whose recipe repo cannot declare a prefix (e.g. a third-party recipe
-    set): bits-console supplies the prefix and the templates take the built-in
-    defaults. A recipe-declared prefix always wins over the fallback.
+    The root prefix is an AUTHORIZATION boundary (which namespace a build may write
+    to), so `injected_prefix` — supplied by the trusted, change-controlled source
+    (bits-console's per-community ui-config.yaml, threaded in as BITS_CVMFS_PREFIX /
+    --prefix) — is AUTHORITATIVE and wins. A recipe-declared `system.prefix` is only
+    honoured as a fallback for local dev builds with no injected prefix; it can NOT
+    override the injected one, so a recipe (or a user who can edit/point at one)
+    cannot redirect a build into another group's CVMFS tree.
 
-    Only a prefix (recipe or fallback) is required; a group that sets any
-    template but has no prefix at all is misconfigured (dieOnError).
+    Only a prefix is required; a group that sets any template but has no prefix at
+    all is misconfigured (dieOnError).
     """
     from bits_helpers.log import dieOnError
     system = (defaults_meta or {}).get("system", {}) or {}
@@ -202,9 +204,9 @@ def resolve_cvmfs_templates(defaults_meta, fallback_prefix=None):
             return system[key]
         return (defaults_meta or {}).get(key, None)
 
-    # Recipe prefix wins; else the bits-console fallback (for recipe sets that
-    # cannot declare their own prefix).
-    root = opt("prefix") or opt("cvmfs_prefix") or (fallback_prefix or None)
+    # Injected (bits-console) prefix is authoritative; the recipe prefix is only a
+    # local-dev fallback and can never override the injected one (auth boundary).
+    root = (injected_prefix or None) or opt("prefix") or opt("cvmfs_prefix")
     # cvmfs_releases_template is the current name; cvmfs_path_template is the
     # legacy alias, still accepted.
     rel = opt("cvmfs_releases_template") or opt("cvmfs_path_template")
@@ -213,8 +215,8 @@ def resolve_cvmfs_templates(defaults_meta, fallback_prefix=None):
     usr = opt("cvmfs_user_prefix")
 
     dieOnError(bool(rel or mod or shr or usr) and not root,
-               "system.prefix is required for CVMFS publishing "
-               "(a cvmfs_*_template is set but prefix is not)")
+               "a CVMFS prefix is required for publishing (an injected/community "
+               "prefix, or a local recipe system.prefix) but none is set")
     if not root:
         return None
 

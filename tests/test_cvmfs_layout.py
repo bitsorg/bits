@@ -117,19 +117,27 @@ class CvmfsTemplatesTest(unittest.TestCase):
         t = RT({"system": {"cvmfs_prefix": "/cvmfs/x.io"}})
         self.assertEqual(t["prefix"], "/cvmfs/x.io")
 
-    def test_fallback_prefix_used_when_recipe_has_none(self):
-        # A recipe set with no system.prefix + a fallback → default layout.
-        t = RT({"system": {}}, fallback_prefix="/cvmfs/y.io/cms/releases")
+    def test_injected_prefix_used_when_recipe_has_none(self):
+        # A recipe set with no system.prefix + an injected prefix → default layout.
+        t = RT({"system": {}}, injected_prefix="/cvmfs/y.io/cms/releases")
         self.assertEqual(t["prefix"], "/cvmfs/y.io/cms/releases")
         self.assertEqual(t["path"], "{prefix}/{platform}/Packages/{pkg}/{tag}")
 
-    def test_recipe_prefix_wins_over_fallback(self):
-        t = RT({"system": {"prefix": "/cvmfs/recipe"}}, fallback_prefix="/cvmfs/fb")
+    def test_injected_prefix_is_authoritative_over_recipe(self):
+        # Security: the injected (bits-console/community) prefix WINS; a recipe
+        # cannot redirect the build into another namespace.
+        t = RT({"system": {"prefix": "/cvmfs/other-group"}},
+               injected_prefix="/cvmfs/my-group")
+        self.assertEqual(t["prefix"], "/cvmfs/my-group")
+
+    def test_recipe_prefix_is_local_dev_fallback(self):
+        # With no injected prefix (local build), the recipe prefix is honoured.
+        t = RT({"system": {"prefix": "/cvmfs/recipe"}}, injected_prefix=None)
         self.assertEqual(t["prefix"], "/cvmfs/recipe")
 
-    def test_no_prefix_no_fallback_is_none(self):
-        self.assertIsNone(RT({"system": {}}, fallback_prefix=None))
-        self.assertIsNone(RT({"system": {}}, fallback_prefix=""))
+    def test_no_prefix_at_all_is_none(self):
+        self.assertIsNone(RT({"system": {}}, injected_prefix=None))
+        self.assertIsNone(RT({"system": {}}, injected_prefix=""))
 
 
 class ResolveReleaseTest(unittest.TestCase):

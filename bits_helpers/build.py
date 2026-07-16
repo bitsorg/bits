@@ -2318,13 +2318,12 @@ def doBuild(args, parser):
     return defaultsMeta.get(key, top_default)
 
   # CVMFS publish-path templates declared by the group under system: (never
-  # affect a package hash). Only `prefix` is required; the four templates fall
-  # back to a conventional layout, so a group normally only sets `prefix`.
-  # Recorded in .meta.json.cvmfs_templates so the publish pipeline resolves the
-  # WHOLE path from the group's declaration; `bits cvmfs-path` resolves the same
-  # templates for the pre-build reserve. Shared resolver so the two never drift.
-  # BITS_CVMFS_PREFIX is a fallback root for recipe sets that cannot declare
-  # system.prefix themselves (bits-console supplies it); a recipe prefix wins.
+  # affect a package hash), recorded in .meta.json.cvmfs_templates so the publish
+  # pipeline and the pre-build reserve (`bits cvmfs-path`) resolve the same path.
+  # BITS_CVMFS_PREFIX (the community's authoritative root, supplied by bits-console)
+  # is the ROOT and OVERRIDES any recipe system.prefix — the prefix is an auth
+  # boundary, so a recipe cannot redirect the publish into another group's tree; a
+  # recipe prefix is only a local-dev fallback. The recipe still owns the LAYOUT.
   from bits_helpers.cvmfs_layout import (
       resolve_cvmfs_templates, resolve_release, path_release, bake_release)
   args.cvmfsTemplates = resolve_cvmfs_templates(
