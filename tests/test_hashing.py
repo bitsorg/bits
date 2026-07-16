@@ -110,3 +110,92 @@ class NormalizeRecipeForHashTestCase(unittest.TestCase):
 
     def test_non_string_passthrough(self):
         self.assertEqual(self._n(None), None)
+
+
+class NormalizeRecipeMetadataExclusionTestCase(unittest.TestCase):
+    """normalize_recipe_for_hash drops metadata/publish-policy keys from the YAML
+    header so editing license/description/url/etc does not change the build hash."""
+
+    HEADER = ("package: Foo\n"
+              "version: \"1.0\"\n"
+              "description: A physics tool\n"
+              "license: MIT\n"
+              "requires:\n"
+              "  - CMake\n"
+              "  - boost\n"
+              "---\n"
+              "#!/bin/bash\n"
+              "make install\n")
+
+    def _n(self, s):
+        from bits_helpers.build import normalize_recipe_for_hash
+        return normalize_recipe_for_hash(s)
+
+    def test_metadata_keys_removed_from_header(self):
+        out = self._n(self.HEADER)
+        self.assertNotIn("license:", out)
+        self.assertNotIn("description:", out)
+        # functional fields survive
+        self.assertIn("version:", out)
+        self.assertIn("- boost", out)
+        self.assertIn("make install", out)      # body untouched
+
+    def test_license_edit_is_hash_invariant(self):
+        a = self.HEADER
+        b = self.HEADER.replace("license: MIT", "license: GPL-3.0-only")
+        self.assertEqual(self._n(a), self._n(b))
+
+    def test_description_edit_is_hash_invariant(self):
+        a = self.HEADER
+        b = self.HEADER.replace("description: A physics tool",
+                                "description: Now with a much longer blurb")
+        self.assertEqual(self._n(a), self._n(b))
+
+    def test_adding_url_acknowledgment_source_redistributable_is_invariant(self):
+        base = self.HEADER
+        extra = self.HEADER.replace(
+            "license: MIT\n",
+            "license: MIT\n"
+            "url: https://example.org/foo\n"
+            "homepage: https://example.org\n"
+            "acknowledgment: Thanks to the Foo Collaboration.\n"
+            "source_url: b3://bucket/SOURCES/foo/1.0/foo-1.0.tar.gz\n"
+            "redistributable: false\n")
+        self.assertEqual(self._n(base), self._n(extra))
+
+    def test_multiline_block_value_dropped_entirely(self):
+        base = self.HEADER.replace("description: A physics tool\n", "")
+        block = self.HEADER.replace(
+            "description: A physics tool\n",
+            "description: |\n"
+            "  first line\n"
+            "  second line\n")
+        self.assertEqual(self._n(block), self._n(base))
+        self.assertNotIn("second line", self._n(block))
+
+    def test_functional_change_still_changes_hash_input(self):
+        for mut in ("version: \"1.0\"", "- boost", "make install"):
+            with self.subTest(mut=mut):
+                b = self.HEADER.replace(mut, mut + "X")
+                self.assertNotEqual(self._n(self.HEADER), self._n(b))
+
+    def test_body_is_not_scanned_for_metadata_keys(self):
+        # a "license:"/"description:" line in the shell body is data, kept verbatim
+        r = ("package: Foo\n"
+             "license: MIT\n"
+             "---\n"
+             "echo 'license: printed at runtime'\n"
+             "cat > NOTICE <<'EOF'\n"
+             "description: shown to users\n"
+             "EOF\n")
+        out = self._n(r)
+        self.assertNotIn("license: MIT", out)                 # header key dropped
+        self.assertIn("echo 'license: printed at runtime'", out)   # body kept
+        self.assertIn("description: shown to users", out)          # heredoc data kept
+
+    def test_similar_key_names_are_not_dropped(self):
+        # exact-match only: "licenses"/"description_of" are not metadata keys
+        r = "package: Foo\nlicenses: many\ndescription_of: x\n---\nmake\n"
+        out = self._n(r)
+        self.assertIn("licenses: many", out)
+        self.assertIn("description_of: x", out)

@@ -683,20 +683,67 @@ def storeHook(package, specs, defaults) -> bool:
 _HEREDOC_START = re.compile(r"<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 
-def normalize_recipe_for_hash(recipe):
-  """Return a copy of a recipe body for HASHING ONLY, with full-line comments
-  and blank lines removed so comment/whitespace edits do not change the build
-  hash (and thus do not force a rebuild). The executed recipe is untouched.
+# Front-matter keys that are metadata / publish-policy ONLY: they never affect
+# what is built, so they are dropped from the HASH input (exactly like comments).
+# Editing a license, description, project URL, attribution, source link, or the
+# redistributable flag therefore does NOT change a package's hash — no rebuild and
+# no re-publish. The executed recipe keeps every field; only hashing ignores these.
+_HASH_EXCLUDED_META_KEYS = frozenset({
+    "license", "description", "url", "homepage",
+    "acknowledgment", "acknowledgement", "source_url", "redistributable",
+})
 
-  Lines inside a here-document are preserved verbatim -- a leading '#' there is
-  data, not a comment. The here-doc scan is deliberately conservative: it only
-  ever protects MORE text, so the worst case is a recipe that keeps hashing its
-  comments (the old behaviour), never two distinct recipes hashing alike.
+
+def normalize_recipe_for_hash(recipe):
+  """Return a copy of a recipe for HASHING ONLY, with elements that do not affect
+  the build removed so that editing them does not change the build hash (and thus
+  does not force a rebuild / re-publish). The executed recipe is untouched.
+
+  Two classes are dropped:
+    * full-line comments and blank lines, everywhere except inside a here-doc
+      (where a leading '#' is data). The here-doc scan is conservative: it only
+      ever protects MORE text, never merges two distinct recipes.
+    * metadata / publish-policy keys (``_HASH_EXCLUDED_META_KEYS``) in the YAML
+      front-matter — the key line and any indented block value beneath it — so
+      license/description/url/acknowledgment/source_url/redistributable are free
+      to edit. These are stripped ONLY in the header (before the first column-0
+      ``---`` separator); the shell body is never scanned for them.
   """
   if not isinstance(recipe, str):
     return recipe
-  out, pending, active = [], [], None
-  for line in recipe.split("\n"):
+  lines = recipe.split("\n")
+  # Header ends at the first column-0 "---" (an indented "---" is block-scalar
+  # data, not the separator). With NO separator the string has no front-matter
+  # (it is a bare shell body, as some callers/tests pass), so treat it all as body
+  # -- never as header -- to preserve here-doc/comment handling.
+  boundary = next((i for i, ln in enumerate(lines) if ln.rstrip() == "---"), None)
+  header = lines[:boundary] if boundary is not None else []
+  body = lines[boundary:] if boundary is not None else lines
+
+  out = []
+  # --- YAML front-matter: drop comments/blanks + metadata-only keys and their
+  #     indented continuation lines.
+  skipping_meta_block = False
+  for line in header:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):   # comment / blank: never hashed
+      continue
+    if line[:1].isspace():                         # indented continuation line
+      if skipping_meta_block:
+        continue                                   # part of a dropped key's value
+      out.append(line)
+      continue
+    key = stripped.split(":", 1)[0].strip()        # a top-level key
+    if key in _HASH_EXCLUDED_META_KEYS:
+      skipping_meta_block = True
+      continue
+    skipping_meta_block = False
+    out.append(line)
+
+  # --- shell body (from the "---" separator onward): unchanged behaviour, with
+  #     here-doc protection.
+  pending, active = [], None
+  for line in body:
     if active is not None:          # inside a here-doc body: keep verbatim
       out.append(line)
       if line.strip() == active:    # terminator (tabs allowed for <<-)
