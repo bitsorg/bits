@@ -693,6 +693,16 @@ _HASH_EXCLUDED_META_KEYS = frozenset({
     "acknowledgment", "acknowledgement", "source_url", "redistributable",
 })
 
+# Source-selection keys are ALSO dropped from the recipe TEXT hash — not because
+# they are cosmetic, but because storeHashes already folds the RESOLVED source
+# identity into the hash from the spec (every sources: URL, the git source + tag,
+# and commit_hash), AFTER _apply_source_mode has pruned to the selected form.
+# Hashing the raw text on top would double-count AND make merely DECLARING a git
+# alternative on a tarball recipe rebuild it, even though the default (tar) build
+# is byte-identical. Excluding them keeps dual-source declarations hash-neutral
+# while the spec-field hashing still makes every distinct source a distinct build.
+_HASH_REDUNDANT_SOURCE_KEYS = frozenset({"source", "sources", "tag"})
+
 
 def normalize_recipe_for_hash(recipe):
   """Return a copy of a recipe for HASHING ONLY, with elements that do not affect
@@ -734,7 +744,7 @@ def normalize_recipe_for_hash(recipe):
       out.append(line)
       continue
     key = stripped.split(":", 1)[0].strip()        # a top-level key
-    if key in _HASH_EXCLUDED_META_KEYS:
+    if key in _HASH_EXCLUDED_META_KEYS or key in _HASH_REDUNDANT_SOURCE_KEYS:
       skipping_meta_block = True
       continue
     skipping_meta_block = False

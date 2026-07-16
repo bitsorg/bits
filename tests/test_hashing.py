@@ -199,3 +199,55 @@ class NormalizeRecipeMetadataExclusionTestCase(unittest.TestCase):
         out = self._n(r)
         self.assertIn("licenses: many", out)
         self.assertIn("description_of: x", out)
+
+
+class SourceKeysExcludedFromTextHashTestCase(unittest.TestCase):
+    """source:/sources:/tag: are dropped from the recipe TEXT hash (storeHashes
+    already folds the resolved source identity in from the spec), so declaring a
+    git alternative on a tarball recipe is hash-neutral."""
+
+    def _n(self, s):
+        from bits_helpers.build import normalize_recipe_for_hash
+        return normalize_recipe_for_hash(s)
+
+    def test_source_sources_tag_stripped_from_header(self):
+        r = ("package: foo\nversion: \"1.2.3\"\n"
+             "source: https://git/foo.git\ntag: \"v%(version)s\"\n"
+             "sources:\n  - https://a/foo-1.2.3.tar.gz\n"
+             "requires:\n  - CMake\n---\nmake\n")
+        out = self._n(r)
+        for k in ("source:", "tag:", "sources:", "- https://a"):
+            self.assertFalse(any(l.strip().startswith(k) for l in out.splitlines()), k)
+        self.assertIn("requires:", out)      # functional keys kept
+        self.assertIn("- CMake", out)
+        self.assertIn("make", out)           # body kept
+
+    def test_body_source_line_not_stripped(self):
+        r = "package: foo\n---\necho 'source: not a header'\n"
+        self.assertIn("echo 'source: not a header'", self._n(r))
+
+    def _h(self, **over):
+        from bits_helpers.build import storeHashes
+        s = {"package": "foo", "version": "1.2.3", "commit_hash": "1.2.3", "tag": "1.2.3",
+             "scm_refs": {}, "requires": [], "build_requires": [], "runtime_requires": [],
+             "is_devel_pkg": False, "pkg_family": "",
+             "sources": ["https://a/foo-1.2.3.tar.gz"],
+             "recipe": "package: foo\nversion: \"1.2.3\"\n---\nmake\n"}
+        s.update(over)
+        specs = {"foo": s}
+        storeHashes("foo", specs, considerRelocation=False)
+        return specs["foo"]["remote_revision_hash"]
+
+    def test_declaring_git_source_is_hash_neutral_in_tar_mode(self):
+        # identical spec sources; only the recipe TEXT gains a git source/tag line
+        plain = self._h()
+        withgit = self._h(recipe="package: foo\nversion: \"1.2.3\"\n"
+                                 "source: https://git/foo.git\ntag: \"v%(version)s\"\n---\nmake\n")
+        self.assertEqual(plain, withgit)
+
+    def test_real_source_changes_still_change_hash(self):
+        self.assertNotEqual(self._h(sources=["https://a/X.tar.gz"]),
+                            self._h(sources=["https://a/Y.tar.gz"]))
+        g1 = self._h(source="g", commit_hash="aaa", tag="v1")
+        g2 = self._h(source="g", commit_hash="bbb", tag="v1")
+        self.assertNotEqual(g1, g2)
