@@ -1317,6 +1317,38 @@ def _notice_block(spec):
     return 'cat > "$INSTALLROOT/NOTICE" <<\\%s\n%s%s\n' % (term, body, term)
 
 
+def _source_mode(defaults_meta):
+    """'git' or 'tar' — which source a recipe that declares BOTH should build from.
+
+    A group chooses in its defaults (``system.source_mode`` or a ``source_mode``
+    variable in defaults-release.sh); the default is ``tar`` (build from the cached
+    tarball ``sources:``). ``BITS_SOURCE_MODE`` overrides for a one-off build.
+    Recipes that declare only one source form are unaffected either way.
+    """
+    val = os.environ.get("BITS_SOURCE_MODE", "").strip().lower()
+    if not val:
+        system = (defaults_meta or {}).get("system", {}) or {}
+        variables = (defaults_meta or {}).get("variables", {}) or {}
+        val = str(system.get("source_mode")
+                  or variables.get("source_mode") or "tar").strip().lower()
+    return "git" if val == "git" else "tar"
+
+
+def _apply_source_mode(spec, mode):
+    """Disambiguate a recipe that declares BOTH a git source (``source:``/``tag:``)
+    AND tarball ``sources:`` — keep only the selected form so the two build paths
+    never both run. ``version:`` is untouched; in ``tar`` mode the git ``tag:`` is
+    dropped so the tarball identity stays version-based (``tag`` defaults to
+    ``version`` downstream). A recipe with only one form is left alone.
+    """
+    if "source" in spec and spec.get("sources"):
+        if mode == "git":
+            spec.pop("sources", None)          # build from git; ignore the tarballs
+        else:                                  # tar (default)
+            spec.pop("source", None)           # build from tarball; ignore git...
+            spec.pop("tag", None)              # ...and its git ref (-> version)
+
+
 def create_provenance_info(package, specs, args):
   """Return a metadata record for storage in the package's install directory."""
 
@@ -2707,10 +2739,18 @@ def doBuild(args, parser):
                 "`force_revision:` on %s to keep <%s>/<version-revision> stable.",
                 t, t, t)
 
+  # A recipe may declare BOTH a git source (source:/tag:) and cached tarball
+  # sources (sources:); the group's source_mode (defaults-release.sh) picks which
+  # one every such recipe builds from. Applied before scm setup so the unused form
+  # is gone. Devel packages always build from their local checkout, so they are
+  # exempt (their source is forced just below).
+  _smode = _source_mode(defaultsMeta)
   for pkg, spec in specs.items():
     spec["is_devel_pkg"] = pkg in develPkgs
     if spec["is_devel_pkg"]:
       spec["source"] = str(Path.cwd() / pkg)
+    else:
+      _apply_source_mode(spec, _smode)
 
     # Only initialize Sapling if it's in PATH and the repo uses it
     use_sapling = False
