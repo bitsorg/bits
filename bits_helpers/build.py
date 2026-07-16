@@ -1247,6 +1247,76 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   return "\n".join(lines)
 
 
+# Copyleft licenses carry a corresponding-source obligation when their binaries
+# are redistributed, so a package under one of these gets a NOTICE that points at
+# the exact source it was built from. Base id matched for "<id> WITH <exception>".
+_COPYLEFT_LICENSES = frozenset({
+    "GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0-only", "GPL-3.0-or-later",
+    "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later",
+    "AGPL-3.0-only", "AGPL-3.0-or-later", "MPL-2.0", "EPL-2.0", "CDDL-1.0",
+})
+
+
+def _is_copyleft(license_id):
+    lic = (license_id or "").strip()
+    return lic in _COPYLEFT_LICENSES or lic.split(" WITH ")[0].strip() in _COPYLEFT_LICENSES
+
+
+def _notice_text(spec):
+    """The per-package NOTICE body, or "" when none is warranted.
+
+    Written "when necessary": a package gets a NOTICE only if it declares an
+    ``acknowledgment`` (a permissive license that requires attribution) or its
+    license is copyleft (source-provision obligation). Otherwise upstream's own
+    LICENSE/COPYING files in the tree already suffice and no NOTICE is added.
+    """
+    lic = (spec.get("license") or "").strip()
+    ack = (spec.get("acknowledgment") or spec.get("acknowledgement") or "").strip()
+    copyleft = _is_copyleft(lic)
+    if not ack and not copyleft:
+        return ""
+    lines = [("%s %s" % (spec.get("package", ""), spec.get("version", ""))).strip()]
+    if lic:
+        lines.append("License: %s" % lic)
+    if ack:
+        lines += ["", ack]
+    if copyleft:
+        lines += ["", "This component is copyleft-licensed. The corresponding source "
+                      "for the exact version built is available at:"]
+        listed = False
+        try:
+            from bits_helpers.checksum import parse_entry
+        except ImportError:
+            parse_entry = None
+        for s in spec.get("sources") or []:
+            if isinstance(s, str):
+                url = parse_entry(s)[0] if parse_entry else s
+                if url:
+                    lines.append("  %s" % url)
+                    listed = True
+        if spec.get("source") and spec.get("tag"):
+            lines.append("  git: %s @ %s" % (spec["source"], spec["tag"]))
+            listed = True
+        if not listed:
+            lines.append("  (see the source: field of this package's recipe)")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _notice_block(spec):
+    """Shell that writes ``$INSTALLROOT/NOTICE``, or "" when no NOTICE is needed.
+
+    A quoted here-doc (``<<\\TERM``) so the body is emitted verbatim with no shell
+    expansion (safe for arbitrary URLs/text); the fixed terminator is defused if it
+    ever appears in the body.
+    """
+    text = _notice_text(spec)
+    if not text:
+        return ""
+    term = "BITS_NOTICE_EOF"
+    body = text.replace(term, term + "_")
+    return 'cat > "$INSTALLROOT/NOTICE" <<\\%s\n%s%s\n' % (term, body, term)
+
+
 def create_provenance_info(package, specs, args):
   """Return a metadata record for storage in the package's install directory."""
 
@@ -3520,6 +3590,7 @@ def doBuild(args, parser):
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
       "BITS_HOOK_PARAMS": hook_params_locals,
+      "notice_block": _notice_block(spec),
     })
 
     # Define the environment so that it can be passed up to the

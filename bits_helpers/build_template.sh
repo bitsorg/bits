@@ -183,6 +183,11 @@ cat > "$INSTALLROOT/.meta.json" <<\EOF
 %(provenance)s
 EOF
 
+# Per-package NOTICE (attribution + corresponding-source info), written by bits
+# only when the recipe's license/acknowledgment require it; empty otherwise so no
+# file is created. It travels with the package into the S3 store and CVMFS.
+%(notice_block)s
+
 # Add "source" command for dependencies to init.sh.
 # Install init.sh now, so that it is available for debugging in case the build fails.
 mkdir -p "$INSTALLROOT/etc/profile.d"
