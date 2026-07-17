@@ -204,9 +204,20 @@ def resolve_cvmfs_templates(defaults_meta, injected_prefix=None):
             return system[key]
         return (defaults_meta or {}).get(key, None)
 
-    # Injected (bits-console) prefix is authoritative; the recipe prefix is only a
-    # local-dev fallback and can never override the injected one (auth boundary).
-    root = (injected_prefix or None) or opt("prefix") or opt("cvmfs_prefix")
+    # The prefix is an AUTHORIZATION boundary. bits-console injects the authoritative
+    # value (BITS_CVMFS_PREFIX); a recipe/defaults `prefix` is a declared copy that
+    # MUST agree with it. If both are set and differ, refuse (fail-closed) rather than
+    # silently publishing into the wrong namespace. With no injection (local dev) the
+    # declared prefix is used as-is.
+    recipe_prefix = opt("prefix") or opt("cvmfs_prefix")
+    dieOnError(
+        bool(injected_prefix) and bool(recipe_prefix)
+        and injected_prefix.rstrip("/") != recipe_prefix.rstrip("/"),
+        "CVMFS prefix mismatch: the defaults/recipe prefix %r disagrees with the "
+        "authoritative bits-console prefix %r (communities/<group>/ui-config.yaml: "
+        "cvmfs_prefix). Reconcile the two — a build will not publish while they "
+        "differ." % (recipe_prefix, injected_prefix))
+    root = (injected_prefix or None) or recipe_prefix
     # cvmfs_releases_template is the current name; cvmfs_path_template is the
     # legacy alias, still accepted.
     rel = opt("cvmfs_releases_template") or opt("cvmfs_path_template")

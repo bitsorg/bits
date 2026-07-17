@@ -123,12 +123,19 @@ class CvmfsTemplatesTest(unittest.TestCase):
         self.assertEqual(t["prefix"], "/cvmfs/y.io/cms/releases")
         self.assertEqual(t["path"], "{prefix}/{platform}/Packages/{pkg}/{tag}")
 
-    def test_injected_prefix_is_authoritative_over_recipe(self):
-        # Security: the injected (bits-console/community) prefix WINS; a recipe
-        # cannot redirect the build into another namespace.
-        t = RT({"system": {"prefix": "/cvmfs/other-group"}},
+    def test_prefix_mismatch_aborts(self):
+        # Security (fail-closed): a declared prefix that disagrees with the injected
+        # authoritative one is a misconfiguration/tamper -> refuse to publish.
+        with self.assertRaises(SystemExit):
+            RT({"system": {"prefix": "/cvmfs/other-group"}},
                injected_prefix="/cvmfs/my-group")
-        self.assertEqual(t["prefix"], "/cvmfs/my-group")
+
+    def test_matching_declared_and_injected_ok(self):
+        # The declared prefix must MIRROR the injected authoritative one; when they
+        # agree the build proceeds (injected value is used, trailing slash ignored).
+        t = RT({"system": {"prefix": "/cvmfs/my-group"}},
+               injected_prefix="/cvmfs/my-group/")
+        self.assertEqual(t["prefix"], "/cvmfs/my-group/")
 
     def test_recipe_prefix_is_local_dev_fallback(self):
         # With no injected prefix (local build), the recipe prefix is honoured.
