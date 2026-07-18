@@ -1270,6 +1270,22 @@ def parseRecipe(reader, generatePackages=None, visited=None):
       header,
       flags=re.MULTILINE,
     )
+    # Free-text metadata (description, acknowledgment, license, url, homepage,
+    # source_url) is prose that routinely contains ": ", parentheses or other
+    # characters YAML forbids in an unquoted (plain) scalar — e.g.
+    #   description: Foo: the bar
+    # trips "mapping values are not allowed here". Auto-quote the single-line value
+    # of these keys so authors need not remember YAML quoting, mirroring the
+    # %(…)s list-item quoting above. Values that are already quoted, a block scalar
+    # (|/>), an anchor/alias/tag, or an inline comment are left alone, and the
+    # transform is idempotent. For these prose keys a mid-value '#' is kept as text.
+    header = re.sub(
+      r'^(\s*(?:description|acknowledge?ment|license|url|homepage|source_url)\s*:[ \t]+)'
+      r'(?![|>&*!#"\'])(.*\S)[ \t]*$',
+      lambda m: m.group(1) + '"' + m.group(2).replace('\\', '\\\\').replace('"', '\\"') + '"',
+      header,
+      flags=re.MULTILINE,
+    )
     spec = yamlLoad(header)
     if spec and "from" in spec:
       basename = os.path.basename(getattr(reader, "url", "") or "")

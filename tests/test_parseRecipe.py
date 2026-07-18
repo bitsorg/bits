@@ -92,6 +92,30 @@ class TestRecipes(unittest.TestCase):
     err, meta, body = parseRecipe(BufferReader("test_broken_6.sh", TEST_BROKEN_6))
     self.assertEqual(err.strip(), ERROR_MSG_6.strip())
 
+  def test_freetext_autoquote(self) -> None:
+    # A ": " inside an unquoted description used to trip YAML
+    # ("mapping values are not allowed here"); it is now auto-quoted.
+    err, meta, body = parseRecipe(BufferReader(
+      "fq1.sh", "package: foo\nversion: 1\ndescription: Foo: the bar (baz)\n---\n"))
+    self.assertEqual(err, None)
+    self.assertEqual(meta["description"], "Foo: the bar (baz)")
+    # acknowledgement with parentheses + colon-space.
+    err, meta, body = parseRecipe(BufferReader(
+      "fq2.sh", "package: foo\nversion: 1\nacknowledgement: Portions (C) 2020: ACME\n---\n"))
+    self.assertEqual(err, None)
+    self.assertEqual(meta["acknowledgement"], "Portions (C) 2020: ACME")
+    # An already-quoted value is preserved (transform is idempotent).
+    err, meta, body = parseRecipe(BufferReader(
+      "fq3.sh", 'package: foo\nversion: 1\ndescription: "already: fine"\n---\n'))
+    self.assertEqual(err, None)
+    self.assertEqual(meta["description"], "already: fine")
+    # A block scalar (|) is left untouched by the sanitizer.
+    err, meta, body = parseRecipe(BufferReader(
+      "fq4.sh", "package: foo\nversion: 1\ndescription: |\n  line one\n  line two\n---\n"))
+    self.assertEqual(err, None)
+    self.assertIn("line one", meta["description"])
+    self.assertIn("line two", meta["description"])
+
   def test_getRecipeReader(self) -> None:
     f = getRecipeReader("foo")
     self.assertEqual(type(f), FileReader)
