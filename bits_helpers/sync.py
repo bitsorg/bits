@@ -885,8 +885,28 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
             - "s3://{bucket}/$link" 2>&1
     done
 
-    # Finally, upload the tarball.
-    put "{store_path}/$tarball" s3://{bucket}/{store_path}/
+    # Finally, upload the tarball, deduped on the BYTES rather than the key: a
+    # .tar.gz is not byte-reproducible, so the same content hash re-packed later
+    # is a different file. Skip only when the object already carries this exact
+    # checksum; otherwise overwrite, so the store holds what this build is about
+    # to sign. Same contract (and same "sha256:<hex>" metadata format) as the
+    # boto3 backend, so either can verify what the other uploaded — without it
+    # `bits certify` reports "store validation failed: sha256 mismatch".
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha="sha256:$(sha256sum "{store_path}/$tarball" | cut -d' ' -f1)"
+    else
+      sha="sha256:$(shasum -a 256 "{store_path}/$tarball" | cut -d' ' -f1)"
+    fi
+    remote_sha=$(s3cmd info -s --host s3.cern.ch --host-bucket {bucket}.s3.cern.ch \\
+                   "s3://{bucket}/{store_path}/$tarball" 2>/dev/null |
+                 sed -n 's/^[[:space:]]*x-amz-meta-sha256:[[:space:]]*//p' |
+                 tr -d '\\r' || true)
+    if [ "$remote_sha" = "$sha" ]; then
+      echo "$tarball already in the store with identical bytes, not uploading"
+    else
+      put --add-header="x-amz-meta-sha256:$sha" \\
+          "{store_path}/$tarball" s3://{bucket}/{store_path}/
+    fi
     """.format(
       workdir=self.workdir,
       bucket=self.remoteStore,
