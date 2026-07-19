@@ -253,6 +253,17 @@ def doParseArgs():
           "Fail-closed: refuses to run if the manifest does not verify."
       ),
   )
+  store_stats_parser = subparsers.add_parser(
+      "store-stats",
+      help="summarise S3 binary-store usage (per-arch + per-build/signed)",
+      description=(
+          "Walk the S3 binary store and write a store.json the Monitoring "
+          "dashboard consumes: per-architecture byte/object totals plus a "
+          "per-build (manifest) breakdown with a signed flag. Runs where bits "
+          "already has the S3 credentials + manifests, replacing the standalone "
+          "store-stats CI collector. Optionally pushes Prometheus gauges."
+      ),
+  )
   status_parser = subparsers.add_parser(
       "status",
       help="show what bits build would do for each package (dry run)",
@@ -1289,6 +1300,28 @@ def doParseArgs():
                          help="Permit sweeping when the verified manifest has zero roots (dangerous).")
   gc_parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
                          help="Report what would be swept without deleting anything.")
+
+  # Options for the store-stats subcommand
+  store_stats_parser.add_argument("--store", dest="storeStatsStore", metavar="URL",
+                                  default="https://s3.cern.ch/lcgapp-bits-testing",
+                                  help=("S3 store URL/bucket to summarise. Accepts https, b3://<bucket>, "
+                                        "or s3://<bucket>. Default: %(default)s"))
+  store_stats_parser.add_argument("--manifests", dest="manifests", metavar="PATH", nargs="*", default=None,
+                                  help=("Build-manifest JSON files/directories that attribute hashes to a "
+                                        "build (manifest). Default: WORKDIR/MANIFESTS."))
+  store_stats_parser.add_argument("--trust-manifest", dest="trustManifest", metavar="PATH", default=None,
+                                  help=("Comma-separated signed common manifests; their verified 'sources' "
+                                        "mark which builds are signed. Optional (unset ⇒ all unsigned)."))
+  store_stats_parser.add_argument("--tars-prefix", dest="tarsPrefix", metavar="PREFIX", default="TARS/",
+                                  help="Store root prefix under which <arch>/store/... lives. Default: %(default)s")
+  store_stats_parser.add_argument("-o", "--out", dest="out", metavar="FILE", default="store.json",
+                                  help="Path to write the store document. Default: %(default)s")
+  store_stats_parser.add_argument("--monitor-url", dest="monitorUrl", metavar="URL", default=None,
+                                  help="Also POST Prometheus gauges here (falls back to $METRICS_URL).")
+  store_stats_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
+                                  help="bits work directory (S3 client + default MANIFESTS). Default: %(default)s.")
+  store_stats_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
+                                  help="Architecture for store-path resolution. Default: %(default)s.")
 
   # Options for the cleanup subcommand
   cleanup_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
