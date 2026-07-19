@@ -3021,11 +3021,16 @@ def doBuild(args, parser):
     # size) and the building packages, pushed to --monitor-url. It never blocks
     # or fails the build and is stopped at process exit. Runtime only — no hash
     # impact.
-    _mon_on = getattr(args, "monitor", None)
-    if _mon_on is None:
-      _mon_on = _truthy(_system_opt("monitor", False))
     _mon_url = (getattr(args, "monitorUrl", None) or os.environ.get("METRICS_URL")
                 or _system_opt("monitor_url", None))
+    _mon_on = getattr(args, "monitor", None)
+    if _mon_on is None:
+      _sys_mon = _system_opt("monitor", None)
+      # Default ON when a metrics endpoint is configured (e.g. $METRICS_URL under
+      # bits-console) so no CLI flag is needed — a plain `bits build` with
+      # METRICS_URL set just works, and an older bits without --monitor is
+      # unaffected. Explicit --monitor/--no-monitor or system 'monitor' still win.
+      _mon_on = _truthy(_sys_mon) if _sys_mon is not None else bool(_mon_url)
     if _mon_on and _mon_url:
       try:
         from bits_helpers import monitor as _bits_monitor
