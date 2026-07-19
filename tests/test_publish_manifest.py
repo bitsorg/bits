@@ -121,8 +121,11 @@ class TestPublishFromManifest(unittest.TestCase):
         self.assertEqual(bucket, "mybucket")
         build_id = build_id_from_manifest(self.manifest)
         self.assertTrue(build_id.startswith("release_gcc15-"))
+        # The leaf carries the BOM's effective architecture: BOMs are
+        # per-platform so certification can be scoped by platform.
         self.assertTrue(
-            re.fullmatch(r"MANIFESTS/%s/[^/]+-\d{8}T\d{6}Z-[0-9a-f]+\.json" % re.escape(build_id), key),
+            re.fullmatch(r"MANIFESTS/%s/[^/]+-\d{8}T\d{6}Z-[0-9a-f]+\.[^/]+\.json"
+                         % re.escape(build_id), key),
             "unexpected key: %s" % key)
 
     def test_bom_has_provenance_and_excludes_config(self):
@@ -163,8 +166,11 @@ class TestPublishFromManifest(unittest.TestCase):
         return SimpleNamespace(**base)
 
     def test_submit_certification_mr_opens_mr(self):
+        # One MR / one commit carrying one per-platform BOM file per arch, each
+        # file named with its architecture (per-platform certification scoping).
         import bits_helpers.forge as forge
-        bom = {"build_id": "release_gcc15-abc", "packages": []}
+        bom = [("x86_64-el9", {"build_id": "release_gcc15-abc", "packages": []}),
+               ("shared", {"build_id": "release_gcc15-abc", "packages": []})]
         with patch.object(forge, "resolve_gitlab_token", return_value="tok"), \
              patch.object(forge, "gitlab_create_commit", return_value={"id": "c1"}) as cc, \
              patch.object(forge, "gitlab_create_merge_request",
@@ -172,10 +178,15 @@ class TestPublishFromManifest(unittest.TestCase):
             publish._submit_certification_mr(self._cert_args(), _Parser(),
                                              "release_gcc15-abc", bom)
         ca, _ = cc.call_args
-        # (api_url, token, project, branch, start_branch, file_path, content, message)
+        # (api_url, token, project, branch, start_branch, files, content, message)
         self.assertEqual(ca[0], "https://gitlab.cern.ch/api/v4")
         self.assertEqual(ca[2], "buncic/bits-manifests")
-        self.assertTrue(ca[5].startswith("manifests/ship/release_gcc15-abc."))
+        paths = [p for p, _c in ca[5]]
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(paths[0].startswith(
+            "manifests/ship/release_gcc15-abc.x86_64-el9."))
+        self.assertTrue(paths[1].startswith(
+            "manifests/ship/release_gcc15-abc.shared."))
         ma, mk = mr.call_args
         self.assertEqual(ma[4], "main")                 # target branch
 
@@ -195,19 +206,21 @@ class TestPublishFromManifest(unittest.TestCase):
 
     def test_submit_certification_records_certifier(self):
         # A bot opens the MR on behalf of a human whose authority was verified
-        # upstream (bits-console): --certifier stamps certified_by into the
-        # committed manifest (audit trail), without mutating the caller's bom.
+        # upstream (bits-console): --certifier stamps certified_by into every
+        # committed per-arch manifest (audit trail), without mutating the
+        # caller's bom.
         import json as _json, bits_helpers.forge as forge
-        bom = {"build_id": "b1", "packages": []}
+        doc = {"build_id": "b1", "packages": []}
+        bom = [("x86_64-el9", doc)]
         with patch.object(forge, "resolve_gitlab_token", return_value="tok"), \
              patch.object(forge, "gitlab_create_commit", return_value={"id": "c1"}) as cc, \
              patch.object(forge, "gitlab_create_merge_request",
                           return_value={"iid": 1, "web_url": "u"}):
             publish._submit_certification_mr(self._cert_args(certifier="alice"),
                                              _Parser(), "b1", bom)
-        committed = _json.loads(cc.call_args[0][6])       # content arg
+        committed = _json.loads(cc.call_args[0][5][0][1])   # first file's content
         self.assertEqual(committed["certified_by"], ["alice"])
-        self.assertNotIn("certified_by", bom)             # caller's dict untouched
+        self.assertNotIn("certified_by", doc)             # caller's dict untouched
 
     def _dopublish_args(self, **over):
         from types import SimpleNamespace

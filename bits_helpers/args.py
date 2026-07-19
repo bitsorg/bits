@@ -1257,6 +1257,12 @@ def doParseArgs():
   certify_parser.add_argument("--changed-groups", dest="changedGroups", metavar="G1,G2", default=None,
                               help=("Restrict the approval re-check to these groups (the ones changed in "
                                     "this MR; e.g. from a git diff). Default: every group present."))
+  certify_parser.add_argument("--architectures", dest="architectures", metavar="A1,A2", default=None,
+                              help=("Certify only these platforms: merge, store-validate and sign only "
+                                    "BOMs of these effective architectures ('shared' is one too), leaving "
+                                    "other platforms' signed manifests untouched. A listed platform whose "
+                                    "BOMs are all gone gets an EMPTY signed manifest (revocation). "
+                                    "Default: every architecture present in the manifests."))
   certify_parser.add_argument("--certifier", dest="certifier", metavar="USERNAME", default=None,
                               help=("GitLab username of the already-authenticated initiator (default: "
                                     "$GITLAB_USER_LOGIN, which GitLab sets for an API-triggered pipeline). "

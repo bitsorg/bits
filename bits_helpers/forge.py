@@ -384,11 +384,18 @@ def gitlab_default_branch(api_url, token, project, timeout=15):
 
 def gitlab_create_commit(api_url, token, project, branch, start_branch,
                          file_path, content, message, timeout=30) -> dict:
-    """Create *branch* off *start_branch* with a single file (commits API)."""
+    """Create *branch* off *start_branch* with one commit (commits API).
+
+    *file_path*/*content* name a single file, or *file_path* may be a list of
+    ``(path, content)`` pairs (with *content* ignored) so one commit can add
+    several files — e.g. one per-platform BOM each for a multi-arch build.
+    """
     import requests
+    files = file_path if isinstance(file_path, (list, tuple)) else [(file_path, content)]
     payload = {
         "branch": branch, "start_branch": start_branch, "commit_message": message,
-        "actions": [{"action": "create", "file_path": file_path, "content": content}],
+        "actions": [{"action": "create", "file_path": p, "content": c}
+                    for p, c in files],
     }
     resp = requests.post("%s/repository/commits" % _gl_project_url(api_url, project),
                          headers={"PRIVATE-TOKEN": token}, json=payload, timeout=timeout)

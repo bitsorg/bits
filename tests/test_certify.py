@@ -452,6 +452,56 @@ class TestCertifyEndToEnd(unittest.TestCase):
         # No monolithic common-manifest.json is written.
         self.assertFalse(os.path.isfile(out))
 
+    def test_bom_architecture_single_mixed_and_empty(self):
+        # A BOM is per-platform: one arch per file ('shared' counts as an arch).
+        self.assertEqual(
+            certify.bom_architecture(_manifest("b1", [
+                _pkg("A", "h1", "sha256:aa", arch="x86_64-el9"),
+                _pkg("B", "h2", "sha256:bb", arch="x86_64-el9")])),
+            "x86_64-el9")
+        # No certifiable entry (nothing with hash+sha) -> None, not an error.
+        self.assertIsNone(certify.bom_architecture(_manifest("b2", [])))
+        # Mixing architectures violates the invariant.
+        with self.assertRaises(certify.CertifyError):
+            certify.bom_architecture(_manifest("b3", [
+                _pkg("A", "h1", "sha256:aa", arch="x86_64-el9"),
+                _pkg("B", "h2", "sha256:bb", arch="x86_64-el10")]))
+
+    def test_certify_scoped_to_platform(self):
+        # only_archs limits merge, store validation and signing to the named
+        # platforms: the other platform's BOM is never merged, its store objects
+        # never probed, and no file is written for it — so a broken (or merely
+        # unchanged) platform cannot block, slow down, or be touched by this run.
+        el9 = _manifest("b-el9", [_pkg("A", "h1", "sha256:aa", arch="x86_64-el9")])
+        el10 = _manifest("b-el10", [_pkg("A", "h1", "sha256:BAD-WOULD-FAIL",
+                                         arch="x86_64-el10")])
+        probed = []
+        def probe(a, h, t=None):
+            probed.append(a)
+            return {("x86_64-el9", "h1"): "sha256:aa"}.get((a, h))
+        out = os.path.join(self.tmp, "out", "common-manifest.json")
+        outputs = certify.certify_by_arch([el9, el10], self.key_pem, out,
+                                          probe=probe,
+                                          only_archs=["x86_64-el9"])
+        self.assertEqual([arch for _o, _s, arch in outputs], ["x86_64-el9"])
+        self.assertEqual(set(probed), {"x86_64-el9"})
+        self.assertFalse(os.path.isfile(os.path.join(
+            self.tmp, "out", "common-manifest-x86_64-el10.json")))
+
+    def test_certify_scoped_deleted_platform_emits_empty_revocation(self):
+        # A scoped platform whose BOMs are all gone still gets an EMPTY signed
+        # manifest: deleting a platform's BOMs from the manifests repo revokes
+        # its entries for consumers.
+        out = os.path.join(self.tmp, "out", "common-manifest.json")
+        outputs = certify.certify_by_arch([], self.key_pem, out,
+                                          probe=lambda a, h, t=None: None,
+                                          only_archs=["x86_64-el9"])
+        (op, sp, arch), = outputs
+        self.assertEqual(arch, "x86_64-el9")
+        kid, index = trust.trusted_index(op)
+        self.assertIsNotNone(kid)                  # well-formed and signed
+        self.assertEqual(index, {})                # ...but trusts nothing
+
     def test_consumer_merges_arch_and_shared(self):
         # A build node fetches its own arch file + shared and merges the indexes.
         from bits_helpers import build

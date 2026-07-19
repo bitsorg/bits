@@ -346,34 +346,49 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                 _user = getpass.getuser()
             except Exception:
                 _user = "unknown"
-            # Provenance ("who / when / where") so the manifest is a self-describing
-            # record and a hash -> build reverse index can be derived from it.
-            bom = {
+            # A BOM is per-platform: partition the entries by their effective
+            # architecture ("shared" — noarch — is just another platform) and
+            # emit one BOM per architecture, with the architecture in the file
+            # name. This is the invariant that lets certification be scoped per
+            # platform (a BOM pairs with exactly one common-manifest-<arch>) —
+            # bits_helpers.certify.bom_architecture() refuses mixed BOMs.
+            by_arch = {}
+            for m in packages:
+                by_arch.setdefault(
+                    m.get("effective_architecture") or "shared", []).append(m)
+            _provenance = {
                 "build_id": build_id,
                 "published_by": "%s@%s" % (_user, socket.gethostname().split(".")[0]),
                 "published_at": datetime.datetime.now(datetime.timezone.utc)
                                     .strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "architecture": architecture,
-                "packages": packages,
             }
-            tmp = os.path.join(_tf.mkdtemp(), leaf)
-            with open(tmp, "w") as fh:
-                _json.dump(bom, fh, indent=1)
-            # Folder per release (identify the build) + unique leaf per run
-            # (concurrent publishes never clobber each other).
-            key = "MANIFESTS/%s/%s" % (build_id, leaf)
-            try:
-                w.s3.upload_file(tmp, w.writeStore, key)
-                info("Manifest (minimal BOM, %d pkgs, build_id=%s) -> %s/%s",
-                     len(packages), build_id, w.writeStore, key)
-            except Exception as exc:
-                error("manifest upload failed: %s", exc)
+            bom = []                    # [(effective_arch, bom_dict), ...]
+            _stem = leaf[:-len(".json")]
+            for _arch in sorted(by_arch):
+                doc = dict(_provenance,
+                           effective_architecture=_arch,
+                           packages=by_arch[_arch])
+                arch_leaf = "%s.%s.json" % (_stem, _arch)
+                tmp = os.path.join(_tf.mkdtemp(), arch_leaf)
+                with open(tmp, "w") as fh:
+                    _json.dump(doc, fh, indent=1)
+                # Folder per release (identify the build) + unique leaf per run
+                # (concurrent publishes never clobber each other).
+                key = "MANIFESTS/%s/%s" % (build_id, arch_leaf)
+                try:
+                    w.s3.upload_file(tmp, w.writeStore, key)
+                    info("Manifest (minimal BOM, %d pkgs, %s, build_id=%s) -> %s/%s",
+                         len(by_arch[_arch]), _arch, build_id, w.writeStore, key)
+                    bom.append((_arch, doc))
+                except Exception as exc:
+                    error("manifest upload failed: %s", exc)
 
     banner("%s %d package(s) to %s",
            "[dry-run] would publish" if dry_run else "Published", ok, write_store)
     if not dry_run and n and ok != n:
         sys.exit(1)
-    if dry_run or bom is None:
+    if dry_run or not bom:
         return None
     return build_id, bom, _system_from_manifest(manifest_doc)
 
@@ -402,7 +417,12 @@ def _system_from_manifest(manifest_doc):
 
 
 def _submit_certification_mr(args, parser, build_id, bom):
-    """Open a merge request adding this build's manifest to the manifests repo.
+    """Open a merge request adding this build's manifest(s) to the manifests repo.
+
+    *bom* is a list of ``(effective_architecture, bom_dict)`` — one per-platform
+    BOM per architecture the build produced ("shared" included) — committed as
+    one commit / one MR, each file named with its architecture so certification
+    can be scoped per platform straight from the file list.
 
     Uses the GitLab REST API with the caller's PAT (works with SSH push — only the
     host/path are parsed from the remote). The MR *author* is the PAT owner, whose
@@ -437,14 +457,15 @@ def _submit_certification_mr(args, parser, build_id, bom):
     # human whose authority was already verified upstream (e.g. bits-console).
     certifier = getattr(args, "certifier", None) or os.environ.get("GITLAB_USER_LOGIN")
     if certifier:
-        bom = dict(bom, certified_by=[certifier])
+        bom = [(a, dict(d, certified_by=[certifier])) for a, d in bom]
     leaf = _run_leaf()                                   # host-UTC-rand, unique
     branch = "certify/%s-%s" % (re.sub(r"[^A-Za-z0-9._-]", "_", build_id), leaf[:-5])
-    path = "manifests/%s/%s.%s" % (group, build_id, leaf)
+    files = [("manifests/%s/%s.%s.%s" % (group, build_id, arch, leaf),
+              _json.dumps(doc, indent=1)) for arch, doc in bom]
     title = "Certify %s (%s)" % (build_id, group)
     try:
-        forge.gitlab_create_commit(api_url, token, project, branch, target, path,
-                                   _json.dumps(bom, indent=1), title)
+        forge.gitlab_create_commit(api_url, token, project, branch, target,
+                                   files, None, title)
         mr = forge.gitlab_create_merge_request(api_url, token, project, branch, target, title)
     except Exception as exc:
         parser.error("failed to open the certification MR on %s: %s" % (project, exc))

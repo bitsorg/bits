@@ -100,6 +100,36 @@ def load_build_manifests(source) -> list:
     return out
 
 
+def bom_architecture(man) -> "str | None":
+    """Return the single effective architecture a build manifest (BOM) is for.
+
+    A BOM is per-platform by construction: ``bits publish`` partitions a build's
+    entries by ``effective_architecture`` and emits one BOM per architecture
+    ("shared" — noarch — is just another architecture). This is what lets
+    certification be scoped per platform instead of scanning every manifest:
+    a BOM pairs with exactly one ``common-manifest-<arch>.json``.
+
+    Returns the architecture, or None when the BOM has no certifiable entry
+    (nothing carrying both ``hash`` and ``tarball_sha256``). A BOM mixing more
+    than one architecture violates the invariant and raises :class:`CertifyError`
+    — re-publish it with a bits that splits BOMs per architecture.
+    """
+    if not isinstance(man, dict):
+        return None
+    archs = {(e.get("effective_architecture") or "shared")
+             for e in man.get("packages") or []
+             if isinstance(e, dict) and e.get("hash") and e.get("tarball_sha256")}
+    if not archs:
+        return None
+    if len(archs) > 1:
+        raise CertifyError(
+            "build manifest %s mixes architectures (%s): a BOM must be "
+            "per-platform — re-publish with a bits version that emits one BOM "
+            "per effective architecture"
+            % (man.get("build_id") or "?", ", ".join(sorted(archs))))
+    return archs.pop()
+
+
 def _expiry_iso(valid_days):
     """ISO-8601 UTC timestamp *valid_days* from now, or None to never expire."""
     if not valid_days:
@@ -382,23 +412,51 @@ def _arch_stem(out_path, arch) -> str:
 
 def certify_by_arch(manifests, key_pem_path, out_path, probe=None,
                     default_group=None, valid_days=None, source_commit=None,
-                    approval_check=None) -> list:
-    """Certify once, then emit one signed manifest per effective_architecture.
+                    approval_check=None, only_archs=None) -> list:
+    """Certify per platform and emit one signed manifest per architecture.
 
-    The trust unit is validated as a whole (a cross-arch hash conflict or a
-    sha256 mismatch still fails the *entire* certification; a package merely
-    absent from the store is dropped, not fatal — see ``_prepare_common``), then
-    the packages are partitioned by ``effective_architecture`` — ``"shared"`` for
-    noarch packages is just another architecture — and each partition is written
-    and signed to ``<stem>-<arch>.json(.sig)``. A build node fetches only its own
-    arch file plus the shared one; there is no point shipping every arch to every
-    node. Returns ``[(out_path, sig_path, arch), ...]`` sorted by arch.
+    Certification is scoped by platform: object identity in the store is
+    ``(effective_architecture, hash)``, so entries from different architectures
+    can never conflict and there is nothing cross-arch to validate. Each BOM is
+    per-platform (see :func:`bom_architecture`) and pairs with exactly one
+    ``common-manifest-<arch>.json``; ``"shared"`` (noarch) is just another
+    architecture.
+
+    *only_archs* — an iterable of architecture strings — limits the run to those
+    platforms: only their BOMs are merged and store-validated, only their files
+    are written/signed, and other platforms' previously signed manifests are
+    untouched (a CI run for a changed platform neither re-validates nor blocks —
+    nor is blocked by — the others). An arch in *only_archs* whose BOMs are all
+    gone still gets an EMPTY signed manifest, so deleting a platform's BOMs
+    revokes its entries. With *only_archs* None, every architecture present is
+    certified (full re-derivation).
+
+    Within the scoped set a sha256 mismatch still fails the whole run
+    (fail-closed); a package merely absent from the store is dropped, not fatal —
+    see ``_prepare_common``. Returns ``[(out_path, sig_path, arch), ...]``
+    sorted by arch.
     """
-    common = _prepare_common(manifests, key_pem_path, probe, default_group,
+    loaded = load_build_manifests(manifests)
+    if only_archs is not None:
+        only = {a.strip() for a in only_archs if a and a.strip()}
+        kept = []
+        for man in loaded:
+            arch = bom_architecture(man)   # also enforces the one-arch invariant
+            if arch in only:
+                kept.append(man)
+        debug("certify: scoped to %s — %d of %d manifest(s) kept",
+              ", ".join(sorted(only)), len(kept), len(loaded))
+        loaded = kept
+    common = _prepare_common(loaded, key_pem_path, probe, default_group,
                              valid_days, source_commit, approval_check)
     buckets = {}
     for p in common["packages"]:
         buckets.setdefault(p.get("effective_architecture") or "shared", []).append(p)
+    # Every scoped arch gets a file even when its packages are gone: an empty
+    # signed manifest is the revocation of that platform's entries.
+    if only_archs is not None:
+        for arch in only:
+            buckets.setdefault(arch, [])
     # Always emit at least the shared file so consumers/GC have a well-formed,
     # signed artifact to read even when a certification is (transiently) empty.
     if not buckets:
@@ -575,12 +633,16 @@ def doCertify(args, parser):
     if valid_days is not None and valid_days < 0:
         parser.error("--valid-days must be >= 0 (0 means no expiry)")
     source_commit = getattr(args, "sourceCommit", None) or os.environ.get("CI_COMMIT_SHA")
+    only_archs = None
+    if getattr(args, "architectures", None):
+        only_archs = [a for a in args.architectures.split(",") if a.strip()]
     try:
         outputs = certify_by_arch(sources, args.key, args.out, probe=probe,
                                   default_group=getattr(args, "group", None),
                                   valid_days=valid_days,
                                   source_commit=source_commit,
-                                  approval_check=approval_check)
+                                  approval_check=approval_check,
+                                  only_archs=only_archs)
     except CertifyError as exc:
         parser.error(str(exc))
     from bits_helpers.log import banner
