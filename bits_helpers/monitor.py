@@ -74,6 +74,7 @@ class BuildMonitor:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
+        self._diag_logged = False         # log the FIRST push outcome once
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self):
@@ -225,9 +226,18 @@ class BuildMonitor:
             self.url + "/api/v1/import/prometheus", data=body,
             headers={"Content-Type": "text/plain"}, method="POST")
         try:
-            urllib.request.urlopen(req, timeout=3).close()
-        except Exception:
-            pass  # endpoint down / behind NAT — drop this sample silently
+            resp = urllib.request.urlopen(req, timeout=3)
+            code = getattr(resp, "status", "?")
+            resp.close()
+            if not self._diag_logged:      # confirm the push path once, loudly
+                print("[monitor] first push OK (HTTP %s) -> %s as instance=%s"
+                      % (code, self.url, self.instance), flush=True)
+                self._diag_logged = True
+        except Exception as e:
+            if not self._diag_logged:      # make a silent NAT/firewall drop visible
+                print("[monitor] first push FAILED -> %s: %s" % (self.url, e), flush=True)
+                self._diag_logged = True
+            # endpoint down / behind NAT — drop subsequent samples silently
 
     # ── small helpers ────────────────────────────────────────────────────────
     @staticmethod
