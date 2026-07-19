@@ -3791,6 +3791,13 @@ def doBuild(args, parser):
       _ro_sources = ("-v %s:%s/SOURCES:ro " % (quote(_src_dir), container_workDir)
                      if _ro_enabled and os.path.isdir(_src_dir)
                      else "")
+      # --user $(id -u):$(id -g) runs as the host uid, which usually has no
+      # passwd entry inside the image, so $HOME is unset and expands to "" — any
+      # recipe that writes under ~/ then targets the filesystem root and fails
+      # (e.g. gflags' CMake package registry -> //.cmake, IJulia's kernelspec ->
+      # /.local). Point HOME at the container-local /tmp (world-writable, and per
+      # container so concurrent builds never collide). HOME is not a hash input,
+      # so this changes no package hash.
       build_command = (
         "docker run --rm --entrypoint= --user $(id -u):$(id -g) "
         "{platformArg}"
@@ -3798,7 +3805,7 @@ def doBuild(args, parser):
         "-v {scriptDir}/build.sh:/build.sh:ro "
         "-v {bits_dir}:/bits "
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
-        "-e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
+        "-e HOME=/tmp -e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
       ).format(
         platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
         roSources=_ro_sources,
