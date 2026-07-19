@@ -220,9 +220,48 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
     from bits_helpers.checksum import checksum_file
     import glob as _glob
 
-    def _store_tarball(arch, h):
+    from bits_helpers.utilities import ver_rev
+
+    def _store_tarball(arch, entry):
+        """The local store tarball for *entry*, chosen by NAME — not by glob order.
+
+        A hash directory can legitimately hold more than one tarball: the upload
+        HEAD-skip is keyed on hash AND file name, so a hash that was once uploaded
+        under two revision labels keeps both (see build.py). Returning glob()[0]
+        therefore picked an arbitrary one, while sync.py uploads the object named
+        from ver_rev(spec) — so the BOM could record the checksum of one file while
+        the store received the other. That is a manifest/store sha256 mismatch
+        produced by a single, consistent build, and `bits certify` rejects it
+        (fail-closed: it cannot tell that apart from tampering). Two publishes of
+        the same build could even disagree with each other, since glob order is not
+        guaranteed.
+
+        Select the exact name the upload will send. If it is missing, fall back to
+        a SORTED pick so at least two runs agree, and say so.
+        """
+        h = entry.get("hash") or ""
         sdir = os.path.join(work_dir, resolve_store_path(arch, h))
-        tars = _glob.glob(os.path.join(sdir, "*.tar.gz")) if os.path.isdir(sdir) else []
+        if not os.path.isdir(sdir):
+            return None
+        spec = {"package":  entry.get("package", ""),
+                "version":  entry.get("version"),
+                "revision": entry.get("revision")}
+        want = "{package}-{ver_rev}.{arch}.tar.gz".format(
+            package=spec["package"], ver_rev=ver_rev(spec), arch=arch)
+        path = os.path.join(sdir, want)
+        if os.path.isfile(path):
+            others = sorted(os.path.basename(t)
+                            for t in _glob.glob(os.path.join(sdir, "*.tar.gz"))
+                            if os.path.basename(t) != want)
+            if others:
+                debug("%s %s: hash dir also holds %s; publishing %s (the name the "
+                      "upload writes)", spec["package"], h[:12], ", ".join(others), want)
+            return path
+        tars = sorted(_glob.glob(os.path.join(sdir, "*.tar.gz")))
+        if tars:
+            warning("  %s %s: no tarball named %s — falling back to %s. The BOM will "
+                    "record that file's checksum, so verify it matches the store.",
+                    spec["package"], h[:12], want, os.path.basename(tars[0]))
         return tars[0] if tars else None
 
     banner("%s from %s to %s",
@@ -243,7 +282,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             debug("skip config package %s", pkg)
             continue
         arch = e.get("effective_architecture") or architecture
-        tar = _store_tarball(arch, h)
+        tar = _store_tarball(arch, e)
         # Only packages with a content-addressed store tarball can be uploaded.
         if not tar:
             warning("  skip %s %s — no local store tarball", pkg, h[:12])
