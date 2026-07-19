@@ -181,6 +181,31 @@ class SyncTestCase(unittest.TestCase):
 class Boto3TestCase(unittest.TestCase):
     """Check the b3:// remote is working properly."""
 
+    def setUp(self):
+        """Create a real workdir holding a content tarball per spec.
+
+        Done in setUp because it runs BEFORE the per-test @patch decorators mock
+        out os.makedirs/os.path.*. The upload path checksums the file it sends (a
+        .tar.gz is not byte-reproducible, so the store dedupes on the BYTES, not
+        on the key alone), so the local tarball has to actually exist.
+        Populates ``self.workdir`` and ``self.shas`` ({hash: sha256}).
+        """
+        import shutil
+        import tempfile
+        from bits_helpers.checksum import checksum_file
+        self.workdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.workdir, True)
+        self.shas = {}
+        for spec in (MISSING_SPEC, GOOD_SPEC, BAD_SPEC):
+            d = os.path.join(self.workdir,
+                             resolve_store_path(ARCHITECTURE, spec["hash"]))
+            os.makedirs(d, exist_ok=True)
+            tar = os.path.join(d, tarball_name(spec))
+            with open(tar, "wb") as fh:
+                fh.write(b"tarball-" + spec["hash"].encode("utf-8"))
+            # Same helper the upload path uses, so the two can never drift.
+            self.shas[spec["hash"]] = checksum_file(tar)
+
     def mock_s3(self):
         """Create a mock object imitating an S3 client.
 
@@ -301,12 +326,21 @@ class Boto3TestCase(unittest.TestCase):
     @patch("os.path.islink", new=MagicMock(return_value=True))
     @patch("bits_helpers.sync.Boto3RemoteSync.write_rev_marker", new=MagicMock())
     def test_tarball_upload(self) -> None:
-        """Hash-only upload (ADR-0005): a fresh content tarball is uploaded once;
-        an already-present one is skipped; NO version-link or dist-symlink objects
-        are written any more (put_object must never be called)."""
+        """Hash-only upload (ADR-0005), deduped on the BYTES.
+
+        A .tar.gz is not byte-reproducible, so the same content hash re-packed
+        later is a different file. An object is therefore skipped only when the
+        sha256 recorded in its metadata matches the local tarball; one whose
+        checksum differs — or is absent (uploaded before this check) — is
+        overwritten, so the store always holds the bytes this build will sign.
+        Skipping on mere key existence was what made the store and the build
+        manifest disagree, which `bits certify` rejects as a sha256 mismatch.
+        NO version-link or dist-symlink objects are written (no put_object).
+        """
+        shas = self.shas
         b3sync = sync.Boto3RemoteSync(
             remoteStore="b3://localhost", writeStore="b3://localhost",
-            architecture=ARCHITECTURE, workdir="/sw")
+            architecture=ARCHITECTURE, workdir=self.workdir)
         b3sync.s3 = self.mock_s3()
 
         # Fresh build: the content object is absent -> upload it. The store keeps
@@ -316,13 +350,32 @@ class Boto3TestCase(unittest.TestCase):
         b3sync.upload_symlinks_and_tarball(MISSING_SPEC)
         b3sync.s3.upload_file.assert_called()
         b3sync.s3.put_object.assert_not_called()
+        # The checksum is recorded so a later build can compare cheaply (HEAD).
+        self.assertEqual(
+            b3sync.s3.upload_file.call_args.kwargs["ExtraArgs"]["Metadata"]["sha256"],
+            shas[MISSING_SPEC["hash"]])
 
-        # Already in the store (content-addressed dedup by hash): skip re-upload.
+        # Present with exactly these bytes -> skip the re-upload.
+        b3sync.s3.head_object = lambda Bucket, Key: {
+            "Metadata": {"sha256": shas[GOOD_SPEC["hash"]]}}
         b3sync.s3.put_object.reset_mock()
         b3sync.s3.upload_file.reset_mock()
         b3sync.upload_symlinks_and_tarball(GOOD_SPEC)
         b3sync.s3.upload_file.assert_not_called()
         b3sync.s3.put_object.assert_not_called()
+
+        # Present but DIFFERENT bytes -> overwrite (this is the certify fix).
+        b3sync.s3.head_object = lambda Bucket, Key: {"Metadata": {"sha256": "0" * 64}}
+        b3sync.s3.upload_file.reset_mock()
+        b3sync.upload_symlinks_and_tarball(GOOD_SPEC)
+        b3sync.s3.upload_file.assert_called()
+
+        # Legacy object with no recorded checksum: equality cannot be proven, so
+        # re-upload (which also migrates it to carry the sha256).
+        b3sync.s3.head_object = lambda Bucket, Key: {}
+        b3sync.s3.upload_file.reset_mock()
+        b3sync.upload_symlinks_and_tarball(GOOD_SPEC)
+        b3sync.s3.upload_file.assert_called()
 
     @patch("os.listdir", new=lambda path: (
         [] if path.endswith("-" + MISSING_SPEC["revision"]) else NotImplemented))
@@ -333,7 +386,7 @@ class Boto3TestCase(unittest.TestCase):
         """Every upload records the build's rev-index marker (ADR-0005 P2d)."""
         b3sync = sync.Boto3RemoteSync(
             remoteStore="b3://localhost", writeStore="b3://localhost",
-            architecture=ARCHITECTURE, workdir="/sw")
+            architecture=ARCHITECTURE, workdir=self.workdir)
         b3sync.s3 = self.mock_s3()
         b3sync.upload_symlinks_and_tarball(MISSING_SPEC)
         mock_marker.assert_called_once_with(MISSING_SPEC)
@@ -355,7 +408,7 @@ class Boto3TestCase(unittest.TestCase):
         """
         b3sync = sync.Boto3RemoteSync(
             remoteStore="b3://localhost", writeStore="b3://localhost",
-            architecture=ARCHITECTURE, workdir="/sw")
+            architecture=ARCHITECTURE, workdir=self.workdir)
         b3sync.s3 = self.mock_s3()
         # MISSING_SPEC routing (fresh upload) + an explicit architecture key.
         spec = dict(MISSING_SPEC, architecture=ARCHITECTURE)

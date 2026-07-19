@@ -4255,7 +4255,11 @@ def doBuild(args, parser):
   # dashboard reads them via the snapshot). This is why there is no scheduled
   # store-stats job. Only when we actually wrote to a store AND a monitor URL is
   # configured. Fire-and-forget: listing the store or the push never fails build.
-  if _mon_url and getattr(syncHelper, "writeStore", "") and getattr(syncHelper, "s3", None):
+  # Resolved here rather than reusing the monitor block's _mon_url: that lives in
+  # a conditional branch and may never have been assigned on this path.
+  _store_mon_url = (getattr(args, "monitorUrl", None)
+                    or os.environ.get("METRICS_URL") or "").strip().rstrip("/")
+  if _store_mon_url and getattr(syncHelper, "writeStore", "") and getattr(syncHelper, "s3", None):
     try:
       from bits_helpers import store_stats as _ss, certify as _certify
       _bucket = getattr(syncHelper, "remoteStore", "") or getattr(syncHelper, "writeStore", "")
@@ -4268,12 +4272,12 @@ def doBuild(args, parser):
       _stats = _ss.summarise(_ss.iter_s3_objects(syncHelper.s3, _bucket),
                              _hash_to_build, set())
       import urllib.request as _urlreq
-      _req = _urlreq.Request(_mon_url.rstrip("/") + "/api/v1/import/prometheus",
+      _req = _urlreq.Request(_store_mon_url + "/api/v1/import/prometheus",
                              data=_ss.to_prometheus(_stats).encode("utf-8"),
                              headers={"Content-Type": "text/plain"}, method="POST")
       _urlreq.urlopen(_req, timeout=15).close()
       info("store-stats: pushed store gauges to %s (%d objects, %d arch)",
-           _mon_url, _stats["total_objects"], len(_stats["arch"]))
+           _store_mon_url, _stats["total_objects"], len(_stats["arch"]))
     except Exception as _ss_err:  # pylint: disable=broad-except
       debug("store-stats push skipped: %s", _ss_err)
 

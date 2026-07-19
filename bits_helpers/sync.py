@@ -27,6 +27,13 @@ DEFAULT_S3_ENDPOINT = "https://s3.cern.ch"
 # $BITS_AWS_KEYS_FILE.
 DEFAULT_AWS_KEYS_FILE = "~/.bits/s3keys"
 
+# S3 user-metadata key holding the sha256 of an uploaded content tarball. A
+# .tar.gz is not byte-reproducible, so key existence alone cannot tell us whether
+# the store holds the same bytes the build manifest records; this lets the upload
+# path compare cheaply (HEAD) and overwrite when they differ, keeping the store
+# consistent with the manifest that `bits certify` signs.
+_SHA256_META = "sha256"
+
 
 def _load_aws_keys_file(path):
   """Read S3 credentials from a private key file (default ~/.bits/s3keys).
@@ -1025,6 +1032,35 @@ class Boto3RemoteSync:
       raise
     return True
 
+  def _s3_object_has_bytes(self, key, local_path) -> bool:
+    """Return whether the store already holds EXACTLY the bytes of *local_path*.
+
+    A ``.tar.gz`` is not byte-reproducible (mtimes, gzip header, member order), so
+    re-packing the same content hash yields a different file. "The key exists" is
+    therefore NOT "the bytes match": skipping on mere existence let the store keep
+    one build's tarball while a later build's manifest recorded the sha256 of its
+    own, and `bits certify` then rejects the pair as a sha256 mismatch (it must
+    fail closed — it cannot tell that apart from tampering).
+
+    We compare against the sha256 recorded in the object's metadata at upload
+    time. An object without that metadata predates this check, so we cannot prove
+    equality and report False: it is re-uploaded, which both fixes the store and
+    migrates it to carry the checksum. This keeps the invariant the certifier
+    needs — the store holds the bytes whose sha256 the signer put in the manifest.
+    """
+    from botocore.exceptions import ClientError
+    try:
+      meta = self.s3.head_object(Bucket=self.writeStore, Key=key)
+    except ClientError as err:
+      if err.response["Error"]["Code"] == "404":
+        return False
+      raise
+    remote_sha = (meta.get("Metadata") or {}).get(_SHA256_META, "")
+    if not remote_sha:
+      return False
+    from bits_helpers.checksum import checksum_file
+    return remote_sha == checksum_file(local_path)
+
   def write_rev_marker(self, spec):
     """Record this build's revision in the rev-index (ADR-0005).
 
@@ -1205,16 +1241,23 @@ class Boto3RemoteSync:
         package=spec["package"], ver_rev=ver_rev(spec), architecture=arch)
     tar_path = os.path.join(resolve_store_path(arch, spec["hash"]), tarball)
 
-    # Content-addressed dedup: the same hash on the same arch is byte-identical,
-    # so an object already present never needs re-uploading.
-    if self._s3_key_exists(tar_path):
-      debug("%s exists on S3 already, not uploading", tarball)
+    # Content-addressed dedup, but keyed on the BYTES, not just the key: a .tar.gz
+    # is not byte-reproducible, so the same hash re-packed later differs. Skipping
+    # on mere existence left the store holding an older tarball while the manifest
+    # recorded this build's sha256 — which `bits certify` rejects (fail-closed) as
+    # a sha256 mismatch. Overwrite when the bytes differ, so the store always holds
+    # what this publisher built and is about to sign.
+    local_file = os.path.join(self.workdir, tar_path)
+    if self._s3_object_has_bytes(tar_path, local_file):
+      debug("%s already in the store with identical bytes, not uploading", tarball)
       return
 
     debug("Uploading content tarball for %s %s-%s (%s) to S3",
           spec["package"], spec["version"], spec["revision"], spec["hash"])
+    from bits_helpers.checksum import checksum_file
     self.s3.upload_file(Bucket=self.writeStore, Key=tar_path,
-                        Filename=os.path.join(self.workdir, tar_path))
+                        Filename=local_file,
+                        ExtraArgs={"Metadata": {_SHA256_META: checksum_file(local_file)}})
 
   def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
     """Try to fetch a source archive from the boto3/S3 remote store.
