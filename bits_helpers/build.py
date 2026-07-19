@@ -4249,5 +4249,33 @@ def doBuild(args, parser):
     from bits_helpers.provenance import compute_build_id
     send_reuse_beacon(_beaconUrl, compute_build_id(specs, args), sorted(_reused))
 
+  # ── Best-effort: refresh S3 store-usage gauges on VM ───────────────────────
+  # bits just uploaded artefacts to the store, so summarise the store and push
+  # the gauges to the same VM endpoint the runner metrics use (the Monitoring
+  # dashboard reads them via the snapshot). This is why there is no scheduled
+  # store-stats job. Only when we actually wrote to a store AND a monitor URL is
+  # configured. Fire-and-forget: listing the store or the push never fails build.
+  if _mon_url and getattr(syncHelper, "writeStore", "") and getattr(syncHelper, "s3", None):
+    try:
+      from bits_helpers import store_stats as _ss, certify as _certify
+      _bucket = getattr(syncHelper, "remoteStore", "") or getattr(syncHelper, "writeStore", "")
+      _hash_to_build = {}
+      try:
+        _hash_to_build = _ss.hash_to_build_map(
+            _certify.load_build_manifests([join(args.workDir, "MANIFESTS")]))
+      except Exception:  # pylint: disable=broad-except
+        pass  # per-build attribution is optional; degrade to (uncertified)
+      _stats = _ss.summarise(_ss.iter_s3_objects(syncHelper.s3, _bucket),
+                             _hash_to_build, set())
+      import urllib.request as _urlreq
+      _req = _urlreq.Request(_mon_url.rstrip("/") + "/api/v1/import/prometheus",
+                             data=_ss.to_prometheus(_stats).encode("utf-8"),
+                             headers={"Content-Type": "text/plain"}, method="POST")
+      _urlreq.urlopen(_req, timeout=15).close()
+      info("store-stats: pushed store gauges to %s (%d objects, %d arch)",
+           _mon_url, _stats["total_objects"], len(_stats["arch"]))
+    except Exception as _ss_err:  # pylint: disable=broad-except
+      debug("store-stats push skipped: %s", _ss_err)
+
   debug("Everything done")
 
