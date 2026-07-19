@@ -35,6 +35,11 @@ COMMON_MANIFEST_KIND = "common-manifest"
 # tarball_sha256 are what trusted_index() keys on; group drives the consumer
 # trust policy (own-group + common); the rest aid GC/monitoring.
 _PKG_FIELDS = ("package", "version", "revision", "effective_architecture",
+               # pkg_family is carried so an install layout
+               # (<arch>/<family>/<package>/<version>-<revision>) can be
+               # reconstructed from the signed manifest alone, without fetching
+               # the per-build BOMs.
+               "pkg_family",
                "hash", "tarball", "tarball_sha256", "group",
                # Provenance carried through for store lifecycle management: the
                # build timestamp and the builder host of the object. Combined

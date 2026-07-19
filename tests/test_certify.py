@@ -41,6 +41,15 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(common["sources"], ["b1", "b2"])
         self.assertEqual(common["kind"], certify.COMMON_MANIFEST_KIND)
 
+    def test_pkg_family_carried_into_common_manifest(self):
+        # pkg_family travels into the signed manifest so an install layout
+        # (<arch>/<family>/<package>/<version>-<revision>) can be reconstructed
+        # from it alone, without fetching the per-build BOMs.
+        m = _manifest("b1", [_pkg("pythia6", "h1", "sha256:aa",
+                                  pkg_family="Pythia")])
+        e = certify.merge_common_manifest([m])["packages"][0]
+        self.assertEqual(e["pkg_family"], "Pythia")
+
     def test_provenance_fields_carried_into_common_manifest(self):
         # completed_at/built_by come from the package entry; bits_version/
         # bits_dist_hash are injected from the manifest level — so store
