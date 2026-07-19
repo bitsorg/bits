@@ -299,6 +299,14 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                 "revision": e.get("revision"), "hash": h}
         try:
             writer.upload_symlinks_and_tarball(spec)
+            # The upload path records the sha256 of the object actually in the
+            # store (kept-as-found or freshly uploaded). It overrides whatever
+            # the build manifest recorded: the store object is authoritative,
+            # and the build's locally-packed bytes may legitimately differ
+            # (.tar.gz is not byte-reproducible). The BOM below must describe
+            # the stored bytes or `bits certify` will reject it.
+            if spec.get("store_tarball_sha256"):
+                e = dict(e, tarball_sha256=spec["store_tarball_sha256"])
             ok += 1
             published.append((e, tar))
             info("  [%d] %s %s", n, pkg, h[:12])

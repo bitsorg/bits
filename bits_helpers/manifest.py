@@ -420,7 +420,15 @@ class BuildManifest:
             "commit_hash":            spec.get("commit_hash", ""),
             "outcome":                outcome,
             "tarball":                os.path.basename(tarball_path) if tarball_path else None,
-            "tarball_sha256":         _tarball_sha256(tarball_path),
+            # Prefer the checksum of the object actually in the remote store
+            # (recorded on the spec by the upload path). The store object is
+            # authoritative: a .tar.gz is not byte-reproducible, so when the
+            # upload found an object already at the designated path it kept it,
+            # and this build's locally-packed bytes may differ. Recording the
+            # store's sha256 keeps every manifest consistent with the one stable
+            # object that `bits certify` validates.
+            "tarball_sha256":         spec.get("store_tarball_sha256")
+                                      or _tarball_sha256(tarball_path),
             "source_checksums":       _source_entries(spec),
             # v3: patch provenance (names + recorded checksums) and the resolved
             # recipe variables that shaped this build.
