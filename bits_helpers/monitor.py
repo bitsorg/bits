@@ -74,21 +74,31 @@ class BuildMonitor:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
+        self._slow_thread = None
+        self._sw_bytes = None             # latest du(sw), filled by the slow loop
         self._diag_logged = False         # log the FIRST push outcome once
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self):
         if not self.url:
             return self
+        # Two threads: a FAST one that pushes cheap host metrics every interval,
+        # and a SLOW one that runs du(sw) + `docker stats` on its own cadence.
+        # du over a large sw/ tree can take minutes, so it MUST NOT sit on the
+        # host-cadence thread (it would block every host sample until it returns).
         self._thread = threading.Thread(target=self._loop, name="bits-monitor",
                                         daemon=True)
         self._thread.start()
+        self._slow_thread = threading.Thread(target=self._slow_loop,
+                                             name="bits-monitor-slow", daemon=True)
+        self._slow_thread.start()
         return self
 
     def stop(self, timeout=3.0):
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout)
+        for t in (self._thread, self._slow_thread):
+            if t is not None:
+                t.join(timeout)
 
     def set_active(self, package, arch, on=True):
         key = "%s|%s" % (package, arch)
@@ -98,23 +108,42 @@ class BuildMonitor:
             else:
                 self._active.pop(key, None)
 
-    # ── loop ─────────────────────────────────────────────────────────────────
+    # ── loops ────────────────────────────────────────────────────────────────
     def _loop(self):
-        last_disk = 0.0
+        """FAST cadence: cheap host + filesystem(statvfs) + active + cached sw."""
         while not self._stop.wait(self.interval):
             try:
-                lines = self._host_lines() + self._active_lines()
-                now = time.monotonic()
-                if now - last_disk >= self.disk_interval:
-                    lines += self._disk_lines() + self._container_lines()
-                    last_disk = now
-                self._push(lines)
+                self._push(self._fast_lines())
             except Exception:
                 pass  # best-effort: a build must never be affected by monitoring
         try:                                   # one final flush on shutdown
-            self._push(self._host_lines() + self._disk_lines())
+            self._push(self._fast_lines())
         except Exception:
             pass
+
+    def _slow_loop(self):
+        """SLOW cadence: du(sw) (can take minutes) + `docker stats`. Runs on its
+        own thread and pushes its own lines, so it never stalls the host push."""
+        delay = 1.0                            # take a first sample soon
+        while not self._stop.wait(delay):
+            delay = self.disk_interval
+            if self.sw_dir and os.path.isdir(self.sw_dir):
+                b = self._du(self.sw_dir)
+                if b is not None:
+                    self._sw_bytes = b         # picked up by the fast push
+            try:
+                cl = self._container_lines()
+                if cl:
+                    self._push(cl)
+            except Exception:
+                pass
+
+    def _fast_lines(self):
+        """Everything cheap enough to sample on every host tick (no du/docker)."""
+        out = self._host_lines() + self._active_lines() + self._fs_lines()
+        if self._sw_bytes is not None:
+            out.append("bits_sw_dir_bytes{%s} %d" % (self._lbl(), self._sw_bytes))
+        return out
 
     # ── samplers (each returns a list of Prometheus text lines) ──────────────
     def _lbl(self, extra=""):
@@ -155,15 +184,12 @@ class BuildMonitor:
             pass
         return out
 
-    def _disk_lines(self):
-        """du(sw) -> bits_sw_dir_bytes, and the sw filesystem's size/avail."""
+    def _fs_lines(self):
+        """The sw filesystem's size/avail via statvfs (fast — no du here)."""
         out = []
         sw = self.sw_dir
         if not sw or not os.path.isdir(sw):
             return out
-        b = self._du(sw)
-        if b is not None:
-            out.append("bits_sw_dir_bytes{%s} %d" % (self._lbl(), b))
         try:
             st = os.statvfs(sw)
             size = st.f_blocks * st.f_frsize

@@ -103,5 +103,29 @@ class ModuleApiTests(unittest.TestCase):
         monitor.note_build("X", "arch", True)  # must not raise
 
 
+class FastLoopTests(unittest.TestCase):
+    def test_host_push_not_blocked_by_slow_du(self):
+        """The regression: du(sw) runs on the slow thread, so host metrics must
+        still be pushed promptly even when du takes far longer than a tick."""
+        import time
+        m = BuildMonitor("http://x", instance="h", interval=0.05,
+                         disk_interval=0.05, sw_dir="/tmp")
+        pushed = []
+        m._push = lambda lines: pushed.append(list(lines))
+        m._container_lines = lambda: []
+        m._du = lambda path: (time.sleep(2.0), 999)[1]   # du is very slow
+        m.start()
+        time.sleep(0.4)                                   # << du's 2s
+        m.stop(timeout=1.0)
+        joined = "\n".join("\n".join(p) for p in pushed)
+        self.assertIn("node_load1", joined)               # host metrics still flowed
+
+    def test_fast_lines_has_no_du(self):
+        m = BuildMonitor("http://x", instance="h", sw_dir="/tmp")
+        m._du = lambda path: self.fail("du must not run on the fast path")
+        lines = "\n".join(m._fast_lines())
+        self.assertIn("node_load1", lines)
+
+
 if __name__ == "__main__":
     unittest.main()
