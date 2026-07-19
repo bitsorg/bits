@@ -1664,12 +1664,15 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
                 "in command); container build runs unthrottled this slot.")
       else:
         build_command = "nice -n %d /bin/sh -c %s" % (nice_level, shlex.quote(build_command))
+  from bits_helpers import monitor as _bits_monitor
+  _bits_monitor.note_build(p, getattr(args, "architecture", ""), True)
   try:
     if args.resourceMonitoring:
       err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=progress)
     else:
       err = execute(build_command, printer=progress)
   finally:
+    _bits_monitor.note_build(p, getattr(args, "architecture", ""), False)
     if nice_ladder is not None:
       nice_ladder.release(nice_token)
   if args.builders==1:
@@ -3012,6 +3015,31 @@ def doBuild(args, parser):
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
                           parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)),
                           criticalPath=getattr(args, "criticalPathSchedule", True))
+
+    # Opt-in build-host monitor (--monitor / system 'monitor'): a best-effort
+    # background sampler of this runner (load / memory / build filesystem / sw
+    # size) and the building packages, pushed to --monitor-url. It never blocks
+    # or fails the build and is stopped at process exit. Runtime only — no hash
+    # impact.
+    _mon_on = getattr(args, "monitor", None)
+    if _mon_on is None:
+      _mon_on = _truthy(_system_opt("monitor", False))
+    _mon_url = (getattr(args, "monitorUrl", None) or os.environ.get("METRICS_URL")
+                or _system_opt("monitor_url", None))
+    if _mon_on and _mon_url:
+      try:
+        from bits_helpers import monitor as _bits_monitor
+        _bits_monitor.start_monitor(
+            url=_mon_url,
+            instance=getattr(args, "monitorInstance", None) or _system_opt("monitor_instance", None),
+            interval=float(getattr(args, "monitorInterval", None) or _system_opt("monitor_interval", 15) or 15),
+            disk_interval=float(getattr(args, "monitorDiskInterval", None) or _system_opt("monitor_disk_interval", 60) or 60),
+            sw_dir=abspath(args.workDir))
+        import atexit as _atexit
+        _atexit.register(_bits_monitor.stop_monitor)
+        info("build-host monitor: pushing per-runner metrics to %s", _mon_url)
+      except Exception as _mon_err:  # pylint: disable=broad-except
+        debug("build-host monitor not started: %s", _mon_err)
 
     # Collect concise per-package failures during the run so we can write a
     # readable summary at the end (write_failure_summary), instead of leaving the

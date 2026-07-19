@@ -633,6 +633,24 @@ def doParseArgs():
                             help=("Console base URL to report reused-from-store hashes to (best-effort, "
                                   "fire-and-forget; never blocks or fails the build). Falls back to "
                                   "$BITS_REUSE_BEACON. Only small references are sent, never artifact data."))
+  build_remote.add_argument("--monitor", dest="monitor", action="store_true", default=None,
+                            help=("Run a best-effort background thread that samples this runner host (load, "
+                                  "memory, build filesystem, sw/ size) and the building packages and pushes "
+                                  "them to --monitor-url. Never blocks or fails the build; off by default "
+                                  "(bits-console enables it). Falls back to the system 'monitor' option."))
+  build_remote.add_argument("--no-monitor", dest="monitor", action="store_false",
+                            help="Disable the build-host monitor even if the system config enables it.")
+  build_remote.add_argument("--monitor-url", dest="monitorUrl", default=None, metavar="URL",
+                            help=("VictoriaMetrics/Prometheus base URL for --monitor (POSTs to "
+                                  "<URL>/api/v1/import/prometheus). Falls back to $METRICS_URL, then the "
+                                  "system 'monitor_url' option."))
+  build_remote.add_argument("--monitor-interval", dest="monitorInterval", type=float, default=None, metavar="SECS",
+                            help="Host load/memory sample interval for --monitor (default 15s).")
+  build_remote.add_argument("--monitor-disk-interval", dest="monitorDiskInterval", type=float, default=None, metavar="SECS",
+                            help=("sw/ du + filesystem sample interval for --monitor (default 60s; never "
+                                  "more often than --monitor-interval)."))
+  build_remote.add_argument("--monitor-instance", dest="monitorInstance", default=None, metavar="NAME",
+                            help="Override the per-runner instance label (default <fqdn>-<runner-id>).")
   build_remote.add_argument("--reuse-policy", dest="reusePolicy", choices=["strict", "relaxed"],
                             default=None,
                             help=("CVMFS reuse strictness (ADR-0001). 'strict' (default): reuse only on "
