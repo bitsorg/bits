@@ -134,6 +134,7 @@ def to_prometheus(stats):
         lbl = 'manifest="%s",arch="%s",signed="%s"' % (
             _esc(e["manifest"]), _esc(e["arch"]), "1" if e["signed"] else "0")
         lines.append('bits_store_manifest_bytes{%s} %d' % (lbl, e["bytes"]))
+        lines.append('bits_store_manifest_objects{%s} %d' % (lbl, e["objects"]))
     lines.append("bits_store_bytes_total %d" % stats["total_bytes"])
     lines.append("bits_store_objects_total %d" % stats["total_objects"])
     return "\n".join(lines) + "\n"
