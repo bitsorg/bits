@@ -3831,8 +3831,13 @@ def doBuild(args, parser):
       # /.local). Point HOME at the container-local /tmp (world-writable, and per
       # container so concurrent builds never collide). HOME is not a hash input,
       # so this changes no package hash.
+      # Stamp the container with the CI job id so a cancel can force-remove only
+      # THIS job's containers (a runner that kills just the shell — e.g. the
+      # gitlab-runner 19.1.x regression — otherwise orphans the container and the
+      # build keeps running). Label only; no hash impact.
+      _job_id = (os.environ.get("BITS_JOB_ID") or os.environ.get("CI_JOB_ID") or "").strip()
       build_command = (
-        "docker run --rm --entrypoint= --user $(id -u):$(id -g) "
+        "docker run --rm --entrypoint= --user $(id -u):$(id -g) {jobLabel}"
         "{platformArg}"
         "-v {workdir}:{container_workDir} {roSources}-v{configDir}:/pkgdist.bits:ro "
         "-v {scriptDir}/build.sh:/build.sh:ro "
@@ -3840,6 +3845,7 @@ def doBuild(args, parser):
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
         "-e HOME=/tmp -e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
       ).format(
+        jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",
         platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
         roSources=_ro_sources,
         image=quote(args.dockerImage),
