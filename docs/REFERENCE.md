@@ -254,6 +254,29 @@ Certifier identity and authority:
   Enforced at signing (producer) and in `trusted_index` (consumer); absent policy
   = no restriction. See `keys/README.md`.
 
+Per-platform certification: the store is content-addressed **per
+architecture** — object identity is `(effective_architecture, hash)` — so
+entries from different platforms can never conflict and certification is
+scoped by platform. `bits publish` emits **one BOM per effective
+architecture** ("shared" — noarch — is just another platform; the arch is in
+the BOM file name), and `bits certify --architectures A1,A2` merges,
+store-validates and signs only those platforms' BOMs, leaving the other
+platforms' signed manifests untouched. A scoped platform whose BOMs are all
+gone is re-signed **empty** — deleting a platform's BOMs revokes its entries.
+The manifests-repo CI derives the changed architectures from the merge diff,
+so validation cost scales with the change, not with the whole store, and one
+platform's problem never blocks another's certification. Without
+`--architectures` every architecture present is re-derived (full run).
+
+Store objects are **authoritative** for their checksum: a `.tar.gz` is not
+byte-reproducible, so the same content hash re-packed by a later build is a
+different file — expected and benign. An upload that finds an object already
+at its designated path keeps it and records **its** sha256 in the build
+manifest and BOM (read cheaply from the object's `x-amz-meta-sha256`; legacy
+objects are streamed once and stamped), so every manifest converges on the
+one stable object that certification verifies. Store objects are never
+overwritten.
+
 #### Store garbage collection — `bits gc`
 
 `bits gc --trust-manifest <signed-common-manifest>` sweeps unreferenced objects
@@ -284,6 +307,52 @@ admin** via bits-console (SSO-authenticated), which triggers a CI job to sign th
 manifest with the single trust anchor key. Consumers reuse only artifacts listed
 in a verified signed manifest (`--require-signed-reuse` + `--trust-manifest`). See
 `docs/adr/0004-group-signed-trusted-reuse.md` for the full model.
+
+#### Licence compliance and redistribution policy
+
+Recipes carry licence metadata in the YAML front-matter. All of it is
+**hash-excluded** (like comments): editing it never changes a package hash, so
+licence corrections cost zero rebuilds.
+
+```yaml
+license: GPL-2.0-or-later        # SPDX id (LicenseRef-* for custom licences)
+acknowledgment: "This product includes …"   # attribution text, if required
+redistributable: none            # all | binaries | sources | none
+```
+
+`redistributable:` declares which **forms** of the package may be
+redistributed — a "no redistribution" licence clause covers both the source
+code and the binaries unless it says otherwise:
+
+| Value      | Binaries → store/CVMFS | Source archives → store mirror |
+|------------|------------------------|--------------------------------|
+| `all` (default) | yes | yes |
+| `binaries` | yes | no |
+| `sources`  | no  | yes |
+| `none`     | no  | no  |
+
+Legacy booleans parse as `all`/`none`; an unrecognised value fails **closed**
+(`none`, with a warning) — a typo must never publish a restricted package.
+Enforcement is at every boundary: the end-of-build upload and the bulk
+`bits publish` skip restricted binaries (they never enter the BOM either — what
+is not in the store cannot be certified or reused), the per-package CVMFS
+publish refuses them, and the source-archive mirror (`SOURCES/cache/`) drops
+restricted sources while still allowing *fetches* from the mirror. Restricted
+packages are still built and usable locally; they just never leave the host.
+
+Attribution and the GPL source obligation are discharged mechanically: the
+build script writes a per-package `NOTICE` into each `$INSTALLROOT` (from
+`license:`/`acknowledgment:` and the source location), and `bits publish`
+generates the per-release aggregation — `NOTICE` (required attributions,
+every distributed package with its SPDX id, and the licence-excluded list)
+plus `LICENSE-SOURCE-OFFER.txt` (where the corresponding sources of every
+copyleft component are archived, and for how long) — uploaded next to the
+release's BOMs under `MANIFESTS/<build_id>/` and placed at the root of a
+published release view.
+
+`bits compliance` audits it all (see the command reference), and
+`bits compliance --enforce` is the admin tool to purge non-compliant packages
+from the store and its manifests and re-certify the affected platforms.
 
 ---
 
@@ -1166,6 +1235,50 @@ or set `mem_per_job`. The flags:
 
 ---
 
+### bits compliance
+
+Audit recipe licence metadata and the binary store; optionally enforce.
+Read-only by default; exit `0` = clean, `1` = issues found, so it can gate CI.
+
+```bash
+bits compliance [--recipes DIR] [--store URL] [--no-store-check]
+bits compliance --enforce [--dry-run] [--key PEM]     # admin
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--recipes DIR` | `.` | Recipe repository to audit (a directory of `*.sh` recipes). |
+| `--store URL` | CERN test store | S3 store to audit against the recipe flags (`https`, `b3://`, `s3://`). |
+| `--no-store-check` | off | Audit the recipes only. |
+| `--enforce` | off | ADMIN: purge non-compliant packages from the store (see below). |
+| `--dry-run` | off | With `--enforce`: print every action, touch nothing. |
+| `--key PEM` | _(none)_ | With `--enforce`: re-sign the affected platforms after the purge. |
+| `-w DIR`, `--work-dir DIR` | `sw` | Scratch for the store client. |
+
+The **audit** reports: recipes missing a `license:` field, unverified
+`LicenseRef-*` ids, `NOASSERTION` system shims, and the binaries-restricted /
+sources-restricted sets (`redistributable:` — see §9). The **store walk**
+probes whether the bucket answers *unauthenticated* requests (anonymous access
+working at all is a finding: a restricted object in a world-readable bucket is
+public redistribution regardless of any CVMFS gate), then checks every
+per-build BOM and signed manifest for packages whose **current** recipe forbids
+redistribution — the recipes are the source of truth, the store is audited
+against them. Works without S3 credentials (degrades to an unsigned client).
+
+`--enforce` removes what the audit found: deletes the offending packages'
+store objects (all files under their `TARS/<arch>/store/…` prefixes), their
+rev-index markers and their `SOURCES/cache/` archives (resolved from the
+recipes; unresolvable URLs are reported, never guessed), rewrites the
+per-build BOMs without the offending entries (an emptied BOM is deleted), and
+with `--key` re-certifies the affected architectures from the rewritten BOMs
+(per-platform scoping — an arch left empty gets an empty signed manifest,
+i.e. revocation). Without `--key` the next CI certification self-heals.
+It prints the matching `bits-manifests` repo files to prune, since CI
+re-derives the signed manifests from the repo. Requires S3 write credentials
+(`--dry-run` does not). Always dry-run first.
+
+---
+
 ### bits init
 
 `bits init` has two distinct modes selected by whether a PACKAGE name is given.
@@ -1477,6 +1590,16 @@ A recipe file consists of a YAML block, a `---` separator, and a Bash script:
 | `sources` | List of source archive URLs (or local `file://` paths) to download before the build. Each file is placed in `$SOURCEDIR` and exposed as `$SOURCE0`, `$SOURCE1`, … Each entry may optionally carry an inline checksum (see [Checksum verification](#checksum-verification) below). |
 | `patches` | List of patch file names to apply, relative to the `patches/` directory inside the recipe repository. Patch files are copied to `$SOURCEDIR` and exposed as `$PATCH0`, `$PATCH1`, … before the recipe body runs. Each entry may optionally carry an inline checksum and/or a conditional matcher — see [Conditional patches](#conditional-patches). |
 | `auto_patch` | Whether bits applies the `patches:` automatically. Default `true` (unchanged behaviour). Set to `false` to take over patching in the recipe body: bits still stages the patch files in `$SOURCEDIR` and exports `$PATCH0..$PATCH_COUNT`, but runs no `patch(1)` and writes no `.bits_patched` sentinel, so the recipe owns ordering, strip level and idempotency. Can also be forced off for **every** package with the global `--no-auto-patch` flag or `auto_patch: false` in the active `defaults-*` file. See [Controlling patch application](#controlling-patch-application). |
+
+Metadata / publish-policy fields — all **hash-excluded** (editing them never
+rebuilds anything; see "Licence compliance and redistribution policy" in §9):
+
+| Field | Description |
+|-------|-------------|
+| `license` | SPDX licence identifier (`LicenseRef-*` for custom licences; `NOASSERTION` for system shims). Recorded in the build manifest, the publish BOM and the signed manifest; feeds the per-package and per-release `NOTICE` files and the `bits compliance` audit. |
+| `acknowledgment` | Attribution text required by the licence; written into the per-package `NOTICE`. |
+| `redistributable` | Which forms may be redistributed: `all` (default), `binaries`, `sources`, `none`. Restricted binaries are never uploaded to the store nor published to CVMFS; restricted sources are never mirrored to `SOURCES/cache/`. Legacy `true`/`false` = `all`/`none`; unknown values fail closed as `none`. |
+| `description`, `url`, `homepage`, `source_url` | Free-text metadata, also hash-excluded. |
 
 **Source archives detail.** When `sources:` is specified, bits downloads each archive to `$SOURCEDIR` using the file's basename as the local filename. Archives are not automatically unpacked — the recipe is responsible for extraction. The variable `$SOURCE_COUNT` holds the total count so scripts can handle a variable-length list:
 

@@ -17,7 +17,7 @@ than one build, you are asked to disambiguate by naming the top package).
 import json
 import os
 
-from bits_helpers.log import error, info, warning
+from bits_helpers.log import debug, error, info, warning
 from bits_helpers.view import collect_build_id_roots, build_published_view
 
 
@@ -124,6 +124,23 @@ def doPublishView(args, parser):
     views_dir = _layout_views_dir(roots)
     result = build_published_view(roots, name, build_id, architecture, store,
                                   views_dir=views_dir)
+    # Compliance obligations live at the release root: place NOTICE and the
+    # GPL source offer in the published view, generated from this build's
+    # manifest. Best-effort — never fails the view publish.
+    try:
+        from bits_helpers.certify import load_build_manifests
+        from bits_helpers.notice import write_release_compliance
+        from bits_helpers.provenance import build_id_from_manifest
+        for man in load_build_manifests(os.path.join(work_dir, "MANIFESTS")):
+            if build_id_from_manifest(man) == build_id:
+                write_release_compliance(result["view_dir"],
+                                         man.get("packages") or [], build_id)
+                break
+        else:
+            debug("publish --view: no local manifest for %s — NOTICE skipped",
+                  build_id)
+    except Exception as exc:              # pylint: disable=broad-except
+        warning("publish --view: could not write NOTICE/source-offer: %s", exc)
     info("publish --view: '%s' (%s) — %d package(s) -> %s (%d link(s))",
          name, build_id, len(roots), result["view_dir"], len(result["linked"]))
     if result["conflicts"]:

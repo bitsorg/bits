@@ -36,10 +36,14 @@ class _Parser:
 class _FakeS3:
     def __init__(self):
         self.uploads = []
+        self.texts = {}          # key -> str (NOTICE / source-offer uploads)
 
     def upload_file(self, local, bucket, key):
         with open(local) as fh:
             self.uploads.append((bucket, key, json.load(fh)))
+
+    def put_object(self, Bucket, Key, Body):
+        self.texts[Key] = Body.decode("utf-8")
 
 
 class _FakeWriter:
@@ -150,6 +154,19 @@ class TestPublishFromManifest(unittest.TestCase):
         self.assertEqual(top["license"], "MIT")
         self.assertTrue(top["tarball"])
         self.assertTrue(top["tarball_sha256"].startswith("sha256:"))
+
+    def test_release_compliance_files_uploaded(self):
+        # NOTICE + LICENSE-SOURCE-OFFER.txt land next to the release's BOMs;
+        # the NOTICE lists the distributed package and the excluded one.
+        w = self._run()
+        build_id = build_id_from_manifest(self.manifest)
+        notice_txt = w.s3.texts.get("MANIFESTS/%s/NOTICE" % build_id, "")
+        self.assertIn("Top", notice_txt)
+        self.assertIn("MIT", notice_txt)
+        self.assertIn("Secret", notice_txt)          # excluded-section entry
+        self.assertIn("Not included in this distribution", notice_txt)
+        self.assertIn("MANIFESTS/%s/LICENSE-SOURCE-OFFER.txt" % build_id,
+                      w.s3.texts)
 
     def test_non_redistributable_never_uploaded_nor_in_bom(self):
         # redistributable: false — the binary must not reach the (possibly

@@ -398,6 +398,14 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                     bom.append((_arch, doc))
                 except Exception as exc:
                     error("manifest upload failed: %s", exc)
+            # NOTICE + LICENSE-SOURCE-OFFER.txt next to the release's BOMs:
+            # attribution and the GPL source offer are discharged mechanically
+            # from the FULL manifest entries (which carry license,
+            # redistributable and the source archives' store paths).
+            # Best-effort — a compliance-file failure never fails a publish.
+            from bits_helpers.notice import upload_release_compliance
+            upload_release_compliance(w.s3, w.writeStore, build_id, entries,
+                                      store_url=store_url)
 
     banner("%s %d package(s) to %s",
            "[dry-run] would publish" if dry_run else "Published", ok, write_store)
