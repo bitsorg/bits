@@ -264,6 +264,19 @@ def doParseArgs():
           "store-stats CI collector. Optionally pushes Prometheus gauges."
       ),
   )
+  compliance_parser = subparsers.add_parser(
+      "compliance",
+      help="audit recipe licence metadata and the binary store",
+      description=(
+          "Summarise licence-compliance status: scan a recipe repository for "
+          "license:/redistributable: metadata (missing licences, unverified "
+          "LicenseRef-* ids, the redistributable:false CVMFS-exclusion list), "
+          "probe whether the S3 store answers unauthenticated requests, and "
+          "report every stored or certified package whose current recipe "
+          "forbids redistribution. Read-only. Exit 0 = clean, 1 = issues "
+          "found, so it can gate CI."
+      ),
+  )
   status_parser = subparsers.add_parser(
       "status",
       help="show what bits build would do for each package (dry run)",
@@ -1288,6 +1301,19 @@ def doParseArgs():
                               help="bits work directory (source of MANIFESTS when no MANIFEST is given). Default: %(default)s.")
   certify_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
                               help="Architecture for store-path resolution. Default: %(default)s.")
+
+  # Options for the compliance subcommand
+  compliance_parser.add_argument("--recipes", dest="recipesDir", metavar="DIR", default=None,
+                                 help=("Recipe repository to audit (a directory of *.sh recipes, "
+                                       "e.g. an lcg.bits checkout). Default: the current directory."))
+  compliance_parser.add_argument("--store", dest="complianceStore", metavar="URL",
+                                 default="https://s3.cern.ch/lcgapp-bits-testing",
+                                 help=("S3 store to audit against the recipe flags. Accepts https, "
+                                       "b3://<bucket>, or s3://<bucket>. Default: %(default)s"))
+  compliance_parser.add_argument("--no-store-check", dest="noStoreCheck", action="store_true", default=False,
+                                 help="Audit the recipes only; skip the store walk and the public-access probe.")
+  compliance_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
+                                 help="bits work directory (scratch for the store client). Default: %(default)s.")
 
   # Options for the gc subcommand
   gc_parser.add_argument("--trust-manifest", dest="trustManifest", required=True, metavar="PATH",
