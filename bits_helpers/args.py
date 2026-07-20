@@ -1314,6 +1314,18 @@ def doParseArgs():
                                  help="Audit the recipes only; skip the store walk and the public-access probe.")
   compliance_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
                                  help="bits work directory (scratch for the store client). Default: %(default)s.")
+  compliance_parser.add_argument("--enforce", dest="enforce", action="store_true", default=False,
+                                 help=("ADMIN: remove non-compliant packages from the store — delete their "
+                                       "TARS objects, rev-index markers and SOURCES archives, rewrite the "
+                                       "per-build BOMs without them, and (with --key) re-certify the affected "
+                                       "architectures. Requires S3 write credentials. Combine with --dry-run "
+                                       "to preview every action first."))
+  compliance_parser.add_argument("--dry-run", dest="dryRun", action="store_true", default=False,
+                                 help="With --enforce: print every deletion/rewrite without touching anything.")
+  compliance_parser.add_argument("--key", dest="enforceKey", metavar="PEM", default=None,
+                                 help=("With --enforce: Ed25519 release key to re-sign the affected "
+                                       "architectures' common manifests after the purge. Without it the next "
+                                       "CI certification heals them (removed objects are dropped as missing)."))
 
   # Options for the gc subcommand
   gc_parser.add_argument("--trust-manifest", dest="trustManifest", required=True, metavar="PATH",
@@ -1593,16 +1605,18 @@ def doParseArgs():
   # Make sure old option ordering behavior is actually still working
   prog = sys.argv[0]
   rest = sys.argv[1:]
-  _cleanup_invocation = "cleanup" in rest
+  # Subcommands that define their OWN --dry-run/-n: hoisting the flag before
+  # the subcommand would let the parent parser consume it, and the subparser's
+  # default (False) would then overwrite it — silently turning a dry run into
+  # a real one, which for `compliance --enforce` means real deletions.
+  _own_dry_run = bool({"cleanup", "compliance", "gc"} & set(rest))
   def optionOrder(x):
     # --debug/-d must come before any subcommand so the parent parser sees them.
-    # --dry-run/-n is also a top-level flag (for build), BUT the "cleanup"
-    # subparser has its OWN --dry-run/-n.  If we're in a cleanup invocation
-    # we must NOT hoist -n/-dry-run before "cleanup" or the parent parser will
-    # consume it and the cleanup subparser's default (False) will overwrite it.
+    # --dry-run/-n is also a top-level flag (for build), BUT some subparsers
+    # have their own (see _own_dry_run above).
     if x in ["--debug", "-d"]:
       return 0
-    if x in ["-n", "--dry-run"] and not _cleanup_invocation:
+    if x in ["-n", "--dry-run"] and not _own_dry_run:
       return 0
 #   if x in ["build", "init", "clean", "analytics", "doctor", "deps"]:
     if x in ["build", "init", "clean", "doctor", "deps"]:

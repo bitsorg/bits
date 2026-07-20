@@ -84,7 +84,12 @@ class TestPublishFromManifest(unittest.TestCase):
                  "hash": "aa11", "effective_architecture": ARCH,
                  "commit_hash": "c0ffee", "built_by": "me@host",
                  "completed_at": "2026-01-01T00:00:00Z", "outcome": "built_from_source",
-                 "license": "MIT", "redistributable": False},
+                 "license": "MIT"},
+                # Restricted: has a store tarball, but redistributable: false —
+                # must be skipped from the upload AND from the BOM.
+                {"package": "Secret", "version": "3", "revision": "local1",
+                 "hash": "cc44", "effective_architecture": ARCH,
+                 "license": "LicenseRef-Secret", "redistributable": False},
                 {"package": "defaults-release", "version": "1", "revision": "1",
                  "hash": "dd22", "effective_architecture": ARCH},
                 {"package": "NoTar", "version": "9", "revision": "local1",
@@ -95,6 +100,7 @@ class TestPublishFromManifest(unittest.TestCase):
         with open(self.man_path, "w") as fh:
             json.dump(self.manifest, fh)
         _write_store_tarball(self.work, ARCH, "aa11", "Top-1-local1.slc7_x86-64.tar.gz")
+        _write_store_tarball(self.work, ARCH, "cc44", "Secret-3-local1.slc7_x86-64.tar.gz")
         # defaults-release also has a tarball on disk, to prove exclusion is by
         # name, not by tarball absence.
         _write_store_tarball(self.work, ARCH, "dd22", "defaults-release-1-1.tar.gz")
@@ -140,12 +146,20 @@ class TestPublishFromManifest(unittest.TestCase):
         top = bom["packages"][0]
         self.assertEqual(top["built_by"], "me@host")
         self.assertEqual(top["completed_at"], "2026-01-01T00:00:00Z")
-        # Compliance metadata travels with the BOM: license feeds the NOTICE
-        # file, redistributable: false marks CVMFS-excluded packages (QGRAF).
+        # Compliance metadata travels with the BOM (license feeds NOTICE).
         self.assertEqual(top["license"], "MIT")
-        self.assertIs(top["redistributable"], False)
         self.assertTrue(top["tarball"])
         self.assertTrue(top["tarball_sha256"].startswith("sha256:"))
+
+    def test_non_redistributable_never_uploaded_nor_in_bom(self):
+        # redistributable: false — the binary must not reach the (possibly
+        # world-readable) store, and what is not in the store cannot be in the
+        # BOM: Secret has a real store tarball on disk, yet neither its hash is
+        # uploaded nor does any BOM entry mention it.
+        w = self._run()
+        self.assertEqual(w.tarballs, ["aa11"])            # no cc44
+        _, _, bom = w.s3.uploads[-1]
+        self.assertEqual([p["package"] for p in bom["packages"]], ["Top"])
 
     def test_cvmfs_publish_refuses_non_redistributable(self):
         # The enforcement point for `redistributable: false`: a per-package
@@ -153,7 +167,7 @@ class TestPublishFromManifest(unittest.TestCase):
         # touching its install tree — it stays in the private store only.
         from types import SimpleNamespace
         args = SimpleNamespace(
-            publishView=None, fromManifest=None, package="Top", version=None,
+            publishView=None, fromManifest=None, package="Secret", version=None,
             workDir=self.work, architecture=ARCH, cvmfsTarget="/cvmfs/x",
             spool="/tmp/spool", scratchDir=None, rsyncOpts=None,
             prepubUrl=None, prepubToken=None, prepubRepo=None, prepubPath=None,

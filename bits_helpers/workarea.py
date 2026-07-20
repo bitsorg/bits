@@ -619,6 +619,12 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
   behaviour.  Values >1 use a ``ThreadPoolExecutor`` and raise the first
   exception encountered, preserving the same failure semantics.
   """
+  # Recipes forbidding source redistribution (redistributable_sources /
+  # redistributable: false) may still READ the store's source mirror, but a
+  # fresh upstream download must never be archived to it — the store may be
+  # world-readable, and "no redistribution" covers the source form too.
+  from bits_helpers.sync import source_sync_for
+  sync_helper = source_sync_for(spec, sync_helper)
   scm = spec["scm"]
 
   def scm_exec(command, directory=".", check=True):

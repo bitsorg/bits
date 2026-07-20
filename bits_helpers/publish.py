@@ -281,6 +281,13 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
         if pkg.startswith("defaults"):
             debug("skip config package %s", pkg)
             continue
+        # redistributable: false — the binary must not be uploaded to the
+        # (possibly world-readable) store, and consequently never enters the
+        # BOM either: what is not in the store cannot be certified or reused.
+        if e.get("redistributable") is False:
+            info("  skip %s — redistributable: false (licence forbids "
+                 "redistribution)", pkg)
+            continue
         arch = e.get("effective_architecture") or architecture
         tar = _store_tarball(arch, e)
         # Only packages with a content-addressed store tarball can be uploaded.

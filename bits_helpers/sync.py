@@ -27,6 +27,62 @@ DEFAULT_S3_ENDPOINT = "https://s3.cern.ch"
 # $BITS_AWS_KEYS_FILE.
 DEFAULT_AWS_KEYS_FILE = "~/.bits/s3keys"
 
+def binary_redistributable(spec) -> bool:
+  """May this package's BINARY artifact be uploaded to the store / published?
+
+  ``redistributable: false`` (hash-excluded recipe metadata) forbids it: with
+  the store potentially world-readable, uploading IS redistribution — the
+  licence clarification of 2026-07-20 confirms a "no redistribution" clause
+  covers binaries. Default: true.
+  """
+  v = spec.get("redistributable", True)
+  return v if isinstance(v, bool) else str(v).strip().lower() != "false"
+
+
+def sources_redistributable(spec) -> bool:
+  """May this package's SOURCE archives be mirrored to the store?
+
+  ``redistributable_sources:`` (hash-excluded) controls it; when absent it
+  FOLLOWS ``redistributable:`` — a "no redistribution" clause covers both the
+  source code and the binaries unless the licence says otherwise, so the
+  binary flag is the safe default. Set it explicitly only for the rare
+  package whose two forms genuinely differ (e.g. free source, restricted
+  binary or vice versa).
+  """
+  v = spec.get("redistributable_sources")
+  if v is None:
+    return binary_redistributable(spec)
+  return v if isinstance(v, bool) else str(v).strip().lower() != "false"
+
+
+class SourceUploadGate:
+  """Sync-helper proxy that DROPS source-archive uploads.
+
+  Used for packages whose recipe forbids source redistribution: fetching FROM
+  the store mirror stays allowed (reading is not distribution by us), but a
+  freshly downloaded upstream archive must not be pushed to a store that third
+  parties may read. Everything else delegates to the wrapped helper.
+  """
+
+  def __init__(self, inner):
+    self._inner = inner
+
+  def __getattr__(self, name):
+    return getattr(self._inner, name)
+
+  def upload_source(self, local_path, url_checksum, filename) -> None:
+    debug("NOT archiving source %s to the remote store: the recipe forbids "
+          "source redistribution (redistributable_sources: false)", filename)
+
+
+def source_sync_for(spec, sync_helper):
+  """Return *sync_helper*, wrapped to drop source uploads when *spec* forbids
+  source redistribution. None passes through."""
+  if sync_helper is None or sources_redistributable(spec):
+    return sync_helper
+  return SourceUploadGate(sync_helper)
+
+
 # S3 user-metadata key holding the sha256 of an uploaded content tarball. A
 # .tar.gz is not byte-reproducible, so key existence alone cannot tell us whether
 # the store holds the same bytes the build manifest records; this lets the upload

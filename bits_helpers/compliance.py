@@ -170,6 +170,181 @@ def audit_store(store_url, restricted, work_dir):
     return found
 
 
+def _recipe_source_prefixes(recipes_dir, rec, restricted):
+    """SOURCES/cache/ prefixes for the restricted packages' source archives.
+
+    Resolves each restricted recipe's ``source:``/``sources:`` URLs (best-effort
+    ``%(version)s``/``%(tag)s`` substitution — the audit reports what it cannot
+    resolve rather than guessing) to the store's checksum-addressed
+    ``SOURCES/cache/<h2>/<url_md5>/`` prefix. Returns ``(prefixes, unresolved)``.
+    """
+    from bits_helpers.download import getUrlChecksum
+    url_re = re.compile(r"^(source|version|tag):[ \t]*(.*?)[ \t]*$", re.M)
+    prefixes, unresolved = [], []
+    for pkg in sorted(restricted):
+        name = rec["by_package"].get(pkg, {}).get("recipe")
+        if not name:
+            continue
+        header = []
+        with open(os.path.join(recipes_dir, name), encoding="utf-8",
+                  errors="replace") as fh:
+            for line in fh:
+                if line.rstrip("\n") == "---":
+                    break
+                header.append(line)
+        text = "".join(header)
+        meta = dict((k, v.strip().strip("\"'")) for k, v in url_re.findall(text))
+        urls = []
+        m = re.search(r"^sources:\n((?:[ \t]+-[ \t]+.*\n)+)", text, re.M)
+        if m:
+            urls += [ln.strip().lstrip("-").strip().strip("\"'")
+                     for ln in m.group(1).splitlines()]
+        if meta.get("source"):
+            urls.append(meta["source"])
+        from bits_helpers.checksum import parse_entry
+        for url in urls:
+            url, _cs = parse_entry(url)       # strip a ',algo:hex' checksum suffix
+            for key in ("version", "tag"):
+                url = url.replace("%%(%s)s" % key,
+                                  meta.get(key) or meta.get("version") or "")
+            if "%(" in url:
+                unresolved.append("%s: %s" % (name, url))
+                continue
+            if url.startswith(("git://", "git+")) or url.endswith(".git"):
+                continue                       # git sources are not archived here
+            h = getUrlChecksum(url)
+            prefixes.append(("SOURCES/cache/%s/%s/" % (h[:2], h), name))
+    return prefixes, unresolved
+
+
+def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
+                  work_dir="sw"):
+    """Remove non-compliant packages from the store and its manifests.
+
+    The admin action behind ``bits compliance --enforce``:
+
+      1. delete every store object of a restricted package (all files under its
+         ``TARS/<arch>/store/<h2>/<hash>/`` prefix) and its rev-index markers;
+      2. rewrite the per-build BOMs without the offending entries (a BOM left
+         empty is deleted);
+      3. delete the restricted packages' ``SOURCES/cache/`` archives resolved
+         from their recipes;
+      4. with *key_pem*, re-certify the affected architectures from the
+         rewritten BOMs (per-platform scoping; an arch left without packages
+         gets an EMPTY signed manifest — revocation). Without a key the next
+         CI certification self-heals (missing objects are dropped), but the
+         signed manifests are stale until then.
+
+    With *dry_run* every action is printed and nothing is touched. Returns the
+    number of issues remaining (0 = store clean after enforcement).
+    """
+    restricted = {p.lower() for p in rec["restricted"]}
+    s3, bucket, _endpoint = _s3_client(store_url)
+    if not dry_run and not (os.environ.get("AWS_ACCESS_KEY_ID")
+                            and os.environ.get("AWS_SECRET_ACCESS_KEY")):
+        error("--enforce needs S3 write credentials (a dry run does not)")
+        return 1
+    act = "[dry-run] would" if dry_run else "will"
+
+    def _delete_prefix(prefix, why):
+        n = 0
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for o in page.get("Contents", []) or []:
+                info("  %s delete %s (%s)", act, o["Key"], why)
+                if not dry_run:
+                    s3.delete_object(Bucket=bucket, Key=o["Key"])
+                n += 1
+        return n
+
+    from bits_helpers.utilities import resolve_store_path
+    banner("Enforcing licence compliance on %s%s", bucket,
+           " (dry run)" if dry_run else "")
+
+    # 1+2 — walk the BOMs, delete offending objects, rewrite the BOMs.
+    paginator = s3.get_paginator("list_objects_v2")
+    keys = [o["Key"] for page in paginator.paginate(Bucket=bucket,
+                                                    Prefix="MANIFESTS/")
+            for o in page.get("Contents", []) or []]
+    affected_archs, remaining_boms, removed, repo_prune = set(), [], 0, []
+    for key in keys:
+        leaf = key.split("/")[-1]
+        if (not leaf.endswith(".json") or "/rev-index/" in key
+                or leaf.startswith("common-manifest")):
+            continue
+        try:
+            doc = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+        except Exception as exc:          # pylint: disable=broad-except
+            warning("enforce: unreadable manifest %s (%s)", key, exc)
+            continue
+        pkgs = doc.get("packages") or []
+        offending = [e for e in pkgs
+                     if str(e.get("package", "")).lower() in restricted]
+        if not offending:
+            remaining_boms.append(doc)
+            continue
+        for e in offending:
+            arch = e.get("effective_architecture") or ""
+            affected_archs.add(arch)
+            removed += _delete_prefix(
+                resolve_store_path(arch, e.get("hash", "")) + "/",
+                "%s — redistributable: false" % e.get("package"))
+            _delete_prefix("MANIFESTS/rev-index/%s/%s/" % (arch, e.get("package")),
+                           "rev-index marker")
+        kept = [e for e in pkgs if e not in offending]
+        repo_prune.append(leaf)
+        if kept:
+            doc["packages"] = kept
+            info("  %s rewrite %s (%d -> %d packages)", act, key,
+                 len(pkgs), len(kept))
+            if not dry_run:
+                s3.put_object(Bucket=bucket, Key=key,
+                              Body=json.dumps(doc, indent=1).encode())
+            remaining_boms.append(doc)
+        else:
+            info("  %s delete %s (no packages left)", act, key)
+            if not dry_run:
+                s3.delete_object(Bucket=bucket, Key=key)
+
+    # 3 — source archives, resolved from the restricted recipes themselves.
+    prefixes, unresolved = _recipe_source_prefixes(recipes_dir, rec, restricted)
+    for prefix, why in prefixes:
+        removed += _delete_prefix(prefix, "source archive of %s" % why)
+    for u in unresolved:
+        warning("enforce: could not resolve a source URL, clean up manually: %s", u)
+
+    info("Enforcement: %d object(s) %s removed, %d build manifest(s) affected, "
+         "architectures: %s", removed, "would be" if dry_run else "",
+         len(repo_prune), ", ".join(sorted(affected_archs)) or "none")
+    if repo_prune:
+        warning("Certification re-derives from the bits-manifests git repo — "
+                "prune the matching BOM file(s) there too: %s",
+                ", ".join(sorted(repo_prune)))
+
+    # 4 — re-certify the affected platforms from the rewritten BOMs.
+    if affected_archs and key_pem and not dry_run:
+        import tempfile
+        from bits_helpers import certify as _certify
+        out = os.path.join(tempfile.mkdtemp(prefix="bits-enforce-"),
+                           "common-manifest.json")
+        outputs = _certify.certify_by_arch(
+            remaining_boms, key_pem, out,
+            probe=_certify.make_s3_probe(store_url, work_dir, "enforce"),
+            only_archs=sorted(affected_archs))
+        for op, sp, arch in outputs:
+            for src, dst in ((op, "MANIFESTS/common-manifest-%s.json" % arch),
+                             (sp, "MANIFESTS/common-manifest-%s.json.sig" % arch)):
+                s3.upload_file(src, bucket, dst)
+            info("  re-certified %s -> MANIFESTS/common-manifest-%s.json(.sig)",
+                 arch, arch)
+    elif affected_archs and not dry_run:
+        warning("no --key given: the signed manifests for %s still reference "
+                "the removed objects until the next certification (which drops "
+                "them as missing). Re-run with --key to re-sign now.",
+                ", ".join(sorted(affected_archs)))
+    return 0
+
+
 def doCompliance(args, parser):
     """CLI entrypoint for ``bits compliance``. Returns the exit code."""
     recipes_dir = os.path.abspath(getattr(args, "recipesDir", None) or ".")
@@ -192,6 +367,16 @@ def doCompliance(args, parser):
         issues.append("%d recipe(s) missing a license: field: %s"
                       % (len(rec["missing_license"]),
                          ", ".join(rec["missing_license"])))
+
+    if getattr(args, "enforce", False):
+        if getattr(args, "noStoreCheck", False):
+            parser.error("--enforce audits and cleans the store; it cannot be "
+                         "combined with --no-store-check")
+        return enforce_store(args.complianceStore, rec, recipes_dir,
+                             key_pem=getattr(args, "enforceKey", None),
+                             dry_run=getattr(args, "dryRun", False),
+                             work_dir=os.path.abspath(args.workDir)) or (
+                                 1 if issues else 0)
 
     if not getattr(args, "noStoreCheck", False):
         restricted = {p.lower() for p in rec["restricted"]}

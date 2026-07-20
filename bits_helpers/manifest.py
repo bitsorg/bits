@@ -389,6 +389,9 @@ class BuildManifest:
             the publish pipeline to locate the tarball and choose the correct
             CVMFS path template.
         """
+        from bits_helpers.sync import (
+            binary_redistributable as _binary_redistributable,
+            sources_redistributable as _sources_redistributable)
         entry = {
             "package":                spec.get("package", ""),
             "version":                spec.get("version", ""),
@@ -412,7 +415,15 @@ class BuildManifest:
             # redistributable: false (e.g. the Oracle client, qgraf) is still built
             # and kept in the S3 store for reuse, but the publish pipeline skips it
             # from the public CVMFS tree. Default true = published as normal.
-            "redistributable":        bool(spec.get("redistributable", True)),
+            # Parsed via the same helpers the upload gates use, so the manifest
+            # can never disagree with what the build actually did (a quoted
+            # "false" in YAML is a string — bool("false") would say True).
+            "redistributable":        _binary_redistributable(spec),
+            # Source-form counterpart: may the SOURCE archives be mirrored to a
+            # (possibly world-readable) store? Defaults to the binary flag — a
+            # "no redistribution" clause covers both forms unless stated
+            # otherwise (bits_helpers.sync.sources_redistributable).
+            "redistributable_sources": _sources_redistributable(spec),
             # SPDX license id (hash-excluded metadata). Carried so the publish step
             # can aggregate a per-release NOTICE / attribution file.
             "license":                (spec.get("license") or ""),

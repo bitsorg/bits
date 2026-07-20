@@ -164,6 +164,11 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch) -> None:
   # download() already uses _acquire_download/_wait_for_sentinel internally, so
   # concurrent prefetch threads coordinate automatically.
   source_parent = os.path.join(work_dir, "SOURCES", spec["package"], spec["version"])
+  # Same source-upload gate as checkout_sources: prefetch may be the first
+  # fetch of an upstream archive, and a redistribution-forbidden source must
+  # not be archived to a (possibly world-readable) store from here either.
+  from bits_helpers.sync import source_sync_for
+  sync_helper = source_sync_for(spec, sync_helper)
   checksums = spec.get("source_checksums") or {}
   for s in spec.get("sources", []):
     url, inline_checksum = _pe(s)
@@ -691,6 +696,7 @@ _HEREDOC_START = re.compile(r"<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _HASH_EXCLUDED_META_KEYS = frozenset({
     "license", "description", "url", "homepage",
     "acknowledgment", "acknowledgement", "source_url", "redistributable",
+    "redistributable_sources",
 })
 
 # Source-selection keys are ALSO dropped from the recipe TEXT hash — not because
@@ -1922,7 +1928,17 @@ def doFinalSync(spec, specs, args, syncHelper):
   # trigger recipe-repo loading during resolution; they carry no publishable
   # artifacts and must NOT be pushed to the store (nor published to CVMFS). Skip
   # their upload the same way local-only builds are skipped.
-  if not spec["revision"].startswith("local") and not spec.get("provides_repository"):
+  from bits_helpers.sync import binary_redistributable
+  if not spec["revision"].startswith("local") and not spec.get("provides_repository") \
+     and not binary_redistributable(spec):
+    # redistributable: false (QGRAF, the CPC family, vendor EULAs …): the
+    # binary must not be uploaded — the store may be world-readable, and a
+    # "no redistribution" clause covers the binary form. The package is still
+    # built and usable locally; it just never leaves this host.
+    if getattr(syncHelper, "writeStore", ""):
+      info("%s@%s [NOT uploaded — redistributable: false]",
+           spec["package"], spec["version"])
+  elif not spec["revision"].startswith("local") and not spec.get("provides_repository"):
     syncHelper.upload_symlinks_and_tarball(spec)
     # Log (info level) that a freshly built tarball was pushed to the write store.
     # Reused packages (cachedTarball) are already there and were marked
