@@ -23,6 +23,7 @@ always runs and knows the final job result.
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -137,18 +138,59 @@ def set_total(total):
     with _lock:
         _state["total"] = int(total or 0)
         _state["done"] = 0
+        _state["posted"] = False
+        _state["last_pct"] = None
+        _state["last_ts"] = 0.0
 
 
 def tick(package):
-    """Mark another package as started and push the updated progress status."""
+    """Mark another package as started and push the updated progress status.
+
+    GitLab cannot UPDATE a running commit status: the API assigns the new
+    coverage/description but then fires the ``run!`` state transition, which is
+    invalid from ``running`` — the whole update rolls back with HTTP 400
+    ("Cannot transition status via :run from :running"). Posting ``running`` on
+    every tick therefore left the console's progress bar stuck at its first
+    value until the terminal status jumped it to 100% ("0 or 100, nothing in
+    between").
+
+    So after the first post, every update CANCELS the current status (a valid
+    transition from running, freeing the (pipeline, name, user, ref) slot) and
+    immediately re-posts ``running`` with the new coverage. The re-post creates
+    a fresh status row and GitLab marks the canceled one retried in the same
+    transaction (``update_older_statuses_retried!``), so the pipeline's
+    composite status and the console (which read only the latest row per name)
+    are never polluted. A failed cancel is ignored: the follow-up ``running``
+    post then either updates a pending status or re-creates the slot, so the
+    pair self-heals.
+
+    An update costs two API calls, so ticks are throttled: skip when the
+    rounded percent has not moved (unless 30 s passed, to refresh the package
+    name in the description) and allow at most one post per 2 s (reused
+    packages tick in bursts). The final tick is never skipped.
+    """
     if not _probe():
         return
     with _lock:
         _state["done"] += 1
         done = _state["done"]
         total = _state["total"] or done
-    pct = max(0, min(100, round(done * 100.0 / total))) if total else 0
-    _post("running", pct, "{}/{} · {}".format(done, total, package))
+        pct = max(0, min(100, round(done * 100.0 / total))) if total else 0
+        now = time.monotonic()
+        last_ts = _state.get("last_ts", 0.0)
+        if done != total:
+            if _state.get("last_pct") == pct and now - last_ts < 30.0:
+                return
+            if now - last_ts < 2.0:
+                return
+        first = not _state.get("posted")
+        _state["posted"] = True
+        _state["last_pct"] = pct
+        _state["last_ts"] = now
+    desc = "{}/{} · {}".format(done, total, package)
+    if not first:
+        _post("canceled", pct, desc)     # free the slot; failure is harmless
+    _post("running", pct, desc)
 
 
 def finish(success=True):
