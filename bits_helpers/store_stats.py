@@ -20,6 +20,8 @@ import json
 import os
 import time
 
+from bits_helpers.log import debug, info
+
 SCHEMA_VERSION = 2          # v1 had arch/other/totals; v2 adds "manifests"
 UNCERTIFIED = "(uncertified)"
 
@@ -138,6 +140,40 @@ def to_prometheus(stats):
     lines.append("bits_store_bytes_total %d" % stats["total_bytes"])
     lines.append("bits_store_objects_total %d" % stats["total_objects"])
     return "\n".join(lines) + "\n"
+
+
+def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None) -> bool:
+    """Summarise the S3 store and POST the gauges to the VM *monitor_url*.
+
+    Called wherever the store was just mutated — end of a `bits build` that
+    uploaded, and end of a `bits publish` bulk upload (re-publishes go through
+    publish, not build, and the Monitoring dashboard's store bar would otherwise
+    go stale/empty between builds). Best-effort and fire-and-forget: listing the
+    store or pushing the gauges must never fail the caller. Returns True when
+    the push succeeded.
+    """
+    import urllib.request
+    try:
+        hash_to_build = {}
+        if work_dir:
+            try:
+                from bits_helpers import certify as _certify
+                hash_to_build = hash_to_build_map(_certify.load_build_manifests(
+                    [os.path.join(work_dir, "MANIFESTS")]))
+            except Exception:  # pylint: disable=broad-except
+                pass  # per-build attribution is optional; degrade to (uncertified)
+        stats = summarise(iter_s3_objects(s3_client, bucket), hash_to_build, set())
+        req = urllib.request.Request(
+            monitor_url.rstrip("/") + "/api/v1/import/prometheus",
+            data=to_prometheus(stats).encode("utf-8"),
+            headers={"Content-Type": "text/plain"}, method="POST")
+        urllib.request.urlopen(req, timeout=15).close()
+        info("store-stats: pushed store gauges to %s (%d objects, %d arch)",
+             monitor_url, stats["total_objects"], len(stats["arch"]))
+        return True
+    except Exception as exc:  # pylint: disable=broad-except
+        debug("store-stats push skipped: %s", exc)
+        return False
 
 
 def iter_s3_objects(client, bucket, prefix=""):

@@ -4260,26 +4260,10 @@ def doBuild(args, parser):
   _store_mon_url = (getattr(args, "monitorUrl", None)
                     or os.environ.get("METRICS_URL") or "").strip().rstrip("/")
   if _store_mon_url and getattr(syncHelper, "writeStore", "") and getattr(syncHelper, "s3", None):
-    try:
-      from bits_helpers import store_stats as _ss, certify as _certify
-      _bucket = getattr(syncHelper, "remoteStore", "") or getattr(syncHelper, "writeStore", "")
-      _hash_to_build = {}
-      try:
-        _hash_to_build = _ss.hash_to_build_map(
-            _certify.load_build_manifests([join(args.workDir, "MANIFESTS")]))
-      except Exception:  # pylint: disable=broad-except
-        pass  # per-build attribution is optional; degrade to (uncertified)
-      _stats = _ss.summarise(_ss.iter_s3_objects(syncHelper.s3, _bucket),
-                             _hash_to_build, set())
-      import urllib.request as _urlreq
-      _req = _urlreq.Request(_store_mon_url + "/api/v1/import/prometheus",
-                             data=_ss.to_prometheus(_stats).encode("utf-8"),
-                             headers={"Content-Type": "text/plain"}, method="POST")
-      _urlreq.urlopen(_req, timeout=15).close()
-      info("store-stats: pushed store gauges to %s (%d objects, %d arch)",
-           _store_mon_url, _stats["total_objects"], len(_stats["arch"]))
-    except Exception as _ss_err:  # pylint: disable=broad-except
-      debug("store-stats push skipped: %s", _ss_err)
+    from bits_helpers import store_stats as _ss
+    _bucket = getattr(syncHelper, "remoteStore", "") or getattr(syncHelper, "writeStore", "")
+    _ss.push_store_gauges(syncHelper.s3, _bucket, _store_mon_url,
+                          work_dir=args.workDir)
 
   debug("Everything done")
 

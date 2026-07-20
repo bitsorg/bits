@@ -388,6 +388,16 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
            "[dry-run] would publish" if dry_run else "Published", ok, write_store)
     if not dry_run and n and ok != n:
         sys.exit(1)
+    # Best-effort: refresh the S3 store-usage gauges on VM. Publish (including a
+    # re-publish, which never runs `bits build`) is a store mutation, and the
+    # Monitoring dashboard's store bar reads these gauges via the snapshot —
+    # without this push the bar goes stale/empty between builds.
+    if not dry_run and ok:
+        _mon = (os.environ.get("METRICS_URL") or "").strip().rstrip("/")
+        _w = next(iter(writers.values()), None)
+        if _mon and _w is not None and getattr(_w, "s3", None) and getattr(_w, "writeStore", None):
+            from bits_helpers import store_stats as _ss
+            _ss.push_store_gauges(_w.s3, _w.writeStore, _mon, work_dir=work_dir)
     if dry_run or not bom:
         return None
     return build_id, bom, _system_from_manifest(manifest_doc)
