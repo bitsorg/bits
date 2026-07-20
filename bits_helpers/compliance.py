@@ -58,9 +58,17 @@ def _recipe_meta(path):
 
 
 def scan_recipes(recipes_dir):
-    """Scan *recipes_dir* for ``*.sh`` recipes; return the audit dict."""
+    """Scan *recipes_dir* for ``*.sh`` recipes; return the audit dict.
+
+    ``restricted`` lists packages whose BINARIES may not be redistributed
+    (``redistributable: sources|none`` — the store/CVMFS exclusion list);
+    ``restricted_sources`` those whose SOURCE archives may not
+    (``binaries|none``). One enum key covers both forms.
+    """
+    from bits_helpers.sync import redistributable_forms
     out = {"total": 0, "missing_license": [], "licenseref": [],
-           "noassertion": [], "restricted": [], "by_package": {}}
+           "noassertion": [], "restricted": [], "restricted_sources": [],
+           "by_package": {}}
     for name in sorted(os.listdir(recipes_dir)):
         if not name.endswith(".sh"):
             continue
@@ -78,9 +86,13 @@ def scan_recipes(recipes_dir):
             out["licenseref"].append("%s (%s)" % (name, lic))
         if lic == "NOASSERTION":
             out["noassertion"].append(name)
-        if meta.get("redistributable", "").lower() == "false":
-            out["restricted"].append(pkg)
-            out["by_package"][pkg.lower()]["restricted"] = True
+        if "redistributable" in meta:
+            forms = redistributable_forms(meta["redistributable"])
+            if "binaries" not in forms:
+                out["restricted"].append(pkg)
+                out["by_package"][pkg.lower()]["restricted"] = True
+            if "sources" not in forms:
+                out["restricted_sources"].append(pkg)
     return out
 
 
@@ -239,6 +251,7 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
     number of issues remaining (0 = store clean after enforcement).
     """
     restricted = {p.lower() for p in rec["restricted"]}
+    restricted_src = {p.lower() for p in rec["restricted_sources"]}
     s3, bucket, _endpoint = _s3_client(store_url)
     if not dry_run and not (os.environ.get("AWS_ACCESS_KEY_ID")
                             and os.environ.get("AWS_SECRET_ACCESS_KEY")):
@@ -289,8 +302,9 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
             removed += _delete_prefix(
                 resolve_store_path(arch, e.get("hash", "")) + "/",
                 "%s — redistributable: false" % e.get("package"))
-            _delete_prefix("MANIFESTS/rev-index/%s/%s/" % (arch, e.get("package")),
-                           "rev-index marker")
+            removed += _delete_prefix(
+                "MANIFESTS/rev-index/%s/%s/" % (arch, e.get("package")),
+                "rev-index marker")
         kept = [e for e in pkgs if e not in offending]
         repo_prune.append(leaf)
         if kept:
@@ -306,8 +320,9 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
             if not dry_run:
                 s3.delete_object(Bucket=bucket, Key=key)
 
-    # 3 — source archives, resolved from the restricted recipes themselves.
-    prefixes, unresolved = _recipe_source_prefixes(recipes_dir, rec, restricted)
+    # 3 — source archives, for the SOURCE-restricted set (redistributable:
+    # binaries|none), resolved from the recipes themselves.
+    prefixes, unresolved = _recipe_source_prefixes(recipes_dir, rec, restricted_src)
     for prefix, why in prefixes:
         removed += _delete_prefix(prefix, "source archive of %s" % why)
     for u in unresolved:
@@ -355,8 +370,10 @@ def doCompliance(args, parser):
     banner("Compliance audit: %s", recipes_dir)
     rec = scan_recipes(recipes_dir)
     info("Recipes scanned .......... %d", rec["total"])
-    info("  redistributable: false . %d (the CVMFS exclusion list)",
-         len(rec["restricted"]))
+    info("  binaries restricted ..... %d (redistributable: sources|none — the "
+         "CVMFS/store exclusion list)", len(rec["restricted"]))
+    info("  sources restricted ...... %d (redistributable: binaries|none — "
+         "never mirrored to SOURCES/)", len(rec["restricted_sources"]))
     debug("  exclusion list: %s", ", ".join(sorted(rec["restricted"])))
     info("  LicenseRef-* ............ %d (custom ids — verify against the "
          "compliance ruling)", len(rec["licenseref"]))

@@ -281,12 +281,16 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
         if pkg.startswith("defaults"):
             debug("skip config package %s", pkg)
             continue
-        # redistributable: false — the binary must not be uploaded to the
-        # (possibly world-readable) store, and consequently never enters the
-        # BOM either: what is not in the store cannot be certified or reused.
-        if e.get("redistributable") is False:
-            info("  skip %s — redistributable: false (licence forbids "
-                 "redistribution)", pkg)
+        # redistributable: sources|none — the binary must not be uploaded to
+        # the (possibly world-readable) store, and consequently never enters
+        # the BOM either: what is not in the store cannot be certified or
+        # reused. Parsed with the gates' own parser, so legacy booleans in old
+        # manifests keep working (false == none).
+        from bits_helpers.sync import redistributable_forms
+        if "redistributable" in e and \
+           "binaries" not in redistributable_forms(e.get("redistributable")):
+            info("  skip %s — redistributable: %s (licence forbids binary "
+                 "redistribution)", pkg, e.get("redistributable"))
             continue
         arch = e.get("effective_architecture") or architecture
         tar = _store_tarball(arch, e)
@@ -727,20 +731,21 @@ def doPublish(args, parser):
     # ------------------------------------------------------------------
     # 0. Redistribution policy gate
     # ------------------------------------------------------------------
-    # A recipe may declare `redistributable: false` (hash-excluded metadata —
-    # e.g. QGRAF, the Oracle client): the package is built and kept in the
-    # private S3 store for reuse, but must never be laid into a public CVMFS
-    # tree — CVMFS is worldwide, read-only, unauthenticated redistribution.
-    # This is the enforcement point for that flag; it was recorded in the build
-    # manifest but previously nothing acted on it. Skipping (rather than
-    # failing) keeps whole-stack publish loops running: the desired end state
-    # IS this package being absent from CVMFS.
+    # A recipe may restrict redistribution (`redistributable: sources|none`,
+    # hash-excluded metadata — e.g. QGRAF, the Oracle client): such a package
+    # must never be laid into a public CVMFS tree — CVMFS is worldwide,
+    # read-only, unauthenticated redistribution of binaries. This is the
+    # enforcement point for the flag. Skipping (rather than failing) keeps
+    # whole-stack publish loops running: the desired end state IS this package
+    # being absent from CVMFS. Legacy boolean values parse as all/none.
+    from bits_helpers.sync import redistributable_forms
     _entry = _load_manifest_spec(work_dir, package, version)
-    if _entry is not None and _entry.get("redistributable") is False:
+    if _entry is not None and "redistributable" in _entry and \
+       "binaries" not in redistributable_forms(_entry.get("redistributable")):
         banner("NOT publishing %s to CVMFS: its recipe declares "
-               "redistributable: false (the license forbids public "
-               "redistribution). The package remains in the private store "
-               "for build reuse; users must obtain it upstream.", package)
+               "redistributable: %s (the licence forbids public binary "
+               "redistribution). Users must obtain it upstream.",
+               package, _entry.get("redistributable"))
         return
 
     # ------------------------------------------------------------------

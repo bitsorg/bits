@@ -14,7 +14,7 @@ from requests.exceptions import RequestException
 from urllib.parse import quote
 
 from bits_helpers.cmd import execute
-from bits_helpers.log import debug, info, error, dieOnError, ProgressPrint
+from bits_helpers.log import debug, info, error, warning, dieOnError, ProgressPrint
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, effective_arch, ver_rev
 
 
@@ -27,32 +27,53 @@ DEFAULT_S3_ENDPOINT = "https://s3.cern.ch"
 # $BITS_AWS_KEYS_FILE.
 DEFAULT_AWS_KEYS_FILE = "~/.bits/s3keys"
 
+def redistributable_forms(value) -> frozenset:
+  """Parse a ``redistributable:`` value into the set of distributable forms.
+
+  One hash-excluded recipe key covers both forms of a package:
+
+    * ``all``      — sources and binaries may be redistributed (the default);
+    * ``binaries`` — only the binaries (e.g. a vendor EULA permitting runtime
+                     redistribution while the sources are proprietary);
+    * ``sources``  — only the sources (e.g. free source whose binary links
+                     something restricted);
+    * ``none``     — neither form ("no redistribution" clauses cover both the
+                     source code and the executables — CPC, QGRAF, …).
+
+  Legacy booleans are accepted: ``true`` = ``all``, ``false`` = ``none`` (old
+  recipes and already-written manifests). An unrecognised value is treated as
+  ``none`` — fail closed, a typo must never publish a restricted package —
+  with a warning.
+  """
+  if value is None or value is True:
+    return frozenset({"binaries", "sources"})
+  if value is False:
+    return frozenset()
+  v = str(value).strip().lower()
+  if v in ("all", "true", ""):
+    return frozenset({"binaries", "sources"})
+  if v == "binaries":
+    return frozenset({"binaries"})
+  if v == "sources":
+    return frozenset({"sources"})
+  if v in ("none", "false"):
+    return frozenset()
+  warning("unrecognised redistributable: %r — treating as 'none' (fail "
+          "closed); valid values: all, binaries, sources, none", value)
+  return frozenset()
+
+
 def binary_redistributable(spec) -> bool:
   """May this package's BINARY artifact be uploaded to the store / published?
 
-  ``redistributable: false`` (hash-excluded recipe metadata) forbids it: with
-  the store potentially world-readable, uploading IS redistribution — the
-  licence clarification of 2026-07-20 confirms a "no redistribution" clause
-  covers binaries. Default: true.
+  With the store potentially world-readable, uploading IS redistribution.
   """
-  v = spec.get("redistributable", True)
-  return v if isinstance(v, bool) else str(v).strip().lower() != "false"
+  return "binaries" in redistributable_forms(spec.get("redistributable"))
 
 
 def sources_redistributable(spec) -> bool:
-  """May this package's SOURCE archives be mirrored to the store?
-
-  ``redistributable_sources:`` (hash-excluded) controls it; when absent it
-  FOLLOWS ``redistributable:`` — a "no redistribution" clause covers both the
-  source code and the binaries unless the licence says otherwise, so the
-  binary flag is the safe default. Set it explicitly only for the rare
-  package whose two forms genuinely differ (e.g. free source, restricted
-  binary or vice versa).
-  """
-  v = spec.get("redistributable_sources")
-  if v is None:
-    return binary_redistributable(spec)
-  return v if isinstance(v, bool) else str(v).strip().lower() != "false"
+  """May this package's SOURCE archives be mirrored to the store?"""
+  return "sources" in redistributable_forms(spec.get("redistributable"))
 
 
 class SourceUploadGate:
@@ -72,7 +93,7 @@ class SourceUploadGate:
 
   def upload_source(self, local_path, url_checksum, filename) -> None:
     debug("NOT archiving source %s to the remote store: the recipe forbids "
-          "source redistribution (redistributable_sources: false)", filename)
+          "source redistribution (redistributable: binaries|none)", filename)
 
 
 def source_sync_for(spec, sync_helper):

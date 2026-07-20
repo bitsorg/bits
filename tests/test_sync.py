@@ -172,6 +172,46 @@ class SyncTestCase(unittest.TestCase):
             syncer.fetch_tarball(MISSING_SPEC)
 
 
+class RedistributableFormsTestCase(unittest.TestCase):
+    """redistributable: all | binaries | sources | none (+ legacy booleans)."""
+
+    def test_enum_and_legacy_values(self):
+        f = sync.redistributable_forms
+        both = {"binaries", "sources"}
+        self.assertEqual(f(None), both)          # absent -> all
+        self.assertEqual(f("all"), both)
+        self.assertEqual(f(True), both)          # legacy
+        self.assertEqual(f("binaries"), {"binaries"})
+        self.assertEqual(f("sources"), {"sources"})
+        self.assertEqual(f("none"), set())
+        self.assertEqual(f(False), set())        # legacy
+        self.assertEqual(f("NONE"), set())       # case-insensitive
+        self.assertEqual(f("typo"), set())       # unknown -> fail closed
+
+    def test_spec_gates(self):
+        self.assertTrue(sync.binary_redistributable({}))
+        self.assertTrue(sync.sources_redistributable({}))
+        spec = {"redistributable": "binaries"}
+        self.assertTrue(sync.binary_redistributable(spec))
+        self.assertFalse(sync.sources_redistributable(spec))
+        spec = {"redistributable": "sources"}
+        self.assertFalse(sync.binary_redistributable(spec))
+        self.assertTrue(sync.sources_redistributable(spec))
+        spec = {"redistributable": "none"}
+        self.assertFalse(sync.binary_redistributable(spec))
+        self.assertFalse(sync.sources_redistributable(spec))
+
+    def test_source_upload_gate_wraps_only_when_needed(self):
+        helper = MagicMock()
+        self.assertIs(sync.source_sync_for({"redistributable": "all"}, helper),
+                      helper)
+        gated = sync.source_sync_for({"redistributable": "none"}, helper)
+        gated.upload_source("/tmp/x", "abc", "x.tar.gz")
+        helper.upload_source.assert_not_called()   # dropped
+        gated.fetch_source("abc", "x.tar.gz", "/tmp")
+        helper.fetch_source.assert_called_once()   # reads still delegate
+
+
 @unittest.skipIf(sys.version_info < (3, 6), "python >= 3.6 is required for boto3")
 @patch("os.makedirs", new=MagicMock(return_value=None))
 @patch("bits_helpers.sync.symlink", new=MagicMock(return_value=None))

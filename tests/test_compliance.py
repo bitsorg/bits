@@ -35,7 +35,15 @@ class ScanRecipesTestCase(unittest.TestCase):
         _recipe(self.d, "quoted.sh",
                 'package: Quoted\nlicense: "Apache-2.0 WITH LLVM-exception"')
         _recipe(self.d, "restricted.sh",
-                "package: Secret\nlicense: LicenseRef-Secret\nredistributable: false")
+                "package: Secret\nlicense: LicenseRef-Secret\nredistributable: none")
+        # Legacy boolean must keep working (false == none).
+        _recipe(self.d, "legacy.sh",
+                "package: Legacy\nlicense: LicenseRef-L\nredistributable: false")
+        # Split forms: binaries-only (vendor runtime), sources-only.
+        _recipe(self.d, "runtime.sh",
+                "package: Runtime\nlicense: LicenseRef-R\nredistributable: binaries")
+        _recipe(self.d, "srconly.sh",
+                "package: SrcOnly\nlicense: MIT\nredistributable: sources")
         _recipe(self.d, "shim.sh", "package: shim\nlicense: NOASSERTION")
         _recipe(self.d, "nolicense.sh", "package: Bare\nversion: \"2\"")
         _recipe(self.d, "defaults-x.sh", "package: defaults-x")  # pseudo: exempt
@@ -44,11 +52,16 @@ class ScanRecipesTestCase(unittest.TestCase):
 
     def test_scan(self):
         rec = compliance.scan_recipes(self.d)
-        self.assertEqual(rec["total"], 6)
+        self.assertEqual(rec["total"], 9)
         self.assertEqual(rec["missing_license"], ["nolicense.sh"])
-        self.assertEqual(rec["licenseref"], ["restricted.sh (LicenseRef-Secret)"])
+        self.assertIn("restricted.sh (LicenseRef-Secret)", rec["licenseref"])
         self.assertEqual(rec["noassertion"], ["shim.sh"])
-        self.assertEqual(rec["restricted"], ["Secret"])
+        # binaries restricted: none + legacy false + sources-only.
+        self.assertEqual(sorted(rec["restricted"]),
+                         ["Legacy", "Secret", "SrcOnly"])
+        # sources restricted: none + legacy false + binaries-only.
+        self.assertEqual(sorted(rec["restricted_sources"]),
+                         ["Legacy", "Runtime", "Secret"])
         # Quoted values are unquoted; body 'license:' lines never leak in.
         self.assertEqual(rec["by_package"]["quoted"]["license"],
                          "Apache-2.0 WITH LLVM-exception")

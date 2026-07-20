@@ -696,7 +696,6 @@ _HEREDOC_START = re.compile(r"<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _HASH_EXCLUDED_META_KEYS = frozenset({
     "license", "description", "url", "homepage",
     "acknowledgment", "acknowledgement", "source_url", "redistributable",
-    "redistributable_sources",
 })
 
 # Source-selection keys are ALSO dropped from the recipe TEXT hash — not because
@@ -1931,13 +1930,13 @@ def doFinalSync(spec, specs, args, syncHelper):
   from bits_helpers.sync import binary_redistributable
   if not spec["revision"].startswith("local") and not spec.get("provides_repository") \
      and not binary_redistributable(spec):
-    # redistributable: false (QGRAF, the CPC family, vendor EULAs …): the
-    # binary must not be uploaded — the store may be world-readable, and a
+    # redistributable: sources|none (QGRAF, the CPC family, vendor EULAs …):
+    # the binary must not be uploaded — the store may be world-readable, and a
     # "no redistribution" clause covers the binary form. The package is still
     # built and usable locally; it just never leaves this host.
     if getattr(syncHelper, "writeStore", ""):
-      info("%s@%s [NOT uploaded — redistributable: false]",
-           spec["package"], spec["version"])
+      info("%s@%s [NOT uploaded — redistributable: %s]",
+           spec["package"], spec["version"], spec.get("redistributable"))
   elif not spec["revision"].startswith("local") and not spec.get("provides_repository"):
     syncHelper.upload_symlinks_and_tarball(spec)
     # Log (info level) that a freshly built tarball was pushed to the write store.
