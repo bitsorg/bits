@@ -83,7 +83,8 @@ class TestPublishFromManifest(unittest.TestCase):
                 {"package": "Top", "version": "1", "revision": "local1",
                  "hash": "aa11", "effective_architecture": ARCH,
                  "commit_hash": "c0ffee", "built_by": "me@host",
-                 "completed_at": "2026-01-01T00:00:00Z", "outcome": "built_from_source"},
+                 "completed_at": "2026-01-01T00:00:00Z", "outcome": "built_from_source",
+                 "license": "MIT", "redistributable": False},
                 {"package": "defaults-release", "version": "1", "revision": "1",
                  "hash": "dd22", "effective_architecture": ARCH},
                 {"package": "NoTar", "version": "9", "revision": "local1",
@@ -139,8 +140,30 @@ class TestPublishFromManifest(unittest.TestCase):
         top = bom["packages"][0]
         self.assertEqual(top["built_by"], "me@host")
         self.assertEqual(top["completed_at"], "2026-01-01T00:00:00Z")
+        # Compliance metadata travels with the BOM: license feeds the NOTICE
+        # file, redistributable: false marks CVMFS-excluded packages (QGRAF).
+        self.assertEqual(top["license"], "MIT")
+        self.assertIs(top["redistributable"], False)
         self.assertTrue(top["tarball"])
         self.assertTrue(top["tarball_sha256"].startswith("sha256:"))
+
+    def test_cvmfs_publish_refuses_non_redistributable(self):
+        # The enforcement point for `redistributable: false`: a per-package
+        # CVMFS publish must SKIP such a package (QGRAF, Oracle client) before
+        # touching its install tree — it stays in the private store only.
+        from types import SimpleNamespace
+        args = SimpleNamespace(
+            publishView=None, fromManifest=None, package="Top", version=None,
+            workDir=self.work, architecture=ARCH, cvmfsTarget="/cvmfs/x",
+            spool="/tmp/spool", scratchDir=None, rsyncOpts=None,
+            prepubUrl=None, prepubToken=None, prepubRepo=None, prepubPath=None,
+            prepubWebhook=None, prepubPollInterval=10, prepubTimeout=1800,
+            prepubNoVerifyTls=False, publishTo=None, dryRun=False,
+        )
+        with patch.object(publish, "_find_installroot",
+                          side_effect=AssertionError("must gate BEFORE locating "
+                                                     "the install tree")):
+            publish.doPublish(args, _Parser())   # returns without publishing
 
     def test_partial_publish_writes_no_bom(self):
         # If any package fails to upload, no BOM manifest is emitted (a partial

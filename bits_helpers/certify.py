@@ -40,6 +40,13 @@ _PKG_FIELDS = ("package", "version", "revision", "effective_architecture",
                # reconstructed from the signed manifest alone, without fetching
                # the per-build BOMs.
                "pkg_family",
+               # Compliance metadata: license feeds the per-release NOTICE /
+               # attribution file; redistributable: false (e.g. QGRAF, the
+               # Oracle client) marks packages that stay in the private store
+               # for build reuse but must never be laid into a public CVMFS
+               # tree. Carried so any consumer of the signed manifest can
+               # enforce the exclusion without the per-build BOMs.
+               "license", "redistributable",
                "hash", "tarball", "tarball_sha256", "group",
                # Provenance carried through for store lifecycle management: the
                # build timestamp and the builder host of the object. Combined

@@ -327,8 +327,12 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
         w = next(iter(writers.values()), None)
         if w is not None and hasattr(w, "s3") and getattr(w, "writeStore", None):
             # completed_at is kept per package so every hash carries "when built".
+            # license/redistributable are the compliance metadata: the BOM (and
+            # the signed manifest merged from it) must know what may be laid
+            # into a public CVMFS tree and what attribution a NOTICE file needs.
             _keep = ("package", "version", "revision", "effective_architecture",
-                     "hash", "commit_hash", "pkg_family", "built_by", "completed_at")
+                     "hash", "commit_hash", "pkg_family", "built_by", "completed_at",
+                     "license", "redistributable")
             packages = []
             for e, tar in published:
                 m = {k: e[k] for k in _keep if k in e}
@@ -712,6 +716,25 @@ def doPublish(args, parser):
         parser.error("--prepub-url and --spool are mutually exclusive; use one or the other.")
     if not prepub_url and not spool:
         parser.error("one of --spool or --prepub-url is required.")
+
+    # ------------------------------------------------------------------
+    # 0. Redistribution policy gate
+    # ------------------------------------------------------------------
+    # A recipe may declare `redistributable: false` (hash-excluded metadata —
+    # e.g. QGRAF, the Oracle client): the package is built and kept in the
+    # private S3 store for reuse, but must never be laid into a public CVMFS
+    # tree — CVMFS is worldwide, read-only, unauthenticated redistribution.
+    # This is the enforcement point for that flag; it was recorded in the build
+    # manifest but previously nothing acted on it. Skipping (rather than
+    # failing) keeps whole-stack publish loops running: the desired end state
+    # IS this package being absent from CVMFS.
+    _entry = _load_manifest_spec(work_dir, package, version)
+    if _entry is not None and _entry.get("redistributable") is False:
+        banner("NOT publishing %s to CVMFS: its recipe declares "
+               "redistributable: false (the license forbids public "
+               "redistribution). The package remains in the private store "
+               "for build reuse; users must obtain it upstream.", package)
+        return
 
     # ------------------------------------------------------------------
     # 1. Locate immutable INSTALLROOT
