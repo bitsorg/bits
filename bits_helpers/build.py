@@ -3846,6 +3846,11 @@ def doBuild(args, parser):
       # /.local). Point HOME at the container-local /tmp (world-writable, and per
       # container so concurrent builds never collide). HOME is not a hash input,
       # so this changes no package hash.
+      # Same passwd-entry problem for SHELL: bash fills it in from the login shell
+      # of whatever account happens to own the host uid inside the image, which on
+      # EL is typically a system account with /sbin/nologin — every recipe running
+      # `$SHELL -c ...` then dies with "This account is currently not available".
+      # Pin it to bash. Not a hash input either.
       # Stamp the container with the CI job id so a cancel can force-remove only
       # THIS job's containers (a runner that kills just the shell — e.g. the
       # gitlab-runner 19.1.x regression — otherwise orphans the container and the
@@ -3858,7 +3863,7 @@ def doBuild(args, parser):
         "-v {scriptDir}/build.sh:/build.sh:ro "
         "-v {bits_dir}:/bits "
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
-        "-e HOME=/tmp -e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
+        "-e HOME=/tmp -e SHELL=/bin/bash -e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
       ).format(
         jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",
         platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
