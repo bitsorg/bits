@@ -1409,21 +1409,33 @@ def doParseArgs():
                               default=False,
                               help="Run only disk-pressure eviction; skip age-based eviction.")
   cleanup_parser.add_argument("--retain", dest="retain", action="store_true", default=False,
-                              help=("Manifest-rooted retention sweep: per architecture keep the packages "
-                                    "of the newest --keep-builds local build manifests (the last builds) "
-                                    "plus every package of each verified signed manifest given via "
-                                    "--trust-manifest (the groups' last certified sets) — both the install "
-                                    "tree (CVMFS publish) and the store tarball (re-publish) — and evict "
-                                    "everything else (install trees, store tarballs, BUILD dirs, dangling "
-                                    "links). Fail-closed: an unverifiable trust manifest aborts the sweep."))
-  cleanup_parser.add_argument("--keep-builds", dest="keepBuilds", type=int, default=1, metavar="N",
+                              help=("Manifest-rooted retention sweep over ALL architectures in the "
+                                    "workDir. Keeps the packages of the newest --keep-builds local build "
+                                    "manifests per architecture (the latest iterations, including failed "
+                                    "ones) and certified packages NOT yet published to CVMFS; evicts "
+                                    "content that is safe upstream — uploaded to the store, in the "
+                                    "verified signed manifest AND recorded as published to CVMFS — plus "
+                                    "superseded old attempts, orphan store tarballs, BUILD dirs and "
+                                    "dangling links. Per-architecture fail-closed: an arch whose signed "
+                                    "manifest cannot be fetched/verified is skipped entirely."))
+  cleanup_parser.add_argument("--keep-builds", dest="keepBuilds", type=int, default=2, metavar="N",
                               help="With --retain: keep the newest %(metavar)s build manifests per "
                                    "architecture. Default %(default)s.")
+  cleanup_parser.add_argument("--store", dest="retainStore", metavar="URL", default=None,
+                              help=("With --retain: remote store to reconstruct the signed common "
+                                    "manifests from, one per architecture found on disk (plus 'shared') — "
+                                    "same derivation as bits build's signed reuse. http(s) and b3:///s3:// "
+                                    "forms accepted."))
   cleanup_parser.add_argument("--trust-manifest", dest="trustManifests", metavar="PATH|URL",
                               action="append", default=[],
-                              help=("With --retain: signed common manifest whose packages must stay "
-                                    "re-publishable (repeatable, one per group/architecture; URLs are "
-                                    "fetched with their .sig)."))
+                              help=("With --retain: explicit signed common manifest(s) in addition to (or "
+                                    "instead of) --store derivation (repeatable; URLs are fetched with "
+                                    "their .sig)."))
+  cleanup_parser.add_argument("--mark-published-from", dest="markPublishedFrom", metavar="PATH|URL",
+                              default=None,
+                              help=("With --retain: backfill CVMFS publish markers (.published/) from a "
+                                    "cvmfs-status.json publish record before sweeping, so released "
+                                    "content becomes evictable."))
   cleanup_parser.add_argument("--grace-days", dest="graceDays", type=float, default=1.0, metavar="DAYS",
                               help="With --retain: never evict anything modified more recently than "
                                    "%(metavar)s days ago. Default %(default)s.")

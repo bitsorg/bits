@@ -376,18 +376,6 @@ def _iter_install_dirs(archdir, max_depth=3):
             dirs[:] = []
 
 
-def _du(path):
-    total = 0
-    for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if not os.path.islink(join(root, d))]
-        for f in files:
-            try:
-                total += os.lstat(join(root, f)).st_size
-            except OSError:
-                pass
-    return total
-
-
 def _unlink_quiet(p):
     try:
         os.unlink(p)
@@ -408,20 +396,155 @@ def _prune_empty_dirs(top):
             pass
 
 
+# ── CVMFS publish record ────────────────────────────────────────────────────
+# CVMFS publication is asynchronous (prepub service), so the build node learns
+# about it from the console's cvmfs-status.json publish record. Markers under
+# workDir/.published/<arch>/<pkg>/<ver>-<rev> persist that knowledge locally:
+# a certified package is only considered "released" (and thus evictable) once
+# its marker exists.
+
+def published_marker_path(work_dir, arch, pkg, verrev):
+    return join(work_dir, ".published", arch, pkg, verrev)
+
+
+def record_published(work_dir, arch, pkg, verrev):
+    """Persist "this package build is on CVMFS" (idempotent)."""
+    p = published_marker_path(work_dir, arch, pkg, verrev)
+    os.makedirs(dirname(p), exist_ok=True)
+    with open(p, "a"):
+        pass
+
+
+def mark_published_from(work_dir, src):
+    """Backfill publish markers from a cvmfs-status.json record (path/URL).
+
+    Record entries carry package/version/platform plus a pkg_id of the form
+    ``<package>-<version>-<revision>-<platform>`` — the revision is recovered
+    from it so markers are revision-precise. Returns the number recorded.
+    """
+    import json
+    path = src
+    if "://" in str(src):
+        from bits_helpers.download import downloadUrllib2
+        dest = join(work_dir, "MANIFESTS", "retention")
+        os.makedirs(dest, exist_ok=True)
+        downloadUrllib2(src, dest, work_dir, dest_filename="cvmfs-status.json")
+        path = join(dest, "cvmfs-status.json")
+    with open(path) as fh:
+        data = json.load(fh)
+    n = 0
+    for e in data.get("packages") or []:
+        pkg  = str(e.get("package") or "")
+        ver  = str(e.get("version") or "")
+        plat = str(e.get("platform") or "")
+        if not (pkg and ver and plat):
+            continue
+        pid  = str(e.get("pkg_id") or "")
+        head, tail = "%s-%s-" % (pkg, ver), "-%s" % plat
+        rev = pid[len(head):-len(tail)] \
+            if pid.startswith(head) and pid.endswith(tail) else ""
+        record_published(work_dir, plat, pkg,
+                         "%s-%s" % (ver, rev) if rev else ver)
+        n += 1
+    info("retention: %d CVMFS publish marker(s) recorded from %s", n, src)
+    return n
+
+
+def _on_disk_arches(work_dir):
+    """Architecture names present in the workDir (install trees and TARS)."""
+    arches = set()
+    for d in (os.listdir(work_dir) if exists(work_dir) else []):
+        if d not in _NON_ARCH_DIRS and not d.startswith(".") \
+           and os.path.isdir(join(work_dir, d)):
+            arches.add(d)
+    tars = join(work_dir, "TARS")
+    for d in (os.listdir(tars) if exists(tars) else []):
+        if os.path.isdir(join(tars, d)):
+            arches.add(d)
+    return arches
+
+
 def retention_sweep(args, parser):
-    """Manifest-rooted retention for the local workDir. Returns exit code."""
+    """Manifest-rooted retention for the local workDir. Returns exit code.
+
+    Policy (all architectures found in the workDir):
+      * released content — uploaded to the store, in the arch's VERIFIED
+        signed manifest AND marked published to CVMFS — is evicted (it is
+        safe upstream and can be fetched back);
+      * certified-but-not-yet-published content is kept (still needed to
+        publish);
+      * the newest --keep-builds build manifests' packages are kept unless
+        released — this preserves the latest (possibly failed) iterations;
+      * anything younger than --grace-days is never touched;
+      * per-arch fail-closed: an architecture whose signed manifest cannot
+        be fetched/verified is skipped entirely.
+    """
     import re
     from bits_helpers import trust
+    from bits_helpers.build import derive_trust_manifest_srcs
     from bits_helpers.gc import _localize_manifest
 
     work_dir = abspath(args.workDir)
     dry_run  = getattr(args, "dryRun", False)
     grace_s  = max(0.0, getattr(args, "graceDays", 1.0)) * 86400
-    keep_n   = max(1, getattr(args, "keepBuilds", 1))
+    keep_n   = max(1, getattr(args, "keepBuilds", 2))
     now      = time.time()
     hex_re   = re.compile(r"^[0-9a-f]{40,64}$")
 
-    keep_paths, keep_hashes = set(), set()
+    # 0. Publish record → markers.
+    src = getattr(args, "markPublishedFrom", None)
+    if src:
+        try:
+            mark_published_from(work_dir, src)
+        except Exception as exc:            # noqa: BLE001 — record only
+            warning("retention: could not read publish record %s (%s) — "
+                    "continuing; unpublished-looking content stays kept",
+                    src, exc)
+
+    def _is_published(e):
+        install, _h = _entry_paths(work_dir, e)
+        if not install:
+            return False
+        arch = str(e.get("effective_architecture") or "")
+        return exists(published_marker_path(
+            work_dir, arch, str(e.get("package")), basename(install)))
+
+    # 1. Certified sets, per architecture found on disk (plus explicit ones).
+    #    Fail-closed PER ARCH: only arches with a verified manifest are swept.
+    arches = _on_disk_arches(work_dir)
+    sources = {}                       # src -> arch it certifies ('' = explicit)
+    store = str(getattr(args, "retainStore", None) or "")
+    if store:
+        base = store.split("::", 1)[0] if store.startswith(("http://", "https://")) else store
+        for arch in sorted(arches):
+            for s in derive_trust_manifest_srcs(base, None, arch):
+                sources.setdefault(s, arch if ("-%s.json" % arch) in s else "shared")
+    for s in (getattr(args, "trustManifests", None) or []):
+        sources.setdefault(s, "")
+
+    verified_arches = set()
+    certified = []                     # verified entries across all manifests
+    for s, arch_hint in sources.items():
+        try:
+            path = _localize_manifest(s, work_dir)
+            kid, entries = trust.trusted_records(path)
+        except Exception as exc:        # noqa: BLE001
+            kid, entries = None, []
+            debug("retention: %s: %s", s, exc)
+        if not kid:
+            warning("retention: %s not available/verified — architecture "
+                    "'%s' will NOT be swept", s, arch_hint or "?")
+            continue
+        certified.extend(entries)
+        verified_arches.update({str(e.get("effective_architecture") or "")
+                                for e in entries})
+        if arch_hint:
+            verified_arches.add(arch_hint)
+    if not sources:
+        warning("retention: no --store/--trust-manifest — no architecture "
+                "has a verified certified set, nothing will be swept")
+
+    keep_paths, keep_hashes, released_n = set(), set(), 0
 
     def _keep(e):
         install, h = _entry_paths(work_dir, e)
@@ -430,34 +553,36 @@ def retention_sweep(args, parser):
         if h:
             keep_hashes.add(h)
 
-    # 1. The last builds: newest N local build manifests per architecture.
+    # 2. Certified but not yet on CVMFS → keep (needed to publish).
+    #    Certified AND published → evictable (safe upstream).
+    for e in certified:
+        if _is_published(e):
+            released_n += 1
+        else:
+            _keep(e)
+
+    # 3. The last builds (newest N local manifests per arch): keep their
+    #    packages unless released — the latest iterations, failed ones
+    #    included, are exactly what makes the next attempt fast.
     manifests = _local_build_manifests(work_dir, keep_n)
+    released_keys = {os.path.normpath(_entry_paths(work_dir, e)[0])
+                     for e in certified if _is_published(e)
+                     and _entry_paths(work_dir, e)[0]}
     for _f, data in manifests:
         for e in data.get("packages") or []:
+            install, _h = _entry_paths(work_dir, e)
+            if install and os.path.normpath(install) in released_keys:
+                continue
             _keep(e)
-    info("retention: last builds — %d manifest(s): %s", len(manifests),
-         ", ".join(basename(f) for f, _ in manifests) or "none")
+    info("retention: arches on disk: %s | verified: %s | certified: %d "
+         "(released: %d) | last-build manifests: %d",
+         ", ".join(sorted(arches)) or "-",
+         ", ".join(sorted(a for a in verified_arches if a)) or "-",
+         len(certified), released_n, len(manifests))
 
-    # 2. The certified sets: verified signed manifests (fail closed).
-    for src in (getattr(args, "trustManifests", None) or []):
-        try:
-            path = _localize_manifest(src, work_dir)
-        except Exception as exc:                # noqa: BLE001 — fail closed
-            error("retention: cannot fetch trust manifest %s (%s) — "
-                  "refusing to sweep", src, exc)
-            return 1
-        kid, entries = trust.trusted_records(path)
-        if not kid:
-            error("retention: %s did not verify — refusing to sweep", src)
-            return 1
-        for e in entries:
-            _keep(e)
-        info("retention: %s verified (key %s) — %d certified package(s) kept",
-             basename(str(path)), kid, len(entries))
-
-    if not keep_paths and not keep_hashes:
-        error("retention: resolved an EMPTY keep set (no build manifests and "
-              "no --trust-manifest) — refusing to sweep")
+    if not verified_arches:
+        error("retention: no architecture has a verified certified set — "
+              "refusing to sweep")
         return 1
 
     stats = {"evicted": 0, "freed": 0}
@@ -478,10 +603,10 @@ def retention_sweep(args, parser):
         stats["evicted"] += 1
         stats["freed"]   += size
 
-    # 3. Install trees.
-    for arch in sorted(os.listdir(work_dir) if exists(work_dir) else []):
-        if arch in _NON_ARCH_DIRS or arch.startswith("."):
-            continue
+    # 4. Install trees — ALL architectures with a verified certified set.
+    for arch in sorted(arches):
+        if arch not in verified_arches:
+            continue                    # per-arch fail-closed
         archdir = join(work_dir, arch)
         if not os.path.isdir(archdir) or os.path.islink(archdir):
             continue
@@ -492,10 +617,12 @@ def retention_sweep(args, parser):
         if not dry_run:
             _prune_empty_dirs(archdir)
 
-    # 4. Store tarball dirs, by content hash (defense in depth: only
+    # 5. Store tarball dirs, by content hash (defense in depth: only
     #    well-formed <h2>/<hash> paths are ever considered).
     tars = join(work_dir, "TARS")
     for arch in sorted(os.listdir(tars) if exists(tars) else []):
+        if arch not in verified_arches:
+            continue                    # per-arch fail-closed
         store = join(tars, arch, "store")
         if not os.path.isdir(store):
             continue
@@ -513,7 +640,7 @@ def retention_sweep(args, parser):
         if not dry_run:
             _prune_empty_dirs(store)
 
-    # 5. BUILD dirs by hash; dangling *-latest links.
+    # 6. BUILD dirs by hash; dangling *-latest links.
     bdir = join(work_dir, "BUILD")
     for name in sorted(os.listdir(bdir) if exists(bdir) else []):
         p = join(bdir, name)
@@ -525,7 +652,7 @@ def retention_sweep(args, parser):
                 and os.path.isdir(p) and not _young(p)):
             _rm(p, "build dir")
 
-    # 6. Dangling symlinks under TARS (version links, dist-link trees).
+    # 7. Dangling symlinks under TARS (version links, dist-link trees).
     for root, dirs, files in os.walk(tars) if exists(tars) else []:
         if os.sep + "store" in root:
             dirs[:] = []
@@ -535,7 +662,7 @@ def retention_sweep(args, parser):
             if os.path.islink(p) and not exists(p):
                 _unlink_quiet(p)
 
-    # 7. Sentinels whose install dir is gone.
+    # 8. Sentinels whose install dir is gone.
     pkroot = join(work_dir, ".packages")
     if exists(pkroot):
         for root, _dirs, files in os.walk(pkroot):
