@@ -31,7 +31,8 @@ from bits_helpers.log import banner, debug, error, info, warning
 # Front-matter keys read from each recipe. Values may be quoted (the header
 # auto-quoting writes them back quoted); strip one level of quotes.
 _KEY_RE = re.compile(
-    r"^(package|license|redistributable):[ \t]*(.*?)[ \t]*$", re.M)
+    r"^(package|license|redistributable|provides_repository):[ \t]*(.*?)[ \t]*$",
+    re.M)
 
 
 def _recipe_meta(path):
@@ -79,8 +80,10 @@ def scan_recipes(recipes_dir):
         out["total"] += 1
         lic = meta.get("license", "")
         out["by_package"][pkg.lower()] = {"license": lic, "recipe": name}
-        # defaults-* are config pseudo-packages: never published, licence-free.
-        if not lic and not pkg.startswith("defaults"):
+        # defaults-* are config pseudo-packages and repository providers are
+        # meta-recipes pointing at a recipe repo: never published, licence-free.
+        if not lic and not pkg.startswith("defaults") \
+           and not meta.get("provides_repository"):
             out["missing_license"].append(name)
         if lic.startswith("LicenseRef-"):
             out["licenseref"].append("%s (%s)" % (name, lic))
@@ -88,6 +91,121 @@ def scan_recipes(recipes_dir):
             out["noassertion"].append(name)
         if "redistributable" in meta:
             forms = redistributable_forms(meta["redistributable"])
+            if "binaries" not in forms:
+                out["restricted"].append(pkg)
+                out["by_package"][pkg.lower()]["restricted"] = True
+            if "sources" not in forms:
+                out["restricted_sources"].append(pkg)
+    return out
+
+
+def resolve_group_specs(args, parser):
+    """Resolve the dependency closure of ``args.packages`` for a group.
+
+    Follows the exact repository-discovery path of ``bits build`` (and
+    ``bits deps``): the primary config dir, the defaults profile, always-on
+    providers (bits-providers) and repository providers discovered iteratively
+    along the dependency walk. Returns ``(specs, system_pkgs, config_paths)``
+    where *specs* maps every package in the closure to its resolved spec —
+    conditional requires (``pkg:(?var)`` / arch gates) already evaluated for
+    the selected --defaults/--architecture.
+    """
+    from bits_helpers.cmd import getstatusoutput
+    from bits_helpers.repo_provider import (
+        fetch_repo_providers_iteratively, load_always_on_providers)
+    from bits_helpers.utilities import (
+        getConfigPaths, getPackageList, parseDefaults, readDefaults,
+        resolve_variables, validateDefaults)
+
+    config_dir = os.path.abspath(args.configDir)
+
+    def defaultsReader():
+        meta, body = readDefaults(config_dir, args.defaults, parser.error,
+                                  args.architecture)
+        meta["variables"] = resolve_variables(meta.get("variables"), {},
+                                              args.architecture, args.defaults)
+        return meta, body
+
+    err, overrides, taps, defaultsMeta = parseDefaults(args.disable,
+                                                       defaultsReader, debug)
+    if err:
+        parser.error(err)
+
+    work_dir = getattr(args, "workDir", None) or os.environ.get(
+        "BITS_WORK_DIR", "sw")
+    prov = dict(
+        config_dir        = config_dir,
+        work_dir          = work_dir,
+        reference_sources = getattr(args, "referenceSources", None)
+                            or os.path.join(work_dir, "MIRROR"),
+        fetch_repos       = getattr(args, "fetchRepos", True),
+        taps              = taps,
+        provider_policy   = getattr(args, "provider_policy", {}) or {},
+    )
+    always_on = load_always_on_providers(
+        bits_providers=getattr(args, "bits_providers", None), **prov)
+    provider_dirs = fetch_repo_providers_iteratively(
+        packages     = list(args.packages)
+                       + list(defaultsMeta.get("requires", []))
+                       + list(defaultsMeta.get("build_requires", [])),
+        overrides    = overrides,
+        defaults     = args.defaults,
+        default_vars = defaultsMeta.get("variables"),
+        **prov)
+    provider_dirs.update(always_on)
+
+    def performCheck(pkg, cmd):
+        return getstatusoutput(cmd)
+
+    specs = {}
+    system_pkgs, _own, failed, _valid = getPackageList(
+        packages                = list(args.packages),
+        specs                   = specs,
+        configDir               = config_dir,
+        preferSystem            = False,
+        noSystem                = None,
+        architecture            = args.architecture,
+        disable                 = args.disable,
+        defaults                = args.defaults,
+        performPreferCheck      = performCheck,
+        performRequirementCheck = performCheck,
+        performValidateDefaults = lambda spec: validateDefaults(spec, args.defaults),
+        overrides               = overrides,
+        taps                    = taps,
+        log                     = debug,
+        provider_dirs           = provider_dirs,
+        defaults_meta           = defaultsMeta)
+    if failed:
+        warning("compliance: could not resolve: %s", ", ".join(sorted(failed)))
+    return specs, system_pkgs, getConfigPaths(config_dir)
+
+
+def scan_specs(specs):
+    """Audit a resolved dependency closure — same classification as
+    ``scan_recipes``, but over discovery-resolved specs, so the result covers
+    exactly the packages of the selected group (conditionals evaluated,
+    first-repo-wins already applied)."""
+    from bits_helpers.sync import redistributable_forms
+    out = {"total": 0, "missing_license": [], "licenseref": [],
+           "noassertion": [], "restricted": [], "restricted_sources": [],
+           "by_package": {}}
+    for pkg in sorted(specs):
+        spec = specs[pkg]
+        name = "%s.sh" % pkg.lower()
+        out["total"] += 1
+        lic = str(spec.get("license") or "")
+        out["by_package"][pkg.lower()] = {"license": lic, "recipe": name}
+        # defaults-* are config pseudo-packages; repository providers are
+        # meta-recipes pointing at a recipe repo — neither is published.
+        if not lic and not pkg.startswith("defaults") \
+           and not spec.get("provides_repository"):
+            out["missing_license"].append(name)
+        if lic.startswith("LicenseRef-"):
+            out["licenseref"].append("%s (%s)" % (name, lic))
+        if lic == "NOASSERTION":
+            out["noassertion"].append(name)
+        if "redistributable" in spec:
+            forms = redistributable_forms(spec.get("redistributable"))
             if "binaries" not in forms:
                 out["restricted"].append(pkg)
                 out["by_package"][pkg.lower()]["restricted"] = True
@@ -362,14 +480,34 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
 
 def doCompliance(args, parser):
     """CLI entrypoint for ``bits compliance``. Returns the exit code."""
-    recipes_dir = os.path.abspath(getattr(args, "recipesDir", None) or ".")
-    if not any(f.endswith(".sh") for f in os.listdir(recipes_dir)):
-        parser.error("no recipes (*.sh) found in %s — point --recipes at a "
-                     "recipe repository (e.g. a lcg.bits checkout)" % recipes_dir)
-
-    banner("Compliance audit: %s", recipes_dir)
-    rec = scan_recipes(recipes_dir)
-    info("Recipes scanned .......... %d", rec["total"])
+    roots = list(getattr(args, "packages", []) or [])
+    if roots:
+        # Group mode: follow the build's repository-discovery path and audit
+        # exactly the resolved dependency closure of the given roots.
+        if getattr(args, "recipesDir", None):
+            parser.error("--recipes scans a single directory; drop it when "
+                         "giving PACKAGE roots (group mode discovers the "
+                         "repositories itself)")
+        specs, system_pkgs, config_paths = resolve_group_specs(args, parser)
+        recipes_dir = os.path.abspath(args.configDir)
+        banner("Compliance audit: %s (defaults: %s, architecture: %s)",
+               " ".join(roots), "::".join(args.defaults), args.architecture)
+        for d in config_paths:
+            info("  repository: %s", d)
+        rec = scan_specs(specs)
+        info("Packages in closure ...... %d", rec["total"])
+        if system_pkgs:
+            info("  system-provided ......... %d (taken from the host, not "
+                 "distributed)", len(system_pkgs))
+    else:
+        recipes_dir = os.path.abspath(getattr(args, "recipesDir", None) or ".")
+        if not any(f.endswith(".sh") for f in os.listdir(recipes_dir)):
+            parser.error("no recipes (*.sh) found in %s — point --recipes at a "
+                         "recipe repository (e.g. a lcg.bits checkout), or give "
+                         "PACKAGE roots for a group-wide audit" % recipes_dir)
+        banner("Compliance audit: %s", recipes_dir)
+        rec = scan_recipes(recipes_dir)
+        info("Recipes scanned .......... %d", rec["total"])
     info("  binaries restricted ..... %d (redistributable: sources|none — the "
          "CVMFS/store exclusion list)", len(rec["restricted"]))
     info("  sources restricted ...... %d (redistributable: binaries|none — "

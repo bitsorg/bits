@@ -268,13 +268,18 @@ def doParseArgs():
       "compliance",
       help="audit recipe licence metadata and the binary store",
       description=(
-          "Summarise licence-compliance status: scan a recipe repository for "
+          "Summarise licence-compliance status: scan recipes for "
           "license:/redistributable: metadata (missing licences, unverified "
           "LicenseRef-* ids, the redistributable:false CVMFS-exclusion list), "
           "probe whether the S3 store answers unauthenticated requests, and "
           "report every stored or certified package whose current recipe "
-          "forbids redistribution. Read-only. Exit 0 = clean, 1 = issues "
-          "found, so it can gate CI."
+          "forbids redistribution. With PACKAGE roots (e.g. 'bits compliance "
+          "externals generators'), the audit follows the same repository-"
+          "discovery path as bits build (config dir, defaults profile, "
+          "repository providers) and covers exactly the resolved dependency "
+          "closure of those roots for the selected group; without roots it "
+          "scans one recipe directory (--recipes, default CWD). Read-only. "
+          "Exit 0 = clean, 1 = issues found, so it can gate CI."
       ),
   )
   status_parser = subparsers.add_parser(
@@ -1303,6 +1308,24 @@ def doParseArgs():
                               help="Architecture for store-path resolution. Default: %(default)s.")
 
   # Options for the compliance subcommand
+  compliance_parser.add_argument("packages", metavar="PACKAGE", nargs="*", default=[],
+                                 help=("Audit the dependency closure of %(metavar)s (group mode): recipe "
+                                       "repositories are discovered exactly as bits build does — config dir, "
+                                       "defaults profile, repository providers — and only the resolved closure "
+                                       "is audited. Typically the group's meta-package(s), e.g. 'externals "
+                                       "generators'. Without %(metavar)s, one recipe directory is scanned "
+                                       "(--recipes, default the current directory)."))
+  compliance_parser.add_argument("-c", "--config-dir", dest="configDir",
+                                 default=os.environ.get("BITS_REPO_DIR", "."),
+                                 help="The directory containing build recipes (group mode). Default '%(default)s'.")
+  compliance_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
+                                 help=("Resolve the closure as if on %(metavar)s (group mode). Default is the "
+                                       "current system architecture, '%(default)s'."))
+  compliance_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
+                                 help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh (group mode).")
+  compliance_parser.add_argument("--disable", dest="disable", default=[], metavar="PACKAGE", action="append",
+                                 help=("Assume we're not building %(metavar)s and all its (unique) dependencies "
+                                       "(group mode). Repeat or comma-separate."))
   compliance_parser.add_argument("--recipes", dest="recipesDir", metavar="DIR", default=None,
                                  help=("Recipe repository to audit (a directory of *.sh recipes, "
                                        "e.g. an lcg.bits checkout). Default: the current directory."))
@@ -1797,6 +1820,9 @@ def finaliseArgs(args, parser):
     args.referenceSources = args.referenceSources % {"workDir": args.workDir}
     return args
 
+  # compliance group mode rides the general finalisation: it needs the
+  # defaults split, the disable normalisation and — crucially — the bits.rc /
+  # BITS_PROVIDERS / provider_policy resolution below for repo discovery.
   if hasattr(args, "defaults"):
     args.defaults = _with_release_base(args.defaults.split("::"))
 
