@@ -294,6 +294,268 @@ def _try_evict(entry: _SentinelEntry, dry_run: bool) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
+# Retention sweep (--retain)
+# ---------------------------------------------------------------------------
+#
+# Policy, per architecture (mirrors `bits gc`'s manifest-rooted, fail-closed
+# design, but sweeps the LOCAL workDir instead of the S3 store):
+#
+#   KEEP
+#     * every package of the newest --keep-builds local build manifests
+#       (MANIFESTS/bits-manifest-*.json) — "the last builds";
+#     * every package of each VERIFIED signed common manifest given via
+#       --trust-manifest — the groups' last certified sets (entries carry
+#       their group). A manifest that does not verify ABORTS the sweep.
+#     For each kept package BOTH artefacts stay, so it remains re-publishable
+#     and uploadable to CVMFS without a rebuild:
+#       - install tree   <arch>/[<family>/]<pkg>/<ver>-<rev>/   (CVMFS publish)
+#       - store tarball  TARS/<arch>/store/<h2>/<hash>/         (S3 re-publish)
+#
+#   EVICT (older than --grace-days)
+#     * install trees (identified by their .build-hash marker) not kept;
+#     * TARS/<arch>/store/<h2>/<hash>/ dirs whose hash is not kept;
+#     * BUILD/<hash> dirs whose hash is not kept;
+#     * dangling symlinks under TARS/ and BUILD/;
+#     * sentinels whose install dir is gone.
+
+_NON_ARCH_DIRS = {"TARS", "BUILD", "TMP", "INSTALLROOT", "SOURCES", "SPECS",
+                  "MIRROR", "REPOS", "MANIFESTS", "LOGS", "MODULES",
+                  "wrapper-scripts"}
+_HEX_HASH_RE = None   # compiled lazily (re imported locally)
+
+
+def _entry_paths(work_dir, e):
+    """(install_dir, content_hash) for a manifest package entry."""
+    arch = str(e.get("effective_architecture") or "")
+    pkg  = str(e.get("package") or "")
+    if not arch or not pkg:
+        return None, None
+    ver = str(e.get("version") or "")
+    rev = str(e.get("revision") or "")
+    verrev = "%s-%s" % (ver, rev) if rev else ver
+    fam = str(e.get("pkg_family") or "")
+    parts = [work_dir, arch] + ([fam] if fam else []) + [pkg, verrev]
+    return join(*parts), str(e.get("hash") or "")
+
+
+def _local_build_manifests(work_dir, keep_builds):
+    """Newest *keep_builds* build manifests per top-level architecture."""
+    import glob
+    import json
+    files = [f for f in glob.glob(join(work_dir, "MANIFESTS",
+                                       "bits-manifest-*.json"))
+             if not os.path.islink(f)]
+    files.sort(key=os.path.getmtime, reverse=True)
+    kept, per_arch = [], {}
+    for f in files:
+        try:
+            with open(f) as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        arch = str(data.get("architecture") or "?")
+        if per_arch.get(arch, 0) >= keep_builds:
+            continue
+        per_arch[arch] = per_arch.get(arch, 0) + 1
+        kept.append((f, data))
+    return kept
+
+
+def _iter_install_dirs(archdir, max_depth=3):
+    """Yield install trees under an architecture dir, identified by their
+    .build-hash marker (never descending into one). Symlinks (latest, CVMFS
+    indirections) are never followed."""
+    base_depth = archdir.rstrip(os.sep).count(os.sep)
+    for root, dirs, files in os.walk(archdir):
+        dirs[:] = [d for d in dirs if not os.path.islink(join(root, d))]
+        if ".build-hash" in files:
+            dirs[:] = []
+            yield root
+            continue
+        if root.count(os.sep) - base_depth >= max_depth:
+            dirs[:] = []
+
+
+def _du(path):
+    total = 0
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if not os.path.islink(join(root, d))]
+        for f in files:
+            try:
+                total += os.lstat(join(root, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _unlink_quiet(p):
+    try:
+        os.unlink(p)
+    except OSError:
+        pass
+
+
+def _prune_empty_dirs(top):
+    # Re-check emptiness with listdir: walk's dirs snapshot predates the rmdir
+    # of children, so relying on it leaves the parents of pruned dirs behind.
+    for root, _dirs, _files in os.walk(top, topdown=False):
+        if root == top:
+            continue
+        try:
+            if not os.listdir(root):
+                os.rmdir(root)
+        except OSError:
+            pass
+
+
+def retention_sweep(args, parser):
+    """Manifest-rooted retention for the local workDir. Returns exit code."""
+    import re
+    from bits_helpers import trust
+    from bits_helpers.gc import _localize_manifest
+
+    work_dir = abspath(args.workDir)
+    dry_run  = getattr(args, "dryRun", False)
+    grace_s  = max(0.0, getattr(args, "graceDays", 1.0)) * 86400
+    keep_n   = max(1, getattr(args, "keepBuilds", 1))
+    now      = time.time()
+    hex_re   = re.compile(r"^[0-9a-f]{40,64}$")
+
+    keep_paths, keep_hashes = set(), set()
+
+    def _keep(e):
+        install, h = _entry_paths(work_dir, e)
+        if install:
+            keep_paths.add(os.path.normpath(install))
+        if h:
+            keep_hashes.add(h)
+
+    # 1. The last builds: newest N local build manifests per architecture.
+    manifests = _local_build_manifests(work_dir, keep_n)
+    for _f, data in manifests:
+        for e in data.get("packages") or []:
+            _keep(e)
+    info("retention: last builds — %d manifest(s): %s", len(manifests),
+         ", ".join(basename(f) for f, _ in manifests) or "none")
+
+    # 2. The certified sets: verified signed manifests (fail closed).
+    for src in (getattr(args, "trustManifests", None) or []):
+        try:
+            path = _localize_manifest(src, work_dir)
+        except Exception as exc:                # noqa: BLE001 — fail closed
+            error("retention: cannot fetch trust manifest %s (%s) — "
+                  "refusing to sweep", src, exc)
+            return 1
+        kid, entries = trust.trusted_records(path)
+        if not kid:
+            error("retention: %s did not verify — refusing to sweep", src)
+            return 1
+        for e in entries:
+            _keep(e)
+        info("retention: %s verified (key %s) — %d certified package(s) kept",
+             basename(str(path)), kid, len(entries))
+
+    if not keep_paths and not keep_hashes:
+        error("retention: resolved an EMPTY keep set (no build manifests and "
+              "no --trust-manifest) — refusing to sweep")
+        return 1
+
+    stats = {"evicted": 0, "freed": 0}
+
+    def _young(path):
+        try:
+            return (now - os.path.getmtime(path)) < grace_s
+        except OSError:
+            return True
+
+    def _rm(path, what):
+        size = _du(path)
+        if dry_run:
+            info("dry-run: would evict %s %s (%.1f MiB)", what, path, size / 1e6)
+        else:
+            info("evicting %s %s (%.1f MiB)", what, path, size / 1e6)
+            shutil.rmtree(path, ignore_errors=True)
+        stats["evicted"] += 1
+        stats["freed"]   += size
+
+    # 3. Install trees.
+    for arch in sorted(os.listdir(work_dir) if exists(work_dir) else []):
+        if arch in _NON_ARCH_DIRS or arch.startswith("."):
+            continue
+        archdir = join(work_dir, arch)
+        if not os.path.isdir(archdir) or os.path.islink(archdir):
+            continue
+        for root in list(_iter_install_dirs(archdir)):
+            if os.path.normpath(root) in keep_paths or _young(root):
+                continue
+            _rm(root, "install")
+        if not dry_run:
+            _prune_empty_dirs(archdir)
+
+    # 4. Store tarball dirs, by content hash (defense in depth: only
+    #    well-formed <h2>/<hash> paths are ever considered).
+    tars = join(work_dir, "TARS")
+    for arch in sorted(os.listdir(tars) if exists(tars) else []):
+        store = join(tars, arch, "store")
+        if not os.path.isdir(store):
+            continue
+        for shard in sorted(os.listdir(store)):
+            sh = join(store, shard)
+            if not os.path.isdir(sh):
+                continue
+            for h in sorted(os.listdir(sh)):
+                d = join(sh, h)
+                if (not hex_re.match(h) or h[:2] != shard
+                        or not os.path.isdir(d) or h in keep_hashes
+                        or _young(d)):
+                    continue
+                _rm(d, "store tarball")
+        if not dry_run:
+            _prune_empty_dirs(store)
+
+    # 5. BUILD dirs by hash; dangling *-latest links.
+    bdir = join(work_dir, "BUILD")
+    for name in sorted(os.listdir(bdir) if exists(bdir) else []):
+        p = join(bdir, name)
+        if os.path.islink(p):
+            if not exists(p):
+                _unlink_quiet(p)
+            continue
+        if (hex_re.match(name) and name not in keep_hashes
+                and os.path.isdir(p) and not _young(p)):
+            _rm(p, "build dir")
+
+    # 6. Dangling symlinks under TARS (version links, dist-link trees).
+    for root, dirs, files in os.walk(tars) if exists(tars) else []:
+        if os.sep + "store" in root:
+            dirs[:] = []
+            continue
+        for n in files + dirs:
+            p = join(root, n)
+            if os.path.islink(p) and not exists(p):
+                _unlink_quiet(p)
+
+    # 7. Sentinels whose install dir is gone.
+    pkroot = join(work_dir, ".packages")
+    if exists(pkroot):
+        for root, _dirs, files in os.walk(pkroot):
+            for n in files:
+                s = join(root, n)
+                rel = os.path.relpath(s, pkroot)   # <arch>/<pkg>/<version>
+                if not exists(join(work_dir, rel)):
+                    _unlink_quiet(s)
+        if not dry_run:
+            _prune_empty_dirs(pkroot)
+
+    info("retention: %s%d item(s), %.2f GiB — kept %d install tree(s), "
+         "%d content hash(es)",
+         "dry-run — would evict " if dry_run else "evicted ",
+         stats["evicted"], stats["freed"] / 1e9,
+         len(keep_paths), len(keep_hashes))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -309,6 +571,10 @@ def doCleanup(args, parser):
     if not exists(work_dir):
         info("workDir %s does not exist — nothing to clean", work_dir)
         sys.exit(0)
+
+    # Manifest-rooted retention mode: standalone sweep, then exit.
+    if getattr(args, "retain", False):
+        sys.exit(retention_sweep(args, parser))
 
     entries = _list_sentinels(work_dir, arch)
     if not entries:

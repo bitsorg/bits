@@ -1408,6 +1408,25 @@ def doParseArgs():
   cleanup_parser.add_argument("--disk-pressure-only", dest="diskPressureOnly", action="store_true",
                               default=False,
                               help="Run only disk-pressure eviction; skip age-based eviction.")
+  cleanup_parser.add_argument("--retain", dest="retain", action="store_true", default=False,
+                              help=("Manifest-rooted retention sweep: per architecture keep the packages "
+                                    "of the newest --keep-builds local build manifests (the last builds) "
+                                    "plus every package of each verified signed manifest given via "
+                                    "--trust-manifest (the groups' last certified sets) — both the install "
+                                    "tree (CVMFS publish) and the store tarball (re-publish) — and evict "
+                                    "everything else (install trees, store tarballs, BUILD dirs, dangling "
+                                    "links). Fail-closed: an unverifiable trust manifest aborts the sweep."))
+  cleanup_parser.add_argument("--keep-builds", dest="keepBuilds", type=int, default=1, metavar="N",
+                              help="With --retain: keep the newest %(metavar)s build manifests per "
+                                   "architecture. Default %(default)s.")
+  cleanup_parser.add_argument("--trust-manifest", dest="trustManifests", metavar="PATH|URL",
+                              action="append", default=[],
+                              help=("With --retain: signed common manifest whose packages must stay "
+                                    "re-publishable (repeatable, one per group/architecture; URLs are "
+                                    "fetched with their .sig)."))
+  cleanup_parser.add_argument("--grace-days", dest="graceDays", type=float, default=1.0, metavar="DAYS",
+                              help="With --retain: never evict anything modified more recently than "
+                                   "%(metavar)s days ago. Default %(default)s.")
   cleanup_parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
                               help="Print what would be evicted without actually removing anything.")
 
