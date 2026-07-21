@@ -11,7 +11,7 @@ from bits_helpers.utilities import resolve_variables, predefined_arch_vars
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import asList
 from bits_helpers.utilities import prunePaths
-from bits_helpers.utilities import resolve_version, resolve_spec_data
+from bits_helpers.utilities import resolve_version, resolve_spec_data, resolve_tag
 from bits_helpers.utilities import topological_sort
 from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
 from bits_helpers.utilities import _parse_req_matcher, _collect_version_pins
@@ -838,6 +838,37 @@ class VersionMatcherTest(unittest.TestCase):
                          ["a.patch", "b.patch"])
         self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r4"),
                          ["b.patch", "c.patch,sha256:zz"])
+
+
+class TestResolveTag(unittest.TestCase):
+    """`tag:` must accept the same variables as version:/source:/patches:."""
+
+    def test_date_keywords_still_work(self):
+        spec = {"package": "p", "tag": "nightly-%(year)s"}
+        self.assertRegex(resolve_tag(spec), r"^nightly-\d{4}$")
+
+    def test_spec_keys_still_win_over_nothing(self):
+        spec = {"package": "p", "version": "v1", "tag": "rel-%(version)s"}
+        self.assertEqual(resolve_tag(spec), "rel-v1")
+
+    def test_defaults_profile_variables(self):
+        """key4hep case: variables: release: main + overrides: tag: %(release)s."""
+        spec = {"package": "lcg.bits", "tag": "%(release)s"}
+        self.assertEqual(resolve_tag(spec, {"release": "main"}), "main")
+
+    def test_recipe_variables_override_profile(self):
+        spec = {"package": "p", "tag": "%(release)s",
+                "variables": {"release": "dev4"}}
+        self.assertEqual(resolve_tag(spec, {"release": "main"}), "dev4")
+
+    def test_unknown_variable_still_fatal(self):
+        spec = {"package": "p", "tag": "%(nope)s"}
+        with patch("bits_helpers.utilities.dieOnError") as die:
+            resolve_tag(spec, {"release": "main"})
+        die.assert_called_once()
+        self.assertIn("nope", die.call_args[0][1])
+        # the message should help by listing what IS available
+        self.assertIn("release", die.call_args[0][1])
 
 
 if __name__ == '__main__':

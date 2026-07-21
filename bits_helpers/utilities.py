@@ -407,19 +407,33 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
 def resolve_version(spec, defaults, branch_basename, branch_stream):
     return resolve_spec_data(spec, spec["version"], defaults, branch_basename, branch_stream)
 
-def resolve_tag(spec):
+def resolve_tag(spec, default_vars=None):
   """Expand the tag, replacing the following keywords:
   - %(year)s
   - %(month)s
   - %(day)s
   - %(hour)s
+  - any variable from the active defaults profile's `variables:` block, or the
+    recipe's own `variables:`
+
+  The variables blocks matter because `tag:` otherwise accepted a strictly
+  smaller vocabulary than `version:` / `source:` / `patches:`, which go through
+  resolve_spec_data. A profile defining `variables: {release: main}` and an
+  override of `tag: "%(release)s"` therefore died with "Unknown variable" even
+  though the very same expansion worked in every other field. Precedence
+  mirrors resolve_spec_data: profile-wide first, then recipe-local.
   """
+  all_vars = {**nowKwds, **spec,
+              **(default_vars or {}),
+              **(spec.get("variables") or {})}
   try:
-    return spec["tag"] % {**nowKwds, **spec}
+    return spec["tag"] % all_vars
   except KeyError as e:
     dieOnError(True,
-      "Unknown variable %s in tag field of recipe for '%s': %r" % (
-        e, spec.get("package", "?"), spec.get("tag", "")))
+      "Unknown variable %s in tag field of recipe for '%s': %r\n"
+      "  Available variables: %s" % (
+        e, spec.get("package", "?"), spec.get("tag", ""),
+        ", ".join(sorted(str(k) for k in all_vars))))
     return spec.get("tag", "")  # guard for mocked dieOnError in tests
 
 

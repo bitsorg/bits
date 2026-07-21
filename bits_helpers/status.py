@@ -138,13 +138,14 @@ def _try_populate_refs(spec: dict, reference_sources: str, package: str) -> None
         spec.setdefault("scm_refs", {})
 
 
-def _resolve_commit_hash(spec: dict) -> None:
+def _resolve_commit_hash(spec: dict, default_vars=None) -> None:
     """Set spec["commit_hash"] from scm_refs, falling back to the tag string."""
     if "tag" not in spec:
         spec["tag"] = spec["version"]
-    # Expand date-based tags (%(year)s etc.)
+    # Expand date-based tags (%(year)s etc.) and defaults/recipe variables, so
+    # `bits status` resolves the same tag the build does.
     try:
-        spec["tag"] = resolve_tag(spec)
+        spec["tag"] = resolve_tag(spec, default_vars)
     except (KeyError, ValueError):
         pass
     if "source" not in spec:
@@ -511,7 +512,7 @@ def doStatus(args, parser) -> None:
             spec.setdefault("scm_refs", {})
 
         # Resolve commit hash
-        _resolve_commit_hash(spec)
+        _resolve_commit_hash(spec, defaults_meta.get("variables"))
 
         # Devel package: compute devel_hash from local changes
         if spec["is_devel_pkg"]:

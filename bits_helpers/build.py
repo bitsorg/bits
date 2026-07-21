@@ -2823,8 +2823,10 @@ def doBuild(args, parser):
     if "tag" not in spec:
       spec["tag"] = spec["version"]
     if "source" in spec:
-      # Tag may contain date params like %(year)s, %(month)s, %(day)s, %(hour).
-      spec["tag"] = resolve_tag(spec)
+      # Tag may contain date params like %(year)s, %(month)s, %(day)s, %(hour),
+      # plus any variable from the defaults profile / the recipe (e.g. an
+      # override of tag: "%(release)s" driven by variables: release:).
+      spec["tag"] = resolve_tag(spec, defaultsMeta.get("variables"))
       # First, we try to resolve the "tag" as a branch name, and use its tip as
       # the commit_hash. If it's not a branch, it must be a tag or a raw commit
       # hash, so we use it directly. Finally if the package is a development
