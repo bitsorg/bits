@@ -142,7 +142,8 @@ def to_prometheus(stats):
     return "\n".join(lines) + "\n"
 
 
-def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None) -> bool:
+def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None,
+                      store=None, endpoint=None) -> bool:
     """Summarise the S3 store and POST the gauges to the VM *monitor_url*.
 
     Called wherever the store was just mutated — end of a `bits build` that
@@ -151,6 +152,13 @@ def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None) -> bool:
     go stale/empty between builds). Best-effort and fire-and-forget: listing the
     store or pushing the gauges must never fail the caller. Returns True when
     the push succeeded.
+
+    When *store* (the http/b3/s3 store URL) is given, the signed/unsigned split
+    is populated from the store's signed common manifests — the same
+    ``MANIFESTS/common-manifest-<arch>.json`` files `bits build --require-signed-
+    reuse` derives — so the dashboard reflects certification automatically, not
+    only via the `bits store-stats --trust-manifest` CLI. Without it (or if the
+    manifests are absent/unverifiable), builds degrade to uncertified.
     """
     import urllib.request
     try:
@@ -162,7 +170,26 @@ def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None) -> bool:
                     [os.path.join(work_dir, "MANIFESTS")]))
             except Exception:  # pylint: disable=broad-except
                 pass  # per-build attribution is optional; degrade to (uncertified)
-        stats = summarise(iter_s3_objects(s3_client, bucket), hash_to_build, set())
+        objects = list(iter_s3_objects(s3_client, bucket))
+        stats = summarise(objects, hash_to_build, set())
+        # Signed set from the store's signed common manifests (own-arch files that
+        # actually appear in the store + the always-shared one), verified against
+        # the trust anchor. Best-effort: an unsupported store form, a missing
+        # manifest, or a bad signature just leaves builds uncertified.
+        signed = set()
+        if store:
+            try:
+                from bits_helpers.build import derive_trust_manifest_srcs
+                srcs = []
+                for _a in (e.get("arch") for e in stats.get("arch", []) if e.get("arch")):
+                    srcs += derive_trust_manifest_srcs(store, "MANIFESTS/common-manifest", _a, endpoint)
+                srcs = [s for s in dict.fromkeys(srcs) if s]
+                if srcs:
+                    signed = signed_builds_from_common(_load_common_manifests(",".join(srcs)))
+            except Exception as exc:  # pylint: disable=broad-except
+                debug("store-stats: trust-manifest derivation skipped: %s", exc)
+        if signed:
+            stats = summarise(objects, hash_to_build, signed)
         req = urllib.request.Request(
             monitor_url.rstrip("/") + "/api/v1/import/prometheus",
             data=to_prometheus(stats).encode("utf-8"),

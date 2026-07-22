@@ -4284,8 +4284,14 @@ def doBuild(args, parser):
   if _store_mon_url and getattr(syncHelper, "writeStore", "") and getattr(syncHelper, "s3", None):
     from bits_helpers import store_stats as _ss
     _bucket = getattr(syncHelper, "remoteStore", "") or getattr(syncHelper, "writeStore", "")
+    # Endpoint precedence matches the S3 client / the require-signed-reuse derive.
+    _store_ep = (getattr(args, "s3Endpoint", None)
+                 or os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
+                 or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
     _ss.push_store_gauges(syncHelper.s3, _bucket, _store_mon_url,
-                          work_dir=args.workDir)
+                          work_dir=args.workDir,
+                          store=getattr(args, "remoteStore", "") or _bucket,
+                          endpoint=_store_ep)
 
   debug("Everything done")
 

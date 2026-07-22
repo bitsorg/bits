@@ -420,7 +420,11 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
         _w = next(iter(writers.values()), None)
         if _mon and _w is not None and getattr(_w, "s3", None) and getattr(_w, "writeStore", None):
             from bits_helpers import store_stats as _ss
-            _ss.push_store_gauges(_w.s3, _w.writeStore, _mon, work_dir=work_dir)
+            _pub_ep = (os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
+                       or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
+            _ss.push_store_gauges(_w.s3, _w.writeStore, _mon, work_dir=work_dir,
+                                  store=getattr(_w, "remoteStore", "") or _w.writeStore,
+                                  endpoint=_pub_ep)
     if dry_run or not bom:
         return None
     return build_id, bom, _system_from_manifest(manifest_doc)
