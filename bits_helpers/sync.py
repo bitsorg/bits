@@ -63,6 +63,31 @@ def redistributable_forms(value) -> frozenset:
   return frozenset()
 
 
+def safe_link_pair(name, target):
+  """Validate an UNTRUSTED (symlink name, symlink target) pair from a store.
+
+  Every fetch_symlinks backend uses this ONE rule so no backend can lag the
+  others (a store listing/manifest is remote data; a hostile or MITM'd store
+  must not plant symlinks outside the links dir or point them outside the
+  store tree). The NAME must be a plain basename; the TARGET, after stripping
+  an optional leading ``../../`` (the store-relative prefix every legitimate
+  target carries), must normalise to a path that neither climbs (``..``) nor
+  is absolute.
+
+  Returns the normalised ``../../``-prefixed target, or None to refuse.
+  """
+  import posixpath
+  if not name or name in (".", "..") or "/" in name or "\\" in name:
+    return None
+  t = str(target)
+  if t.startswith("../../"):
+    t = t[len("../../"):]
+  t = posixpath.normpath(t)
+  if t.startswith("..") or t.startswith("/") or "\\" in t:
+    return None
+  return "../../" + t
+
+
 def binary_redistributable(spec) -> bool:
   """May this package's BINARY artifact be uploaded to the store / published?
 
@@ -633,8 +658,14 @@ class HttpRemoteSync:
                           returnResult=True, log=False, session=session) \
                 .decode("utf-8").rstrip("\r\n")
     for linkname, target in symlinks.items():
-      symlink("../../" + target.lstrip("./"),
-              os.path.join(self.workdir, links_path, linkname))
+      # Both fields are UNTRUSTED remote data (manifest lines / listing JSON):
+      # same validation as every other backend.
+      safe = safe_link_pair(linkname, target.lstrip("./"))
+      if safe is None:
+        warning("ignoring store symlink with unsafe name/target %r -> %r "
+                "under %s", linkname, target, links_path)
+        continue
+      symlink(safe, os.path.join(self.workdir, links_path, linkname))
 
   def upload_symlinks_and_tarball(self, spec) -> None:
     pass
@@ -933,9 +964,13 @@ class S3RemoteSync:
       while IFS='\t' read -r symlink target; do
         # Both fields are UNTRUSTED remote data. The link NAME must be a plain
         # basename (a '/' or '..' would plant the link outside linksPath), and
-        # the TARGET is forced under the ../../ store-relative prefix.
+        # the TARGET, after stripping ONE optional ../../ prefix, must not
+        # climb ('..' as any component) or be absolute — '../../../x' style
+        # targets still climb after the strip and are refused.
         case "$symlink" in ''|*/*|..|.) continue ;; esac
-        ln -sf "../../${{target#../../}}" "{workDir}/{linksPath}/$symlink" || true
+        t="${{target#../../}}"
+        case "$t" in ..|../*|*/../*|*/..|/*) continue ;; esac
+        ln -sf "../../$t" "{workDir}/{linksPath}/$symlink" || true
       done
     for x in $(curl -sL "https://s3.cern.ch/swift/v1/{b}/?prefix={linksPath}/"); do
       # Skip already existing symlinks -- these were from the manifest.
@@ -944,7 +979,7 @@ class S3RemoteSync:
       # The target is UNTRUSTED remote data: force it under ../../ and refuse
       # anything that keeps climbing (arbitrary-symlink write otherwise).
       t="$(curl -sL "https://s3.cern.ch/swift/v1/{b}/$x" | sed -r 's,^(\\.\\./\\.\\./)?,../../,')"
-      case "${{t#../../}}" in *../*|*..) continue ;; esac
+      case "${{t#../../}}" in ..|../*|*/../*|*/..|/*) continue ;; esac
       ln -sf "$t" "{workDir}/{linksPath}/$(basename "$x")" || true
     done
     """.format(
@@ -1325,24 +1360,19 @@ class Boto3RemoteSync:
         if not has_sep:
           debug("Ignoring malformed line in manifest: %r", line)
           continue
-        # Both fields are UNTRUSTED remote data. The link NAME must be a plain
-        # basename — with '/' or '..' the symlink() below would plant a link
-        # OUTSIDE links_path (arbitrary-symlink write). The TARGET is forced
-        # under the store-relative ../../ prefix; refuse targets that keep
-        # climbing above it.
+        # Both fields are UNTRUSTED remote data: one shared rule for every
+        # backend (see safe_link_pair) — a '/'-or-'..' NAME would plant the
+        # link outside links_path, a climbing TARGET would point it outside
+        # the store tree (including the '../../../x' form that a naive
+        # substring check misses).
         name = os.fsdecode(link_name)
-        if (not name or name in (".", "..") or "/" in name or "\\" in name):
-          warning("ignoring symlink with unsafe name %r in %s.manifest",
-                  name, links_path)
-          continue
-        if not target.startswith(b"../../"):
-          target = b"../../" + target
-        target = os.fsdecode(target)
-        if "/../" in target[len("../../"):] or target.endswith("/.."):
-          warning("ignoring symlink %r with traversing target %r", name, target)
+        safe = safe_link_pair(name, os.fsdecode(target))
+        if safe is None:
+          warning("ignoring symlink with unsafe name/target %r -> %r in "
+                  "%s.manifest", name, os.fsdecode(target), links_path)
           continue
         link_path = os.path.join(self.workdir, links_path, name)
-        symlink(target, link_path)
+        symlink(safe, link_path)
         n_symlinks += 1
       debug("Got %d entries in manifest", n_symlinks)
 
@@ -1352,9 +1382,11 @@ class Boto3RemoteSync:
     for link_key in self._s3_listdir(links_path):
       # link_key is an UNTRUSTED S3 key (keys may contain '..'): the resolved
       # link path must stay inside links_path or we'd plant a symlink at an
-      # arbitrary location.
+      # arbitrary location. os.sep suffix so a sibling 'links_path-evil'
+      # cannot pass the prefix test.
       link_path = os.path.join(self.workdir, link_key)
-      if not os.path.realpath(os.path.dirname(link_path)).startswith(links_root):
+      parent = os.path.realpath(os.path.dirname(link_path))
+      if not (parent == links_root or parent.startswith(links_root + os.sep)):
         warning("ignoring store symlink with unsafe key %r", link_key)
         continue
       if os.path.islink(link_path):
@@ -1362,13 +1394,12 @@ class Boto3RemoteSync:
       debug("Fetching leftover symlink %s", link_key)
       resp = self.s3.get_object(Bucket=self.remoteStore, Key=link_key)
       target = os.fsdecode(resp["Body"].read()).rstrip("\n")
-      if not target.startswith("../../"):
-        target = "../../" + target
-      if "/../" in target[len("../../"):] or target.endswith("/.."):
-        warning("ignoring store symlink %r with traversing target %r",
+      safe = safe_link_pair(os.path.basename(link_path), target)
+      if safe is None:
+        warning("ignoring store symlink %r with unsafe target %r",
                 link_key, target)
         continue
-      symlink(target, link_path)
+      symlink(safe, link_path)
 
   def upload_symlinks_and_tarball(self, spec) -> None:
     if not self.writeStore:

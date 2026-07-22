@@ -378,7 +378,7 @@ fi
 for arg in "$@"
 do
   case $arg in
-    analytics|architecture|brew|build|certify|clean|cleanup|compliance|cvmfs-path|deps|doctor|gc|init|publish|stats|status|verify|version|-debug|-d)
+    architecture|brew|build|certify|clean|cleanup|compliance|cvmfs-path|deps|doctor|gc|init|publish|stats|status|store-stats|verify|version|-debug|-d)
          mkdir -p "$BITS_WORK_DIR" || echo "Cannot create directory: $BITS_WORK_DIR"
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?

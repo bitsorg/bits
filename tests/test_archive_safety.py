@@ -65,6 +65,48 @@ class TarSlipGuardTestCase(unittest.TestCase):
         self.assertIsNone(_assert_safe_archive_members(p))
 
 
+class TraversingHardlinkTestCase(unittest.TestCase):
+
+    def test_traversing_hardlink_rejected_relative_symlink_allowed(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        p = os.path.join(d, "hl.tar.gz")
+        with tarfile.open(p, "w:gz") as tf:
+            ti = tarfile.TarInfo("pkg/leak")
+            ti.type = tarfile.LNKTYPE
+            ti.linkname = "../../../etc/passwd"
+            tf.addfile(ti)
+        with self.assertRaises(ValueError):
+            _assert_safe_archive_members(p)
+
+
+class SafeLinkPairTestCase(unittest.TestCase):
+    """One shared rule for every fetch_symlinks backend."""
+
+    def test_valid_pairs(self):
+        from bits_helpers.sync import safe_link_pair
+        self.assertEqual(safe_link_pair("pkg-1.tar.gz", "TARS/x/store/ab/h/t.gz"),
+                         "../../TARS/x/store/ab/h/t.gz")
+        # An already-prefixed target is normalised, not double-prefixed.
+        self.assertEqual(safe_link_pair("l", "../../TARS/x/y"), "../../TARS/x/y")
+
+    def test_unsafe_names_rejected(self):
+        from bits_helpers.sync import safe_link_pair
+        for name in ("", ".", "..", "a/b", "..\\x"):
+            self.assertIsNone(safe_link_pair(name, "TARS/x"), name)
+
+    def test_climbing_targets_rejected(self):
+        from bits_helpers.sync import safe_link_pair
+        for target in ("../../../x",          # climbs after the prefix strip
+                       "../x", "a/../../x", "/etc/passwd",
+                       "../../..", ".."):
+            self.assertIsNone(safe_link_pair("l", target), target)
+
+    def test_inner_dotdot_that_normalises_away_is_fine(self):
+        from bits_helpers.sync import safe_link_pair
+        self.assertEqual(safe_link_pair("l", "a/../b"), "../../b")
+
+
 class PrepubTokenTestCase(unittest.TestCase):
 
     def test_token_not_sent_over_unverified_tls(self):

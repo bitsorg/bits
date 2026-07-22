@@ -357,16 +357,26 @@ def _assert_safe_archive_members(filepath):
           raise ValueError("absolute member path %r" % name)
         if ".." in name.split("/"):
           raise ValueError("traversing member path %r" % name)
-        # A hardlink/symlink MEMBER NAME that traverses is as bad as a file.
-        if (m.islnk() or m.issym()) and m.linkname.startswith("/"):
-          # Absolute link targets pointing outside are suspicious in source
+        if m.issym() and m.linkname.startswith("/"):
+          # Absolute SYMLINK targets pointing outside are suspicious in source
           # archives; relative '..' targets are common (lib64 -> ../lib) and
           # are allowed — tar cannot write THROUGH them mid-extraction for
           # names we have already vetted above.
           raise ValueError("absolute link target %r -> %r" % (name, m.linkname))
-  except tarfile.ReadError:
-    debug("cannot pre-scan %s with tarfile (unsupported compression) — "
-          "relying on tar's own traversal protection", filepath)
+        if m.islnk() and (m.linkname.startswith("/")
+                          or ".." in m.linkname.split("/")):
+          # A HARDLINK is stricter than a symlink: tar resolves it at
+          # extraction time, so a traversing target ('../../../etc/…') links
+          # host files INTO the tree — the lib64 -> ../lib argument justifies
+          # relative symlinks, not relative hardlinks.
+          raise ValueError("traversing hardlink %r -> %r" % (name, m.linkname))
+  except tarfile.TarError:
+    # ReadError/CompressionError: unsupported compression on this host (e.g.
+    # .tar.zst, or a Python without _bz2/_lzma) — fall through to system tar,
+    # whose own protections then apply; a genuinely corrupt archive fails the
+    # actual extraction with a clean dieOnError there.
+    debug("cannot pre-scan %s with tarfile — relying on tar's own traversal "
+          "protection", filepath)
 
 
 def _extract_zip_strip(archive_path, dest_dir, strip=1):

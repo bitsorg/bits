@@ -3571,7 +3571,7 @@ def doBuild(args, parser):
       # for it to finish (its spec["prefetched_tarballs"] write happens before
       # its sentinel release).
       _hold_sentinel = False
-      if _prefetch_workers > 0:
+      if _prefetch_executor is not None:   # a prefetch pool actually started
         from bits_helpers.download import (
             _acquire_download as _acq, _sentinel_is_stale as _stale,
             _sentinel_path as _spath, _wait_for_sentinel as _wfs)
