@@ -265,18 +265,40 @@ def doStoreStats(args, parser):
 
 
 def _load_common_manifests(trust_manifest):
-    """Load + signature-verify comma-separated signed common manifests (paths or
-    URLs); return the parsed dicts. Empty when none configured or verifiable."""
+    """Load + signature-verify comma-separated signed common manifests; return the
+    parsed dicts. Each entry is a local path OR an http(s) URL; the detached
+    signature is the entry with '.sig' appended. Entries that can't be fetched or
+    whose signature doesn't verify against the trust anchor (bits/keys,
+    $BITS_TRUST_KEYS, ~/.config/bits/keys) are skipped.
+
+    URLs are fetched here (the store publishes the common manifests over http),
+    rather than requiring the caller to pre-stage local files: trust.verify_manifest
+    only reads local paths, so we fetch the bytes + the .sig envelope and verify
+    with trust.verify_bytes directly."""
     if not trust_manifest:
         return []
+    import urllib.request
     from bits_helpers import trust
+    trusted = trust.load_trusted_keys()
+
+    def _read(u):
+        if u.startswith(("http://", "https://")):
+            with urllib.request.urlopen(u, timeout=20) as r:
+                return r.read()
+        with open(u, "rb") as fh:
+            return fh.read()
+
     out = []
     for src in (s.strip() for s in str(trust_manifest).split(",") if s.strip()):
         try:
-            if not trust.verify_manifest(src):
+            data     = _read(src)
+            envelope = json.loads(_read(src + ".sig"))
+            if not trust.verify_bytes(data, envelope, trusted):
+                debug("store-stats: trust-manifest %s: signature did not verify "
+                      "(no matching trusted key?), treating its builds as unsigned", src)
                 continue
-            with open(src) as fh:
-                out.append(json.load(fh))
-        except Exception:  # pylint: disable=broad-except
+            out.append(json.loads(data))
+        except Exception as exc:  # pylint: disable=broad-except
+            debug("store-stats: trust-manifest %s: %s", src, exc)
             continue
     return out
