@@ -3561,23 +3561,55 @@ def doBuild(args, parser):
     debug("Looking for cached tarball in %s", tar_hash_dir)
     spec["cachedTarball"] = ""
     if not spec["is_devel_pkg"]:
-      # If a prefetch worker is downloading this tarball, wait for it to finish
-      # before we try to use the result.  The sentinel (tar_hash_dir + ".downloading")
-      # is only created when a prefetch pool is active, so skip the check otherwise.
+      # MUTUAL EXCLUSION with the prefetch pool, not just waiting: merely
+      # waiting on the sentinel left a window — a prefetch worker that had not
+      # yet STARTED this package (no sentinel to wait on) could drop the
+      # REMOTE tarball into the hash dir between our pre-fetch snapshot below
+      # and the gate check, and the gate would then treat it as a trusted
+      # local artifact. Claiming the SAME sentinel the prefetcher claims
+      # closes it: while we hold it, _prefetch_package's _acquire_download
+      # fails and it downloads nothing; if the prefetcher holds it, we wait
+      # for it to finish (its spec["prefetched_tarballs"] write happens before
+      # its sentinel release).
+      _hold_sentinel = False
       if _prefetch_workers > 0:
-        from bits_helpers.download import _wait_for_sentinel as _wfs
-        _wfs(tar_hash_dir)
-      # Tarballs already present before the remote fetch are local build-node
-      # artifacts (ultimately trusted); ones that appear only after fetch came
-      # from the remote store and are subject to --require-signed-reuse.
-      # A prefetch worker (above) may already have pulled the REMOTE tarball into
-      # this directory, and _wait_for_sentinel just blocked until it finished --
-      # so subtract whatever it downloaded, or the gate would exempt it.
-      _preFetchTars = (set(glob(os.path.join(tar_hash_dir, "*gz")))
-                       - set(spec.get("prefetched_tarballs", ())))
-      syncHelper.fetch_tarball(spec)
-      tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
-                  if os.path.isfile(t)]  # skip dangling symlinks
+        from bits_helpers.download import (
+            _acquire_download as _acq, _sentinel_is_stale as _stale,
+            _sentinel_path as _spath, _wait_for_sentinel as _wfs)
+        # The sentinel lives NEXT TO the hash dir; make sure its parent exists
+        # before trying to create it (fresh work dirs).
+        os.makedirs(dirname(tar_hash_dir), exist_ok=True)
+        while not _acq(tar_hash_dir):
+          _wfs(tar_hash_dir)
+          _s = _spath(tar_hash_dir)
+          if os.path.exists(_s):
+            if _stale(_s):
+              try:
+                os.unlink(_s)
+              except OSError:
+                pass
+            else:
+              break                     # live owner past timeout: proceed unguarded
+        else:
+          _hold_sentinel = True
+      try:
+        # Tarballs already present before the remote fetch are local build-node
+        # artifacts (ultimately trusted); ones that appear only after fetch came
+        # from the remote store and are subject to --require-signed-reuse.
+        # A prefetch worker may already have pulled the REMOTE tarball into
+        # this directory — subtract whatever it downloaded, or the gate would
+        # exempt it.
+        _preFetchTars = (set(glob(os.path.join(tar_hash_dir, "*gz")))
+                         - set(spec.get("prefetched_tarballs", ())))
+        syncHelper.fetch_tarball(spec)
+        tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
+                    if os.path.isfile(t)]  # skip dangling symlinks
+      finally:
+        if _hold_sentinel:
+          try:
+            os.unlink(os.path.join(tar_hash_dir + ".downloading"))
+          except OSError:
+            pass
       spec["cachedTarball"] = _select_cached_tarball(
         tarballs, spec, effective_arch(spec, args.architecture))
       debug("Found tarball in %s" % spec["cachedTarball"]

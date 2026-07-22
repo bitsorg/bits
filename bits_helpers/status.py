@@ -389,6 +389,38 @@ def doStatus(args, parser) -> None:
     raw_architecture = args.architecture
     args.architecture = compute_combined_arch(defaults_meta, args.defaults, raw_architecture)
 
+    # ── Repository-provider discovery ──────────────────────────────────────────
+    # Mirrors bits build (both phases + the defaults-file seed): status reports
+    # what `bits build` WOULD do, so it must see the same provider-supplied
+    # recipes — previously it passed provider_dirs={} and reported packages a
+    # build would resolve via a provider as missing/hash_unknown.
+    from bits_helpers.repo_provider import (fetch_repo_providers_iteratively,
+                                            load_always_on_providers)
+    always_on_dirs = load_always_on_providers(
+        config_dir        = args.configDir,
+        work_dir          = work_dir,
+        reference_sources = args.referenceSources,
+        fetch_repos       = getattr(args, "fetchRepos", False),
+        bits_providers    = getattr(args, "bits_providers", None),
+        taps              = taps,
+        provider_policy   = getattr(args, "provider_policy", {}),
+    )
+    provider_seed = (list(defaults_meta.get("requires", []))
+                     + list(defaults_meta.get("build_requires", [])))
+    provider_dirs = fetch_repo_providers_iteratively(
+        packages          = packages + provider_seed,
+        config_dir        = args.configDir,
+        work_dir          = work_dir,
+        reference_sources = args.referenceSources,
+        fetch_repos       = getattr(args, "fetchRepos", False),
+        taps              = taps,
+        provider_policy   = getattr(args, "provider_policy", {}),
+        overrides         = overrides,
+        defaults          = args.defaults,
+        default_vars      = defaults_meta.get("variables"),
+    )
+    provider_dirs.update(always_on_dirs)
+
     # ── Package list resolution ────────────────────────────────────────────────
     # Use no-op lambdas for prefer_check and requirement_check: bits status does
     # not run any external commands to test system package compatibility.
@@ -412,7 +444,7 @@ def doStatus(args, parser) -> None:
         overrides               = overrides,
         taps                    = taps,
         log                     = debug,
-        provider_dirs           = {},
+        provider_dirs           = provider_dirs,
         defaults_meta           = defaults_meta,
     )
 

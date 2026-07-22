@@ -1653,8 +1653,23 @@ def doParseArgs():
     # argument-level defaults (add_argument(..., default=...)).  We must call
     # set_defaults on every subparser individually so that bits.rc values win
     # over hardcoded argument defaults while still losing to explicit CLI flags.
-    for _sp in [build_parser, clean_parser, cleanup_parser, deps_parser, doctor_parser, init_parser, verify_parser, status_parser]:
+    _legacy_rc_parsers = [build_parser, clean_parser, cleanup_parser, deps_parser,
+                          doctor_parser, init_parser, verify_parser, status_parser]
+    for _sp in _legacy_rc_parsers:
       _sp.set_defaults(**_rc_defaults)
+    # Every OTHER subcommand honours bits.rc too, but only for options it
+    # actually declares: previously publish/certify/gc/store-stats/compliance
+    # ignored a configured work_dir/architecture entirely (build honoured it,
+    # the publish pipeline didn't — surprising), while blanket set_defaults
+    # would inject attributes for options a subparser doesn't have (e.g. a
+    # `defaults` value appearing on parsers with no --defaults flag).
+    for _sp in subparsers.choices.values():
+      if _sp in _legacy_rc_parsers:
+        continue
+      _declared = {_a.dest for _a in _sp._actions}
+      _vals = {k: v for k, v in _rc_defaults.items() if k in _declared}
+      if _vals:
+        _sp.set_defaults(**_vals)
 
   # Make sure old option ordering behavior is actually still working
   prog = sys.argv[0]
@@ -1663,7 +1678,12 @@ def doParseArgs():
   # the subcommand would let the parent parser consume it, and the subparser's
   # default (False) would then overwrite it — silently turning a dry run into
   # a real one, which for `compliance --enforce` means real deletions.
-  _own_dry_run = bool({"cleanup", "compliance", "gc"} & set(rest))
+  # Identify the SUBCOMMAND as the first token that names one (scanning in
+  # order): a mere option VALUE that happens to equal 'gc'/'cleanup' (a
+  # package named gc, --disable gc, a path segment) appears after the real
+  # subcommand and must not flip this guard — matching on set(rest) did.
+  _subcommand = next((x for x in rest if x in subparsers.choices), None)
+  _own_dry_run = _subcommand in ("cleanup", "compliance", "gc")
   def optionOrder(x):
     # --debug/-d must come before any subcommand so the parent parser sees them.
     # --dry-run/-n is also a top-level flag (for build), BUT some subparsers
@@ -1849,6 +1869,20 @@ def finaliseArgs(args, parser):
     args.disable       = normalise_multiple_options(args.disable)
     args.force_rebuild = normalise_multiple_options(args.force_rebuild)
     args.referenceSources = args.referenceSources % {"workDir": args.workDir}
+    # Repository-provider configuration, mirroring the general path below:
+    # `bits status` reports what `bits build` WOULD do, so it must resolve
+    # recipes through the same provider repositories — without this it
+    # reported provider-supplied packages as missing/hash_unknown.
+    _rc_status = _read_bits_rc()
+    _alibuild = os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild"
+    args.bits_providers = (
+      os.environ.get("BITS_PROVIDERS")
+      or _rc_status.get("providers")
+      or ("" if _alibuild else "https://github.com/bitsorg/bits-providers"))
+    if args.bits_providers:
+      os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
+    args.provider_policy = _parse_provider_policy(
+      getattr(args, "providerPolicy", None) or _rc_status.get("provider_policy", ""))
     return args
 
   # compliance group mode rides the general finalisation: it needs the

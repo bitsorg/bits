@@ -38,13 +38,29 @@ def _acquire_download(path):
     already holds it.  The sentinel contains the current PID so stale files
     from crashed processes can be identified at startup.
     """
-    try:
+    def _open():
         fd = os.open(_sentinel_path(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.write(fd, str(os.getpid()).encode())
         os.close(fd)
+    try:
+        _open()
         return True
     except FileExistsError:
         return False
+    except FileNotFoundError:
+        # Parent directory missing (fresh work dir). Create it and retry once;
+        # if the sentinel still cannot be created, report the slot as OURS and
+        # proceed unguarded — the sentinel is a best-effort de-duplication
+        # device, and a location where no sentinel can exist is equally
+        # invisible to every other would-be downloader.
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            _open()
+            return True
+        except FileExistsError:
+            return False
+        except OSError:
+            return True
 
 
 def _sentinel_is_stale(sentinel):
@@ -457,22 +473,52 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
             raise e
 
     realFile = join(downloadDir, filename)
-    # If a background prefetch thread is currently downloading this file,
-    # wait for it to finish before inspecting the cache.
-    _wait_for_sentinel(realFile)
+    # Cross-thread download de-duplication. Waiting alone is not enough: this
+    # function itself must CREATE the sentinel while it downloads, or two
+    # concurrent callers for the same URL (a prefetch worker plus a build-time
+    # checkout, or two entries in the parallel-sources pool) both see a cache
+    # miss and both fetch — the wait below only ever fired for the tarball
+    # sentinels the prefetcher creates, never for sources. Loop: whoever
+    # cannot acquire the sentinel waits for the owner, then re-checks the
+    # cache; a stale sentinel (dead owner) is broken by the waiter.
+    _acquired = False
+    while not exists(realFile):
+        if _acquire_download(realFile):
+            _acquired = True
+            break
+        _wait_for_sentinel(realFile)
+        _sent = _sentinel_path(realFile)
+        if os.path.exists(_sent):
+            if _sentinel_is_stale(_sent):
+                try:
+                    os.unlink(_sent)      # break the dead owner's sentinel
+                except OSError:
+                    pass
+            else:
+                # Wait timed out with a live owner still holding it: proceed
+                # unguarded (pre-existing behaviour) rather than looping
+                # forever — the atomic tmp+rename write keeps this safe.
+                break
     fetched_from_upstream = False
-    if not exists(realFile):
-        # Before hitting the upstream URL, check whether the remote store
-        # already has an archived copy of this source.  This makes rebuilds
-        # resilient to upstream URL disappearance.
-        if sync_helper is not None:
-            debug("Trying remote store for source file: %s", filename)
-            sync_helper.fetch_source(url_checksum, filename, downloadDir)
-
+    try:
         if not exists(realFile):
-            debug("Trying to fetch source file: %s", source)
-            downloadHandler(source, downloadDir, work_dir)
-            fetched_from_upstream = True
+            # Before hitting the upstream URL, check whether the remote store
+            # already has an archived copy of this source.  This makes rebuilds
+            # resilient to upstream URL disappearance.
+            if sync_helper is not None:
+                debug("Trying remote store for source file: %s", filename)
+                sync_helper.fetch_source(url_checksum, filename, downloadDir)
+
+            if not exists(realFile):
+                debug("Trying to fetch source file: %s", source)
+                downloadHandler(source, downloadDir, work_dir)
+                fetched_from_upstream = True
+    finally:
+        if _acquired:
+            try:
+                os.unlink(_sentinel_path(realFile))
+            except OSError:
+                pass
 
     if exists(realFile):
         # Verify checksum against the cached copy (covers both fresh downloads

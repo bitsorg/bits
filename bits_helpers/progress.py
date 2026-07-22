@@ -43,7 +43,18 @@ _state = {
 
 
 def _probe():
-    """Resolve the CI environment once. Returns True if posting is possible."""
+    """Resolve the CI environment once. Returns True if posting is possible.
+
+    Called from every builder thread's first tick, so the one-time
+    initialisation runs under ``_lock``: without it two threads could
+    interleave the ``_state`` writes (idempotent in practice, but this module
+    must not rely on that).
+    """
+    with _lock:
+        return _probe_locked()
+
+
+def _probe_locked():
     if _state["ready"] is not None:
         return _state["ready"]
     env = os.environ
@@ -120,9 +131,11 @@ def _post(state, coverage, description):
     # job, in GitLab and the console). So we only ever post as the
     # BITS_STATUS_TOKEN user, or not at all. Surface GitLab's reason once.
     if code in (401, 403):
-        _state["ready"] = False                      # stop trying this run
-        if not _state.get("warned"):
+        with _lock:
+            _state["ready"] = False                  # stop trying this run
+            warn_once = not _state.get("warned")
             _state["warned"] = True
+        if warn_once:
             warning("progress: commit-status POST to %s returned HTTP %s%s; "
                     "build-progress reporting disabled for this run (not falling "
                     "back to the job token: that posts as a different user and "

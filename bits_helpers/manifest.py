@@ -305,6 +305,13 @@ class BuildManifest:
             else "bits-manifest-{}.json".format(timestamp)
         )
         self._path = os.path.join(self._manifest_dir, _name)
+        # Disk-write coordination: _save serialises a snapshot under _lock,
+        # _write_pending performs the I/O under _io_lock with a monotonic
+        # sequence so racing writers converge on the newest snapshot.
+        self._seq = 0
+        self._written_seq = 0
+        self._pending = None
+        self._io_lock = threading.Lock()
         # Serialises concurrent add_package()/_save() calls from --builders
         # worker threads so they neither corrupt _data nor race os.replace().
         self._lock = threading.Lock()
@@ -324,6 +331,7 @@ class BuildManifest:
             "packages":           [],
         }
         self._save()
+        self._write_pending()
         debug("manifest: initialised at %s", self._path)
 
     # ── Accessors ─────────────────────────────────────────────────────────────
@@ -360,6 +368,7 @@ class BuildManifest:
             if provider_dirs:
                 self._data["updated_at"] = _now_iso()
                 self._save()
+        self._write_pending()
 
     # ── Package recording ─────────────────────────────────────────────────────
 
@@ -458,6 +467,7 @@ class BuildManifest:
             self._data["packages"].append(entry)
             self._data["updated_at"] = _now_iso()
             self._save()
+        self._write_pending()          # disk I/O outside the data lock
         debug("manifest: %s recorded as %s", spec.get("package", "?"), outcome)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -468,6 +478,7 @@ class BuildManifest:
             self._data["status"] = "complete"
             self._data["updated_at"] = _now_iso()
             self._save()
+        self._write_pending()
         debug("manifest: complete — %s", self._path)
 
     def fail(self, package_name: str = "", reason: str = "") -> None:
@@ -484,6 +495,7 @@ class BuildManifest:
             if reason:
                 self._data["failure_reason"] = reason
             self._save()
+        self._write_pending()
         debug("manifest: failed at package %s", package_name or "(unknown)")
 
     # ── Serialisation ─────────────────────────────────────────────────────────
@@ -504,32 +516,57 @@ class BuildManifest:
     def _save(self) -> None:
         """Atomically write the JSON manifest and update the ``latest`` symlink.
 
+        MUST be called with ``self._lock`` held (every caller mutates
+        ``_data`` under it). The expensive part — serialising the whole
+        manifest — happens here under the lock so the snapshot is consistent,
+        but the DISK I/O is handed to :meth:`_write` which runs under a
+        separate I/O lock: with ``--builders`` every package completion saves,
+        and holding the data lock across ``os.replace`` serialised all
+        builders on disk latency. A monotonic sequence number makes the
+        file-on-disk converge on the NEWEST snapshot even when two writers
+        race (the loser's older payload is discarded, never written over a
+        newer one).
+
         Uses a unique temp file (not a fixed ``<path>.tmp``) so that concurrent
         --builders workers cannot race on a shared temp name -- previously two
         simultaneous saves could leave one ``os.replace`` with a missing temp
         (FileNotFoundError), failing an otherwise-successful package.
         """
-        fd, tmp = tempfile.mkstemp(dir=self._manifest_dir, prefix=".manifest-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as fh:
-                json.dump(self._data, fh, indent=2)
-                fh.write("\n")
-            os.replace(tmp, self._path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        self._seq += 1
+        self._pending = (self._seq, json.dumps(self._data, indent=2) + "\n")
 
-        # Update the ``bits-manifest-latest.json`` symlink atomically.
-        # The symlink lives alongside the timestamped files inside MANIFESTS/.
-        latest = os.path.join(self._manifest_dir, self._LATEST_SYMLINK)
-        tmp_link = latest + ".tmp"
-        try:
-            if os.path.lexists(tmp_link):
-                os.unlink(tmp_link)
-            os.symlink(os.path.basename(self._path), tmp_link)
-            os.replace(tmp_link, latest)
-        except OSError as exc:
-            warning("manifest: could not update latest symlink: %s", exc)
+    def _write_pending(self) -> None:
+        """Write the newest serialised snapshot to disk (outside _lock)."""
+        with self._lock:
+            pending = self._pending
+        if pending is None:
+            return
+        seq, payload = pending
+        with self._io_lock:
+            if seq <= self._written_seq:
+                return                      # a newer snapshot already landed
+            fd, tmp = tempfile.mkstemp(dir=self._manifest_dir,
+                                       prefix=".manifest-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(payload)
+                os.replace(tmp, self._path)
+                self._written_seq = seq
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+
+            # Update the ``bits-manifest-latest.json`` symlink atomically.
+            # The symlink lives alongside the timestamped files inside MANIFESTS/.
+            latest = os.path.join(self._manifest_dir, self._LATEST_SYMLINK)
+            tmp_link = latest + ".tmp"
+            try:
+                if os.path.lexists(tmp_link):
+                    os.unlink(tmp_link)
+                os.symlink(os.path.basename(self._path), tmp_link)
+                os.replace(tmp_link, latest)
+            except OSError as exc:
+                warning("manifest: could not update latest symlink: %s", exc)

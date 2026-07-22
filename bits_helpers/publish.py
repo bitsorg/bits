@@ -380,24 +380,44 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             }
             bom = []                    # [(effective_arch, bom_dict), ...]
             _stem = leaf[:-len(".json")]
-            for _arch in sorted(by_arch):
-                doc = dict(_provenance,
-                           effective_architecture=_arch,
-                           packages=by_arch[_arch])
-                arch_leaf = "%s.%s.json" % (_stem, _arch)
-                tmp = os.path.join(_tf.mkdtemp(), arch_leaf)
-                with open(tmp, "w") as fh:
-                    _json.dump(doc, fh, indent=1)
-                # Folder per release (identify the build) + unique leaf per run
-                # (concurrent publishes never clobber each other).
-                key = "MANIFESTS/%s/%s" % (build_id, arch_leaf)
-                try:
-                    w.s3.upload_file(tmp, w.writeStore, key)
-                    info("Manifest (minimal BOM, %d pkgs, %s, build_id=%s) -> %s/%s",
-                         len(by_arch[_arch]), _arch, build_id, w.writeStore, key)
-                    bom.append((_arch, doc))
-                except Exception as exc:
-                    error("manifest upload failed: %s", exc)
+            # One temp dir for ALL per-arch BOMs, removed when done (the
+            # previous mkdtemp-per-arch was never cleaned up and leaked one
+            # directory per architecture per publish). A BOM upload failure is
+            # a PUBLISH failure: continuing would leave S3 with a partial arch
+            # set and open a certification MR for a mismatched subset.
+            _bomdir = _tf.mkdtemp(prefix="bits-bom-")
+            _bom_failed = None
+            try:
+                for _arch in sorted(by_arch):
+                    doc = dict(_provenance,
+                               effective_architecture=_arch,
+                               packages=by_arch[_arch])
+                    arch_leaf = "%s.%s.json" % (_stem, _arch)
+                    tmp = os.path.join(_bomdir, arch_leaf)
+                    with open(tmp, "w") as fh:
+                        _json.dump(doc, fh, indent=1)
+                    # Folder per release (identify the build) + unique leaf per
+                    # run (concurrent publishes never clobber each other).
+                    key = "MANIFESTS/%s/%s" % (build_id, arch_leaf)
+                    try:
+                        w.s3.upload_file(tmp, w.writeStore, key)
+                        info("Manifest (minimal BOM, %d pkgs, %s, build_id=%s) -> %s/%s",
+                             len(by_arch[_arch]), _arch, build_id, w.writeStore, key)
+                        bom.append((_arch, doc))
+                    except Exception as exc:
+                        error("manifest upload failed for %s: %s", _arch, exc)
+                        _bom_failed = _arch
+                        break
+            finally:
+                import shutil as _shutil
+                _shutil.rmtree(_bomdir, ignore_errors=True)
+            if _bom_failed is not None:
+                error("BOM upload failed for architecture %s — aborting the "
+                      "publish (no certification MR will be opened; already-"
+                      "uploaded BOMs of this run remain and are harmless: "
+                      "certification is scoped per architecture and a re-run "
+                      "supersedes them)", _bom_failed)
+                sys.exit(1)
             # NOTICE + LICENSE-SOURCE-OFFER.txt next to the release's BOMs:
             # attribution and the GPL source offer are discharged mechanically
             # from the FULL manifest entries (which carry license,
@@ -420,7 +440,11 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
         _w = next(iter(writers.values()), None)
         if _mon and _w is not None and getattr(_w, "s3", None) and getattr(_w, "writeStore", None):
             from bits_helpers import store_stats as _ss
-            _ss.push_store_gauges(_w.s3, _w.writeStore, _mon, work_dir=work_dir)
+            _pub_ep = (os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
+                       or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
+            _ss.push_store_gauges(_w.s3, _w.writeStore, _mon, work_dir=work_dir,
+                                  store=getattr(_w, "remoteStore", "") or _w.writeStore,
+                                  endpoint=_pub_ep)
     if dry_run or not bom:
         return None
     return build_id, bom, _system_from_manifest(manifest_doc)
