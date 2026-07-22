@@ -62,8 +62,21 @@ DEFAULT_TIMEOUT       = 1800    # 30 minutes total poll budget
 # ---------------------------------------------------------------------------
 
 def _make_session(token: str, no_verify_tls: bool = False) -> requests.Session:
-    """Return a requests.Session with auth header and retry back-off."""
+    """Return a requests.Session with auth header and retry back-off.
+
+    The Bearer token is NEVER attached when TLS verification is disabled: an
+    unverified connection can be intercepted, and a captured token grants
+    publish rights. --prepub-no-verify-tls therefore only works against an
+    endpoint that does not require authentication (e.g. a local test
+    instance); requests needing the token must use a verified connection.
+    """
     session = requests.Session()
+    if token and no_verify_tls:
+        error("prepub: refusing to send the Bearer token over a "
+              "TLS-verification-disabled connection (--prepub-no-verify-tls); "
+              "requests will be anonymous. Use a verified endpoint for "
+              "authenticated publishing.")
+        token = ""
     if token:
         session.headers["Authorization"] = f"Bearer {token}"
     session.verify = not no_verify_tls

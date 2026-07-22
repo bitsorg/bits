@@ -269,7 +269,15 @@ else
   # containing spaces does not cause word-splitting — especially dangerous on
   # 'rm -rf' lines which could otherwise delete multiple unintended paths.
   mkdir -p "$WORK_DIR/TMP/$PKGHASH"
-  tar -xzf "$CACHED_TARBALL" -C "$WORK_DIR/TMP/$PKGHASH"
+  # Tar-slip guard: a recalled store tarball may be attacker-controlled when
+  # signed reuse is disabled. Refuse member names that are absolute or contain
+  # a '..' component (belt over tar's own protections, which vary by
+  # implementation/version), and never restore ownership from the archive.
+  if tar -tzf "$CACHED_TARBALL" | grep -qE '(^/|(^|/)\.\.(/|$))'; then
+    echo "ERROR: $CACHED_TARBALL contains absolute or traversing member paths — refusing to unpack" >&2
+    exit 1
+  fi
+  tar -xzf "$CACHED_TARBALL" --no-same-owner -C "$WORK_DIR/TMP/$PKGHASH"
   mkdir -p "$(dirname "$INSTALLROOT")"
   rm -rf "$INSTALLROOT"
   mv "$WORK_DIR/TMP/$PKGHASH/$PKGPATH" "$INSTALLROOT"

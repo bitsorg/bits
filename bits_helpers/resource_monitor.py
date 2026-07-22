@@ -16,13 +16,17 @@ from bits_helpers.cmd import monitor_progress
 # Sampling interval in seconds
 SAMPLE_INTERVAL = 1.0
 
-# PIDs whose CPU counter has been initialised (first call always returns 0.0).
-# NOTE: mutated from a single monitoring thread — not designed for concurrent use.
-cpu_initialized = set()
-
-
-def update_monitor_stats(proc):
+def update_monitor_stats(proc, cpu_initialized):
     """Collect resource stats for all children of *proc*.
+
+    *cpu_initialized* is the CALLER-OWNED set of PIDs whose psutil CPU counter
+    has been primed (the first ``cpu_percent`` call always returns 0.0). It
+    must be private to one monitoring thread: with ``--builders N`` there is
+    one monitor thread per concurrently building package, and a shared
+    module-level set (the previous design) let thread A's
+    ``intersection_update`` evict the PIDs thread B had just primed — B then
+    re-primed every sample and recorded ~0% CPU, silently corrupting the
+    per-package stats that feed the history-driven scheduler.
 
     Returns a dict with cumulative CPU%, memory, thread, and FD counts, or an
     empty dict when the process has no children or has already exited.
@@ -92,8 +96,9 @@ def monitor_stats(p_id, stats_file_name):
     stime = int(time())
     p = psutil.Process(p_id)
     data = []
+    cpu_initialized = set()      # thread-local: see update_monitor_stats
     while p.is_running():
-        stats = update_monitor_stats(p)
+        stats = update_monitor_stats(p, cpu_initialized)
         if not stats:
             sleep(SAMPLE_INTERVAL)
             continue

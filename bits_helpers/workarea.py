@@ -333,6 +333,42 @@ def _archive_prefix_depth(archive_path):
     return 1
 
 
+def _assert_safe_archive_members(filepath):
+  """Refuse a tar archive whose member names would escape the extraction dir.
+
+  Source archives can come from the store MIRROR (keyed by URL hash, content
+  not verified when the recipe declares no checksum), so member names are
+  untrusted: a name like ``../../.bashrc`` or ``/etc/...`` is the classic
+  tar-slip. GNU/bsd tar versions differ in their own protections, so enforce
+  explicitly, using tarfile for metadata-only iteration (no extraction).
+
+  ``.tar.zst`` cannot be opened by tarfile on all platforms; it falls through
+  the ImportError/ReadError branch and relies on tar's built-in refusal of
+  absolute/``..`` names (GNU tar >= 1.29 skips them without ``-P``).
+
+  Raises ``ValueError`` on an unsafe member; returns None when safe/unscanned.
+  """
+  import tarfile
+  try:
+    with tarfile.open(filepath) as tf:
+      for m in tf:
+        name = m.name
+        if name.startswith(("/", "\\")) or os.path.splitdrive(name)[0]:
+          raise ValueError("absolute member path %r" % name)
+        if ".." in name.split("/"):
+          raise ValueError("traversing member path %r" % name)
+        # A hardlink/symlink MEMBER NAME that traverses is as bad as a file.
+        if (m.islnk() or m.issym()) and m.linkname.startswith("/"):
+          # Absolute link targets pointing outside are suspicious in source
+          # archives; relative '..' targets are common (lib64 -> ../lib) and
+          # are allowed — tar cannot write THROUGH them mid-extraction for
+          # names we have already vetted above.
+          raise ValueError("absolute link target %r -> %r" % (name, m.linkname))
+  except tarfile.ReadError:
+    debug("cannot pre-scan %s with tarfile (unsupported compression) — "
+          "relying on tar's own traversal protection", filepath)
+
+
 def _extract_zip_strip(archive_path, dest_dir, strip=1):
   """Extract a zip archive into dest_dir, stripping *strip* path components.
 
@@ -577,12 +613,16 @@ def _extract_source_archives(source_dir, expected_names=None):
     debug("Extracting %s into %s (--strip-components=%d)", entry, source_dir, strip)
     try:
       if any(lower.endswith(ext) for ext in _TAR_EXTENSIONS):
+        _assert_safe_archive_members(filepath)   # tar-slip guard (untrusted mirror)
         subprocess.check_call(
           ["tar", "xf", filepath, "--strip-components=%d" % strip, "-C", source_dir]
         )
       else:
+        # zipfile.extract sanitises member names itself (drives, leading
+        # separators and '..' components are stripped by CPython).
         _extract_zip_strip(filepath, source_dir, strip=strip)
-    except (subprocess.CalledProcessError, zipfile.BadZipFile, OSError) as exc:
+    except (subprocess.CalledProcessError, zipfile.BadZipFile, ValueError,
+            OSError) as exc:
       # A corrupt or wrong-format archive must fail this package cleanly rather
       # than crash the whole run with a traceback. The most common cause is a
       # download that returned an error/HTML page instead of the tarball (a

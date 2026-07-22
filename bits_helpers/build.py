@@ -2411,6 +2411,17 @@ def doBuild(args, parser):
   if getattr(args, "requireSignedReuse", None) is None:
     _rsr = _system_opt("require_signed_reuse", None)
     args.requireSignedReuse = _truthy(_rsr) if _rsr is not None else True
+  # Disabling the gate while a remote store is configured means recalled
+  # tarballs are unpacked AND their relocate-me.sh executed with NO
+  # verification at all — anyone who can write (or MITM, with --insecure) the
+  # store can run code on this host. Allowed, but never silently.
+  if not args.requireSignedReuse and getattr(args, "remoteStore", ""):
+    warning("SIGNED REUSE IS DISABLED: tarballs recalled from %s will be "
+            "unpacked and their relocation scripts executed WITHOUT any "
+            "signature or checksum verification. Anyone with write access "
+            "to that store can execute code on this host. Re-enable with "
+            "--require-signed-reuse or system: require_signed_reuse: true.",
+            args.remoteStore)
   if not getattr(args, "trustGroups", None):
     _tg = _system_opt("trust_groups", None)
     if _tg:

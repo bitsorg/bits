@@ -554,7 +554,19 @@ class HttpRemoteSync:
         tarballs = self.getRetry("{}/{}/".format(self.remoteStore, store_path),
                                  session=session)
         if tarballs:
-          use_tarball = tarballs[0]["name"]
+          # The listing is UNTRUSTED remote JSON and this name becomes a local
+          # write path below: reduce to a basename and refuse anything that
+          # still looks like a traversal — "name": "../../..." from a hostile
+          # or man-in-the-middled store must never escape the store directory.
+          _name = tarballs[0].get("name") if isinstance(tarballs[0], dict) else None
+          if not isinstance(_name, str):
+            continue
+          _name = os.path.basename(_name)
+          if not _name or _name in (".", "..") or "/" in _name or "\\" in _name:
+            warning("ignoring store object with unsafe name %r under %s",
+                    tarballs[0].get("name"), store_path)
+            continue
+          use_tarball = _name
           break
 
       if store_path is None or use_tarball is None:
@@ -919,14 +931,21 @@ class S3RemoteSync:
     find "{workDir}/{linksPath}" -type l -delete
     curl -sL "https://s3.cern.ch/swift/v1/{b}/{linksPath}.manifest" |
       while IFS='\t' read -r symlink target; do
+        # Both fields are UNTRUSTED remote data. The link NAME must be a plain
+        # basename (a '/' or '..' would plant the link outside linksPath), and
+        # the TARGET is forced under the ../../ store-relative prefix.
+        case "$symlink" in ''|*/*|..|.) continue ;; esac
         ln -sf "../../${{target#../../}}" "{workDir}/{linksPath}/$symlink" || true
       done
     for x in $(curl -sL "https://s3.cern.ch/swift/v1/{b}/?prefix={linksPath}/"); do
       # Skip already existing symlinks -- these were from the manifest.
       # (We delete leftover symlinks from previous runs above.)
       [ -L "{workDir}/{linksPath}/$(basename "$x")" ] && continue
-      ln -sf "$(curl -sL "https://s3.cern.ch/swift/v1/{b}/$x" | sed -r 's,^(\\.\\./\\.\\./)?,../../,')" \
-         "{workDir}/{linksPath}/$(basename "$x")" || true
+      # The target is UNTRUSTED remote data: force it under ../../ and refuse
+      # anything that keeps climbing (arbitrary-symlink write otherwise).
+      t="$(curl -sL "https://s3.cern.ch/swift/v1/{b}/$x" | sed -r 's,^(\\.\\./\\.\\./)?,../../,')"
+      case "${{t#../../}}" in *../*|*..) continue ;; esac
+      ln -sf "$t" "{workDir}/{linksPath}/$(basename "$x")" || true
     done
     """.format(
       b=self.remoteStore,
@@ -1303,18 +1322,38 @@ class Boto3RemoteSync:
         if not has_sep:
           debug("Ignoring malformed line in manifest: %r", line)
           continue
+        # Both fields are UNTRUSTED remote data. The link NAME must be a plain
+        # basename — with '/' or '..' the symlink() below would plant a link
+        # OUTSIDE links_path (arbitrary-symlink write). The TARGET is forced
+        # under the store-relative ../../ prefix; refuse targets that keep
+        # climbing above it.
+        name = os.fsdecode(link_name)
+        if (not name or name in (".", "..") or "/" in name or "\\" in name):
+          warning("ignoring symlink with unsafe name %r in %s.manifest",
+                  name, links_path)
+          continue
         if not target.startswith(b"../../"):
           target = b"../../" + target
         target = os.fsdecode(target)
-        link_path = os.path.join(self.workdir, links_path, os.fsdecode(link_name))
+        if "/../" in target[len("../../"):] or target.endswith("/.."):
+          warning("ignoring symlink %r with traversing target %r", name, target)
+          continue
+        link_path = os.path.join(self.workdir, links_path, name)
         symlink(target, link_path)
         n_symlinks += 1
       debug("Got %d entries in manifest", n_symlinks)
 
     # Create remote symlinks that aren't in the manifest yet.
     debug("Looking for symlinks not in manifest")
+    links_root = os.path.realpath(os.path.join(self.workdir, links_path))
     for link_key in self._s3_listdir(links_path):
+      # link_key is an UNTRUSTED S3 key (keys may contain '..'): the resolved
+      # link path must stay inside links_path or we'd plant a symlink at an
+      # arbitrary location.
       link_path = os.path.join(self.workdir, link_key)
+      if not os.path.realpath(os.path.dirname(link_path)).startswith(links_root):
+        warning("ignoring store symlink with unsafe key %r", link_key)
+        continue
       if os.path.islink(link_path):
         continue
       debug("Fetching leftover symlink %s", link_key)
@@ -1322,6 +1361,10 @@ class Boto3RemoteSync:
       target = os.fsdecode(resp["Body"].read()).rstrip("\n")
       if not target.startswith("../../"):
         target = "../../" + target
+      if "/../" in target[len("../../"):] or target.endswith("/.."):
+        warning("ignoring store symlink %r with traversing target %r",
+                link_key, target)
+        continue
       symlink(target, link_path)
 
   def upload_symlinks_and_tarball(self, spec) -> None:

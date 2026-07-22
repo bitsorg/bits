@@ -118,7 +118,10 @@ def generate_notice(entries, build_id="unknown") -> str:
 def generate_source_offer(entries, store_url=None, build_id="unknown") -> str:
     """Return the written source offer for the release's copyleft components."""
     now = datetime.datetime.now(datetime.timezone.utc)
-    until = now.replace(year=now.year + SOURCE_OFFER_YEARS)
+    # NOT now.replace(year=+N): that raises ValueError on Feb 29 (the target
+    # year is never a leap year), and the best-effort wrappers would then
+    # silently ship a release with NO compliance files at all.
+    until = now + datetime.timedelta(days=365 * SOURCE_OFFER_YEARS + 1)
     lines = [
         "LICENSE-SOURCE-OFFER — corresponding source",
         "Release: %s" % build_id,
