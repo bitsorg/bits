@@ -532,8 +532,11 @@ def make_s3_probe(store_url, work_dir, default_arch):
             key = tars[0]
         digest = hashlib.sha256()
         body = s3.get_object(Bucket=bucket, Key=key)["Body"]
-        for chunk in iter(lambda: body.read(1 << 20), b""):
-            digest.update(chunk)
+        try:
+            for chunk in iter(lambda: body.read(1 << 20), b""):
+                digest.update(chunk)
+        finally:
+            body.close()          # release the pooled connection on error too
         return "sha256:" + digest.hexdigest()
 
     return probe

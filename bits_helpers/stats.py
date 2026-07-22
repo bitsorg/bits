@@ -299,7 +299,7 @@ def render_package(work_dir, package):
 def doStats(args, parser):
     work_dir = getattr(args, "workDir", "sw")
     arch = getattr(args, "architecture", "") or ""
-    as_json = getattr(args, "json", False)
+    as_json = getattr(args, "json_output", False)
 
     if getattr(args, "package", None):
         if as_json:

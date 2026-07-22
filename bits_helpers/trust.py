@@ -41,6 +41,17 @@ def key_id(pub: Ed25519PublicKey) -> str:
 
 
 def load_private_key(pem_path: str) -> Ed25519PrivateKey:
+  # The release SIGNING key: warn when it is group/other-accessible, same as
+  # ~/.bits/s3keys — a leaked signing key lets anyone certify arbitrary
+  # artifacts for the whole community.
+  try:
+    import stat as _stat
+    if os.stat(pem_path).st_mode & (_stat.S_IRWXG | _stat.S_IRWXO):
+      from bits_helpers.log import warning
+      warning("%s is group/other-accessible but holds the release SIGNING key; "
+              "run `chmod 600 %s`", pem_path, pem_path)
+  except OSError:
+    pass
   with open(pem_path, "rb") as fh:
     key = serialization.load_pem_private_key(fh.read(), password=None)
   if not isinstance(key, Ed25519PrivateKey):

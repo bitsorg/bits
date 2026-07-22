@@ -149,6 +149,9 @@ def dummy_git(args, directory=".", check=True, prompt=True):
 TIMES_ASKED = {}
 
 
+_REAL_OPEN = open        # captured before any @patch replaces module opens
+
+
 def _mock_write_cm():
     """Return a MagicMock usable as a write-mode context manager."""
     cm = MagicMock()
@@ -161,7 +164,11 @@ def dummy_open(x, mode="r", encoding=None, errors=None):
     if x.endswith("/fetch-log.txt") and mode == "w":
         return _mock_write_cm()
     if x.endswith("/bits_helpers/build_template.sh"):
-        return DEFAULT  # actually open the real build_template.sh
+        # Actually open the real build_template.sh. (Returning mock.DEFAULT
+        # from a side_effect does NOT call the real function — it returns the
+        # mock's return_value, so cmd_raw used to be a MagicMock that the old
+        # un-entered write mock silently absorbed.)
+        return _REAL_OPEN(x, mode)
 
     # Write-mode guard: absorb any write to paths under the mock work directory
     # (/sw/…) or to ledger/manifest files so that store-integrity or manifest

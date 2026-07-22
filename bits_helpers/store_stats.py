@@ -142,7 +142,8 @@ def to_prometheus(stats):
     return "\n".join(lines) + "\n"
 
 
-def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None) -> bool:
+def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None,
+                      store=None, endpoint=None) -> bool:
     """Summarise the S3 store and POST the gauges to the VM *monitor_url*.
 
     Called wherever the store was just mutated — end of a `bits build` that
@@ -151,6 +152,13 @@ def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None) -> bool:
     go stale/empty between builds). Best-effort and fire-and-forget: listing the
     store or pushing the gauges must never fail the caller. Returns True when
     the push succeeded.
+
+    When *store* (the http/b3/s3 store URL) is given, the signed/unsigned split
+    is populated from the store's signed common manifests — the same
+    ``MANIFESTS/common-manifest-<arch>.json`` files `bits build --require-signed-
+    reuse` derives — so the dashboard reflects certification automatically, not
+    only via the `bits store-stats --trust-manifest` CLI. Without it (or if the
+    manifests are absent/unverifiable), builds degrade to uncertified.
     """
     import urllib.request
     try:
@@ -162,7 +170,26 @@ def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None) -> bool:
                     [os.path.join(work_dir, "MANIFESTS")]))
             except Exception:  # pylint: disable=broad-except
                 pass  # per-build attribution is optional; degrade to (uncertified)
-        stats = summarise(iter_s3_objects(s3_client, bucket), hash_to_build, set())
+        objects = list(iter_s3_objects(s3_client, bucket))
+        stats = summarise(objects, hash_to_build, set())
+        # Signed set from the store's signed common manifests (own-arch files that
+        # actually appear in the store + the always-shared one), verified against
+        # the trust anchor. Best-effort: an unsupported store form, a missing
+        # manifest, or a bad signature just leaves builds uncertified.
+        signed = set()
+        if store:
+            try:
+                from bits_helpers.build import derive_trust_manifest_srcs
+                srcs = []
+                for _a in (e.get("arch") for e in stats.get("arch", []) if e.get("arch")):
+                    srcs += derive_trust_manifest_srcs(store, "MANIFESTS/common-manifest", _a, endpoint)
+                srcs = [s for s in dict.fromkeys(srcs) if s]
+                if srcs:
+                    signed = signed_builds_from_common(_load_common_manifests(",".join(srcs)))
+            except Exception as exc:  # pylint: disable=broad-except
+                debug("store-stats: trust-manifest derivation skipped: %s", exc)
+        if signed:
+            stats = summarise(objects, hash_to_build, signed)
         req = urllib.request.Request(
             monitor_url.rstrip("/") + "/api/v1/import/prometheus",
             data=to_prometheus(stats).encode("utf-8"),
@@ -265,18 +292,40 @@ def doStoreStats(args, parser):
 
 
 def _load_common_manifests(trust_manifest):
-    """Load + signature-verify comma-separated signed common manifests (paths or
-    URLs); return the parsed dicts. Empty when none configured or verifiable."""
+    """Load + signature-verify comma-separated signed common manifests; return the
+    parsed dicts. Each entry is a local path OR an http(s) URL; the detached
+    signature is the entry with '.sig' appended. Entries that can't be fetched or
+    whose signature doesn't verify against the trust anchor (bits/keys,
+    $BITS_TRUST_KEYS, ~/.config/bits/keys) are skipped.
+
+    URLs are fetched here (the store publishes the common manifests over http),
+    rather than requiring the caller to pre-stage local files: trust.verify_manifest
+    only reads local paths, so we fetch the bytes + the .sig envelope and verify
+    with trust.verify_bytes directly."""
     if not trust_manifest:
         return []
+    import urllib.request
     from bits_helpers import trust
+    trusted = trust.load_trusted_keys()
+
+    def _read(u):
+        if u.startswith(("http://", "https://")):
+            with urllib.request.urlopen(u, timeout=20) as r:
+                return r.read()
+        with open(u, "rb") as fh:
+            return fh.read()
+
     out = []
     for src in (s.strip() for s in str(trust_manifest).split(",") if s.strip()):
         try:
-            if not trust.verify_manifest(src):
+            data     = _read(src)
+            envelope = json.loads(_read(src + ".sig"))
+            if not trust.verify_bytes(data, envelope, trusted):
+                debug("store-stats: trust-manifest %s: signature did not verify "
+                      "(no matching trusted key?), treating its builds as unsigned", src)
                 continue
-            with open(src) as fh:
-                out.append(json.load(fh))
-        except Exception:  # pylint: disable=broad-except
+            out.append(json.loads(data))
+        except Exception as exc:  # pylint: disable=broad-except
+            debug("store-stats: trust-manifest %s: %s", src, exc)
             continue
     return out

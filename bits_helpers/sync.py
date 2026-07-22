@@ -1175,8 +1175,11 @@ class Boto3RemoteSync:
     import hashlib
     digest = hashlib.sha256()
     body = self.s3.get_object(Bucket=self.writeStore, Key=key)["Body"]
-    for chunk in iter(lambda: body.read(1 << 20), b""):
-      digest.update(chunk)
+    try:
+      for chunk in iter(lambda: body.read(1 << 20), b""):
+        digest.update(chunk)
+    finally:
+      body.close()              # release the pooled connection on error too
     sha = "sha256:" + digest.hexdigest()
     try:
       self.s3.copy_object(Bucket=self.writeStore, Key=key,

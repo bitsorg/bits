@@ -328,7 +328,7 @@ def doParseArgs():
                             help="Show the top N packages in the table (default: %(default)s).")
   stats_parser.add_argument("--sort", dest="sort", choices=["time", "rss", "cpu"],
                             default="time", help="Sort the table by this metric (default: %(default)s).")
-  stats_parser.add_argument("--json", dest="json", action="store_true",
+  stats_parser.add_argument("--json", dest="json_output", action="store_true",
                             help="Emit machine-readable JSON instead of the text report.")
 
   import_parser = subparsers.add_parser(
@@ -520,8 +520,6 @@ def doParseArgs():
                             help=("Use makeflow for paralle workflow execution. "))
   build_parser.add_argument("--only-deps", dest="onlyDeps", default=False, action="store_true",
                             help="Only build dependencies, not the main package (e.g. for caching)")
-  build_parser.add_argument("--gcc-toolchain", dest="gccToolchain", default=None, metavar="PACKAGE", action="append",
-                            help=("Override gcc toolchain version tag"))  
 
   build_docker = build_parser.add_argument_group(title="Build inside a container", description="""\
   Builds can be done inside a Docker container, to make it easier to get a
@@ -764,7 +762,7 @@ def doParseArgs():
   build_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
                           help=("The toplevel directory under which builds should be done and build results "
                                 "should be installed. Default '%(default)s'."))
-  build_dirs.add_argument("-c", "--config-dir", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
+  build_dirs.add_argument("-c", "--config-dir", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
                           help="The directory containing build recipes. Default '%(default)s'.")
   build_dirs.add_argument("--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
                           default="%(workDir)s/MIRROR",
@@ -922,7 +920,7 @@ def doParseArgs():
                                  "with spaces, and make sure quoting is correct! Implies --docker."))
 
   deps_parser.add_argument_group(title="Customise bits directories") \
-             .add_argument("-c", "--config-dir", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
+             .add_argument("-c", "--config-dir", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
                            help="The directory containing build recipes. Default '%(default)s'.")
 
   deps_system = deps_parser.add_mutually_exclusive_group()
@@ -1001,7 +999,7 @@ def doParseArgs():
   doctor_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,  # TODO: previous default was "workDir".
                            help=("The toplevel directory under which builds should be done and build results "
                                  "should be installed. Default '%(default)s'."))
-  doctor_dirs.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
+  doctor_dirs.add_argument("-c", "--config", "--config-dir", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
                            help="The directory containing build recipes. Default '%(default)s'.")
 
   # Mode flags — apply to --runner, --check-store, and future modes
@@ -1070,7 +1068,7 @@ def doParseArgs():
   brew_parser.add_argument("--check", dest="check", action="store_true", default=False,
                            help=("Do not write; exit non-zero if FILE is missing or differs from what "
                                  "would be generated (for CI / pre-commit)."))
-  brew_parser.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR", "."),
+  brew_parser.add_argument("-c", "--config", "--config-dir", dest="configDir", default=os.environ.get("BITS_REPO_DIR", "."),
                            help="The directory containing build recipes. Default '%(default)s'.")
   brew_parser.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
                            help=("Change to the specified directory before doing anything. "
@@ -1103,7 +1101,7 @@ def doParseArgs():
   init_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
                          help=("The toplevel directory under which builds should be done and "
                                "build results should be installed. Default '%(default)s'."))
-  init_dirs.add_argument("-c", "--config-dir", dest="configDir", default="%(prefix)salidist",
+  init_dirs.add_argument("-c", "--config-dir", "--config", dest="configDir", default="%(prefix)salidist",
                          help=("The directory where build recipes will be placed. '%%(prefix)s' will "
                                "be replaced with 'DEVELPREFIX/'. Default '%(default)s'."))
   init_dirs.add_argument("--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
@@ -1315,7 +1313,7 @@ def doParseArgs():
                                        "is audited. Typically the group's meta-package(s), e.g. 'externals "
                                        "generators'. Without %(metavar)s, one recipe directory is scanned "
                                        "(--recipes, default the current directory)."))
-  compliance_parser.add_argument("-c", "--config-dir", dest="configDir",
+  compliance_parser.add_argument("-c", "--config-dir", "--config", dest="configDir",
                                  default=os.environ.get("BITS_REPO_DIR", "."),
                                  help="The directory containing build recipes (group mode). Default '%(default)s'.")
   compliance_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
@@ -1487,7 +1485,7 @@ def doParseArgs():
       help=("The bits work directory to inspect. Default '%(default)s'."),
   )
   status_parser.add_argument(
-      "-c", "--config", dest="configDir",
+      "-c", "--config", "--config-dir", dest="configDir",
       default=os.environ.get("BITS_REPO_DIR", "."),
       help="The directory containing build recipes. Default '%(default)s'.",
   )
@@ -1599,7 +1597,7 @@ def doParseArgs():
       default=detectedArch,
       help="Target architecture used to load the defaults. Default '%(default)s'.")
   cvmfs_path_parser.add_argument(
-      "-c", "--config", dest="configDir",
+      "-c", "--config", "--config-dir", dest="configDir",
       default=os.environ.get("BITS_REPO_DIR", "."),
       help="The directory containing build recipes. Default '%(default)s'.")
   cvmfs_path_parser.add_argument(
@@ -2129,7 +2127,7 @@ def finaliseArgs(args, parser):
     if args.resourceMonitoring:
       try:
         import psutil
-      except:
+      except Exception:
         args.resourceMonitoring = False
         print("Warning: Unable to use psutil. Disabling resource monitoring")
     pass

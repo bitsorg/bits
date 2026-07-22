@@ -162,12 +162,8 @@ if __name__ == "__main__":
   os.environ["BITS_ANALYTICS_ID"] = _ANALYTICS_TRACKING_ID
   os.environ["BITS_VERSION"] = __version__ or ""
 
-  if args.action == "analytics":
-    if args.state == "off":
-      disable_analytics()
-    else:
-      enable_analytics()
-    sys.exit(0)
+  # NOTE: the "analytics" subcommand is currently disabled in args.py; the
+  # enable/disable helpers stay importable for the opt-out env-var path.
 
   if args.action == "architecture":
     arch = detectArch()

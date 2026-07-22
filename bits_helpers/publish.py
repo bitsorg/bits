@@ -114,7 +114,8 @@ def _load_manifest_spec(work_dir, package, version):
                    key=os.path.getmtime, reverse=True)
     for f in files:
         try:
-            data = _json.load(open(f))
+            with open(f) as _fh:
+                data = _json.load(_fh)
         except Exception:
             continue
         for e in data.get("packages", []):
@@ -209,7 +210,8 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             parser.error("no build manifest under %s — build something first, "
                          "or pass a path to --from-manifest" % work_dir)
     try:
-        manifest_doc = _json.load(open(man))
+        with open(man) as _fh:
+            manifest_doc = _json.load(_fh)
         entries = manifest_doc.get("packages", [])
     except Exception as exc:
         parser.error("could not read manifest %s: %s" % (man, exc))

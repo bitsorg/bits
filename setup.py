@@ -51,7 +51,7 @@ setup(
 
         # Specify the Python versions you support here. In particular, ensure
         # that you indicate whether you support Python 2, Python 3 or both.
-        'Programming Language :: Python :: 3.6',   # slc7, slc8, cs8
+        'Programming Language :: Python :: 3.7',   # (3.6 dropped: from __future__ import annotations)
         'Programming Language :: Python :: 3.8',   # ubuntu2004
         'Programming Language :: Python :: 3.9',   # slc9
         'Programming Language :: Python :: 3.10',  # ubuntu2204
@@ -73,6 +73,7 @@ setup(
     # Single-source our package version using setuptools_scm. This makes it
     # PEP440-compliant, and it always references the bits commit that
     # bits was built from.
+    python_requires='>=3.7',
     use_scm_version={'write_to': 'bits_helpers/_version.py'},
     setup_requires=[
         # The 7.* series removed support for Python 3.6.

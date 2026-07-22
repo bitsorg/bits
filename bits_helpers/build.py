@@ -31,7 +31,7 @@ from bits_helpers.sync import remote_from_url
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 try:
   from bits_helpers.resource_monitor import run_monitor_on_command
-except:
+except Exception:
   pass
 from bits_helpers.log import ProgressPrint, log_current_package
 from glob import glob
@@ -55,9 +55,8 @@ import subprocess
 from jinja2.sandbox import SandboxedEnvironment
 
 def writeAll(fn, txt) -> None:
-  f = open(fn, "w")
-  f.write(txt)
-  f.close()
+  with open(fn, "w") as f:
+    f.write(txt)
 
 
 def _generate_create_links_sh(spec, specs, args) -> str:
@@ -4111,10 +4110,9 @@ def doBuild(args, parser):
     makedirs(mfDir, exist_ok=True)
     jnj = ""
     try:
-      fp = open(dirname(realpath(__file__))+'/Makeflow.jnj')
-      jnj = fp.read()
-      fp.close()
-    except:
+      with open(dirname(realpath(__file__))+'/Makeflow.jnj') as fp:
+        jnj = fp.read()
+    except Exception:
       from pkg_resources import resource_string
       jnj = resource_string("bits_helpers", 'Makeflow.jnj')
     with open(mfFile, 'w') as mf:
