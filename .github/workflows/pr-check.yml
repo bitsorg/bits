@@ -37,6 +37,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # setuptools_scm / vcs-versioning derive the version from git history
+          # and tags; a shallow clone (checkout@v4 default) makes them fail with
+          # "TypeError: 'NoneType' object is not iterable" on the sdist build.
+          fetch-depth: 0
         
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -85,6 +89,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # setuptools_scm / vcs-versioning derive the version from git history
+          # and tags; a shallow clone (checkout@v4 default) makes them fail with
+          # "TypeError: 'NoneType' object is not iterable" on the sdist build.
+          fetch-depth: 0
       - name: Fix macOS permissions
         run: |
           # /dev/null permissions occasionally get corrupted on GitHub-hosted macOS runners.
@@ -149,6 +157,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # tox builds the package (setuptools_scm needs full git history/tags).
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
