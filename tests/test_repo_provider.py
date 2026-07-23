@@ -1063,5 +1063,37 @@ class TestApplyProviderOverride(unittest.TestCase):
         self.assertEqual((spec["source"], spec["tag"]), ("orig", "main"))
 
 
+class ProviderReadStoreTestCase(unittest.TestCase):
+    """A provider recipe may declare a read-only reuse store (read_store)."""
+
+    def setUp(self):
+        rp.reset_provider_read_stores()
+        self.addCleanup(rp.reset_provider_read_stores)
+
+    def test_records_valid_store(self):
+        rp._record_provider_read_store(
+            "alidist.bits",
+            {"provides_repository": True,
+             "read_store": "https://s3.cern.ch/swift/v1/alibuild-repo"})
+        self.assertEqual(dict(rp.provider_read_stores()),
+                         {"alidist.bits": "https://s3.cern.ch/swift/v1/alibuild-repo"})
+
+    def test_absent_store_is_noop(self):
+        rp._record_provider_read_store("x.bits", {"provides_repository": True})
+        self.assertEqual(dict(rp.provider_read_stores()), {})
+
+    def test_unsafe_store_rejected(self):
+        rp._record_provider_read_store(
+            "evil.bits", {"read_store": "b3://b; rm -rf /"})
+        self.assertEqual(dict(rp.provider_read_stores()), {})
+
+    def test_ordering_and_reset(self):
+        rp._record_provider_read_store("a.bits", {"read_store": "b3://a"})
+        rp._record_provider_read_store("b.bits", {"read_store": "b3://b"})
+        self.assertEqual(list(rp.provider_read_stores()), ["a.bits", "b.bits"])
+        rp.reset_provider_read_stores()
+        self.assertEqual(dict(rp.provider_read_stores()), {})
+
+
 if __name__ == "__main__":
     unittest.main()

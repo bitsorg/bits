@@ -59,6 +59,34 @@ def writeAll(fn, txt) -> None:
     f.write(txt)
 
 
+def apply_defaults_legacy_initdotsh(args, defaults_meta, explicit) -> bool:
+  """Let a defaults file select the legacy (pre-modules) init.sh.
+
+  A defaults profile may declare ``system: legacy_initdotsh: true`` (a bare
+  top-level ``legacy_initdotsh`` is also honoured). When it does and the user
+  did NOT choose explicitly (*explicit* False — no ``--legacy-initdotsh`` /
+  ``--initdotsh-from-modules`` flag and no ``BITS_LEGACY_INITDOTSH`` env), flip
+  ``args.initdotshFromModules`` to legacy and strip the ``BITS_INITDOTSH_FROM_
+  MODULES`` marker that the defaults reader injected into the (hashed) defaults
+  env during the parse — so package hashes come out byte-identical to
+  pre-modules and alidist tarballs stay reusable.
+
+  Returns True when it flipped to legacy, else False. No-op if already legacy
+  or if the user was explicit.
+  """
+  sysd = defaults_meta.get("system", {}) or {}
+  want_legacy = str(
+      sysd.get("legacy_initdotsh", defaults_meta.get("legacy_initdotsh", ""))
+      ).strip().lower() in ("1", "true", "yes", "on")
+  if not (want_legacy and not explicit and getattr(args, "initdotshFromModules", False)):
+    return False
+  args.initdotshFromModules = False
+  env = defaults_meta.get("env")
+  if isinstance(env, dict):
+    env.pop("BITS_INITDOTSH_FROM_MODULES", None)
+  return True
+
+
 def _generate_create_links_sh(spec, specs, args) -> str:
   """Generate a self-contained shell script that recreates the dist symlink trees.
 
@@ -2278,6 +2306,12 @@ def doBuild(args, parser):
   # nothing above and so hashes byte-identically to the pre-modules default (bits
   # can still reuse alidist tarballs). Resolved here, before parseDefaults runs the
   # reader closure above that reads args.initdotshFromModules.
+  # Whether legacy mode was chosen EXPLICITLY (CLI flag or env var). Only then
+  # does it win over a defaults-file request below; the CLI flags set
+  # initdotshFromModules to True/False (None when absent), env is
+  # BITS_LEGACY_INITDOTSH.
+  _initdotsh_explicit = (getattr(args, "initdotshFromModules", None) is not None
+                         or os.environ.get("BITS_LEGACY_INITDOTSH", "").strip() != "")
   if getattr(args, "initdotshFromModules", None) is None:
     _legacy_env = os.environ.get("BITS_LEGACY_INITDOTSH", "").strip().lower() in (
       "1", "true", "yes", "on")
@@ -2285,6 +2319,13 @@ def doBuild(args, parser):
   (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
                                         defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)
+  # A defaults file may request the legacy (pre-modules) init.sh via
+  # `system: legacy_initdotsh: true` (top-level key also honoured) — this is how
+  # `--defaults alidist` makes bits reuse the alibuild-repo tarballs without any
+  # env var or the aliBuild wrapper. CLI/env still win.
+  if apply_defaults_legacy_initdotsh(args, defaultsMeta, _initdotsh_explicit):
+    info("defaults request the legacy init.sh (system.legacy_initdotsh) — using "
+         "pre-modules hashes so alidist tarballs stay reusable")
   makedirs(join(workDir, "SPECS"), exist_ok=True)
 
   # When any loaded defaults file sets ``qualify_arch: true`` the install tree
@@ -2526,6 +2567,10 @@ def doBuild(args, parser):
     extra_env["BITS_BREW"] = "1"
 
   # ── Repository-provider discovery ─────────────────────────────────────────
+  # Reset any provider-declared read stores from a prior call (module-level
+  # accumulator; a build process handles one build, but be explicit).
+  from bits_helpers.repo_provider import reset_provider_read_stores
+  reset_provider_read_stores()
   # Phase 1 – Always-on providers: recipes with ``always_load: true`` (and
   # optionally the auto-synthesised ``bits-providers`` package built from
   # $BITS_PROVIDERS / bits.rc).  These are cloned *before* the iterative scan
@@ -2580,6 +2625,43 @@ def doBuild(args, parser):
     default_vars      = defaultsMeta.get("variables"),
   )
   provider_dirs.update(always_on_dirs)
+
+  # ── Provider-declared read store ──────────────────────────────────────────
+  # A loaded repository provider may declare `read_store: <url>` — the READ-ONLY
+  # store holding the prebuilt tarballs of the recipes it provides (e.g.
+  # alidist.bits → the alibuild-repo). This is the only place such a store can
+  # live and still apply under the Testbed mother umbrella, where the group's own
+  # defaults-release.sh is not the one loaded. Resolved HERE, after providers
+  # load (the store resolution above runs before that), so:
+  #   - it sets the READ store (args.remoteStore), where bits looks for reuse;
+  #   - whatever store was resolved earlier (explicit --remote-store,
+  #     system.remote_store, or the ::rw community store) becomes the WRITE
+  #     target for freshly-built packages, if not already set — so a legacy
+  #     alidist build reads alibuild-repo and writes the community store.
+  # Disabled by --no-remote-store. The URL is non-hashed. An explicit store is
+  # overridden for READ (the provider knows where its tarballs are) but a warning
+  # makes that visible.
+  if not getattr(args, "no_remote_store", False):
+    from bits_helpers.repo_provider import provider_read_stores as _prov_read_stores
+    _prs = _prov_read_stores()
+    if _prs:
+      _names = list(_prs)
+      _read_url = _prs[_names[0]]
+      if len(_prs) > 1:
+        warning("multiple providers declare read_store (%s); using %s from %s",
+                ", ".join(_names), _read_url, _names[0])
+      _cur = getattr(args, "remoteStore", "")
+      if _cur and _cur != _read_url and not getattr(args, "writeStore", ""):
+        # The previously-resolved store becomes the write target (::rw already
+        # stripped into writeStore for ::rw stores; a plain URL is taken as-is).
+        args.writeStore = _cur[:-4] if _cur.endswith("::rw") else _cur
+      if _cur and _cur != _read_url and getattr(args, "remoteStoreExplicit", False):
+        warning("provider %s read_store %s overrides the explicit remote store "
+                "%s for reuse; fresh builds are written to %s",
+                _names[0], _read_url, _cur, args.writeStore or "<none>")
+      args.remoteStore = _read_url
+      info("Reuse read store from provider %s: %s (write store: %s)",
+           _names[0], _read_url, getattr(args, "writeStore", "") or "<none>")
 
   # ── Build manifest initialisation ─────────────────────────────────────────
   # The manifest is always written; it records every package, provider, and
