@@ -2567,10 +2567,6 @@ def doBuild(args, parser):
     extra_env["BITS_BREW"] = "1"
 
   # ── Repository-provider discovery ─────────────────────────────────────────
-  # Reset any provider-declared read stores from a prior call (module-level
-  # accumulator; a build process handles one build, but be explicit).
-  from bits_helpers.repo_provider import reset_provider_read_stores
-  reset_provider_read_stores()
   # Phase 1 – Always-on providers: recipes with ``always_load: true`` (and
   # optionally the auto-synthesised ``bits-providers`` package built from
   # $BITS_PROVIDERS / bits.rc).  These are cloned *before* the iterative scan
@@ -2625,43 +2621,6 @@ def doBuild(args, parser):
     default_vars      = defaultsMeta.get("variables"),
   )
   provider_dirs.update(always_on_dirs)
-
-  # ── Provider-declared read store ──────────────────────────────────────────
-  # A loaded repository provider may declare `read_store: <url>` — the READ-ONLY
-  # store holding the prebuilt tarballs of the recipes it provides (e.g.
-  # alidist.bits → the alibuild-repo). This is the only place such a store can
-  # live and still apply under the Testbed mother umbrella, where the group's own
-  # defaults-release.sh is not the one loaded. Resolved HERE, after providers
-  # load (the store resolution above runs before that), so:
-  #   - it sets the READ store (args.remoteStore), where bits looks for reuse;
-  #   - whatever store was resolved earlier (explicit --remote-store,
-  #     system.remote_store, or the ::rw community store) becomes the WRITE
-  #     target for freshly-built packages, if not already set — so a legacy
-  #     alidist build reads alibuild-repo and writes the community store.
-  # Disabled by --no-remote-store. The URL is non-hashed. An explicit store is
-  # overridden for READ (the provider knows where its tarballs are) but a warning
-  # makes that visible.
-  if not getattr(args, "no_remote_store", False):
-    from bits_helpers.repo_provider import provider_read_stores as _prov_read_stores
-    _prs = _prov_read_stores()
-    if _prs:
-      _names = list(_prs)
-      _read_url = _prs[_names[0]]
-      if len(_prs) > 1:
-        warning("multiple providers declare read_store (%s); using %s from %s",
-                ", ".join(_names), _read_url, _names[0])
-      _cur = getattr(args, "remoteStore", "")
-      if _cur and _cur != _read_url and not getattr(args, "writeStore", ""):
-        # The previously-resolved store becomes the write target (::rw already
-        # stripped into writeStore for ::rw stores; a plain URL is taken as-is).
-        args.writeStore = _cur[:-4] if _cur.endswith("::rw") else _cur
-      if _cur and _cur != _read_url and getattr(args, "remoteStoreExplicit", False):
-        warning("provider %s read_store %s overrides the explicit remote store "
-                "%s for reuse; fresh builds are written to %s",
-                _names[0], _read_url, _cur, args.writeStore or "<none>")
-      args.remoteStore = _read_url
-      info("Reuse read store from provider %s: %s (write store: %s)",
-           _names[0], _read_url, getattr(args, "writeStore", "") or "<none>")
 
   # ── Build manifest initialisation ─────────────────────────────────────────
   # The manifest is always written; it records every package, provider, and

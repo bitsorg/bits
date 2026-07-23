@@ -51,7 +51,6 @@ sourced from it.
 
 import glob
 import os
-import re
 import shutil
 from collections import OrderedDict
 from os.path import join, exists, abspath
@@ -79,43 +78,6 @@ REPOS_CACHE_SUBDIR = "REPOS"
 
 # Reserved package name for the BITS_PROVIDERS / bits.rc synthesised provider
 BITS_PROVIDERS_PACKAGE = "bits-providers"
-
-
-# Read stores declared by loaded repository providers. A provider recipe
-# (provides_repository: true) may carry `read_store: <url>` — a READ-ONLY reuse
-# store for the prebuilt tarballs of the recipes it provides (e.g. alidist.bits
-# → the alibuild-repo). It rides the provider so that loading the provider
-# brings both its recipes AND where their tarballs live, which is the only
-# placement that survives the Testbed mother umbrella (a group's own
-# defaults-release.sh is not the one loaded there). Collected here as the
-# providers load; bits_helpers.build applies the first one below any explicit
-# store (CLI/env/bits.rc/system.remote_store) and above the built-in default.
-# The store URL is non-hashed, so declaring it never invalidates a hash.
-_PROVIDER_READ_STORES: "OrderedDict[str, str]" = OrderedDict()
-
-
-def reset_provider_read_stores() -> None:
-  """Clear the accumulated provider read stores (call once per build run)."""
-  _PROVIDER_READ_STORES.clear()
-
-
-def provider_read_stores() -> "OrderedDict[str, str]":
-  """Return ``{provider_name: read_store_url}`` for providers loaded so far."""
-  return _PROVIDER_READ_STORES
-
-
-def _record_provider_read_store(pkg: str, spec: dict) -> None:
-  """Record a loaded provider's ``read_store`` (if any and well-formed)."""
-  rs = spec.get("read_store")
-  if not rs:
-    return
-  rs = str(rs).strip()
-  # A recipe repo is only semi-trusted; the URL flows to the sync backend, so
-  # keep it to plausible store URLs (no shell metacharacters / whitespace).
-  if not re.match(r"^[A-Za-z0-9._+:/@=,%{}-]+$", rs):
-    warning("provider %s declares an unsafe read_store %r — ignoring", pkg, rs)
-    return
-  _PROVIDER_READ_STORES[pkg] = rs
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────
@@ -543,7 +505,6 @@ def load_always_on_providers(
         policy=policy,
       )
       provider_dirs[checkout_dir] = (BITS_PROVIDERS_PACKAGE, commit_hash)
-      _record_provider_read_store(BITS_PROVIDERS_PACKAGE, spec)
     except SystemExit:
       warning(
         "Failed to load BITS_PROVIDERS from %s — continuing without it.",
@@ -579,7 +540,6 @@ def load_always_on_providers(
         policy=policy,
       )
       provider_dirs[checkout_dir] = (pkg, commit_hash)
-      _record_provider_read_store(pkg, spec)
     except SystemExit:
       warning(
         "Failed to always-load provider '%s' — continuing without it.", pkg,
@@ -877,7 +837,6 @@ def fetch_repo_providers_iteratively(
                     policy=policy,
                 )
                 provider_dirs[checkout_dir] = (pkg, commit_hash)
-                _record_provider_read_store(pkg, spec)
                 cloned.add(pkg)
                 cloned_tag[pkg] = spec.get("tag", spec.get("version", "HEAD"))
 
