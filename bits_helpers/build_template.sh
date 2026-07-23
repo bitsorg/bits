@@ -150,21 +150,6 @@ export BUILDROOT="$BITS_BUILD_WORK_DIR/BUILD/$PKGHASH"
 export SOURCEDIR="$WORK_DIR/SOURCES/$PKGNAME/$PKGVERSION/$COMMIT_HASH"
 export BUILDDIR="$BUILDROOT/$PKGNAME"
 
-# Legacy (aliBuild) recipes patch their source in place. The shared SOURCES tree
-# is mounted read-only to stop one build from poisoning the source another build
-# (or another recipe repo) reuses, so give this build a PRIVATE writable copy and
-# point SOURCEDIR at it. The copy carries the patch sentinels, so patches are not
-# re-applied. cleanup() removes it on exit (success or failure). Only active when
-# bits runs in legacy mode (BITS_PRIVATE_SOURCE=1, set by build.py).
-if [ "${BITS_PRIVATE_SOURCE:-}" = 1 ] && [ -n "$PKGHASH" ] && [ -d "$SOURCEDIR" ]; then
-  _bits_private_src="$BUILDROOT/.source"
-  rm -rf "$_bits_private_src"
-  mkdir -p "$_bits_private_src"
-  echo "bits: legacy mode — private source copy $SOURCEDIR -> $_bits_private_src"
-  rsync -a "$SOURCEDIR/" "$_bits_private_src/"
-  export SOURCEDIR="$_bits_private_src"
-fi
-
 # All caching for RECC should happen relative to $WORK_DIR
 export RECC_PROJECT_ROOT=$WORK_DIR
 export RECC_WORKING_DIR_PREFIX=$WORK_DIR
@@ -196,6 +181,23 @@ if [[ "$INCREMENTAL_BUILD_HASH" == 0 ]] && ! rm -rf "$BUILDROOT"; then
   rm -rf "$BUILDROOT"
 fi
 mkdir -p "$INSTALLROOT" "$BUILDROOT" "$BUILDDIR" "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
+
+# Legacy (aliBuild) recipes patch their source in place. The shared SOURCES tree
+# is mounted read-only to stop one build from poisoning the source another build
+# (or another recipe repo) reuses, so give this build a PRIVATE writable copy and
+# point SOURCEDIR at it. The copy carries the patch sentinels, so patches are not
+# re-applied. cleanup() removes it on exit (success or failure). Only active in
+# legacy mode (BITS_PRIVATE_SOURCE=1, set by build.py). Done HERE, after the
+# BUILDROOT reset above (which would otherwise delete the copy) and before the
+# recipe runs.
+if [ "${BITS_PRIVATE_SOURCE:-}" = 1 ] && [ -n "$PKGHASH" ] && [ -d "$SOURCEDIR" ]; then
+  _bits_private_src="$BUILDROOT/.source"
+  rm -rf "$_bits_private_src"
+  mkdir -p "$_bits_private_src"
+  echo "bits: legacy mode — private source copy $SOURCEDIR -> $_bits_private_src"
+  rsync -a "$SOURCEDIR/" "$_bits_private_src/"
+  export SOURCEDIR="$_bits_private_src"
+fi
 
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH"
 cat > "$INSTALLROOT/.meta.json" <<\EOF
