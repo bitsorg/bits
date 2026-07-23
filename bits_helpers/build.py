@@ -3914,13 +3914,19 @@ def doBuild(args, parser):
       # Tripwire: mount the shared SOURCES tree read-only so a recipe that mutates
       # its source in place (in-tree patching, codegen, in-tree downloads) fails
       # loudly with EROFS instead of silently poisoning the reused tree for the
-      # next build/arch. On by default (every bits recipe-tools recipe builds from
-      # its private rsync'd copy, so a correct recipe is unaffected); disable with
-      # BITS_READONLY_SOURCES=0 if a not-yet-migrated recipe needs to write back.
+      # next build/arch. On by default for modern bits recipes (they build from
+      # their private rsync'd copy, so a correct recipe is unaffected).
+      #
+      # In legacy mode (--legacy-initdotsh / system.legacy_initdotsh, i.e.
+      # args.initdotshFromModules is False) the tripwire defaults OFF: aliBuild /
+      # alidist recipes legitimately patch their source in place (e.g. GMP's
+      # `sed -i` on acinclude.m4), which the read-only mount would break. An
+      # explicit BITS_READONLY_SOURCES env always wins either way.
       # It overlays the read-write workdir mount and the more-specific :ro mount
       # wins. No chmod of the host tree.
       _src_dir = os.path.join(abspath(args.workDir), "SOURCES")
-      _ro_enabled = os.environ.get("BITS_READONLY_SOURCES", "1").strip().lower() \
+      _ro_default = "1" if getattr(args, "initdotshFromModules", True) else "0"
+      _ro_enabled = os.environ.get("BITS_READONLY_SOURCES", _ro_default).strip().lower() \
                     not in ("0", "false", "no", "off", "")
       _ro_sources = ("-v %s:%s/SOURCES:ro " % (quote(_src_dir), container_workDir)
                      if _ro_enabled and os.path.isdir(_src_dir)
