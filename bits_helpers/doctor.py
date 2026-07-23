@@ -47,7 +47,7 @@ from bits_helpers.cmd import DockerRunner, getstatusoutput
 from bits_helpers.log import banner, debug, error, info, logger, success, warning
 from bits_helpers.utilities import (
     getPackageList, parseDefaults, readDefaults, validateDefaults,
-    effective_arch, ver_rev,
+    incompatibleFlavorDefaults, effective_arch, ver_rev,
 )
 
 # ── Status constants ───────────────────────────────────────────────────────────
@@ -867,7 +867,8 @@ def doDoctor(args, parser):
                "Look at the error messages above to get hints on what packages you need to install separately.",
                "\n- ".join(failed))
         exitcode = 1
-    if validDefaults and any(d not in validDefaults for d in args.defaults):
+    _bad_defaults, _missing_flavor = incompatibleFlavorDefaults(validDefaults, args.defaults, _defaultsMeta)
+    if _bad_defaults or _missing_flavor:
         banner("The list of packages cannot be built with the defaults you have specified.\n"
                "List of valid defaults:\n\n- %s\n\n"
                "Use the `--defaults' switch to specify one of them.",

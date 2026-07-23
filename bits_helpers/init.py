@@ -13,7 +13,7 @@ import os.path as path
 from bits_helpers.cmd import getstatusoutput
 from bits_helpers.git import git, Git
 from bits_helpers.log import banner, debug, dieOnError, error, info, warning
-from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults
+from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults, incompatibleFlavorDefaults
 from bits_helpers.workarea import updateReferenceRepoSpec
 
 
@@ -282,7 +282,8 @@ def doInit(args):
                                          overrides=overrides,
                                          taps=taps,
                                          log=debug)
-  dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
+  _bad_defaults, _missing_flavor = incompatibleFlavorDefaults(validDefaults, args.defaults, _defaultsMeta)
+  dieOnError(bool(_bad_defaults) or _missing_flavor,
              "Specified default `%s' is not compatible with the packages you want to build.\n" % "::".join(args.defaults) +
              "Valid defaults:\n\n- " +
              "\n- ".join(sorted(validDefaults)))

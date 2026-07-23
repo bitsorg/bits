@@ -78,3 +78,35 @@ class DeepMergeTest(unittest.TestCase):
         d2 = {"disabled": "notalist"}
         result = merge_dicts(d1, d2)
         self.assertEqual(result, {"disabled": "notalist"})
+
+
+class ReadDefaultsExemptTest(unittest.TestCase):
+    """readDefaults collects structural (valid_defaults_exempt) chain layers."""
+
+    def _read(self, chain, metas):
+        from unittest.mock import patch
+        from bits_helpers.utilities import readDefaults
+        with patch("bits_helpers.utilities.resolveDefaultsFilename",
+                   side_effect=lambda name, cfg, failOnError=False: name), \
+             patch("bits_helpers.utilities.exists", return_value=True), \
+             patch("bits_helpers.utilities.getRecipeReader", side_effect=lambda p: p), \
+             patch("bits_helpers.utilities.parseRecipe",
+                   side_effect=lambda reader: (None, dict(metas[reader]), "")):
+            return readDefaults("/cfg", chain, lambda m: None, "x86_64-el8")
+
+    def test_collects_marker_and_strips_it(self):
+        metas = {
+            "release": {"package": "defaults-release"},
+            "alidist": {"package": "defaults-alidist", "valid_defaults_exempt": True},
+            "o2":      {"package": "defaults-o2"},
+        }
+        meta, _ = self._read(["release", "alidist", "o2"], metas)
+        # release (auto base) + alidist (marker); o2 is a flavor, not exempt.
+        self.assertEqual(meta.get("_valid_defaults_exempt"), ["alidist", "release"])
+        # The marker must not leak into the merged metadata.
+        self.assertNotIn("valid_defaults_exempt", meta)
+
+    def test_release_always_exempt(self):
+        metas = {"release": {"package": "defaults-release"}}
+        meta, _ = self._read(["release"], metas)
+        self.assertEqual(meta.get("_valid_defaults_exempt"), ["release"])

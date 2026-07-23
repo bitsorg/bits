@@ -475,6 +475,33 @@ def validateDefaults(finalPkgSpec, defaults):
                    ", ".join(invalidDefaults),
                    "\n".join([" - " + x for x in validDefaults])), validDefaults)
 
+def incompatibleFlavorDefaults(validDefaults, defaults, defaults_meta=None):
+  """Evaluate the valid_defaults gate for a chained-defaults build, ignoring
+  structural/overlay layers.
+
+  Packages declare ``valid_defaults`` to gate on build *flavors* (e.g. ``o2``,
+  ``o2-epn``). Structural layers are not flavors and must be ignored: the
+  always-present ``release`` base, and any default whose file declares
+  ``valid_defaults_exempt: true`` (e.g. the ``alidist`` variant). Their names
+  are collected by :func:`readDefaults` into ``defaults_meta['_valid_defaults_exempt']``.
+
+  Returns ``(bad, missing)``:
+
+  * ``bad``     – chosen flavor defaults the packages do not accept;
+  * ``missing`` – ``True`` when the packages require a flavor
+    (``validDefaults`` is non-empty) but only structural layers were selected.
+
+  When *validDefaults* is falsy (no package restricts defaults, e.g. a plain
+  LCG build) the build is always compatible and ``([], False)`` is returned.
+  """
+  if not validDefaults:
+    return ([], False)
+  exempt = set((defaults_meta or {}).get("_valid_defaults_exempt", ()))
+  exempt.add("release")
+  flavors = [d for d in defaults if d not in exempt]
+  bad = [d for d in flavors if d not in validDefaults]
+  return (bad, not flavors)
+
 
 # Built-in architecture layout, used when no `architecture:` template is set in
 # the defaults.  Expressed with the same %(...)s substitution syntax bits uses
@@ -1046,6 +1073,7 @@ def readDefaults(configDir, defaults, error, architecture):
   defaultsMeta = {}
   defaultsBody = ""
   append_arch_qualifiers = []  # per-default append_arch values, in chain order
+  valid_defaults_exempt = []   # structural/overlay defaults, in chain order
 
   for xdefaults in defaults:
     xDefaults = resolveDefaultsFilename(xdefaults, configDir, failOnError=False)
@@ -1061,6 +1089,12 @@ def readDefaults(configDir, defaults, error, architecture):
       # into a single scalar and we need the ordered per-default list).
       if "append_arch" in xMeta:
         append_arch_qualifiers.append(xMeta["append_arch"])
+      # A structural/overlay default (e.g. the 'alidist' variant) is not a
+      # build flavor: packages must not gate their valid_defaults on it. Read
+      # and strip the marker before the merge so it does not leak into the
+      # merged metadata (see incompatibleFlavorDefaults).
+      if xMeta.pop("valid_defaults_exempt", False):
+        valid_defaults_exempt.append(xdefaults)
       # Normalise this profile's overrides to dict-form *before* the chain merge
       # so that defaults chained as a::b::c deep-merge: the union of all entries,
       # last profile wins on a per-package key. Without this, merge_dicts sees a
@@ -1077,6 +1111,12 @@ def readDefaults(configDir, defaults, error, architecture):
   # use them instead of appending every default name to the architecture.
   if append_arch_qualifiers:
     defaultsMeta["_append_arch_qualifiers"] = append_arch_qualifiers
+
+  # The 'release' base is auto-injected into every chain and is never a build
+  # flavor, so it is always structural (exempt from the valid_defaults gate).
+  if "release" in defaults and "release" not in valid_defaults_exempt:
+    valid_defaults_exempt.append("release")
+  defaultsMeta["_valid_defaults_exempt"] = valid_defaults_exempt
 
   debug("Merged Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
 

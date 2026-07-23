@@ -5,7 +5,7 @@ import unittest
 import platform
 from bits_helpers.utilities import parseRecipe, getRecipeReader, parseDefaults
 from bits_helpers.utilities import FileReader, GitReader
-from bits_helpers.utilities import validateDefaults, SpecError
+from bits_helpers.utilities import validateDefaults, SpecError, incompatibleFlavorDefaults
 from collections import OrderedDict
 
 TEST1="""package: foo
@@ -154,6 +154,32 @@ class TestRecipes(unittest.TestCase):
     ok, out, validDefaults = validateDefaults({"package": "foo", "valid_defaults": {}}, "o2")
     self.assertEqual(ok, False)
     self.assertEqual(out, 'valid_defaults needs to be a string or a list of strings. Found [{}].')
+
+  def test_incompatibleFlavorDefaults(self) -> None:
+    # No package restricts defaults -> always compatible.
+    self.assertEqual(incompatibleFlavorDefaults([], ["release", "o2"]), ([], False))
+    self.assertEqual(incompatibleFlavorDefaults(None, ["release", "o2"]), ([], False))
+
+    valid = ["ali", "alo", "o2", "o2-acts"]
+    meta = {"_valid_defaults_exempt": ["alidist", "release"]}
+
+    # Structural layers (release base + alidist variant) are exempt; the flavor
+    # leaf 'o2' is accepted -> compatible. This is the release::alidist::o2 case.
+    self.assertEqual(
+        incompatibleFlavorDefaults(valid, ["release", "alidist", "o2"], meta),
+        ([], False))
+
+    # A real flavor mismatch is still rejected.
+    bad, missing = incompatibleFlavorDefaults(valid, ["release", "alidist", "nope"], meta)
+    self.assertEqual((bad, missing), (["nope"], False))
+
+    # 'release' is always exempt even without meta; a flavor package built with
+    # no flavor selected is flagged as missing (preserves the original gate).
+    self.assertEqual(incompatibleFlavorDefaults(valid, ["release"]), ([], True))
+    self.assertEqual(incompatibleFlavorDefaults(valid, ["release"], {}), ([], True))
+
+    # A valid single flavor passes.
+    self.assertEqual(incompatibleFlavorDefaults(valid, ["release", "o2"]), ([], False))
 
 if __name__ == '__main__':
     unittest.main()

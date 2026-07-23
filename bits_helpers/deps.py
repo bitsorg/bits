@@ -12,7 +12,7 @@ from bits_helpers.cmd import DockerRunner, execute, getstatusoutput
 from bits_helpers.log import debug, dieOnError, error, info
 from bits_helpers.repo_provider import (
     fetch_repo_providers_iteratively, load_always_on_providers)
-from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults, resolve_variables
+from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, validateDefaults, resolve_variables, incompatibleFlavorDefaults
 
 def doDeps(args, parser):
 
@@ -86,7 +86,8 @@ def doDeps(args, parser):
                      provider_dirs           = provider_dirs,
                      defaults_meta           = defaultsMeta)
   
-  dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
+  _bad_defaults, _missing_flavor = incompatibleFlavorDefaults(validDefaults, args.defaults, defaultsMeta)
+  dieOnError(bool(_bad_defaults) or _missing_flavor,
              "Specified default `%s' is not compatible with the packages you want to build.\n" % "::".join(args.defaults) +
              "Valid defaults:\n\n- " +
              "\n- ".join(sorted(validDefaults)))

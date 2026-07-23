@@ -21,7 +21,7 @@ from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, 
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id, ver_rev
 from bits_helpers.utilities import parseDefaults, readDefaults, resolve_variables
 from bits_helpers.utilities import getPackageList, asList
-from bits_helpers.utilities import validateDefaults
+from bits_helpers.utilities import validateDefaults, incompatibleFlavorDefaults
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash, resolve_spec_data, resolveLocalPath
 from bits_helpers.git import Git, git
@@ -2693,7 +2693,8 @@ def doBuild(args, parser):
                      defaults_meta           = defaultsMeta,
                      performCvmfsMatch       = _cvmfs_match)
 
-  dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
+  _bad_defaults, _missing_flavor = incompatibleFlavorDefaults(validDefaults, args.defaults, defaultsMeta)
+  dieOnError(bool(_bad_defaults) or _missing_flavor,
              "Specified default `%s' is not compatible with the packages you want to build.\n"
              "Valid defaults:\n\n- %s" % ("::".join(args.defaults), "\n- ".join(sorted(validDefaults or []))))
   dieOnError(failed,
