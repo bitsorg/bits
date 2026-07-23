@@ -3824,6 +3824,10 @@ def doBuild(args, parser):
       ("FULL_REQUIRES", " ".join(spec["full_requires"])),
       ("BITS_PREFER_SYSTEM_KEY", spec.get("key", "")),
       ("BITS_SCRIPT_DIR", "/bits" if args.docker else bits_dir),
+      # In legacy mode (aliBuild/alidist) recipes patch their source in place;
+      # build_template.sh makes a private writable copy so the shared read-only
+      # SOURCES tree is never mutated. Empty (off) for modern out-of-tree builds.
+      ("BITS_PRIVATE_SOURCE", "1" if not getattr(args, "initdotshFromModules", True) else ""),
     ]
     if "sources" in spec:
       for idx, src in enumerate(spec["sources"]):
@@ -3914,19 +3918,16 @@ def doBuild(args, parser):
       # Tripwire: mount the shared SOURCES tree read-only so a recipe that mutates
       # its source in place (in-tree patching, codegen, in-tree downloads) fails
       # loudly with EROFS instead of silently poisoning the reused tree for the
-      # next build/arch. On by default for modern bits recipes (they build from
-      # their private rsync'd copy, so a correct recipe is unaffected).
-      #
-      # In legacy mode (--legacy-initdotsh / system.legacy_initdotsh, i.e.
-      # args.initdotshFromModules is False) the tripwire defaults OFF: aliBuild /
-      # alidist recipes legitimately patch their source in place (e.g. GMP's
-      # `sed -i` on acinclude.m4), which the read-only mount would break. An
-      # explicit BITS_READONLY_SOURCES env always wins either way.
-      # It overlays the read-write workdir mount and the more-specific :ro mount
-      # wins. No chmod of the host tree.
+      # next build/arch — or a build of the same package from a DIFFERENT recipe
+      # repo, since SOURCES is keyed by name+version+commit, not by hash. Modern
+      # bits recipes build out-of-tree so they never hit it. Legacy
+      # (aliBuild/alidist) recipes patch in place, so bits hands them a private
+      # writable copy of the source (BITS_PRIVATE_SOURCE below / build_template.sh)
+      # and the shared tree stays read-only for them too. Disable the tripwire
+      # with BITS_READONLY_SOURCES=0. It overlays the read-write workdir mount and
+      # the more-specific :ro mount wins. No chmod of the host tree.
       _src_dir = os.path.join(abspath(args.workDir), "SOURCES")
-      _ro_default = "1" if getattr(args, "initdotshFromModules", True) else "0"
-      _ro_enabled = os.environ.get("BITS_READONLY_SOURCES", _ro_default).strip().lower() \
+      _ro_enabled = os.environ.get("BITS_READONLY_SOURCES", "1").strip().lower() \
                     not in ("0", "false", "no", "off", "")
       _ro_sources = ("-v %s:%s/SOURCES:ro " % (quote(_src_dir), container_workDir)
                      if _ro_enabled and os.path.isdir(_src_dir)

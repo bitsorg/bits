@@ -41,6 +41,10 @@ cleanup() {
   BITS_END_TIMESTAMP=$(date +%%s)
   BITS_DELTA_TIME=$(($BITS_END_TIMESTAMP - $BITS_START_TIMESTAMP))
   echo "bits: done building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP (${BITS_DELTA_TIME} s)"
+  # Remove the per-build private source copy (legacy mode) on success or failure.
+  if [ -n "${_bits_private_src:-}" ] && [ -d "${_bits_private_src:-}" ]; then
+    rm -rf "$_bits_private_src" 2>/dev/null || true
+  fi
   exit $exit_code
 }
 
@@ -145,6 +149,21 @@ fi
 export BUILDROOT="$BITS_BUILD_WORK_DIR/BUILD/$PKGHASH"
 export SOURCEDIR="$WORK_DIR/SOURCES/$PKGNAME/$PKGVERSION/$COMMIT_HASH"
 export BUILDDIR="$BUILDROOT/$PKGNAME"
+
+# Legacy (aliBuild) recipes patch their source in place. The shared SOURCES tree
+# is mounted read-only to stop one build from poisoning the source another build
+# (or another recipe repo) reuses, so give this build a PRIVATE writable copy and
+# point SOURCEDIR at it. The copy carries the patch sentinels, so patches are not
+# re-applied. cleanup() removes it on exit (success or failure). Only active when
+# bits runs in legacy mode (BITS_PRIVATE_SOURCE=1, set by build.py).
+if [ "${BITS_PRIVATE_SOURCE:-}" = 1 ] && [ -n "$PKGHASH" ] && [ -d "$SOURCEDIR" ]; then
+  _bits_private_src="$BUILDROOT/.source"
+  rm -rf "$_bits_private_src"
+  mkdir -p "$_bits_private_src"
+  echo "bits: legacy mode — private source copy $SOURCEDIR -> $_bits_private_src"
+  rsync -a "$SOURCEDIR/" "$_bits_private_src/"
+  export SOURCEDIR="$_bits_private_src"
+fi
 
 # All caching for RECC should happen relative to $WORK_DIR
 export RECC_PROJECT_ROOT=$WORK_DIR
