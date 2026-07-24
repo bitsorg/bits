@@ -123,14 +123,25 @@ def updateReferenceRepo(referenceSources, p, spec,
   call_ignoring_oserrors(os.makedirs, os.path.abspath(referenceSources), exist_ok=True)
 
   if not is_writeable(referenceSources):
-    if os.path.exists(referenceRepo):
+    if _is_valid_reference_repo(referenceRepo, scm):
       debug("Using %s as reference for %s", referenceRepo, p)
       return referenceRepo  # reference is read-only
     else:
-      debug("Cannot create reference for %s in %s", p, referenceSources)
-      return None  # no reference can be found and created (not fatal)
+      # Either absent, or present-but-corrupt in a read-only area we can't fix.
+      debug("No usable reference for %s in %s", p, referenceSources)
+      return None  # not fatal — checkout falls back to a full clone
 
-  if not os.path.exists(referenceRepo):
+  # A directory left behind by an interrupted/partial clone exists but is NOT a
+  # valid bare mirror: `git fetch` in it dies with "not a git repository" and it
+  # stays broken on every subsequent run. Treat such a dir as absent — wipe it
+  # and re-clone, so the reference cache self-heals.
+  repo_valid = _is_valid_reference_repo(referenceRepo, scm)
+  if os.path.exists(referenceRepo) and not repo_valid:
+    warning("Reference repo for %s at %s is incomplete/corrupt "
+            "(interrupted clone?) — removing and re-cloning.", p, referenceRepo)
+    call_ignoring_oserrors(shutil.rmtree, referenceRepo, ignore_errors=True)
+
+  if not repo_valid:
     cmd = scm.cloneReferenceCmd(spec["source"], referenceRepo, usePartialClone)
     logged_scm(scm, p, referenceSources, cmd, ".", allowGitPrompt)
   elif fetch:
@@ -139,6 +150,23 @@ def updateReferenceRepo(referenceSources, p, spec,
     logged_scm(scm, p, referenceSources, cmd, referenceRepo, allowGitPrompt)
 
   return referenceRepo  # reference is read-write
+
+
+def _is_valid_reference_repo(path, scm):
+  """True if *path* is a present, usable reference mirror.
+
+  A git bare mirror has ``HEAD`` and an ``objects/`` directory at its top level;
+  a directory left behind by an interrupted clone has neither, and every git
+  command run in it fails with "not a git repository". Only git is validated by
+  these markers — for other SCMs (e.g. Sapling) we cannot tell cheaply, so assume
+  the directory is fine rather than risk wiping a good mirror.
+  """
+  if not os.path.exists(path):
+    return False
+  if getattr(scm, "name", "") != "Git":
+    return True
+  return os.path.exists(os.path.join(path, "HEAD")) and \
+         os.path.exists(os.path.join(path, "objects"))
 
 
 def is_writeable(dirpath):
