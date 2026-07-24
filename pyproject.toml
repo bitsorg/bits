@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = 'build-bits'
 dynamic = ['readme', 'version']
 description = 'Build Tool'
+requires-python = '>=3.7'
 keywords = ['HEP', 'ALICE']
 license = { file = 'LICENSE.md' }
 authors = [

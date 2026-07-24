@@ -73,7 +73,11 @@ setup(
     # Single-source our package version using setuptools_scm. This makes it
     # PEP440-compliant, and it always references the bits commit that
     # bits was built from.
-    python_requires='>=3.7',
+    # NOTE: requires-python lives in pyproject.toml's [project] table (the
+    # authoritative PEP 621 metadata here). Do NOT re-add python_requires below:
+    # setuptools ignores a setup.py value it finds "outside pyproject.toml" and,
+    # with a [project] table present, crashes applying the (absent) requires-python
+    # (TypeError: 'NoneType' object is not iterable). See issue #105.
     use_scm_version={'write_to': 'bits_helpers/_version.py'},
     setup_requires=[
         # The 7.* series removed support for Python 3.6.
