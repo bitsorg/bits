@@ -169,6 +169,21 @@ def _is_valid_reference_repo(path, scm):
          os.path.exists(os.path.join(path, "objects"))
 
 
+def _is_valid_source_checkout(source_dir, scm):
+  """True if *source_dir* is a usable git working tree.
+
+  A git checkout has a ``.git`` entry (a directory, or a gitlink file for a
+  worktree/submodule). Some recipes mutate their own source at build time and
+  remove ``.git`` (aliBuild tolerates this by building from a private copy — see
+  the BITS_PRIVATE_SOURCE copy in build_template.sh); a leftover source dir with
+  no ``.git`` makes `git checkout`/`fetch` there die with "not a git repository".
+  Only git is validated — other SCMs are assumed valid rather than re-cloned.
+  """
+  if getattr(scm, "name", "") != "Git":
+    return True
+  return os.path.exists(os.path.join(source_dir, ".git"))
+
+
 def is_writeable(dirpath):
   try:
     with tempfile.NamedTemporaryFile(dir=dirpath):
@@ -826,7 +841,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     symlink("/" + os.path.basename(spec["source"])
             if containerised_build else spec["source"],
             source_dir)
-  elif os.path.isdir(source_dir):
+  elif os.path.isdir(source_dir) and _is_valid_source_checkout(source_dir, scm):
     # Sources are a relative path or URL and the local repo already exists, so
     # checkout the right commit there.
     err = scm_exec(scm.checkoutCmd(spec["tag"]), source_dir, check=False)
@@ -838,6 +853,13 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     _verify_commit_pin(scm, spec, source_dir, enforce_mode)
     _apply_patches(spec, source_dir)
   else:
+    # source_dir either doesn't exist yet, OR exists but is not a valid checkout
+    # (a previous in-tree build removed .git, or an interrupted clone) — in which
+    # case `git checkout`/`fetch` there die with "not a git repository". Wipe the
+    # corrupt leftover and (re)clone so the source checkout self-heals.
+    if os.path.isdir(source_dir):
+      warning("Source dir %s for %s is not a valid checkout (missing .git) — "
+              "removing and re-cloning.", source_dir, spec["package"])
     # Sources are a relative path or URL and don't exist locally yet, so clone
     # and checkout the git repo from there.
     # Safety: verify source_dir is inside work_dir before any destructive

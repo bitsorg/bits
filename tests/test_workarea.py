@@ -319,5 +319,25 @@ class ApplyPatchesTest(unittest.TestCase):
                          ".bits_patched must not exist after a failed patch application")
 
 
+class SourceCheckoutValidityTest(unittest.TestCase):
+    """_is_valid_source_checkout: a git source dir with no .git is not usable."""
+
+    def test_validity(self):
+        from bits_helpers.workarea import _is_valid_source_checkout
+        d = tempfile.mkdtemp()
+        try:
+            # git scm, dir with no .git (recipe removed it / interrupted clone)
+            self.assertFalse(_is_valid_source_checkout(d, Git()))
+            # git scm, dir with a .git → valid
+            os.makedirs(os.path.join(d, ".git"))
+            self.assertTrue(_is_valid_source_checkout(d, Git()))
+            # non-git SCM → assumed valid (never re-cloned by this check)
+            class _Sapling:
+                name = "Sapling"
+            self.assertTrue(_is_valid_source_checkout(d + "/absent", _Sapling()))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == '__main__':
     unittest.main()
