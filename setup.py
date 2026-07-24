@@ -2,105 +2,11 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-""" Package bits using setuptools
-"""
+# All packaging metadata lives in pyproject.toml (PEP 621 [project] table +
+# [tool.setuptools*] + [tool.setuptools_scm]). This shim only exists so legacy
+# `python setup.py …` / older pip invocations keep working; it adds no metadata
+# of its own. Do NOT reintroduce name/version/dependencies/python_requires here —
+# duplicating them fights the [project] table (see issue #105).
+from setuptools import setup
 
-# Always prefer setuptools over distutils
-from setuptools import setup, find_packages
-# To use a consistent encoding
-from codecs import open
-import os.path
-import sys
-
-here = os.path.abspath(os.path.dirname(__file__))
-
-# Get the long description from the README file
-with open(os.path.join(here, 'README.md'), encoding='utf-8') as f:
-    long_description = f.read()
-
-install_requires = ['pyyaml', 'requests', 'distro', 'jinja2', 'boto3', 'cryptography']
-
-setup(
-    name='build-bits',
-
-    description='Software Build Tool',
-    long_description=long_description,
-    long_description_content_type='text/markdown',
-
-    # The project's main homepage.
-    url='https://github.com/bitsorg/bits',
-
-    # Author details
-    author='Giulio Eulisse',
-    author_email='giulio.eulisse@cern.ch',
-
-    # Choose your license
-    license='GPL-3.0-or-later',
-
-    # See https://pypi.org/classifiers/
-    classifiers=[
-        # How mature is this project?
-        'Development Status :: 5 - Production/Stable',
-
-        # Indicate who your project is intended for
-        'Intended Audience :: Developers',
-        'Topic :: Software Development :: Build Tools',
-
-        # Pick your license as you wish (should match "license" above)
-        'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
-
-        # Specify the Python versions you support here. In particular, ensure
-        # that you indicate whether you support Python 2, Python 3 or both.
-        'Programming Language :: Python :: 3.7',   # (3.6 dropped: from __future__ import annotations)
-        'Programming Language :: Python :: 3.8',   # ubuntu2004
-        'Programming Language :: Python :: 3.9',   # slc9
-        'Programming Language :: Python :: 3.10',  # ubuntu2204
-        'Programming Language :: Python :: 3.11',  # MacOS
-        'Programming Language :: Python :: 3.12',  # MacOS
-    ],
-
-    # What does your project relate to?
-    keywords='HEP ALICE',
-
-    # You can just specify the packages manually here if your project is
-    # simple. Or you can use find_packages().
-    packages=find_packages(exclude=['yaml']),
-
-    # Alternatively, if you want to distribute just a my_module.py, uncomment
-    # this:
-    #   py_modules=["my_module"],
-
-    # Single-source our package version using setuptools_scm. This makes it
-    # PEP440-compliant, and it always references the bits commit that
-    # bits was built from.
-    # NOTE: requires-python lives in pyproject.toml's [project] table (the
-    # authoritative PEP 621 metadata here). Do NOT re-add python_requires below:
-    # setuptools ignores a setup.py value it finds "outside pyproject.toml" and,
-    # with a [project] table present, crashes applying the (absent) requires-python
-    # (TypeError: 'NoneType' object is not iterable). See issue #105.
-    use_scm_version={'write_to': 'bits_helpers/_version.py'},
-    setup_requires=[
-        # The 7.* series removed support for Python 3.6.
-        'setuptools_scm<7.0.0' if sys.version_info < (3, 7) else
-        'setuptools_scm'
-    ] + (['packaging<=23'] if sys.version_info <(3, 7) else []),
-
-    # List run-time dependencies here.  These will be installed by pip when
-    # your project is installed. For an analysis of "install_requires" vs pip's
-    # requirements files see:
-    # https://packaging.python.org/en/latest/requirements.html
-    install_requires=install_requires,
-
-    # If there are data files included in your packages that need to be
-    # installed, specify them here.  If using Python 2.6 or less, then these
-    # have to be included in MANIFEST.in as well.
-    include_package_data=True,
-    package_data={
-      'bits_helpers': ['build_template.sh'],
-    },
-
-    # To provide executable scripts, use entry points in preference to the
-    # "scripts" keyword. Entry points provide cross-platform support and allow
-    # pip to create the appropriate form of executable for the target platform.
-    scripts = ["bitsBuild", "bits", "bitsDoctor", "bitsDeps", "pb"]
-)
+setup()
