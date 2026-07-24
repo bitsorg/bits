@@ -65,3 +65,24 @@ exclude = ["yaml"]
 
 [tool.setuptools.dynamic]
 readme = {file = ["README.md"], content-type = "text/markdown"}
+
+[tool.ruff]
+# Code formatter/linter — adopted per issue #59 (consensus: ruff).
+# Match the historical .flake8 line length. NOTE: the codebase's hand-aligned
+# 2-space style is intentionally NOT reformatted here; `ruff format` would rewrite
+# essentially every file and is a separate, deliberate flag-day (see #59). This
+# config drives a CHECK-ONLY lint gate.
+line-length = 127
+target-version = "py37"
+
+[tool.ruff.lint]
+# Start with the real-bug subset only — syntax errors (E9), bad comparisons/
+# asserts (F63), misplaced statements (F7), undefined names (F82) — the same set
+# the old (disabled) flake8 job enforced, and green today. Style/hygiene rules
+# (E1/E2/E5/E7, F401 unused-import, F841 unused-var, …) are deliberately left out:
+# enforcing them needs the format flag-day and/or a large one-off cleanup; ratchet
+# them in later.
+# WARNING: do NOT run `ruff check --fix` blindly on this tree — F401 strips
+# import-for-side-effect probes (e.g. the `import psutil` availability check in
+# args.py). Such imports carry an explicit `# noqa: F401`.
+select = ["E9", "F63", "F7", "F82"]

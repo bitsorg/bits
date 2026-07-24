@@ -2764,7 +2764,10 @@ def doBuild(args, parser):
       #   - MyPkg/feature  [development package]
       def _build_row(pkg):
         label = "{}/{}".format(pkg, _display_ref(pkg))
-        source = ("development package" if pkg in develPkgs
+        # noqa on next line: `develPkgs` is defined above in the enclosing scope
+        # (2733/2737); ruff's F821 is a false positive confused by the later
+        # `del develPkgs`, but this closure only runs before that del.
+        source = ("development package" if pkg in develPkgs  # noqa: F821
                   else specs[pkg].get("recipe_source", "?"))
         return label, source
       _rows = [_build_row(x) for x in builtPackages if x != "defaults-release"]

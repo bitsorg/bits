@@ -2126,7 +2126,7 @@ def finaliseArgs(args, parser):
       args.resourceMonitoring = getattr(args, "builders", 1) > 1
     if args.resourceMonitoring:
       try:
-        import psutil
+        import psutil  # noqa: F401  # availability probe: imported for its ImportError side effect, not used by name
       except Exception:
         args.resourceMonitoring = False
         print("Warning: Unable to use psutil. Disabling resource monitoring")

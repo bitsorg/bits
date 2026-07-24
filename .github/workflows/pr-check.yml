@@ -132,25 +132,29 @@ jobs:
         with:
           files: coverage.json
 
-  # Temporarily disabled until we decide whether to follow PEP8 or not
-  # lint:
-  #   name: lint
-  #   runs-on: ubuntu-latest
-  #
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #
-  #     - name: Set up Python
-  #       uses: actions/setup-python@v5
-  #       with:
-  #         python-version: 3.x
-  #
-  #     - name: Install dependencies
-  #       run: python -m pip install --upgrade tox tox-gh-actions
-  #
-  #     - name: Run linters
-  #       run: tox -e lint
-    
+  # Lint with ruff (issue #59). CHECK-ONLY: the ruleset is configured in
+  # pyproject.toml [tool.ruff.lint] to the real-bug subset (E9/F63/F7/F82), so
+  # this is green today and gates new code against syntax errors, undefined
+  # names, and bad comparisons. It does NOT run `ruff format` (a separate
+  # flag-day) and does NOT `--fix`.
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+
+      - name: Install ruff
+        run: python -m pip install --upgrade ruff
+
+      - name: Run ruff
+        run: ruff check .
+
   check-readme:
     name: Check README
     runs-on: ubuntu-latest
