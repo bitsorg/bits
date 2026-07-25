@@ -1105,7 +1105,7 @@ def _pkg_install_path(workDir, architecture, spec):
 
 
 def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False,
-                       from_modules=False):
+                       from_modules=False, cmake_prefix_env=False):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
   If post_build is true, also generate variables pointing to the package
@@ -1117,6 +1117,12 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   (<PKG>_INCLUDE_DIR, Python site-packages on PYTHONPATH), generated from the
   package root and guarded on existence. Off by default, so the generated text
   is byte-identical to before when the mode is not active.
+
+  If cmake_prefix_env is true (legacy/alidist builds that opt in via the
+  hashed defaults env knob BITS_LEGACY_CMAKE_PREFIX_PATH), each package root is
+  also exported on the ':'-separated CMAKE_PREFIX_PATH environment variable,
+  which CMake's find_package() reads natively on Unix. Off by default so the
+  text stays byte-identical to aliBuild's when the knob is not set.
   """
   spec = specs[package]
   # Allow users to override BITS_ARCH_PREFIX if they manually source
@@ -1257,6 +1263,23 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
                  .format(key=key, value=dir)
                  for key, value in prepend_path.items()
                  for dir in value)
+
+    # Legacy/alidist builds, opted in via the hashed defaults env knob
+    # BITS_LEGACY_CMAKE_PREFIX_PATH: expose each package root on the
+    # ':'-separated CMAKE_PREFIX_PATH ENVIRONMENT variable. This mirrors at
+    # build time what the runtime modulefiles already provide
+    # (alibuild-generate-module --cmake emits `prepend-path CMAKE_PREFIX_PATH`),
+    # the same build/runtime-parity rationale as the generic PKG_CONFIG_PATH
+    # above. Needed because aliBuild's init.sh sets only <PKG>_ROOT, which
+    # CMake ignores for packages whose cmake_minimum_required predates
+    # CMP0074/CMP0144 (e.g. VecGeom's builtin VecCore 0.8.0 requiring 3.9
+    # cannot find Vc under CMake 4). Gated off in from_modules mode, which
+    # already emits its own CMAKE_PREFIX_PATH entry.
+    if cmake_prefix_env and not from_modules:
+      _cpp_root = "${%s_ROOT}" % bigpackage
+      lines.append('[ ! -d "%s" ] || export '
+                   'CMAKE_PREFIX_PATH="%s${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"'
+                   % (_cpp_root, _cpp_root))
 
     if from_modules:
       # --initdotsh-from-modules: also expose the development/build environment
@@ -2326,6 +2349,17 @@ def doBuild(args, parser):
   if apply_defaults_legacy_initdotsh(args, defaultsMeta, _initdotsh_explicit):
     info("defaults request the legacy init.sh (system.legacy_initdotsh) — using "
          "pre-modules hashes so alidist tarballs stay reusable")
+  # Legacy/alidist builds may opt in to exporting dependency roots on the
+  # CMAKE_PREFIX_PATH environment variable in the generated init.sh (see
+  # generate_initdotsh). The knob deliberately lives in the defaults `env:`
+  # block — env: is a hashed input, so flipping it re-hashes the whole chain
+  # (build behaviour must never change under an unchanged hash), and the
+  # off-state init.sh stays byte-identical to aliBuild's.
+  _cmake_prefix_env = str((defaultsMeta.get("env") or {}).get(
+      "BITS_LEGACY_CMAKE_PREFIX_PATH", "")).strip().lower() in ("1", "true", "yes", "on")
+  if _cmake_prefix_env:
+    info("defaults env BITS_LEGACY_CMAKE_PREFIX_PATH: dependency roots will be "
+         "exported on CMAKE_PREFIX_PATH in each build's init.sh")
   makedirs(join(workDir, "SPECS"), exist_ok=True)
 
   # When any loaded defaults file sets ``qualify_arch: true`` the install tree
@@ -3765,9 +3799,11 @@ def doBuild(args, parser):
     writeAll("%s/build.sh" % scriptDir, cmd_raw % {
       "provenance": create_provenance_info(spec["package"], specs, args),
       "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False,
-                                           from_modules=getattr(args, "initdotshFromModules", False)),
+                                           from_modules=getattr(args, "initdotshFromModules", False),
+                                           cmake_prefix_env=_cmake_prefix_env),
       "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True,
-                                           from_modules=getattr(args, "initdotshFromModules", False)),
+                                           from_modules=getattr(args, "initdotshFromModules", False),
+                                           cmake_prefix_env=_cmake_prefix_env),
       "develPrefix": develPrefix,
       "workDir": workDir,
       "configDir": abspath(args.configDir),
