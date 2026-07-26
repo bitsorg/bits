@@ -91,8 +91,12 @@ GETSTATUSOUTPUT_MOCKS = {
 class ArgsTestCase(unittest.TestCase):
   @mock.patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")   # for uname -m
   @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
+  # Neutralise the host-dependent --memory/--memory-swap docker injection so
+  # the exact docker_extra_args expectations below hold on any test host
+  # (the cap depends on host RAM and is skipped on hosts below the reserve).
+  @mock.patch("bits_helpers.args._docker_memory_args", return_value=[])
   @mock.patch('bits_helpers.args.commands')
-  def test_actionParsing(self, mock_commands, _mock_cpus):
+  def test_actionParsing(self, mock_commands, _mock_mem, _mock_cpus):
     mock_commands.getstatusoutput.side_effect = lambda x : GETSTATUSOUTPUT_MOCKS[x]
     for (env, cmd, effects) in CORRECT_BEHAVIOR:
       (bits_helpers.args.DEFAULT_WORK_DIR,
@@ -133,6 +137,7 @@ class CpusetInjectionTestCase(unittest.TestCase):
     """Helper: parse a build command with a mocked _host_online_cpus."""
     with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value=cpuset_return), \
+         mock.patch("bits_helpers.args._docker_memory_args", return_value=[]), \
          mock.patch("bits_helpers.args.commands") as mock_cmd, \
          patch.object(sys, "argv", ["alibuild"] + shlex.split(cmd)):
       mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
@@ -193,6 +198,69 @@ class CpusetInjectionTestCase(unittest.TestCase):
          mock.patch("os.cpu_count", return_value=None):
       result = _host_online_cpus()
     self.assertEqual(result, "0-0")
+
+
+class DockerMemoryCapTestCase(unittest.TestCase):
+  """--memory/--memory-swap injection: no single build can OOM the host."""
+
+  @staticmethod
+  def _flags(meminfo="MemTotal:       67108864 kB\n", system="Linux", env=None):
+    from bits_helpers.args import _docker_memory_args
+    with mock.patch("bits_helpers.args.platform.system", return_value=system), \
+         mock.patch("builtins.open", mock.mock_open(read_data=meminfo)), \
+         mock.patch.dict(os.environ, env or {}, clear=False):
+      if env is None and "BITS_DOCKER_MEMORY" in os.environ:
+        del os.environ["BITS_DOCKER_MEMORY"]  # pragma: no cover
+      return _docker_memory_args()
+
+  def test_cap_is_total_minus_reserve(self):
+    # 64 GiB host: reserve = max(4096, 6553) = 6553 MiB → cap 58983 MiB.
+    flags = self._flags()
+    self.assertEqual(flags, ["--memory=58983m", "--memory-swap=58983m"])
+
+  def test_small_host_skips_cap(self):
+    # 4 GiB host is below the 4 GiB reserve → no cap rather than a negative one.
+    self.assertEqual(self._flags(meminfo="MemTotal:        4194304 kB\n"), [])
+
+  def test_non_linux_skips_cap(self):
+    self.assertEqual(self._flags(system="Darwin"), [])
+
+  def test_env_override_value(self):
+    flags = self._flags(env={"BITS_DOCKER_MEMORY": "48g"})
+    self.assertEqual(flags, ["--memory=48g", "--memory-swap=48g"])
+
+  def test_env_override_off(self):
+    for off in ("off", "0", "false", "no"):
+      with self.subTest(off=off):
+        self.assertEqual(self._flags(env={"BITS_DOCKER_MEMORY": off}), [])
+
+  def test_user_memory_flag_suppresses_injection(self):
+    # Parse-level: a user-supplied --memory* in --docker-extra-args wins.
+    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+         mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
+         mock.patch("bits_helpers.args._docker_memory_args",
+                    return_value=["--memory=59g", "--memory-swap=59g"]), \
+         mock.patch("bits_helpers.args.commands") as mock_cmd, \
+         patch.object(sys, "argv", ["alibuild"] + shlex.split(
+           "build zlib -a slc7_x86-64 --docker --docker-extra-args=--memory=8g")):
+      mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
+      args, _ = doParseArgs()
+    mem_args = [a for a in vars(args)["docker_extra_args"] if a.startswith("--memory")]
+    self.assertEqual(mem_args, ["--memory=8g"])
+
+  def test_injected_when_absent(self):
+    # Parse-level: the helper's flags land in docker_extra_args by default.
+    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+         mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
+         mock.patch("bits_helpers.args._docker_memory_args",
+                    return_value=["--memory=59g", "--memory-swap=59g"]), \
+         mock.patch("bits_helpers.args.commands") as mock_cmd, \
+         patch.object(sys, "argv", ["alibuild"] + shlex.split(
+           "build zlib -a slc7_x86-64 --docker")):
+      mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
+      args, _ = doParseArgs()
+    self.assertIn("--memory=59g", vars(args)["docker_extra_args"])
+    self.assertIn("--memory-swap=59g", vars(args)["docker_extra_args"])
 
 
 class ReleaseBaseTestCase(unittest.TestCase):

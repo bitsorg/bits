@@ -78,6 +78,46 @@ def _host_online_cpus():
   except OSError:
     return "0-%d" % ((os.cpu_count() or 1) - 1)
 
+
+def _docker_memory_args():
+  """Return the ``--memory``/``--memory-swap`` flags for the build container.
+
+  Hard memory cap so that no single build can OOM the HOST: the kernel then
+  OOM-kills inside the container's cgroup only, and host services (runner,
+  sshd, monitoring) survive. The cap is host total minus a reserve of
+  max(4 GiB, 10%). ``--memory-swap`` is set to the same value so a capped
+  build cannot thrash host swap instead. Inside the container,
+  available_memory_mib() reads the cgroup limit, so $JOBS self-throttles to
+  fit rather than hitting the cap (see memory.py).
+
+  Returns [] (no cap) when: not Linux (docker on macOS runs in a VM that
+  already bounds memory), BITS_DOCKER_MEMORY=off/0/false/no, the host total
+  cannot be read, or the host is smaller than the reserve.
+  BITS_DOCKER_MEMORY=<size> (docker syntax, e.g. 48g) overrides the computed
+  cap. Callers skip the injection entirely when the user already passed any
+  ``--memory*`` in --docker-extra-args.
+  """
+  if platform.system() != "Linux":
+    return []
+  bdm = os.environ.get("BITS_DOCKER_MEMORY", "").strip()
+  if bdm.lower() in ("off", "0", "false", "no"):
+    return []
+  mem_flag = bdm
+  if not mem_flag:
+    try:
+      with open("/proc/meminfo") as fh:
+        total_kib = next((int(l.split()[1]) for l in fh
+                          if l.startswith("MemTotal:")), 0)
+      total_mib = total_kib // 1024
+      reserve = max(4096, total_mib // 10)
+      if total_mib > reserve:
+        mem_flag = "%dm" % (total_mib - reserve)
+    except Exception:  # pylint: disable=broad-except
+      pass  # detection failed → no cap (previous behaviour)
+  if not mem_flag:
+    return []
+  return ["--memory=" + mem_flag, "--memory-swap=" + mem_flag]
+
 # cd to this directory before start
 DEFAULT_CHDIR = os.environ.get("BITS_CHDIR") or "."
 
@@ -2023,37 +2063,10 @@ def finaliseArgs(args, parser):
       args.docker_extra_args.append("--cpuset-cpus=" + _host_online_cpus())
 
     # Hard memory cap on the build container so that no single build can OOM
-    # the HOST: the kernel then OOM-kills inside the container's cgroup only,
-    # and host services (runner, sshd, monitoring) survive. The cap is host
-    # total minus a reserve of max(4 GiB, 10%). --memory-swap is set to the
-    # same value so a capped build cannot thrash host swap instead. Inside the
-    # container, available_memory_mib() reads the cgroup limit, so $JOBS
-    # self-throttles to fit rather than hitting the cap (see memory.py).
-    # Skipped when the user passes any --memory* themselves, or with
-    # BITS_DOCKER_MEMORY=off; BITS_DOCKER_MEMORY=<size> (docker syntax, e.g.
-    # 48g) overrides the computed cap. Linux-only (docker on macOS runs in a
-    # VM that already bounds memory).
-    _bdm = os.environ.get("BITS_DOCKER_MEMORY", "").strip()
-    if (platform.system() == "Linux"
-        and _bdm.lower() not in ("off", "0", "false", "no")
-        and not any(a.startswith("--memory") for a in args.docker_extra_args)):
-      _mem_flag = ""
-      if _bdm:
-        _mem_flag = _bdm
-      else:
-        try:
-          with open("/proc/meminfo") as _fh:
-            _total_kib = next((int(l.split()[1]) for l in _fh
-                               if l.startswith("MemTotal:")), 0)
-          _total_mib = _total_kib // 1024
-          _reserve = max(4096, _total_mib // 10)
-          if _total_mib > _reserve:
-            _mem_flag = "%dm" % (_total_mib - _reserve)
-        except Exception:  # pylint: disable=broad-except
-          pass  # detection failed → no cap (previous behaviour)
-      if _mem_flag:
-        args.docker_extra_args.append("--memory=" + _mem_flag)
-        args.docker_extra_args.append("--memory-swap=" + _mem_flag)
+    # the HOST (see _docker_memory_args). Skipped when the user passes any
+    # --memory* themselves.
+    if not any(a.startswith("--memory") for a in args.docker_extra_args):
+      args.docker_extra_args.extend(_docker_memory_args())
 
     if args.docker and args.architecture.startswith("osx"):
       parser.error("cannot use `-a %s` and --docker" % args.architecture)
