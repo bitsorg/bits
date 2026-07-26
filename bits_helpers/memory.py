@@ -90,6 +90,51 @@ def parse_memory(value) -> int:
     return result
 
 
+def _cgroup_available_mib() -> int:
+    """Memory still available to *this cgroup* in MiB, or 0 when unlimited.
+
+    ``/proc/meminfo`` (and psutil, which reads it) is NOT namespaced: inside a
+    memory-limited container it reports the HOST's memory, so a build in a
+    ``docker run --memory=X`` container would size ``$JOBS`` for the whole
+    machine and promptly get OOM-killed by its own cgroup.  Read the actual
+    limit and current usage from the cgroup filesystem instead:
+
+    * cgroup v2: ``/sys/fs/cgroup/memory.max`` ("max" = unlimited) and
+      ``memory.current``.
+    * cgroup v1: ``/sys/fs/cgroup/memory/memory.limit_in_bytes`` (a huge
+      sentinel value = unlimited) and ``memory.usage_in_bytes``.
+
+    Returns 0 for "no effective limit" (bare metal, unlimited container, or
+    unreadable cgroupfs) so the caller falls back to the host estimate.
+    """
+    candidates = (
+        ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),          # v2
+        ("/sys/fs/cgroup/memory/memory.limit_in_bytes",
+         "/sys/fs/cgroup/memory/memory.usage_in_bytes"),                         # v1
+    )
+    for limit_path, usage_path in candidates:
+        try:
+            with open(limit_path) as fh:
+                raw = fh.read().strip()
+            if raw == "max":
+                continue                       # v2 unlimited
+            limit = int(raw)
+            # v1 reports ~PAGE_COUNTER_MAX when unlimited; anything absurdly
+            # large (> 1 PiB) is a sentinel, not a real limit.
+            if limit <= 0 or limit > (1 << 50):
+                continue
+            usage = 0
+            try:
+                with open(usage_path) as fh:
+                    usage = int(fh.read().strip())
+            except Exception:  # pylint: disable=broad-except
+                pass           # limit alone is still a valid (conservative) cap
+            return max(0, (limit - usage)) // (1024 * 1024)
+        except Exception:  # pylint: disable=broad-except
+            continue
+    return 0
+
+
 def available_memory_mib() -> int:
     """Return a conservative estimate of *currently available* memory in MiB.
 
@@ -99,28 +144,41 @@ def available_memory_mib() -> int:
     inactive + speculative + purgeable).  When the optional ``psutil`` package
     is importable, its vetted cross-platform reading is preferred over both.
 
+    When the process runs inside a memory-limited cgroup (e.g. a
+    ``docker run --memory=X`` build container), the host estimate is clamped
+    to the cgroup's remaining budget — /proc/meminfo is not namespaced, so
+    without the clamp a containerised build would size itself for the whole
+    machine and be OOM-killed by its own cgroup.
+
     Returns 0 when detection fails so that callers can treat 0 as "unknown"
     and skip capping.
     """
     system = platform.system()
     try:
+        host_avail = 0
         # Prefer psutil's vetted reading when the optional dependency is present:
         # it is more accurate than the per-OS heuristics below — notably on macOS,
         # where vm_stat's overlapping page buckets make an exact "available" hard.
         try:
             import psutil
-            avail = int(psutil.virtual_memory().available) // (1024 * 1024)
-            if avail > 0:
-                return avail
+            host_avail = int(psutil.virtual_memory().available) // (1024 * 1024)
         except Exception:  # pylint: disable=broad-except
             pass  # psutil absent/failed → fall back to per-OS detection below
-        if system == "Linux":
-            return _available_linux()
-        elif system == "Darwin":
-            return _available_darwin()
-        else:
-            debug("available_memory_mib: unsupported platform %r, skipping cap", system)
-            return 0
+        if host_avail <= 0:
+            if system == "Linux":
+                host_avail = _available_linux()
+            elif system == "Darwin":
+                host_avail = _available_darwin()
+            else:
+                debug("available_memory_mib: unsupported platform %r, skipping cap", system)
+                return 0
+        if system == "Linux" and host_avail > 0:
+            cg = _cgroup_available_mib()
+            if cg > 0 and cg < host_avail:
+                debug("available_memory_mib: cgroup limit clamps host estimate "
+                      "%d MiB -> %d MiB", host_avail, cg)
+                return cg
+        return host_avail
     except Exception as exc:  # pylint: disable=broad-except
         warning("Could not detect available memory (%s); $JOBS will not be capped.", exc)
         return 0
@@ -187,7 +245,8 @@ def _available_darwin() -> int:
 # ── Main public function ──────────────────────────────────────────────────────
 
 def effective_jobs(requested: int, spec: dict, builders: int = 1,
-                   oversubscribe: float = 1.0) -> int:
+                   oversubscribe: float = 1.0,
+                   default_mem_per_job: int = 0) -> int:
     """Return the number of parallel jobs to use for *spec*.
 
     The return value bounds two independent oversubscription axes so that the
@@ -234,6 +293,13 @@ def effective_jobs(requested: int, spec: dict, builders: int = 1,
         default) keeps the previous behaviour exactly.  Has no effect on the
         memory cap, nor on single-builder builds (the ``min(requested, …)``
         clamp absorbs it).
+    default_mem_per_job:
+        Per-job memory footprint (MiB) assumed for recipes that declare no
+        ``mem_per_job`` of their own.  0 (the default) preserves the previous
+        behaviour: no memory cap without a recipe hint.  Set from the defaults
+        ``system: mem_per_job_default`` knob so that recipe sets that never
+        declare ``mem_per_job`` (e.g. alidist — aliBuild has no such concept)
+        still cannot OOM the machine with a large ``-j`` (O2Physics at -j32).
     """
     builders = max(1, int(builders))
     try:
@@ -248,13 +314,20 @@ def effective_jobs(requested: int, spec: dict, builders: int = 1,
 
     raw = spec.get("mem_per_job")
     if raw is None:
-        return min(requested, cpu_cap)              # no mem hint → CPU cap only
-
-    try:
-        mem_per_job = parse_memory(raw)
-    except ValueError as exc:
-        warning("Ignoring invalid mem_per_job for %r: %s", spec.get("package", "?"), exc)
-        return min(requested, cpu_cap)
+        # No recipe hint: fall back to the build-host default footprint (the
+        # defaults `system: mem_per_job_default` knob), so a hint-less recipe
+        # set is still memory-capped. 0 = no default → CPU cap only (previous
+        # behaviour).
+        if default_mem_per_job and default_mem_per_job > 0:
+            mem_per_job = int(default_mem_per_job)
+        else:
+            return min(requested, cpu_cap)          # no mem hint → CPU cap only
+    else:
+        try:
+            mem_per_job = parse_memory(raw)
+        except ValueError as exc:
+            warning("Ignoring invalid mem_per_job for %r: %s", spec.get("package", "?"), exc)
+            return min(requested, cpu_cap)
 
     utilisation = float(spec.get("mem_utilisation", 0.9))
     if not (0.0 < utilisation <= 1.0):

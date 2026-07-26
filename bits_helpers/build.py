@@ -2453,6 +2453,25 @@ def doBuild(args, parser):
     except (TypeError, ValueError):
       args.oversubscribe = 1.0
 
+  # Default per-job memory footprint for recipes that declare no mem_per_job
+  # (system: mem_per_job_default — NON-hashed build-host policy: -j never
+  # changes what a build produces). Defaults to 2 GiB so a hint-less recipe
+  # set (e.g. alidist: aliBuild has no mem_per_job) cannot OOM the host with a
+  # large -j (O2Physics at -j32). Set to 0/"off" to disable. Recipes with an
+  # explicit mem_per_job are unaffected. Combined with the cgroup-aware
+  # available_memory_mib(), this also makes builds self-throttle instead of
+  # being OOM-killed inside a --memory-limited container.
+  from bits_helpers.memory import parse_memory as _parse_mem
+  _mpjd = _system_opt("mem_per_job_default", "2 GiB")
+  if str(_mpjd).strip().lower() in ("0", "off", "false", "no", "none", ""):
+    args.memPerJobDefault = 0
+  else:
+    try:
+      args.memPerJobDefault = _parse_mem(str(_mpjd))
+    except ValueError:
+      warning("Invalid system.mem_per_job_default %r — using 2 GiB", _mpjd)
+      args.memPerJobDefault = 2048
+
   # Binary store URL from the active defaults (system.remote_store). Under
   # system: it is NOT hashed, so a stack-wide store never invalidates package
   # hashes (unlike env:). Precedence: CLI/bits.rc/env > system.remote_store >
@@ -3848,7 +3867,8 @@ def doBuild(args, parser):
                         and args.builders > 1
                         and spec["package"] == mainPackage)
                   else args.builders),
-        oversubscribe=getattr(args, "oversubscribe", 1.0) or 1.0))),
+        oversubscribe=getattr(args, "oversubscribe", 1.0) or 1.0,
+        default_mem_per_job=getattr(args, "memPerJobDefault", 0)))),
       ("PKGFAMILY", spec.get("pkg_family", "")),
       ("PKGHASH", spec["hash"]),
       ("PKGNAME", spec["package"]),
