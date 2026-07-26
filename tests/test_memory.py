@@ -435,5 +435,53 @@ class TestEffectiveJobs(unittest.TestCase):
         self.assertEqual(jobs, 3)
 
 
+class TestDefaultMemPerJob(unittest.TestCase):
+    """default_mem_per_job: the memory cap for recipes without mem_per_job."""
+
+    def test_zero_default_preserves_previous_behaviour(self):
+        # No recipe hint + no default → CPU cap only (unbounded by memory).
+        with _avail(4096):
+            self.assertEqual(effective_jobs(32, {"package": "x"}), 32)
+            self.assertEqual(
+                effective_jobs(32, {"package": "x"}, default_mem_per_job=0), 32)
+
+    def test_default_caps_hintless_recipe(self):
+        # 57600 MiB * 0.9 / 2048 = 25.
+        with _avail(57600):
+            self.assertEqual(
+                effective_jobs(32, {"package": "O2Physics"},
+                               default_mem_per_job=2048), 25)
+
+    def test_recipe_hint_wins_over_default(self):
+        # An explicit mem_per_job beats any default (57600*0.9/5120 = 10).
+        spec = {"package": "O2Physics", "mem_per_job": "5 GiB"}
+        with _avail(57600):
+            self.assertEqual(
+                effective_jobs(32, spec, default_mem_per_job=2048), 10)
+
+    def test_unleash_final_keeps_memory_cap(self):
+        # The "unleash final job" DAG optimisation calls effective_jobs with
+        # builders=1 to lift the per-builder CPU split for the last package.
+        # That must NEVER lift the memory cap: with 57600 MiB available and
+        # 5 GiB/job, the unleashed final still runs -j10, not -j32 — the
+        # guardrail that keeps the host alive applies to the last job too.
+        spec = {"package": "O2Physics", "mem_per_job": "5 GiB"}
+        with _avail(57600):
+            unleashed = effective_jobs(32, spec, builders=1,
+                                       default_mem_per_job=2048)
+            shared = effective_jobs(32, spec, builders=4,
+                                    default_mem_per_job=2048)
+        self.assertEqual(unleashed, 10)   # full budget, still memory-capped
+        self.assertEqual(shared, 2)       # (57600/4)*0.9/5120
+
+    def test_unleash_final_keeps_default_memory_cap(self):
+        # Same guarantee for a hint-less recipe running on the default footprint.
+        with _avail(57600):
+            self.assertEqual(
+                effective_jobs(32, {"package": "x"}, builders=1,
+                               oversubscribe=2.0, default_mem_per_job=2048),
+                25)  # memory cap holds; oversubscribe never inflates it
+
+
 if __name__ == "__main__":
     unittest.main()
