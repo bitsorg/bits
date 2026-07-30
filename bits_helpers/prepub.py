@@ -49,10 +49,10 @@ overridden explicitly with ``--prepub-repo`` and ``--prepub-path``.
 """
 
 import hashlib
-import io
 import os
 import time
 from typing import Optional
+from urllib.parse import urlsplit
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -73,21 +73,39 @@ DEFAULT_TIMEOUT       = 1800    # 30 minutes total poll budget
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_session(no_verify_tls: bool = False) -> requests.Session:
-    """Return a requests.Session with retry back-off and no credential.
+#: Attempts for a signed submission, retried by re-signing (see below).
+_SUBMIT_ATTEMPTS = 5
+_SUBMIT_BACKOFF  = 0.5   # seconds; doubled per attempt
+
+
+def _make_session(no_verify_tls: bool = False, signed: bool = True) -> requests.Session:
+    """Return a requests.Session with no credential attached.
 
     The credential is deliberately NOT set here. A signature covers one
     request — its method, URI, field set and payload digest — so it cannot be
     a session-wide header the way a bearer token was; each call site signs its
     own request via :func:`_auth_headers`.
+
+    For the same reason a SIGNED session gets no urllib3-level retry.  urllib3
+    replays the request verbatim, headers included, and a signature is
+    single-use and time-bounded: the replay is rejected as a nonce reuse, so a
+    transient 503 would surface to the caller as a 401 that no amount of
+    reading the server log explains.  (It is also unsound for the upload
+    specifically — the multipart body has already been consumed from the file
+    handle by then.)  Retrying is done by the call sites instead, which re-sign
+    each attempt; :func:`poll_job` already had its own loop.
     """
     session = requests.Session()
     session.verify = not no_verify_tls
-    # Retry on transient server errors and connection resets, but NOT on
-    # the polling GET (status 200) — only on 5xx and connection failures.
+    if signed:
+        session.mount("https://", HTTPAdapter(max_retries=Retry(total=0)))
+        session.mount("http://",  HTTPAdapter(max_retries=Retry(total=0)))
+        return session
+    # Bearer: the credential is a constant header, so a verbatim replay is a
+    # valid request and urllib3 can do the retrying.
     retry = Retry(
         total=5,
-        backoff_factor=0.5,
+        backoff_factor=_SUBMIT_BACKOFF,
         status_forcelist=[500, 502, 503, 504],
         allowed_methods=["GET", "POST"],
         raise_on_status=False,
@@ -126,6 +144,24 @@ def _auth_headers(
             return {}
         return {"Authorization": f"Bearer {token}"}
     return {httpsig.HEADER_NAME: httpsig.sign(token, method, uri, fields, body_hash)}
+
+
+def _signed_uri(url: str) -> str:
+    """Return the request-URI of *url*: the part a signature commits to.
+
+    The signature covers the request-target the server sees, not the path this
+    client happens to have hardcoded. Those differ whenever prepub is deployed
+    under a path prefix (``https://host/prepub``) or behind a reverse proxy
+    that does not strip one: the request arrives as ``/prepub/api/v1/jobs``
+    while a hardcoded ``/api/v1/jobs`` was signed, and every request comes back
+    401 with nothing in either log to explain it. Deriving the URI from the URL
+    that is actually being fetched keeps the two in step by construction.
+    """
+    parts = urlsplit(url)
+    uri = parts.path or "/"
+    if parts.query:
+        uri += "?" + parts.query
+    return uri
 
 
 def sha256_file(path: str) -> str:
@@ -238,7 +274,7 @@ def submit_job(
          os.path.basename(tar_path), tar_size >> 20)
     debug("  POST %s  repo=%s  path=%s  sha256=%s", url, repo, path, digest)
 
-    session = _make_session(no_verify_tls)
+    session = _make_session(no_verify_tls, signed=not bearer_auth)
 
     # The signed field set must be EXACTLY what the server parses, or the
     # digests differ and the request is refused. tar_sha256 is what ties the
@@ -248,25 +284,41 @@ def submit_job(
     if webhook_url:
         signed_fields["webhook_url"] = webhook_url
 
-    try:
-        with open(tar_path, "rb") as tar_fh:
-            fields = {
-                "repo":       (None, repo),
-                "path":       (None, path),
-                "tar":        (os.path.basename(tar_path), tar_fh, "application/octet-stream"),
-                "tar_sha256": (None, digest),
-            }
-            if webhook_url:
-                fields["webhook_url"] = (None, webhook_url)
+    # Retry here rather than in urllib3, so each attempt carries a FRESH
+    # signature and re-opens the tar. Only attempts that plainly never
+    # produced a decision are repeated: a connection failure, or a 5xx.
+    attempts = 1 if bearer_auth else _SUBMIT_ATTEMPTS
+    resp = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with open(tar_path, "rb") as tar_fh:
+                fields = {
+                    "repo":       (None, repo),
+                    "path":       (None, path),
+                    "tar":        (os.path.basename(tar_path), tar_fh, "application/octet-stream"),
+                    "tar_sha256": (None, digest),
+                }
+                if webhook_url:
+                    fields["webhook_url"] = (None, webhook_url)
 
-            headers = _auth_headers(
-                token, "POST", "/api/v1/jobs",
-                fields=signed_fields, body_hash=digest,
-                bearer_auth=bearer_auth, no_verify_tls=no_verify_tls)
-            resp = session.post(url, files=fields, headers=headers, timeout=300)
-    except requests.RequestException as exc:
-        error("Failed to connect to cvmfs-prepub at %s: %s", prepub_url, exc)
-        raise SystemExit(1) from exc
+                headers = _auth_headers(
+                    token, "POST", _signed_uri(url),
+                    fields=signed_fields, body_hash=digest,
+                    bearer_auth=bearer_auth, no_verify_tls=no_verify_tls)
+                resp = session.post(url, files=fields, headers=headers, timeout=300)
+        except requests.RequestException as exc:
+            if attempt == attempts:
+                error("Failed to connect to cvmfs-prepub at %s: %s", prepub_url, exc)
+                raise SystemExit(1) from exc
+            debug("Submission attempt %d failed (network): %s", attempt, exc)
+            time.sleep(_SUBMIT_BACKOFF * (2 ** (attempt - 1)))
+            continue
+
+        if resp.status_code < 500 or attempt == attempts:
+            break
+        debug("Submission attempt %d: HTTP %d, retrying with a fresh signature",
+              attempt, resp.status_code)
+        time.sleep(_SUBMIT_BACKOFF * (2 ** (attempt - 1)))
 
     if resp.status_code != 202:
         error(
@@ -326,8 +378,8 @@ def poll_job(
         When the job fails, is aborted, or the timeout is exceeded.
     """
     url = f"{prepub_url.rstrip('/')}/api/v1/jobs/{job_id}"
-    uri        = f"/api/v1/jobs/{job_id}"
-    session    = _make_session(no_verify_tls)
+    uri        = _signed_uri(url)
+    session    = _make_session(no_verify_tls, signed=not bearer_auth)
     deadline   = time.monotonic() + timeout
     attempt    = 0
     last_state = ""

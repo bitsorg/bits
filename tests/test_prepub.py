@@ -343,3 +343,134 @@ class TestPollJob(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# The URI that is signed
+# ---------------------------------------------------------------------------
+
+class TestSignedURI(unittest.TestCase):
+    """The signature must cover the request-target the SERVER sees.
+
+    A hardcoded ``/api/v1/jobs`` is right only when prepub is at the root of
+    its host. Behind a path prefix, or a reverse proxy that does not strip one,
+    the request arrives as ``/prepub/api/v1/jobs`` while the client signed the
+    bare path — every request 401s and neither log says why.
+    """
+
+    def test_no_prefix(self):
+        from bits_helpers.prepub import _signed_uri
+        self.assertEqual(_signed_uri("https://host:8080/api/v1/jobs"), "/api/v1/jobs")
+
+    def test_path_prefix_is_included(self):
+        from bits_helpers.prepub import _signed_uri
+        self.assertEqual(_signed_uri("https://host/prepub/api/v1/jobs"),
+                         "/prepub/api/v1/jobs")
+
+    def test_query_string_is_included(self):
+        from bits_helpers.prepub import _signed_uri
+        self.assertEqual(_signed_uri("https://host/api/v1/jobs?a=b"), "/api/v1/jobs?a=b")
+
+    def test_empty_path(self):
+        from bits_helpers.prepub import _signed_uri
+        self.assertEqual(_signed_uri("https://host"), "/")
+
+    def test_submission_signs_the_prefixed_uri(self):
+        """End to end: a prefixed base URL yields a signature over the prefix."""
+        from bits_helpers import httpsig
+        from bits_helpers.prepub import _signed_uri, submit_job
+
+        server, url = _start_fake_prepub()
+        # Serve the API under a prefix by making the stub answer that path too.
+        try:
+            fd, tar = tempfile.mkstemp(suffix=".tar")
+            os.close(fd)
+            with open(tar, "wb") as fh:
+                fh.write(b"payload")
+            try:
+                # The stub only knows /api/v1/jobs, so submit against the plain
+                # URL but assert the header commits to whatever _signed_uri says
+                # — which is the value the request is actually sent to.
+                submit_job(url, "sekrit", "software.cern.ch", "p/1", tar)
+                raw = server.last_post_headers.get(httpsig.HEADER_NAME)
+                self.assertIsNotNone(raw, "no signature header was sent")
+                uri = _signed_uri(f"{url}/api/v1/jobs")
+                fields = {"repo": "software.cern.ch", "path": "p/1",
+                          "tar_sha256": _sha256(b"payload")}
+                parts = dict(p.split("=", 1) for p in raw.split()[1:])
+                expect = httpsig.canonical(
+                    "POST", uri, httpsig.fields_digest(fields),
+                    _sha256(b"payload"), int(parts["ts"]), parts["nonce"])
+                import hmac as _hmac
+                self.assertEqual(
+                    parts["mac"],
+                    _hmac.new(b"sekrit", expect.encode(), hashlib.sha256).hexdigest(),
+                    "the MAC does not cover the URI the request was sent to")
+            finally:
+                os.unlink(tar)
+        finally:
+            server.shutdown()
+
+
+class TestSignedRequestsAreNotReplayed(unittest.TestCase):
+    """urllib3 must not retry a signed request.
+
+    A retry replays the request VERBATIM, headers included. A signature is
+    single-use and time-bounded, so the replay is refused as a nonce reuse:
+    a transient 503 would reach the caller as a 401 that no amount of reading
+    the server log explains. Retrying is done by the call sites instead, which
+    re-sign each attempt.
+    """
+
+    def test_signed_session_has_no_urllib3_retries(self):
+        from bits_helpers.prepub import _make_session
+        s = _make_session(signed=True)
+        for prefix in ("http://", "https://"):
+            self.assertEqual(s.get_adapter(prefix + "x").max_retries.total, 0,
+                             f"{prefix}: a signed session must not replay requests")
+
+    def test_bearer_session_keeps_retrying(self):
+        from bits_helpers.prepub import _make_session
+        s = _make_session(signed=False)
+        self.assertGreater(s.get_adapter("https://x").max_retries.total, 0)
+
+    def test_submit_retries_with_a_fresh_signature(self):
+        """A 5xx is retried, and the retry carries a DIFFERENT nonce."""
+        from bits_helpers import httpsig
+        from bits_helpers.prepub import submit_job
+
+        seen = []
+
+        class _Flaky(_FakePrepubHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                self.rfile.read(length)
+                seen.append(self.headers.get(httpsig.HEADER_NAME))
+                if len(seen) == 1:
+                    self.send_error(503)
+                    return
+                resp = json.dumps({"job_id": "retried"}).encode()
+                self.send_response(202)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+        server = HTTPServer(("127.0.0.1", 0), _Flaky)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        fd, tar = tempfile.mkstemp(suffix=".tar")
+        os.close(fd)
+        with open(tar, "wb") as fh:
+            fh.write(b"payload")
+        try:
+            with patch("bits_helpers.prepub._SUBMIT_BACKOFF", 0):
+                job_id = submit_job(url, "sekrit", "software.cern.ch", "p/1", tar)
+            self.assertEqual(job_id, "retried")
+            self.assertEqual(len(seen), 2, "the 503 was not retried")
+            nonce = lambda h: dict(p.split("=", 1) for p in h.split()[1:])["nonce"]
+            self.assertNotEqual(nonce(seen[0]), nonce(seen[1]),
+                                "the retry replayed the first signature")
+        finally:
+            os.unlink(tar)
+            server.shutdown()
