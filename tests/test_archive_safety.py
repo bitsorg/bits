@@ -109,17 +109,45 @@ class SafeLinkPairTestCase(unittest.TestCase):
 
 class PrepubTokenTestCase(unittest.TestCase):
 
-    def test_token_not_sent_over_unverified_tls(self):
+    # The credential moved off the Session and onto each request: a signature
+    # covers one method/URI/field-set/payload, so it cannot be a session-wide
+    # header the way a bearer token was.
+
+    def test_session_carries_no_credential(self):
         from bits_helpers.prepub import _make_session
-        s = _make_session("secret-token", no_verify_tls=True)
+        s = _make_session(no_verify_tls=True)
         self.assertNotIn("Authorization", s.headers)
+        self.assertNotIn("X-Bits-Auth", s.headers)
         self.assertFalse(s.verify)
 
-    def test_token_sent_over_verified_tls(self):
-        from bits_helpers.prepub import _make_session
-        s = _make_session("secret-token", no_verify_tls=False)
-        self.assertEqual(s.headers.get("Authorization"), "Bearer secret-token")
-        self.assertTrue(s.verify)
+    def test_bearer_not_sent_over_unverified_tls(self):
+        """An unverified connection can be intercepted and a captured bearer
+        grants publish rights until it is rotated, so it is withheld."""
+        from bits_helpers.prepub import _auth_headers
+        h = _auth_headers("secret-token", "GET", "/api/v1/jobs/x",
+                          bearer_auth=True, no_verify_tls=True)
+        self.assertEqual(h, {})
+
+    def test_bearer_sent_over_verified_tls(self):
+        from bits_helpers.prepub import _auth_headers
+        h = _auth_headers("secret-token", "GET", "/api/v1/jobs/x",
+                          bearer_auth=True, no_verify_tls=False)
+        self.assertEqual(h.get("Authorization"), "Bearer secret-token")
+
+    def test_signature_is_sent_even_without_tls_verification(self):
+        """Signing has no TLS caveat: the secret never leaves this process and
+        the MAC is useless for any other request, so an intercepted request
+        yields nothing reusable."""
+        from bits_helpers.prepub import _auth_headers
+        h = _auth_headers("secret-token", "GET", "/api/v1/jobs/x",
+                          no_verify_tls=True)
+        self.assertTrue(h.get("X-Bits-Auth", "").startswith("v1 key_id=prepub "))
+        self.assertNotIn("Authorization", h)
+        self.assertNotIn("secret-token", h["X-Bits-Auth"])
+
+    def test_no_credential_when_token_is_empty(self):
+        from bits_helpers.prepub import _auth_headers
+        self.assertEqual(_auth_headers("", "GET", "/api/v1/jobs/x"), {})
 
 
 if __name__ == "__main__":

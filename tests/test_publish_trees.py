@@ -49,7 +49,7 @@ class TestPublishTree(unittest.TestCase):
         captured = {}
 
         def fake_submit(prepub_url, token, repo, path, tar_path, webhook_url,
-                        no_verify_tls):
+                        no_verify_tls, bearer_auth=False):
             # the tar really contains the tree's files
             with tarfile.open(tar_path) as tf:
                 captured["names"] = sorted(n.lstrip("./") for n in tf.getnames()
@@ -61,7 +61,8 @@ class TestPublishTree(unittest.TestCase):
 
         polled = {}
 
-        def fake_poll(prepub_url, token, job_id, poll_interval, timeout, no_verify_tls):
+        def fake_poll(prepub_url, token, job_id, poll_interval, timeout, no_verify_tls,
+                      bearer_auth=False):
             polled["job"] = job_id
 
         with tempfile.TemporaryDirectory() as d:

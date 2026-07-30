@@ -1292,6 +1292,13 @@ def doParseArgs():
   _prepub.add_argument("--prepub-no-verify-tls", dest="prepubNoVerifyTls", action="store_true",
                        default=False,
                        help="Disable TLS certificate verification (self-signed certs / dev mode only).")
+  _prepub.add_argument("--prepub-bearer-auth", dest="prepubBearerAuth", action="store_true",
+                       default=False,
+                       help=("Send the token as 'Authorization: Bearer' instead of signing the "
+                             "request. Only for a cvmfs-prepub running auth_mode=bearer; the "
+                             "secret then travels on every request, so anyone who observes one "
+                             "holds publish rights until it is rotated. By default each request "
+                             "carries a per-request HMAC and the secret never leaves this host."))
 
   # Options for the certify subcommand
   certify_parser.add_argument("manifests", metavar="MANIFEST", nargs="*", default=None,

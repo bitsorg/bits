@@ -729,6 +729,7 @@ def doPublish(args, parser):
     prepub_poll_interval = getattr(args, "prepubPollInterval", 10)
     prepub_timeout      = getattr(args, "prepubTimeout", 1800)
     prepub_no_verify_tls = getattr(args, "prepubNoVerifyTls", False)
+    prepub_bearer_auth   = getattr(args, "prepubBearerAuth", False)
 
     # ------------------------------------------------------------------
     # Validate: exactly one of --spool / --prepub-url must be provided.
@@ -909,6 +910,7 @@ def doPublish(args, parser):
     prepub_cfg = _PrepubConfig(
         url=prepub_url, token=resolve_token(prepub_token),
         webhook=prepub_webhook, no_verify_tls=prepub_no_verify_tls,
+        bearer_auth=prepub_bearer_auth,
         poll_interval=prepub_poll_interval, timeout=prepub_timeout,
     )
 
@@ -942,13 +944,17 @@ def doPublish(args, parser):
 class _PrepubConfig:
     """The cvmfs-prepub connection settings shared by every per-tree submission."""
 
-    def __init__(self, url, token, webhook, no_verify_tls, poll_interval, timeout):
+    def __init__(self, url, token, webhook, no_verify_tls, poll_interval, timeout,
+                 bearer_auth=False):
         self.url = url
         self.token = token
         self.webhook = webhook
         self.no_verify_tls = no_verify_tls
         self.poll_interval = poll_interval
         self.timeout = timeout
+        # False (the default) signs each request; True sends the legacy bearer
+        # for a server still running auth_mode=bearer.
+        self.bearer_auth = bearer_auth
 
 
 def _resolve_repo_subpath(prepub_repo, prepub_path, cvmfs_target, parser):
@@ -980,10 +986,12 @@ def _publish_tree(tree_dir, repo, subpath, cfg, what):
             tf.add(tree_dir, arcname=".")
         job_id = submit_job(prepub_url=cfg.url, token=cfg.token, repo=repo,
                             path=subpath, tar_path=tar_path, webhook_url=cfg.webhook,
-                            no_verify_tls=cfg.no_verify_tls)
+                            no_verify_tls=cfg.no_verify_tls,
+                            bearer_auth=cfg.bearer_auth)
         poll_job(prepub_url=cfg.url, token=cfg.token, job_id=job_id,
                  poll_interval=cfg.poll_interval, timeout=cfg.timeout,
-                 no_verify_tls=cfg.no_verify_tls)
+                 no_verify_tls=cfg.no_verify_tls,
+                 bearer_auth=cfg.bearer_auth)
     finally:
         try:
             os.unlink(tar_path)

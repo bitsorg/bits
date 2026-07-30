@@ -190,14 +190,72 @@ class TestSubmitJob(unittest.TestCase):
         finally:
             os.unlink(tar)
 
-    def test_submit_sends_bearer_token(self):
+    def test_submit_signs_and_does_not_send_the_token(self):
+        """By default the request is signed and the secret never travels.
+
+        The point of signing is that observing a request yields nothing
+        reusable, so this asserts BOTH halves: a signature is present, and the
+        Authorization header is absent. Sending both would hand an observer the
+        very credential the signature exists to protect.
+        """
+        from bits_helpers import httpsig
         from bits_helpers.prepub import submit_job
         tar = self._make_tar()
         try:
             submit_job(self.url, "my-secret-token", "software.cern.ch", "atlas/24.0", tar)
-            # last_post_headers is an email.message.Message — .get() is case-insensitive
-            auth = self.server.last_post_headers.get("Authorization", "")
-            self.assertEqual(auth, "Bearer my-secret-token")
+            headers = self.server.last_post_headers
+            sig = headers.get(httpsig.HEADER_NAME, "")
+            self.assertTrue(sig.startswith("v1 key_id=prepub "), sig)
+            self.assertEqual(headers.get("Authorization", ""), "")
+            self.assertNotIn("my-secret-token", sig)
+        finally:
+            os.unlink(tar)
+
+    def test_submit_signature_binds_the_fields_and_payload(self):
+        """The signature must commit to the exact fields and tar sent."""
+        from bits_helpers import httpsig
+        from bits_helpers.prepub import sha256_file, submit_job
+        tar = self._make_tar()
+        try:
+            submit_job(self.url, "my-secret-token", "software.cern.ch", "atlas/24.0", tar)
+            parts = dict(kv.split("=", 1) for kv in
+                         self.server.last_post_headers[httpsig.HEADER_NAME].split()[1:])
+            digest = sha256_file(tar)
+            self.assertEqual(parts["bh"], digest)
+            self.assertEqual(parts["fd"], httpsig.fields_digest({
+                "repo": "software.cern.ch",
+                "path": "atlas/24.0",
+                "tar_sha256": digest,
+            }))
+        finally:
+            os.unlink(tar)
+
+    def test_submit_bearer_auth_opt_in(self):
+        """--prepub-bearer-auth restores the legacy header for an old server."""
+        from bits_helpers import httpsig
+        from bits_helpers.prepub import submit_job
+        tar = self._make_tar()
+        try:
+            submit_job(self.url, "my-secret-token", "software.cern.ch", "atlas/24.0", tar,
+                       bearer_auth=True)
+            headers = self.server.last_post_headers
+            self.assertEqual(headers.get("Authorization", ""), "Bearer my-secret-token")
+            self.assertEqual(headers.get(httpsig.HEADER_NAME, ""), "")
+        finally:
+            os.unlink(tar)
+
+    def test_submit_bearer_refused_without_tls_verification(self):
+        """The bearer must not go over an unverified connection.
+
+        A signature has no such restriction: the secret never leaves the
+        process, so an intercepted request yields nothing reusable.
+        """
+        from bits_helpers.prepub import submit_job
+        tar = self._make_tar()
+        try:
+            submit_job(self.url, "my-secret-token", "software.cern.ch", "atlas/24.0", tar,
+                       bearer_auth=True, no_verify_tls=True)
+            self.assertEqual(self.server.last_post_headers.get("Authorization", ""), "")
         finally:
             os.unlink(tar)
 

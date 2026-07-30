@@ -24,11 +24,22 @@ API contract (cvmfs-prepub ≥ 0.1.0)
 
 Authentication
 --------------
-Pass the bearer token in the ``Authorization: Bearer <token>`` header.
-The token is read from (in priority order):
+The shared secret is read from (in priority order):
 
 1. The ``--prepub-token`` CLI argument.
 2. The ``PREPUB_API_TOKEN`` environment variable.
+
+It is used one of two ways, matching the server's ``auth_mode``:
+
+* **signed** (default) — the secret stays here and each request carries an
+  ``X-Bits-Auth`` MAC bound to its method, URI, fields and payload
+  (:mod:`bits_helpers.httpsig`, ADR-0008 D3). Observing a request yields
+  nothing reusable.
+* **bearer** (``--prepub-bearer-auth``) — the legacy header, for a server
+  still running ``auth_mode: bearer``. The secret travels on every request.
+
+Signed and bearer are mutually exclusive: sending both would put the secret on
+the wire anyway.
 
 Derivation of repo and sub-path from ``--cvmfs-target``
 --------------------------------------------------------
@@ -46,6 +57,7 @@ from typing import Optional
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
+from bits_helpers import httpsig
 from bits_helpers.log import debug, error, info
 
 
@@ -61,24 +73,15 @@ DEFAULT_TIMEOUT       = 1800    # 30 minutes total poll budget
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_session(token: str, no_verify_tls: bool = False) -> requests.Session:
-    """Return a requests.Session with auth header and retry back-off.
+def _make_session(no_verify_tls: bool = False) -> requests.Session:
+    """Return a requests.Session with retry back-off and no credential.
 
-    The Bearer token is NEVER attached when TLS verification is disabled: an
-    unverified connection can be intercepted, and a captured token grants
-    publish rights. --prepub-no-verify-tls therefore only works against an
-    endpoint that does not require authentication (e.g. a local test
-    instance); requests needing the token must use a verified connection.
+    The credential is deliberately NOT set here. A signature covers one
+    request — its method, URI, field set and payload digest — so it cannot be
+    a session-wide header the way a bearer token was; each call site signs its
+    own request via :func:`_auth_headers`.
     """
     session = requests.Session()
-    if token and no_verify_tls:
-        error("prepub: refusing to send the Bearer token over a "
-              "TLS-verification-disabled connection (--prepub-no-verify-tls); "
-              "requests will be anonymous. Use a verified endpoint for "
-              "authenticated publishing.")
-        token = ""
-    if token:
-        session.headers["Authorization"] = f"Bearer {token}"
     session.verify = not no_verify_tls
     # Retry on transient server errors and connection resets, but NOT on
     # the polling GET (status 200) — only on 5xx and connection failures.
@@ -92,6 +95,37 @@ def _make_session(token: str, no_verify_tls: bool = False) -> requests.Session:
     session.mount("https://", HTTPAdapter(max_retries=retry))
     session.mount("http://",  HTTPAdapter(max_retries=retry))
     return session
+
+
+def _auth_headers(
+    token:         str,
+    method:        str,
+    uri:           str,
+    fields:        Optional[dict] = None,
+    body_hash:     str = httpsig.NO_BODY,
+    bearer_auth:   bool = False,
+    no_verify_tls: bool = False,
+) -> dict:
+    """Build the auth header for one request.
+
+    The TLS caveat applies only to the bearer: an unverified connection can be
+    intercepted, and a captured token grants publish rights until it is
+    rotated. A signature has no such exposure — the secret never leaves this
+    process and the MAC is useless for any other request — so signing over an
+    unverified connection is refused only for the bearer path.
+    """
+    if not token:
+        return {}
+    if bearer_auth:
+        if no_verify_tls:
+            error("prepub: refusing to send the Bearer token over a "
+                  "TLS-verification-disabled connection "
+                  "(--prepub-no-verify-tls); requests will be anonymous. "
+                  "Drop --prepub-bearer-auth to sign instead, which does not "
+                  "put the secret on the wire.")
+            return {}
+        return {"Authorization": f"Bearer {token}"}
+    return {httpsig.HEADER_NAME: httpsig.sign(token, method, uri, fields, body_hash)}
 
 
 def sha256_file(path: str) -> str:
@@ -158,6 +192,7 @@ def submit_job(
     tar_path:      str,
     webhook_url:   Optional[str] = None,
     no_verify_tls: bool = False,
+    bearer_auth:   bool = False,
 ) -> str:
     """Submit a tar archive to cvmfs-prepub and return the assigned job ID.
 
@@ -180,6 +215,10 @@ def submit_job(
         a terminal state.
     no_verify_tls:
         Disable TLS certificate verification (dev/self-signed certs only).
+    bearer_auth:
+        Send the legacy ``Authorization: Bearer`` header instead of signing.
+        Only for a server running ``auth_mode: bearer``; the secret then
+        travels on every request.
 
     Returns
     -------
@@ -199,7 +238,16 @@ def submit_job(
          os.path.basename(tar_path), tar_size >> 20)
     debug("  POST %s  repo=%s  path=%s  sha256=%s", url, repo, path, digest)
 
-    session = _make_session(token, no_verify_tls)
+    session = _make_session(no_verify_tls)
+
+    # The signed field set must be EXACTLY what the server parses, or the
+    # digests differ and the request is refused. tar_sha256 is what ties the
+    # signature to the payload, so a signed submission must carry it — which
+    # this client already did, for integrity.
+    signed_fields = {"repo": repo, "path": path, "tar_sha256": digest}
+    if webhook_url:
+        signed_fields["webhook_url"] = webhook_url
+
     try:
         with open(tar_path, "rb") as tar_fh:
             fields = {
@@ -211,7 +259,11 @@ def submit_job(
             if webhook_url:
                 fields["webhook_url"] = (None, webhook_url)
 
-            resp = session.post(url, files=fields, timeout=300)
+            headers = _auth_headers(
+                token, "POST", "/api/v1/jobs",
+                fields=signed_fields, body_hash=digest,
+                bearer_auth=bearer_auth, no_verify_tls=no_verify_tls)
+            resp = session.post(url, files=fields, headers=headers, timeout=300)
     except requests.RequestException as exc:
         error("Failed to connect to cvmfs-prepub at %s: %s", prepub_url, exc)
         raise SystemExit(1) from exc
@@ -241,6 +293,7 @@ def poll_job(
     poll_interval: int  = DEFAULT_POLL_INTERVAL,
     timeout:       int  = DEFAULT_TIMEOUT,
     no_verify_tls: bool = False,
+    bearer_auth:   bool = False,
 ) -> str:
     """Poll ``GET /api/v1/jobs/<id>`` until the job reaches a terminal state.
 
@@ -258,6 +311,8 @@ def poll_job(
         Maximum total seconds to wait.  Default: 1800 (30 min).
     no_verify_tls:
         Disable TLS certificate verification.
+    bearer_auth:
+        Send the legacy bearer header instead of signing.
 
     Returns
     -------
@@ -271,7 +326,8 @@ def poll_job(
         When the job fails, is aborted, or the timeout is exceeded.
     """
     url = f"{prepub_url.rstrip('/')}/api/v1/jobs/{job_id}"
-    session    = _make_session(token, no_verify_tls)
+    uri        = f"/api/v1/jobs/{job_id}"
+    session    = _make_session(no_verify_tls)
     deadline   = time.monotonic() + timeout
     attempt    = 0
     last_state = ""
@@ -284,7 +340,11 @@ def poll_job(
             raise SystemExit(1)
 
         try:
-            resp = session.get(url, timeout=30)
+            # Signed per attempt, not once: a signature is single-use, so a
+            # reused one would be rejected as a replay on the second poll.
+            resp = session.get(url, timeout=30, headers=_auth_headers(
+                token, "GET", uri,
+                bearer_auth=bearer_auth, no_verify_tls=no_verify_tls))
         except requests.RequestException as exc:
             # Transient network issue — log and keep waiting.
             debug("Poll attempt %d failed (network): %s", attempt, exc)
