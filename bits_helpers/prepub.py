@@ -285,8 +285,16 @@ def submit_job(
         signed_fields["webhook_url"] = webhook_url
 
     # Retry here rather than in urllib3, so each attempt carries a FRESH
-    # signature and re-opens the tar. Only attempts that plainly never
-    # produced a decision are repeated: a connection failure, or a 5xx.
+    # signature and re-opens the tar. Only a connection failure or a 5xx is
+    # repeated; a 4xx is a decision and is returned as-is.
+    #
+    # This is NOT idempotent, and cannot be made so without a client-supplied
+    # request id the server deduplicates on. A 502 from an intermediary, or a
+    # reset after the body was delivered, may mean prepub created the job and
+    # only the reply was lost — the retry then creates a second job for the
+    # same repo/path, and the loser fails on the lease. That is the same
+    # exposure urllib3's retry had; it is called out here so nobody reads the
+    # loop as a guarantee it does not make.
     attempts = 1 if bearer_auth else _SUBMIT_ATTEMPTS
     resp = None
     for attempt in range(1, attempts + 1):
