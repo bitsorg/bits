@@ -59,6 +59,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 import zlib
 
 try:  # reuse the existing primitives when running inside bits
@@ -270,11 +271,13 @@ def parse_s3_upstream(value):
     return alias, conf.strip()
 
 
-def repo_alias(repo, server_conf=None):
-    """The repository's S3 key prefix, from its own server.conf.
+def repo_upstream(repo, server_conf=None):
+    """(alias, s3_config_path) from the repository's own server.conf.
 
-    Read rather than guessed, and read from the file CVMFS itself reads, so
-    this cannot drift from where the objects actually are.
+    Both halves come from ONE line, which is the point: the alias says where
+    the repository's objects live inside the bucket, and the path says which
+    S3 configuration names that bucket. Taking them from different places is
+    how a prepare ends up writing to one store and reading from another.
 
     Later assignments win, as they would in the shell that sources this file,
     and `export KEY=value` counts as an assignment -- which is the form that
@@ -313,7 +316,12 @@ def repo_alias(repo, server_conf=None):
             value = rest
     if value is None:
         raise StageError("%s sets no CVMFS_UPSTREAM_STORAGE" % path)
-    return parse_s3_upstream(value)[0]
+    return parse_s3_upstream(value)
+
+
+def repo_alias(repo, server_conf=None):
+    """Just the alias half of repo_upstream()."""
+    return repo_upstream(repo, server_conf)[0]
 
 
 def bucket_root_url(repo_url, alias):
@@ -365,6 +373,69 @@ def staging_url(repo_url, alias, stage_prefix):
     if not stage_prefix:
         raise StageError("empty staging prefix")
     return "%s/%s" % (bucket_root_url(repo_url, alias), stage_prefix)
+
+
+def probe_staged_object(stage_url, cat_hash, timeout=30, retry_delay=2):
+    """Confirm one object we KNOW was just staged is readable at stage_url.
+
+    The premise is checked, not assumed: WritableCatalogManager::Commit calls
+    root_catalog->SetDirty() unconditionally (catalog_mgr_rw.cc:1320), so the
+    root catalog is always in the set SnapshotCatalogs uploads, and
+    swissknife_ingest.cc:163 gives the catalog spooler the same staging
+    destination as the data spooler. After a successful prepare that object is
+    in the staging prefix whether or not the tar changed anything.
+
+    A failure here therefore means the staging URL is wrong -- OR that the
+    object store was briefly unreachable. Both are reported, because
+    fetch_and_decompress flattens timeouts, 5xx and 403 into one error and
+    claiming certainty about which would be the same overconfidence this
+    function exists to prevent. One retry, because a publish that already paid
+    for the ingest should not die on a single dropped connection.
+
+    This exists because the alternative diagnosis is wrong and convincing.
+    Without it, a bad staging URL makes every fetch 404, http_fetcher silently
+    falls back to the repository, the repository does not have the newly staged
+    catalogs, and find_subtree_catalog reports "the prepare did not produce a
+    subtree catalog for this path" -- sending the reader to swissknife when the
+    fault is a URL.
+
+    Deliberately empirical. The bucket root could instead be computed from the
+    s3.conf, but CVMFS does not parse those files, it EXECUTES them
+    (options.cc BashOptionsManager pipes the file through a shell and reads
+    values back with `echo $PARAM`), so any reimplementation here would
+    disagree with the uploader on `$VAR`, backticks, comments and quoting. One
+    HTTP request answers the question that a parser could only estimate.
+    """
+    # Wrapped: data_url_for_hash raises FastPathUnavailable on a short hash,
+    # and main() catches only StageError, so it would escape as a traceback.
+    try:
+        url = data_url_for_hash(stage_url, cat_hash)
+    except Exception as exc:
+        raise StageError("cannot address catalog %r under %s: %s"
+                         % (cat_hash, stage_url, exc))
+
+    last = None
+    for attempt in (1, 2):
+        try:
+            fetch_and_decompress(url, timeout=timeout)
+            return
+        except Exception as exc:
+            last = exc
+            if attempt == 1:
+                time.sleep(retry_delay)
+
+    raise StageError(
+        "the prepare succeeded, but the object it just staged cannot be read "
+        "back (2 attempts):\n"
+        "  %s\n"
+        "  %s\n"
+        "That object was written moments ago, so either the staging URL is "
+        "wrong or the object store is unreachable. If the error above is a "
+        "404, it is the URL: check the community's stratum0_url in "
+        "bits-console -- it must be the bucket root followed by the "
+        "repository's S3 alias, and the bucket root must be the host serving "
+        "the object store, not a stratum0 web front end."
+        % (url, last))
 
 
 def fetch_published_root(repo_url, timeout=30):

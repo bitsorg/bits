@@ -14,10 +14,20 @@ carries, and nothing else on stdout, so a caller can eval them:
 
 --json emits the same as an object. Progress and errors go to stderr.
 
-The credential comes from $HOME/.bits/<repo>.s3.conf if present, else
-/etc/cvmfs/keys/<repo>.s3.conf, then /etc/cvmfs/s3/<repo>.s3.conf (ADR-0011
-D10). This command never contacts the gateway and never holds a gateway or
-prepub credential: publishing goes through prepub, which holds both.
+The S3 configuration is the one the repository itself uses: the path after the
+"@" in CVMFS_UPSTREAM_STORAGE in /etc/cvmfs/repositories.d/<repo>/server.conf,
+which is also where the repository's key prefix (its "alias") comes from.
+Taking both from one line is what guarantees the objects are written to the
+store the repository is served from.
+
+When that file is absent or unreadable -- an s3.conf is conventionally 0600
+owned by the publishing user -- the search order from ADR-0011 D10 applies
+instead: $HOME/.bits/<repo>.s3.conf, then /etc/cvmfs/keys/<repo>.s3.conf, then
+/etc/cvmfs/s3/<repo>.s3.conf. That is a fine way to find a CREDENTIAL and a
+poor way to decide which BUCKET, so it warns when it is used.
+
+This command never contacts the gateway and never holds a gateway or prepub
+credential: publishing goes through prepub, which holds both.
 
 The S3 credential is NOT scoped, and saying otherwise would misstate the
 security posture. ADR-0011 D2 wants a credential able to write only its own
@@ -53,22 +63,31 @@ import uuid
 try:
     from bits_helpers.cvmfs_stage import (
         StageError, fetch_published_root, find_subtree_catalog, http_fetcher,
-        parse_manifest, prepare_argv, repo_alias, scratch_dir, staging_prefix,
-        staging_url,
+        parse_manifest, prepare_argv, probe_staged_object, repo_upstream,
+        scratch_dir, staging_prefix, staging_url,
     )
 except ImportError:  # pragma: no cover
     from cvmfs_stage import (  # type: ignore
         StageError, fetch_published_root, find_subtree_catalog, http_fetcher,
-        parse_manifest, prepare_argv, repo_alias, scratch_dir, staging_prefix,
-        staging_url,
+        parse_manifest, prepare_argv, probe_staged_object, repo_upstream,
+        scratch_dir, staging_prefix, staging_url,
     )
 
 
 def find_s3_conf(repo, explicit=None):
-    """$HOME/.bits first, then the system path (ADR-0011 D10)."""
+    """$HOME/.bits first, then the system path (ADR-0011 D10).
+
+    Readability, not mere existence: an s3.conf is conventionally 0600 owned
+    by the publishing user, so a path that exists but cannot be read by THIS
+    process is not a usable answer -- selecting it only moves the failure into
+    swissknife, which reports it as a shell error while sourcing the file.
+    """
     if explicit:
         if not os.path.exists(explicit):
             raise StageError("no S3 config at %s" % explicit)
+        if not os.access(explicit, os.R_OK):
+            raise StageError("S3 config %s is not readable by this user "
+                             "(uid %d)" % (explicit, os.getuid()))
         return explicit
     candidates = [
         os.path.join(os.path.expanduser("~"), ".bits", "%s.s3.conf" % repo),
@@ -83,9 +102,9 @@ def find_s3_conf(repo, explicit=None):
         "/etc/cvmfs/s3/%s.s3.conf" % repo,
     ]
     for c in candidates:
-        if os.path.exists(c):
+        if os.access(c, os.R_OK):
             return c
-    raise StageError("no staging S3 config found; looked in:\n  %s"
+    raise StageError("no readable staging S3 config found; looked in:\n  %s"
                      % "\n  ".join(candidates))
 
 
@@ -189,7 +208,6 @@ def main(argv=None):
         user = os.environ.get("USER", "")
 
     try:
-        s3_conf = find_s3_conf(a.repo, a.s3_conf or None)
         # No default. The previous one -- http://cvmfs-stratum-zero.cern.ch/
         # cvmfs/<repo> -- names a stratum0 web front end rather than the object
         # store, and it has exactly the right SHAPE to satisfy every check
@@ -206,19 +224,79 @@ def main(argv=None):
                 "  http://cvmfs-bits.s3.cern.ch/cvmfs/bits.cern.ch")
         stage = staging_prefix(a.host, user, a.job_id)
 
-        # Resolve the repository's S3 alias BEFORE the prepare runs. It is a
-        # local file read costing nothing, and the alternative is discovering a
-        # missing server.conf after a multi-minute ingest has already finished.
-        # A --dry-run must still work on a laptop that has no repository
+        # Read the repository's own server.conf BEFORE the prepare runs. It is
+        # a local file read costing nothing, and the alternative is discovering
+        # a missing server.conf after a multi-minute ingest has finished. A
+        # --dry-run must still work on a laptop that has no repository
         # configuration at all, so there it degrades to a warning.
+        override = a.repo_alias.strip("/")
+        alias, conf_from_server = "", ""
         try:
-            alias = a.repo_alias.strip("/") or repo_alias(a.repo, a.server_conf or None)
+            alias, conf_from_server = repo_upstream(a.repo, a.server_conf or None)
         except StageError:
-            if not a.dry_run:
+            # An explicitly named --server-conf that cannot be read is an
+            # error whatever else was passed: the operator pointed at a
+            # specific file and it did not answer.
+            if a.server_conf or not (a.dry_run or override):
                 raise
-            alias = ""
-            print("[cvmfs-stage] no repository alias available; --dry-run "
-                  "continues without one", file=sys.stderr)
+            if override:
+                print("[cvmfs-stage] no repository configuration read; using "
+                      "--repo-alias", file=sys.stderr)
+            else:
+                print("[cvmfs-stage] no repository configuration read; "
+                      "--dry-run continues without an alias", file=sys.stderr)
+
+        if override:
+            # Tested AFTER strip("/"): `--repo-alias /` used to fall through to
+            # server.conf and now would blank a value already read from it,
+            # leaving an empty alias that survives all the way to a "the
+            # staging URL is wrong" report after the full ingest.
+            if alias and override != alias:
+                print("[cvmfs-stage] WARNING: --repo-alias %s overrides %s from "
+                      "server.conf. The S3 configuration still comes from that "
+                      "same server.conf line, so these two now describe "
+                      "different stores -- pass --s3-conf as well if that is "
+                      "not what you meant." % (override, alias), file=sys.stderr)
+            alias = override
+
+        # Nothing below can do anything useful without an alias, and a real run
+        # that reaches the ingest without one wastes the whole prepare before
+        # failing with a misleading message about the staging URL.
+        if not alias and not a.dry_run:
+            raise StageError(
+                "no repository S3 alias: it was not found in server.conf and "
+                "--repo-alias gave nothing usable")
+
+        # The S3 configuration comes from the SAME CVMFS_UPSTREAM_STORAGE line
+        # as the alias, so the store written to is by construction the store
+        # the repository is served from. find_s3_conf's search order remains
+        # only for hosts with no repository configuration at all: it prefers
+        # $HOME/.bits/<repo>.s3.conf, which is a fine credential location but a
+        # poor way to decide WHICH bucket -- it can name a different store than
+        # the repository uses, and objects would then be written to one and
+        # read back from the other. That is a silent 404, not an error.
+        #
+        # The fallback is kept live rather than made unreachable: an s3.conf is
+        # conventionally 0600 owned by the publishing user, and a build host
+        # where the repository's copy is root-only but the user has a readable
+        # one in $HOME used to work. Losing that would be a regression, so an
+        # unreadable server.conf-named file degrades to the search order with
+        # a warning rather than failing.
+        if a.s3_conf:
+            s3_conf = find_s3_conf(a.repo, a.s3_conf)
+        elif conf_from_server and os.access(conf_from_server, os.R_OK):
+            s3_conf = conf_from_server
+        else:
+            if conf_from_server:
+                print("[cvmfs-stage] %s, named by CVMFS_UPSTREAM_STORAGE in the "
+                      "repository's server.conf, %s; falling back to the search "
+                      "order, which may name a different store"
+                      % (conf_from_server,
+                         "does not exist" if not os.path.exists(conf_from_server)
+                         else "is not readable by this user"),
+                      file=sys.stderr)
+            s3_conf = find_s3_conf(a.repo)
+        print("[cvmfs-stage] S3 config: %s" % s3_conf, file=sys.stderr)
 
         # Resolve the read-back URL NOW, not after the ingest. A URL that
         # disagrees with the alias is the failure this whole path exists to
@@ -296,6 +374,13 @@ def main(argv=None):
             # the spool one prepare at a time, and it is ours alone.
             if not a.dry_run:
                 shutil.rmtree(tmp, ignore_errors=True)
+
+        # Before walking: confirm the staging URL actually serves an object we
+        # just wrote. The walk's fallback to the repository is what makes a bad
+        # URL look like a bad prepare, so this question has to be asked while
+        # the answer is still unambiguous.
+        probe_staged_object(stage_url, m["root"])
+        print("[cvmfs-stage] staging URL confirmed readable", file=sys.stderr)
 
         # The manifest names the ROOT catalog. prepub needs the SUBTREE one.
         # stage_url was resolved before the ingest; see there for why the

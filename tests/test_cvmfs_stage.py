@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bits_helpers.cvmfs_stage import (  # noqa: E402
     StageError, bucket_root_url, find_subtree_catalog, parse_manifest,
-    parse_s3_upstream, read_catalog, repo_alias, staging_prefix, staging_url,
+    parse_s3_upstream, probe_staged_object, read_catalog, repo_alias,
+    repo_upstream, staging_prefix, staging_url,
 )
 
 
@@ -486,6 +487,216 @@ class TestBucketRootAndStagingURL(unittest.TestCase):
             bucket_root_url("/cvmfs/bits.cern.ch", self.PROD_ALIAS)
         with self.assertRaises(StageError):
             staging_url(self.PROD_URL, self.PROD_ALIAS, "")
+
+
+class TestRepoUpstream(unittest.TestCase):
+    """The alias and the s3.conf path come from ONE line, together."""
+
+    def conf(self, text):
+        fd, path = tempfile.mkstemp(suffix=".conf")
+        os.write(fd, text.encode())
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_returns_both_halves_of_the_production_value(self):
+        p = self.conf(
+            "CVMFS_UPSTREAM_STORAGE=S3,/var/spool/cvmfs/bits.cern.ch/tmp,"
+            "cvmfs/bits.cern.ch@/etc/cvmfs/keys/bits.cern.ch.s3.conf\n")
+        self.assertEqual(repo_upstream("bits.cern.ch", p),
+                         ("cvmfs/bits.cern.ch",
+                          "/etc/cvmfs/keys/bits.cern.ch.s3.conf"))
+
+    def test_the_s3_conf_is_the_one_beside_the_alias(self):
+        """The point of taking both from one line: whichever store the alias
+        describes, this is the configuration that names it. A search order over
+        conventional paths can pick a different store, and objects would then
+        be written to one bucket and read back from another -- a silent 404,
+        not an error.
+        """
+        p = self.conf("CVMFS_UPSTREAM_STORAGE=S3,/tmp,"
+                      "cvmfs/bits.cern.ch@/etc/cvmfs/keys/elsewhere.s3.conf\n")
+        alias, conf = repo_upstream("bits.cern.ch", p)
+        self.assertEqual(alias, "cvmfs/bits.cern.ch")
+        self.assertEqual(conf, "/etc/cvmfs/keys/elsewhere.s3.conf")
+
+    def test_repo_alias_returns_the_alias(self):
+        p = self.conf("CVMFS_UPSTREAM_STORAGE=S3,/tmp,a/b@/etc/c.conf\n")
+        self.assertEqual(repo_alias("r", p), "a/b")
+
+
+class TestProbeStagedObject(unittest.TestCase):
+    """One HTTP request, asked while the answer is still unambiguous."""
+
+    HASH = "a" * 40
+
+    def test_silent_when_the_object_is_there(self):
+        seen = []
+
+        def ok(url, timeout=30):
+            seen.append(url)
+            return b"blob"
+
+        with _patched_fetch(ok):
+            probe_staged_object("http://bucket.example/staging/h/u/7", self.HASH)
+        # Addresses the object by its content path, including the catalog's
+        # "C" suffix -- the same URL the walk will use.
+        self.assertEqual(seen, ["http://bucket.example/staging/h/u/7/data/"
+                                "aa/" + "a" * 38 + "C"])
+
+    def test_failure_names_the_URL_and_not_the_prepare(self):
+        """The whole reason this function exists. Without it a bad staging URL
+        surfaces as find_subtree_catalog's "the prepare did not produce a
+        subtree catalog for this path", which points at swissknife."""
+        def missing(url, timeout=30):
+            raise IOError("HTTP Error 404: Not Found")
+
+        with _patched_fetch(missing):
+            with self.assertRaises(StageError) as cm:
+                probe_staged_object("http://wrong.example/staging/h/u/7", self.HASH,
+                                    retry_delay=0)
+        msg = str(cm.exception)
+        self.assertIn("http://wrong.example/staging/h/u/7", msg)
+        self.assertIn("stratum0_url", msg)
+        # It must not blame the prepare, which succeeded ...
+        self.assertNotIn("did not produce", msg)
+        # ... nor claim a certainty it does not have: fetch_and_decompress
+        # flattens timeouts, 5xx and 403 into the same error as a 404.
+        self.assertIn("unreachable", msg)
+
+    def test_retries_once_before_giving_up(self):
+        """The ingest has already been paid for; one dropped connection should
+        not throw it away.
+
+        NEGATIVE CONTROL: drop the retry loop and calls == 1, so this fails.
+        """
+        calls = []
+
+        def flaky(url, timeout=30):
+            calls.append(url)
+            if len(calls) == 1:
+                raise IOError("Connection reset by peer")
+            return b"blob"
+
+        with _patched_fetch(flaky):
+            probe_staged_object("http://bucket.example/staging/h/u/7", self.HASH,
+                                retry_delay=0)
+        self.assertEqual(len(calls), 2)
+
+    def test_implausible_hash_raises_StageError_not_a_traceback(self):
+        """data_url_for_hash raises FastPathUnavailable, which main() does not
+        catch. It has to be raised inside the handler or it escapes as a
+        traceback.
+
+        NEGATIVE CONTROL: move data_url_for_hash out of the try and this fails
+        with FastPathUnavailable instead of StageError.
+        """
+        def explode(url, timeout=30):
+            raise AssertionError("must not fetch on a malformed hash")
+
+        with _patched_fetch(explode):
+            with self.assertRaises(StageError):
+                probe_staged_object("http://bucket.example/s", "ab")
+
+
+class TestMainWiring(unittest.TestCase):
+    """Drives cvmfs_stage_cmd.main with the ingest stubbed out.
+
+    The unit tests above prove each piece; this proves they are CONNECTED.
+    Without it the probe could be deleted from main() and every other test in
+    this file would stay green -- which was true of an earlier version, whose
+    "NEGATIVE CONTROL: delete the probe call from cvmfs_stage_cmd" note
+    described an experiment the suite could not perform.
+    """
+
+    ROOT = "a" * 40
+
+    def setUp(self):
+        import bits_helpers.cvmfs_stage_cmd as cmd
+        import bits_helpers.cvmfs_stage as mod
+        self.cmd, self.mod = cmd, mod
+
+        fd, self.server_conf = tempfile.mkstemp(suffix=".conf")
+        os.write(fd, b"CVMFS_UPSTREAM_STORAGE=S3,/tmp,cvmfs/bits.cern.ch"
+                     b"@%s\n" % self.s3conf().encode())
+        os.close(fd)
+        self.addCleanup(os.unlink, self.server_conf)
+
+        # The ingest: write the manifest the real one would, and succeed.
+        def fake_call(argv, stdout=None):
+            out = argv[argv.index("-o") + 1]
+            with open(out, "w") as fh:
+                fh.write("C%s\nNbits.cern.ch\nS2\n" % self.ROOT)
+            return 0
+
+        self._real_call = cmd.subprocess.call
+        cmd.subprocess.call = fake_call
+        self.addCleanup(setattr, cmd.subprocess, "call", self._real_call)
+
+        # No locking and no spool: neither is what this test is about.
+        self._real_lock = cmd.prepare_lock
+        cmd.prepare_lock = lambda *a, **k: contextlib.nullcontext()
+        self.addCleanup(setattr, cmd, "prepare_lock", self._real_lock)
+
+    def s3conf(self):
+        if not hasattr(self, "_s3conf"):
+            fd, self._s3conf = tempfile.mkstemp(suffix=".s3.conf")
+            os.write(fd, b"CVMFS_S3_HOST=s3.cern.ch\nCVMFS_S3_BUCKET=cvmfs-bits\n")
+            os.close(fd)
+            self.addCleanup(os.unlink, self._s3conf)
+        return self._s3conf
+
+    def argv(self, spool):
+        return ["--repo", "bits.cern.ch", "--path", "p/1.0",
+                "--tar", self.s3conf(), "--job-id", "7",
+                "--host", "h", "--user", "u",
+                "--server-conf", self.server_conf,
+                "--spool", spool, "--base-root", "b" * 40,
+                "--stratum0-url",
+                "http://cvmfs-bits.s3.cern.ch/cvmfs/bits.cern.ch"]
+
+    def test_a_bad_staging_url_is_caught_by_the_probe_not_the_walk(self):
+        """NEGATIVE CONTROL: delete the probe_staged_object call from main()
+        and this fails -- the run gets as far as the walk and reports "the
+        prepare did not produce a subtree catalog", blaming swissknife.
+        Verified.
+        """
+        import io
+        spool = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, spool, True)
+
+        def nothing_anywhere(url, timeout=30):
+            raise IOError("HTTP Error 404: Not Found")
+
+        err = io.StringIO()
+        real_stderr, sys.stderr = sys.stderr, err
+        try:
+            with _patched_fetch(nothing_anywhere):
+                rc = self.cmd.main(self.argv(spool))
+        finally:
+            sys.stderr = real_stderr
+
+        self.assertEqual(rc, 1)
+        msg = err.getvalue()
+        self.assertIn("cannot be read back", msg)
+        self.assertNotIn("did not produce a subtree catalog", msg)
+
+
+import contextlib  # noqa: E402
+import shutil  # noqa: E402
+
+
+@contextlib.contextmanager
+def _patched_fetch(fn):
+    """Swap the module's fetcher. The probe is defined by which URL it asks
+    for and what it does with a failure, so the transport is the right seam."""
+    import bits_helpers.cvmfs_stage as mod
+    original = mod.fetch_and_decompress
+    mod.fetch_and_decompress = fn
+    try:
+        yield
+    finally:
+        mod.fetch_and_decompress = original
 
 
 if __name__ == "__main__":
