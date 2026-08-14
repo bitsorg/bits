@@ -15,9 +15,18 @@ carries, and nothing else on stdout, so a caller can eval them:
 --json emits the same as an object. Progress and errors go to stderr.
 
 The credential comes from $HOME/.bits/<repo>.s3.conf if present, else
-/etc/cvmfs/keys/<repo>.s3.conf (ADR-0011 D10). It is the STAGING credential,
-scoped to write only its own prefix; it is never the CVMFS bucket credential,
-and this command never contacts the gateway.
+/etc/cvmfs/keys/<repo>.s3.conf, then /etc/cvmfs/s3/<repo>.s3.conf (ADR-0011
+D10). This command never contacts the gateway and never holds a gateway or
+prepub credential: publishing goes through prepub, which holds both.
+
+The S3 credential is NOT scoped, and saying otherwise would misstate the
+security posture. ADR-0011 D2 wants a credential able to write only its own
+staging prefix; RGW at CERN cannot express that without an administrator
+granting `user-policy` capability (`radosgw-admin caps add --uid=... --caps=
+"user-policy=*"`), which has not happened. So today this is the repository's
+S3 credential, and a build host that holds it can write anywhere in the
+bucket. That is a real limitation of the deployment, not of the design, and
+it bounds how far the "producer needs nothing privileged" argument reaches.
 """
 
 import argparse
@@ -55,6 +64,12 @@ def find_s3_conf(repo, explicit=None):
     candidates = [
         os.path.join(os.path.expanduser("~"), ".bits", "%s.s3.conf" % repo),
         "/etc/cvmfs/keys/%s.s3.conf" % repo,
+        # Where CVMFS deployments actually put it. /etc/cvmfs/keys holds the
+        # SIGNING material (.crt/.key/.masterkey/.pub) and no S3 config; the
+        # testbed and the build host both use /etc/cvmfs/s3/. MEASUREMENTS §18
+        # recorded the same surprise for --direct-s3, which defaults to
+        # /etc/cvmfs/<repo>.s3.conf and fails on this layout.
+        "/etc/cvmfs/s3/%s.s3.conf" % repo,
     ]
     for c in candidates:
         if os.path.exists(c):
