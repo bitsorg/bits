@@ -28,6 +28,31 @@ is still *referenced* by the tree but is not re-staged: in §21, `/golden/smoke`
 returned 404 from the staging prefix and 200 from the repository. A walker that
 assumes the staging prefix is self-contained works on a toy repository and dies
 on a real one.
+
+Reading the staged objects back needs the BUCKET root, not the repository URL
+--------------------------------------------------------------------------
+The staging prefix is bucket-root relative: `staging/<host>/<user>/<job>` is
+handed to the spooler as its alias, so objects land at exactly that key. To
+fetch them over HTTP the walk needs the bucket root, and the only thing the
+caller has is the repository's URL -- which is the bucket root plus the
+repository's own alias.
+
+Deriving one from the other by chopping a fixed number of path segments is
+wrong, because the two deployments have different alias depths:
+
+    production   http://cvmfs-bits.s3.cern.ch/cvmfs/bits.cern.ch
+                 bucket cvmfs-bits (virtual-host), alias "cvmfs/bits.cern.ch"
+    testbed      http://minio:9000/cvmfs/test.cvmfs.io
+                 bucket cvmfs (path-style),        alias "test.cvmfs.io"
+
+An earlier version chopped exactly one segment. That is correct for the testbed
+and wrong for production, where it produced `.../cvmfs/staging/...` for objects
+written at `staging/...`. The failure is not a 404 the caller sees: the fetcher
+falls back to the repository, the repository does not have the newly staged
+catalogs, and the walk reports "the prepare did not produce a subtree catalog
+for this path" -- a confident wrong diagnosis pointing at swissknife. So the
+alias is read from the repository configuration that defines it, and the URL is
+required to end with it rather than assumed to.
 """
 
 import os
@@ -209,6 +234,137 @@ def staging_prefix(host, user, job_id):
     if len(prefix) > 128:
         raise StageError("staging prefix exceeds prepub's 128-byte limit: %r" % prefix)
     return prefix
+
+
+def parse_s3_upstream(value):
+    """Split a CVMFS_UPSTREAM_STORAGE value into (alias, s3_config_path).
+
+    The value is the one CVMFS itself parses:
+
+        S3,<scratch-dir>,<repo_alias>@<s3.conf>
+
+    The alias is the key prefix every object of the repository lives under --
+    `upload_s3.cc` builds "<alias>/data/<hash-path>" -- so it is what turns a
+    bucket into a repository URL, and it is not derivable from the repository
+    name: production uses "cvmfs/bits.cern.ch" for repository "bits.cern.ch".
+    """
+    value = (value or "").strip().strip("'\"")
+    fields = value.split(",")
+    # Exactly three fields, and "S3" case-sensitively: this is what CVMFS
+    # itself accepts (upload_spooler_definition.cc refuses upstream.size() != 3
+    # and compares the tag literally). Being more permissive here would accept
+    # values the publisher rejects, so a malformed upstream would be diagnosed
+    # by whatever failed next instead of by this function.
+    if len(fields) != 3 or fields[0].strip() != "S3":
+        raise StageError(
+            "CVMFS_UPSTREAM_STORAGE is not an S3 spooler configuration: %r. "
+            "Expected exactly S3,<scratch-dir>,<alias>@<s3.conf>. The staged "
+            "publish path stages into S3 and has nothing to read back from "
+            "any other upstream." % value[:200])
+    alias, sep, conf = fields[2].partition("@")
+    alias = alias.strip().strip("/")
+    if not alias or not sep or not conf.strip():
+        raise StageError(
+            "cannot read <alias>@<s3.conf> out of CVMFS_UPSTREAM_STORAGE: %r"
+            % value[:200])
+    return alias, conf.strip()
+
+
+def repo_alias(repo, server_conf=None):
+    """The repository's S3 key prefix, from its own server.conf.
+
+    Read rather than guessed, and read from the file CVMFS itself reads, so
+    this cannot drift from where the objects actually are.
+
+    Later assignments win, as they would in the shell that sources this file,
+    and `export KEY=value` counts as an assignment -- which is the form that
+    silently lost to a stale earlier line in the first version of this
+    function, producing a "the URL and the alias disagree" error that blamed
+    the configuration for a parser bug.
+
+    This is a deliberately shallow reader, not a shell: it does not expand
+    variables, follow continuations or evaluate conditionals. Every one of
+    those produces a StageError further on rather than a wrong answer, because
+    the value either fails to parse or fails to match the repository URL.
+    """
+    path = server_conf or "/etc/cvmfs/repositories.d/%s/server.conf" % repo
+    try:
+        # errors="replace": a stray non-UTF-8 byte anywhere in the file must
+        # not turn into a UnicodeDecodeError traceback out of main(), which
+        # catches StageError only.
+        with open(path, "r", errors="replace") as fh:
+            text = fh.read()
+    except IOError as exc:
+        raise StageError(
+            "cannot read %s: %s -- the staged publish path needs the "
+            "repository's S3 alias, which lives in CVMFS_UPSTREAM_STORAGE "
+            "there. Pass --repo-alias to override." % (path, exc))
+
+    value = None
+    for line in text.splitlines():
+        line = line.strip()
+        key, sep, rest = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if key == "CVMFS_UPSTREAM_STORAGE":
+            value = rest
+    if value is None:
+        raise StageError("%s sets no CVMFS_UPSTREAM_STORAGE" % path)
+    return parse_s3_upstream(value)[0]
+
+
+def bucket_root_url(repo_url, alias):
+    """Strip the repository's alias off its URL, leaving the bucket root.
+
+    REQUIRES rather than assumes: the repository URL must end with the alias.
+    When it does not, the console's `stratum0_url` and the repository's own
+    configuration disagree about where the repository lives, and every
+    subsequent fetch would silently address the wrong keys. See the module
+    docstring for what that looked like the first time.
+    """
+    url = (repo_url or "").rstrip("/")
+    if "://" not in url:
+        raise StageError("repository URL %r is not absolute" % repo_url)
+    alias = (alias or "").strip("/")
+    if not alias:
+        raise StageError("empty repository alias: nothing to strip from %r" % repo_url)
+
+    # The leading slash is what makes this a SEGMENT match rather than a
+    # substring one: without it, alias "cvmfs.io" would match the tail of
+    # ".../test.cvmfs.io" and silently cut a hostname in half.
+    suffix = "/" + alias
+    if not url.endswith(suffix):
+        raise StageError(
+            "the repository URL and the repository's S3 alias disagree.\n"
+            "  URL   (BITS_STRATUM0_URL): %s\n"
+            "  alias (CVMFS_UPSTREAM_STORAGE): %s\n"
+            "The URL must be the bucket root followed by the alias, e.g.\n"
+            "  http://cvmfs-bits.s3.cern.ch/cvmfs/bits.cern.ch  (alias cvmfs/bits.cern.ch)\n"
+            "Refusing to guess: staged objects would be fetched from the wrong "
+            "keys, and the walk would then blame the prepare for producing no "
+            "subtree catalog." % (url, alias))
+
+    root = url[:-len(suffix)]
+    if "://" not in root or not root.split("://", 1)[1]:
+        raise StageError(
+            "stripping alias %r from %r leaves no bucket root (%r)"
+            % (alias, url, root))
+    return root
+
+
+def staging_url(repo_url, alias, stage_prefix):
+    """The HTTP base under which this run's staged objects can be read.
+
+    Bucket root + the staging prefix, because the prefix is what the spooler
+    was given as its alias and is therefore bucket-root relative.
+    """
+    stage_prefix = (stage_prefix or "").strip("/")
+    if not stage_prefix:
+        raise StageError("empty staging prefix")
+    return "%s/%s" % (bucket_root_url(repo_url, alias), stage_prefix)
 
 
 def fetch_published_root(repo_url, timeout=30):

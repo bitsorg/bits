@@ -21,8 +21,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bits_helpers.cvmfs_stage import (  # noqa: E402
-    StageError, find_subtree_catalog, parse_manifest, read_catalog,
-    staging_prefix,
+    StageError, bucket_root_url, find_subtree_catalog, parse_manifest,
+    parse_s3_upstream, read_catalog, repo_alias, staging_prefix, staging_url,
 )
 
 
@@ -279,6 +279,213 @@ class TestPrepareArgv(unittest.TestCase):
     def test_base_root_is_the_hash_it_was_given(self):
         a = self.argv(base_root="b" * 40)
         self.assertEqual(a[a.index("-b") + 1], "b" * 40)
+
+
+class TestParseS3Upstream(unittest.TestCase):
+
+    def test_reads_the_production_value_verbatim(self):
+        alias, conf = parse_s3_upstream(
+            "S3,/var/spool/cvmfs/bits.cern.ch/tmp,cvmfs/bits.cern.ch"
+            "@/etc/cvmfs/keys/bits.cern.ch.s3.conf")
+        self.assertEqual(alias, "cvmfs/bits.cern.ch")
+        self.assertEqual(conf, "/etc/cvmfs/keys/bits.cern.ch.s3.conf")
+
+    def test_testbed_single_segment_alias(self):
+        alias, conf = parse_s3_upstream(
+            "S3,/var/spool/cvmfs/test.cvmfs.io/tmp,test.cvmfs.io"
+            "@/etc/cvmfs/s3/test.cvmfs.io.s3.conf")
+        self.assertEqual(alias, "test.cvmfs.io")
+        self.assertEqual(conf, "/etc/cvmfs/s3/test.cvmfs.io.s3.conf")
+
+    def test_quoted_value(self):
+        alias, _ = parse_s3_upstream("'S3,/tmp,cvmfs/bits.cern.ch@/etc/x.conf'")
+        self.assertEqual(alias, "cvmfs/bits.cern.ch")
+
+    def test_non_s3_upstream_is_refused(self):
+        """A local or gateway upstream has no bucket to read staged objects
+        from, so continuing would fetch from nowhere."""
+        for bad in ("local,/srv/cvmfs/repo,/srv/cvmfs/repo",
+                    "gw,/var/spool/cvmfs/repo/tmp,http://gw:4929/api/v1",
+                    "", "S3,/tmp"):
+            with self.assertRaises(StageError, msg="accepted %r" % bad):
+                parse_s3_upstream(bad)
+
+    def test_missing_at_sign_is_refused(self):
+        with self.assertRaises(StageError):
+            parse_s3_upstream("S3,/tmp,cvmfs/bits.cern.ch")
+
+    def test_no_laxer_than_cvmfs_itself(self):
+        """upload_spooler_definition.cc refuses upstream.size() != 3 and
+        compares the "S3" tag literally. Accepting more here would mean a value
+        the publisher rejects gets diagnosed by whatever fails next instead of
+        by this function."""
+        for bad in ("S3,/tmp,extra,cvmfs/bits.cern.ch@/etc/y.conf",
+                    "s3,/tmp,cvmfs/bits.cern.ch@/etc/y.conf"):
+            with self.assertRaises(StageError, msg="accepted %r" % bad):
+                parse_s3_upstream(bad)
+
+
+class TestRepoAlias(unittest.TestCase):
+
+    def conf(self, text):
+        fd, path = tempfile.mkstemp(suffix=".conf")
+        os.write(fd, text.encode())
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_reads_the_alias(self):
+        p = self.conf(
+            "CVMFS_SPOOL_DIR=/var/spool/cvmfs/bits.cern.ch\n"
+            "CVMFS_UPSTREAM_STORAGE=S3,/var/spool/cvmfs/bits.cern.ch/tmp,"
+            "cvmfs/bits.cern.ch@/etc/cvmfs/keys/bits.cern.ch.s3.conf\n"
+            "CVMFS_USER=cvmfs\n")
+        self.assertEqual(repo_alias("bits.cern.ch", p), "cvmfs/bits.cern.ch")
+
+    def test_last_assignment_wins(self):
+        """server.conf is sourced by a shell, so a later line overrides."""
+        p = self.conf(
+            "CVMFS_UPSTREAM_STORAGE=S3,/tmp,stale/alias@/etc/a.conf\n"
+            "CVMFS_UPSTREAM_STORAGE=S3,/tmp,cvmfs/bits.cern.ch@/etc/b.conf\n")
+        self.assertEqual(repo_alias("bits.cern.ch", p), "cvmfs/bits.cern.ch")
+
+    def test_export_form_is_an_assignment(self):
+        """`export KEY=value` is how a shell-sourced file commonly writes this,
+        and it must not lose to a stale earlier line.
+
+        NEGATIVE CONTROL: drop the `export ` handling and this returns
+        'stale/alias' -- which then surfaces as bucket_root_url complaining
+        that the URL and the alias disagree, blaming the configuration for a
+        parser bug. Verified.
+        """
+        p = self.conf(
+            "CVMFS_UPSTREAM_STORAGE=S3,/tmp,stale/alias@/etc/a.conf\n"
+            "export CVMFS_UPSTREAM_STORAGE=S3,/tmp,cvmfs/bits.cern.ch@/etc/b.conf\n")
+        self.assertEqual(repo_alias("bits.cern.ch", p), "cvmfs/bits.cern.ch")
+
+    def test_commented_out_line_does_not_override(self):
+        """A stale value commented out AFTER the live one is the ordering that
+        would actually hurt. Can only fail if the reader starts treating a
+        leading '#' as insignificant."""
+        p = self.conf(
+            "CVMFS_UPSTREAM_STORAGE=S3,/tmp,cvmfs/bits.cern.ch@/etc/b.conf\n"
+            "#CVMFS_UPSTREAM_STORAGE=S3,/tmp,wrong/alias@/etc/c.conf\n"
+            "# export CVMFS_UPSTREAM_STORAGE=S3,/tmp,worse/alias@/etc/d.conf\n")
+        self.assertEqual(repo_alias("bits.cern.ch", p), "cvmfs/bits.cern.ch")
+
+    def test_non_utf8_file_raises_StageError_not_a_traceback(self):
+        """main() catches StageError only, so a stray byte must not escape as
+        UnicodeDecodeError."""
+        fd, p = tempfile.mkstemp(suffix=".conf")
+        os.write(fd, b"# caf\xe9 latin-1\nCVMFS_UPSTREAM_STORAGE="
+                     b"S3,/tmp,cvmfs/bits.cern.ch@/etc/b.conf\n")
+        os.close(fd)
+        self.addCleanup(os.unlink, p)
+        self.assertEqual(repo_alias("bits.cern.ch", p), "cvmfs/bits.cern.ch")
+
+    def test_missing_file_names_the_override(self):
+        with self.assertRaises(StageError) as cm:
+            repo_alias("bits.cern.ch", "/nonexistent/server.conf")
+        self.assertIn("--repo-alias", str(cm.exception))
+
+    def test_file_without_the_key(self):
+        with self.assertRaises(StageError):
+            repo_alias("bits.cern.ch", self.conf("CVMFS_USER=cvmfs\n"))
+
+
+class TestBucketRootAndStagingURL(unittest.TestCase):
+    """The regression this whole change exists for.
+
+    NEGATIVE CONTROL: replace staging_url's body with the old one-segment chop,
+
+        "%s/%s" % (repo_url.rstrip("/").rsplit("/", 1)[0], stage_prefix)
+
+    and test_testbed_shape STILL PASSES while test_production_shape fails. That
+    asymmetry is the bug: a one-segment alias hides it, and the testbed has a
+    one-segment alias, so every measurement to date was blind to it. Verified.
+    """
+
+    PROD_URL = "http://cvmfs-bits.s3.cern.ch/cvmfs/bits.cern.ch"
+    PROD_ALIAS = "cvmfs/bits.cern.ch"
+    TB_URL = "http://minio:9000/cvmfs/test.cvmfs.io"
+    TB_ALIAS = "test.cvmfs.io"
+    STAGE = "staging/build07/alice/12345"
+
+    def test_production_shape(self):
+        """Two-segment alias, virtual-host bucket. The bucket root is the
+        bare host, so the staged key is staging/... exactly as written."""
+        self.assertEqual(bucket_root_url(self.PROD_URL, self.PROD_ALIAS),
+                         "http://cvmfs-bits.s3.cern.ch")
+        self.assertEqual(staging_url(self.PROD_URL, self.PROD_ALIAS, self.STAGE),
+                         "http://cvmfs-bits.s3.cern.ch/" + self.STAGE)
+
+    def test_testbed_shape(self):
+        """One-segment alias, path-style bucket. The bucket root keeps the
+        bucket segment, and the staged key is again staging/... ."""
+        self.assertEqual(bucket_root_url(self.TB_URL, self.TB_ALIAS),
+                         "http://minio:9000/cvmfs")
+        self.assertEqual(staging_url(self.TB_URL, self.TB_ALIAS, self.STAGE),
+                         "http://minio:9000/cvmfs/" + self.STAGE)
+
+    def test_both_deployments_address_the_same_key(self):
+        """The invariant that makes the testbed a valid rehearsal: whatever the
+        bucket addressing style, the staged object's KEY is the staging prefix
+        the spooler was given."""
+        prod = staging_url(self.PROD_URL, self.PROD_ALIAS, self.STAGE)
+        tb = staging_url(self.TB_URL, self.TB_ALIAS, self.STAGE)
+        self.assertTrue(prod.endswith("/" + self.STAGE))
+        self.assertTrue(tb.endswith("/" + self.STAGE))
+        self.assertEqual(prod[len(bucket_root_url(self.PROD_URL, self.PROD_ALIAS)):],
+                         tb[len(bucket_root_url(self.TB_URL, self.TB_ALIAS)):])
+
+    def test_trailing_slashes_do_not_shift_the_result(self):
+        for url in (self.PROD_URL + "/", self.PROD_URL + "//"):
+            self.assertEqual(staging_url(url, self.PROD_ALIAS, self.STAGE),
+                             "http://cvmfs-bits.s3.cern.ch/" + self.STAGE)
+        for alias in ("/" + self.PROD_ALIAS, self.PROD_ALIAS + "/"):
+            self.assertEqual(staging_url(self.PROD_URL, alias, self.STAGE),
+                             "http://cvmfs-bits.s3.cern.ch/" + self.STAGE)
+        self.assertEqual(staging_url(self.PROD_URL, self.PROD_ALIAS, "/" + self.STAGE + "/"),
+                         "http://cvmfs-bits.s3.cern.ch/" + self.STAGE)
+
+    def test_url_that_does_not_end_with_the_alias_is_REFUSED(self):
+        """The console's stratum0_url and the repository's server.conf
+        disagreeing is a configuration fault. Guessing past it addresses the
+        wrong keys and then blames the prepare."""
+        for url in ("http://cvmfs-bits.s3.cern.ch/cvmfs/other.cern.ch",
+                    "http://cvmfs-bits.s3.cern.ch/bits.cern.ch",
+                    "http://cvmfs-bits.s3.cern.ch/"):
+            with self.assertRaises(StageError, msg="accepted %r" % url) as cm:
+                bucket_root_url(url, self.PROD_ALIAS)
+            msg = str(cm.exception)
+            self.assertIn("BITS_STRATUM0_URL", msg)
+            self.assertIn("CVMFS_UPSTREAM_STORAGE", msg)
+
+    def test_alias_match_is_on_segment_boundaries(self):
+        """Substring matching would cut a hostname in half: alias 'cvmfs.io'
+        must NOT match the tail of '.../test.cvmfs.io'."""
+        with self.assertRaises(StageError):
+            bucket_root_url("http://minio:9000/cvmfs/test.cvmfs.io", "cvmfs.io")
+
+    def test_stripping_everything_leaves_no_root(self):
+        """Reaches the empty-root branch specifically: the alias eats the whole
+        path AND the host, leaving a bare scheme."""
+        with self.assertRaises(StageError):
+            bucket_root_url("http:///cvmfs/bits.cern.ch", "cvmfs/bits.cern.ch")
+
+    def test_alias_eating_the_hostname_is_refused(self):
+        """'http://host'.endswith('/host') is true -- the alias would eat the
+        second slash of '://' and leave 'http:/'."""
+        with self.assertRaises(StageError):
+            bucket_root_url("http://cvmfs-bits.s3.cern.ch", "cvmfs-bits.s3.cern.ch")
+
+    def test_empty_inputs_refused(self):
+        with self.assertRaises(StageError):
+            bucket_root_url(self.PROD_URL, "")
+        with self.assertRaises(StageError):
+            bucket_root_url("/cvmfs/bits.cern.ch", self.PROD_ALIAS)
+        with self.assertRaises(StageError):
+            staging_url(self.PROD_URL, self.PROD_ALIAS, "")
 
 
 if __name__ == "__main__":

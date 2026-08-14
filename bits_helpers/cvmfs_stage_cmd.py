@@ -53,12 +53,14 @@ import uuid
 try:
     from bits_helpers.cvmfs_stage import (
         StageError, fetch_published_root, find_subtree_catalog, http_fetcher,
-        parse_manifest, prepare_argv, scratch_dir, staging_prefix,
+        parse_manifest, prepare_argv, repo_alias, scratch_dir, staging_prefix,
+        staging_url,
     )
 except ImportError:  # pragma: no cover
     from cvmfs_stage import (  # type: ignore
         StageError, fetch_published_root, find_subtree_catalog, http_fetcher,
-        parse_manifest, prepare_argv, scratch_dir, staging_prefix,
+        parse_manifest, prepare_argv, repo_alias, scratch_dir, staging_prefix,
+        staging_url,
     )
 
 
@@ -157,6 +159,16 @@ def main(argv=None):
                     or "local-" + uuid.uuid4().hex[:12])
     ap.add_argument("--stratum0-url", default=os.environ.get("BITS_STRATUM0_URL", ""))
     ap.add_argument("--s3-conf", default="")
+    # The repository's S3 key prefix. Normally read from the repository's own
+    # server.conf; the override exists for hosts that have no repository
+    # configuration and for tests. It is NOT the repository name: production
+    # uses "cvmfs/bits.cern.ch" for repository "bits.cern.ch".
+    ap.add_argument("--repo-alias", default="",
+                    help="S3 key prefix the repository's objects live under; "
+                         "read from server.conf when not given")
+    ap.add_argument("--server-conf", default="",
+                    help="path to the repository's server.conf; default "
+                         "/etc/cvmfs/repositories.d/<repo>/server.conf")
     ap.add_argument("--swissknife", default="cvmfs_swissknife")
     ap.add_argument("--spool", default="",
                     help="spool root; default /var/spool/cvmfs/<repo>")
@@ -178,8 +190,42 @@ def main(argv=None):
 
     try:
         s3_conf = find_s3_conf(a.repo, a.s3_conf or None)
-        stratum0 = a.stratum0_url or "http://cvmfs-stratum-zero.cern.ch/cvmfs/%s" % a.repo
+        # No default. The previous one -- http://cvmfs-stratum-zero.cern.ch/
+        # cvmfs/<repo> -- names a stratum0 web front end rather than the object
+        # store, and it has exactly the right SHAPE to satisfy every check
+        # below: it ends with the production alias "cvmfs/bits.cern.ch", so the
+        # URL/alias agreement test passes and the bucket root comes out as a
+        # host that serves no staged objects at all. A plausible wrong answer
+        # is worse here than no answer.
+        stratum0 = (a.stratum0_url or "").strip()
+        if not stratum0:
+            raise StageError(
+                "no repository URL: set BITS_STRATUM0_URL or pass "
+                "--stratum0-url.\nIt is the bucket root followed by the "
+                "repository's S3 alias, e.g.\n"
+                "  http://cvmfs-bits.s3.cern.ch/cvmfs/bits.cern.ch")
         stage = staging_prefix(a.host, user, a.job_id)
+
+        # Resolve the repository's S3 alias BEFORE the prepare runs. It is a
+        # local file read costing nothing, and the alternative is discovering a
+        # missing server.conf after a multi-minute ingest has already finished.
+        # A --dry-run must still work on a laptop that has no repository
+        # configuration at all, so there it degrades to a warning.
+        try:
+            alias = a.repo_alias.strip("/") or repo_alias(a.repo, a.server_conf or None)
+        except StageError:
+            if not a.dry_run:
+                raise
+            alias = ""
+            print("[cvmfs-stage] no repository alias available; --dry-run "
+                  "continues without one", file=sys.stderr)
+
+        # Resolve the read-back URL NOW, not after the ingest. A URL that
+        # disagrees with the alias is the failure this whole path exists to
+        # catch, and discovering it once swissknife has already run costs the
+        # entire prepare. --dry-run reaches this line too, so it is a real
+        # preflight for the misconfiguration and not just a command printer.
+        stage_url = staging_url(stratum0, alias, stage) if alias else ""
 
         # The base the prepare computes against, and later the graft's
         # old_root_hash. Read from the repository, not assumed -- but a
@@ -195,8 +241,11 @@ def main(argv=None):
             except Exception as exc:
                 raise StageError("cannot read the current root from %s: %s"
                                  % (stratum0, exc))
-        print("[cvmfs-stage] repo=%s base=%s" % (a.repo, base), file=sys.stderr)
+        print("[cvmfs-stage] repo=%s alias=%s base=%s"
+              % (a.repo, alias or "<unknown>", base), file=sys.stderr)
         print("[cvmfs-stage] staging prefix: %s" % stage, file=sys.stderr)
+        print("[cvmfs-stage] staged objects will be read from %s"
+              % (stage_url or "<unresolved>"), file=sys.stderr)
 
         fd, manifest = tempfile.mkstemp(prefix="bits-stage-", suffix=".manifest")
         os.close(fd)
@@ -249,12 +298,8 @@ def main(argv=None):
                 shutil.rmtree(tmp, ignore_errors=True)
 
         # The manifest names the ROOT catalog. prepub needs the SUBTREE one.
-        # rstrip first: a --stratum0-url with a trailing slash otherwise makes
-        # this "<repo>/staging/..." , every staging fetch 404s, everything falls
-        # back to the repository (which lacks the new objects), and the walk
-        # fails claiming the prepare produced no subtree catalog -- a confident
-        # wrong diagnosis.
-        stage_url = "%s/%s" % (stratum0.rstrip("/").rsplit("/", 1)[0], stage)
+        # stage_url was resolved before the ingest; see there for why the
+        # bucket root is not a fixed number of segments off the repository URL.
         catalog = find_subtree_catalog(m["root"], a.path,
                                        http_fetcher(stage_url, stratum0))
         print("[cvmfs-stage] manifest root %s (not sent)" % m["root"], file=sys.stderr)
