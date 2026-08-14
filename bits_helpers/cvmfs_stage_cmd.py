@@ -27,6 +27,13 @@ granting `user-policy` capability (`radosgw-admin caps add --uid=... --caps=
 S3 credential, and a build host that holds it can write anywhere in the
 bucket. That is a real limitation of the deployment, not of the design, and
 it bounds how far the "producer needs nothing privileged" argument reaches.
+
+On a TESTBED the credentials are generated per rebuild and are disposable, so
+a copy placed on a build host goes stale the next time the testbed is rebuilt.
+The failure is loud (S3 answers 403 and the prepare exits non-zero), not
+silent, but it is a maintenance trap worth knowing about: either refresh the
+copy with the testbed, or make the testbed derive its keys deterministically
+from .env so they survive a rebuild.
 """
 
 import argparse
@@ -63,12 +70,14 @@ def find_s3_conf(repo, explicit=None):
         return explicit
     candidates = [
         os.path.join(os.path.expanduser("~"), ".bits", "%s.s3.conf" % repo),
+        # The canonical CVMFS location, alongside the signing material.
         "/etc/cvmfs/keys/%s.s3.conf" % repo,
-        # Where CVMFS deployments actually put it. /etc/cvmfs/keys holds the
-        # SIGNING material (.crt/.key/.masterkey/.pub) and no S3 config; the
-        # testbed and the build host both use /etc/cvmfs/s3/. MEASUREMENTS §18
-        # recorded the same surprise for --direct-s3, which defaults to
-        # /etc/cvmfs/<repo>.s3.conf and fails on this layout.
+        # The testbed's CONTAINER layout, kept only as a fallback so a config
+        # copied from a container image is still found. Not canonical: on a
+        # build host this directory does not exist. (An earlier version of this
+        # comment claimed /etc/cvmfs/keys holds no S3 config, generalising from
+        # one host where none had been provisioned there yet. It is the
+        # canonical home; the absence was the anomaly.)
         "/etc/cvmfs/s3/%s.s3.conf" % repo,
     ]
     for c in candidates:
