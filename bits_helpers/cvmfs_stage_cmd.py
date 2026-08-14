@@ -377,7 +377,16 @@ def main(argv=None):
         print("[cvmfs-stage] staged objects will be read from %s"
               % (stage_url or "<unresolved>"), file=sys.stderr)
 
-        fd, manifest = tempfile.mkstemp(prefix="bits-stage-", suffix=".manifest")
+        # Same treatment as the scratch directory below: the only other
+        # filesystem call in main() that can raise out of the StageError
+        # handler. TMPDIR being unwritable is a broken host rather than a
+        # misconfiguration, but it should still say so in one line.
+        try:
+            fd, manifest = tempfile.mkstemp(prefix="bits-stage-", suffix=".manifest")
+        except OSError as exc:
+            raise StageError("cannot create a temporary file for the prepare "
+                             "manifest (TMPDIR=%s): %s"
+                             % (os.environ.get("TMPDIR", "/tmp"), exc))
         os.close(fd)
         try:
             # Per-invocation scratch: concurrent prepares on one host would
@@ -394,7 +403,29 @@ def main(argv=None):
                 print(" ".join(cmd), file=sys.stderr)
                 return 0
 
-            os.makedirs(tmp, exist_ok=True)
+            # Wrapped: main() catches StageError only, so an unwritable spool
+            # arrived as a raw PermissionError traceback out of os.makedirs --
+            # which says "Permission denied" and nothing about whose permission
+            # or what to do. The spool belongs to the repository owner
+            # (cvmfs_server mkfs -o <user>), and a staged prepare running as a
+            # DIFFERENT user needs write access to it: that is a deployment
+            # fact worth stating rather than a stack trace.
+            try:
+                os.makedirs(tmp, exist_ok=True)
+            except OSError as exc:
+                raise StageError(
+                    "cannot create the prepare scratch directory %s: %s\n"
+                    "  The repository's spool is owned by the user the "
+                    "repository was created for\n"
+                    "  (cvmfs_server mkfs -o <user>), and this prepare runs as "
+                    "uid %d.\n"
+                    "  Grant that user write access to the spool: it is needed "
+                    "for this scratch\n"
+                    "  directory and for the per-repository prepare lock.\n"
+                    "  --spool is NOT a fix on its own -- it also moves the "
+                    "-c <spool>/rdonly mount,\n"
+                    "  which must stay where the repository actually is."
+                    % (tmp, exc, os.getuid()))
             print("[cvmfs-stage] scratch: %s" % tmp, file=sys.stderr)
 
             print("[cvmfs-stage] preparing (no gateway)...", file=sys.stderr)
@@ -412,6 +443,27 @@ def main(argv=None):
                 raise StageError("cannot run %s: %s -- the staged publish path "
                                  "needs cvmfs_swissknife on PATH"
                                  % (a.swissknife, exc))
+            if rc in (126, 127):
+                # 127 from a binary that DID start is the dynamic loader, not a
+                # missing command -- an absent binary fails earlier, as OSError
+                # from execvp. The CVMFS build this path uses installs
+                # libcvmfs_*.so flat beside the cvmfs_* executables
+                # (cvmfs-testbed scripts/install.sh) rather than into a system
+                # library directory, so nothing finds them unless that
+                # directory is on the loader's path.
+                where = os.path.dirname(shutil.which(a.swissknife) or a.swissknife)
+                raise StageError(
+                    "prepare exited %d -- see the child's own error above.\n"
+                    "  This is the dynamic loader, not a missing command: %s "
+                    "was found and started.\n"
+                    "  The CVMFS build installs libcvmfs_*.so beside the "
+                    "binaries rather than in a\n"
+                    "  system library directory. Put that directory on the "
+                    "loader's path, e.g.\n"
+                    "      LD_LIBRARY_PATH=%s\n"
+                    "  in the runner environment, or install it via "
+                    "/etc/ld.so.conf.d + ldconfig."
+                    % (rc, a.swissknife, where or "<dir containing cvmfs_swissknife>"))
             if rc != 0:
                 raise StageError("prepare failed with exit %d" % rc)
 
