@@ -221,11 +221,27 @@ def main(argv=None):
         # is worse here than no answer.
         stratum0 = (a.stratum0_url or "").strip()
         if not stratum0:
+            # Names THIS repository and shows a placeholder, not a worked
+            # example from another deployment. The previous wording ended with
+            # "e.g. http://cvmfs-bits.s3.cern.ch/cvmfs/bits.cern.ch", and a
+            # reader of a testbed job log reasonably took that production URL
+            # for the value in use -- concluding the job was pointed at the
+            # wrong bucket when in fact no value was set at all. An example is
+            # not worth a misdiagnosis in the one message whose job is to say
+            # that a value is MISSING.
             raise StageError(
-                "no repository URL: set BITS_STRATUM0_URL or pass "
-                "--stratum0-url.\nIt is the bucket root followed by the "
-                "repository's S3 alias, e.g.\n"
-                "  http://cvmfs-bits.s3.cern.ch/cvmfs/bits.cern.ch")
+                "no object-store URL for %s: set BITS_STRATUM0_URL or pass "
+                "--stratum0-url.\n"
+                "  Nothing was fetched -- this is a missing setting, not a "
+                "wrong one.\n"
+                "  The value is the S3 bucket root followed by this "
+                "repository's alias:\n"
+                "      http://<bucket-root>/<alias>\n"
+                "  The alias is the text between the last comma and the '@' in "
+                "CVMFS_UPSTREAM_STORAGE\n"
+                "  in /etc/cvmfs/repositories.d/%s/server.conf.\n"
+                "  bits-console sends it per community from ui-config.yaml's "
+                "stratum0_url." % (a.repo, a.repo))
         stage = staging_prefix(a.host, user, a.job_id)
 
         # Read the repository's own server.conf BEFORE the prepare runs. It is
