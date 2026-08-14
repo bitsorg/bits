@@ -268,9 +268,11 @@ def main(argv=None):
                     help="base revision to prepare against; read from the "
                          "repository when not given")
     ap.add_argument("--replace", action="store_true",
-                    help="delete the publish path before extracting, so a "
-                         "version already present is REPLACED rather than "
-                         "failing. Deletes state: never implied.")
+                    help="delete the publish path before extracting (-D), so "
+                         "the PREPARE succeeds where the path is already "
+                         "occupied. Deletes state: never implied. NOTE this "
+                         "does not make a republish work end to end -- the "
+                         "graft refuses an existing path (ADR-0011 D17).")
     ap.add_argument("--base-retries", type=int, default=4,
                     help="re-read the base and re-prepare this many times when "
                          "the repository head moves mid-prepare (ADR-0011 D16)")
@@ -500,12 +502,16 @@ def main(argv=None):
                                 "not asked to replace it.\n"
                                 "  swissknife aborts rather than merging: the "
                                 "entries are already in the catalog\n"
-                                "  (UNIQUE constraint on catalog.md5path). Pass "
-                                "--replace to delete the path\n"
-                                "  before extracting, or publish at a path that "
-                                "is not already taken.\n"
-                                "  --replace DELETES what is there, so it is "
-                                "never implied."
+                                "  (UNIQUE constraint on catalog.md5path).\n"
+                                "  PUBLISH AT A PATH THAT IS NOT ALREADY "
+                                "TAKEN. A staged publish can ADD a path,\n"
+                                "  not replace one: even with --replace (which "
+                                "passes -D and lets this\n"
+                                "  prepare finish), the graft then refuses "
+                                "with \"invalid attempt to graft\n"
+                                "  nested catalog into existing directory\" "
+                                "-- TryGraftNestedCatalog is\n"
+                                "  add-only by construction. See ADR-0011 D17."
                                 % (a.path, a.repo))
                         stale_base = "stale_base" in seen
                         if rc == 0 or not stale_base or a.base_root:

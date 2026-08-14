@@ -760,8 +760,9 @@ class TestMainWiring(unittest.TestCase):
     def test_an_existing_path_names_replace_instead_of_aborting(self):
         """swissknife ABORTS (SIGABRT, rc -6) with a C++ PANIC when the tar's
         entries are already in the catalog. Nobody should have to read
-        "UNIQUE constraint failed: catalog.md5path_1" to learn they meant
-        --replace.
+        "UNIQUE constraint failed: catalog.md5path_1" to learn that the path
+        is taken -- nor be pointed at --replace, which fixes only this half
+        and leaves the graft to refuse (ADR-0011 D17).
 
         NEGATIVE CONTROL: drop the path_exists branch and this surfaces as
         "prepare failed with exit -6", naming neither the path nor the flag.
@@ -780,9 +781,14 @@ class TestMainWiring(unittest.TestCase):
 
         self.assertEqual(rc, 1)
         msg = err.getvalue()
-        self.assertIn("--replace", msg)
-        self.assertIn("p/1.0", msg)          # the path it refused
-        self.assertIn("DELETES", msg)        # and that the flag is destructive
+        self.assertIn("p/1.0", msg)              # the path it refused
+        # The actionable instruction is "use a free path", NOT "--replace":
+        # --replace lets the prepare finish and the graft then refuses
+        # (ADR-0011 D17). An earlier message led with the flag, which would
+        # have sent the reader round a loop ending in a receiver error.
+        self.assertIn("NOT ALREADY", msg)
+        self.assertIn("ADR-0011 D17", msg)
+        self.assertIn("add-only", msg)
 
     def test_replace_passes_the_delete_flag_and_default_does_not(self):
         """-D is what makes a re-publish possible, and its absence is what
