@@ -38,12 +38,16 @@ S3 credential, and a build host that holds it can write anywhere in the
 bucket. That is a real limitation of the deployment, not of the design, and
 it bounds how far the "producer needs nothing privileged" argument reaches.
 
-On a TESTBED the credentials are generated per rebuild and are disposable, so
-a copy placed on a build host goes stale the next time the testbed is rebuilt.
-The failure is loud (S3 answers 403 and the prepare exits non-zero), not
-silent, but it is a maintenance trap worth knowing about: either refresh the
-copy with the testbed, or make the testbed derive its keys deterministically
-from .env so they survive a rebuild.
+On a TESTBED the credentials come from .env.s3, which init.sh creates ONCE
+with a generated password and thereafter preserves, regenerating
+<repo>.s3.conf from it on every init. They therefore SURVIVE a rebuild. An
+earlier version of this docstring said they were disposable and warned that a
+copy would go stale; that is true only if .env.s3 is deleted, and it
+overstated the risk.
+
+What does not survive is a copy taken somewhere else. Prefer the path the
+repository's own server.conf names -- init.sh keeps that one current, and a
+second copy is the thing that silently ages out.
 """
 
 import argparse
