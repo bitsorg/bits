@@ -375,6 +375,21 @@ if [[ "${1:-}" == "store" ]]; then
   exec "$BITSDIR/bitsStore" "$@"
 fi
 
+# `bits cvmfs-stage …` → producer-side CVMFS staging (ADR-0011).
+# Prepares a package into a staging S3 prefix with the canonical publisher and
+# names the catalog prepub must graft. Handled here, before work-dir/module
+# setup, for the same reason as `store`: it talks to S3 and a tar, not to the
+# local install tree.
+#
+# Run like the view helper — source dir on sys.path via BITS_SELF, never
+# PYTHONPATH — so the helper's imports cannot leak into the caller's
+# environment. stdout is the two eval-able assignments and nothing else;
+# progress goes to stderr.
+if [[ "${1:-}" == "cvmfs-stage" ]]; then
+  shift
+  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_stage_cmd import main; sys.exit(main())' "$@"
+fi
+
 for arg in "$@"
 do
   case $arg in
