@@ -78,6 +78,41 @@ except ImportError:  # pragma: no cover
     )
 
 
+def path_problem(path):
+    """Why `path` is unusable, distinguishing ABSENT from UNREACHABLE.
+
+    os.path.exists() answers False for both "no such file" and "an ancestor
+    directory is not searchable by this user", because it swallows the OSError
+    that stat() raises. Those have nothing in common as far as the fix goes:
+
+      absent      -- the testbed never wrote it, or wrote it somewhere else;
+                     look on the machine that generates it.
+      unreachable -- the file is there and correct; a home directory is 0700
+                     and the service account cannot traverse it. chmod o+x.
+
+    Reporting the first when it is the second sends the reader to the wrong
+    machine to look for a file that is sitting right where it should be. This
+    happened on the first staged run against the testbed.
+
+    Returns "" when the path is readable.
+    """
+    if os.access(path, os.R_OK):
+        return ""
+    # Walk the ancestors top-down: the FIRST unsearchable one is the cause,
+    # and anything below it would report a misleading "does not exist".
+    walked = os.sep
+    for part in os.path.abspath(path).split(os.sep)[1:-1]:
+        walked = os.path.join(walked, part)
+        if not os.access(walked, os.X_OK):
+            return ("is unreachable: %s is not searchable by uid %d. The file "
+                    "may well exist and be correct -- run `chmod o+x %s` (or "
+                    "use a path outside a private home directory)"
+                    % (walked, os.getuid(), walked))
+    if not os.path.exists(path):
+        return "does not exist"
+    return "exists but is not readable by uid %d" % os.getuid()
+
+
 def find_s3_conf(repo, explicit=None):
     """$HOME/.bits first, then the system path (ADR-0011 D10).
 
@@ -87,11 +122,9 @@ def find_s3_conf(repo, explicit=None):
     swissknife, which reports it as a shell error while sourcing the file.
     """
     if explicit:
-        if not os.path.exists(explicit):
-            raise StageError("no S3 config at %s" % explicit)
-        if not os.access(explicit, os.R_OK):
-            raise StageError("S3 config %s is not readable by this user "
-                             "(uid %d)" % (explicit, os.getuid()))
+        why = path_problem(explicit)
+        if why:
+            raise StageError("S3 config %s %s" % (explicit, why))
         return explicit
     candidates = [
         os.path.join(os.path.expanduser("~"), ".bits", "%s.s3.conf" % repo),
@@ -108,8 +141,9 @@ def find_s3_conf(repo, explicit=None):
     for c in candidates:
         if os.access(c, os.R_OK):
             return c
-    raise StageError("no readable staging S3 config found; looked in:\n  %s"
-                     % "\n  ".join(candidates))
+    raise StageError(
+        "no readable staging S3 config found:\n  %s"
+        % "\n  ".join("%s  -- %s" % (c, path_problem(c)) for c in candidates))
 
 
 @contextlib.contextmanager
@@ -308,12 +342,10 @@ def main(argv=None):
             s3_conf = conf_from_server
         else:
             if conf_from_server:
-                print("[cvmfs-stage] %s, named by CVMFS_UPSTREAM_STORAGE in the "
-                      "repository's server.conf, %s; falling back to the search "
-                      "order, which may name a different store"
-                      % (conf_from_server,
-                         "does not exist" if not os.path.exists(conf_from_server)
-                         else "is not readable by this user"),
+                print("[cvmfs-stage] %s,\n  named by CVMFS_UPSTREAM_STORAGE in "
+                      "the repository's server.conf, %s.\n  Falling back to the "
+                      "search order, which may name a different store."
+                      % (conf_from_server, path_problem(conf_from_server)),
                       file=sys.stderr)
             s3_conf = find_s3_conf(a.repo)
         print("[cvmfs-stage] S3 config: %s" % s3_conf, file=sys.stderr)
