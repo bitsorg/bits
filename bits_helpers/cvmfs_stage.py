@@ -476,7 +476,8 @@ def scratch_dir(repo, job_id, spool=None):
 
 def prepare_argv(repo, lease_path, tar_path, stage_prefix, s3_conf,
                  stratum0_url, base_root, manifest_out, spool=None,
-                 pubkey=None, swissknife="cvmfs_swissknife", tmp=None):
+                 pubkey=None, swissknife="cvmfs_swissknife", tmp=None,
+                 replace=False):
     """Build the `cvmfs_swissknife ingest` command line for a prepare.
 
     Kept as a separate, pure function because the one thing that must never
@@ -513,6 +514,20 @@ def prepare_argv(repo, lease_path, tar_path, stage_prefix, s3_conf,
         "-B", lease_path.strip("/"),
         "-C", "true",
     ]
+    if replace:
+        # -D is "entity to delete before to extract the tar". Without it,
+        # extracting into a path that already holds this version re-adds
+        # entries the catalog has, and the C++ ABORTS:
+        #   PANIC: catalog_rw.cc:168 failed to add '<path>/relocate-me.sh'
+        #   ... UNIQUE constraint failed: catalog.md5path_1, catalog.md5path_2
+        #
+        # Opt-in, never a default. It DELETES the published path inside the
+        # revision being prepared, so a caller that did not mean to republish
+        # gets a loud failure instead of silently discarding whatever was
+        # there -- possibly a different build that landed at the same path.
+        # ADR-0011: anything that deletes state runs only on an explicit flag,
+        # never as a side effect of a missing-file heuristic.
+        argv += ["-D", lease_path.strip("/")]
     for forbidden in ("-P", "-H"):
         if forbidden in argv:
             raise StageError(

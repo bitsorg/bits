@@ -113,27 +113,33 @@ def path_problem(path):
     return "exists but is not readable by uid %d" % os.getuid()
 
 
-# swissknife's message when -b names a revision that is no longer the head.
-# Matched on text because the exit code (3) is not specific to it.
-_STALE_BASE = "base hash does not match manifest"
+# Conditions worth naming, keyed by the text swissknife prints. Matched on the
+# message because the exit codes are not specific: 3 is generic, and the second
+# case ABORTS, arriving as -6 (SIGABRT) with a C++ PANIC nobody should have to
+# read to learn they meant --replace.
+_MARKERS = {
+    "stale_base": "base hash does not match manifest",
+    "path_exists": "UNIQUE constraint failed: catalog.md5path",
+}
 
 
 def run_prepare(cmd):
-    """Run the prepare, streaming its output, and report a stale base.
+    """Run the prepare, streaming its output, and report what it printed.
 
-    Returns (exit_code, saw_stale_base).
+    Returns (exit_code, set_of_marker_names).
 
     The child's output is streamed rather than captured-then-printed so a long
     ingest still shows progress in the job log as it happens. It goes to
     STDERR: this command's stdout is a contract -- the two assignments and
     nothing else, so `eval "$(bits cvmfs-stage)"` works.
     """
-    seen = False
+    seen = set()
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     for raw in proc.stdout:
         line = raw.decode("utf-8", errors="replace")
-        if _STALE_BASE in line:
-            seen = True
+        for name, marker in _MARKERS.items():
+            if marker in line:
+                seen.add(name)
         sys.stderr.write(line)
     sys.stderr.flush()
     return proc.wait(), seen
@@ -261,6 +267,10 @@ def main(argv=None):
     ap.add_argument("--base-root", default="",
                     help="base revision to prepare against; read from the "
                          "repository when not given")
+    ap.add_argument("--replace", action="store_true",
+                    help="delete the publish path before extracting, so a "
+                         "version already present is REPLACED rather than "
+                         "failing. Deletes state: never implied.")
     ap.add_argument("--base-retries", type=int, default=4,
                     help="re-read the base and re-prepare this many times when "
                          "the repository head moves mid-prepare (ADR-0011 D16)")
@@ -428,7 +438,8 @@ def main(argv=None):
                     repo=a.repo, lease_path=a.path, tar_path=a.tar,
                     stage_prefix=stage, s3_conf=s3_conf, stratum0_url=stratum0,
                     base_root=base_hash, manifest_out=manifest,
-                    swissknife=a.swissknife, spool=a.spool or None, tmp=tmp)
+                    swissknife=a.swissknife, spool=a.spool or None, tmp=tmp,
+                    replace=a.replace)
 
             cmd = build(base)
             if a.dry_run:
@@ -482,7 +493,21 @@ def main(argv=None):
                     # base, and silently substituting a different one would
                     # publish against something they did not ask for.
                     for attempt in range(1, max(1, a.base_retries) + 1):
-                        rc, stale_base = run_prepare(cmd)
+                        rc, seen = run_prepare(cmd)
+                        if "path_exists" in seen and not a.replace:
+                            raise StageError(
+                                "%s already exists in %s, and this prepare was "
+                                "not asked to replace it.\n"
+                                "  swissknife aborts rather than merging: the "
+                                "entries are already in the catalog\n"
+                                "  (UNIQUE constraint on catalog.md5path). Pass "
+                                "--replace to delete the path\n"
+                                "  before extracting, or publish at a path that "
+                                "is not already taken.\n"
+                                "  --replace DELETES what is there, so it is "
+                                "never implied."
+                                % (a.path, a.repo))
+                        stale_base = "stale_base" in seen
                         if rc == 0 or not stale_base or a.base_root:
                             break
                         if attempt == max(1, a.base_retries):

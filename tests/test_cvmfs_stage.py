@@ -634,7 +634,7 @@ class TestMainWiring(unittest.TestCase):
             out = argv[argv.index("-o") + 1]
             with open(out, "w") as fh:
                 fh.write("C%s\nNbits.cern.ch\nS2\n" % self.ROOT)
-            return 0, False
+            return 0, set()
 
         self._real_run = cmd.run_prepare
         cmd.run_prepare = fake_run
@@ -717,11 +717,11 @@ class TestMainWiring(unittest.TestCase):
             calls.append(list(argv))
             self.prepared_bases.append(argv[argv.index("-b") + 1])
             if len(calls) == 1:
-                return 3, True          # base hash does not match manifest
+                return 3, {"stale_base"}   # base hash does not match manifest
             out = argv[argv.index("-o") + 1]
             with open(out, "w") as fh:
                 fh.write("C%s\nNbits.cern.ch\nS2\n" % self.ROOT)
-            return 0, False
+            return 0, set()
 
         self.cmd.run_prepare = flaky
 
@@ -755,6 +755,76 @@ class TestMainWiring(unittest.TestCase):
                          "the retry did not re-read the head")
         self.assertIn("base moved", err.getvalue())
         self.assertEqual(rc, 0)
+
+
+    def test_an_existing_path_names_replace_instead_of_aborting(self):
+        """swissknife ABORTS (SIGABRT, rc -6) with a C++ PANIC when the tar's
+        entries are already in the catalog. Nobody should have to read
+        "UNIQUE constraint failed: catalog.md5path_1" to learn they meant
+        --replace.
+
+        NEGATIVE CONTROL: drop the path_exists branch and this surfaces as
+        "prepare failed with exit -6", naming neither the path nor the flag.
+        """
+        import io
+        spool = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, spool, True)
+        self.cmd.run_prepare = lambda argv: (-6, {"path_exists"})
+
+        err = io.StringIO()
+        real_stderr, sys.stderr = sys.stderr, err
+        try:
+            rc = self.cmd.main(self.argv(spool))
+        finally:
+            sys.stderr = real_stderr
+
+        self.assertEqual(rc, 1)
+        msg = err.getvalue()
+        self.assertIn("--replace", msg)
+        self.assertIn("p/1.0", msg)          # the path it refused
+        self.assertIn("DELETES", msg)        # and that the flag is destructive
+
+    def test_replace_passes_the_delete_flag_and_default_does_not(self):
+        """-D is what makes a re-publish possible, and its absence is what
+        makes an accidental one fail loudly rather than discard data."""
+        spool = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, spool, True)
+
+        def run(extra):
+            self.prepared = []
+            self.cmd.run_prepare = lambda argv: (
+                self.prepared.append(list(argv)) or self._write_manifest(argv))
+            with _patched_fetch(self._serve()):
+                self.cmd.main(self.argv(spool) + extra)
+            return self.prepared[0]
+
+        import io
+        real_stderr, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            without = run([])
+            with_flag = run(["--replace"])
+        finally:
+            sys.stderr = real_stderr
+
+        self.assertNotIn("-D", without)
+        self.assertIn("-D", with_flag)
+        self.assertEqual(with_flag[with_flag.index("-D") + 1], "p/1.0")
+
+    def _write_manifest(self, argv):
+        out = argv[argv.index("-o") + 1]
+        with open(out, "w") as fh:
+            fh.write("C%s\nNbits.cern.ch\nS2\n" % self.ROOT)
+        return 0, set()
+
+    def _serve(self):
+        objects = {
+            self.ROOT: make_catalog("/", nested=[("/p/1.0", H_SUB)]),
+            H_SUB: make_catalog("/p/1.0"),
+        }
+        def serve(url, timeout=30):
+            seg = url.rstrip("/").split("/")
+            return objects[seg[-2] + seg[-1][:-1]]
+        return serve
 
 
 import contextlib  # noqa: E402
