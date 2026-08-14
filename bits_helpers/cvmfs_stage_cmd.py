@@ -113,6 +113,32 @@ def path_problem(path):
     return "exists but is not readable by uid %d" % os.getuid()
 
 
+# swissknife's message when -b names a revision that is no longer the head.
+# Matched on text because the exit code (3) is not specific to it.
+_STALE_BASE = "base hash does not match manifest"
+
+
+def run_prepare(cmd):
+    """Run the prepare, streaming its output, and report a stale base.
+
+    Returns (exit_code, saw_stale_base).
+
+    The child's output is streamed rather than captured-then-printed so a long
+    ingest still shows progress in the job log as it happens. It goes to
+    STDERR: this command's stdout is a contract -- the two assignments and
+    nothing else, so `eval "$(bits cvmfs-stage)"` works.
+    """
+    seen = False
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    for raw in proc.stdout:
+        line = raw.decode("utf-8", errors="replace")
+        if _STALE_BASE in line:
+            seen = True
+        sys.stderr.write(line)
+    sys.stderr.flush()
+    return proc.wait(), seen
+
+
 def find_s3_conf(repo, explicit=None):
     """$HOME/.bits first, then the system path (ADR-0011 D10).
 
@@ -235,6 +261,9 @@ def main(argv=None):
     ap.add_argument("--base-root", default="",
                     help="base revision to prepare against; read from the "
                          "repository when not given")
+    ap.add_argument("--base-retries", type=int, default=4,
+                    help="re-read the base and re-prepare this many times when "
+                         "the repository head moves mid-prepare (ADR-0011 D16)")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the prepare command and stop; makes no network "
                          "call, so it can be run anywhere")
@@ -393,12 +422,15 @@ def main(argv=None):
             # otherwise share <spool>/tmp with no lock, because calling
             # swissknife directly bypasses cvmfs_server's per-repo lock.
             tmp = scratch_dir(a.repo, a.job_id, a.spool or None)
-            cmd = prepare_argv(
-                repo=a.repo, lease_path=a.path, tar_path=a.tar,
-                stage_prefix=stage, s3_conf=s3_conf, stratum0_url=stratum0,
-                base_root=base, manifest_out=manifest, swissknife=a.swissknife,
-                spool=a.spool or None, tmp=tmp)
 
+            def build(base_hash):
+                return prepare_argv(
+                    repo=a.repo, lease_path=a.path, tar_path=a.tar,
+                    stage_prefix=stage, s3_conf=s3_conf, stratum0_url=stratum0,
+                    base_root=base_hash, manifest_out=manifest,
+                    swissknife=a.swissknife, spool=a.spool or None, tmp=tmp)
+
+            cmd = build(base)
             if a.dry_run:
                 print(" ".join(cmd), file=sys.stderr)
                 return 0
@@ -436,7 +468,41 @@ def main(argv=None):
             # progress output.
             try:
                 with prepare_lock(a.repo, a.spool or None):
-                    rc = subprocess.call(cmd, stdout=sys.stderr)
+                    # RETRY ON A MOVED BASE. See ADR-0011 D16: the base is read
+                    # from stratum0 moments before swissknife reads the same
+                    # manifest, and prepub commits an earlier package in
+                    # between, so the head moves under a prepare that has not
+                    # started yet. swissknife refuses with
+                    #   base hash does not match manifest (found: X expected: Y)
+                    # and exits 3, BEFORE chunking or uploading anything, so a
+                    # retry costs a process start.
+                    #
+                    # Bounded, and only when the base was read rather than
+                    # given: an explicit --base-root is the caller asserting a
+                    # base, and silently substituting a different one would
+                    # publish against something they did not ask for.
+                    for attempt in range(1, max(1, a.base_retries) + 1):
+                        rc, stale_base = run_prepare(cmd)
+                        if rc == 0 or not stale_base or a.base_root:
+                            break
+                        if attempt == max(1, a.base_retries):
+                            raise StageError(
+                                "the repository head moved under this prepare "
+                                "%d times (ADR-0011 D16).\n"
+                                "  Another publish is committing while this "
+                                "one prepares. Raise --base-retries,\n"
+                                "  or serialise publishing so a prepare is not "
+                                "racing a commit." % attempt)
+                        # Scratch may hold partial state from the failed run.
+                        shutil.rmtree(tmp, ignore_errors=True)
+                        os.makedirs(tmp, exist_ok=True)
+                        new_base = fetch_published_root(stratum0)
+                        print("[cvmfs-stage] base moved %s -> %s; re-preparing "
+                              "(attempt %d of %d)"
+                              % (base, new_base, attempt + 1,
+                                 max(1, a.base_retries)), file=sys.stderr)
+                        base = new_base
+                        cmd = build(base)
             except OSError as exc:
                 # A missing cvmfs_swissknife is a runner prerequisite, not a
                 # bug: name it rather than showing a traceback.

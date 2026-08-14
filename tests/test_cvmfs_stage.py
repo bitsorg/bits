@@ -623,15 +623,22 @@ class TestMainWiring(unittest.TestCase):
         self.addCleanup(os.unlink, self.server_conf)
 
         # The ingest: write the manifest the real one would, and succeed.
-        def fake_call(argv, stdout=None):
+        # Stubs run_prepare, which is the seam main() actually uses -- an
+        # earlier version stubbed subprocess.call and silently stopped
+        # intercepting when the retry loop moved to Popen, leaving the test
+        # asserting on a "cvmfs_swissknife not found" error instead.
+        self.prepared = []
+
+        def fake_run(argv):
+            self.prepared.append(list(argv))
             out = argv[argv.index("-o") + 1]
             with open(out, "w") as fh:
                 fh.write("C%s\nNbits.cern.ch\nS2\n" % self.ROOT)
-            return 0
+            return 0, False
 
-        self._real_call = cmd.subprocess.call
-        cmd.subprocess.call = fake_call
-        self.addCleanup(setattr, cmd.subprocess, "call", self._real_call)
+        self._real_run = cmd.run_prepare
+        cmd.run_prepare = fake_run
+        self.addCleanup(setattr, cmd, "run_prepare", self._real_run)
 
         # No locking and no spool: neither is what this test is about.
         self._real_lock = cmd.prepare_lock
@@ -680,6 +687,74 @@ class TestMainWiring(unittest.TestCase):
         msg = err.getvalue()
         self.assertIn("cannot be read back", msg)
         self.assertNotIn("did not produce a subtree catalog", msg)
+
+
+    def test_a_moved_base_is_retried_with_a_freshly_read_head(self):
+        """ADR-0011 D16: prepub commits an earlier package while this one
+        prepares, so the head moves between our read and swissknife's.
+
+        NEGATIVE CONTROL: drop the retry and the first (3, stale) result
+        propagates as a hard failure with one prepare attempt, not two.
+        """
+        import io
+        spool = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, spool, True)
+
+        # The head MUST differ between the first read and the re-read, or
+        # "re-read the base" and "reuse the stale base" produce identical argv
+        # and the assertion below cannot tell them apart. A negative control
+        # caught exactly that: mutating new_base = base left the test green.
+        heads = ["c" * 40, "d" * 40]
+        self.cmd.fetch_published_root = \
+            lambda url, timeout=30: heads[min(len(self.prepared_bases), 1)]
+        self.prepared_bases = []
+        self.addCleanup(setattr, self.cmd, "fetch_published_root",
+                        self.cmd.fetch_published_root)
+
+        calls = []
+
+        def flaky(argv):
+            calls.append(list(argv))
+            self.prepared_bases.append(argv[argv.index("-b") + 1])
+            if len(calls) == 1:
+                return 3, True          # base hash does not match manifest
+            out = argv[argv.index("-o") + 1]
+            with open(out, "w") as fh:
+                fh.write("C%s\nNbits.cern.ch\nS2\n" % self.ROOT)
+            return 0, False
+
+        self.cmd.run_prepare = flaky
+
+        err = io.StringIO()
+        real_stderr, sys.stderr = sys.stderr, err
+        try:
+            # Serve REAL catalogs, keyed by the hash in the URL, so the probe
+            # and the walk both succeed and rc==0 means the whole path ran --
+            # not just that the retry fired.
+            objects = {
+                self.ROOT: make_catalog("/", nested=[("/p/1.0", H_SUB)]),
+                H_SUB: make_catalog("/p/1.0"),
+            }
+
+            def serve(url, timeout=30):
+                seg = url.rstrip("/").split("/")
+                return objects[seg[-2] + seg[-1][:-1]]
+
+            with _patched_fetch(serve):
+                # No --base-root: an explicit base must NOT be substituted.
+                argv = [x for x in self.argv(spool) if x != "--base-root"
+                        and x != "b" * 40]
+                rc = self.cmd.main(argv)
+        finally:
+            sys.stderr = real_stderr
+
+        self.assertEqual(len(calls), 2, "the prepare was not retried")
+        # The second attempt used the head read after the failure, not the
+        # stale one -- substituting the same base would retry forever.
+        self.assertEqual(self.prepared_bases, ["c" * 40, "d" * 40],
+                         "the retry did not re-read the head")
+        self.assertIn("base moved", err.getvalue())
+        self.assertEqual(rc, 0)
 
 
 import contextlib  # noqa: E402
