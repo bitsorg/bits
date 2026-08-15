@@ -149,6 +149,17 @@ def http_fetcher(stage_url, repo_url, timeout=30):
     return fetch
 
 
+def fetch_repo_catalog(repo_url, cat_hash, timeout=30):
+    """Fetch a catalog from the REPOSITORY only, never the staging prefix.
+
+    http_fetcher tries staging first and falls back to the repository, which
+    is right for the walk. It is wrong for answering "is this path already
+    published?", where a staged copy would produce a false yes.
+    """
+    return fetch_and_decompress(data_url_for_hash(repo_url, cat_hash),
+                                timeout=timeout)
+
+
 def find_subtree_catalog(root_hash, lease_path, fetch):
     """Walk from root_hash to the catalog whose root_prefix is lease_path.
 

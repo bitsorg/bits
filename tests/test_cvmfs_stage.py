@@ -771,6 +771,15 @@ class TestMainWiring(unittest.TestCase):
         spool = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, spool, True)
         self.cmd.run_prepare = lambda argv: (-6, {"path_exists"})
+        # The repository DOES have the path: this is the confirmed branch, and
+        # only that branch is entitled to say "publish somewhere else".
+        # H_FOUND is deliberately distinct from the --base-root ("b" * 40):
+        # asserting it below proves the message names the CATALOG the walk
+        # found, not just the base it started from.
+        H_FOUND = "e" * 40
+        real_walk = self.cmd.find_subtree_catalog
+        self.cmd.find_subtree_catalog = lambda root, path, fetch: H_FOUND
+        self.addCleanup(setattr, self.cmd, "find_subtree_catalog", real_walk)
 
         err = io.StringIO()
         real_stderr, sys.stderr = sys.stderr, err
@@ -789,6 +798,100 @@ class TestMainWiring(unittest.TestCase):
         self.assertIn("NOT ALREADY", msg)
         self.assertIn("ADR-0011 D17", msg)
         self.assertIn("add-only", msg)
+        self.assertIn("It IS in the repository", msg)   # checked, not assumed
+        self.assertIn(H_FOUND, msg)                     # and names the catalog
+
+
+    def test_an_unconfirmed_path_does_not_claim_the_repository_has_it(self):
+        """The constraint alone says only "added twice". When the walk finds
+        no catalog covering the path, the tool must NOT tell the reader to
+        publish elsewhere -- that is the same unfounded assertion one layer
+        down, and the real cause may be a duplicate inside the tar.
+
+        NEGATIVE CONTROL: move the "PUBLISH AT A PATH..." advice back into the
+        shared tail and this fails, because it then appears unconditionally.
+        """
+        import io
+        spool = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, spool, True)
+        self.cmd.run_prepare = lambda argv: (-6, {"path_exists"})
+
+        def refuse(root, path, fetch):
+            raise StageError("no catalog covers")
+        real_walk = self.cmd.find_subtree_catalog
+        self.cmd.find_subtree_catalog = refuse
+        self.addCleanup(setattr, self.cmd, "find_subtree_catalog", real_walk)
+
+        err = io.StringIO()
+        real_stderr, sys.stderr = sys.stderr, err
+        try:
+            rc = self.cmd.main(self.argv(spool))
+        finally:
+            sys.stderr = real_stderr
+
+        self.assertEqual(rc, 1)
+        msg = err.getvalue()
+        self.assertIn("NOT CONFIRMED", msg)
+        self.assertIn("no catalog covers", msg)      # the walk's own words
+        self.assertIn("ls -d /cvmfs/", msg)          # how to settle it
+        self.assertIn("packaging bug", msg)          # the other cause, named
+        self.assertNotIn("PUBLISH AT A PATH", msg)   # advice it has not earned
+
+    def test_the_conflict_probe_reads_the_repository_never_the_staging_prefix(
+            self):
+        """The probe answers "is this path already PUBLISHED?", so it must
+        read the repository only: through the staging-first http_fetcher, a
+        staged-but-unpromoted copy of the subtree would answer yes to a
+        question about published state.
+
+        The walk here is the REAL find_subtree_catalog over real catalog
+        fixtures; only the HTTP layer is recorded.
+
+        NEGATIVE CONTROL: route the probe's lambda through http_fetcher
+        instead of fetch_repo_catalog and the first recorded URL carries the
+        staging prefix, failing the prefix assertion.
+        """
+        import io
+        spool = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, spool, True)
+        self.cmd.run_prepare = lambda argv: (-6, {"path_exists"})
+
+        h_leaf = "e" * 40
+        objects = {
+            "b" * 40: make_catalog("/", nested=[("/p/1.0", h_leaf)]),
+            h_leaf: make_catalog("/p/1.0"),
+        }
+        urls = []
+
+        def record(url, timeout=30):
+            urls.append(url)
+            tail = url.rsplit("/data/", 1)[1]      # <2>/<rest>C
+            h = tail.replace("/", "")[:-1]         # drop separator + C suffix
+            if h not in objects:
+                raise IOError("HTTP Error 404: Not Found")
+            return objects[h]
+
+        real_fetch = self.mod.fetch_and_decompress
+        self.mod.fetch_and_decompress = record
+        self.addCleanup(setattr, self.mod, "fetch_and_decompress", real_fetch)
+
+        err = io.StringIO()
+        real_stderr, sys.stderr = sys.stderr, err
+        try:
+            rc = self.cmd.main(self.argv(spool))
+        finally:
+            sys.stderr = real_stderr
+
+        self.assertEqual(rc, 1)
+        msg = err.getvalue()
+        self.assertIn("It IS in the repository", msg)
+        self.assertIn(h_leaf, msg)                   # the walk's real answer
+        self.assertTrue(urls)                        # and it really fetched
+        repo_prefix = ("http://cvmfs-bits.s3.cern.ch/cvmfs/bits.cern.ch"
+                       "/data/")
+        for u in urls:
+            self.assertTrue(u.startswith(repo_prefix), u)
+            self.assertNotIn("staging", u)
 
     def test_replace_passes_the_delete_flag_and_default_does_not(self):
         """-D is what makes a re-publish possible, and its absence is what

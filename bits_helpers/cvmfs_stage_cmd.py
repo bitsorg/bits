@@ -67,13 +67,15 @@ import uuid
 try:
     from bits_helpers.cvmfs_stage import (
         StageError, fetch_published_root, find_subtree_catalog, http_fetcher,
-        parse_manifest, prepare_argv, probe_staged_object, repo_upstream,
+        fetch_repo_catalog, parse_manifest, prepare_argv,
+        probe_staged_object, repo_upstream,
         scratch_dir, staging_prefix, staging_url,
     )
 except ImportError:  # pragma: no cover
     from cvmfs_stage import (  # type: ignore
         StageError, fetch_published_root, find_subtree_catalog, http_fetcher,
-        parse_manifest, prepare_argv, probe_staged_object, repo_upstream,
+        fetch_repo_catalog, parse_manifest, prepare_argv,
+        probe_staged_object, repo_upstream,
         scratch_dir, staging_prefix, staging_url,
     )
 
@@ -497,22 +499,65 @@ def main(argv=None):
                     for attempt in range(1, max(1, a.base_retries) + 1):
                         rc, seen = run_prepare(cmd)
                         if "path_exists" in seen and not a.replace:
+                            # ASK the repository rather than assert. The
+                            # constraint says only "this path is added twice";
+                            # "it is already published" is the likely cause,
+                            # not a proven one. A repository-only walk from the
+                            # base settles it when the path carries its own
+                            # catalog, which it does whenever a previous
+                            # publish created one (-C true / -c).
+                            found = None
+                            walk_error = None
+                            try:
+                                found = find_subtree_catalog(
+                                    base, a.path,
+                                    lambda h: fetch_repo_catalog(stratum0, h))
+                            except Exception as exc:
+                                walk_error = exc
+                            if found:
+                                where = (
+                                    "It IS in the repository: catalog %s covers "
+                                    "that path at base %s.\n"
+                                    "  PUBLISH AT A PATH THAT IS NOT ALREADY "
+                                    "TAKEN. A staged publish can ADD a path,\n"
+                                    "  not replace one: even with --replace "
+                                    "(which passes -D and lets this prepare\n"
+                                    "  finish), the graft then refuses with "
+                                    "\"invalid attempt to graft nested\n"
+                                    "  catalog into existing directory\" -- "
+                                    "TryGraftNestedCatalog is add-only by\n"
+                                    "  construction. See ADR-0011 D17."
+                                    % (found, base))
+                            else:
+                                # The walk raises both when it completed and
+                                # nothing covers the path AND when catalogs
+                                # were unreachable; its message says which
+                                # ("no catalog covers" vs "<unreachable: ...>")
+                                # -- show it, so a network failure is not
+                                # dressed up as a verdict about the repository.
+                                where = (
+                                    "NOT CONFIRMED in the repository. The walk "
+                                    "from base %s reported:\n"
+                                    "      %s\n"
+                                    "  If the repository was reachable, that "
+                                    "means either it is published\n"
+                                    "  without a catalog of its own, or the tar "
+                                    "contains the path twice. Check:\n"
+                                    "      ls -d /cvmfs/%s/%s\n"
+                                    "  If it IS there, a staged publish cannot "
+                                    "replace it (ADR-0011 D17) -- use a\n"
+                                    "  path that is free. If it is NOT, the "
+                                    "duplicate is inside the tar and this is\n"
+                                    "  a packaging bug, not a publishing one."
+                                    % (base, walk_error, a.repo,
+                                       a.path.strip("/")))
                             raise StageError(
-                                "%s already exists in %s, and this prepare was "
-                                "not asked to replace it.\n"
-                                "  swissknife aborts rather than merging: the "
-                                "entries are already in the catalog\n"
-                                "  (UNIQUE constraint on catalog.md5path).\n"
-                                "  PUBLISH AT A PATH THAT IS NOT ALREADY "
-                                "TAKEN. A staged publish can ADD a path,\n"
-                                "  not replace one: even with --replace (which "
-                                "passes -D and lets this\n"
-                                "  prepare finish), the graft then refuses "
-                                "with \"invalid attempt to graft\n"
-                                "  nested catalog into existing directory\" "
-                                "-- TryGraftNestedCatalog is\n"
-                                "  add-only by construction. See ADR-0011 D17."
-                                % (a.path, a.repo))
+                                "cannot extract %s into %s: swissknife hit "
+                                "UNIQUE constraint on\n"
+                                "  catalog.md5path -- an entry is being added "
+                                "that the catalog already has.\n"
+                                "  %s"
+                                % (a.path, a.repo, where))
                         stale_base = "stale_base" in seen
                         if rc == 0 or not stale_base or a.base_root:
                             break
