@@ -281,6 +281,7 @@ class TestPrepareArgv(unittest.TestCase):
         self.assertNotIn("-P", a)
         self.assertNotIn("-H", a)
         self.assertIn("-D", a)
+        self.assertIn("-f", a)
         self.assertIn("-n", a)
 
     def test_never_passes_the_gateway_flags(self):
@@ -978,6 +979,16 @@ class TestMainWiring(unittest.TestCase):
 
         self.assertNotIn("-D", without)
         self.assertIn("-D", with_flag)
+        # -f must travel WITH -D. Measured 2026-08-16: -D alone classifies the
+        # entry through the read-only union view, which a mountless prepare
+        # does not have, so the delete is refused ("cannot be deleted.
+        # Unrecognized file type.") and the prepare aborts on the very UNIQUE
+        # constraint -D was passed to avoid.
+        #
+        # NEGATIVE CONTROL: drop "-f" from the replace branch in prepare_argv
+        # and this fails with "'-f' not found".
+        self.assertNotIn("-f", without)
+        self.assertIn("-f", with_flag)
         self.assertEqual(with_flag[with_flag.index("-D") + 1], "p/1.0")
 
     def _write_manifest(self, argv):

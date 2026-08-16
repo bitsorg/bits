@@ -533,13 +533,14 @@ def main(argv=None):
                                     "that path at base %s.\n"
                                     "  PUBLISH AT A PATH THAT IS NOT ALREADY "
                                     "TAKEN. A staged publish can ADD a path,\n"
-                                    "  not replace one: even with --replace "
-                                    "(which passes -D and lets this prepare\n"
-                                    "  finish), the graft then refuses with "
-                                    "\"invalid attempt to graft nested\n"
-                                    "  catalog into existing directory\" -- "
-                                    "TryGraftNestedCatalog is add-only by\n"
-                                    "  construction. See ADR-0011 D17."
+                                    "  not replace one. --replace lets this "
+                                    "PREPARE finish, but the graft then\n"
+                                    "  refuses: TryGraftNestedCatalog is "
+                                    "add-only by construction, so the\n"
+                                    "  published subtree has to be deleted "
+                                    "first. prepub does that itself when\n"
+                                    "  replace_on_conflict is enabled. See "
+                                    "ADR-0011 D17."
                                     % (found, base))
                             else:
                                 # The walk raises both when it completed and
@@ -620,16 +621,24 @@ def main(argv=None):
                     "/etc/ld.so.conf.d + ldconfig."
                     % (rc, a.swissknife, where or "<dir containing cvmfs_swissknife>"))
             if rc != 0:
+                # Fork-local switches this invocation may have passed. A stock
+                # swissknife rejects the unknown option, then Usage() dumps
+                # ~200 lines for every command, so the one diagnostic line is
+                # buried a long way up the job log and exit 1 is also what a
+                # missing mandatory parameter gives.
+                fork_flags = []
+                if a.no_stats_db:
+                    fork_flags.append("-n (--no-stats-db)")
+                if a.replace:
+                    fork_flags.append("-f (--replace)")
                 hint = ""
-                if a.no_stats_db and rc == 1:
-                    # getopt prints one line about the unknown option and then
-                    # Usage() dumps ~200 lines for every swissknife command, so
-                    # the diagnostic is buried a long way up the job log.
-                    hint = ("\n  This prepare passed -n (--no-stats-db). A "
-                            "cvmfs_swissknife without that switch prints its "
-                            "usage and exits 1;\n  check `%s ingest --help` "
-                            "for -n before assuming the prepare itself failed."
-                            % a.swissknife)
+                if fork_flags and rc == 1:
+                    hint = ("\n  This prepare passed %s, which only a forked "
+                            "cvmfs_swissknife accepts.\n  One that does not "
+                            "prints its usage and exits 1 — check `%s ingest "
+                            "--help`\n  before assuming the prepare itself "
+                            "failed."
+                            % (" and ".join(fork_flags), a.swissknife))
                 raise StageError("prepare failed with exit %d%s" % (rc, hint))
 
             with open(manifest, "rb") as fh:

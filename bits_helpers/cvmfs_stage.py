@@ -539,7 +539,23 @@ def prepare_argv(repo, lease_path, tar_path, stage_prefix, s3_conf,
         # there -- possibly a different build that landed at the same path.
         # ADR-0011: anything that deletes state runs only on an explicit flag,
         # never as a side effect of a missing-file heuristic.
-        argv += ["-D", lease_path.strip("/")]
+        # -f goes with it, and is not optional here: -D alone classifies the
+        # entry through the read-only union view, which a MOUNTLESS prepare
+        # does not have. Measured 2026-08-16 against an occupied path: the
+        # delete is refused with "cannot be deleted. Unrecognized file type."
+        # and the prepare then aborts on the very UNIQUE constraint -D was
+        # passed to avoid. With -f (catalog-based fast delete, cvmfs
+        # 5d3ccdda3) the same prepare exits 0.
+        #
+        # That holds for a NESTED-CATALOG MOUNTPOINT. sync_mediator.cc:241-248
+        # still warns "cannot be deleted" for a path the catalog has that is
+        # not a transition point -- every path bits publishes is one, because
+        # it passes -C true, but --replace takes an arbitrary lease_path.
+        #
+        # -f is fork-local (like -n, -S, -3): a stock swissknife rejects the
+        # unknown option, prints usage and exits 1, and cvmfs_stage_cmd adds a
+        # hint pointing here.
+        argv += ["-D", lease_path.strip("/"), "-f"]
     if no_stats_db:
         # -n: prepare without opening the statistics database. A prepare's row
         # describes a publish it deliberately never made, and OpenStandardDB
