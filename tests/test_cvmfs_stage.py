@@ -252,6 +252,37 @@ class TestPrepareArgv(unittest.TestCase):
         args.update(kw)
         return prepare_argv(**args)
 
+    def test_no_stats_db_off_state_is_byte_identical(self):
+        """Off must add nothing and change nothing -- not merely "no -n".
+
+        Comparing the two argvs earns the claim; assertNotIn("-n") would pass
+        even if the flag also reordered or dropped something.
+        """
+        off = self.argv()
+        on = self.argv(no_stats_db=True)
+        self.assertEqual(off, [x for x in on if x != "-n"])
+        self.assertNotIn("-n", off)
+
+    def test_no_stats_db_emits_n(self):
+        """-n removes the documented blocker to running prepares concurrently
+        (the shared statistics DB). It does NOT by itself make anything run
+        concurrently -- prepare_lock still serialises them.
+
+        NEGATIVE CONTROL: drop the `argv += ["-n"]` branch in prepare_argv and
+        this fails with "'-n' not found in [...]".
+        """
+        self.assertIn("-n", self.argv(no_stats_db=True))
+
+    def test_no_stats_db_does_not_disturb_the_gateway_ban(self):
+        """The safety property must hold in the new state too, not just the
+        default one -- a flag that only added -n to a code path where -P/-H
+        were unchecked would pass the other test and still be wrong."""
+        a = self.argv(no_stats_db=True, replace=True)
+        self.assertNotIn("-P", a)
+        self.assertNotIn("-H", a)
+        self.assertIn("-D", a)
+        self.assertIn("-n", a)
+
     def test_never_passes_the_gateway_flags(self):
         """-P is a session token and -H a gateway key. Either one turns a
         prepare into a publish nobody asked for (MEASUREMENTS §18)."""
@@ -892,6 +923,36 @@ class TestMainWiring(unittest.TestCase):
         for u in urls:
             self.assertTrue(u.startswith(repo_prefix), u)
             self.assertNotIn("staging", u)
+
+    def test_no_stats_db_reaches_the_argv_through_the_cli(self):
+        """Covers the layer the argv tests cannot: a misspelled attribute at
+        the prepare_argv call site is an AttributeError no unit test sees.
+
+        NEGATIVE CONTROL: rename the kwarg to a.no_statsdb in
+        cvmfs_stage_cmd and this fails (AttributeError), while every
+        prepare_argv-level test still passes.
+        """
+        spool = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, spool, True)
+
+        def run(extra):
+            self.prepared = []
+            self.cmd.run_prepare = lambda argv: (
+                self.prepared.append(list(argv)) or self._write_manifest(argv))
+            with _patched_fetch(self._serve()):
+                self.cmd.main(self.argv(spool) + extra)
+            return self.prepared[0]
+
+        import io
+        real_stderr, sys.stderr = sys.stderr, io.StringIO()
+        try:
+            without = run([])
+            with_flag = run(["--no-stats-db"])
+        finally:
+            sys.stderr = real_stderr
+
+        self.assertNotIn("-n", without)
+        self.assertIn("-n", with_flag)
 
     def test_replace_passes_the_delete_flag_and_default_does_not(self):
         """-D is what makes a re-publish possible, and its absence is what

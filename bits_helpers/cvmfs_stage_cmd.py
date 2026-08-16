@@ -191,10 +191,15 @@ def prepare_lock(repo, spool=None, timeout=1800):
     manifest -- verified on the testbed, one of two concurrent runs failing.
 
     The stats path is CVMFS_STATISTICS_DB in the repository's server.conf, or
-    /var/spool/cvmfs/<repo>/stats.db; it is repository configuration, not a
-    command-line flag, so no argument this tool can pass makes the two runs
-    disjoint. A per-invocation scratch directory is necessary and NOT
-    sufficient.
+    /var/spool/cvmfs/<repo>/stats.db; it is repository configuration and cannot
+    be made per-invocation. A per-invocation scratch directory is necessary and
+    NOT sufficient.
+
+    `--no-stats-db` (swissknife -n) removes that blocker by not opening the
+    database at all -- measured 2026-08-16: 2 and 8 concurrent prepares both
+    clean with it, one and two aborts respectively without. The lock stays
+    until that has been proven at the scale the pipeline runs at; -n makes
+    lifting it possible, it does not lift it.
 
     This costs nothing that matters: the parallelism ADR-0011 buys is across the
     runner fleet, not within one host, and a prepare that waits is still off the
@@ -275,6 +280,14 @@ def main(argv=None):
                          "occupied. Deletes state: never implied. NOTE this "
                          "does not make a republish work end to end -- the "
                          "graft refuses an existing path (ADR-0011 D17).")
+    ap.add_argument("--no-stats-db", action="store_true",
+                    help="pass -n to swissknife: prepare without opening the "
+                         "repository's statistics database. A prepare's row "
+                         "describes a publish that never happened, and the "
+                         "file is shared by every ingest of this repository "
+                         "on the host, so concurrent prepares abort on it. "
+                         "Changes no timing on its own -- prepare_lock still "
+                         "serialises prepares. Needs a swissknife carrying -n.")
     ap.add_argument("--base-retries", type=int, default=4,
                     help="re-read the base and re-prepare this many times when "
                          "the repository head moves mid-prepare (ADR-0011 D16)")
@@ -443,7 +456,7 @@ def main(argv=None):
                     stage_prefix=stage, s3_conf=s3_conf, stratum0_url=stratum0,
                     base_root=base_hash, manifest_out=manifest,
                     swissknife=a.swissknife, spool=a.spool or None, tmp=tmp,
-                    replace=a.replace)
+                    replace=a.replace, no_stats_db=a.no_stats_db)
 
             cmd = build(base)
             if a.dry_run:
@@ -607,7 +620,17 @@ def main(argv=None):
                     "/etc/ld.so.conf.d + ldconfig."
                     % (rc, a.swissknife, where or "<dir containing cvmfs_swissknife>"))
             if rc != 0:
-                raise StageError("prepare failed with exit %d" % rc)
+                hint = ""
+                if a.no_stats_db and rc == 1:
+                    # getopt prints one line about the unknown option and then
+                    # Usage() dumps ~200 lines for every swissknife command, so
+                    # the diagnostic is buried a long way up the job log.
+                    hint = ("\n  This prepare passed -n (--no-stats-db). A "
+                            "cvmfs_swissknife without that switch prints its "
+                            "usage and exits 1;\n  check `%s ingest --help` "
+                            "for -n before assuming the prepare itself failed."
+                            % a.swissknife)
+                raise StageError("prepare failed with exit %d%s" % (rc, hint))
 
             with open(manifest, "rb") as fh:
                 m = parse_manifest(fh.read().decode("utf-8", errors="replace"))

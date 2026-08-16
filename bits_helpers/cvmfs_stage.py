@@ -478,7 +478,8 @@ def scratch_dir(repo, job_id, spool=None):
     attributable: a scratch directory found next week names the submission that
     made it. Verified on the testbed that swissknife accepts a nested -t.
 
-    NOT isolated by this: <spool>/stats.db, which every invocation writes.
+    NOT isolated by this: <spool>/stats.db, which every invocation writes
+    unless the prepare passes -n (--no-stats-db).
     """
     spool = spool or "/var/spool/cvmfs/%s" % repo
     safe = re.sub(r"[^A-Za-z0-9._-]", "-", str(job_id or "")).strip("-.") or "nojob"
@@ -488,7 +489,7 @@ def scratch_dir(repo, job_id, spool=None):
 def prepare_argv(repo, lease_path, tar_path, stage_prefix, s3_conf,
                  stratum0_url, base_root, manifest_out, spool=None,
                  pubkey=None, swissknife="cvmfs_swissknife", tmp=None,
-                 replace=False):
+                 replace=False, no_stats_db=False):
     """Build the `cvmfs_swissknife ingest` command line for a prepare.
 
     Kept as a separate, pure function because the one thing that must never
@@ -539,6 +540,21 @@ def prepare_argv(repo, lease_path, tar_path, stage_prefix, s3_conf,
         # ADR-0011: anything that deletes state runs only on an explicit flag,
         # never as a side effect of a missing-file heuristic.
         argv += ["-D", lease_path.strip("/")]
+    if no_stats_db:
+        # -n: prepare without opening the statistics database. A prepare's row
+        # describes a publish it deliberately never made, and OpenStandardDB
+        # creates, prunes and vacuums a file SHARED by every ingest of this
+        # repository on the host -- which is why concurrent prepares abort on
+        # it (MEASUREMENTS.md §28).
+        #
+        # This flag ALONE changes no timing: prepare_lock still serialises
+        # prepares. It removes the documented blocker; it does not lift the
+        # lock.
+        #
+        # Requires a swissknife carrying -n. An older one rejects the unknown
+        # option, prints usage and exits 1 -- loud, and cvmfs_stage_cmd adds a
+        # hint pointing here.
+        argv += ["-n"]
     for forbidden in ("-P", "-H"):
         if forbidden in argv:
             raise StageError(
