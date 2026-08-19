@@ -158,5 +158,112 @@ class TestSanitize(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(d, "fifo")))
 
 
+class TestOrderBiggestFirst(unittest.TestCase):
+    def _tars(self, sizes):
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        for name, size in sizes:
+            d = os.path.join(t, "el9", name); os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "%s-1.0.el9.tar.gz" % name), "wb") as fh:
+                fh.write(b"x" * size)
+        return t
+
+    def test_largest_first_missing_tar_last(self):
+        from bits_helpers.cvmfs_publish import order_biggest_first
+        t = self._tars([("GEANT4", 100), ("O2", 50), ("Clang", 80)])
+        specs = [{"package": p, "version": "1.0"}
+                 for p in ("O2", "GEANT4", "Clang", "Ghost")]   # Ghost: no tar
+        self.assertEqual(
+            [s["package"] for s in order_biggest_first(specs, t, "el9")],
+            ["GEANT4", "Clang", "O2", "Ghost"])
+
+
+class TestBatchDriver(unittest.TestCase):
+    def _manifest(self, sizes):
+        import json
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        tars = os.path.join(t, "TARS")
+        pkgs = []
+        for name, size in sizes:
+            d = os.path.join(tars, "el9", name); os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "%s-1.0.el9.tar.gz" % name), "wb") as fh:
+                fh.write(b"x" * size)
+            pkgs.append({"package": name, "version": "1.0",
+                         "effective_architecture": "el9"})
+        m = os.path.join(t, "manifest.json")
+        with open(m, "w") as fh:
+            json.dump({"packages": pkgs}, fh)
+        return m, tars
+
+    def _run(self, m, tars, workers, fake):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        argv = ["--manifest", m, "--repo", "r", "--tars-root", tars,
+                "--arch", "el9", "--workers", str(workers)]
+        if workers > 1:                       # satisfy the concurrency gate
+            argv += ["--no-stats-db", "--no-prepare-lock"]
+        with mock.patch.object(cp, "publish_one", fake):
+            return cp.main(argv)
+
+    def test_workers_gt_1_requires_the_concurrency_flags(self):
+        # NEGATIVE CONTROL: drop the gate and this call returns 0 instead of
+        # exiting — concurrent prepares would then abort on the shared stats DB.
+        m, tars = self._manifest([("a", 10)])
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        with mock.patch.object(cp, "publish_one", lambda s, c: []):
+            with self.assertRaises(SystemExit):
+                cp.main(["--manifest", m, "--repo", "r", "--tars-root", tars,
+                         "--arch", "el9", "--workers", "4"])
+
+    def test_serial_is_manifest_order(self):
+        m, tars = self._manifest([("a", 10), ("big", 100), ("c", 5)])
+        seen = []
+        rc = self._run(m, tars, 1, lambda spec, ctx: seen.append(spec["package"]) or [])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen, ["a", "big", "c"])       # N=1: manifest order, no sort
+
+    def test_workers_process_all_packages(self):
+        m, tars = self._manifest([("a", 10), ("big", 100), ("c", 5), ("d", 50)])
+        seen = []
+        import threading
+        lock = threading.Lock()
+
+        def fake(spec, ctx):
+            with lock:
+                seen.append(spec["package"])
+            return [("job-%s" % spec["package"], "%s@1(pkg)" % spec["package"])]
+        rc = self._run(m, tars, 4, fake)
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(seen), ["a", "big", "c", "d"])
+
+    def test_one_failure_fails_the_batch(self):
+        m, tars = self._manifest([("a", 10), ("bad", 100), ("c", 5)])
+
+        def fake(spec, ctx):
+            if spec["package"] == "bad":
+                raise SystemExit("boom")
+            return []
+        # NEGATIVE CONTROL: swallow the exception in _run_one and rc would be 0.
+        self.assertEqual(self._run(m, tars, 4, fake), 1)
+        self.assertEqual(self._run(m, tars, 1, fake), 1)   # serial too
+
+    def test_concurrency_is_bounded_by_workers(self):
+        m, tars = self._manifest([(chr(97 + i), 10 + i) for i in range(12)])
+        import threading
+        import time
+        live = [0]; peak = [0]; lock = threading.Lock()
+
+        def fake(spec, ctx):
+            with lock:
+                live[0] += 1; peak[0] = max(peak[0], live[0])
+            time.sleep(0.02)
+            with lock:
+                live[0] -= 1
+            return []
+        self.assertEqual(self._run(m, tars, 4, fake), 0)
+        self.assertLessEqual(peak[0], 4)                   # never more than N in flight
+        self.assertGreater(peak[0], 1)                     # and it DID run concurrently
+
+
 if __name__ == "__main__":
     unittest.main()

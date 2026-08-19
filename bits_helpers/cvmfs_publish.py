@@ -215,6 +215,29 @@ def submit_staged(prepub_url, token, repo, path, staging_prefix, catalog_hash,
     return jid
 
 
+def tar_path(spec, tars_root, default_arch):
+    """Deterministic path of a package's built tarball (mirrors the CI at
+    cvmfs-prepub-publish.yml:1386)."""
+    arch = spec.get("effective_architecture") or default_arch
+    rev = spec.get("revision", "")
+    vdir = spec.get("version", "") + ("-" + rev if rev else "")
+    return os.path.join(tars_root, arch, spec["package"],
+                        "%s-%s.%s.tar.gz" % (spec["package"], vdir, arch))
+
+
+def order_biggest_first(specs, tars_root, default_arch):
+    """Sort package specs by compressed tar size, largest first (LPT), so the
+    longest prepare starts first and does not gate the window (MEASUREMENTS §31).
+    A missing tar (system-provided package) sorts last (size 0). Stable within a
+    size for reproducibility."""
+    def size(spec):
+        try:
+            return os.path.getsize(tar_path(spec, tars_root, default_arch))
+        except OSError:
+            return 0
+    return sorted(specs, key=size, reverse=True)
+
+
 def _locate_pkgroot(work_dir):
     """The dir holding .meta.json inside the extracted tar (mirrors the CI find)."""
     for dp, _dns, fns in os.walk(work_dir):
@@ -238,8 +261,7 @@ def publish_one(spec, ctx):
     commit = spec.get("commit", "")
     arch = spec.get("effective_architecture") or ctx["arch"]
 
-    tar_gz = os.path.join(ctx["tars_root"], arch, pkg,
-                          "%s-%s.%s.tar.gz" % (pkg, vdir, arch))
+    tar_gz = tar_path(spec, ctx["tars_root"], ctx["arch"])
     if not os.path.isfile(tar_gz):
         return []   # system-provided: no tar, nothing to publish
 
@@ -276,7 +298,8 @@ def publish_one(spec, ctx):
         sanitize(pkgroot)
         _fp = tree_fingerprint(pkgroot)   # content of the tree that goes into the tar
 
-        pkg_tar = tempfile.mktemp(suffix=".tar", dir=ctx.get("tmp_dir") or None)
+        _tfd, pkg_tar = tempfile.mkstemp(suffix=".tar", dir=ctx.get("tmp_dir") or None)
+        os.close(_tfd)
         subprocess.run(["tar", "-cf", pkg_tar, "--hard-dereference",
                         "-C", pkgroot, "."], check=True)
         try:
@@ -332,10 +355,12 @@ def stage_tar(repo, tar_path, path, job_id, stratum0_url,
     D16 base retry, subtree-catalog walk, probe) rather than reimplementing it.
     base_root pins the base revision (else cvmfs-stage reads the current root):
     the verify hook uses it to re-prepare against the base BEFORE the package was
-    published, avoiding the add-only UNIQUE conflict."""
-    import io
-    from contextlib import redirect_stdout
-    from bits_helpers import cvmfs_stage_cmd
+    published, avoiding the add-only UNIQUE conflict.
+
+    Runs cvmfs-stage as a SUBPROCESS, not in-process: cvmfs_stage_cmd.main prints
+    to stdout and capturing that via redirect_stdout mutates sys.stdout
+    process-wide, which is NOT thread-safe. A subprocess has its own stdout, so
+    several publish_one() may run concurrently in a thread pool."""
     argv = ["--repo", repo, "--path", path, "--tar", tar_path,
             "--job-id", job_id, "--stratum0-url", stratum0_url]
     if base_root:
@@ -346,13 +371,20 @@ def stage_tar(repo, tar_path, path, job_id, stratum0_url,
         argv.append("--no-prepare-lock")
     if swissknife:
         argv += ["--swissknife", swissknife]
-    buf = io.StringIO()
-    with redirect_stdout(buf):
-        rc = cvmfs_stage_cmd.main(argv)
-    if rc != 0:
-        raise SystemExit("cvmfs-stage failed for %s (rc=%s)" % (path, rc))
+    bits_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = bits_root + (os.pathsep + env["PYTHONPATH"]
+                                     if env.get("PYTHONPATH") else "")
+    p = subprocess.run(
+        [sys.executable, "-c",
+         "from bits_helpers.cvmfs_stage_cmd import main; import sys; sys.exit(main())",
+         *argv],
+        env=env, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise SystemExit("cvmfs-stage failed for %s (rc=%s): %s"
+                         % (path, p.returncode, (p.stderr or "")[-800:]))
     prefix = catalog = ""
-    for line in buf.getvalue().splitlines():
+    for line in p.stdout.splitlines():
         if line.startswith("BITS_STAGING_PREFIX="):
             prefix = line.split("=", 1)[1]
         elif line.startswith("BITS_CATALOG_HASH="):
@@ -394,6 +426,11 @@ def main(argv=None):
     ap.add_argument("--swissknife", default="")
     ap.add_argument("--no-stats-db", action="store_true")
     ap.add_argument("--no-prepare-lock", action="store_true")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="prepare up to N packages concurrently, biggest tar "
+                         "first (MEASUREMENTS §31). Default 1 = serial, manifest "
+                         "order (today's behaviour). N>1 needs --no-stats-db + "
+                         "--no-prepare-lock (concurrent prepares).")
     ap.add_argument("--dry-run", action="store_true",
                     help="stage but do NOT submit — prints DRYRUN(prefix|hashC), "
                          "so the catalog hash can be checked without a graft")
@@ -404,6 +441,13 @@ def main(argv=None):
         return 0
     if not a.manifest or not a.repo:
         ap.error("--manifest and --repo are required")
+    if a.dry_run:
+        a.workers = 1   # dry-run is single-package verification — keep it serial
+                        # so publish_one's FINGERPRINT print cannot interleave.
+    if a.workers > 1 and not (a.no_stats_db and a.no_prepare_lock):
+        ap.error("--workers > 1 requires --no-stats-db and --no-prepare-lock: "
+                 "concurrent prepares otherwise abort on the shared statistics "
+                 "database and the per-host prepare lock (MEASUREMENTS §28)")
 
     with open(a.manifest) as fh:
         pkgs = (json.load(fh).get("packages") or [])
@@ -419,18 +463,40 @@ def main(argv=None):
                os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
     os.makedirs(ctx["tmp_dir"], exist_ok=True)
 
-    rc = 0
-    for spec in pkgs:
-        if spec.get("provides_repository") or spec.get("package") == "defaults-release":
-            continue
-        if a.one and spec.get("package") != a.one:
-            continue
+    publishable = [s for s in pkgs
+                   if not (s.get("provides_repository")
+                           or s.get("package") == "defaults-release")
+                   and (not a.one or s.get("package") == a.one)]
+
+    def _run_one(spec):
+        # Returns (rc, lines) — never raises, so one bad package fails the batch
+        # without tearing down the pool. publish_one's own errors are SystemExit.
         try:
-            for jid, label in publish_one(spec, ctx):
-                print("PUBLISHED %s %s" % (jid, label))
-        except SystemExit as exc:
-            print("FAILED %s: %s" % (spec.get("package"), exc), file=sys.stderr)
-            rc = 1
+            jobs = publish_one(spec, ctx)
+            return 0, ["PUBLISHED %s %s" % (jid, label) for jid, label in jobs]
+        except (SystemExit, Exception) as exc:
+            return 1, ["FAILED %s: %s" % (spec.get("package"), exc)]
+
+    def _emit(out):
+        # Emit one package's lines atomically (whole list at once, from the main
+        # thread) so nothing interleaves, but stream per package so a serial run
+        # shows progress and does not lose finished work if killed mid-run.
+        for ln in out:
+            (sys.stderr if ln.startswith("FAILED") else sys.stdout).write(ln + "\n")
+        sys.stdout.flush(); sys.stderr.flush()
+
+    rc = 0
+    if a.workers > 1:
+        # Biggest-first: the longest prepare (chunk/compress/upload to S3) starts
+        # first, so it does not land on the tail and gate the window (§31).
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        ordered = order_biggest_first(publishable, ctx["tars_root"], a.arch)
+        with ThreadPoolExecutor(max_workers=a.workers) as ex:
+            for fut in as_completed([ex.submit(_run_one, s) for s in ordered]):
+                r, out = fut.result(); rc |= r; _emit(out)
+    else:
+        for spec in publishable:               # serial, manifest order = today
+            r, out = _run_one(spec); rc |= r; _emit(out)
     return rc
 
 
