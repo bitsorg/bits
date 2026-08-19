@@ -15,7 +15,35 @@ import json
 
 from bits_helpers.cvmfs_publish import (
     expand_tmpl, repo_relative_path, relativise_symlinks, sanitize,
-    resolve_pkg_path)
+    resolve_pkg_path, tree_fingerprint)
+
+
+class TestTreeFingerprint(unittest.TestCase):
+    def _tree(self):
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, True)
+        os.makedirs(os.path.join(d, "bin"))
+        with open(os.path.join(d, "bin", "x"), "w") as fh:
+            fh.write("hello")
+        os.symlink("../bin/x", os.path.join(d, "bin", "l"))
+        return d
+
+    def test_mtime_independent(self):
+        # the catalog hash embeds mtime (relocation stamps it); the content
+        # fingerprint must NOT, or no two runs could ever match.
+        d = self._tree(); f1 = tree_fingerprint(d)
+        os.utime(os.path.join(d, "bin", "x"), (1, 1))
+        self.assertEqual(f1, tree_fingerprint(d))
+
+    def test_content_sensitive(self):
+        d = self._tree(); f1 = tree_fingerprint(d)
+        with open(os.path.join(d, "bin", "x"), "w") as fh:
+            fh.write("HELLO")
+        self.assertNotEqual(f1, tree_fingerprint(d))
+
+    def test_mode_and_symlink_sensitive(self):
+        d = self._tree(); f1 = tree_fingerprint(d)
+        os.chmod(os.path.join(d, "bin", "x"), 0o755)
+        self.assertNotEqual(f1, tree_fingerprint(d))
 
 
 class TestResolvePkgPath(unittest.TestCase):

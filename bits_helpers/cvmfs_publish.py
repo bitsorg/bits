@@ -114,6 +114,37 @@ def sanitize(pkgroot):
     return {"hardlinks": hard, "specials_removed": specials, "abs_symlinks": abssym}
 
 
+def tree_fingerprint(root):
+    """Deterministic content fingerprint of a directory tree: sha256 over sorted
+    per-entry lines carrying structure + mode + size + content-sha256 + symlink
+    target. Deliberately EXCLUDES mtime/uid/gid — a CVMFS catalog hash includes
+    mtime, which relocate-me.sh stamps at relocation time, so it is not stable
+    run-to-run; content is what "reproduces the CI" must mean."""
+    import hashlib
+    import stat as _stat
+    lines = []
+    for dp, dns, fns in os.walk(root):
+        for name in dns + fns:
+            p = os.path.join(dp, name)
+            rel = os.path.relpath(p, root)
+            st = os.lstat(p)
+            mode = oct(_stat.S_IMODE(st.st_mode))
+            if _stat.S_ISLNK(st.st_mode):
+                lines.append("%s\tL\t%s" % (rel, os.readlink(p)))
+            elif _stat.S_ISDIR(st.st_mode):
+                lines.append("%s\tD\t%s" % (rel, mode))
+            elif _stat.S_ISREG(st.st_mode):
+                h = hashlib.sha256()
+                with open(p, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 16), b""):
+                        h.update(chunk)
+                lines.append("%s\tF\t%s\t%d\t%s" % (rel, mode, st.st_size, h.hexdigest()))
+            else:
+                lines.append("%s\t?\t%s" % (rel, mode))
+    lines.sort()
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
+
+
 def resolve_pkg_path(pkgroot, repo, pkg, vdir, ver, rev, platform, install_dir,
                      commit, user, family, kind, tmpl_prefix, arch,
                      prefix_fallback=None):
@@ -243,6 +274,7 @@ def publish_one(spec, ctx):
 
         relativise_symlinks(pkgroot)
         sanitize(pkgroot)
+        _fp = tree_fingerprint(pkgroot)   # content of the tree that goes into the tar
 
         pkg_tar = tempfile.mktemp(suffix=".tar", dir=ctx.get("tmp_dir") or None)
         subprocess.run(["tar", "-cf", pkg_tar, "--hard-dereference",
@@ -265,6 +297,9 @@ def publish_one(spec, ctx):
                                 no_verify_tls=ctx.get("no_verify_tls", False))
         else:
             jid = catalog   # --dry-run: the catalog hash (already <hash>C), for verify
+            # mtime-independent content fingerprint — the reliable equivalence
+            # check (the catalog hash embeds relocation-time mtimes).
+            print("FINGERPRINT %s %s@%s(pkg)" % (_fp, pkg, vdir))
         jobs.append((jid, "%s@%s(pkg)" % (pkg, vdir)))
         # NOTE: modulefile job (etc/modulefiles/<pkg>) is added next increment.
     finally:
@@ -330,8 +365,12 @@ def stage_tar(repo, tar_path, path, job_id, stratum0_url,
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog="bits cvmfs-publish")
-    ap.add_argument("--manifest", required=True)
-    ap.add_argument("--repo", required=True)
+    ap.add_argument("--fingerprint", default="",
+                    help="print the content fingerprint of a directory tree and "
+                         "exit (the CI uses this to fingerprint its own relocated "
+                         "tree with the identical algorithm); other args ignored")
+    ap.add_argument("--manifest")   # required unless --fingerprint (checked below)
+    ap.add_argument("--repo")
     ap.add_argument("--one", help="publish only this package (increment-1 test)")
     ap.add_argument("--tars-root", default=os.path.join(
         os.environ.get("BITS_WORK_DIR", ""), "TARS"))
@@ -359,6 +398,12 @@ def main(argv=None):
                     help="stage but do NOT submit — prints DRYRUN(prefix|hashC), "
                          "so the catalog hash can be checked without a graft")
     a = ap.parse_args(argv)
+
+    if a.fingerprint:
+        print(tree_fingerprint(a.fingerprint))
+        return 0
+    if not a.manifest or not a.repo:
+        ap.error("--manifest and --repo are required")
 
     with open(a.manifest) as fh:
         pkgs = (json.load(fh).get("packages") or [])
