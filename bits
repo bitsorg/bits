@@ -390,6 +390,13 @@ if [[ "${1:-}" == "cvmfs-stage" ]]; then
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_stage_cmd import main; sys.exit(main())' "$@"
 fi
 
+# `bits cvmfs-publish …` → producer-side staged publish of a build's packages
+# (concurrent, biggest-first). Same source-on-sys.path convention as cvmfs-stage.
+if [[ "${1:-}" == "cvmfs-publish" ]]; then
+  shift
+  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_publish import main; sys.exit(main())' "$@"
+fi
+
 for arg in "$@"
 do
   case $arg in
