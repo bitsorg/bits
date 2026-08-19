@@ -253,7 +253,7 @@ def publish_one(spec, ctx):
                 "%s-%s" % (ctx["job_id_base"], _hash8(path)), ctx["stratum0_url"],
                 no_stats_db=ctx.get("no_stats_db", False),
                 no_prepare_lock=ctx.get("no_prepare_lock", False),
-                swissknife=ctx.get("swissknife"))
+                swissknife=ctx.get("swissknife"), base_root=ctx.get("base_root"))
         finally:
             _safe_rm(pkg_tar)
         # `catalog` is already the C-suffixed hash (cvmfs-stage prints
@@ -290,15 +290,21 @@ def _safe_rmtree(p):
 
 
 def stage_tar(repo, tar_path, path, job_id, stratum0_url,
-              no_stats_db=False, no_prepare_lock=False, swissknife=None):
+              no_stats_db=False, no_prepare_lock=False, swissknife=None,
+              base_root=None):
     """Run `bits cvmfs-stage` in-process (cvmfs_stage_cmd.main) and return
     (staging_prefix, catalog_hash). Reuses ALL of cvmfs-stage's logic (prepare,
-    D16 base retry, subtree-catalog walk, probe) rather than reimplementing it."""
+    D16 base retry, subtree-catalog walk, probe) rather than reimplementing it.
+    base_root pins the base revision (else cvmfs-stage reads the current root):
+    the verify hook uses it to re-prepare against the base BEFORE the package was
+    published, avoiding the add-only UNIQUE conflict."""
     import io
     from contextlib import redirect_stdout
     from bits_helpers import cvmfs_stage_cmd
     argv = ["--repo", repo, "--path", path, "--tar", tar_path,
             "--job-id", job_id, "--stratum0-url", stratum0_url]
+    if base_root:
+        argv += ["--base-root", base_root]
     if no_stats_db:
         argv.append("--no-stats-db")
     if no_prepare_lock:
@@ -340,6 +346,10 @@ def main(argv=None):
     ap.add_argument("--user", default="")
     ap.add_argument("--job-id-base", default=os.environ.get("CI_JOB_ID", "local"))
     ap.add_argument("--build-id", default=os.environ.get("CI_PIPELINE_ID", ""))
+    ap.add_argument("--base-root", default="",
+                    help="pin the base revision for the prepare (else the current "
+                         "published root is read); the verify hook passes the "
+                         "base the package was published against")
     ap.add_argument("--bearer-auth", action="store_true",
                     help="send the token as a Bearer header (default: sign)")
     ap.add_argument("--swissknife", default="")
@@ -358,6 +368,7 @@ def main(argv=None):
            "platform": a.platform, "install_dir": a.install_dir, "user": a.user,
            "job_id_base": a.job_id_base, "swissknife": a.swissknife or None,
            "build_id": a.build_id, "bearer_auth": a.bearer_auth,
+           "base_root": a.base_root or None,
            "no_stats_db": a.no_stats_db, "no_prepare_lock": a.no_prepare_lock,
            "submit": not a.dry_run, "tmp_dir": os.path.join(
                os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
