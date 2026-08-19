@@ -308,7 +308,8 @@ def publish_one(spec, ctx):
                 "%s-%s" % (ctx["job_id_base"], _hash8(path)), ctx["stratum0_url"],
                 no_stats_db=ctx.get("no_stats_db", False),
                 no_prepare_lock=ctx.get("no_prepare_lock", False),
-                swissknife=ctx.get("swissknife"), base_root=ctx.get("base_root"))
+                swissknife=ctx.get("swissknife"), base_root=ctx.get("base_root"),
+                replace_on_conflict=ctx.get("replace_on_conflict", False))
         finally:
             _safe_rm(pkg_tar)
         # `catalog` is already the C-suffixed hash (cvmfs-stage prints
@@ -347,7 +348,8 @@ def publish_one(spec, ctx):
                         "%s-%s" % (ctx["job_id_base"], _hash8(mod_path)),
                         ctx["stratum0_url"], no_stats_db=ctx.get("no_stats_db", False),
                         no_prepare_lock=ctx.get("no_prepare_lock", False),
-                        swissknife=ctx.get("swissknife"), base_root=ctx.get("base_root"))
+                        swissknife=ctx.get("swissknife"), base_root=ctx.get("base_root"),
+                        replace_on_conflict=ctx.get("replace_on_conflict", False))
                 finally:
                     _safe_rm(mod_tar)
                 if ctx.get("submit", True):
@@ -383,7 +385,7 @@ def _safe_rmtree(p):
 
 def stage_tar(repo, tar_path, path, job_id, stratum0_url,
               no_stats_db=False, no_prepare_lock=False, swissknife=None,
-              base_root=None):
+              base_root=None, replace_on_conflict=False):
     """Run `bits cvmfs-stage` in-process (cvmfs_stage_cmd.main) and return
     (staging_prefix, catalog_hash). Reuses ALL of cvmfs-stage's logic (prepare,
     D16 base retry, subtree-catalog walk, probe) rather than reimplementing it.
@@ -409,14 +411,33 @@ def stage_tar(repo, tar_path, path, job_id, stratum0_url,
     env = dict(os.environ)
     env["PYTHONPATH"] = bits_root + (os.pathsep + env["PYTHONPATH"]
                                      if env.get("PYTHONPATH") else "")
-    p = subprocess.run(
-        [sys.executable, "-c",
-         "from bits_helpers.cvmfs_stage_cmd import main; import sys; sys.exit(main())",
-         *argv],
-        env=env, capture_output=True, text=True)
+    def _run(extra):
+        return subprocess.run(
+            [sys.executable, "-c",
+             "from bits_helpers.cvmfs_stage_cmd import main; import sys; sys.exit(main())",
+             *argv, *extra],
+            env=env, capture_output=True, text=True)
+    p = _run([])
+    first_err = p.stderr or ""
+    # Republish: retry with --replace ONLY when the prepare failed because the
+    # path is ALREADY PUBLISHED. cvmfs-stage's add-only attempt confirms that
+    # against the repository ("It IS in the repository") — an in-tar duplicate
+    # hits the SAME swissknife UNIQUE (catalog.md5path) but reports "NOT
+    # CONFIRMED", i.e. a packaging bug, which must NOT delete anything. --replace
+    # makes the prepare delete-then-add; the prepub daemon's own
+    # replace_on_conflict then does the repo-level graft (both must be on).
+    if (p.returncode != 0 and replace_on_conflict
+            and "It IS in the repository" in first_err):
+        p = _run(["--replace"])
+        if p.returncode != 0:
+            # Keep the original add-only failure: it carries the clearer verdict.
+            raise SystemExit(
+                "cvmfs-stage --replace retry failed for %s (rc=%s): %s\n"
+                "  original add-only failure: %s"
+                % (path, p.returncode, (p.stderr or "")[-800:], first_err[-800:]))
     if p.returncode != 0:
         raise SystemExit("cvmfs-stage failed for %s (rc=%s): %s"
-                         % (path, p.returncode, (p.stderr or "")[-800:]))
+                         % (path, p.returncode, first_err[-800:]))
     prefix = catalog = ""
     for line in p.stdout.splitlines():
         if line.startswith("BITS_STAGING_PREFIX="):
@@ -460,6 +481,15 @@ def main(argv=None):
     ap.add_argument("--swissknife", default="")
     ap.add_argument("--no-stats-db", action="store_true")
     ap.add_argument("--no-prepare-lock", action="store_true")
+    ap.add_argument("--replace-on-conflict", action="store_true",
+                    help="REPUBLISH: if a package's path is already published, "
+                         "the add-only prepare fails on a UNIQUE conflict; retry "
+                         "it once with `cvmfs-stage --replace`, which deletes the "
+                         "existing subtree inside the prepared revision (prior "
+                         "revisions keep objects until GC) and re-adds the new "
+                         "content. New paths are unaffected. REQUIRES the prepub "
+                         "daemon to also run with replace_on_conflict, else the "
+                         "graft still refuses (ADR-0011 D17).")
     ap.add_argument("--workers", type=int, default=1,
                     help="prepare up to N packages concurrently, biggest tar "
                          "first (MEASUREMENTS §31). Default 1 = serial, manifest "
@@ -493,6 +523,7 @@ def main(argv=None):
            "build_id": a.build_id, "bearer_auth": a.bearer_auth,
            "base_root": a.base_root or None,
            "no_stats_db": a.no_stats_db, "no_prepare_lock": a.no_prepare_lock,
+           "replace_on_conflict": a.replace_on_conflict,
            "submit": not a.dry_run, "tmp_dir": os.path.join(
                os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
     os.makedirs(ctx["tmp_dir"], exist_ok=True)

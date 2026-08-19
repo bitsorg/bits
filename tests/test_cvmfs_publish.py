@@ -293,5 +293,121 @@ class TestBatchDriver(unittest.TestCase):
         self.assertGreater(peak[0], 1)                     # and it DID run concurrently
 
 
+class TestStageTarReplaceOnConflict(unittest.TestCase):
+    """stage_tar retries with `cvmfs-stage --replace` ONLY on the add-only
+    UNIQUE conflict, and ONLY when the caller opted in — a genuinely-new path
+    (any other failure) must never trigger the delete."""
+
+    OK = (0, "BITS_STAGING_PREFIX=pfx\nBITS_CATALOG_HASH=abcC\n", "")
+    # Path already published: cvmfs-stage's add-only attempt CONFIRMS it in the
+    # repository. The only case --replace should remedy.
+    CONFLICT = (1, "", "cannot extract some/path into repo: swissknife hit UNIQUE "
+                       "constraint on\n  catalog.md5path -- an entry is being added "
+                       "that the catalog already has.\n  It IS in the repository: "
+                       "catalog abc123 covers that path at base def456.")
+    # Same swissknife UNIQUE, but the path is NOT in the repository — the tar
+    # holds it twice (a packaging bug). Must NOT trigger a delete-retry.
+    INTAR_DUP = (1, "", "cannot extract some/path into repo: swissknife hit UNIQUE "
+                        "constraint on\n  catalog.md5path -- ...\n  NOT CONFIRMED in "
+                        "the repository. ... the duplicate is inside the tar and this "
+                        "is\n  a packaging bug, not a publishing one.")
+    OTHERFAIL = (1, "", "prepare failed with exit 3")
+
+    def _patch(self, responses):
+        import bits_helpers.cvmfs_publish as cp
+        calls = []
+        seq = list(responses)
+
+        class R:
+            def __init__(self, rc, out, err):
+                self.returncode = rc; self.stdout = out; self.stderr = err
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return R(*seq.pop(0))
+        return cp, calls, fake_run
+
+    def _call(self, cp, fake_run, **kw):
+        from unittest import mock
+        with mock.patch.object(cp.subprocess, "run", fake_run):
+            return cp.stage_tar("repo", "/tmp/t.tar", "some/path", "job1",
+                                "http://s0", **kw)
+
+    def test_retries_with_replace_on_conflict_when_enabled(self):
+        cp, calls, fake = self._patch([self.CONFLICT, self.OK])
+        self.assertEqual(self._call(cp, fake, replace_on_conflict=True),
+                         ("pfx", "abcC"))
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("--replace", calls[0])          # first try is add-only
+        self.assertEqual(calls[1], calls[0] + ["--replace"])  # SAME argv + --replace
+
+    def test_no_retry_when_disabled(self):
+        cp, calls, fake = self._patch([self.CONFLICT])
+        with self.assertRaises(SystemExit):
+            self._call(cp, fake, replace_on_conflict=False)
+        self.assertEqual(len(calls), 1)            # default add-only, never retries
+
+    def test_no_retry_on_in_tar_duplicate(self):
+        # NEGATIVE CONTROL: same swissknife UNIQUE, but the path is NOT published
+        # (duplicate inside the tar). --replace must not fire — nothing to delete.
+        cp, calls, fake = self._patch([self.INTAR_DUP])
+        with self.assertRaises(SystemExit):
+            self._call(cp, fake, replace_on_conflict=True)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("--replace", calls[0])
+
+    def test_no_retry_on_non_conflict_failure(self):
+        # NEGATIVE CONTROL: a failure that is NOT the path-occupied conflict must
+        # not delete anything, even with the flag on.
+        cp, calls, fake = self._patch([self.OTHERFAIL])
+        with self.assertRaises(SystemExit):
+            self._call(cp, fake, replace_on_conflict=True)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("--replace", calls[0])
+
+    def test_retry_failure_preserves_original_error(self):
+        cp, calls, fake = self._patch([self.CONFLICT, self.OTHERFAIL])
+        with self.assertRaises(SystemExit) as cm:
+            self._call(cp, fake, replace_on_conflict=True)
+        self.assertEqual(len(calls), 2)
+        msg = str(cm.exception)
+        self.assertIn("original add-only failure", msg)
+        self.assertIn("It IS in the repository", msg)   # the clearer verdict is kept
+
+    def test_success_first_try_never_replaces(self):
+        cp, calls, fake = self._patch([self.OK])
+        self.assertEqual(self._call(cp, fake, replace_on_conflict=True),
+                         ("pfx", "abcC"))
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("--replace", calls[0])
+
+
+class TestMainThreadsReplaceOnConflict(unittest.TestCase):
+    """--replace-on-conflict reaches publish_one via ctx (off by default)."""
+
+    def _run_capture_ctx(self, argv):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        seen = {}
+
+        def fake_publish_one(spec, ctx):
+            seen.update(ctx)
+            return []
+        m = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump({"packages": [{"package": "p", "version": "1", "revision": "1"}]}, m)
+        m.close()
+        with mock.patch.object(cp, "publish_one", fake_publish_one):
+            cp.main(["--manifest", m.name, "--repo", "r"] + argv)
+        os.unlink(m.name)
+        return seen
+
+    def test_off_by_default(self):
+        self.assertFalse(self._run_capture_ctx([]).get("replace_on_conflict"))
+
+    def test_on_when_flag_passed(self):
+        self.assertTrue(self._run_capture_ctx(
+            ["--replace-on-conflict"]).get("replace_on_conflict"))
+
+
 if __name__ == "__main__":
     unittest.main()
