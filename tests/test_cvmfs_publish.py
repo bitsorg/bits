@@ -62,6 +62,14 @@ class TestResolvePkgPath(unittest.TestCase):
                              kind="path", tmpl_prefix="", arch="el9-x86"),
             "el9/Packages/O2/1.0")
 
+    def test_modules_kind_uses_the_modules_template(self):
+        d = self._meta(path="{prefix}/el9/Packages/{pkg}/{version}",
+                       modules="{prefix}/el9/Modules/modulefiles/{pkg}")
+        self.assertEqual(
+            resolve_pkg_path(d, "r", "O2", "1.0", "1.0", "", "", "", "", "", "",
+                             kind="modules", tmpl_prefix="", arch="el9"),
+            "el9/Modules/modulefiles/O2")
+
     def test_shared_arch_uses_the_shared_template(self):
         # NEGATIVE CONTROL: selecting shared unconditionally would give the wrong
         # path for a normal package and change the relocated bytes (the hash).
@@ -235,6 +243,26 @@ class TestBatchDriver(unittest.TestCase):
         rc = self._run(m, tars, 4, fake)
         self.assertEqual(rc, 0)
         self.assertEqual(sorted(seen), ["a", "big", "c", "d"])
+
+    def test_non_redistributable_false_is_excluded(self):
+        # exact CI replica: a literal boolean false excludes; enum strings do not.
+        import json
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        tars = os.path.join(t, "TARS")
+        pkgs = [{"package": "keep", "version": "1.0", "effective_architecture": "el9",
+                 "redistributable": "all"},
+                {"package": "drop", "version": "1.0", "effective_architecture": "el9",
+                 "redistributable": False}]
+        for name in ("keep", "drop"):
+            d = os.path.join(tars, "el9", name); os.makedirs(d)
+            with open(os.path.join(d, "%s-1.0.el9.tar.gz" % name), "wb") as fh:
+                fh.write(b"x")
+        m = os.path.join(t, "manifest.json")
+        with open(m, "w") as fh:
+            json.dump({"packages": pkgs}, fh)
+        seen = []
+        self._run(m, tars, 1, lambda spec, ctx: seen.append(spec["package"]) or [])
+        self.assertEqual(seen, ["keep"])            # 'drop' excluded, 'keep' kept
 
     def test_one_failure_fails_the_batch(self):
         m, tars = self._manifest([("a", 10), ("bad", 100), ("c", 5)])

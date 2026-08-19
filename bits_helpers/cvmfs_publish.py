@@ -324,7 +324,41 @@ def publish_one(spec, ctx):
             # check (the catalog hash embeds relocation-time mtimes).
             print("FINGERPRINT %s %s@%s(pkg)" % (_fp, pkg, vdir))
         jobs.append((jid, "%s@%s(pkg)" % (pkg, vdir)))
-        # NOTE: modulefile job (etc/modulefiles/<pkg>) is added next increment.
+
+        # Modulefile: a package that ships etc/modulefiles/<pkg> publishes it as
+        # a SECOND prepub job at the modules path (mirrors the CI loop).
+        modfile = os.path.join(pkgroot, "etc", "modulefiles", pkg)
+        if os.path.isfile(modfile):
+            mod_path = resolve_pkg_path(
+                pkgroot, ctx["repo"], pkg, vdir, ver, rev, ctx.get("platform", ""),
+                ctx.get("install_dir", ""), commit, ctx.get("user", ""), family,
+                kind="modules", tmpl_prefix=ctx["tmpl_prefix"], arch=arch,
+                prefix_fallback=ctx.get("prefix_fallback"))
+            if mod_path:
+                _mfd, mod_tar = tempfile.mkstemp(suffix=".tar", dir=ctx.get("tmp_dir") or None)
+                os.close(_mfd)
+                # arcname is the bare filename (tar -C the modulefiles dir, add
+                # <pkg>) so prepub extracts it as <modules_path>/<pkg>.
+                subprocess.run(["tar", "-cf", mod_tar, "--hard-dereference",
+                                "-C", os.path.dirname(modfile), pkg], check=True)
+                try:
+                    mprefix, mcat = stage_tar(
+                        ctx["repo"], mod_tar, mod_path,
+                        "%s-%s" % (ctx["job_id_base"], _hash8(mod_path)),
+                        ctx["stratum0_url"], no_stats_db=ctx.get("no_stats_db", False),
+                        no_prepare_lock=ctx.get("no_prepare_lock", False),
+                        swissknife=ctx.get("swissknife"), base_root=ctx.get("base_root"))
+                finally:
+                    _safe_rm(mod_tar)
+                if ctx.get("submit", True):
+                    mjid = submit_staged(
+                        ctx["prepub_url"], ctx["token"], ctx["repo"], mod_path,
+                        mprefix, mcat, build_id=ctx.get("build_id", ""),
+                        bearer_auth=ctx.get("bearer_auth", False),
+                        no_verify_tls=ctx.get("no_verify_tls", False))
+                else:
+                    mjid = mcat
+                jobs.append((mjid, "%s@%s(modules)" % (pkg, vdir)))
     finally:
         _safe_rmtree(work_dir)
     return jobs
@@ -463,10 +497,19 @@ def main(argv=None):
                os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
     os.makedirs(ctx["tmp_dir"], exist_ok=True)
 
-    publishable = [s for s in pkgs
-                   if not (s.get("provides_repository")
-                           or s.get("package") == "defaults-release")
-                   and (not a.one or s.get("package") == a.one)]
+    def _publishable(s):
+        # virtual / repository-loader packages produce nothing for CVMFS
+        if s.get("provides_repository") or s.get("package") == "defaults-release":
+            return False
+        # non-redistributable: kept in the store, never in public CVMFS. Exact
+        # replica of the CI (jq `.redistributable != false`): only a literal
+        # boolean false excludes; the current enum values never do.
+        if s.get("redistributable") is False:
+            return False
+        if a.one and s.get("package") != a.one:
+            return False
+        return True
+    publishable = [s for s in pkgs if _publishable(s)]
 
     def _run_one(spec):
         # Returns (rc, lines) — never raises, so one bad package fails the batch
