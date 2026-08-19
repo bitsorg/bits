@@ -197,9 +197,9 @@ def prepare_lock(repo, spool=None, timeout=1800):
 
     `--no-stats-db` (swissknife -n) removes that blocker by not opening the
     database at all -- measured 2026-08-16: 2 and 8 concurrent prepares both
-    clean with it, one and two aborts respectively without. The lock stays
-    until that has been proven at the scale the pipeline runs at; -n makes
-    lifting it possible, it does not lift it.
+    clean with it, one and two aborts respectively without. `--no-prepare-lock`
+    (which requires -n) lifts this lock; it stays OFF by default until a full
+    pipeline run at scale is proven clean.
 
     This costs nothing that matters: the parallelism ADR-0011 buys is across the
     runner fleet, not within one host, and a prepare that waits is still off the
@@ -288,6 +288,14 @@ def main(argv=None):
                          "on the host, so concurrent prepares abort on it. "
                          "Changes no timing on its own -- prepare_lock still "
                          "serialises prepares. Needs a swissknife carrying -n.")
+    ap.add_argument("--no-prepare-lock", action="store_true",
+                    help="skip the per-host prepare serialisation lock so "
+                         "prepares of one repository run concurrently. Requires "
+                         "--no-stats-db: the lock exists only because concurrent "
+                         "prepares abort on the shared statistics database "
+                         "(MEASUREMENTS §28), and -n removes exactly that. Off "
+                         "by default; prove a full pipeline run is clean before "
+                         "turning it on.")
     ap.add_argument("--base-retries", type=int, default=4,
                     help="re-read the base and re-prepare this many times when "
                          "the repository head moves mid-prepare (ADR-0011 D16)")
@@ -302,6 +310,17 @@ def main(argv=None):
         user = os.environ.get("USER", "")
 
     try:
+        # --no-prepare-lock lifts the per-host serialisation that keeps
+        # concurrent prepares off the shared statistics database. Without -n
+        # that database is still opened and the losers abort (MEASUREMENTS §28),
+        # so refuse the combination rather than hand out a flag that crashes
+        # under the very concurrency it promises.
+        if a.no_prepare_lock and not a.no_stats_db:
+            raise StageError(
+                "--no-prepare-lock requires --no-stats-db: without -n, "
+                "concurrent prepares abort on the shared statistics database "
+                "(MEASUREMENTS §28), which is the only reason the lock exists")
+
         # No default. The previous one -- http://cvmfs-stratum-zero.cern.ch/
         # cvmfs/<repo> -- names a stratum0 web front end rather than the object
         # store, and it has exactly the right SHAPE to satisfy every check
@@ -495,7 +514,11 @@ def main(argv=None):
             # works -- so its child's stdout goes to stderr with the rest of the
             # progress output.
             try:
-                with prepare_lock(a.repo, a.spool or None):
+                # Lock lifted only with -n (gated above): concurrent prepares
+                # are safe once the shared statistics DB is out of the picture.
+                prepare_cm = (contextlib.nullcontext() if a.no_prepare_lock
+                              else prepare_lock(a.repo, a.spool or None))
+                with prepare_cm:
                     # RETRY ON A MOVED BASE. See ADR-0011 D16: the base is read
                     # from stratum0 moments before swissknife reads the same
                     # manifest, and prepub commits an earlier package in

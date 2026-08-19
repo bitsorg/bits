@@ -694,6 +694,62 @@ class TestMainWiring(unittest.TestCase):
                 "--stratum0-url",
                 "http://cvmfs-bits.s3.cern.ch/cvmfs/bits.cern.ch"]
 
+    def test_no_prepare_lock_is_gated_on_no_stats_db_and_then_bypasses_the_lock(self):
+        """--no-prepare-lock lifts the per-host serialisation, but only WITH
+        --no-stats-db -- without -n the shared statistics DB is still opened and
+        concurrent prepares abort (MEASUREMENTS §28).
+
+        NEGATIVE CONTROL 1: drop the gate in main() and the first run no longer
+        names --no-stats-db (it fails later at the read-back probe instead), so
+        the assertIn check fails.
+        NEGATIVE CONTROL 2: remove the nullcontext branch at the prepare call
+        site and the flagged run enters the lock -> `entered` is non-empty.
+        """
+        import io
+        spool = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, spool, True)
+
+        # 1) GATE: --no-prepare-lock without --no-stats-db is refused, and the
+        # refusal names the missing flag (this run fails before any I/O).
+        err = io.StringIO()
+        real_stderr, sys.stderr = sys.stderr, err
+        try:
+            rc = self.cmd.main(self.argv(spool) + ["--no-prepare-lock"])
+        finally:
+            sys.stderr = real_stderr
+        self.assertEqual(rc, 1)
+        self.assertIn("--no-stats-db", err.getvalue())
+
+        # Record lock entries. The lock DECISION is made during the prepare,
+        # before the read-back probe -- which we let 404 so each run stops
+        # hermetically there, with no live network.
+        entered = []
+        self.cmd.prepare_lock = lambda *a, **k: (
+            entered.append("x"), contextlib.nullcontext())[1]
+
+        def not_found(url, timeout=30):
+            raise IOError("HTTP Error 404: Not Found")
+
+        def run(extra):
+            e = io.StringIO()
+            r, sys.stderr = sys.stderr, e
+            try:
+                with _patched_fetch(not_found):
+                    self.cmd.main(self.argv(spool) + extra)
+            finally:
+                sys.stderr = r
+
+        # 2) DEFAULT: the lock IS entered (the anchor for control 2).
+        entered.clear()
+        run(["--no-stats-db"])
+        self.assertEqual(entered, ["x"], "the lock must be entered by default")
+
+        # 3) --no-prepare-lock bypasses it, and the prepare still carries -n.
+        entered.clear()
+        run(["--no-stats-db", "--no-prepare-lock"])
+        self.assertEqual(entered, [], "the lock was entered despite --no-prepare-lock")
+        self.assertIn("-n", self.prepared[-1])
+
     def test_a_bad_staging_url_is_caught_by_the_probe_not_the_walk(self):
         """NEGATIVE CONTROL: delete the probe_staged_object call from main()
         and this fails -- the run gets as far as the walk and reports "the
