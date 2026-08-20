@@ -225,38 +225,42 @@ def tar_path(spec, tars_root, default_arch):
                         "%s-%s.%s.tar.gz" % (spec["package"], vdir, arch))
 
 
-def order_biggest_first(specs, tars_root, default_arch):
-    """Sort package specs by PAYLOAD size, largest first (LPT), so the longest
-    unit starts first and does not tail the window (MEASUREMENTS §31/§32).
+def _human(n):
+    """Bytes as a short human string (1.8G, 212M, 4K, 0B). For log cross-checks."""
+    n = float(n)
+    for u in ("B", "K", "M", "G", "T"):
+        if n < 1024 or u == "T":
+            return ("%.0f%s" % (n, u)) if u == "B" else ("%.1f%s" % (n, u))
+        n /= 1024.0
 
-    The size is the package's recorded install du — the sentinel the build
-    writes at <sw>/.packages/<arch>/<pkg>/<ver-rev> — which reflects the real
-    content (212 MB .. 1.8 GB here) for EVERY outcome, including reused
-    artefacts. The publish tarball must NOT be used for this: it is a ~4 KB
-    relocate-metadata stub, uniform across packages, so sizing it collapsed the
-    sort to manifest order and sent the biggest payload (GEANT4) last (§32).
-    Falls back to the tar size, then 0, when no sentinel was recorded (e.g.
-    system-provided packages) — those sort last. Stable within a size."""
+
+def payload_size(spec, tars_root, default_arch):
+    """Best size for LPT ordering: the install du the build records in the GC
+    sentinel (<sw>/.packages/<arch>/<pkg>/<ver-rev>) — the real payload, present
+    for EVERY outcome including reused artefacts — else the (uniform ~4 KB)
+    publish tar, else 0. Never raises; any miss degrades to the tar/zero
+    fallback. The tar must not be the primary key: uniform across packages, it
+    collapsed the sort to manifest order and sent the biggest payload last (§32)."""
     work_dir = os.environ.get("BITS_WORK_DIR") or os.path.dirname(tars_root.rstrip("/"))
     try:
         from bits_helpers.cleanup import sentinel_path
         from bits_helpers.utilities import ver_rev
-    except Exception:                       # pragma: no cover - keep ordering usable
-        sentinel_path = ver_rev = None
+        with open(sentinel_path(work_dir, default_arch, spec["package"], ver_rev(spec))) as fh:
+            return int(fh.readline().strip())
+    except Exception:                       # best-effort heuristic: any failure
+        pass                                # degrades to the tar/zero fallback
+    try:
+        return os.path.getsize(tar_path(spec, tars_root, default_arch))
+    except OSError:
+        return 0
 
-    def size(spec):
-        if sentinel_path is not None:
-            try:
-                sp = sentinel_path(work_dir, default_arch, spec["package"], ver_rev(spec))
-                with open(sp) as fh:
-                    return int(fh.readline().strip())
-            except (OSError, ValueError, KeyError):
-                pass                        # fall through to the tar / zero
-        try:
-            return os.path.getsize(tar_path(spec, tars_root, default_arch))
-        except OSError:
-            return 0
-    return sorted(specs, key=size, reverse=True)
+
+def order_biggest_first(specs, tars_root, default_arch):
+    """Sort package specs by PAYLOAD size, largest first (LPT), so the longest
+    unit starts first and does not tail the window (MEASUREMENTS §31/§32). Size
+    is payload_size (the GC sentinel du). Stable within a size."""
+    return sorted(specs, key=lambda s: payload_size(s, tars_root, default_arch),
+                  reverse=True)
 
 
 def _locate_pkgroot(work_dir):
@@ -586,6 +590,15 @@ def main(argv=None):
         # first, so it does not land on the tail and gate the window (§31).
         from concurrent.futures import ThreadPoolExecutor, as_completed
         ordered = order_biggest_first(publishable, ctx["tars_root"], a.arch)
+        # Cross-check: print the biggest-first order with sizes (to stderr, so it
+        # does not disturb the PUBLISHED stdout the CI parses). If the size source
+        # is degenerate this shows as manifest order with equal sizes.
+        sys.stderr.write("[publish] biggest-first order, %d packages:\n" % len(ordered))
+        for i, s in enumerate(ordered, 1):
+            sys.stderr.write("  %3d. %9s  %s@%s\n" % (
+                i, _human(payload_size(s, ctx["tars_root"], a.arch)),
+                s.get("package", ""), s.get("version", "")))
+        sys.stderr.flush()
         with ThreadPoolExecutor(max_workers=a.workers) as ex:
             for fut in as_completed([ex.submit(_run_one, s) for s in ordered]):
                 r, out = fut.result(); rc |= r; _emit(out)

@@ -274,6 +274,22 @@ class TestBatchDriver(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(seen, ["a", "big", "c"])       # N=1: manifest order, no sort
 
+    def test_prints_biggest_first_order_with_sizes(self):
+        import io, contextlib
+        m, tars = self._manifest([("small", 10), ("HUGE", 900), ("mid", 100)])
+        self.addCleanup(os.environ.pop, "BITS_WORK_DIR", None)
+        os.environ.pop("BITS_WORK_DIR", None)   # no sentinels -> tar-size fallback
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self._run(m, tars, 4, lambda spec, ctx: [])
+        self.assertEqual(rc, 0)
+        out = err.getvalue()
+        self.assertIn("biggest-first order, 3 packages", out)
+        self.assertIn("900B", out)                        # sizes are printed
+        # listed biggest-first: HUGE (900) before mid (100) before small (10)
+        self.assertLess(out.index("HUGE@"), out.index("mid@"))
+        self.assertLess(out.index("mid@"), out.index("small@"))
+
     def test_workers_process_all_packages(self):
         m, tars = self._manifest([("a", 10), ("big", 100), ("c", 5), ("d", 50)])
         seen = []
