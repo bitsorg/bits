@@ -226,11 +226,32 @@ def tar_path(spec, tars_root, default_arch):
 
 
 def order_biggest_first(specs, tars_root, default_arch):
-    """Sort package specs by compressed tar size, largest first (LPT), so the
-    longest prepare starts first and does not gate the window (MEASUREMENTS §31).
-    A missing tar (system-provided package) sorts last (size 0). Stable within a
-    size for reproducibility."""
+    """Sort package specs by PAYLOAD size, largest first (LPT), so the longest
+    unit starts first and does not tail the window (MEASUREMENTS §31/§32).
+
+    The size is the package's recorded install du — the sentinel the build
+    writes at <sw>/.packages/<arch>/<pkg>/<ver-rev> — which reflects the real
+    content (212 MB .. 1.8 GB here) for EVERY outcome, including reused
+    artefacts. The publish tarball must NOT be used for this: it is a ~4 KB
+    relocate-metadata stub, uniform across packages, so sizing it collapsed the
+    sort to manifest order and sent the biggest payload (GEANT4) last (§32).
+    Falls back to the tar size, then 0, when no sentinel was recorded (e.g.
+    system-provided packages) — those sort last. Stable within a size."""
+    work_dir = os.environ.get("BITS_WORK_DIR") or os.path.dirname(tars_root.rstrip("/"))
+    try:
+        from bits_helpers.cleanup import sentinel_path
+        from bits_helpers.utilities import ver_rev
+    except Exception:                       # pragma: no cover - keep ordering usable
+        sentinel_path = ver_rev = None
+
     def size(spec):
+        if sentinel_path is not None:
+            try:
+                sp = sentinel_path(work_dir, default_arch, spec["package"], ver_rev(spec))
+                with open(sp) as fh:
+                    return int(fh.readline().strip())
+            except (OSError, ValueError, KeyError):
+                pass                        # fall through to the tar / zero
         try:
             return os.path.getsize(tar_path(spec, tars_root, default_arch))
         except OSError:

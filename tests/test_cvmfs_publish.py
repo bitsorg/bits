@@ -177,12 +177,56 @@ class TestOrderBiggestFirst(unittest.TestCase):
 
     def test_largest_first_missing_tar_last(self):
         from bits_helpers.cvmfs_publish import order_biggest_first
+        os.environ.pop("BITS_WORK_DIR", None)   # no sentinels -> tar-size fallback
         t = self._tars([("GEANT4", 100), ("O2", 50), ("Clang", 80)])
         specs = [{"package": p, "version": "1.0"}
                  for p in ("O2", "GEANT4", "Clang", "Ghost")]   # Ghost: no tar
         self.assertEqual(
             [s["package"] for s in order_biggest_first(specs, t, "el9")],
             ["GEANT4", "Clang", "O2", "Ghost"])
+
+    def test_orders_by_recorded_payload_not_the_uniform_tar(self):
+        # The §32 bug: every publish tar is a ~4 KB relocate stub, so sizing it
+        # collapsed the order to manifest order and sent the biggest payload last.
+        # With recorded install sizes, order must follow the PAYLOAD.
+        from bits_helpers.cvmfs_publish import order_biggest_first
+        work = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, work, True)
+        tars = os.path.join(work, "TARS")
+        for p in ("GEANT4", "protobuf", "safe_int"):        # identical 4 KB tars
+            d = os.path.join(tars, "el9", p); os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "%s-1.0-2.el9.tar.gz" % p), "wb") as fh:
+                fh.write(b"x" * 4096)
+        for p, sz in (("GEANT4", 1_800_000_000), ("protobuf", 212_000_000),
+                      ("safe_int", 4_000)):                 # but real payloads differ
+            d = os.path.join(work, ".packages", "el9", p); os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "1.0-2"), "w") as fh:
+                fh.write("%d\n" % sz)
+        self.addCleanup(os.environ.pop, "BITS_WORK_DIR", None)
+        os.environ["BITS_WORK_DIR"] = work
+        specs = [{"package": p, "version": "1.0", "revision": "2"}    # manifest order
+                 for p in ("safe_int", "protobuf", "GEANT4")]
+        self.assertEqual(
+            [s["package"] for s in order_biggest_first(specs, tars, "el9")],
+            ["GEANT4", "protobuf", "safe_int"])
+
+    def test_empty_or_corrupt_sentinel_falls_back_not_raises(self):
+        # A blank/garbage sentinel must degrade to the tar-size fallback, never raise.
+        from bits_helpers.cvmfs_publish import order_biggest_first
+        work = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, work, True)
+        tars = os.path.join(work, "TARS")
+        for p, sz in (("big", 90), ("small", 10)):
+            d = os.path.join(tars, "el9", p); os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "%s-1.0-1.el9.tar.gz" % p), "wb") as fh:
+                fh.write(b"x" * sz)
+        for p, body in (("big", ""), ("small", "not-a-number\n")):   # blank + garbage
+            d = os.path.join(work, ".packages", "el9", p); os.makedirs(d, exist_ok=True)
+            open(os.path.join(d, "1.0-1"), "w").write(body)
+        self.addCleanup(os.environ.pop, "BITS_WORK_DIR", None)
+        os.environ["BITS_WORK_DIR"] = work
+        specs = [{"package": p, "version": "1.0", "revision": "1"} for p in ("small", "big")]
+        # both sentinels unreadable -> tar-size order (big 90 > small 10)
+        self.assertEqual(
+            [s["package"] for s in order_biggest_first(specs, tars, "el9")], ["big", "small"])
 
 
 class TestBatchDriver(unittest.TestCase):
