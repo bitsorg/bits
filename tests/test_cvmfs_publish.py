@@ -469,5 +469,127 @@ class TestMainThreadsReplaceOnConflict(unittest.TestCase):
             ["--replace-on-conflict"]).get("replace_on_conflict"))
 
 
+def _boom(*a, **k):
+    raise AssertionError("must not be called")
+
+
+class TestSubmitIngest(unittest.TestCase):
+    def test_posts_tar_with_sha256_and_signs_ingest_path(self):
+        import hashlib
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        import bits_helpers.prepub as pp
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"hello-tar-bytes")
+        want = hashlib.sha256(b"hello-tar-bytes").hexdigest()
+        cap = {}
+
+        class Resp:
+            status_code = 200; text = ""
+            def json(self): return {"job_id": "JID-1"}
+
+        class Sess:
+            def post(self, url, files=None, headers=None, timeout=None):
+                cap["files"] = files; return Resp()
+
+        def fake_auth(token, method, uri, fields=None, body_hash=None,
+                      bearer_auth=False, no_verify_tls=False):
+            cap["signed"] = fields; cap["body_hash"] = body_hash
+            return {"Authorization": "sig"}
+
+        with mock.patch.object(pp, "_make_session", lambda *a, **k: Sess()), \
+             mock.patch.object(pp, "_signed_uri", lambda u: u), \
+             mock.patch.object(pp, "_auth_headers", fake_auth):
+            jid = cp.submit_ingest("http://prepub", "tok", "repo", "el9/pkg",
+                                   tarf, build_id="B1")
+        self.assertEqual(jid, "JID-1")
+        self.assertEqual(cap["files"]["publish_path"], (None, "ingest"))
+        self.assertEqual(cap["files"]["tar_sha256"], (None, want))
+        self.assertEqual(cap["files"]["build_id"], (None, "B1"))
+        self.assertIn("tar", cap["files"])                       # the tar is attached
+        self.assertEqual(cap["signed"]["publish_path"], "ingest")   # signed set binds
+        self.assertEqual(cap["signed"]["tar_sha256"], want)         # the sha + path
+        self.assertEqual(cap["signed"]["build_id"], "B1")
+        # the httpsig BODY hash must be the tar's sha256, or prepub 401s the upload
+        self.assertEqual(cap["body_hash"], want)
+
+
+class TestPublishTar(unittest.TestCase):
+    def _tar(self):
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        p = os.path.join(t, "x.tar"); open(p, "wb").write(b"x"); return p
+
+    def test_ingest_posts_tar_and_skips_stage(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tarf = self._tar()
+        with mock.patch.object(cp, "submit_ingest", lambda *a, **k: "IJID"), \
+             mock.patch.object(cp, "stage_tar", _boom):        # never on ingest
+            jid = cp._publish_tar(
+                {"publish_path": "ingest", "prepub_url": "u", "token": "t",
+                 "repo": "r", "submit": True}, "el9/p", tarf, "p@1(pkg)")
+        self.assertEqual(jid, "IJID")
+        self.assertFalse(os.path.exists(tarf))                 # tar removed
+
+    def test_staged_stages_then_submits(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tarf = self._tar()
+        with mock.patch.object(cp, "stage_tar", lambda *a, **k: ("PFX", "HASHC")), \
+             mock.patch.object(cp, "submit_staged", lambda *a, **k: "SJID"), \
+             mock.patch.object(cp, "submit_ingest", _boom):    # never on staged
+            jid = cp._publish_tar(
+                {"publish_path": "staged", "prepub_url": "u", "token": "t", "repo": "r",
+                 "submit": True, "job_id_base": "jb", "stratum0_url": "s"},
+                "el9/p", tarf, "p@1(pkg)")
+        self.assertEqual(jid, "SJID")
+        self.assertFalse(os.path.exists(tarf))
+
+    def test_dry_run_staged_stages_but_does_not_submit(self):
+        import io, contextlib
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tarf = self._tar(); out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+             mock.patch.object(cp, "stage_tar", lambda *a, **k: ("PFX", "HASHC")), \
+             mock.patch.object(cp, "submit_staged", _boom):    # dry-run: stage but no submit
+            jid = cp._publish_tar(
+                {"publish_path": "staged", "submit": False, "repo": "r",
+                 "job_id_base": "jb", "stratum0_url": "s"},
+                "el9/p", tarf, "p@1(pkg)", fp="FP9")
+        self.assertEqual(jid, "HASHC")                          # catalog hash, for verify
+        self.assertIn("FINGERPRINT FP9 p@1(pkg)", out.getvalue())
+        self.assertFalse(os.path.exists(tarf))
+
+    def test_dry_run_ingest_no_submit_prints_fingerprint(self):
+        import io, contextlib
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tarf = self._tar(); out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+             mock.patch.object(cp, "submit_ingest", _boom):    # dry-run submits nothing
+            jid = cp._publish_tar({"publish_path": "ingest", "submit": False},
+                                  "el9/p", tarf, "p@1(pkg)", fp="FP123")
+        self.assertEqual(jid, "FP123")
+        self.assertIn("FINGERPRINT FP123 p@1(pkg)", out.getvalue())
+        self.assertFalse(os.path.exists(tarf))
+
+
+class TestIngestConcurrencyGate(unittest.TestCase):
+    def test_ingest_workers_gt1_does_not_require_stage_flags(self):
+        # NEGATIVE CONTROL vs the staged gate: ingest N>1 must NOT demand
+        # --no-stats-db/--no-prepare-lock (it runs no local prepare).
+        import json
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        m = os.path.join(t, "man.json")
+        json.dump({"packages": [{"package": "a", "version": "1.0"}]}, open(m, "w"))
+        with mock.patch.object(cp, "publish_one", lambda s, c: []):
+            rc = cp.main(["--manifest", m, "--repo", "r", "--tars-root", t,
+                          "--arch", "el9", "--publish-path", "ingest", "--workers", "4"])
+        self.assertEqual(rc, 0)   # no SystemExit from the gate
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -215,6 +215,57 @@ def submit_staged(prepub_url, token, repo, path, staging_prefix, catalog_hash,
     return jid
 
 
+def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
+                  bearer_auth=False, no_verify_tls=False):
+    """POST /api/v1/jobs for the INGEST path: the raw tar IS the payload (prepub's
+    gateway does the chunk/compress/upload). Mirrors the CI's `_post_tar` ingest
+    branch — sends the tar plus its sha256, and SIGNS tar_sha256 so prepub can
+    reject a corrupted upload. Signed by default; bearer puts the token on the
+    request instead. Returns the job id."""
+    import hashlib
+    from bits_helpers import prepub as _pp
+    url = "%s/api/v1/jobs" % prepub_url.rstrip("/")
+    h = hashlib.sha256()
+    with open(tar_file, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    tar_sha256 = h.hexdigest()
+    # The signed set MUST equal the fields prepub parses, or the digest differs
+    # and the publish 401s (reads as auth failure). tar itself is not signed —
+    # its sha256 is, and prepub re-hashes the upload to bind them.
+    signed_fields = {"repo": repo, "path": path, "publish_path": "ingest",
+                     "tar_sha256": tar_sha256}
+    if build_id:
+        signed_fields["build_id"] = build_id
+    # body_hash BINDS the tar to the signature: prepub re-hashes the uploaded
+    # tar and the MAC only matches if the same digest was signed. Signing
+    # tar_sha256 as a field is NOT enough — the httpsig body-hash component is
+    # what makes a wrong/truncated upload 401 (mirrors prepub.submit_job).
+    headers = _pp._auth_headers(token, "POST", _pp._signed_uri(url),
+                                fields=signed_fields, body_hash=tar_sha256,
+                                bearer_auth=bearer_auth, no_verify_tls=no_verify_tls)
+    session = _pp._make_session(no_verify_tls, signed=not bearer_auth)
+    fields = {
+        "repo":         (None, repo),
+        "path":         (None, path),
+        "publish_path": (None, "ingest"),
+        "tar_sha256":   (None, tar_sha256),
+    }
+    if build_id:
+        fields["build_id"] = (None, build_id)
+    with open(tar_file, "rb") as tfh:
+        fields["tar"] = ("pkg.tar", tfh, "application/octet-stream")
+        resp = session.post(url, files=fields, headers=headers, timeout=1800)
+    if resp.status_code not in (200, 201, 202):
+        raise SystemExit("prepub ingest submit failed: HTTP %s: %s"
+                         % (resp.status_code, resp.text[:400]))
+    jid = (resp.json() or {}).get("job_id", "")
+    if not jid:
+        raise SystemExit("prepub ingest submit: no job_id in response: %s"
+                         % resp.text[:400])
+    return jid
+
+
 def tar_path(spec, tars_root, default_arch):
     """Deterministic path of a package's built tarball (mirrors the CI at
     cvmfs-prepub-publish.yml:1386)."""
@@ -271,8 +322,43 @@ def _locate_pkgroot(work_dir):
     raise SystemExit("cannot locate package root (.meta.json) under %s" % work_dir)
 
 
+def _publish_tar(ctx, path, tar, label, fp=None):
+    """Publish ONE prepared tar via the configured path; return its job id and
+    remove the tar. STAGED (default): cvmfs-stage the tar to an S3 prefix (always,
+    so --dry-run still yields the catalog hash) then submit_staged. INGEST: POST
+    the tar itself with submit_ingest — the gateway chunks it. --dry-run submits
+    nothing. A non-None fp prints the mtime-independent FINGERPRINT (verify hook)."""
+    ingest = ctx.get("publish_path") == "ingest"
+    submit = ctx.get("submit", True)
+    try:
+        if ingest:
+            jid = (submit_ingest(ctx["prepub_url"], ctx["token"], ctx["repo"], path,
+                                 tar, build_id=ctx.get("build_id", ""),
+                                 bearer_auth=ctx.get("bearer_auth", False),
+                                 no_verify_tls=ctx.get("no_verify_tls", False))
+                   if submit else (fp or ""))
+        else:
+            prefix, catalog = stage_tar(
+                ctx["repo"], tar, path,
+                "%s-%s" % (ctx["job_id_base"], _hash8(path)), ctx["stratum0_url"],
+                no_stats_db=ctx.get("no_stats_db", False),
+                no_prepare_lock=ctx.get("no_prepare_lock", False),
+                swissknife=ctx.get("swissknife"), base_root=ctx.get("base_root"),
+                replace_on_conflict=ctx.get("replace_on_conflict", False))
+            jid = (submit_staged(ctx["prepub_url"], ctx["token"], ctx["repo"], path,
+                                 prefix, catalog, build_id=ctx.get("build_id", ""),
+                                 bearer_auth=ctx.get("bearer_auth", False),
+                                 no_verify_tls=ctx.get("no_verify_tls", False))
+                   if submit else catalog)   # dry-run: catalog hash for the verify
+    finally:
+        _safe_rm(tar)
+    if not submit and fp is not None:
+        print("FINGERPRINT %s %s" % (fp, label))
+    return jid
+
+
 def publish_one(spec, ctx):
-    """Full producer pipeline for ONE package, staged path. Mirrors the CI loop
+    """Full producer pipeline for ONE package, staged OR ingest path. Mirrors the CI loop
     body: locate tar -> untar -> resolve path -> relocate -> relativise -> tar ->
     cvmfs-stage -> submit; plus the modulefile as a second job. Returns a list of
     (job_id, label). ctx is a dict of shared config (repo, prefix, tars_root, ...).
@@ -327,29 +413,9 @@ def publish_one(spec, ctx):
         os.close(_tfd)
         subprocess.run(["tar", "-cf", pkg_tar, "--hard-dereference",
                         "-C", pkgroot, "."], check=True)
-        try:
-            prefix, catalog = stage_tar(
-                ctx["repo"], pkg_tar, path,
-                "%s-%s" % (ctx["job_id_base"], _hash8(path)), ctx["stratum0_url"],
-                no_stats_db=ctx.get("no_stats_db", False),
-                no_prepare_lock=ctx.get("no_prepare_lock", False),
-                swissknife=ctx.get("swissknife"), base_root=ctx.get("base_root"),
-                replace_on_conflict=ctx.get("replace_on_conflict", False))
-        finally:
-            _safe_rm(pkg_tar)
-        # `catalog` is already the C-suffixed hash (cvmfs-stage prints
-        # BITS_CATALOG_HASH=<40hex>C) — do NOT append another C.
-        if ctx.get("submit", True):
-            jid = submit_staged(ctx["prepub_url"], ctx["token"], ctx["repo"],
-                                path, prefix, catalog, build_id=ctx.get("build_id", ""),
-                                bearer_auth=ctx.get("bearer_auth", False),
-                                no_verify_tls=ctx.get("no_verify_tls", False))
-        else:
-            jid = catalog   # --dry-run: the catalog hash (already <hash>C), for verify
-            # mtime-independent content fingerprint — the reliable equivalence
-            # check (the catalog hash embeds relocation-time mtimes).
-            print("FINGERPRINT %s %s@%s(pkg)" % (_fp, pkg, vdir))
-        jobs.append((jid, "%s@%s(pkg)" % (pkg, vdir)))
+        _lbl = "%s@%s(pkg)" % (pkg, vdir)
+        jid = _publish_tar(ctx, path, pkg_tar, _lbl, fp=_fp)
+        jobs.append((jid, _lbl))
 
         # Modulefile: a package that ships etc/modulefiles/<pkg> publishes it as
         # a SECOND prepub job at the modules path (mirrors the CI loop).
@@ -367,25 +433,9 @@ def publish_one(spec, ctx):
                 # <pkg>) so prepub extracts it as <modules_path>/<pkg>.
                 subprocess.run(["tar", "-cf", mod_tar, "--hard-dereference",
                                 "-C", os.path.dirname(modfile), pkg], check=True)
-                try:
-                    mprefix, mcat = stage_tar(
-                        ctx["repo"], mod_tar, mod_path,
-                        "%s-%s" % (ctx["job_id_base"], _hash8(mod_path)),
-                        ctx["stratum0_url"], no_stats_db=ctx.get("no_stats_db", False),
-                        no_prepare_lock=ctx.get("no_prepare_lock", False),
-                        swissknife=ctx.get("swissknife"), base_root=ctx.get("base_root"),
-                        replace_on_conflict=ctx.get("replace_on_conflict", False))
-                finally:
-                    _safe_rm(mod_tar)
-                if ctx.get("submit", True):
-                    mjid = submit_staged(
-                        ctx["prepub_url"], ctx["token"], ctx["repo"], mod_path,
-                        mprefix, mcat, build_id=ctx.get("build_id", ""),
-                        bearer_auth=ctx.get("bearer_auth", False),
-                        no_verify_tls=ctx.get("no_verify_tls", False))
-                else:
-                    mjid = mcat
-                jobs.append((mjid, "%s@%s(modules)" % (pkg, vdir)))
+                _mlbl = "%s@%s(modules)" % (pkg, vdir)
+                mjid = _publish_tar(ctx, mod_path, mod_tar, _mlbl)
+                jobs.append((mjid, _mlbl))
     finally:
         _safe_rmtree(work_dir)
     return jobs
@@ -506,6 +556,12 @@ def main(argv=None):
     ap.add_argument("--swissknife", default="")
     ap.add_argument("--no-stats-db", action="store_true")
     ap.add_argument("--no-prepare-lock", action="store_true")
+    ap.add_argument("--publish-path", choices=("staged", "ingest"), default="staged",
+                    help="staged (default): prepare objects here with cvmfs-stage "
+                         "and submit a light job. ingest: POST the tar itself and "
+                         "let prepub's gateway chunk it (the tar IS the payload). "
+                         "Both order biggest-first and run concurrently at N>1; "
+                         "ingest ignores the cvmfs-stage flags below.")
     ap.add_argument("--replace-on-conflict", action="store_true",
                     help="REPUBLISH: if a package's path is already published, "
                          "the add-only prepare fails on a UNIQUE conflict; retry "
@@ -533,10 +589,14 @@ def main(argv=None):
     if a.dry_run:
         a.workers = 1   # dry-run is single-package verification — keep it serial
                         # so publish_one's FINGERPRINT print cannot interleave.
-    if a.workers > 1 and not (a.no_stats_db and a.no_prepare_lock):
-        ap.error("--workers > 1 requires --no-stats-db and --no-prepare-lock: "
-                 "concurrent prepares otherwise abort on the shared statistics "
-                 "database and the per-host prepare lock (MEASUREMENTS §28)")
+    # The stats-db / prepare-lock only exist on the staged path (cvmfs-stage);
+    # ingest POSTs the tar and does no local prepare, so N>1 needs nothing extra.
+    if (a.workers > 1 and a.publish_path == "staged"
+            and not (a.no_stats_db and a.no_prepare_lock)):
+        ap.error("--workers > 1 on the staged path requires --no-stats-db and "
+                 "--no-prepare-lock: concurrent prepares otherwise abort on the "
+                 "shared statistics database and the per-host prepare lock "
+                 "(MEASUREMENTS §28)")
 
     with open(a.manifest) as fh:
         pkgs = (json.load(fh).get("packages") or [])
@@ -548,7 +608,7 @@ def main(argv=None):
            "build_id": a.build_id, "bearer_auth": a.bearer_auth,
            "base_root": a.base_root or None,
            "no_stats_db": a.no_stats_db, "no_prepare_lock": a.no_prepare_lock,
-           "replace_on_conflict": a.replace_on_conflict,
+           "replace_on_conflict": a.replace_on_conflict, "publish_path": a.publish_path,
            "submit": not a.dry_run, "tmp_dir": os.path.join(
                os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
     os.makedirs(ctx["tmp_dir"], exist_ok=True)
