@@ -593,7 +593,8 @@ def main(argv=None):
         # Cross-check: print the biggest-first order with sizes (to stderr, so it
         # does not disturb the PUBLISHED stdout the CI parses). If the size source
         # is degenerate this shows as manifest order with equal sizes.
-        sys.stderr.write("[publish] biggest-first order, %d packages:\n" % len(ordered))
+        sys.stderr.write("[publish] fan-out: %d workers; biggest-first order, %d packages:\n"
+                         % (a.workers, len(ordered)))
         for i, s in enumerate(ordered, 1):
             sys.stderr.write("  %3d. %9s  %s@%s\n" % (
                 i, _human(payload_size(s, ctx["tars_root"], a.arch)),
