@@ -512,6 +512,35 @@ class TestSubmitIngest(unittest.TestCase):
         self.assertEqual(cap["signed"]["build_id"], "B1")
         # the httpsig BODY hash must be the tar's sha256, or prepub 401s the upload
         self.assertEqual(cap["body_hash"], want)
+        self.assertNotIn("direct_s3", cap["files"])          # off by default
+        self.assertNotIn("direct_s3", cap["signed"])
+
+    def test_direct_s3_sent_and_signed_when_enabled(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        import bits_helpers.prepub as pp
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
+        cap = {}
+
+        class Resp:
+            status_code = 200; text = ""
+            def json(self): return {"job_id": "J"}
+
+        class Sess:
+            def post(self, url, files=None, headers=None, timeout=None):
+                cap["files"] = files; return Resp()
+
+        def fake_auth(token, method, uri, fields=None, body_hash=None,
+                      bearer_auth=False, no_verify_tls=False):
+            cap["signed"] = fields; return {}
+
+        with mock.patch.object(pp, "_make_session", lambda *a, **k: Sess()), \
+             mock.patch.object(pp, "_signed_uri", lambda u: u), \
+             mock.patch.object(pp, "_auth_headers", fake_auth):
+            cp.submit_ingest("http://p", "t", "r", "el9/x", tarf, direct_s3=True)
+        self.assertEqual(cap["files"]["direct_s3"], (None, "true"))   # form field
+        self.assertEqual(cap["signed"]["direct_s3"], "true")          # and signed
 
 
 class TestPublishTar(unittest.TestCase):

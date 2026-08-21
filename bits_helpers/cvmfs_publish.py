@@ -216,12 +216,13 @@ def submit_staged(prepub_url, token, repo, path, staging_prefix, catalog_hash,
 
 
 def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
-                  bearer_auth=False, no_verify_tls=False):
+                  direct_s3=False, bearer_auth=False, no_verify_tls=False):
     """POST /api/v1/jobs for the INGEST path: the raw tar IS the payload (prepub's
     gateway does the chunk/compress/upload). Mirrors the CI's `_post_tar` ingest
     branch — sends the tar plus its sha256, and SIGNS tar_sha256 so prepub can
-    reject a corrupted upload. Signed by default; bearer puts the token on the
-    request instead. Returns the job id."""
+    reject a corrupted upload. direct_s3=True adds the direct_s3 field so
+    cvmfs_server writes objects straight to S3 (bypassing the gateway). Signed by
+    default; bearer puts the token on the request instead. Returns the job id."""
     import hashlib
     from bits_helpers import prepub as _pp
     url = "%s/api/v1/jobs" % prepub_url.rstrip("/")
@@ -237,6 +238,8 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
                      "tar_sha256": tar_sha256}
     if build_id:
         signed_fields["build_id"] = build_id
+    if direct_s3:
+        signed_fields["direct_s3"] = "true"
     # body_hash BINDS the tar to the signature: prepub re-hashes the uploaded
     # tar and the MAC only matches if the same digest was signed. Signing
     # tar_sha256 as a field is NOT enough — the httpsig body-hash component is
@@ -253,6 +256,8 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
     }
     if build_id:
         fields["build_id"] = (None, build_id)
+    if direct_s3:
+        fields["direct_s3"] = (None, "true")
     with open(tar_file, "rb") as tfh:
         fields["tar"] = ("pkg.tar", tfh, "application/octet-stream")
         resp = session.post(url, files=fields, headers=headers, timeout=1800)
@@ -334,6 +339,7 @@ def _publish_tar(ctx, path, tar, label, fp=None):
         if ingest:
             jid = (submit_ingest(ctx["prepub_url"], ctx["token"], ctx["repo"], path,
                                  tar, build_id=ctx.get("build_id", ""),
+                                 direct_s3=ctx.get("direct_s3", False),
                                  bearer_auth=ctx.get("bearer_auth", False),
                                  no_verify_tls=ctx.get("no_verify_tls", False))
                    if submit else (fp or ""))
@@ -556,6 +562,10 @@ def main(argv=None):
     ap.add_argument("--swissknife", default="")
     ap.add_argument("--no-stats-db", action="store_true")
     ap.add_argument("--no-prepare-lock", action="store_true")
+    ap.add_argument("--direct-s3", action="store_true",
+                    help="ingest only: add direct_s3 so cvmfs_server writes data "
+                         "objects straight to S3, bypassing the gateway. No effect "
+                         "on the staged path.")
     ap.add_argument("--publish-path", choices=("staged", "ingest"), default="staged",
                     help="staged (default): prepare objects here with cvmfs-stage "
                          "and submit a light job. ingest: POST the tar itself and "
@@ -609,6 +619,7 @@ def main(argv=None):
            "base_root": a.base_root or None,
            "no_stats_db": a.no_stats_db, "no_prepare_lock": a.no_prepare_lock,
            "replace_on_conflict": a.replace_on_conflict, "publish_path": a.publish_path,
+           "direct_s3": a.direct_s3,
            "submit": not a.dry_run, "tmp_dir": os.path.join(
                os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
     os.makedirs(ctx["tmp_dir"], exist_ok=True)
