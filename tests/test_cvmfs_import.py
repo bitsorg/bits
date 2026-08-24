@@ -54,9 +54,12 @@ class RewriteModuleAnchorTest(_unittest.TestCase):
 
 
 def _mf(pkg, verrev, deps):
-    """A deployed bits modulefile (BASEDIR-anchored, loads BASE + deps)."""
-    lines = ["#%%Module1.0", "set version %s" % verrev,
-             "if ![ is-loaded 'BASE/1.0' ] { module load BASE/1.0 }"]
+    """A deployed bits modulefile as really published: a multi-line proc block,
+    a MULTI-LINE `if { ... }` BASE guard, single-line dep guards, BASEDIR anchor."""
+    lines = ["#%%Module1.0",
+             "proc ModulesHelp { } {", '  puts stderr "help"', "}",
+             "set version %s" % verrev, "# Dependencies",
+             "if ![ is-loaded 'BASE/1.0' ] {", " module load BASE/1.0", "}"]
     for d in deps:
         lines.append('if ![ is-loaded "%s" ] { module load %s }' % (d, d))
     lines += ["set PKG_ROOT $::env(BASEDIR)/%s/$version" % pkg,
@@ -65,18 +68,34 @@ def _mf(pkg, verrev, deps):
     return "\n".join(lines) + "\n"
 
 
+def _braces_balanced(text):
+    return text.count("{") == text.count("}")
+
+
 class StripBaseDepTest(_unittest.TestCase):
 
     def test_strips_only_base(self):
         text = _mf("Boost", "1.90.0-1", ["CMake/3.30.6-1", "Python/3.13.11-1"])
+        self.assertTrue(_braces_balanced(text))
         out = strip_base_dep(text)
-        # The BASE load/is-loaded line is gone; real deps and BASEDIR ref remain
-        # (re-anchoring, not this function, removes BASEDIR).
+        # The whole multi-line BASE block is gone — no orphan '}' left behind
+        # (regression: the deployment's guard spans `if {` / `module load` / `}`).
         self.assertNotIn("module load BASE", out)
         self.assertNotIn("is-loaded 'BASE", out)
+        self.assertTrue(_braces_balanced(out), "unbalanced braces after strip:\n" + out)
+        # Real deps and the proc block survive; BASEDIR ref stays (re-anchor removes it).
         self.assertIn("module load CMake/3.30.6-1", out)
         self.assertIn("module load Python/3.13.11-1", out)
+        self.assertIn("proc ModulesHelp", out)
         self.assertIn("BASEDIR", out)
+
+    def test_strips_single_line_base_guard(self):
+        # The one-line form must still be handled (balanced { } on one line).
+        text = "if ![ is-loaded 'BASE/1.0' ] { module load BASE/1.0 }\nset x 1\n"
+        out = strip_base_dep(text)
+        self.assertNotIn("BASE", out)
+        self.assertIn("set x 1", out)
+        self.assertTrue(_braces_balanced(out))
 
     def test_base_prefix_package_not_stripped(self):
         # A package whose id merely starts with "BASE" must be kept.

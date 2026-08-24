@@ -262,24 +262,41 @@ def _is_base_id(token):
     return t == "BASE" or t.startswith("BASE/")
 
 
+def _line_loads_base(line):
+    """True if *line* has a ``load`` / ``prereq`` / ``is-loaded`` directive whose
+    next token is the BASE module id — matched by token so ``BASECAMP`` etc. are
+    not mis-matched."""
+    _directives = ("load", "prereq", "prereq-all", "depends-on", "is-loaded")
+    toks = line.split()
+    return any(tok in _directives and i + 1 < len(toks) and _is_base_id(toks[i + 1])
+               for i, tok in enumerate(toks))
+
+
 def strip_base_dep(text):
-    """Drop the ``BASE`` module dependency line(s) from a re-anchored modulefile.
+    """Drop the ``BASE`` module dependency from a re-anchored modulefile.
 
     A deployed bits modulefile loads ``BASE`` only to obtain ``BASEDIR``; once
     ``rewrite_module_anchor`` has inlined that as an absolute path, ``BASE`` is
     unneeded (and may be absent from the reuse set). Real deps (``CMake``,
-    ``Python``…) are kept. A line is a BASE dependency when a ``load`` / ``prereq``
-    / ``is-loaded`` directive on it targets BASE as a module id — matched by token
-    (like ``_module_load_deps``) so a package named ``BASE…`` is not mis-stripped.
+    ``Python``…) are kept. Handles both the one-line guard and the multi-line
+    ``if ![ is-loaded 'BASE/1.0' ] {`` / ``module load BASE/1.0`` / ``}`` block:
+    when the BASE line opens an unbalanced ``{``, consume through its matching
+    ``}`` so no orphan brace is left behind.
     """
-    _directives = ("load", "prereq", "prereq-all", "depends-on", "is-loaded")
     out = []
-    for line in text.splitlines():
-        toks = line.split()
-        if any(tok in _directives and i + 1 < len(toks) and _is_base_id(toks[i + 1])
-               for i, tok in enumerate(toks)):
+    lines = text.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if _line_loads_base(line):
+            depth = line.count("{") - line.count("}")
+            i += 1
+            while depth > 0 and i < n:
+                depth += lines[i].count("{") - lines[i].count("}")
+                i += 1
             continue
         out.append(line)
+        i += 1
     return "\n".join(out) + ("\n" if text.endswith("\n") else "")
 
 
