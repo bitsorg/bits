@@ -616,16 +616,16 @@ def doParseArgs():
   sandboxed and never invokes podman.
   """)
   build_sandbox.add_argument(
-      "--sandbox", dest="sandbox", metavar="MODE", default="auto",
+      "--sandbox", dest="sandbox", metavar="MODE", default="off",
       choices=["off", "auto", "podman", "sandbox-exec"],
       help=(
           "Recipe sandbox mode. "
-          "'auto' (default): sandbox-exec on macOS, nested podman when --docker "
-          "is active, and 'off' on a local Linux build (podman is not used or "
-          "even probed there). "
+          "'off' (default): no sandboxing. "
+          "'auto': sandbox-exec on macOS, nested podman when --docker is active "
+          "and podman is present in the builder image (else off), and off on a "
+          "local Linux build. "
           "'podman': always use podman (requires --docker or --sandbox-image). "
-          "'sandbox-exec': macOS only. "
-          "'off': no sandboxing."
+          "'sandbox-exec': macOS only."
       ),
   )
   build_sandbox.add_argument(
@@ -2115,8 +2115,10 @@ def finaliseArgs(args, parser):
         else:
           args.dockerPlatform = None
 
-    # --sandbox-image implies --sandbox=podman
-    if getattr(args, "sandboxImage", None) and getattr(args, "sandbox", "auto") == "auto":
+    # --sandbox-image implies --sandbox=podman. Promote from the mode-unset
+    # states ("off" is the default, "auto" the legacy default); an explicit
+    # "podman"/"sandbox-exec" is left as chosen.
+    if getattr(args, "sandboxImage", None) and getattr(args, "sandbox", "off") in ("off", "auto"):
       args.sandbox = "podman"
 
   if "annotate" in args:
