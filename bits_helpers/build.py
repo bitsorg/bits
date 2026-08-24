@@ -3329,6 +3329,13 @@ def doBuild(args, parser):
     import atexit
     atexit.register(lambda ex=_prefetch_executor: ex.shutdown(wait=False, cancel_futures=True))
 
+  # Default build_family for the final banner, matching the in-loop formula
+  # (build.py sets it per-package below). Needed so a reused/skipped MAIN package
+  # does not leave mainBuildFamily unset; the in-loop assignment overrides it
+  # whenever the main package is actually built.
+  _mdp = getattr(args, "develPrefix", develPackageBranch)
+  mainBuildFamily = ("{}-{}".format(_mdp, "_".join(args.defaults)) if _mdp
+                     else "_".join(args.defaults))
   while buildOrder:
     p = buildOrder.pop(0)
     spec = specs[p]
@@ -3347,13 +3354,15 @@ def doBuild(args, parser):
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
 
-    # 4b-1: if the reuse overlay satisfies this package, mark it so its consumers
-    # set it up via 'module load' (generate_initdotsh) instead of sourcing its
-    # init.sh. Strict = same remote hash (byte-identical, publishable); relaxed =
-    # any version in the (one-release) overlay. defaults-* and --build-local
-    # packages are never grafted. The package still builds here; skipping its
-    # build is a later step.
-    if getattr(args, "reuseOverlay", None) and not spec["package"].startswith("defaults-"):
+    # 4b: if the reuse overlay satisfies this package, set it up from modules
+    # instead of building. Its consumers 'module load' it (generate_initdotsh);
+    # it is neither built nor materialized locally, so we skip the whole
+    # build/unpack path here (this is what avoids the legacy tarball synthesis +
+    # relocate-me.sh). Strict = same remote hash (byte-identical, publishable);
+    # relaxed = any version in the one-release overlay. defaults-*, --build-local
+    # and development packages are never grafted.
+    if (getattr(args, "reuseOverlay", None) and not spec["is_devel_pkg"]
+        and not spec["package"].startswith("defaults-")):
       _bl = set(x for x in (getattr(args, "buildLocal", "") or "").split(",") if x)
       _relaxed = getattr(args, "reusePolicy", "strict") == "relaxed"
       _want = None if _relaxed else spec.get("remote_revision_hash")
@@ -3362,8 +3371,19 @@ def doBuild(args, parser):
         from bits_helpers.cvmfs_import import overlay_reuse_module
         _mid = overlay_reuse_module(args.reuseOverlay, spec["package"], want_hash=_want)
         if _mid:
+          # Adopt a consistent identity for the manifest, then skip the build.
           spec["reuse_module_id"] = _mid
-          info("Reuse: %s from CVMFS overlay as module %s", p, _mid)
+          _verrev = _mid.split("/", 1)[1]
+          spec["revision"] = (_verrev[len(spec["version"]) + 1:]
+                              if _verrev.startswith(spec["version"] + "-") else _verrev)
+          spec["hash"] = spec.get("remote_revision_hash") or spec.get("hash", "")
+          spec["cachedTarball"] = ""
+          spec.setdefault("deps_hash", "")
+          info("Reuse: %s from CVMFS overlay as module %s (not built)", p, _mid)
+          if getattr(args, "manifest", None) is not None:
+            args.manifest.add_package(spec, "already_installed",
+                                      effective_architecture=effective_arch(spec, args.architecture))
+          continue
 
     # Warn if a package declares architecture: shared but has arch-specific
     # deps — the shared label would be misleading in that case because its
