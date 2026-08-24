@@ -230,6 +230,21 @@ def _shell_id(name):
     return "".join(c if (c.isalnum() or c == "_") else "_" for c in name)
 
 
+def rewrite_module_anchor(text, install_base):
+    """Re-anchor a bits-built modulefile so it no longer needs the shared BASEDIR.
+
+    A deployed bits modulefile derives its install root from ``$::env(BASEDIR)``
+    (set by the BASE module), so the first BASE on MODULEPATH pins the location
+    for every package. When such a modulefile is reused next to a local build
+    that would misplace it. Replace the ``BASEDIR`` env reference with the
+    absolute *install_base* so the copy is self-anchoring and order-independent;
+    everything else (guards, deps, $version) is preserved verbatim.
+    """
+    base = (install_base or "").rstrip("/")
+    return (text.replace("$::env(BASEDIR)", base)
+                .replace("$env(BASEDIR)", base))
+
+
 def build_module_meta(module_id, entry, build_id, package_hash="", abi_tag=""):
     """Module-side ``.meta.json`` payload for a corpus *entry* (D6 overlay).
 
@@ -471,8 +486,12 @@ def write_overlay(corpus, build_id, arch, out_root, alias=None,
             continue
         dest = os.path.join(arch_root, name)
         os.makedirs(dest, exist_ok=True)
+        # A trusted-harvest entry carries the deployment's own modulefile,
+        # already re-anchored (entry["rendered"]); a foreign one is regenerated
+        # from its parsed ops. One writer, two sources.
         with open(os.path.join(dest, vfile), "w") as fh:
-            fh.write(generate_modulefile(bits_id, remapped, build_id))
+            fh.write(entry.get("rendered")
+                     or generate_modulefile(bits_id, remapped, build_id))
         meta = build_module_meta(bits_id, entry, build_id,
                                  package_hash=package_hashes.get(module_id, ""),
                                  abi_tag=abi_tag)

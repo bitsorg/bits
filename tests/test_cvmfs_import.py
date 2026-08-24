@@ -13,8 +13,64 @@ from bits_helpers.cvmfs_import import (
     closure_check, compute_corpus_build_id, generate_modulefile,
     build_module_meta,
     AliasMap, corpus_from_manifest, _infer_base_prefix, write_overlay,
-    import_release,
+    import_release, rewrite_module_anchor,
 )
+import json as _json
+import os as _os
+import tempfile as _tempfile
+import unittest as _unittest
+
+
+# A deployed bits modulefile anchored on $::env(BASEDIR) (as pasted from CVMFS).
+_DEPLOYED_BOOST = """\
+#%Module1.0
+set version 1.90.0-1
+if ![ is-loaded 'BASE/1.0' ] { module load BASE/1.0 }
+set PKG_ROOT $::env(BASEDIR)/Boost/$version
+if {[file isdirectory $PKG_ROOT/lib]} { prepend-path LD_LIBRARY_PATH $PKG_ROOT/lib }
+setenv BOOST_ROOT $PKG_ROOT
+"""
+
+
+class RewriteModuleAnchorTest(_unittest.TestCase):
+
+    def test_basedir_replaced_with_absolute_base(self):
+        out = rewrite_module_anchor(_DEPLOYED_BOOST, "/cvmfs/r/x86_64-el9-gcc15-opt/Packages/")
+        # BASEDIR reference gone; PKG_ROOT now absolute; trailing slash trimmed.
+        self.assertNotIn("BASEDIR", out)
+        self.assertIn("set PKG_ROOT /cvmfs/r/x86_64-el9-gcc15-opt/Packages/Boost/$version", out)
+        # Everything else (guard, $version, BASE load, deps) preserved.
+        self.assertIn("module load BASE/1.0", out)
+        self.assertIn("file isdirectory $PKG_ROOT/lib", out)
+
+    def test_both_env_forms(self):
+        self.assertEqual(rewrite_module_anchor("$env(BASEDIR)/a", "/b"), "/b/a")
+        self.assertEqual(rewrite_module_anchor("$::env(BASEDIR)/a", "/b"), "/b/a")
+
+    def test_no_basedir_is_noop(self):
+        self.assertEqual(rewrite_module_anchor("prepend-path PATH /x/bin\n", "/b"),
+                         "prepend-path PATH /x/bin\n")
+
+
+class WriteOverlayRenderedTest(_unittest.TestCase):
+
+    def test_rendered_modulefile_written_verbatim(self):
+        rendered = rewrite_module_anchor(_DEPLOYED_BOOST, "/cvmfs/r/Packages")
+        corpus = {"Boost/1.90.0-1": {"version": "1.90.0", "revision": "1",
+                                     "deps": [], "rendered": rendered}}
+        with _tempfile.TemporaryDirectory() as out:
+            write_overlay(corpus, "bid-1", "x86_64-el9-gcc15-opt", out,
+                          package_hashes={"Boost/1.90.0-1": "abc123"})
+            mf = _os.path.join(out, "bid-1", "x86_64-el9-gcc15-opt", "Boost", "1.90.0-1")
+            with open(mf) as fh:
+                text = fh.read()
+            # The deployment's own (re-anchored) modulefile, not a regenerated one.
+            self.assertEqual(text, rendered)
+            meta_path = _os.path.join(_os.path.dirname(mf), ".1.90.0-1.meta.json")
+            with open(meta_path) as fh:
+                meta = _json.load(fh)
+            self.assertEqual(meta["hash"], "abc123")
+            self.assertEqual(meta["build_id"], "bid-1")
 
 PREFIX = "/cvmfs/x/ROOT/6.38.00"
 
