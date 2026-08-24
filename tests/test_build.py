@@ -652,6 +652,36 @@ class BuildTestCase(unittest.TestCase):
         self.assertIn('export LIBSHARED_INCLUDE_DIR="${LIBSHARED_ROOT}/include"', shared)
         self.assertNotIn('$BITS_ARCH_PREFIX"/libshared', shared)
 
+    def test_initdotsh_reuse_modules(self) -> None:
+        """A dependency satisfied from a reused CVMFS release is set up via its
+        overlay modulefile (module use/load); a locally-built dependency keeps its
+        init.sh sourcing — so a plain/legacy package can consume a module-reused
+        dep. Dormant (byte-identical) when no reuse_modulepath is passed."""
+        base = {"revision": "1", "hash": "h", "commit_hash": "c"}
+        specs = {
+            "App":   dict(base, package="App", version="1.0",
+                          requires=["CMake", "Boost"]),
+            "CMake": dict(base, package="CMake", version="3.30.6", requires=[]),
+            "Boost": dict(base, package="Boost", version="1.90.0", requires=[]),
+        }
+        # Baseline: no reuse path -> both deps sourced via init.sh, no modules.
+        baseline = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False)
+        self.assertNotIn("module use", baseline)
+        self.assertIn("/CMake/3.30.6-1/etc/profile.d/init.sh", baseline)
+
+        # Mark CMake reused-from-CVMFS; Boost stays locally built.
+        specs["CMake"]["reuse_module_id"] = "CMake/3.30.6-1"
+        out = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False,
+                                 reuse_modulepath="/ov/bid/slc7_x86-64")
+        self.assertIn('module use "/ov/bid/slc7_x86-64"', out)
+        self.assertIn("module load CMake/3.30.6-1", out)
+        self.assertNotIn("/CMake/3.30.6-1/etc/profile.d/init.sh", out)   # not sourced
+        self.assertIn("/Boost/1.90.0-1/etc/profile.d/init.sh", out)      # still built
+
+        # Dormant safety: marker set but no modulepath -> identical to baseline.
+        dormant = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False)
+        self.assertEqual(dormant, baseline)
+
 
 if __name__ == '__main__':
     unittest.main()

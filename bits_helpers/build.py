@@ -1105,7 +1105,8 @@ def _pkg_install_path(workDir, architecture, spec):
 
 
 def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False,
-                       from_modules=False, cmake_prefix_env=False):
+                       from_modules=False, cmake_prefix_env=False,
+                       reuse_modulepath=None):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
   If post_build is true, also generate variables pointing to the package
@@ -1173,7 +1174,19 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       package=quote(dep_spec["package"]),
       ver_rev=quote(ver_rev(dep_spec)),
     )
-  lines.extend(_dep_init_path(dep) for dep in spec.get("requires", ()))
+  # A dependency satisfied from a reused CVMFS release is set up via its overlay
+  # modulefile (module use/load); one built locally keeps the init.sh sourcing.
+  # The choice is per-DEPENDENCY, not per this package's mode, so a legacy-built
+  # package can still consume a module-reused dependency. Reused deps go first so
+  # their env is in place before any built dep's init.sh references it.
+  _reqs = list(spec.get("requires", ()))
+  _reused = [d for d in _reqs
+             if reuse_modulepath and specs[d].get("reuse_module_id")]
+  if _reused:
+    lines.append('module use "%s"' % reuse_modulepath)
+    lines.extend("module load %s" % specs[d]["reuse_module_id"] for d in _reused)
+  _reused_set = set(_reused)
+  lines.extend(_dep_init_path(dep) for dep in _reqs if dep not in _reused_set)
 
   if post_build:
     bigpackage = pkg_to_shell_id(package)
