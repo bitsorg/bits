@@ -162,6 +162,13 @@ class ResolveSandboxModeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve_sandbox_mode("podman", False)
 
+    # explicit podman under --docker probes the image, not the host
+    @patch("bits_helpers.sandbox.podman_in_image", return_value=False)
+    def test_explicit_podman_docker_missing_in_image_raises(self, _p):
+        with self.assertRaises(ValueError) as ctx:
+            resolve_sandbox_mode("podman", True, image="img")
+        self.assertIn("builder image", str(ctx.exception))
+
     @patch("sys.platform", "darwin")
     @patch("bits_helpers.sandbox.sandbox_exec_available", return_value=True)
     def test_explicit_sandbox_exec_macos(self, _s):
@@ -197,14 +204,14 @@ class ResolveSandboxModeTests(unittest.TestCase):
     def test_auto_macos_no_sandbox_exec(self, _s):
         self.assertEqual("off", resolve_sandbox_mode("auto", False))
 
-    # auto, with docker
-    @patch("bits_helpers.sandbox.podman_available", return_value=True)
-    def test_auto_docker_podman_available(self, _p):
-        self.assertEqual("podman", resolve_sandbox_mode("auto", True))
+    # auto, with docker: podman is probed INSIDE the builder image, not the host
+    @patch("bits_helpers.sandbox.podman_in_image", return_value=True)
+    def test_auto_docker_podman_in_image(self, _p):
+        self.assertEqual("podman", resolve_sandbox_mode("auto", True, image="img"))
 
-    @patch("bits_helpers.sandbox.podman_available", return_value=False)
-    def test_auto_docker_no_podman(self, _p):
-        self.assertEqual("off", resolve_sandbox_mode("auto", True))
+    @patch("bits_helpers.sandbox.podman_in_image", return_value=False)
+    def test_auto_docker_no_podman_in_image(self, _p):
+        self.assertEqual("off", resolve_sandbox_mode("auto", True, image="img"))
 
 
 # ---------------------------------------------------------------------------

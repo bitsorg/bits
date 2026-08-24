@@ -103,24 +103,59 @@ def sandbox_exec_available() -> bool:
     return sys.platform == "darwin" and shutil.which("sandbox-exec") is not None
 
 
+_PODMAN_IN_IMAGE_CACHE: dict = {}
+
+
+def podman_in_image(image: str, docker_cmd: str = "docker") -> bool:
+    """Return True if ``podman`` is on PATH inside the builder *image*.
+
+    The nested-podman sandbox runs ``podman`` INSIDE the builder image, so the
+    host having podman is irrelevant. Probe the image once (result cached).
+    Note: a transient docker failure caches a negative for the run.
+    """
+    if not image:
+        return False
+    if image in _PODMAN_IN_IMAGE_CACHE:
+        return _PODMAN_IN_IMAGE_CACHE[image]
+    ok = False
+    try:
+        result = subprocess.run(
+            [docker_cmd, "run", "--rm", "--entrypoint=", image,
+             "sh", "-c", "command -v podman"],
+            capture_output=True, timeout=60,
+        )
+        ok = result.returncode == 0
+    except Exception:
+        ok = False
+    _PODMAN_IN_IMAGE_CACHE[image] = ok
+    return ok
+
+
 # ---------------------------------------------------------------------------
 # Mode resolution
 # ---------------------------------------------------------------------------
 
-def resolve_sandbox_mode(requested: str, docker_active: bool) -> str:
+def resolve_sandbox_mode(requested: str, docker_active: bool, image=None) -> str:
     """Return the effective sandbox mode.
 
     :param requested: one of ``"off"``, ``"auto"``, ``"podman"``, ``"sandbox-exec"``
     :param docker_active: True when ``--docker`` was passed to ``bits build``
+    :param image: builder image name; under ``--docker`` podman must exist INSIDE
+        it (the nested-podman sandbox), so availability is probed in the image,
+        not on the host.
     :raises ValueError: when an explicitly requested mode is unavailable
     """
     if requested == "off":
         return "off"
 
     if requested == "podman":
-        if not podman_available():
+        # Under --docker the nested podman runs in the image; otherwise it runs
+        # on the host (rootless podman driving --sandbox-image).
+        available = podman_in_image(image) if docker_active else podman_available()
+        if not available:
             raise ValueError(
-                "--sandbox=podman requested but podman is not available on this system"
+                "--sandbox=podman requested but podman is not available %s"
+                % ("in the builder image" if docker_active else "on this system")
             )
         return "podman"
 
@@ -134,12 +169,15 @@ def resolve_sandbox_mode(requested: str, docker_active: bool) -> str:
     # --- auto ---
     if docker_active:
         # The build already runs inside a Docker container; add an additional
-        # nested-podman layer for recipe isolation.
-        if podman_available():
+        # nested-podman layer for recipe isolation -- but only if podman is
+        # actually present in the builder image (probing the host would wrongly
+        # pick podman for an image that lacks it, then fail at build time).
+        if podman_in_image(image):
             return "podman"
         warning(
-            "sandbox=auto with --docker: podman not found, sandboxing disabled. "
-            "Install podman in the builder image to enable recipe sandboxing."
+            "sandbox=auto with --docker: podman not found in the builder image, "
+            "sandboxing disabled. Install podman in the image to enable recipe "
+            "sandboxing."
         )
         return "off"
 
@@ -323,7 +361,8 @@ def wrap_build_command(
                          in ("off", "false", "no", "0"))
 
     requested = getattr(opts, "sandbox", "auto")
-    mode = resolve_sandbox_mode(requested, docker_active)
+    image = getattr(opts, "sandboxImage", None) or docker_image
+    mode = resolve_sandbox_mode(requested, docker_active, image=image)
     debug(
         "Sandbox mode for %s: %s (requested=%s, docker=%s, sandbox_network=%s)",
         spec.get("package", "?"), mode, requested, docker_active, sandbox_network,
@@ -332,7 +371,6 @@ def wrap_build_command(
     if mode == "off":
         return build_command
 
-    image = getattr(opts, "sandboxImage", None) or docker_image
     if mode == "podman" and not image:
         # No container image available.  If the user explicitly requested podman
         # (--sandbox=podman) this is a configuration mistake — warn loudly.
