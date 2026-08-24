@@ -689,6 +689,32 @@ class BuildTestCase(unittest.TestCase):
         dormant = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False)
         self.assertEqual(dormant, baseline)
 
+    def test_initdotsh_reuse_orders_prereq_before_reused(self) -> None:
+        """A local prerequisite of a reused dep must be sourced BEFORE it: the
+        reused dep's deployed init.sh transitively sources that prereq (guarded on
+        its _REVISION) and would look on CVMFS, where a local-only build is absent.
+        Emitting in topological order sets the prereq's _REVISION first so the
+        guard skips the CVMFS re-source."""
+        base = {"revision": "1", "hash": "h", "commit_hash": "c"}
+        specs = {
+            "App":   dict(base, package="App", version="1.0",
+                          requires=["CMake", "Tools"]),
+            # CMake (reused) declares Tools as a dependency, so its deployed
+            # init.sh sources Tools; Tools itself is built locally.
+            "CMake": dict(base, package="CMake", version="3.30.6",
+                          requires=["Tools"]),
+            "Tools": dict(base, package="Tools", version="0.0.32", requires=[]),
+        }
+        specs["CMake"]["reuse_module_id"] = "CMake/3.30.6-1"
+        out = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False,
+                                 reuse_cvmfs_base="/cvmfs/x/Packages")
+        tools_line = '"$WORK_DIR/$BITS_ARCH_PREFIX"/Tools/0.0.32-1/etc/profile.d/init.sh'
+        cmake_line = '. "/cvmfs/x/Packages/CMake/3.30.6-1/etc/profile.d/init.sh"'
+        self.assertIn(tools_line, out)
+        self.assertIn(cmake_line, out)
+        self.assertLess(out.index(tools_line), out.index(cmake_line),
+                        "local prerequisite Tools must be sourced before reused CMake")
+
 
 if __name__ == '__main__':
     unittest.main()

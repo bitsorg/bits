@@ -1180,29 +1180,43 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # $BITS_ARCH_PREFIX", so we point those at the CVMFS Packages base while
   # sourcing (and restore after) so its own and its transitive deps' paths land
   # on CVMFS. Per-DEPENDENCY, so a legacy-built package can consume a reused dep.
-  # Reused deps go first so their env is in place before a built dep references
-  # it. Needs /cvmfs mounted in the build container (no modulecmd required).
+  # Needs /cvmfs mounted in the build container (no modulecmd required).
   _reqs = list(spec.get("requires", ()))
-  _reused = [d for d in _reqs
-             if reuse_cvmfs_base and specs[d].get("reuse_module_id")]
-  if _reused:
+  _reused_set = {d for d in _reqs
+                 if reuse_cvmfs_base and specs[d].get("reuse_module_id")}
+
+  def _reused_dep_lines(d):
     # Point the deployed init.sh's "$WORK_DIR/$BITS_ARCH_PREFIX" at the CVMFS
     # Packages base. BITS_ARCH_PREFIX MUST be non-null (the deployed init.sh's
     # `: "${BITS_ARCH_PREFIX:=<arch>}"` would otherwise re-add the arch); "." is
     # a harmless no-op segment (<base>/./<pkg> == <base>/<pkg>). Save/restore so
-    # locally-built deps sourced afterwards keep the local WORK_DIR.
-    lines.append('_bits_swd="${WORK_DIR:-}"; _bits_sap="${BITS_ARCH_PREFIX:-}"')
-    lines.append('WORK_DIR="%s"; BITS_ARCH_PREFIX="."' % reuse_cvmfs_base)
-    for d in _reused:
-      dep_spec = specs[d]
-      verrev = dep_spec["reuse_module_id"].split("/", 1)[1]
-      lines.append(
-        '[ -n "${%s_REVISION}" ] || . "%s/%s/%s/etc/profile.d/init.sh"'
-        % (pkg_to_shell_id(d), reuse_cvmfs_base, dep_spec["package"], verrev))
-    lines.append('WORK_DIR="${_bits_swd}"; BITS_ARCH_PREFIX="${_bits_sap}"; '
-                 'unset _bits_swd _bits_sap')
-  _reused_set = set(_reused)
-  lines.extend(_dep_init_path(dep) for dep in _reqs if dep not in _reused_set)
+    # locally-built deps keep the local WORK_DIR.
+    dep_spec = specs[d]
+    verrev = dep_spec["reuse_module_id"].split("/", 1)[1]
+    return [
+      '_bits_swd="${WORK_DIR:-}"; _bits_sap="${BITS_ARCH_PREFIX:-}"',
+      'WORK_DIR="%s"; BITS_ARCH_PREFIX="."' % reuse_cvmfs_base,
+      '[ -n "${%s_REVISION}" ] || . "%s/%s/%s/etc/profile.d/init.sh"'
+      % (pkg_to_shell_id(d), reuse_cvmfs_base, dep_spec["package"], verrev),
+      'WORK_DIR="${_bits_swd}"; BITS_ARCH_PREFIX="${_bits_sap}"; '
+      'unset _bits_swd _bits_sap',
+    ]
+
+  if _reused_set:
+    # Emit deps in topological order (prerequisites first) so a dep set up
+    # before a reused dep whose deployed init.sh transitively references it —
+    # e.g. a locally-built bits-recipe-tools before a reused CMake — sets its
+    # _REVISION first, and the deployed init.sh's guard skips the re-source
+    # (which would look on CVMFS where a local-only build does not exist).
+    _req_set = set(_reqs)
+    _order = [d for d in topological_sort(specs) if d in _req_set]
+    for d in _order:
+      if d in _reused_set:
+        lines.extend(_reused_dep_lines(d))
+      else:
+        lines.append(_dep_init_path(d))
+  else:
+    lines.extend(_dep_init_path(dep) for dep in _reqs)
 
   if post_build:
     bigpackage = pkg_to_shell_id(package)
