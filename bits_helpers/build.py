@@ -3341,6 +3341,24 @@ def doBuild(args, parser):
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
 
+    # 4b-1: if the reuse overlay satisfies this package, mark it so its consumers
+    # set it up via 'module load' (generate_initdotsh) instead of sourcing its
+    # init.sh. Strict = same remote hash (byte-identical, publishable); relaxed =
+    # any version in the (one-release) overlay. defaults-* and --build-local
+    # packages are never grafted. The package still builds here; skipping its
+    # build is a later step.
+    if getattr(args, "reuseOverlay", None) and not spec["package"].startswith("defaults-"):
+      _bl = set(x for x in (getattr(args, "buildLocal", "") or "").split(",") if x)
+      _relaxed = getattr(args, "reusePolicy", "strict") == "relaxed"
+      _want = None if _relaxed else spec.get("remote_revision_hash")
+      # In strict mode a missing hash must NOT fall through to match-any.
+      if spec["package"] not in _bl and (_relaxed or _want):
+        from bits_helpers.cvmfs_import import overlay_reuse_module
+        _mid = overlay_reuse_module(args.reuseOverlay, spec["package"], want_hash=_want)
+        if _mid:
+          spec["reuse_module_id"] = _mid
+          info("Reuse: %s from CVMFS overlay as module %s", p, _mid)
+
     # Warn if a package declares architecture: shared but has arch-specific
     # deps — the shared label would be misleading in that case because its
     # hash (and therefore install path) will differ across platforms.

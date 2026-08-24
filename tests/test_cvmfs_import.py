@@ -14,7 +14,7 @@ from bits_helpers.cvmfs_import import (
     build_module_meta,
     AliasMap, corpus_from_manifest, _infer_base_prefix, write_overlay,
     import_release, rewrite_module_anchor,
-    strip_base_dep, harvest_trusted, import_trusted_release,
+    strip_base_dep, harvest_trusted, import_trusted_release, overlay_reuse_module,
 )
 import json as _json
 import os as _os
@@ -154,6 +154,35 @@ class HarvestTrustedTest(_unittest.TestCase):
             with open(_os.path.join(out, "rel-XYZ", arch, "Boost",
                                     ".1.90.0-1.meta.json")) as fh:
                 self.assertEqual(_json.load(fh)["hash"], "hB")
+
+
+class OverlayReuseModuleTest(_unittest.TestCase):
+
+    def _overlay(self, root):
+        d = _os.path.join(root, "Boost"); _os.makedirs(d)
+        open(_os.path.join(d, "1.90.0-1"), "w").close()
+        with open(_os.path.join(d, ".1.90.0-1.meta.json"), "w") as fh:
+            _json.dump({"hash": "hB"}, fh)
+        return root
+
+    def test_strict_hash_match(self):
+        with _tempfile.TemporaryDirectory() as ov:
+            self._overlay(ov)
+            self.assertEqual(overlay_reuse_module(ov, "Boost", want_hash="hB"),
+                             "Boost/1.90.0-1")
+            self.assertIsNone(overlay_reuse_module(ov, "Boost", want_hash="other"))
+
+    def test_relaxed_any_version(self):
+        with _tempfile.TemporaryDirectory() as ov:
+            self._overlay(ov)
+            self.assertEqual(overlay_reuse_module(ov, "Boost", want_hash=None),
+                             "Boost/1.90.0-1")
+
+    def test_missing_package_or_overlay(self):
+        with _tempfile.TemporaryDirectory() as ov:
+            self._overlay(ov)
+            self.assertIsNone(overlay_reuse_module(ov, "Nope", want_hash="hB"))
+        self.assertIsNone(overlay_reuse_module(None, "Boost", want_hash="hB"))
 
 
 class WriteOverlayRenderedTest(_unittest.TestCase):

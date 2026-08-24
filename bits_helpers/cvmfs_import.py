@@ -375,6 +375,28 @@ def import_trusted_release(module_root, install_base, arch, out_root, label="reu
             "overlay_path": os.path.join(out_root, build_id, arch)}
 
 
+def overlay_reuse_module(overlay_path, package, want_hash=None):
+    """Return ``<package>/<verrev>`` if the overlay satisfies *package*, else None.
+
+    The overlay is ``<overlay_path>/<package>/<verrev>`` (modulefile) alongside a
+    hidden ``.<verrev>.meta.json``. Strict (``want_hash`` given): match a module
+    whose recorded hash equals it — a byte-identical, publishable reuse. Relaxed
+    (``want_hash`` None): any module for the package (the overlay is one coherent
+    release). Defensive: a missing overlay/package yields None.
+    """
+    import os
+    pkg_dir = os.path.join(overlay_path or "", package)
+    if not (overlay_path and os.path.isdir(pkg_dir)):
+        return None
+    for name in sorted(os.listdir(pkg_dir)):
+        if name.startswith("."):        # skip the hidden .<verrev>.meta.json
+            continue
+        meta = _read_meta(os.path.join(pkg_dir, ".%s.meta.json" % name)) or {}
+        if want_hash is None or meta.get("hash") == want_hash:
+            return "%s/%s" % (package, name)
+    return None
+
+
 def build_module_meta(module_id, entry, build_id, package_hash="", abi_tag=""):
     """Module-side ``.meta.json`` payload for a corpus *entry* (D6 overlay).
 
