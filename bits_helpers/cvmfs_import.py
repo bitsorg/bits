@@ -362,13 +362,17 @@ def import_trusted_release(module_root, install_base, arch, out_root, label="reu
     one. Returns ``{"build_id", "written", "dangling"}`` (same shape as
     ``import_release``).
     """
+    import os
     corpus, hashes, dep_build_id = harvest_trusted(module_root, install_base)
     dangling = closure_check(corpus)
     if dangling and not force:
-        return {"build_id": None, "written": [], "dangling": dangling}
+        return {"build_id": None, "written": [], "dangling": dangling,
+                "overlay_path": None}
     build_id = dep_build_id or compute_corpus_build_id(corpus, label)
     written = write_overlay(corpus, build_id, arch, out_root, package_hashes=hashes)
-    return {"build_id": build_id, "written": written, "dangling": dangling}
+    # Return the overlay path so callers need not reconstruct <out_root>/<id>/<arch>.
+    return {"build_id": build_id, "written": written, "dangling": dangling,
+            "overlay_path": os.path.join(out_root, build_id, arch)}
 
 
 def build_module_meta(module_id, entry, build_id, package_hash="", abi_tag=""):

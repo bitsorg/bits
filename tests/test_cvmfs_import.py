@@ -146,6 +146,8 @@ class HarvestTrustedTest(_unittest.TestCase):
             res = import_trusted_release(mroot, proot, arch, out)
             self.assertEqual(res["build_id"], "rel-XYZ")
             self.assertEqual(res["dangling"], [])     # closure complete
+            self.assertEqual(res["overlay_path"],
+                             _os.path.join(out, "rel-XYZ", arch))
             mf = _os.path.join(out, "rel-XYZ", arch, "Boost", "1.90.0-1")
             with open(mf) as fh:
                 self.assertIn("%s/Boost/$version" % proot, fh.read())

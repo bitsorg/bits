@@ -2418,8 +2418,30 @@ def doBuild(args, parser):
     args.reuseFrom = resolve_reuse_from(getattr(args, "reuseFrom", None), _cvmfs)
   except ValueError as exc:
     dieOnError(True, str(exc))
+  # Build the local, re-anchored overlay from the deployment named by
+  # --reuse-from, so reused deps can be set up via modules. The install base (the
+  # deployment's Packages root) comes from the layout — available for
+  # --reuse-from cvmfs. Dormant until packages are marked reused (next step): the
+  # overlay is produced and its path threaded to generate_initdotsh, but nothing
+  # is grafted yet, so the build is unchanged.
+  args.reuseOverlay = None
   if args.reuseFrom:
     info("Reuse-from modules: %s", args.reuseFrom)
+    _install_base = _cvmfs.get("install_path") if _cvmfs else None
+    dieOnError(not _install_base,
+               "--reuse-from needs the deployment's Packages root; declare "
+               "install_dir / cvmfs_dir in the defaults system: layout.")
+    from bits_helpers.cvmfs_import import import_trusted_release
+    _res = import_trusted_release(args.reuseFrom, _install_base, args.architecture,
+                                  os.path.join(workDir, "MODULES"))
+    if _res.get("build_id"):
+      args.reuseOverlay = _res["overlay_path"]
+      info("Reuse overlay: %d module(s) -> %s",
+           len(_res["written"]), args.reuseOverlay)
+    else:
+      warning("Reuse overlay: release under %s is not closed (missing: %s); "
+              "no modules imported.", args.reuseFrom,
+              ", ".join(_res.get("dangling", [])))
 
   # Build-host policy knobs live under a single `system:` entry in defaults.
   # These control *how* the build runs (network, CPU) — not *what* it produces —
@@ -3871,10 +3893,12 @@ def doBuild(args, parser):
       "provenance": create_provenance_info(spec["package"], specs, args),
       "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False,
                                            from_modules=getattr(args, "initdotshFromModules", False),
-                                           cmake_prefix_env=_cmake_prefix_env),
+                                           cmake_prefix_env=_cmake_prefix_env,
+                                           reuse_modulepath=getattr(args, "reuseOverlay", None)),
       "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True,
                                            from_modules=getattr(args, "initdotshFromModules", False),
-                                           cmake_prefix_env=_cmake_prefix_env),
+                                           cmake_prefix_env=_cmake_prefix_env,
+                                           reuse_modulepath=getattr(args, "reuseOverlay", None)),
       "develPrefix": develPrefix,
       "workDir": workDir,
       "configDir": abspath(args.configDir),
