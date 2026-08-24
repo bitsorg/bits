@@ -2398,6 +2398,16 @@ def doBuild(args, parser):
       args.remoteStore = "cvmfs://" + _cvmfs["cvmfs_dir"]
       info("Reusing deployed components: --remote-store %s", args.remoteStore)
 
+  # Resolve --reuse-from into an absolute modules-tree path ('cvmfs' -> the
+  # defaults system: layout module_path). Nothing consumes it yet (later step).
+  from bits_helpers.cvmfs_layout import resolve_reuse_from
+  try:
+    args.reuseFrom = resolve_reuse_from(getattr(args, "reuseFrom", None), _cvmfs)
+  except ValueError as exc:
+    dieOnError(True, str(exc))
+  if args.reuseFrom:
+    info("Reuse-from modules: %s", args.reuseFrom)
+
   # Build-host policy knobs live under a single `system:` entry in defaults.
   # These control *how* the build runs (network, CPU) — not *what* it produces —
   # so, unlike `env:`, they are NOT folded into any package hash and changing

@@ -12,7 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bits_helpers.cvmfs_layout import resolve_cvmfs_layout as R
 from bits_helpers.cvmfs_layout import resolve_cvmfs_templates as RT
 from bits_helpers.cvmfs_layout import (
-    resolve_release, path_release, bake_release, _declared_release)
+    resolve_release, path_release, bake_release, _declared_release,
+    resolve_reuse_from)
 
 ARCH = "ubuntu2510_x86-64-gcc15-dbg"
 
@@ -243,6 +244,32 @@ class ResolveReleaseTest(unittest.TestCase):
     def test_end_to_end_explicit_release(self):
         rel = path_release(resolve_release({"variables": {"release": "dev3"}}, "main"))
         self.assertEqual(rel, "dev3")
+
+
+class ResolveReuseFromTest(unittest.TestCase):
+
+    def test_none_and_empty(self):
+        self.assertIsNone(resolve_reuse_from(None, None))
+        self.assertIsNone(resolve_reuse_from("", {"module_path": "/x"}))
+
+    def test_absolute_path_passthrough(self):
+        self.assertEqual(resolve_reuse_from("/cvmfs/x/modules", None),
+                         "/cvmfs/x/modules")
+
+    def test_relative_path_rejected(self):
+        with self.assertRaises(ValueError):
+            resolve_reuse_from("modules", None)
+
+    def test_cvmfs_resolves_from_layout(self):
+        layout = R({"cvmfs_dir": "/cvmfs/r"}, ARCH)  # module_path defaults to <arch>/modules
+        self.assertEqual(resolve_reuse_from("cvmfs", layout),
+                         os.path.join("/cvmfs/r", ARCH, "modules"))
+
+    def test_cvmfs_without_layout_fails(self):
+        with self.assertRaises(ValueError):
+            resolve_reuse_from("cvmfs", None)
+        with self.assertRaises(ValueError):
+            resolve_reuse_from("cvmfs", {})  # layout present but no module_path
 
 
 if __name__ == "__main__":

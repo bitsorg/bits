@@ -734,6 +734,12 @@ def doParseArgs():
                                   "build_id for the build target) and 'latest-common' (newest build_id "
                                   "shared by all requested packages); the same happens when left empty "
                                   "under relaxed. The chosen build_id is announced."))
+  build_remote.add_argument("--reuse-from", dest="reuseFrom", metavar="PATH|cvmfs", default=None,
+                            help=("Reuse deployed components via their published modulefiles at this "
+                                  "absolute modules-tree path (distinct from --remote-store, which is the "
+                                  "tarball store). The literal 'cvmfs' resolves the exact location from the "
+                                  "defaults `system:` layout (module_dir under cvmfs_dir); fails if that is "
+                                  "not configured."))
   build_remote.add_argument("--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",
                             help=("Comma-separated packages to always build locally even under "
                                   "--reuse-policy relaxed (e.g. a package you need patched), rather than "

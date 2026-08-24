@@ -42,6 +42,30 @@ def _render(template, subst):
     return _VAR_RE.sub(lambda m: str(subst.get(m.group(1), m.group(0))), template)
 
 
+def resolve_reuse_from(reuse_from, layout):
+    """Resolve ``--reuse-from`` to an absolute modules-tree path, or None.
+
+    ``None``/``""`` → None (no module reuse). The literal ``"cvmfs"`` →
+    ``layout["module_path"]`` (raises ValueError if there is no layout /
+    module_path). Any other value must be an absolute path (raises otherwise).
+    Pure and side-effect free so the caller decides how to report the error.
+    """
+    if not reuse_from:
+        return None
+    if reuse_from == "cvmfs":
+        module_path = layout.get("module_path") if layout else None
+        if not module_path:
+            raise ValueError(
+                "--reuse-from cvmfs needs a modules layout (module_dir/cvmfs_dir) "
+                "in the defaults system: section; none is configured.")
+        return module_path
+    if not os.path.isabs(reuse_from):
+        raise ValueError(
+            "--reuse-from must be an absolute path or the literal 'cvmfs' "
+            "(got %r)." % reuse_from)
+    return reuse_from
+
+
 def resolve_cvmfs_layout(defaults_meta, architecture):
     """Return the resolved CVMFS layout dict, or None when not configured.
 
