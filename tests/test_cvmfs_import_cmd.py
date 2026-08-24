@@ -79,6 +79,34 @@ class TestDoCvmfsImport(unittest.TestCase):
             self.assertTrue(doImport(
                 _args(out, importManifest=mf, importForce=True), None))
 
+    def test_trusted_harvest_writes_overlay(self):
+        with tempfile.TemporaryDirectory() as dep, tempfile.TemporaryDirectory() as out:
+            arch = "x86_64-el9-gcc13"
+            mroot = os.path.join(dep, "Modules", "modulefiles")
+            proot = os.path.join(dep, "Packages")
+            for pkg, ver, deps, h in [("ROOT", "6.38.00-1", [], "hR")]:
+                os.makedirs(os.path.join(mroot, pkg))
+                with open(os.path.join(mroot, pkg, ver), "w") as fh:
+                    fh.write("#%%Module1.0\nset PKG_ROOT $::env(BASEDIR)/%s/%s\n"
+                             "prepend-path PATH $PKG_ROOT/bin\n" % (pkg, ver))
+                os.makedirs(os.path.join(proot, pkg, ver))
+                with open(os.path.join(proot, pkg, ver, ".meta.json"), "w") as fh:
+                    json.dump({"build_id": "rel-1",
+                               "package": {"hash": h, "version": "6.38.00",
+                                           "revision": "1"}}, fh)
+            ok = doImport(_args(out, architecture=arch, importTrusted=True,
+                                importModulepath=mroot, importInstallBase=proot), None)
+            self.assertTrue(ok)
+            mf = os.path.join(out, "rel-1", arch, "ROOT", "6.38.00-1")
+            with open(mf) as fh:
+                text = fh.read()
+            self.assertIn("%s/ROOT/6.38.00-1" % proot, text)   # re-anchored absolute
+            self.assertNotIn("BASEDIR", text)
+
+    def test_trusted_needs_modulepath_and_install_base(self):
+        with tempfile.TemporaryDirectory() as out:
+            self.assertFalse(doImport(_args(out, importTrusted=True), None))
+
     def test_no_source_errors(self):
         with tempfile.TemporaryDirectory() as out:
             self.assertFalse(doImport(_args(out), None))

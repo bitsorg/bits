@@ -397,6 +397,15 @@ def doParseArgs():
                              metavar="FILE", default=None,
                              help="JSON manifest to import instead of harvesting (fallback when "
                                   "no modulefiles exist).")
+  import_parser.add_argument("--trusted", dest="importTrusted", action="store_true",
+                             help="Trusted mode: harvest a bits-built deployment directly, reading "
+                                  "its own modulefiles (--modulepath) and re-anchoring them to "
+                                  "--install-base, capturing package hashes from the install tree. "
+                                  "Deterministic (no modulecmd); publishable strict reuse.")
+  import_parser.add_argument("--install-base", dest="importInstallBase",
+                             metavar="DIR", default=None,
+                             help="With --trusted, the absolute Packages root the modulefiles' "
+                                  "BASEDIR resolves to (and where each package's .meta.json lives).")
   import_parser.add_argument("--aliases", dest="importAliases",
                              metavar="FILE", default=None,
                              help="JSON name-alias map (foreign -> bits names).")

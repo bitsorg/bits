@@ -14,6 +14,7 @@ from bits_helpers.cvmfs_import import (
     build_module_meta,
     AliasMap, corpus_from_manifest, _infer_base_prefix, write_overlay,
     import_release, rewrite_module_anchor,
+    strip_base_dep, harvest_trusted, import_trusted_release,
 )
 import json as _json
 import os as _os
@@ -50,6 +51,88 @@ class RewriteModuleAnchorTest(_unittest.TestCase):
     def test_no_basedir_is_noop(self):
         self.assertEqual(rewrite_module_anchor("prepend-path PATH /x/bin\n", "/b"),
                          "prepend-path PATH /x/bin\n")
+
+
+def _mf(pkg, verrev, deps):
+    """A deployed bits modulefile (BASEDIR-anchored, loads BASE + deps)."""
+    lines = ["#%%Module1.0", "set version %s" % verrev,
+             "if ![ is-loaded 'BASE/1.0' ] { module load BASE/1.0 }"]
+    for d in deps:
+        lines.append('if ![ is-loaded "%s" ] { module load %s }' % (d, d))
+    lines += ["set PKG_ROOT $::env(BASEDIR)/%s/$version" % pkg,
+              "prepend-path PATH $PKG_ROOT/bin",
+              "setenv %s_ROOT $PKG_ROOT" % pkg.upper()]
+    return "\n".join(lines) + "\n"
+
+
+class StripBaseDepTest(_unittest.TestCase):
+
+    def test_strips_only_base(self):
+        text = _mf("Boost", "1.90.0-1", ["CMake/3.30.6-1", "Python/3.13.11-1"])
+        out = strip_base_dep(text)
+        # The BASE load/is-loaded line is gone; real deps and BASEDIR ref remain
+        # (re-anchoring, not this function, removes BASEDIR).
+        self.assertNotIn("module load BASE", out)
+        self.assertNotIn("is-loaded 'BASE", out)
+        self.assertIn("module load CMake/3.30.6-1", out)
+        self.assertIn("module load Python/3.13.11-1", out)
+        self.assertIn("BASEDIR", out)
+
+    def test_base_prefix_package_not_stripped(self):
+        # A package whose id merely starts with "BASE" must be kept.
+        text = ('if ![ is-loaded "BASECAMP/1.0" ] { module load BASECAMP/1.0 }\n'
+                "if ![ is-loaded 'BASE/1.0' ] { module load BASE/1.0 }\n")
+        out = strip_base_dep(text)
+        self.assertIn("module load BASECAMP/1.0", out)
+        self.assertNotIn("module load BASE/1.0", out)
+
+
+class HarvestTrustedTest(_unittest.TestCase):
+
+    def _deploy(self, root):
+        arch = "x86_64-el9-gcc15-opt"
+        mroot = _os.path.join(root, arch, "Modules", "modulefiles")
+        proot = _os.path.join(root, arch, "Packages")
+        pkgs = {"Boost": ("1.90.0-1", ["CMake/3.30.6-1", "Python/3.13.11-1"], "hB"),
+                "CMake": ("3.30.6-1", [], "hC"),
+                "Python": ("3.13.11-1", [], "hP")}
+        for pkg, (verrev, deps, h) in pkgs.items():
+            md = _os.path.join(mroot, pkg); _os.makedirs(md)
+            with open(_os.path.join(md, verrev), "w") as fh:
+                fh.write(_mf(pkg, verrev, deps))
+            pd = _os.path.join(proot, pkg, verrev); _os.makedirs(pd)
+            with open(_os.path.join(pd, ".meta.json"), "w") as fh:
+                _json.dump({"build_id": "rel-XYZ",
+                            "package": {"hash": h, "version": verrev.split("-")[0],
+                                        "revision": "1"}}, fh)
+        return mroot, proot, arch
+
+    def test_reanchor_hash_and_build_id(self):
+        with _tempfile.TemporaryDirectory() as root:
+            mroot, proot, arch = self._deploy(root)
+            corpus, hashes, build_id = harvest_trusted(mroot, proot)
+            self.assertEqual(build_id, "rel-XYZ")
+            self.assertEqual(hashes["Boost/1.90.0-1"], "hB")
+            boost = corpus["Boost/1.90.0-1"]["rendered"]
+            self.assertNotIn("BASEDIR", boost)        # re-anchored
+            self.assertNotIn("BASE/1.0", boost)       # BASE dep stripped
+            self.assertIn("set PKG_ROOT %s/Boost/$version" % proot, boost)
+            self.assertEqual(corpus["Boost/1.90.0-1"]["deps"],
+                             ["CMake/3.30.6-1", "Python/3.13.11-1"])
+
+    def test_import_trusted_writes_overlay(self):
+        with _tempfile.TemporaryDirectory() as root, \
+             _tempfile.TemporaryDirectory() as out:
+            mroot, proot, arch = self._deploy(root)
+            res = import_trusted_release(mroot, proot, arch, out)
+            self.assertEqual(res["build_id"], "rel-XYZ")
+            self.assertEqual(res["dangling"], [])     # closure complete
+            mf = _os.path.join(out, "rel-XYZ", arch, "Boost", "1.90.0-1")
+            with open(mf) as fh:
+                self.assertIn("%s/Boost/$version" % proot, fh.read())
+            with open(_os.path.join(out, "rel-XYZ", arch, "Boost",
+                                    ".1.90.0-1.meta.json")) as fh:
+                self.assertEqual(_json.load(fh)["hash"], "hB")
 
 
 class WriteOverlayRenderedTest(_unittest.TestCase):

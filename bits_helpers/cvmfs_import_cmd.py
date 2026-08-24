@@ -56,6 +56,26 @@ def doImport(args, parser):
     manifest = getattr(args, "importManifest", None)
     modulepath = getattr(args, "importModulepath", None)
 
+    # Trusted mode: harvest a bits-built deployment directly (no modulecmd) and
+    # re-anchor its own modulefiles to the absolute Packages root.
+    if getattr(args, "importTrusted", False):
+        from bits_helpers.cvmfs_import import import_trusted_release
+        install_base = getattr(args, "importInstallBase", None)
+        if not (modulepath and install_base):
+            error("import --trusted needs --modulepath <modules-tree> and "
+                  "--install-base <Packages-root>")
+            return False
+        result = import_trusted_release(modulepath, install_base, arch, out_root,
+                                        label=label, force=force)
+        if result["build_id"] is None:
+            error("import: release is not closed; missing deps: %s",
+                  ", ".join(result["dangling"]))
+            return False
+        info("import: build_id %s", result["build_id"])
+        info("import: wrote %d module(s) under %s", len(result["written"]),
+             os.path.join(out_root, result["build_id"], arch))
+        return True
+
     if manifest:
         try:
             with open(manifest) as fh:

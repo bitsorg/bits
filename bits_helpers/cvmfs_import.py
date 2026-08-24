@@ -245,6 +245,115 @@ def rewrite_module_anchor(text, install_base):
                 .replace("$env(BASEDIR)", base))
 
 
+def _read_meta(path):
+    """Load a JSON ``.meta.json`` defensively; None on any read/parse error."""
+    import json
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _is_base_id(token):
+    """True if *token* names the BASE module (BASE or BASE/<ver>), quotes/braces
+    tolerated — matched as a whole id so BASECAMP/BASELINE are NOT BASE."""
+    t = token.strip("'\"{}")
+    return t == "BASE" or t.startswith("BASE/")
+
+
+def strip_base_dep(text):
+    """Drop the ``BASE`` module dependency line(s) from a re-anchored modulefile.
+
+    A deployed bits modulefile loads ``BASE`` only to obtain ``BASEDIR``; once
+    ``rewrite_module_anchor`` has inlined that as an absolute path, ``BASE`` is
+    unneeded (and may be absent from the reuse set). Real deps (``CMake``,
+    ``Python``…) are kept. A line is a BASE dependency when a ``load`` / ``prereq``
+    / ``is-loaded`` directive on it targets BASE as a module id — matched by token
+    (like ``_module_load_deps``) so a package named ``BASE…`` is not mis-stripped.
+    """
+    _directives = ("load", "prereq", "prereq-all", "depends-on", "is-loaded")
+    out = []
+    for line in text.splitlines():
+        toks = line.split()
+        if any(tok in _directives and i + 1 < len(toks) and _is_base_id(toks[i + 1])
+               for i, tok in enumerate(toks)):
+            continue
+        out.append(line)
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
+def _module_load_deps(text):
+    """Ordered, de-duplicated ``module load <id>`` targets in *text*, excluding BASE."""
+    deps = []
+    for line in text.splitlines():
+        toks = line.split()
+        for i, tok in enumerate(toks):
+            if tok == "load" and i and toks[i - 1] == "module" and i + 1 < len(toks):
+                dep = toks[i + 1].strip("'\"{}")
+                if dep and dep != "BASE" and not dep.startswith("BASE/") and dep not in deps:
+                    deps.append(dep)
+    return deps
+
+
+def harvest_trusted(module_root, install_base):
+    """Harvest a bits-built deployment into a re-anchored corpus.
+
+    *module_root* is the deployed modulefiles tree (``<pkg>/<verrev>`` files, e.g.
+    ``.../Modules/modulefiles``); *install_base* is the absolute ``Packages`` root
+    the modulefiles' ``BASEDIR`` should resolve to. For each modulefile: re-anchor
+    it to *install_base*, strip its ``BASE`` dep, and read the co-located package
+    ``.meta.json`` (``<install_base>/<pkg>/<verrev>/.meta.json``) for the content
+    hash / build_id. Returns ``(corpus, package_hashes, build_id)``; build_id is
+    the deployment's recorded one (all packages share it), or "" if none carried it.
+    """
+    import json
+    import os
+    corpus, hashes, build_id = {}, {}, ""
+    if not (module_root and os.path.isdir(module_root)):
+        return corpus, hashes, build_id
+    for pkg in sorted(os.listdir(module_root)):
+        pkg_dir = os.path.join(module_root, pkg)
+        if not os.path.isdir(pkg_dir):
+            continue
+        for verrev in sorted(os.listdir(pkg_dir)):
+            mfile = os.path.join(pkg_dir, verrev)
+            if not os.path.isfile(mfile):
+                continue
+            with open(mfile) as fh:
+                rendered = strip_base_dep(rewrite_module_anchor(fh.read(), install_base))
+            module_id = "%s/%s" % (pkg, verrev)
+            meta = _read_meta(os.path.join(install_base, pkg, verrev, ".meta.json")) or {}
+            pkg_info = meta.get("package") if isinstance(meta.get("package"), dict) else {}
+            hashes[module_id] = pkg_info.get("hash", "")
+            build_id = build_id or meta.get("build_id", "")
+            corpus[module_id] = {
+                "version": pkg_info.get("version"),
+                "revision": pkg_info.get("revision"),
+                "deps": _module_load_deps(rendered),
+                "rendered": rendered,
+                "base_prefix": install_base,
+            }
+    return corpus, hashes, build_id
+
+
+def import_trusted_release(module_root, install_base, arch, out_root, label="reuse",
+                           force=False):
+    """Import a trusted bits deployment: harvest → build_id → write overlay.
+
+    Uses the deployment's recorded build_id when present, else a corpus-derived
+    one. Returns ``{"build_id", "written", "dangling"}`` (same shape as
+    ``import_release``).
+    """
+    corpus, hashes, dep_build_id = harvest_trusted(module_root, install_base)
+    dangling = closure_check(corpus)
+    if dangling and not force:
+        return {"build_id": None, "written": [], "dangling": dangling}
+    build_id = dep_build_id or compute_corpus_build_id(corpus, label)
+    written = write_overlay(corpus, build_id, arch, out_root, package_hashes=hashes)
+    return {"build_id": build_id, "written": written, "dangling": dangling}
+
+
 def build_module_meta(module_id, entry, build_id, package_hash="", abi_tag=""):
     """Module-side ``.meta.json`` payload for a corpus *entry* (D6 overlay).
 
