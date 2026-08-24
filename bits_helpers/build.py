@@ -2428,9 +2428,15 @@ def doBuild(args, parser):
   if args.reuseFrom:
     info("Reuse-from modules: %s", args.reuseFrom)
     _install_base = _cvmfs.get("install_path") if _cvmfs else None
+    if not _install_base and "Modules/modulefiles" in args.reuseFrom:
+      # Explicit --reuse-from path, no layout: derive the Packages root by the
+      # deployment convention (the same Modules/modulefiles<->Packages map the
+      # BASE module uses).
+      _install_base = args.reuseFrom.replace("Modules/modulefiles", "Packages")
     dieOnError(not _install_base,
                "--reuse-from needs the deployment's Packages root; declare "
-               "install_dir / cvmfs_dir in the defaults system: layout.")
+               "install_dir / cvmfs_dir in the defaults system: layout, or point "
+               "--reuse-from at a .../Modules/modulefiles tree.")
     from bits_helpers.cvmfs_import import import_trusted_release
     _res = import_trusted_release(args.reuseFrom, _install_base, args.architecture,
                                   os.path.join(workDir, "MODULES"))
