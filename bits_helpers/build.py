@@ -2568,6 +2568,35 @@ def doBuild(args, parser):
     args.reusePolicy = "strict"
   if getattr(args, "reuseBase", None) is None:
     args.reuseBase = _system_opt("reuse_base", "") or ""
+  # Relaxed reuse: auto-select a build_id from the CVMFS store when none was
+  # given (or the sentinels "latest" / "latest-common"), so the user need not
+  # copy an id by hand. Anchors on the build target for "latest"; requires all
+  # requested packages to share it for "latest-common". Announced loudly; an
+  # explicit --reuse-base always wins. Uses the (combined) architecture, which
+  # must match the deployed <arch>/Packages dir name.
+  if args.reusePolicy == "relaxed" \
+     and str(args.reuseBase).strip().lower() in ("", "latest", "latest-common"):
+    _strategy = "latest-common" if str(args.reuseBase).strip().lower() == "latest-common" \
+                else "latest"
+    _store = args.remoteStore or ""
+    if not _store.startswith("cvmfs://"):
+      warning("relaxed reuse: auto-select needs a cvmfs:// --remote-store; "
+              "no build_id selected, packages will be built.")
+      args.reuseBase = ""
+    else:
+      from bits_helpers.cvmfs_reuse import select_build_id
+      _root = re.sub("^cvmfs://", "", _store)
+      _bid, _cov = select_build_id(packages, args.architecture, _root, _strategy)
+      if _bid:
+        banner("relaxed reuse: auto-selected build_id '%s' (%s)\n"
+               "    from %s/%s/Packages, covering %d/%d requested package(s)",
+               _bid, _strategy, _root, args.architecture,
+               len(_cov.get(_bid, ())), len(packages))
+        args.reuseBase = _bid
+      else:
+        warning("relaxed reuse: no %s build_id found under %s/%s/Packages; "
+                "packages will be built.", _strategy, _root, args.architecture)
+        args.reuseBase = ""
   # Publish guard: relaxed builds are loose-provenance (their closure includes
   # unverified deployed binaries) and must never reach a write store / publish
   # pipeline. Refuse early and clearly.

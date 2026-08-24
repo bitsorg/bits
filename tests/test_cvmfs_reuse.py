@@ -13,7 +13,7 @@ import os
 import tempfile
 import unittest
 
-from bits_helpers.cvmfs_reuse import graftable_match
+from bits_helpers.cvmfs_reuse import graftable_match, select_build_id
 
 
 ARCH = "ubuntu2510_x86-64-gcc15-dbg"
@@ -88,6 +88,54 @@ class TestGraftableMatch(unittest.TestCase):
         self.assertIsNone(graftable_match("ROOT", "", "x", self.root))
         self.assertIsNone(graftable_match("ROOT", ARCH, "", self.root))
         self.assertIsNone(graftable_match("ROOT", ARCH, "x", ""))
+
+
+class TestSelectBuildId(unittest.TestCase):
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+
+    def _mtime(self, d, t):
+        os.utime(os.path.join(d, ".meta.json"), (t, t))
+
+    def test_latest_anchors_on_build_target(self):
+        # ROOT is the target (last requested). Newer build_id must win for it,
+        # regardless of what CMake carries.
+        old = _deploy(self.root, "ROOT", "6.0", "1", build_id="rel-old")
+        new = _deploy(self.root, "ROOT", "6.1", "1", build_id="rel-new")
+        self._mtime(old, 1000); self._mtime(new, 2000)
+        _deploy(self.root, "CMake", "3.30", "1", build_id="rel-old")
+        bid, cov = select_build_id(["CMake", "ROOT"], ARCH, self.root, "latest")
+        self.assertEqual(bid, "rel-new")
+        self.assertIn("ROOT", cov["rel-new"])
+
+    def test_latest_common_requires_all_packages(self):
+        # rel-new is newest but only ROOT has it; rel-old is shared by both.
+        r_old = _deploy(self.root, "ROOT", "6.0", "1", build_id="rel-old")
+        r_new = _deploy(self.root, "ROOT", "6.1", "1", build_id="rel-new")
+        c_old = _deploy(self.root, "CMake", "3.30", "1", build_id="rel-old")
+        self._mtime(r_old, 1000); self._mtime(r_new, 2000); self._mtime(c_old, 1000)
+        bid, _ = select_build_id(["CMake", "ROOT"], ARCH, self.root, "latest-common")
+        self.assertEqual(bid, "rel-old")
+
+    def test_latest_common_tolerates_duplicate_packages(self):
+        # A duplicated target must not make the shared-by-all test unsatisfiable.
+        _deploy(self.root, "ROOT", "6.1", "1", build_id="rel-x")
+        bid, _ = select_build_id(["ROOT", "ROOT"], ARCH, self.root, "latest-common")
+        self.assertEqual(bid, "rel-x")
+
+    def test_latest_common_none_when_no_shared_id(self):
+        _deploy(self.root, "ROOT", "6.1", "1", build_id="rel-a")
+        _deploy(self.root, "CMake", "3.30", "1", build_id="rel-b")
+        bid, _ = select_build_id(["CMake", "ROOT"], ARCH, self.root, "latest-common")
+        self.assertIsNone(bid)
+
+    def test_none_when_store_empty_or_no_build_id(self):
+        self.assertEqual((None, {}), select_build_id(["ROOT"], ARCH, self.root, "latest"))
+        _deploy(self.root, "ROOT", "6.1", "1", build_id=None)  # legacy: no build_id
+        bid, cov = select_build_id(["ROOT"], ARCH, self.root, "latest")
+        self.assertIsNone(bid)
+        self.assertEqual(cov, {})
 
 
 if __name__ == "__main__":

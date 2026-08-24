@@ -729,7 +729,11 @@ def doParseArgs():
                                   "value, else 'strict'."))
   build_remote.add_argument("--reuse-base", dest="reuseBase", metavar="BUILD_ID", default=None,
                             help=("With --reuse-policy relaxed, the build_id of the deployed release to "
-                                  "graft packages from. Falls back to the defaults `reuse_base:` value."))
+                                  "graft packages from. Falls back to the defaults `reuse_base:` value. "
+                                  "Special values auto-select from the cvmfs:// store: 'latest' (newest "
+                                  "build_id for the build target) and 'latest-common' (newest build_id "
+                                  "shared by all requested packages); the same happens when left empty "
+                                  "under relaxed. The chosen build_id is announced."))
   build_remote.add_argument("--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",
                             help=("Comma-separated packages to always build locally even under "
                                   "--reuse-policy relaxed (e.g. a package you need patched), rather than "

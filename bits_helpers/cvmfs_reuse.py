@@ -29,6 +29,73 @@ def _read_meta(path):
         return None
 
 
+def available_build_ids(package, architecture, store_root):
+    """Return ``{build_id: (version_dir, mtime)}`` for *package* on the store.
+
+    Scans ``<store_root>/<architecture>/Packages/<package>/*/.meta.json`` and
+    keeps, per build_id, the version directory with the newest ``.meta.json``
+    mtime (the recency proxy used for "latest" — there is no build-time field in
+    the metadata). Defensive: a missing store or unreadable meta yields ``{}``.
+    """
+    out = {}
+    if not (package and architecture and store_root):
+        return out
+    pkg_dir = os.path.join(store_root, architecture, "Packages", package)
+    if not os.path.isdir(pkg_dir):
+        return out
+    for ver_dir in glob(os.path.join(pkg_dir, "*")):
+        if not os.path.isdir(ver_dir):
+            continue
+        meta = _read_meta(os.path.join(ver_dir, ".meta.json"))
+        if not isinstance(meta, dict):
+            continue
+        bid = meta.get("build_id")
+        if not bid:
+            continue
+        try:
+            mtime = os.path.getmtime(os.path.join(ver_dir, ".meta.json"))
+        except OSError:
+            mtime = 0.0
+        if bid not in out or mtime > out[bid][1]:
+            out[bid] = (ver_dir, mtime)
+    return out
+
+
+def select_build_id(packages, architecture, store_root, strategy="latest"):
+    """Pick a build_id for relaxed reuse across the requested *packages*.
+
+    ``latest``        : newest build_id available for the anchor (the last
+                        requested package — the build target). A coherent release
+                        shares one build_id across its whole closure, so the
+                        target's newest build_id already covers its dependencies.
+    ``latest-common`` : newest build_id present for EVERY requested package.
+
+    Only the top-level requested packages are known here (the resolved
+    dependency closure is not available until after this selection feeds the
+    resolver), so "common" is across the requested targets. Returns
+    ``(build_id | None, coverage)`` where coverage maps build_id -> set(packages).
+    """
+    per_pkg = {p: available_build_ids(p, architecture, store_root) for p in packages}
+    coverage, newest = {}, {}
+    for pkg, ids in per_pkg.items():
+        for bid, (_vd, mtime) in ids.items():
+            coverage.setdefault(bid, set()).add(pkg)
+            newest[bid] = max(newest.get(bid, 0.0), mtime)
+    if not coverage:
+        return None, coverage
+    if strategy == "latest-common":
+        want = len(set(packages))
+        common = [b for b, pkgs in coverage.items() if len(pkgs) == want]
+        if not common:
+            return None, coverage
+        return max(common, key=lambda b: newest[b]), coverage
+    # 'latest': anchor on the build target (last requested package)
+    anchor_ids = per_pkg.get(packages[-1], {}) if packages else {}
+    if not anchor_ids:
+        return None, coverage
+    return max(anchor_ids, key=lambda b: anchor_ids[b][1]), coverage
+
+
 def graftable_match(package, architecture, build_id, store_root):
     """Return a match descriptor for *package* under *build_id*, or None.
 
