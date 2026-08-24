@@ -876,9 +876,13 @@ class CVMFSRemoteSync:
       ln -sf ../../{architecture}/store/$pref/$pkg_hash/$tarball "{workDir}/{links_path}/$tarball"
       # Create the dummy tarball, if it does not exists
       test -f "{workDir}/{architecture}/store/$pref/$pkg_hash/$tarball" && continue
-      mkdir -p "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}"
-      find "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version" -mindepth 1 -maxdepth 1 ! -name etc -exec ln -sf {{}} "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/" \;
-      cp -fr "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version/etc" "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/etc"
+      # Build the tree the reuse-unpack expects: <arch>/<pkg>/<verrev>/... (the
+      # $full_version dir is the version-revision segment). Matches PKGPATH for
+      # the family-less deployed layout (Packages/<pkg>/<version> has no family).
+      pkgroot="{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/$full_version"
+      mkdir -p "$pkgroot"
+      find "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version" -mindepth 1 -maxdepth 1 ! -name etc -exec ln -sf {{}} "$pkgroot/" \;
+      cp -fr "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version/etc" "$pkgroot/etc"
       mkdir -p "{workDir}/TARS/{architecture}/store/$pref/$pkg_hash"
       tar -C "{workDir}/INSTALLROOT/$pkg_hash" -czf "{workDir}/TARS/{architecture}/store/$pref/$pkg_hash/$tarball" .
       rm -rf "{workDir}/INSTALLROOT/$pkg_hash"
