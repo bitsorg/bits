@@ -3363,7 +3363,10 @@ def doBuild(args, parser):
     # and development packages are never grafted.
     if (getattr(args, "reuseOverlay", None) and not spec["is_devel_pkg"]
         and not spec["package"].startswith("defaults-")):
-      _bl = set(x for x in (getattr(args, "buildLocal", "") or "").split(",") if x)
+      _bl_raw = getattr(args, "buildLocal", None) or []
+      if isinstance(_bl_raw, str):
+        _bl_raw = _bl_raw.split(",")
+      _bl = set(x for x in _bl_raw if x)
       _relaxed = getattr(args, "reusePolicy", "strict") == "relaxed"
       _want = None if _relaxed else spec.get("remote_revision_hash")
       # In strict mode a missing hash must NOT fall through to match-any.
