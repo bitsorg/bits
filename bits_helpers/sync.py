@@ -870,14 +870,17 @@ class CVMFSRemoteSync:
       if [ "X$pkg_hash" = X ]; then
         continue
       fi
-      ln -sf ../../{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball "{workDir}/{links_path}/$tarball"
+      # POSIX 2-char prefix: this script runs under /bin/sh (dash), where a
+      # bash substring expansion would give "Bad substitution".
+      pref=$(printf %s "$pkg_hash" | cut -c1-2)
+      ln -sf ../../{architecture}/store/$pref/$pkg_hash/$tarball "{workDir}/{links_path}/$tarball"
       # Create the dummy tarball, if it does not exists
-      test -f "{workDir}/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball" && continue
+      test -f "{workDir}/{architecture}/store/$pref/$pkg_hash/$tarball" && continue
       mkdir -p "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}"
       find "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version" -mindepth 1 -maxdepth 1 ! -name etc -exec ln -sf {{}} "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/" \;
       cp -fr "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version/etc" "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/etc"
-      mkdir -p "{workDir}/TARS/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash"
-      tar -C "{workDir}/INSTALLROOT/$pkg_hash" -czf "{workDir}/TARS/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball" .
+      mkdir -p "{workDir}/TARS/{architecture}/store/$pref/$pkg_hash"
+      tar -C "{workDir}/INSTALLROOT/$pkg_hash" -czf "{workDir}/TARS/{architecture}/store/$pref/$pkg_hash/$tarball" .
       rm -rf "{workDir}/INSTALLROOT/$pkg_hash"
     done
     """.format(
