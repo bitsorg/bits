@@ -664,21 +664,28 @@ class BuildTestCase(unittest.TestCase):
             "CMake": dict(base, package="CMake", version="3.30.6", requires=[]),
             "Boost": dict(base, package="Boost", version="1.90.0", requires=[]),
         }
-        # Baseline: no reuse path -> both deps sourced via init.sh, no modules.
+        # Baseline: no reuse base -> both deps sourced from the local tree.
         baseline = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False)
-        self.assertNotIn("module use", baseline)
-        self.assertIn("/CMake/3.30.6-1/etc/profile.d/init.sh", baseline)
+        self.assertNotIn("/cvmfs", baseline)
+        self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/CMake/3.30.6-1/etc/profile.d/init.sh',
+                      baseline)
 
         # Mark CMake reused-from-CVMFS; Boost stays locally built.
         specs["CMake"]["reuse_module_id"] = "CMake/3.30.6-1"
         out = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False,
-                                 reuse_modulepath="/ov/bid/slc7_x86-64")
-        self.assertIn('module use "/ov/bid/slc7_x86-64"', out)
-        self.assertIn("module load CMake/3.30.6-1", out)
-        self.assertNotIn("/CMake/3.30.6-1/etc/profile.d/init.sh", out)   # not sourced
-        self.assertIn("/Boost/1.90.0-1/etc/profile.d/init.sh", out)      # still built
+                                 reuse_cvmfs_base="/cvmfs/x/Packages")
+        # CMake sourced from its DEPLOYED init.sh on CVMFS, under a WORK_DIR
+        # override. BITS_ARCH_PREFIX="." (non-null) survives the deployed init.sh's
+        # `:=` default, which "" would not.
+        self.assertIn('WORK_DIR="/cvmfs/x/Packages"; BITS_ARCH_PREFIX="."', out)
+        self.assertIn('. "/cvmfs/x/Packages/CMake/3.30.6-1/etc/profile.d/init.sh"', out)
+        # ...and NOT from the local tree; Boost (built) still is.
+        self.assertNotIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/CMake/3.30.6-1/etc/profile.d/init.sh',
+                         out)
+        self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/Boost/1.90.0-1/etc/profile.d/init.sh',
+                      out)
 
-        # Dormant safety: marker set but no modulepath -> identical to baseline.
+        # Dormant safety: marker set but no reuse base -> identical to baseline.
         dormant = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False)
         self.assertEqual(dormant, baseline)
 

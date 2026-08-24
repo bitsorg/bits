@@ -1106,7 +1106,7 @@ def _pkg_install_path(workDir, architecture, spec):
 
 def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False,
                        from_modules=False, cmake_prefix_env=False,
-                       reuse_modulepath=None):
+                       reuse_cvmfs_base=None):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
   If post_build is true, also generate variables pointing to the package
@@ -1174,17 +1174,33 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       package=quote(dep_spec["package"]),
       ver_rev=quote(ver_rev(dep_spec)),
     )
-  # A dependency satisfied from a reused CVMFS release is set up via its overlay
-  # modulefile (module use/load); one built locally keeps the init.sh sourcing.
-  # The choice is per-DEPENDENCY, not per this package's mode, so a legacy-built
-  # package can still consume a module-reused dependency. Reused deps go first so
-  # their env is in place before any built dep's init.sh references it.
+  # A dependency satisfied from a reused CVMFS release is set up by sourcing its
+  # DEPLOYED init.sh from CVMFS — the same mechanism as a local dep, just from
+  # the deployment. The deployed init.sh resolves paths via "$WORK_DIR/
+  # $BITS_ARCH_PREFIX", so we point those at the CVMFS Packages base while
+  # sourcing (and restore after) so its own and its transitive deps' paths land
+  # on CVMFS. Per-DEPENDENCY, so a legacy-built package can consume a reused dep.
+  # Reused deps go first so their env is in place before a built dep references
+  # it. Needs /cvmfs mounted in the build container (no modulecmd required).
   _reqs = list(spec.get("requires", ()))
   _reused = [d for d in _reqs
-             if reuse_modulepath and specs[d].get("reuse_module_id")]
+             if reuse_cvmfs_base and specs[d].get("reuse_module_id")]
   if _reused:
-    lines.append('module use "%s"' % reuse_modulepath)
-    lines.extend("module load %s" % specs[d]["reuse_module_id"] for d in _reused)
+    # Point the deployed init.sh's "$WORK_DIR/$BITS_ARCH_PREFIX" at the CVMFS
+    # Packages base. BITS_ARCH_PREFIX MUST be non-null (the deployed init.sh's
+    # `: "${BITS_ARCH_PREFIX:=<arch>}"` would otherwise re-add the arch); "." is
+    # a harmless no-op segment (<base>/./<pkg> == <base>/<pkg>). Save/restore so
+    # locally-built deps sourced afterwards keep the local WORK_DIR.
+    lines.append('_bits_swd="${WORK_DIR:-}"; _bits_sap="${BITS_ARCH_PREFIX:-}"')
+    lines.append('WORK_DIR="%s"; BITS_ARCH_PREFIX="."' % reuse_cvmfs_base)
+    for d in _reused:
+      dep_spec = specs[d]
+      verrev = dep_spec["reuse_module_id"].split("/", 1)[1]
+      lines.append(
+        '[ -n "${%s_REVISION}" ] || . "%s/%s/%s/etc/profile.d/init.sh"'
+        % (pkg_to_shell_id(d), reuse_cvmfs_base, dep_spec["package"], verrev))
+    lines.append('WORK_DIR="${_bits_swd}"; BITS_ARCH_PREFIX="${_bits_sap}"; '
+                 'unset _bits_swd _bits_sap')
   _reused_set = set(_reused)
   lines.extend(_dep_init_path(dep) for dep in _reqs if dep not in _reused_set)
 
@@ -2426,6 +2442,7 @@ def doBuild(args, parser):
   # is grafted yet, so the build is unchanged.
   args.reuseOverlay = None
   args.reuseBuildId = None
+  args.reuseCvmfsBase = None
   if args.reuseFrom:
     info("Reuse-from modules: %s", args.reuseFrom)
     _install_base = _cvmfs.get("install_path") if _cvmfs else None
@@ -2443,7 +2460,8 @@ def doBuild(args, parser):
                                   os.path.join(workDir, "MODULES"))
     if _res.get("build_id"):
       args.reuseOverlay = _res["overlay_path"]   # host path, for reading
-      args.reuseBuildId = _res["build_id"]        # to build the container path
+      args.reuseBuildId = _res["build_id"]
+      args.reuseCvmfsBase = _install_base         # CVMFS Packages base for init.sh
       info("Reuse overlay: %d module(s) -> %s",
            len(_res["written"]), args.reuseOverlay)
     else:
@@ -3929,12 +3947,10 @@ def doBuild(args, parser):
                      ver_rev(spec))
 
     init_workDir = container_workDir if args.docker else args.workDir
-    # Overlay modulepath as seen from where init.sh runs (the container workdir
-    # under --docker, the host workdir otherwise) — NOT the host abspath, which
-    # would not exist inside the build container.
-    _reuse_modulepath = (os.path.join(init_workDir, "MODULES",
-                                      args.reuseBuildId, args.architecture)
-                         if getattr(args, "reuseBuildId", None) else None)
+    # Reused deps are set up by sourcing their deployed init.sh from the CVMFS
+    # Packages base (an absolute /cvmfs path, identical on host and in the
+    # container once /cvmfs is mounted).
+    _reuse_cvmfs_base = getattr(args, "reuseCvmfsBase", None)
     makedirs(scriptDir, exist_ok=True)
     # Remember where the resource monitor will write this package's trace so we
     # can aggregate build stats once the run finishes (P3).
@@ -3949,11 +3965,11 @@ def doBuild(args, parser):
       "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False,
                                            from_modules=getattr(args, "initdotshFromModules", False),
                                            cmake_prefix_env=_cmake_prefix_env,
-                                           reuse_modulepath=_reuse_modulepath),
+                                           reuse_cvmfs_base=_reuse_cvmfs_base),
       "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True,
                                            from_modules=getattr(args, "initdotshFromModules", False),
                                            cmake_prefix_env=_cmake_prefix_env,
-                                           reuse_modulepath=_reuse_modulepath),
+                                           reuse_cvmfs_base=_reuse_cvmfs_base),
       "develPrefix": develPrefix,
       "workDir": workDir,
       "configDir": abspath(args.configDir),
@@ -4145,10 +4161,14 @@ def doBuild(args, parser):
         "-v {workdir}:{container_workDir} {roSources}-v{configDir}:/pkgdist.bits:ro "
         "-v {scriptDir}/build.sh:/build.sh:ro "
         "-v {bits_dir}:/bits "
+        "{cvmfsMount}"
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
         "-e HOME=/tmp -e SHELL=/bin/bash -e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
       ).format(
         jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",
+        # Mount /cvmfs read-only when reusing deployed components, so a reused
+        # dep's init.sh (and its files under /cvmfs) resolve inside the container.
+        cvmfsMount=("-v /cvmfs:/cvmfs:ro " if getattr(args, "reuseCvmfsBase", None) else ""),
         platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
         roSources=_ro_sources,
         image=quote(args.dockerImage),
