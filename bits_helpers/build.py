@@ -2664,9 +2664,14 @@ def doBuild(args, parser):
     _strategy = "latest-common" if str(args.reuseBase).strip().lower() == "latest-common" \
                 else "latest"
     _store = args.remoteStore or ""
+    # These warnings describe the legacy build_id graft path only. Silence them
+    # when --reuse-from overlay reuse is active: that path grafts on its own and
+    # the "packages will be built" message would contradict it.
+    _overlay_active = bool(getattr(args, "reuseOverlay", None))
     if not _store.startswith("cvmfs://"):
-      warning("relaxed reuse: auto-select needs a cvmfs:// --remote-store; "
-              "no build_id selected, packages will be built.")
+      if not _overlay_active:
+        warning("relaxed reuse: auto-select needs a cvmfs:// --remote-store; "
+                "no build_id selected, packages will be built.")
       args.reuseBase = ""
     else:
       from bits_helpers.cvmfs_reuse import select_build_id
@@ -2679,8 +2684,9 @@ def doBuild(args, parser):
                len(_cov.get(_bid, ())), len(packages))
         args.reuseBase = _bid
       else:
-        warning("relaxed reuse: no %s build_id found under %s/%s/Packages; "
-                "packages will be built.", _strategy, _root, args.architecture)
+        if not _overlay_active:
+          warning("relaxed reuse: no %s build_id found under %s/%s/Packages; "
+                  "packages will be built.", _strategy, _root, args.architecture)
         args.reuseBase = ""
   # Publish guard: relaxed builds are loose-provenance (their closure includes
   # unverified deployed binaries) and must never reach a write store / publish
@@ -2824,12 +2830,18 @@ def doBuild(args, parser):
     if getattr(args, "reusePolicy", "strict") == "relaxed":
       _base = getattr(args, "reuseBase", "") or ""
       _store = args.remoteStore or ""
+      # Silence these legacy-graft warnings when --reuse-from overlay reuse is
+      # active: the overlay grafts independently, so "no packages will be
+      # grafted" would be misleading.
+      _overlay_active = bool(getattr(args, "reuseOverlay", None))
       if not _base:
-        warning("--reuse-policy relaxed needs --reuse-base <build_id> (or defaults "
-                "reuse_base:); no packages will be grafted.")
+        if not _overlay_active:
+          warning("--reuse-policy relaxed needs --reuse-base <build_id> (or defaults "
+                  "reuse_base:); no packages will be grafted.")
       elif not _store.startswith("cvmfs://"):
-        warning("--reuse-policy relaxed needs a cvmfs:// --remote-store "
-                "(or --reuse-cvmfs); no packages will be grafted.")
+        if not _overlay_active:
+          warning("--reuse-policy relaxed needs a cvmfs:// --remote-store "
+                  "(or --reuse-cvmfs); no packages will be grafted.")
       else:
         from bits_helpers.cvmfs_reuse import graftable_match
         _store_root = re.sub("^cvmfs://", "", _store)
