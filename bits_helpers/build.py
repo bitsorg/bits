@@ -2425,6 +2425,7 @@ def doBuild(args, parser):
   # overlay is produced and its path threaded to generate_initdotsh, but nothing
   # is grafted yet, so the build is unchanged.
   args.reuseOverlay = None
+  args.reuseBuildId = None
   if args.reuseFrom:
     info("Reuse-from modules: %s", args.reuseFrom)
     _install_base = _cvmfs.get("install_path") if _cvmfs else None
@@ -2441,7 +2442,8 @@ def doBuild(args, parser):
     _res = import_trusted_release(args.reuseFrom, _install_base, args.architecture,
                                   os.path.join(workDir, "MODULES"))
     if _res.get("build_id"):
-      args.reuseOverlay = _res["overlay_path"]
+      args.reuseOverlay = _res["overlay_path"]   # host path, for reading
+      args.reuseBuildId = _res["build_id"]        # to build the container path
       info("Reuse overlay: %d module(s) -> %s",
            len(_res["written"]), args.reuseOverlay)
     else:
@@ -3927,6 +3929,12 @@ def doBuild(args, parser):
                      ver_rev(spec))
 
     init_workDir = container_workDir if args.docker else args.workDir
+    # Overlay modulepath as seen from where init.sh runs (the container workdir
+    # under --docker, the host workdir otherwise) — NOT the host abspath, which
+    # would not exist inside the build container.
+    _reuse_modulepath = (os.path.join(init_workDir, "MODULES",
+                                      args.reuseBuildId, args.architecture)
+                         if getattr(args, "reuseBuildId", None) else None)
     makedirs(scriptDir, exist_ok=True)
     # Remember where the resource monitor will write this package's trace so we
     # can aggregate build stats once the run finishes (P3).
@@ -3941,11 +3949,11 @@ def doBuild(args, parser):
       "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False,
                                            from_modules=getattr(args, "initdotshFromModules", False),
                                            cmake_prefix_env=_cmake_prefix_env,
-                                           reuse_modulepath=getattr(args, "reuseOverlay", None)),
+                                           reuse_modulepath=_reuse_modulepath),
       "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True,
                                            from_modules=getattr(args, "initdotshFromModules", False),
                                            cmake_prefix_env=_cmake_prefix_env,
-                                           reuse_modulepath=getattr(args, "reuseOverlay", None)),
+                                           reuse_modulepath=_reuse_modulepath),
       "develPrefix": develPrefix,
       "workDir": workDir,
       "configDir": abspath(args.configDir),
