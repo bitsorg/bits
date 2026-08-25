@@ -3605,7 +3605,10 @@ def doBuild(args, parser):
         # readlink() succeeds even for dangling symlinks, so we must check
         # existence explicitly.
         if not os.path.isfile(symlink_path):
-          warning("Ignoring dangling symlink in tarball directory: %s", symlink_path)
+          # Benign and self-healing: a leftover from a failed build or a cleanup
+          # that removed the store tarball. The scan skips it and the build
+          # rebuilds, so this is diagnostic noise, not actionable — keep it debug.
+          debug("Ignoring dangling symlink in tarball directory: %s", symlink_path)
           continue
         realPath = readlink(symlink_path)
         # The revision group is optional ((?:-((?:local)?[0-9]+))?) to handle
