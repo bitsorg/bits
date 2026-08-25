@@ -610,7 +610,17 @@ if [[ -d "${WORK_DIR}/MODULES/${ARCHITECTURE}" ]]; then
   rm -f "${WORK_DIR}/MODULES/${ARCHITECTURE}/.testwrite" 2> /dev/null || true
 fi
 
-export MODULEPATH="$WORK_DIR/MODULES/$ARCHITECTURE${MODULEPATH:+":$MODULEPATH"}"
+# Reuse-from overlays: a reused dep's (re-anchored) modulefile lives under
+# MODULES/<build_id>/<ARCH>, not the flat per-arch tree, so a locally-built
+# package's `prereq <reused-dep>` cannot resolve at enter/load time without it.
+# Append every such overlay for this arch. Flat tree stays first (a local build
+# wins over a reused copy); no overlays -> MODULEPATH is unchanged.
+_bits_overlays=""
+for _ov in "$WORK_DIR"/MODULES/*/"$ARCHITECTURE"; do
+  [[ -d "$_ov" ]] && _bits_overlays="${_bits_overlays:+$_bits_overlays:}$_ov"
+done
+export MODULEPATH="$WORK_DIR/MODULES/$ARCHITECTURE${_bits_overlays:+":$_bits_overlays"}${MODULEPATH:+":$MODULEPATH"}"
+unset _bits_overlays _ov
 MODULEPATH=$(echo "$MODULEPATH" | sed -e 's/::*/:/g; s/^://; s/:$//')
 IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
 # -q (which unsets VERBOSE) silences environment-modules' "Loading <pkg>" /
