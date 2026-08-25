@@ -3085,9 +3085,14 @@ def doBuild(args, parser):
         spec["commit_hash"] = "0"
 
     if "sources" in spec:
+      # Expand a templated tag (e.g. "v%(version)s") for tarball sources too.
+      # The git branch above only resolves it when a `source:` is present, so a
+      # tarball-only recipe kept the raw tag, which then leaked into commit_hash
+      # and the SOURCES/<pkg>/<version>/<tag> path. No-op for literal tags.
+      spec["tag"] = resolve_tag(spec, defaultsMeta.get("variables"))
       for i, s in enumerate(spec["sources"]):
         resolved = resolveLocalPath(args.configDir, s)
-        spec["sources"][i] = resolved 
+        spec["sources"][i] = resolved
       spec["commit_hash"] = spec["tag"]
     # Version may contain date params like tag, plus %(commit_hash)s,
     # %(short_hash)s and %(tag)s.
