@@ -131,19 +131,22 @@ class TestProvenanceRecord(unittest.TestCase):
         finally:
             os.environ.pop("BITS_DIST_HASH", None)
 
-    def test_provenance_loose_when_closure_has_graft(self):
+    def test_provenance_pure_when_closure_is_clean(self):
+        # No untracked_requires anywhere in the closure -> pure. (The legacy
+        # cvmfs:// graft that also produced "loose" was removed in Step 5.)
         specs = {
             "a": _spec("a", full_runtime_requires=["dep"], full_build_requires=[]),
-            "dep": _spec("dep", from_cvmfs=True),
-        }
-        self.assertEqual(self._record_specs(specs)["provenance"], "loose")
-
-    def test_provenance_pure_when_no_graft_in_closure(self):
-        specs = {
-            "a": _spec("a", full_runtime_requires=["dep"], full_build_requires=[]),
-            "dep": _spec("dep"),   # locally built, not grafted
+            "dep": _spec("dep"),   # locally built
         }
         self.assertEqual(self._record_specs(specs)["provenance"], "pure")
+
+    def test_provenance_loose_when_closure_has_untracked(self):
+        # untracked_requires decouples a dependency from the hash -> loose.
+        specs = {
+            "a": _spec("a", untracked_requires=["dep"]),
+            "dep": _spec("dep"),
+        }
+        self.assertEqual(self._record_specs(specs)["provenance"], "loose")
 
 
 class TestBuildIdFromManifest(unittest.TestCase):

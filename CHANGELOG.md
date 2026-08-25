@@ -27,6 +27,8 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 - **[Improvement]** `621dded` warn on provider version conflict; `4d92e95` point the "package not found" error at the provider mechanism; `ee78182` docs.
 
 ## CVMFS layout, merged views & relaxed reuse
+- **[Feature]** `--reuse-from <modules-path>|cvmfs` reuses deployed components via their published modulefiles/`init.sh` (sourced in place from `/cvmfs`); `--reuse-policy strict|relaxed`, `<src>::policy` sugar, per-dependency reuse, corrected pkg-config prefixes, and `cvmfs`-resolution from the `cvmfs_modules_template`.
+- **[Change]** Removed the legacy `cvmfs://` `--remote-store` reuse: the `build_id` graft (`--reuse-base`/`--reuse-cvmfs`, `CVMFSRemoteSync`, `select_build_id`/`graftable_match`) is retired in favour of `--reuse-from`; a `cvmfs://` `--remote-store` now errors and points at `--reuse-from` (see ADR-0001, superseded).
 - **[Feature]** `0632f28` / `b70abac` / `b1dfc1d` / `e8d1222` / `ea04075` merged symlink-farm view: one-entry-per-var env, opt-in `enter/setenv --view`, view-aware `load`/`printenv` + age-based GC, path remap (fixes PyROOT).
 - **[Feature]** `58f13b6` / `c2d99be` / `f59a547` / `53e91d4` / `80b6a08` published per-`build_id` views on CVMFS, `bits publish --view`, per-tree pre-publish primitive, CVMFS layout recorded in `.meta.json`.
 - **[Feature]** `8f193fa`→`c52f5d7`, `cf19966` ADR-0001 import pipeline: modulefile harvest → classify → closure/`build_id` → overlay → `bits import` (build-sufficient from modulefiles).

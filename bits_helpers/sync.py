@@ -259,11 +259,8 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
   # different backend, so pair the read-only reader with a writer built from
   # write_url (see DualRemoteSync). Without this, the write store was silently
   # dropped below and nothing was ever uploaded.
-  if write_url and (read_url.startswith("cvmfs://") or read_url.startswith("http")):
-    if read_url.startswith("http"):
-      reader = HttpRemoteSync(read_url, architecture, work_dir, insecure)
-    else:
-      reader = CVMFSRemoteSync(read_url, None, architecture, work_dir)
+  if write_url and read_url.startswith("http"):
+    reader = HttpRemoteSync(read_url, architecture, work_dir, insecure)
     return DualRemoteSync(reader, _writer_from_url(write_url, architecture, work_dir))
 
   if read_url.startswith("http"):
@@ -273,7 +270,11 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
   if read_url.startswith("b3://"):
     return Boto3RemoteSync(read_url, write_url, architecture, work_dir)
   if read_url.startswith("cvmfs://"):
-    return CVMFSRemoteSync(read_url, None, architecture, work_dir)
+    dieOnError(True,
+               "--remote-store cvmfs:// is no longer supported. --remote-store "
+               "is the tarball store (s3://, b3://, rsync:, http). To reuse "
+               "components already deployed on CVMFS, use "
+               "--reuse-from <modules-path>|cvmfs instead.")
   if read_url:
     return RsyncRemoteSync(read_url, write_url, architecture, work_dir)
   return NoRemoteSync()
@@ -339,10 +340,10 @@ class DualRemoteSync:
     """Call *method* on the first backend that implements it, reader before writer.
 
     Store metadata (ADR-0005 rev-index markers, content-object listings) lives in
-    the STORE, and a read-only reader (HttpRemoteSync, CVMFSRemoteSync) may not
+    the STORE, and a read-only reader (e.g. HttpRemoteSync) may not
     implement the lookup at all. In the common ``--remote-store https://…::rw``
-    setup both sides are the very same bucket (http read URL + b3 writer); in the
-    cvmfs-read/s3-write setup the metadata only ever exists on the writer.
+    setup both sides are the very same bucket (http read URL + b3 writer); in an
+    http-read/s3-write setup the metadata only ever exists on the writer.
 
     Delegating to the reader alone silently returned the empty default, so the
     revision counter never saw the markers: it could not reuse the recorded
@@ -818,113 +819,6 @@ rsync -avR --ignore-existing "{store_path}/$tarball" {remote}/
       path=remote_dir,
     ))
     dieOnError(err, "Unable to upload source archive to store.")
-
-
-class CVMFSRemoteSync:
-  """ Sync packages build directory from CVMFS or similar
-      FS based deployment. The tarball will be created on the fly with a single
-      symlink to the remote store in it, so that unpacking really
-      means unpacking the symlink to the wanted package.
-  """
-
-  def __init__(self, remoteStore, writeStore, architecture, workdir) -> None:
-    self.remoteStore = re.sub("^cvmfs://", "", remoteStore)
-    # We do not support uploading directly to CVMFS, for obvious
-    # reasons.
-    assert(writeStore is None)
-    self.writeStore = None
-    self.architecture = architecture
-    self.workdir = workdir
-
-  def fetch_tarball(self, spec) -> None:
-    arch = effective_arch(spec, self.architecture)
-    info("Downloading tarball for %s@%s-%s, if available", spec["package"], spec["version"], spec["revision"])
-    # If we already have a tarball with any equivalent hash, don't check S3.
-    for pkg_hash in spec["remote_hashes"] + spec["local_hashes"]:
-      store_path = resolve_store_path(arch, pkg_hash)
-      pattern = os.path.join(self.workdir, store_path, "%s-*.tar.gz" % spec["package"])
-      # Use os.path.isfile() to skip dangling symlinks that glob would otherwise return.
-      if any(os.path.isfile(t) for t in glob.glob(pattern)):
-        info("Reusing existing tarball for %s@%s", spec["package"], pkg_hash)
-        return
-    info("Could not find prebuilt tarball for %s@%s-%s, will be rebuilt",
-         spec["package"], spec["version"], spec["revision"])
-
-  def fetch_symlinks(self, spec) -> None:
-    # When using CVMFS, we create the symlinks grass by reading the .
-    info("Fetching available build hashes for %s, from %s", spec["package"], self.remoteStore)
-    arch = effective_arch(spec, self.architecture)
-    links_path = resolve_links_path(arch, spec["package"])
-    os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
-
-    cvmfs_architecture = re.sub(r"slc(\d+)_x86-64", r"el\1-x86_64", self.architecture)
-    err = execute(r"""\
-    set -x
-    # Exit without error in case we do not have any package published
-    test -d "{remote_store}/{cvmfs_architecture}/Packages/{package}" || exit 0
-    mkdir -p "{workDir}/{links_path}"
-    for install_path in $(find "{remote_store}/{cvmfs_architecture}/Packages/{package}" -mindepth 1 -maxdepth 1 -type d); do
-      full_version="${{install_path##*/}}"
-      tarball={package}-$full_version.{architecture}.tar.gz
-      pkg_hash=$(cat "${{install_path}}/.build-hash" || jq -r '.package.hash' <${{install_path}}/.meta.json)
-      if [ "X$pkg_hash" = X ]; then
-        continue
-      fi
-      # POSIX 2-char prefix: this script runs under /bin/sh (dash), where a
-      # bash substring expansion would give "Bad substitution".
-      pref=$(printf %s "$pkg_hash" | cut -c1-2)
-      ln -sf ../../{architecture}/store/$pref/$pkg_hash/$tarball "{workDir}/{links_path}/$tarball"
-      # Create the dummy tarball, if it does not exists
-      test -f "{workDir}/{architecture}/store/$pref/$pkg_hash/$tarball" && continue
-      # Build the tree the reuse-unpack expects: <arch>/<pkg>/<verrev>/... (the
-      # $full_version dir is the version-revision segment). Matches PKGPATH for
-      # the family-less deployed layout (Packages/<pkg>/<version> has no family).
-      pkgroot="{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/$full_version"
-      mkdir -p "$pkgroot"
-      find "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version" -mindepth 1 -maxdepth 1 ! -name etc -exec ln -sf {{}} "$pkgroot/" \;
-      cp -fr "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version/etc" "$pkgroot/etc"
-      mkdir -p "{workDir}/TARS/{architecture}/store/$pref/$pkg_hash"
-      tar -C "{workDir}/INSTALLROOT/$pkg_hash" -czf "{workDir}/TARS/{architecture}/store/$pref/$pkg_hash/$tarball" .
-      rm -rf "{workDir}/INSTALLROOT/$pkg_hash"
-    done
-    """.format(
-      workDir=self.workdir,
-      architecture=arch,
-      cvmfs_architecture=cvmfs_architecture,
-      package=spec["package"],
-      remote_store=self.remoteStore,
-      links_path=links_path,
-    ))
-    print(f"fetch_symlink: maybe something wrong? {err}")
-
-  def upload_symlinks_and_tarball(self, spec) -> None:
-    dieOnError(True, "CVMFS backend does not support uploading directly")
-
-  def upload_shell_command(self, spec):
-    """Return None: CVMFS backend is read-only."""
-    return None
-
-  def fetch_source(self, url_checksum, filename, dest_dir) -> bool:
-    """Try to fetch a source archive from the CVMFS filesystem mount.
-
-    The CVMFS remote store is a read-only filesystem path; we attempt a
-    plain file copy from the mirrored SOURCES/cache subtree.
-    """
-    remote_path = os.path.join(self.remoteStore,
-                               _source_remote_path(url_checksum, filename))
-    dest = os.path.join(dest_dir, filename)
-    if not os.path.exists(remote_path):
-      return False
-    os.makedirs(dest_dir, exist_ok=True)
-    import shutil
-    try:
-      shutil.copy2(remote_path, dest)
-      return True
-    except OSError:
-      return False
-
-  def upload_source(self, local_path, url_checksum, filename) -> None:
-    pass  # CVMFS backend does not support uploading directly
 
 
 class S3RemoteSync:

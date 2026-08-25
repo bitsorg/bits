@@ -819,24 +819,6 @@ def storeHashes(package, specs, considerRelocation):
     # subsequent calculations.
     return
 
-  # Relaxed CVMFS graft (ADR-0001): a grafted package adopts the *deployed*
-  # artifact's hash. The existing reuse path (CVMFSRemoteSync.fetch_symlinks +
-  # the reuse decision) then materialises and symlinks the deployed tree under
-  # that hash instead of building, and consumers hash against the real deployed
-  # dependency — so no separate build-skip branch is needed. Only triggers when
-  # the resolver tagged the spec from_cvmfs (relaxed mode); never in strict.
-  if spec.get("from_cvmfs") and spec.get("cvmfs_hash"):
-    _h = spec["cvmfs_hash"]
-    spec["remote_revision_hash"] = _h
-    spec["local_revision_hash"] = _h
-    spec["remote_hashes"] = [_h]
-    spec["local_hashes"] = [_h]
-    spec["hash"] = _h
-    # The grafted package has no followed dependencies; set deps_hash too (the
-    # normal path always sets it, and DEPS_HASH is read via spec.get downstream).
-    spec.setdefault("deps_hash", "")
-    return
-
   # For now, all the hashers share data -- they'll be split below.
   h_all = Hasher()
 
@@ -1105,7 +1087,8 @@ def _pkg_install_path(workDir, architecture, spec):
 
 
 def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False,
-                       from_modules=False, cmake_prefix_env=False):
+                       from_modules=False, cmake_prefix_env=False,
+                       reuse_cvmfs_base=None):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
   If post_build is true, also generate variables pointing to the package
@@ -1173,7 +1156,77 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       package=quote(dep_spec["package"]),
       ver_rev=quote(ver_rev(dep_spec)),
     )
-  lines.extend(_dep_init_path(dep) for dep in spec.get("requires", ()))
+  # A dependency satisfied from a reused CVMFS release is set up by sourcing its
+  # DEPLOYED init.sh from CVMFS — the same mechanism as a local dep, just from
+  # the deployment. The deployed init.sh resolves paths via "$WORK_DIR/
+  # $BITS_ARCH_PREFIX", so we point those at the CVMFS Packages base while
+  # sourcing (and restore after) so its own and its transitive deps' paths land
+  # on CVMFS. Per-DEPENDENCY, so a legacy-built package can consume a reused dep.
+  # Needs /cvmfs mounted in the build container (no modulecmd required).
+  _reqs = list(spec.get("requires", ()))
+  _reused_set = {d for d in _reqs
+                 if reuse_cvmfs_base and specs[d].get("reuse_module_id")}
+
+  def _reused_dep_lines(d):
+    # Point the deployed init.sh's "$WORK_DIR/$BITS_ARCH_PREFIX" at the CVMFS
+    # Packages base. BITS_ARCH_PREFIX MUST be non-null (the deployed init.sh's
+    # `: "${BITS_ARCH_PREFIX:=<arch>}"` would otherwise re-add the arch); "." is
+    # a harmless no-op segment (<base>/./<pkg> == <base>/<pkg>). Save/restore so
+    # locally-built deps keep the local WORK_DIR.
+    dep_spec = specs[d]
+    verrev = dep_spec["reuse_module_id"].split("/", 1)[1]
+    return [
+      '_bits_swd="${WORK_DIR:-}"; _bits_sap="${BITS_ARCH_PREFIX:-}"',
+      'WORK_DIR="%s"; BITS_ARCH_PREFIX="."' % reuse_cvmfs_base,
+      '[ -n "${%s_REVISION}" ] || . "%s/%s/%s/etc/profile.d/init.sh"'
+      % (pkg_to_shell_id(d), reuse_cvmfs_base, dep_spec["package"], verrev),
+      'WORK_DIR="${_bits_swd}"; BITS_ARCH_PREFIX="${_bits_sap}"; '
+      'unset _bits_swd _bits_sap',
+    ]
+
+  if _reused_set:
+    # Emit deps in topological order (prerequisites first) so a dep set up
+    # before a reused dep whose deployed init.sh transitively references it —
+    # e.g. a locally-built bits-recipe-tools before a reused CMake — sets its
+    # _REVISION first, and the deployed init.sh's guard skips the re-source
+    # (which would look on CVMFS where a local-only build does not exist).
+    _req_set = set(_reqs)
+    _order = [d for d in topological_sort(specs) if d in _req_set]
+    for d in _order:
+      if d in _reused_set:
+        lines.extend(_reused_dep_lines(d))
+      else:
+        lines.append(_dep_init_path(d))
+    # A reused CVMFS package may ship a pkg-config .pc whose baked `prefix=` does
+    # not match its deployed location (publish-time relocation can misplace it),
+    # breaking find_package via pkg-config for a consumer (e.g. xrootd → Davix).
+    # The reuse anchoring already resolved each dep's real root into <PKG>_ROOT,
+    # so stage corrected .pc copies (prefix rewritten to that root) in a writable
+    # dir and prepend it to PKG_CONFIG_PATH. Reads from read-only /cvmfs, writes
+    # under $WORK_DIR; a no-op for reused deps that ship no .pc.
+    _reused_roots = " ".join('"${%s_ROOT:-}"' % pkg_to_shell_id(d)
+                             for d in _order if d in _reused_set)
+    lines.extend([
+      '_bits_rpc="${WORK_DIR:-.}/reuse-pkgconfig"; mkdir -p "$_bits_rpc"',
+      'for _bits_root in %s; do' % _reused_roots,
+      '  [ -n "$_bits_root" ] || continue',
+      '  for _bits_pcd in "$_bits_root/lib64/pkgconfig" "$_bits_root/lib/pkgconfig"; do',
+      '    [ -d "$_bits_pcd" ] || continue',
+      '    for _bits_pc in "$_bits_pcd"/*.pc; do',
+      '      [ -e "$_bits_pc" ] || continue',
+      '      sed "s|^prefix=.*|prefix=$_bits_root|" "$_bits_pc" > "$_bits_rpc/${_bits_pc##*/}"',
+      '    done',
+      '  done',
+      'done',
+      # Prepend once — init.sh may be sourced repeatedly; avoid unbounded growth.
+      'case ":${PKG_CONFIG_PATH:-}:" in',
+      '  *":$_bits_rpc:"*) ;;',
+      '  *) export PKG_CONFIG_PATH="$_bits_rpc${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" ;;',
+      'esac',
+      'unset _bits_rpc _bits_root _bits_pcd _bits_pc',
+    ])
+  else:
+    lines.extend(_dep_init_path(dep) for dep in _reqs)
 
   if post_build:
     bigpackage = pkg_to_shell_id(package)
@@ -1438,21 +1491,11 @@ def create_provenance_info(package, specs, args):
   from bits_helpers.provenance import (
     compute_build_id, compute_abi_tag, recipe_tools_ref,
   )
-  # Contagious provenance (ADR-0001): a locally-built package is "loose" when its
-  # dependency closure contains a package grafted from CVMFS (adopted by
-  # name/build_id, not verified hash). Grafted packages are not built, so this
-  # function only ever runs for local builds.
-  def _closure_grafted():
-    for _key in ("full_build_requires", "full_runtime_requires"):
-      for _dep in specs[package].get(_key, ()):
-        _ds = specs.get(_dep)
-        if isinstance(_ds, dict) and _ds.get("from_cvmfs"):
-          return True
-    return False
-  # A build is also loose if its closure decoupled a dependency via
-  # untracked_requires: this package, or one below it, was hashed as if that
-  # dependency never changed, so its identity no longer certifies its full input
-  # closure. Contagious upward like grafted provenance.
+  # Contagious provenance: a build is "loose" when its closure decoupled a
+  # dependency via untracked_requires — this package, or one below it, was hashed
+  # as if that dependency never changed, so its identity no longer certifies its
+  # full input closure. (Relaxed --reuse-from builds are kept non-publishable by
+  # the reuse-policy publish guard, so they never reach a published record.)
   def _closure_untracked():
     if specs[package].get("untracked_requires"):
       return True
@@ -1463,7 +1506,7 @@ def create_provenance_info(package, specs, args):
           return True
     return False
   _untracked = list(specs[package].get("untracked_requires", ()))
-  _provenance = "loose" if (_closure_grafted() or _closure_untracked()) else "pure"
+  _provenance = "loose" if _closure_untracked() else "pure"
   return json.dumps({
     "comment": args.annotate.get(package),
     "bits_version": __version__,
@@ -2376,14 +2419,9 @@ def doBuild(args, parser):
 
   # ── CVMFS layout (templated dirs from defaults-release) ────────────────────
   # When defaults declare cvmfs_dir / install_dir / module_dir (templates that
-  # may use %(architecture)s), resolve them and use them to default the build/
-  # reuse flags so the whole CVMFS chain can be driven from one declaration:
-  #   * reuse deployed -> --remote-store = cvmfs://<cvmfs_dir>  (with --reuse-cvmfs)
-  # Docker builds are relocatable by default (built in WORK_DIR with padded
-  # placeholders + relocate-me.sh), so the tarballs can be reused anywhere and are
-  # relocated into CVMFS on publish. Pass --cvmfs-prefix explicitly only for an
-  # in-place, non-relocatable build (skips relocation on publish, but the result
-  # is NOT reusable outside that exact CVMFS path).
+  # may use %(architecture)s), resolve them so create_provenance_info can record
+  # the tree paths in each package's .meta.json. Reusing deployed components is
+  # driven by --reuse-from (module overlay), not the remote/tarball store.
   from bits_helpers.cvmfs_layout import resolve_cvmfs_layout
   _cvmfs = resolve_cvmfs_layout(defaultsMeta, args.architecture)
   # Stash the resolved layout so create_provenance_info can record it in each
@@ -2394,9 +2432,62 @@ def doBuild(args, parser):
   if _cvmfs:
     info("CVMFS layout: install=%s  modules=%s  views=%s",
          _cvmfs["install_path"], _cvmfs["module_path"], _cvmfs["views_path"])
-    if getattr(args, "reuseCvmfs", False) and not args.remoteStore and _cvmfs["cvmfs_dir"]:
-      args.remoteStore = "cvmfs://" + _cvmfs["cvmfs_dir"]
-      info("Reusing deployed components: --remote-store %s", args.remoteStore)
+
+  # Resolve --reuse-from into an absolute modules-tree path ('cvmfs' -> the
+  # defaults system: layout module_path). Nothing consumes it yet (later step).
+  from bits_helpers.cvmfs_layout import (resolve_reuse_from, split_reuse_policy,
+                                         reuse_module_path_from_templates)
+  # Sugar: a trailing '::relaxed'/'::strict' on --reuse-from sets the reuse
+  # policy alongside the source (reconciled with --reuse-policy below).
+  _reuse_src, _reuse_from_policy = split_reuse_policy(getattr(args, "reuseFrom", None))
+  # --reuse-from cvmfs prefers the system: layout module_path; if that is not
+  # declared, fall back to the group's cvmfs_modules_template (one declaration
+  # drives both publish and reuse). Expanded with raw_architecture — the DEPLOYED
+  # arch — not the build-qualified family, so it matches the deployment.
+  _reuse_layout = _cvmfs
+  if _reuse_src == "cvmfs" and not (_cvmfs and _cvmfs.get("module_path")):
+    _mp = reuse_module_path_from_templates(
+        defaultsMeta, raw_architecture, os.environ.get("BITS_CVMFS_PREFIX") or None)
+    if _mp:
+      _reuse_layout = dict(_cvmfs or {}, module_path=_mp)
+  try:
+    args.reuseFrom = resolve_reuse_from(_reuse_src, _reuse_layout)
+  except ValueError as exc:
+    dieOnError(True, str(exc))
+  # Build the local, re-anchored overlay from the deployment named by
+  # --reuse-from, so reused deps can be set up via modules. The install base (the
+  # deployment's Packages root) comes from the layout — available for
+  # --reuse-from cvmfs. Dormant until packages are marked reused (next step): the
+  # overlay is produced and its path threaded to generate_initdotsh, but nothing
+  # is grafted yet, so the build is unchanged.
+  args.reuseOverlay = None
+  args.reuseBuildId = None
+  args.reuseCvmfsBase = None
+  if args.reuseFrom:
+    info("Reuse-from modules: %s", args.reuseFrom)
+    _install_base = _cvmfs.get("install_path") if _cvmfs else None
+    if not _install_base and "Modules/modulefiles" in args.reuseFrom:
+      # Explicit --reuse-from path, no layout: derive the Packages root by the
+      # deployment convention (the same Modules/modulefiles<->Packages map the
+      # BASE module uses).
+      _install_base = args.reuseFrom.replace("Modules/modulefiles", "Packages")
+    dieOnError(not _install_base,
+               "--reuse-from needs the deployment's Packages root; declare "
+               "install_dir / cvmfs_dir in the defaults system: layout, or point "
+               "--reuse-from at a .../Modules/modulefiles tree.")
+    from bits_helpers.cvmfs_import import import_trusted_release
+    _res = import_trusted_release(args.reuseFrom, _install_base, args.architecture,
+                                  os.path.join(workDir, "MODULES"))
+    if _res.get("build_id"):
+      args.reuseOverlay = _res["overlay_path"]   # host path, for reading
+      args.reuseBuildId = _res["build_id"]
+      args.reuseCvmfsBase = _install_base         # CVMFS Packages base for init.sh
+      info("Reuse overlay: %d module(s) -> %s",
+           len(_res["written"]), args.reuseOverlay)
+    else:
+      warning("Reuse overlay: release under %s is not closed (missing: %s); "
+              "no modules imported.", args.reuseFrom,
+              ", ".join(_res.get("dangling", [])))
 
   # Build-host policy knobs live under a single `system:` entry in defaults.
   # These control *how* the build runs (network, CPU) — not *what* it produces —
@@ -2558,45 +2649,22 @@ def doBuild(args, parser):
     args.criticalPathSchedule = _cp if isinstance(_cp, bool) \
         else str(_cp).strip().lower() in ("1", "true", "yes", "on")
 
-  # Relaxed CVMFS reuse policy (ADR-0001). Non-hashed build-host policy, like
-  # the two above. Precedence: explicit --reuse-policy/--reuse-base  >  defaults
-  # system.reuse_policy / reuse_base  >  strict / none. Default strict keeps the
-  # simple aliBuild case bit-for-bit unchanged.
+  # Reuse policy (strict/relaxed) for the --reuse-from module overlay. Strict
+  # reuses only on exact content-hash match (publishable); relaxed matches any
+  # version in the one-release overlay (loose provenance, non-publishable).
+  # An explicit --reuse-policy is canonical; the --reuse-from '::policy' suffix
+  # is sugar. If both are given they must agree; otherwise the suffix fills in.
+  # Precedence: --reuse-policy > --reuse-from ::policy > defaults > strict.
+  if getattr(args, "reusePolicy", None) is not None and _reuse_from_policy \
+     and args.reusePolicy != _reuse_from_policy:
+    dieOnError(True,
+               "--reuse-policy %s conflicts with --reuse-from ...::%s; "
+               "specify the policy once." % (args.reusePolicy, _reuse_from_policy))
   if getattr(args, "reusePolicy", None) is None:
-    args.reusePolicy = str(_system_opt("reuse_policy", "strict")).strip().lower()
+    args.reusePolicy = _reuse_from_policy \
+        or str(_system_opt("reuse_policy", "strict")).strip().lower()
   if args.reusePolicy not in ("strict", "relaxed"):
     args.reusePolicy = "strict"
-  if getattr(args, "reuseBase", None) is None:
-    args.reuseBase = _system_opt("reuse_base", "") or ""
-  # Relaxed reuse: auto-select a build_id from the CVMFS store when none was
-  # given (or the sentinels "latest" / "latest-common"), so the user need not
-  # copy an id by hand. Anchors on the build target for "latest"; requires all
-  # requested packages to share it for "latest-common". Announced loudly; an
-  # explicit --reuse-base always wins. Uses the (combined) architecture, which
-  # must match the deployed <arch>/Packages dir name.
-  if args.reusePolicy == "relaxed" \
-     and str(args.reuseBase).strip().lower() in ("", "latest", "latest-common"):
-    _strategy = "latest-common" if str(args.reuseBase).strip().lower() == "latest-common" \
-                else "latest"
-    _store = args.remoteStore or ""
-    if not _store.startswith("cvmfs://"):
-      warning("relaxed reuse: auto-select needs a cvmfs:// --remote-store; "
-              "no build_id selected, packages will be built.")
-      args.reuseBase = ""
-    else:
-      from bits_helpers.cvmfs_reuse import select_build_id
-      _root = re.sub("^cvmfs://", "", _store)
-      _bid, _cov = select_build_id(packages, args.architecture, _root, _strategy)
-      if _bid:
-        banner("relaxed reuse: auto-selected build_id '%s' (%s)\n"
-               "    from %s/%s/Packages, covering %d/%d requested package(s)",
-               _bid, _strategy, _root, args.architecture,
-               len(_cov.get(_bid, ())), len(packages))
-        args.reuseBase = _bid
-      else:
-        warning("relaxed reuse: no %s build_id found under %s/%s/Packages; "
-                "packages will be built.", _strategy, _root, args.architecture)
-        args.reuseBase = ""
   # Publish guard: relaxed builds are loose-provenance (their closure includes
   # unverified deployed binaries) and must never reach a write store / publish
   # pipeline. Refuse early and clearly.
@@ -2730,31 +2798,6 @@ def doBuild(args, parser):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
         return getstatusoutput_docker(cmd, cwd=temp_dir)
 
-    # Relaxed CVMFS graft callback (ADR-0001). Active only under --reuse-policy
-    # relaxed with a cvmfs:// remote store and a --reuse-base build_id; None in
-    # every other case → strict behaviour, no graft (simple aliBuild path
-    # unaffected). Uses the combined architecture (args.architecture) — the arch
-    # recorded in the deployed packages' .meta.json — not raw_architecture.
-    _cvmfs_match = None
-    if getattr(args, "reusePolicy", "strict") == "relaxed":
-      _base = getattr(args, "reuseBase", "") or ""
-      _store = args.remoteStore or ""
-      if not _base:
-        warning("--reuse-policy relaxed needs --reuse-base <build_id> (or defaults "
-                "reuse_base:); no packages will be grafted.")
-      elif not _store.startswith("cvmfs://"):
-        warning("--reuse-policy relaxed needs a cvmfs:// --remote-store "
-                "(or --reuse-cvmfs); no packages will be grafted.")
-      else:
-        from bits_helpers.cvmfs_reuse import graftable_match
-        _store_root = re.sub("^cvmfs://", "", _store)
-        _build_local = set(getattr(args, "buildLocal", []) or [])
-        def _cvmfs_match(spec, _root=_store_root, _bid=_base,
-                         _arch=args.architecture, _bl=_build_local):
-          if spec["package"] in _bl:
-            return None
-          return graftable_match(spec["package"], _arch, _bid, _root)
-
     systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = packages,
                      specs                   = specs,
@@ -2772,8 +2815,7 @@ def doBuild(args, parser):
                      taps                    = taps,
                      log                     = debug,
                      provider_dirs          = provider_dirs,
-                     defaults_meta           = defaultsMeta,
-                     performCvmfsMatch       = _cvmfs_match)
+                     defaults_meta           = defaultsMeta)
 
   _bad_defaults, _missing_flavor = incompatibleFlavorDefaults(validDefaults, args.defaults, defaultsMeta)
   dieOnError(bool(_bad_defaults) or _missing_flavor,
@@ -2988,9 +3030,14 @@ def doBuild(args, parser):
         spec["commit_hash"] = "0"
 
     if "sources" in spec:
+      # Expand a templated tag (e.g. "v%(version)s") for tarball sources too.
+      # The git branch above only resolves it when a `source:` is present, so a
+      # tarball-only recipe kept the raw tag, which then leaked into commit_hash
+      # and the SOURCES/<pkg>/<version>/<tag> path. No-op for literal tags.
+      spec["tag"] = resolve_tag(spec, defaultsMeta.get("variables"))
       for i, s in enumerate(spec["sources"]):
         resolved = resolveLocalPath(args.configDir, s)
-        spec["sources"][i] = resolved 
+        spec["sources"][i] = resolved
       spec["commit_hash"] = spec["tag"]
     # Version may contain date params like tag, plus %(commit_hash)s,
     # %(short_hash)s and %(tag)s.
@@ -3278,6 +3325,13 @@ def doBuild(args, parser):
     import atexit
     atexit.register(lambda ex=_prefetch_executor: ex.shutdown(wait=False, cancel_futures=True))
 
+  # Default build_family for the final banner, matching the in-loop formula
+  # (build.py sets it per-package below). Needed so a reused/skipped MAIN package
+  # does not leave mainBuildFamily unset; the in-loop assignment overrides it
+  # whenever the main package is actually built.
+  _mdp = getattr(args, "develPrefix", develPackageBranch)
+  mainBuildFamily = ("{}-{}".format(_mdp, "_".join(args.defaults)) if _mdp
+                     else "_".join(args.defaults))
   while buildOrder:
     p = buildOrder.pop(0)
     spec = specs[p]
@@ -3295,6 +3349,40 @@ def doBuild(args, parser):
     ))
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
+
+    # 4b: if the reuse overlay satisfies this package, set it up from modules
+    # instead of building. Its consumers 'module load' it (generate_initdotsh);
+    # it is neither built nor materialized locally, so we skip the whole
+    # build/unpack path here (this is what avoids the legacy tarball synthesis +
+    # relocate-me.sh). Strict = same remote hash (byte-identical, publishable);
+    # relaxed = any version in the one-release overlay. defaults-*, --build-local
+    # and development packages are never grafted.
+    if (getattr(args, "reuseOverlay", None) and not spec["is_devel_pkg"]
+        and not spec["package"].startswith("defaults-")):
+      _bl_raw = getattr(args, "buildLocal", None) or []
+      if isinstance(_bl_raw, str):
+        _bl_raw = _bl_raw.split(",")
+      _bl = set(x for x in _bl_raw if x)
+      _relaxed = getattr(args, "reusePolicy", "strict") == "relaxed"
+      _want = None if _relaxed else spec.get("remote_revision_hash")
+      # In strict mode a missing hash must NOT fall through to match-any.
+      if spec["package"] not in _bl and (_relaxed or _want):
+        from bits_helpers.cvmfs_import import overlay_reuse_module
+        _mid = overlay_reuse_module(args.reuseOverlay, spec["package"], want_hash=_want)
+        if _mid:
+          # Adopt a consistent identity for the manifest, then skip the build.
+          spec["reuse_module_id"] = _mid
+          _verrev = _mid.split("/", 1)[1]
+          spec["revision"] = (_verrev[len(spec["version"]) + 1:]
+                              if _verrev.startswith(spec["version"] + "-") else _verrev)
+          spec["hash"] = spec.get("remote_revision_hash") or spec.get("hash", "")
+          spec["cachedTarball"] = ""
+          spec.setdefault("deps_hash", "")
+          info("Reuse: %s from CVMFS overlay as module %s (not built)", p, _mid)
+          if getattr(args, "manifest", None) is not None:
+            args.manifest.add_package(spec, "already_installed",
+                                      effective_architecture=effective_arch(spec, args.architecture))
+          continue
 
     # Warn if a package declares architecture: shared but has arch-specific
     # deps — the shared label would be misleading in that case because its
@@ -3434,7 +3522,10 @@ def doBuild(args, parser):
         # readlink() succeeds even for dangling symlinks, so we must check
         # existence explicitly.
         if not os.path.isfile(symlink_path):
-          warning("Ignoring dangling symlink in tarball directory: %s", symlink_path)
+          # Benign and self-healing: a leftover from a failed build or a cleanup
+          # that removed the store tarball. The scan skips it and the build
+          # rebuilds, so this is diagnostic noise, not actionable — keep it debug.
+          debug("Ignoring dangling symlink in tarball directory: %s", symlink_path)
           continue
         realPath = readlink(symlink_path)
         # The revision group is optional ((?:-((?:local)?[0-9]+))?) to handle
@@ -3835,6 +3926,10 @@ def doBuild(args, parser):
                      ver_rev(spec))
 
     init_workDir = container_workDir if args.docker else args.workDir
+    # Reused deps are set up by sourcing their deployed init.sh from the CVMFS
+    # Packages base (an absolute /cvmfs path, identical on host and in the
+    # container once /cvmfs is mounted).
+    _reuse_cvmfs_base = getattr(args, "reuseCvmfsBase", None)
     makedirs(scriptDir, exist_ok=True)
     # Remember where the resource monitor will write this package's trace so we
     # can aggregate build stats once the run finishes (P3).
@@ -3848,10 +3943,12 @@ def doBuild(args, parser):
       "provenance": create_provenance_info(spec["package"], specs, args),
       "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False,
                                            from_modules=getattr(args, "initdotshFromModules", False),
-                                           cmake_prefix_env=_cmake_prefix_env),
+                                           cmake_prefix_env=_cmake_prefix_env,
+                                           reuse_cvmfs_base=_reuse_cvmfs_base),
       "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True,
                                            from_modules=getattr(args, "initdotshFromModules", False),
-                                           cmake_prefix_env=_cmake_prefix_env),
+                                           cmake_prefix_env=_cmake_prefix_env,
+                                           reuse_cvmfs_base=_reuse_cvmfs_base),
       "develPrefix": develPrefix,
       "workDir": workDir,
       "configDir": abspath(args.configDir),
@@ -4043,10 +4140,14 @@ def doBuild(args, parser):
         "-v {workdir}:{container_workDir} {roSources}-v{configDir}:/pkgdist.bits:ro "
         "-v {scriptDir}/build.sh:/build.sh:ro "
         "-v {bits_dir}:/bits "
+        "{cvmfsMount}"
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
         "-e HOME=/tmp -e SHELL=/bin/bash -e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
       ).format(
         jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",
+        # Mount /cvmfs read-only when reusing deployed components, so a reused
+        # dep's init.sh (and its files under /cvmfs) resolve inside the container.
+        cvmfsMount=("-v /cvmfs:/cvmfs:ro " if getattr(args, "reuseCvmfsBase", None) else ""),
         platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
         roSources=_ro_sources,
         image=quote(args.dockerImage),

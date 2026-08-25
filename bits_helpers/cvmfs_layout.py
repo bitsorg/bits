@@ -42,6 +42,70 @@ def _render(template, subst):
     return _VAR_RE.sub(lambda m: str(subst.get(m.group(1), m.group(0))), template)
 
 
+def split_reuse_policy(reuse_from):
+    """Split an optional trailing ``::<policy>`` off a ``--reuse-from`` value.
+
+    Sugar so ``--reuse-from cvmfs::relaxed`` (or ``<path>::relaxed``) can set the
+    reuse policy alongside the source. Returns ``(source, policy)`` where policy
+    is ``"strict"``/``"relaxed"`` or ``None`` when no valid suffix is present.
+    Absolute paths never contain ``::``, so splitting on the last ``::`` is
+    unambiguous. Pure; the caller reconciles it with an explicit --reuse-policy.
+    """
+    if not reuse_from:
+        return reuse_from, None
+    head, sep, tail = reuse_from.rpartition("::")
+    if sep and tail.strip().lower() in ("strict", "relaxed"):
+        return head, tail.strip().lower()
+    return reuse_from, None
+
+
+def resolve_reuse_from(reuse_from, layout):
+    """Resolve ``--reuse-from`` to an absolute modules-tree path, or None.
+
+    ``None``/``""`` → None (no module reuse). The literal ``"cvmfs"`` →
+    ``layout["module_path"]`` (raises ValueError if there is no layout /
+    module_path). Any other value must be an absolute path (raises otherwise).
+    Pure and side-effect free so the caller decides how to report the error.
+    """
+    if not reuse_from:
+        return None
+    if reuse_from == "cvmfs":
+        module_path = layout.get("module_path") if layout else None
+        if not module_path:
+            raise ValueError(
+                "--reuse-from cvmfs needs the modules location in the defaults "
+                "system: section — either a layout (module_dir/cvmfs_dir) or a "
+                "cvmfs_modules_template; none is configured.")
+        return module_path
+    if not os.path.isabs(reuse_from):
+        raise ValueError(
+            "--reuse-from must be an absolute path or the literal 'cvmfs' "
+            "(got %r)." % reuse_from)
+    return reuse_from
+
+
+def reuse_module_path_from_templates(defaults_meta, architecture, injected_prefix=None):
+    """Derive the modulefiles BASE dir from the group's ``cvmfs_modules_template``.
+
+    Lets ``--reuse-from cvmfs`` work off the single publish template a group
+    already declares (which also drives publishing), instead of duplicating it as
+    ``cvmfs_dir`` + ``module_dir``. Expands ``{prefix}`` and ``{platform}`` and
+    strips the trailing per-package leaf (``…/{pkg}``), yielding the base under
+    which per-package modulefiles live. ``architecture`` MUST be the DEPLOYED arch
+    (the raw ``-a`` value / ``abi_tag``), not the build-qualified family, so the
+    path matches where the packages actually live. Returns None when no modules
+    template (or no prefix) is configured. Pure.
+    """
+    templates = resolve_cvmfs_templates(defaults_meta, injected_prefix)
+    if not templates or not templates.get("modules"):
+        return None
+    # Drop the trailing "/{token}" run (the per-package leaf, e.g. /{pkg} or
+    # /{pkg}/{tag}) to get the fixed base the modulefiles live under.
+    base = re.sub(r"(?:/\{[^}]*\})+$", "", templates["modules"])
+    return (base.replace("{prefix}", templates["prefix"])
+                .replace("{platform}", architecture))
+
+
 def resolve_cvmfs_layout(defaults_meta, architecture):
     """Return the resolved CVMFS layout dict, or None when not configured.
 

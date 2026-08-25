@@ -479,32 +479,34 @@ class Boto3TestCase(unittest.TestCase):
 
 @patch("bits_helpers.sync.Boto3RemoteSync._s3_init", new=MagicMock())
 class DualRemoteSyncTestCase(unittest.TestCase):
-    """Cross-backend stores: recall from CVMFS, upload freshly-built to S3."""
+    """Cross-backend stores: recall from an HTTP mirror, upload freshly-built to S3/B3."""
 
-    READ = "cvmfs:///cvmfs/sft-nightlies-test.cern.ch/lcg/bits/"
+    READ = "http://mirror.example/tars/"
     WRITE = "b3://bucketofpieces"
 
     # ── remote_from_url dispatch ─────────────────────────────────────────────
-    def test_cvmfs_read_plus_write_returns_dual(self):
+    def test_http_read_plus_write_returns_dual(self):
         helper = sync.remote_from_url(self.READ, self.WRITE, ARCHITECTURE, "/work")
         self.assertIsInstance(helper, sync.DualRemoteSync)
-        self.assertIsInstance(helper.reader, sync.CVMFSRemoteSync)
+        self.assertIsInstance(helper.reader, sync.HttpRemoteSync)
         self.assertIsInstance(helper.writer, sync.Boto3RemoteSync)
         # Writer targets the write store for both its read-back and its uploads.
         self.assertEqual(helper.writer.writeStore, "bucketofpieces")
         self.assertEqual(helper.writer.remoteStore, "bucketofpieces")
-
-    def test_cvmfs_read_without_write_is_unchanged(self):
-        # No write store -> the old read-only CVMFS helper, not a Dual.
-        helper = sync.remote_from_url(self.READ, "", ARCHITECTURE, "/work")
-        self.assertIsInstance(helper, sync.CVMFSRemoteSync)
 
     def test_same_backend_is_unchanged(self):
         helper = sync.remote_from_url("b3://bucket", "b3://bucket", ARCHITECTURE, "/work")
         self.assertIsInstance(helper, sync.Boto3RemoteSync)
 
     @patch("bits_helpers.sync.error", new=MagicMock())
+    def test_cvmfs_read_store_is_rejected(self):
+        # cvmfs:// --remote-store is retired; deployed reuse is via --reuse-from.
+        with self.assertRaises(SystemExit):
+            sync.remote_from_url("cvmfs:///cvmfs/x/", "", ARCHITECTURE, "/work")
+
+    @patch("bits_helpers.sync.error", new=MagicMock())
     def test_cvmfs_write_target_is_rejected(self):
+        # cvmfs is read-only: reject it as a --write-store (via the dual path).
         with self.assertRaises(SystemExit):
             sync.remote_from_url(self.READ, "cvmfs:///somewhere", ARCHITECTURE, "/work")
 

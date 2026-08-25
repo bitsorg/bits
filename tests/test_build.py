@@ -652,6 +652,78 @@ class BuildTestCase(unittest.TestCase):
         self.assertIn('export LIBSHARED_INCLUDE_DIR="${LIBSHARED_ROOT}/include"', shared)
         self.assertNotIn('$BITS_ARCH_PREFIX"/libshared', shared)
 
+    def test_initdotsh_reuse_modules(self) -> None:
+        """A dependency satisfied from a reused CVMFS release is set up via its
+        overlay modulefile (module use/load); a locally-built dependency keeps its
+        init.sh sourcing — so a plain/legacy package can consume a module-reused
+        dep. Dormant (byte-identical) when no reuse_modulepath is passed."""
+        base = {"revision": "1", "hash": "h", "commit_hash": "c"}
+        specs = {
+            "App":   dict(base, package="App", version="1.0",
+                          requires=["CMake", "Boost"]),
+            "CMake": dict(base, package="CMake", version="3.30.6", requires=[]),
+            "Boost": dict(base, package="Boost", version="1.90.0", requires=[]),
+        }
+        # Baseline: no reuse base -> both deps sourced from the local tree.
+        baseline = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False)
+        self.assertNotIn("/cvmfs", baseline)
+        self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/CMake/3.30.6-1/etc/profile.d/init.sh',
+                      baseline)
+
+        # Mark CMake reused-from-CVMFS; Boost stays locally built.
+        specs["CMake"]["reuse_module_id"] = "CMake/3.30.6-1"
+        out = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False,
+                                 reuse_cvmfs_base="/cvmfs/x/Packages")
+        # CMake sourced from its DEPLOYED init.sh on CVMFS, under a WORK_DIR
+        # override. BITS_ARCH_PREFIX="." (non-null) survives the deployed init.sh's
+        # `:=` default, which "" would not.
+        self.assertIn('WORK_DIR="/cvmfs/x/Packages"; BITS_ARCH_PREFIX="."', out)
+        self.assertIn('. "/cvmfs/x/Packages/CMake/3.30.6-1/etc/profile.d/init.sh"', out)
+        # ...and NOT from the local tree; Boost (built) still is.
+        self.assertNotIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/CMake/3.30.6-1/etc/profile.d/init.sh',
+                         out)
+        self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/Boost/1.90.0-1/etc/profile.d/init.sh',
+                      out)
+
+        # A reused dep's pkg-config .pc is re-staged with a corrected prefix (a
+        # deployed .pc can bake a wrong prefix=). The staging loop covers the
+        # REUSED dep (CMake) via its <PKG>_ROOT, not the locally-built Boost.
+        self.assertIn('reuse-pkgconfig', out)
+        self.assertIn('"${CMAKE_ROOT:-}"', out)
+        self.assertNotIn('"${BOOST_ROOT:-}"', out)
+        self.assertIn('export PKG_CONFIG_PATH="$_bits_rpc', out)
+
+        # Dormant safety: marker set but no reuse base -> identical to baseline.
+        dormant = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False)
+        self.assertEqual(dormant, baseline)
+        self.assertNotIn('reuse-pkgconfig', baseline)
+
+    def test_initdotsh_reuse_orders_prereq_before_reused(self) -> None:
+        """A local prerequisite of a reused dep must be sourced BEFORE it: the
+        reused dep's deployed init.sh transitively sources that prereq (guarded on
+        its _REVISION) and would look on CVMFS, where a local-only build is absent.
+        Emitting in topological order sets the prereq's _REVISION first so the
+        guard skips the CVMFS re-source."""
+        base = {"revision": "1", "hash": "h", "commit_hash": "c"}
+        specs = {
+            "App":   dict(base, package="App", version="1.0",
+                          requires=["CMake", "Tools"]),
+            # CMake (reused) declares Tools as a dependency, so its deployed
+            # init.sh sources Tools; Tools itself is built locally.
+            "CMake": dict(base, package="CMake", version="3.30.6",
+                          requires=["Tools"]),
+            "Tools": dict(base, package="Tools", version="0.0.32", requires=[]),
+        }
+        specs["CMake"]["reuse_module_id"] = "CMake/3.30.6-1"
+        out = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False,
+                                 reuse_cvmfs_base="/cvmfs/x/Packages")
+        tools_line = '"$WORK_DIR/$BITS_ARCH_PREFIX"/Tools/0.0.32-1/etc/profile.d/init.sh'
+        cmake_line = '. "/cvmfs/x/Packages/CMake/3.30.6-1/etc/profile.d/init.sh"'
+        self.assertIn(tools_line, out)
+        self.assertIn(cmake_line, out)
+        self.assertLess(out.index(tools_line), out.index(cmake_line),
+                        "local prerequisite Tools must be sourced before reused CMake")
+
 
 if __name__ == '__main__':
     unittest.main()

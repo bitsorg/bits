@@ -12,7 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bits_helpers.cvmfs_layout import resolve_cvmfs_layout as R
 from bits_helpers.cvmfs_layout import resolve_cvmfs_templates as RT
 from bits_helpers.cvmfs_layout import (
-    resolve_release, path_release, bake_release, _declared_release)
+    resolve_release, path_release, bake_release, _declared_release,
+    resolve_reuse_from, split_reuse_policy, reuse_module_path_from_templates)
 
 ARCH = "ubuntu2510_x86-64-gcc15-dbg"
 
@@ -243,6 +244,88 @@ class ResolveReleaseTest(unittest.TestCase):
     def test_end_to_end_explicit_release(self):
         rel = path_release(resolve_release({"variables": {"release": "dev3"}}, "main"))
         self.assertEqual(rel, "dev3")
+
+
+class ResolveReuseFromTest(unittest.TestCase):
+
+    def test_none_and_empty(self):
+        self.assertIsNone(resolve_reuse_from(None, None))
+        self.assertIsNone(resolve_reuse_from("", {"module_path": "/x"}))
+
+    def test_absolute_path_passthrough(self):
+        self.assertEqual(resolve_reuse_from("/cvmfs/x/modules", None),
+                         "/cvmfs/x/modules")
+
+    def test_relative_path_rejected(self):
+        with self.assertRaises(ValueError):
+            resolve_reuse_from("modules", None)
+
+    def test_cvmfs_resolves_from_layout(self):
+        layout = R({"cvmfs_dir": "/cvmfs/r"}, ARCH)  # module_path defaults to <arch>/modules
+        self.assertEqual(resolve_reuse_from("cvmfs", layout),
+                         os.path.join("/cvmfs/r", ARCH, "modules"))
+
+    def test_cvmfs_without_layout_fails(self):
+        with self.assertRaises(ValueError):
+            resolve_reuse_from("cvmfs", None)
+        with self.assertRaises(ValueError):
+            resolve_reuse_from("cvmfs", {})  # layout present but no module_path
+
+
+class SplitReusePolicyTest(unittest.TestCase):
+
+    def test_no_suffix(self):
+        self.assertEqual(split_reuse_policy("cvmfs"), ("cvmfs", None))
+        self.assertEqual(split_reuse_policy("/cvmfs/x/modulefiles"),
+                         ("/cvmfs/x/modulefiles", None))
+
+    def test_none_and_empty(self):
+        self.assertEqual(split_reuse_policy(None), (None, None))
+        self.assertEqual(split_reuse_policy(""), ("", None))
+
+    def test_policy_suffix(self):
+        self.assertEqual(split_reuse_policy("cvmfs::relaxed"), ("cvmfs", "relaxed"))
+        self.assertEqual(split_reuse_policy("cvmfs::strict"), ("cvmfs", "strict"))
+        self.assertEqual(split_reuse_policy("/cvmfs/x/modulefiles::relaxed"),
+                         ("/cvmfs/x/modulefiles", "relaxed"))
+
+    def test_case_insensitive(self):
+        self.assertEqual(split_reuse_policy("cvmfs::RELAXED"), ("cvmfs", "relaxed"))
+
+    def test_unknown_suffix_is_not_a_policy(self):
+        # A non-policy trailing token is left as part of the source, untouched.
+        self.assertEqual(split_reuse_policy("cvmfs::loose"), ("cvmfs::loose", None))
+
+
+class ReuseModulePathFromTemplatesTest(unittest.TestCase):
+
+    def test_derives_base_from_declared_template(self):
+        meta = {"system": {
+            "prefix": "/cvmfs/sft.cern.ch/lcg/bits",
+            "cvmfs_modules_template": "{prefix}/{platform}/Modules/modulefiles/{pkg}",
+        }}
+        # Uses the DEPLOYED (raw) arch and strips the trailing /{pkg}.
+        self.assertEqual(
+            reuse_module_path_from_templates(meta, "x86_64-el9-gcc14-opt"),
+            "/cvmfs/sft.cern.ch/lcg/bits/x86_64-el9-gcc14-opt/Modules/modulefiles")
+
+    def test_default_template_when_only_prefix(self):
+        # No explicit modules template -> resolve_cvmfs_templates supplies the
+        # conventional default, which we still reduce to the base.
+        meta = {"system": {"prefix": "/cvmfs/r"}}
+        self.assertEqual(reuse_module_path_from_templates(meta, "el9"),
+                         "/cvmfs/r/el9/Modules/modulefiles")
+
+    def test_injected_prefix_wins(self):
+        meta = {"system": {"cvmfs_modules_template":
+                           "{prefix}/{platform}/Modules/modulefiles/{pkg}"}}
+        self.assertEqual(
+            reuse_module_path_from_templates(meta, "el9", injected_prefix="/cvmfs/inj"),
+            "/cvmfs/inj/el9/Modules/modulefiles")
+
+    def test_none_when_no_prefix_or_template(self):
+        self.assertIsNone(reuse_module_path_from_templates({}, "el9"))
+        self.assertIsNone(reuse_module_path_from_templates(None, "el9"))
 
 
 if __name__ == "__main__":

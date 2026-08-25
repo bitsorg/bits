@@ -230,6 +230,173 @@ def _shell_id(name):
     return "".join(c if (c.isalnum() or c == "_") else "_" for c in name)
 
 
+def rewrite_module_anchor(text, install_base):
+    """Re-anchor a bits-built modulefile so it no longer needs the shared BASEDIR.
+
+    A deployed bits modulefile derives its install root from ``$::env(BASEDIR)``
+    (set by the BASE module), so the first BASE on MODULEPATH pins the location
+    for every package. When such a modulefile is reused next to a local build
+    that would misplace it. Replace the ``BASEDIR`` env reference with the
+    absolute *install_base* so the copy is self-anchoring and order-independent;
+    everything else (guards, deps, $version) is preserved verbatim.
+    """
+    base = (install_base or "").rstrip("/")
+    return (text.replace("$::env(BASEDIR)", base)
+                .replace("$env(BASEDIR)", base))
+
+
+def _read_meta(path):
+    """Load a JSON ``.meta.json`` defensively; None on any read/parse error."""
+    import json
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _is_base_id(token):
+    """True if *token* names the BASE module (BASE or BASE/<ver>), quotes/braces
+    tolerated — matched as a whole id so BASECAMP/BASELINE are NOT BASE."""
+    t = token.strip("'\"{}")
+    return t == "BASE" or t.startswith("BASE/")
+
+
+def _line_loads_base(line):
+    """True if *line* has a ``load`` / ``prereq`` / ``is-loaded`` directive whose
+    next token is the BASE module id — matched by token so ``BASECAMP`` etc. are
+    not mis-matched."""
+    _directives = ("load", "prereq", "prereq-all", "depends-on", "is-loaded")
+    toks = line.split()
+    return any(tok in _directives and i + 1 < len(toks) and _is_base_id(toks[i + 1])
+               for i, tok in enumerate(toks))
+
+
+def strip_base_dep(text):
+    """Drop the ``BASE`` module dependency from a re-anchored modulefile.
+
+    A deployed bits modulefile loads ``BASE`` only to obtain ``BASEDIR``; once
+    ``rewrite_module_anchor`` has inlined that as an absolute path, ``BASE`` is
+    unneeded (and may be absent from the reuse set). Real deps (``CMake``,
+    ``Python``…) are kept. Handles both the one-line guard and the multi-line
+    ``if ![ is-loaded 'BASE/1.0' ] {`` / ``module load BASE/1.0`` / ``}`` block:
+    when the BASE line opens an unbalanced ``{``, consume through its matching
+    ``}`` so no orphan brace is left behind.
+    """
+    out = []
+    lines = text.splitlines()
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if _line_loads_base(line):
+            depth = line.count("{") - line.count("}")
+            i += 1
+            while depth > 0 and i < n:
+                depth += lines[i].count("{") - lines[i].count("}")
+                i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
+def _module_load_deps(text):
+    """Ordered, de-duplicated ``module load <id>`` targets in *text*, excluding BASE."""
+    deps = []
+    for line in text.splitlines():
+        toks = line.split()
+        for i, tok in enumerate(toks):
+            if tok == "load" and i and toks[i - 1] == "module" and i + 1 < len(toks):
+                dep = toks[i + 1].strip("'\"{}")
+                if dep and dep != "BASE" and not dep.startswith("BASE/") and dep not in deps:
+                    deps.append(dep)
+    return deps
+
+
+def harvest_trusted(module_root, install_base):
+    """Harvest a bits-built deployment into a re-anchored corpus.
+
+    *module_root* is the deployed modulefiles tree (``<pkg>/<verrev>`` files, e.g.
+    ``.../Modules/modulefiles``); *install_base* is the absolute ``Packages`` root
+    the modulefiles' ``BASEDIR`` should resolve to. For each modulefile: re-anchor
+    it to *install_base*, strip its ``BASE`` dep, and read the co-located package
+    ``.meta.json`` (``<install_base>/<pkg>/<verrev>/.meta.json``) for the content
+    hash / build_id. Returns ``(corpus, package_hashes, build_id)``; build_id is
+    the deployment's recorded one (all packages share it), or "" if none carried it.
+    """
+    import json
+    import os
+    corpus, hashes, build_id = {}, {}, ""
+    if not (module_root and os.path.isdir(module_root)):
+        return corpus, hashes, build_id
+    for pkg in sorted(os.listdir(module_root)):
+        pkg_dir = os.path.join(module_root, pkg)
+        if not os.path.isdir(pkg_dir):
+            continue
+        for verrev in sorted(os.listdir(pkg_dir)):
+            mfile = os.path.join(pkg_dir, verrev)
+            if not os.path.isfile(mfile):
+                continue
+            with open(mfile) as fh:
+                rendered = strip_base_dep(rewrite_module_anchor(fh.read(), install_base))
+            module_id = "%s/%s" % (pkg, verrev)
+            meta = _read_meta(os.path.join(install_base, pkg, verrev, ".meta.json")) or {}
+            pkg_info = meta.get("package") if isinstance(meta.get("package"), dict) else {}
+            hashes[module_id] = pkg_info.get("hash", "")
+            build_id = build_id or meta.get("build_id", "")
+            corpus[module_id] = {
+                "version": pkg_info.get("version"),
+                "revision": pkg_info.get("revision"),
+                "deps": _module_load_deps(rendered),
+                "rendered": rendered,
+                "base_prefix": install_base,
+            }
+    return corpus, hashes, build_id
+
+
+def import_trusted_release(module_root, install_base, arch, out_root, label="reuse",
+                           force=False):
+    """Import a trusted bits deployment: harvest → build_id → write overlay.
+
+    Uses the deployment's recorded build_id when present, else a corpus-derived
+    one. Returns ``{"build_id", "written", "dangling"}`` (same shape as
+    ``import_release``).
+    """
+    import os
+    corpus, hashes, dep_build_id = harvest_trusted(module_root, install_base)
+    dangling = closure_check(corpus)
+    if dangling and not force:
+        return {"build_id": None, "written": [], "dangling": dangling,
+                "overlay_path": None}
+    build_id = dep_build_id or compute_corpus_build_id(corpus, label)
+    written = write_overlay(corpus, build_id, arch, out_root, package_hashes=hashes)
+    # Return the overlay path so callers need not reconstruct <out_root>/<id>/<arch>.
+    return {"build_id": build_id, "written": written, "dangling": dangling,
+            "overlay_path": os.path.join(out_root, build_id, arch)}
+
+
+def overlay_reuse_module(overlay_path, package, want_hash=None):
+    """Return ``<package>/<verrev>`` if the overlay satisfies *package*, else None.
+
+    The overlay is ``<overlay_path>/<package>/<verrev>`` (modulefile) alongside a
+    hidden ``.<verrev>.meta.json``. Strict (``want_hash`` given): match a module
+    whose recorded hash equals it — a byte-identical, publishable reuse. Relaxed
+    (``want_hash`` None): any module for the package (the overlay is one coherent
+    release). Defensive: a missing overlay/package yields None.
+    """
+    import os
+    pkg_dir = os.path.join(overlay_path or "", package)
+    if not (overlay_path and os.path.isdir(pkg_dir)):
+        return None
+    for name in sorted(os.listdir(pkg_dir)):
+        if name.startswith("."):        # skip the hidden .<verrev>.meta.json
+            continue
+        meta = _read_meta(os.path.join(pkg_dir, ".%s.meta.json" % name)) or {}
+        if want_hash is None or meta.get("hash") == want_hash:
+            return "%s/%s" % (package, name)
+    return None
+
+
 def build_module_meta(module_id, entry, build_id, package_hash="", abi_tag=""):
     """Module-side ``.meta.json`` payload for a corpus *entry* (D6 overlay).
 
@@ -471,8 +638,12 @@ def write_overlay(corpus, build_id, arch, out_root, alias=None,
             continue
         dest = os.path.join(arch_root, name)
         os.makedirs(dest, exist_ok=True)
+        # A trusted-harvest entry carries the deployment's own modulefile,
+        # already re-anchored (entry["rendered"]); a foreign one is regenerated
+        # from its parsed ops. One writer, two sources.
         with open(os.path.join(dest, vfile), "w") as fh:
-            fh.write(generate_modulefile(bits_id, remapped, build_id))
+            fh.write(entry.get("rendered")
+                     or generate_modulefile(bits_id, remapped, build_id))
         meta = build_module_meta(bits_id, entry, build_id,
                                  package_hash=package_hashes.get(module_id, ""),
                                  abi_tag=abi_tag)

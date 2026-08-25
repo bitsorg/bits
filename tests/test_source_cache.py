@@ -7,7 +7,7 @@ Covers the Part 1 feature described in REFERENCE.md §25:
 
 * ``_source_remote_path()`` — canonical remote path helper
 * ``NoRemoteSync``, ``HttpRemoteSync``, ``RsyncRemoteSync``,
-  ``S3RemoteSync``, ``Boto3RemoteSync``, ``CVMFSRemoteSync`` —
+  ``S3RemoteSync``, ``Boto3RemoteSync`` —
   ``fetch_source()`` / ``upload_source()`` methods
 * ``download()`` — ``sync_helper`` integration (local-cache hit,
   remote-store hit, upstream download with subsequent archive upload)
@@ -367,53 +367,6 @@ class Boto3RemoteSyncSourceTest(unittest.TestCase):
         syncer = self._make_syncer(write_store="")
         syncer.upload_source("/tmp/libfoo.tar.gz", TEST_URL_HASH, TEST_FILENAME)
         syncer.s3.upload_file.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# CVMFSRemoteSync
-# ---------------------------------------------------------------------------
-
-class CVMFSRemoteSyncSourceTest(unittest.TestCase):
-    """CVMFSRemoteSync.fetch_source reads from the filesystem mount."""
-
-    def _make_syncer(self, remote_path):
-        return sync.CVMFSRemoteSync(
-            remoteStore="cvmfs://{}".format(remote_path),
-            writeStore=None,
-            architecture="slc9_x86-64",
-            workdir="/sw",
-        )
-
-    def test_fetch_success(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            # Lay out the file at the expected remote filesystem path.
-            remote_file = os.path.join(
-                tmp, _source_remote_path(TEST_URL_HASH, TEST_FILENAME),
-            )
-            _write_fake_file(remote_file)
-
-            syncer = self._make_syncer(tmp)
-            dest_dir = os.path.join(tmp, "dest")
-            result = syncer.fetch_source(TEST_URL_HASH, TEST_FILENAME, dest_dir)
-
-            self.assertTrue(result)
-            dest_file = os.path.join(dest_dir, TEST_FILENAME)
-            self.assertTrue(os.path.isfile(dest_file))
-            with open(dest_file, "rb") as fh:
-                self.assertEqual(fh.read(), _FAKE_CONTENT)
-
-    def test_fetch_miss(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            syncer = self._make_syncer(tmp)  # remote dir empty
-            result = syncer.fetch_source(TEST_URL_HASH, TEST_FILENAME,
-                                         os.path.join(tmp, "dest"))
-            self.assertFalse(result)
-
-    def test_upload_is_noop(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            syncer = self._make_syncer(tmp)
-            # Must not raise even though CVMFS is read-only.
-            syncer.upload_source("/tmp/libfoo.tar.gz", TEST_URL_HASH, TEST_FILENAME)
 
 
 # ---------------------------------------------------------------------------
