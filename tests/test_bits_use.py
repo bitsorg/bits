@@ -86,10 +86,14 @@ class BitsUseTest(unittest.TestCase):
         self.assertEqual(out[:2], ["-d", "build"])
         self.assertIn("--docker", out)
 
-    def test_rewrite_use_opts_out(self):
+    def test_rewrite_meta_commands_opt_out(self):
+        # Meta commands (use/cvmfs/store/version) take a different option set and
+        # must NOT receive the profile, or their argparse would reject it.
         self._profile()
-        self.assertEqual(U.rewrite_argv(["use", "build", "--docker"], self.p),
-                         ["use", "build", "--docker"])
+        for meta in (["use", "build", "--docker"], ["cvmfs", "platforms"],
+                     ["store", "ls"], ["version"],
+                     ["verify", "--from-manifest", "m.json"]):   # accepts neither flag
+            self.assertEqual(U.rewrite_argv(list(meta), self.p), list(meta))
 
     def test_rewrite_no_profile_is_noop(self):
         self.assertEqual(U.rewrite_argv(["build", "x"], self.p), ["build", "x"])

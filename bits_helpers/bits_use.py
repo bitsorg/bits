@@ -5,16 +5,18 @@
 commands stay short. Distinct from ``.bitsrc`` (typed key=value settings):
 ``.bitscmd`` holds raw CLI tokens, structured by the command they apply to.
 
-A ``[common]`` section is injected into *every* command (e.g. ``--architecture``,
-which ``build`` AND ``q``/``enter`` all need); a per-command section
-(``[build]``, ``[q]``, …) adds command-specific args. Injected BEFORE the user's
-own args, so those override single-value options. Example ``.bitscmd``::
+A ``[common]`` section is injected into arch-aware commands (put only broadly
+accepted args here, i.e. ``--architecture``, which ``build`` AND ``q``/``enter``/
+``clean`` all take); a per-command section (``[build]``, ``[q]``, …) adds args
+that command accepts — e.g. ``--defaults`` belongs in ``[build]``, NOT
+``[common]`` (module commands and ``clean``/``import`` don't accept it). Injected
+BEFORE the user's own args, so those override single-value options. Example::
 
     [common]
-    --architecture x86_64-el9-gcc14-opt --defaults lcg::release::gcc14::opt
+    --architecture x86_64-el9-gcc14-opt
 
     [build]
-    --docker --docker-image reg/alma9 --sandbox off --reuse-from cvmfs::relaxed
+    --defaults lcg::release::gcc14::opt --docker --sandbox off --reuse-from cvmfs::relaxed
 
 Prototype — runs standalone::
 
@@ -118,9 +120,20 @@ def merged_argv(command, user_args, path=PROFILE):
 
 
 # Top-level flags that may precede the action (from the root argparse parser);
-# skipped when locating the action token. `use` never injects into itself.
+# skipped when locating the action token.
 TOP_FLAGS = {"-d", "--debug", "-n", "--dry-run"}
-NO_INJECT = {"use"}
+
+# The profile is injected ONLY into arch-aware commands (they all accept
+# `--architecture`, the intended `[common]` content). Meta commands (use, cvmfs,
+# store, version, help, cvmfs-stage/publish) and `verify` (accepts neither
+# --architecture nor --defaults) take a different option set and are excluded.
+# Note: several of these accept --architecture but NOT --defaults, so --defaults
+# belongs in per-command sections ([build], …), never in [common].
+INJECT_ACTIONS = {
+    "build", "deps", "doctor", "status", "clean", "cleanup", "gc",
+    "import", "publish", "certify", "compliance",
+    "q", "query", "enter", "setenv", "printenv", "load", "unload",
+}
 
 
 def _find_action(argv):
@@ -136,9 +149,10 @@ def _find_action(argv):
 
 def rewrite_argv(argv, path=PROFILE):
     """Return *argv* with the ``.bitscmd`` profile injected right after the action
-    token: ``[common]`` for every command, plus ``[<action>]`` for that action.
-    A no-op when there is no profile, no action, or the action opts out
-    (``use``). This is the single entry point the wrapper calls at startup.
+    token: ``[common]`` plus ``[<action>]``, for arch-aware actions only
+    (``INJECT_ACTIONS``). A no-op when there is no profile, no action, or the
+    action is a meta command (``use``/``cvmfs``/``store``/…). This is the single
+    entry point the wrapper calls at startup.
     """
     argv = list(argv)
     sec = read_all(path)
@@ -148,7 +162,7 @@ def rewrite_argv(argv, path=PROFILE):
     if ai is None:
         return argv
     action = argv[ai].lower()
-    if action in NO_INJECT:
+    if action not in INJECT_ACTIONS:
         return argv
     inject = sec.get(COMMON, []) + sec.get(action, [])
     if not inject:

@@ -1,0 +1,242 @@
+# SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""Read-only inspection of a deployed CVMFS bits tree: discover platforms, mark
+host compatibility, and present a package's build/provenance from .meta.json
+without jq. Prototype — runs standalone as::
+
+    python3 -m bits_helpers.cvmfs_inspect platforms --cvmfs <root>
+    python3 -m bits_helpers.cvmfs_inspect show Davix --cvmfs <root> --arch <a> --deps
+    python3 -m bits_helpers.cvmfs_inspect summary --cvmfs <root> --arch <a>
+
+`<root>` is the directory holding the per-arch trees, i.e. it contains
+``<arch>/Packages/<pkg>/<verrev>/.meta.json``.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+try:
+    from bits_helpers.utilities import (
+        detectArchComponents, arch_machine_token, arch_distro_token)
+except Exception:                       # standalone / partial import fallback
+    detectArchComponents = None
+    arch_machine_token = arch_distro_token = lambda s: None
+
+# Compatibility marks (state -> glyph); ASCII-safe fallbacks are easy to add.
+_MARK = {"native": "✓", "container": "⚠", "incompatible": "✗"}
+
+
+# ── discovery ────────────────────────────────────────────────────────────────
+
+def list_platforms(cvmfs_root):
+    """<arch> dirs under *cvmfs_root* that actually hold a Packages/ tree."""
+    out = []
+    try:
+        for name in sorted(os.listdir(cvmfs_root)):
+            if os.path.isdir(os.path.join(cvmfs_root, name, "Packages")):
+                out.append(name)
+    except OSError:
+        pass
+    return out
+
+
+def _packages_root(cvmfs_root, arch):
+    return os.path.join(cvmfs_root, arch, "Packages")
+
+
+def list_packages(cvmfs_root, arch):
+    """{pkg: [verrev, ...]} under <arch>/Packages (sorted)."""
+    root = _packages_root(cvmfs_root, arch)
+    out = {}
+    try:
+        for pkg in sorted(os.listdir(root)):
+            pdir = os.path.join(root, pkg)
+            if not os.path.isdir(pdir):
+                continue
+            out[pkg] = sorted(v for v in os.listdir(pdir)
+                              if os.path.isdir(os.path.join(pdir, v)))
+    except OSError:
+        pass
+    return out
+
+
+def resolve_verrev(cvmfs_root, arch, pkg, ver=None):
+    """Pick a verrev: prefix-match *ver* if given, else the newest present."""
+    vers = list_packages(cvmfs_root, arch).get(pkg, [])
+    if not vers:
+        return None
+    if ver:
+        for v in vers:
+            if v == ver or v.startswith(ver + "-"):
+                return v
+        return None
+    return vers[-1]
+
+
+def read_meta(cvmfs_root, arch, pkg, verrev):
+    with open(os.path.join(_packages_root(cvmfs_root, arch), pkg, verrev,
+                           ".meta.json")) as fh:
+        return json.load(fh)
+
+
+# ── host compatibility (advisory, three-state) ───────────────────────────────
+
+def _norm_machine(tok):
+    return (tok or "").replace("-", "_")
+
+
+def classify_platform(arch, host=None):
+    """(state, note) with state in {native, container, incompatible}.
+
+    Honest and layered: machine must match (else incompatible); a differing distro
+    token means the binaries were built for another OS/toolchain and want a
+    matching container (the gcc15-in-alma9 lesson), not the bare host.
+    """
+    host = host or (detectArchComponents() if detectArchComponents else {})
+    h_machine = _norm_machine(host.get("_machine") or host.get("machine"))
+    h_os = host.get("os") or ""
+    p_machine = _norm_machine(arch_machine_token(arch))
+    p_os = arch_distro_token(arch) or ""
+    if p_machine and h_machine and p_machine != h_machine:
+        return "incompatible", "needs %s (host is %s)" % (p_machine, h_machine)
+    if p_os and h_os and p_os != h_os:
+        return "container", ("built for %s; host is %s — run in a matching image"
+                             % (p_os, h_os))
+    return "native", "machine/OS match host"
+
+
+# ── presentation ─────────────────────────────────────────────────────────────
+
+def format_meta(meta, deps=False, provenance_only=False):
+    pkg = meta.get("package", {}) or {}
+    L = ["%s  %s-%s" % (pkg.get("name", "?"), pkg.get("version", "?"),
+                        pkg.get("revision", "?"))]
+    L.append("  hash:         %s" % pkg.get("hash", ""))
+    L.append("  architecture: %s" % meta.get("architecture", ""))
+    L.append("  abi_tag:      %s" % meta.get("abi_tag", ""))
+    L.append("  build_id:     %s" % meta.get("build_id", ""))
+    L.append("  provenance:   %s" % meta.get("provenance", ""))
+    L.append("  reuse_policy: %s" % meta.get("reuse_policy", ""))
+    L.append("  defaults:     %s" % " ".join(meta.get("defaults", []) or []))
+    L.append("  bits:         %s   dist %s"
+             % (meta.get("bits_version", ""),
+                ((meta.get("dist") or {}).get("commit", "") or "")[:12]))
+    if provenance_only:
+        return "\n".join(L)
+    if deps:
+        d = meta.get("dependencies", {}) or {}
+        for scope in ("direct", "recursive"):
+            sd = d.get(scope, {}) or {}
+            for kind in ("build", "runtime"):
+                items = sd.get(kind, []) or []
+                if items:
+                    L.append("  %s %s (%d):" % (scope, kind, len(items)))
+                    for it in items:
+                        L.append("    - %s %s-%s" % (it.get("name"),
+                                 it.get("version"), it.get("revision")))
+    return "\n".join(L)
+
+
+# ── summary ──────────────────────────────────────────────────────────────────
+
+def summarize(cvmfs_root, arch):
+    """(pkgs, build_ids): pkgs={pkg:[verrev]}, build_ids={bid:[pkg/verrev]}."""
+    pkgs = list_packages(cvmfs_root, arch)
+    build_ids = {}
+    for pkg, vers in pkgs.items():
+        for v in vers:
+            try:
+                m = read_meta(cvmfs_root, arch, pkg, v)
+            except (OSError, ValueError):
+                continue
+            build_ids.setdefault(m.get("build_id") or "(none)", []).append(
+                "%s/%s" % (pkg, v))
+    return pkgs, build_ids
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+
+def _cmd_platforms(a):
+    plats = list_platforms(a.cvmfs)
+    if a.json:
+        print(json.dumps([{"arch": p, "state": classify_platform(p)[0]}
+                          for p in plats], indent=2))
+        return 0
+    if not plats:
+        print("no platforms found under %s" % a.cvmfs); return 1
+    for p in plats:
+        state, note = classify_platform(p)
+        print("  %s  %-32s %s" % (_MARK.get(state, "?"), p, note))
+    print("\n  %s native   %s needs container   %s incompatible"
+          % (_MARK["native"], _MARK["container"], _MARK["incompatible"]))
+    return 0
+
+
+def _cmd_show(a):
+    arch = a.arch or (list_platforms(a.cvmfs) or [None])[0]
+    if not arch:
+        print("no arch (pass --arch)"); return 1
+    pkg, _, ver = a.package.partition("/")
+    verrev = resolve_verrev(a.cvmfs, arch, pkg, ver or None)
+    if not verrev:
+        print("%s%s not found under %s/%s/Packages"
+              % (pkg, "/" + ver if ver else "", a.cvmfs, arch)); return 1
+    try:
+        meta = read_meta(a.cvmfs, arch, pkg, verrev)
+    except (OSError, ValueError) as exc:
+        print("cannot read %s/%s/%s/.meta.json: %s" % (arch, pkg, verrev, exc))
+        return 1
+    if a.json:
+        print(json.dumps(meta, indent=2)); return 0
+    print(format_meta(meta, deps=a.deps, provenance_only=a.provenance))
+    return 0
+
+
+def _cmd_summary(a):
+    arch = a.arch or (list_platforms(a.cvmfs) or [None])[0]
+    if not arch:
+        print("no arch (pass --arch)"); return 1
+    pkgs, build_ids = summarize(a.cvmfs, arch)
+    if a.json:
+        print(json.dumps({"arch": arch, "packages": len(pkgs),
+                          "build_ids": {b: len(v) for b, v in build_ids.items()}},
+                         indent=2)); return 0
+    print("Platform %s: %d packages, %d build_id(s)"
+          % (arch, len(pkgs), len(build_ids)))
+    for bid, members in sorted(build_ids.items()):
+        print("  %s  (%d packages)" % (bid, len(members)))
+    return 0
+
+
+def main(argv=None):
+    # Shared options live on a parent parser so they work AFTER the subcommand
+    # too (`bits cvmfs platforms --cvmfs ROOT`), not only before it.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--cvmfs", required=True,
+                        help="root holding <arch>/Packages/<pkg>/<verrev>/.meta.json")
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+
+    ap = argparse.ArgumentParser(prog="bits cvmfs",
+                                 description="Inspect a deployed CVMFS bits tree.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("platforms", parents=[common],
+                   help="list platforms + host compatibility")
+    sp = sub.add_parser("show", parents=[common],
+                        help="print a package's build/provenance")
+    sp.add_argument("package", help="PKG or PKG/VERSION")
+    sp.add_argument("--arch", help="platform (default: first found)")
+    sp.add_argument("--deps", action="store_true", help="include dependency tree")
+    sp.add_argument("--provenance", action="store_true", help="provenance fields only")
+    ss = sub.add_parser("summary", parents=[common],
+                        help="per-platform package + build_id summary")
+    ss.add_argument("--arch", help="platform (default: first found)")
+    a = ap.parse_args(argv)
+    return {"platforms": _cmd_platforms, "show": _cmd_show,
+            "summary": _cmd_summary}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

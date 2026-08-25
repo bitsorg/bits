@@ -396,6 +396,15 @@ if [[ "${1:-}" == "use" ]]; then
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' "$@"
 fi
 
+# `bits cvmfs {platforms,show,summary} …` → read-only inspection of a deployed
+# CVMFS bits tree: platforms + host compatibility, a package's build/provenance
+# from .meta.json (no jq), and a per-build_id summary. Reads the tree only, so it
+# needs no work dir; distinct from cvmfs-stage/cvmfs-publish (producer side).
+if [[ "${1:-}" == "cvmfs" ]]; then
+  shift
+  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_inspect import main; sys.exit(main())' "$@"
+fi
+
 # `bits cvmfs-stage …` → producer-side CVMFS staging (ADR-0011).
 # Prepares a package into a staging S3 prefix with the canonical publisher and
 # names the catalog prepub must graft. Handled here, before work-dir/module
