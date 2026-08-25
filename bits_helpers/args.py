@@ -380,8 +380,8 @@ def doParseArgs():
           "manifest), closure-check the set, stamp it with one deterministic "
           "build_id, and generate a per-build_id overlay (build-sufficient bits "
           "modulefiles + module-side .meta.json + .cvmfscatalog) that "
-          "'bits build --reuse-policy relaxed --reuse-base <build_id>' can graft "
-          "without recompiling. See ADR-0001."
+          "'bits build --reuse-from <modules-path>|cvmfs' can reuse without "
+          "recompiling."
       ),
   )
   import_parser.add_argument("-w", "--work-dir", dest="workDir",
@@ -682,10 +682,6 @@ def doParseArgs():
                             is set to the same value). May be set to a default store on some
                             architectures; use --no-remote-store to disable it in that case.
                             """)
-  build_remote.add_argument("--reuse-cvmfs", dest="reuseCvmfs", action="store_true",
-                            help=("Reuse already-deployed components from the CVMFS area declared by the "
-                                  "defaults `cvmfs_dir:` field. Sets --remote-store to cvmfs://<cvmfs_dir> "
-                                  "when no remote store is given."))
   build_remote.add_argument("--sign-manifest", dest="signManifest", default=None, metavar="KEY.pem",
                             help=("After the build, sign the build manifest with this Ed25519 private key "
                                   "(PEM) so consumers can verify it for trusted reuse. Public verification "
@@ -736,13 +732,6 @@ def doParseArgs():
                                   "build_id) for fast local dev; the result is loose-provenance and is "
                                   "refused by the publish path. Falls back to the defaults `reuse_policy:` "
                                   "value, else 'strict'."))
-  build_remote.add_argument("--reuse-base", dest="reuseBase", metavar="BUILD_ID", default=None,
-                            help=("With --reuse-policy relaxed, the build_id of the deployed release to "
-                                  "graft packages from. Falls back to the defaults `reuse_base:` value. "
-                                  "Special values auto-select from the cvmfs:// store: 'latest' (newest "
-                                  "build_id for the build target) and 'latest-common' (newest build_id "
-                                  "shared by all requested packages); the same happens when left empty "
-                                  "under relaxed. The chosen build_id is announced."))
   build_remote.add_argument("--reuse-from", dest="reuseFrom", metavar="PATH|cvmfs", default=None,
                             help=("Reuse deployed components via their published modulefiles at this "
                                   "absolute modules-tree path (distinct from --remote-store, which is the "

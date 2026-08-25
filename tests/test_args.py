@@ -296,14 +296,12 @@ class ReusePolicyArgsTestCase(unittest.TestCase):
     # resolves reusePolicy to "strict"); nothing changes.
     a = self._parse("build --force-unknown-architecture zlib")
     self.assertIsNone(a["reusePolicy"])
-    self.assertIsNone(a["reuseBase"])
     self.assertEqual(a["buildLocal"], [])
 
   def test_relaxed_flags_parse(self):
     a = self._parse("build --force-unknown-architecture --reuse-policy relaxed "
-                    "--reuse-base LCG_109 --build-local p1,p2 zlib")
+                    "--build-local p1,p2 zlib")
     self.assertEqual(a["reusePolicy"], "relaxed")
-    self.assertEqual(a["reuseBase"], "LCG_109")
     self.assertEqual(a["buildLocal"], ["p1", "p2"])
 
   def test_initdotsh_flag_tristate(self):
