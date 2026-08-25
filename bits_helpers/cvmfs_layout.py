@@ -73,14 +73,37 @@ def resolve_reuse_from(reuse_from, layout):
         module_path = layout.get("module_path") if layout else None
         if not module_path:
             raise ValueError(
-                "--reuse-from cvmfs needs a modules layout (module_dir/cvmfs_dir) "
-                "in the defaults system: section; none is configured.")
+                "--reuse-from cvmfs needs the modules location in the defaults "
+                "system: section — either a layout (module_dir/cvmfs_dir) or a "
+                "cvmfs_modules_template; none is configured.")
         return module_path
     if not os.path.isabs(reuse_from):
         raise ValueError(
             "--reuse-from must be an absolute path or the literal 'cvmfs' "
             "(got %r)." % reuse_from)
     return reuse_from
+
+
+def reuse_module_path_from_templates(defaults_meta, architecture, injected_prefix=None):
+    """Derive the modulefiles BASE dir from the group's ``cvmfs_modules_template``.
+
+    Lets ``--reuse-from cvmfs`` work off the single publish template a group
+    already declares (which also drives publishing), instead of duplicating it as
+    ``cvmfs_dir`` + ``module_dir``. Expands ``{prefix}`` and ``{platform}`` and
+    strips the trailing per-package leaf (``…/{pkg}``), yielding the base under
+    which per-package modulefiles live. ``architecture`` MUST be the DEPLOYED arch
+    (the raw ``-a`` value / ``abi_tag``), not the build-qualified family, so the
+    path matches where the packages actually live. Returns None when no modules
+    template (or no prefix) is configured. Pure.
+    """
+    templates = resolve_cvmfs_templates(defaults_meta, injected_prefix)
+    if not templates or not templates.get("modules"):
+        return None
+    # Drop the trailing "/{token}" run (the per-package leaf, e.g. /{pkg} or
+    # /{pkg}/{tag}) to get the fixed base the modulefiles live under.
+    base = re.sub(r"(?:/\{[^}]*\})+$", "", templates["modules"])
+    return (base.replace("{prefix}", templates["prefix"])
+                .replace("{platform}", architecture))
 
 
 def resolve_cvmfs_layout(defaults_meta, architecture):

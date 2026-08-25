@@ -13,7 +13,7 @@ from bits_helpers.cvmfs_layout import resolve_cvmfs_layout as R
 from bits_helpers.cvmfs_layout import resolve_cvmfs_templates as RT
 from bits_helpers.cvmfs_layout import (
     resolve_release, path_release, bake_release, _declared_release,
-    resolve_reuse_from, split_reuse_policy)
+    resolve_reuse_from, split_reuse_policy, reuse_module_path_from_templates)
 
 ARCH = "ubuntu2510_x86-64-gcc15-dbg"
 
@@ -295,6 +295,37 @@ class SplitReusePolicyTest(unittest.TestCase):
     def test_unknown_suffix_is_not_a_policy(self):
         # A non-policy trailing token is left as part of the source, untouched.
         self.assertEqual(split_reuse_policy("cvmfs::loose"), ("cvmfs::loose", None))
+
+
+class ReuseModulePathFromTemplatesTest(unittest.TestCase):
+
+    def test_derives_base_from_declared_template(self):
+        meta = {"system": {
+            "prefix": "/cvmfs/sft.cern.ch/lcg/bits",
+            "cvmfs_modules_template": "{prefix}/{platform}/Modules/modulefiles/{pkg}",
+        }}
+        # Uses the DEPLOYED (raw) arch and strips the trailing /{pkg}.
+        self.assertEqual(
+            reuse_module_path_from_templates(meta, "x86_64-el9-gcc14-opt"),
+            "/cvmfs/sft.cern.ch/lcg/bits/x86_64-el9-gcc14-opt/Modules/modulefiles")
+
+    def test_default_template_when_only_prefix(self):
+        # No explicit modules template -> resolve_cvmfs_templates supplies the
+        # conventional default, which we still reduce to the base.
+        meta = {"system": {"prefix": "/cvmfs/r"}}
+        self.assertEqual(reuse_module_path_from_templates(meta, "el9"),
+                         "/cvmfs/r/el9/Modules/modulefiles")
+
+    def test_injected_prefix_wins(self):
+        meta = {"system": {"cvmfs_modules_template":
+                           "{prefix}/{platform}/Modules/modulefiles/{pkg}"}}
+        self.assertEqual(
+            reuse_module_path_from_templates(meta, "el9", injected_prefix="/cvmfs/inj"),
+            "/cvmfs/inj/el9/Modules/modulefiles")
+
+    def test_none_when_no_prefix_or_template(self):
+        self.assertIsNone(reuse_module_path_from_templates({}, "el9"))
+        self.assertIsNone(reuse_module_path_from_templates(None, "el9"))
 
 
 if __name__ == "__main__":

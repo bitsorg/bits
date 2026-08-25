@@ -2471,12 +2471,23 @@ def doBuild(args, parser):
 
   # Resolve --reuse-from into an absolute modules-tree path ('cvmfs' -> the
   # defaults system: layout module_path). Nothing consumes it yet (later step).
-  from bits_helpers.cvmfs_layout import resolve_reuse_from, split_reuse_policy
+  from bits_helpers.cvmfs_layout import (resolve_reuse_from, split_reuse_policy,
+                                         reuse_module_path_from_templates)
   # Sugar: a trailing '::relaxed'/'::strict' on --reuse-from sets the reuse
   # policy alongside the source (reconciled with --reuse-policy below).
   _reuse_src, _reuse_from_policy = split_reuse_policy(getattr(args, "reuseFrom", None))
+  # --reuse-from cvmfs prefers the system: layout module_path; if that is not
+  # declared, fall back to the group's cvmfs_modules_template (one declaration
+  # drives both publish and reuse). Expanded with raw_architecture — the DEPLOYED
+  # arch — not the build-qualified family, so it matches the deployment.
+  _reuse_layout = _cvmfs
+  if _reuse_src == "cvmfs" and not (_cvmfs and _cvmfs.get("module_path")):
+    _mp = reuse_module_path_from_templates(
+        defaultsMeta, raw_architecture, os.environ.get("BITS_CVMFS_PREFIX") or None)
+    if _mp:
+      _reuse_layout = dict(_cvmfs or {}, module_path=_mp)
   try:
-    args.reuseFrom = resolve_reuse_from(_reuse_src, _cvmfs)
+    args.reuseFrom = resolve_reuse_from(_reuse_src, _reuse_layout)
   except ValueError as exc:
     dieOnError(True, str(exc))
   # Build the local, re-anchored overlay from the deployment named by
