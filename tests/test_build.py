@@ -685,9 +685,18 @@ class BuildTestCase(unittest.TestCase):
         self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/Boost/1.90.0-1/etc/profile.d/init.sh',
                       out)
 
+        # A reused dep's pkg-config .pc is re-staged with a corrected prefix (a
+        # deployed .pc can bake a wrong prefix=). The staging loop covers the
+        # REUSED dep (CMake) via its <PKG>_ROOT, not the locally-built Boost.
+        self.assertIn('reuse-pkgconfig', out)
+        self.assertIn('"${CMAKE_ROOT:-}"', out)
+        self.assertNotIn('"${BOOST_ROOT:-}"', out)
+        self.assertIn('export PKG_CONFIG_PATH="$_bits_rpc', out)
+
         # Dormant safety: marker set but no reuse base -> identical to baseline.
         dormant = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False)
         self.assertEqual(dormant, baseline)
+        self.assertNotIn('reuse-pkgconfig', baseline)
 
     def test_initdotsh_reuse_orders_prereq_before_reused(self) -> None:
         """A local prerequisite of a reused dep must be sourced BEFORE it: the

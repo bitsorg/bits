@@ -1215,6 +1215,34 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
         lines.extend(_reused_dep_lines(d))
       else:
         lines.append(_dep_init_path(d))
+    # A reused CVMFS package may ship a pkg-config .pc whose baked `prefix=` does
+    # not match its deployed location (publish-time relocation can misplace it),
+    # breaking find_package via pkg-config for a consumer (e.g. xrootd → Davix).
+    # The reuse anchoring already resolved each dep's real root into <PKG>_ROOT,
+    # so stage corrected .pc copies (prefix rewritten to that root) in a writable
+    # dir and prepend it to PKG_CONFIG_PATH. Reads from read-only /cvmfs, writes
+    # under $WORK_DIR; a no-op for reused deps that ship no .pc.
+    _reused_roots = " ".join('"${%s_ROOT:-}"' % pkg_to_shell_id(d)
+                             for d in _order if d in _reused_set)
+    lines.extend([
+      '_bits_rpc="${WORK_DIR:-.}/reuse-pkgconfig"; mkdir -p "$_bits_rpc"',
+      'for _bits_root in %s; do' % _reused_roots,
+      '  [ -n "$_bits_root" ] || continue',
+      '  for _bits_pcd in "$_bits_root/lib64/pkgconfig" "$_bits_root/lib/pkgconfig"; do',
+      '    [ -d "$_bits_pcd" ] || continue',
+      '    for _bits_pc in "$_bits_pcd"/*.pc; do',
+      '      [ -e "$_bits_pc" ] || continue',
+      '      sed "s|^prefix=.*|prefix=$_bits_root|" "$_bits_pc" > "$_bits_rpc/${_bits_pc##*/}"',
+      '    done',
+      '  done',
+      'done',
+      # Prepend once — init.sh may be sourced repeatedly; avoid unbounded growth.
+      'case ":${PKG_CONFIG_PATH:-}:" in',
+      '  *":$_bits_rpc:"*) ;;',
+      '  *) export PKG_CONFIG_PATH="$_bits_rpc${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" ;;',
+      'esac',
+      'unset _bits_rpc _bits_root _bits_pcd _bits_pc',
+    ])
   else:
     lines.extend(_dep_init_path(dep) for dep in _reqs)
 
