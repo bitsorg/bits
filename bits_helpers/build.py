@@ -2447,14 +2447,9 @@ def doBuild(args, parser):
 
   # ── CVMFS layout (templated dirs from defaults-release) ────────────────────
   # When defaults declare cvmfs_dir / install_dir / module_dir (templates that
-  # may use %(architecture)s), resolve them and use them to default the build/
-  # reuse flags so the whole CVMFS chain can be driven from one declaration:
-  #   * reuse deployed -> --remote-store = cvmfs://<cvmfs_dir>  (with --reuse-cvmfs)
-  # Docker builds are relocatable by default (built in WORK_DIR with padded
-  # placeholders + relocate-me.sh), so the tarballs can be reused anywhere and are
-  # relocated into CVMFS on publish. Pass --cvmfs-prefix explicitly only for an
-  # in-place, non-relocatable build (skips relocation on publish, but the result
-  # is NOT reusable outside that exact CVMFS path).
+  # may use %(architecture)s), resolve them so create_provenance_info can record
+  # the tree paths in each package's .meta.json. Reusing deployed components is
+  # driven by --reuse-from (module overlay), not the remote/tarball store.
   from bits_helpers.cvmfs_layout import resolve_cvmfs_layout
   _cvmfs = resolve_cvmfs_layout(defaultsMeta, args.architecture)
   # Stash the resolved layout so create_provenance_info can record it in each
@@ -2465,9 +2460,6 @@ def doBuild(args, parser):
   if _cvmfs:
     info("CVMFS layout: install=%s  modules=%s  views=%s",
          _cvmfs["install_path"], _cvmfs["module_path"], _cvmfs["views_path"])
-    if getattr(args, "reuseCvmfs", False) and not args.remoteStore and _cvmfs["cvmfs_dir"]:
-      args.remoteStore = "cvmfs://" + _cvmfs["cvmfs_dir"]
-      info("Reusing deployed components: --remote-store %s", args.remoteStore)
 
   # Resolve --reuse-from into an absolute modules-tree path ('cvmfs' -> the
   # defaults system: layout module_path). Nothing consumes it yet (later step).
@@ -2685,10 +2677,9 @@ def doBuild(args, parser):
     args.criticalPathSchedule = _cp if isinstance(_cp, bool) \
         else str(_cp).strip().lower() in ("1", "true", "yes", "on")
 
-  # Relaxed CVMFS reuse policy (ADR-0001). Non-hashed build-host policy, like
-  # the two above. Precedence: explicit --reuse-policy/--reuse-base  >  defaults
-  # system.reuse_policy / reuse_base  >  strict / none. Default strict keeps the
-  # simple aliBuild case bit-for-bit unchanged.
+  # Reuse policy (strict/relaxed) for the --reuse-from module overlay. Strict
+  # reuses only on exact content-hash match (publishable); relaxed matches any
+  # version in the one-release overlay (loose provenance, non-publishable).
   # An explicit --reuse-policy is canonical; the --reuse-from '::policy' suffix
   # is sugar. If both are given they must agree; otherwise the suffix fills in.
   # Precedence: --reuse-policy > --reuse-from ::policy > defaults > strict.
@@ -2702,43 +2693,6 @@ def doBuild(args, parser):
         or str(_system_opt("reuse_policy", "strict")).strip().lower()
   if args.reusePolicy not in ("strict", "relaxed"):
     args.reusePolicy = "strict"
-  if getattr(args, "reuseBase", None) is None:
-    args.reuseBase = _system_opt("reuse_base", "") or ""
-  # Relaxed reuse: auto-select a build_id from the CVMFS store when none was
-  # given (or the sentinels "latest" / "latest-common"), so the user need not
-  # copy an id by hand. Anchors on the build target for "latest"; requires all
-  # requested packages to share it for "latest-common". Announced loudly; an
-  # explicit --reuse-base always wins. Uses the (combined) architecture, which
-  # must match the deployed <arch>/Packages dir name.
-  if args.reusePolicy == "relaxed" \
-     and str(args.reuseBase).strip().lower() in ("", "latest", "latest-common"):
-    _strategy = "latest-common" if str(args.reuseBase).strip().lower() == "latest-common" \
-                else "latest"
-    _store = args.remoteStore or ""
-    # These warnings describe the legacy build_id graft path only. Silence them
-    # when --reuse-from overlay reuse is active: that path grafts on its own and
-    # the "packages will be built" message would contradict it.
-    _overlay_active = bool(getattr(args, "reuseOverlay", None))
-    if not _store.startswith("cvmfs://"):
-      if not _overlay_active:
-        warning("relaxed reuse: auto-select needs a cvmfs:// --remote-store; "
-                "no build_id selected, packages will be built.")
-      args.reuseBase = ""
-    else:
-      from bits_helpers.cvmfs_reuse import select_build_id
-      _root = re.sub("^cvmfs://", "", _store)
-      _bid, _cov = select_build_id(packages, args.architecture, _root, _strategy)
-      if _bid:
-        banner("relaxed reuse: auto-selected build_id '%s' (%s)\n"
-               "    from %s/%s/Packages, covering %d/%d requested package(s)",
-               _bid, _strategy, _root, args.architecture,
-               len(_cov.get(_bid, ())), len(packages))
-        args.reuseBase = _bid
-      else:
-        if not _overlay_active:
-          warning("relaxed reuse: no %s build_id found under %s/%s/Packages; "
-                  "packages will be built.", _strategy, _root, args.architecture)
-        args.reuseBase = ""
   # Publish guard: relaxed builds are loose-provenance (their closure includes
   # unverified deployed binaries) and must never reach a write store / publish
   # pipeline. Refuse early and clearly.
@@ -2872,37 +2826,6 @@ def doBuild(args, parser):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
         return getstatusoutput_docker(cmd, cwd=temp_dir)
 
-    # Relaxed CVMFS graft callback (ADR-0001). Active only under --reuse-policy
-    # relaxed with a cvmfs:// remote store and a --reuse-base build_id; None in
-    # every other case → strict behaviour, no graft (simple aliBuild path
-    # unaffected). Uses the combined architecture (args.architecture) — the arch
-    # recorded in the deployed packages' .meta.json — not raw_architecture.
-    _cvmfs_match = None
-    if getattr(args, "reusePolicy", "strict") == "relaxed":
-      _base = getattr(args, "reuseBase", "") or ""
-      _store = args.remoteStore or ""
-      # Silence these legacy-graft warnings when --reuse-from overlay reuse is
-      # active: the overlay grafts independently, so "no packages will be
-      # grafted" would be misleading.
-      _overlay_active = bool(getattr(args, "reuseOverlay", None))
-      if not _base:
-        if not _overlay_active:
-          warning("--reuse-policy relaxed needs --reuse-base <build_id> (or defaults "
-                  "reuse_base:); no packages will be grafted.")
-      elif not _store.startswith("cvmfs://"):
-        if not _overlay_active:
-          warning("--reuse-policy relaxed needs a cvmfs:// --remote-store "
-                  "(or --reuse-cvmfs); no packages will be grafted.")
-      else:
-        from bits_helpers.cvmfs_reuse import graftable_match
-        _store_root = re.sub("^cvmfs://", "", _store)
-        _build_local = set(getattr(args, "buildLocal", []) or [])
-        def _cvmfs_match(spec, _root=_store_root, _bid=_base,
-                         _arch=args.architecture, _bl=_build_local):
-          if spec["package"] in _bl:
-            return None
-          return graftable_match(spec["package"], _arch, _bid, _root)
-
     systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = packages,
                      specs                   = specs,
@@ -2920,8 +2843,7 @@ def doBuild(args, parser):
                      taps                    = taps,
                      log                     = debug,
                      provider_dirs          = provider_dirs,
-                     defaults_meta           = defaultsMeta,
-                     performCvmfsMatch       = _cvmfs_match)
+                     defaults_meta           = defaultsMeta)
 
   _bad_defaults, _missing_flavor = incompatibleFlavorDefaults(validDefaults, args.defaults, defaultsMeta)
   dieOnError(bool(_bad_defaults) or _missing_flavor,
