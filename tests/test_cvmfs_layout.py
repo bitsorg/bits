@@ -13,7 +13,7 @@ from bits_helpers.cvmfs_layout import resolve_cvmfs_layout as R
 from bits_helpers.cvmfs_layout import resolve_cvmfs_templates as RT
 from bits_helpers.cvmfs_layout import (
     resolve_release, path_release, bake_release, _declared_release,
-    resolve_reuse_from)
+    resolve_reuse_from, split_reuse_policy)
 
 ARCH = "ubuntu2510_x86-64-gcc15-dbg"
 
@@ -270,6 +270,31 @@ class ResolveReuseFromTest(unittest.TestCase):
             resolve_reuse_from("cvmfs", None)
         with self.assertRaises(ValueError):
             resolve_reuse_from("cvmfs", {})  # layout present but no module_path
+
+
+class SplitReusePolicyTest(unittest.TestCase):
+
+    def test_no_suffix(self):
+        self.assertEqual(split_reuse_policy("cvmfs"), ("cvmfs", None))
+        self.assertEqual(split_reuse_policy("/cvmfs/x/modulefiles"),
+                         ("/cvmfs/x/modulefiles", None))
+
+    def test_none_and_empty(self):
+        self.assertEqual(split_reuse_policy(None), (None, None))
+        self.assertEqual(split_reuse_policy(""), ("", None))
+
+    def test_policy_suffix(self):
+        self.assertEqual(split_reuse_policy("cvmfs::relaxed"), ("cvmfs", "relaxed"))
+        self.assertEqual(split_reuse_policy("cvmfs::strict"), ("cvmfs", "strict"))
+        self.assertEqual(split_reuse_policy("/cvmfs/x/modulefiles::relaxed"),
+                         ("/cvmfs/x/modulefiles", "relaxed"))
+
+    def test_case_insensitive(self):
+        self.assertEqual(split_reuse_policy("cvmfs::RELAXED"), ("cvmfs", "relaxed"))
+
+    def test_unknown_suffix_is_not_a_policy(self):
+        # A non-policy trailing token is left as part of the source, untouched.
+        self.assertEqual(split_reuse_policy("cvmfs::loose"), ("cvmfs::loose", None))
 
 
 if __name__ == "__main__":

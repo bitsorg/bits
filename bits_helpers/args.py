@@ -748,7 +748,9 @@ def doParseArgs():
                                   "absolute modules-tree path (distinct from --remote-store, which is the "
                                   "tarball store). The literal 'cvmfs' resolves the exact location from the "
                                   "defaults `system:` layout (module_dir under cvmfs_dir); fails if that is "
-                                  "not configured."))
+                                  "not configured. A trailing '::relaxed' or '::strict' also sets the reuse "
+                                  "policy (e.g. 'cvmfs::relaxed'); it must agree with --reuse-policy if both "
+                                  "are given."))
   build_remote.add_argument("--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",
                             help=("Comma-separated packages to always build locally even under "
                                   "--reuse-policy relaxed (e.g. a package you need patched), rather than "

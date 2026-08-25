@@ -42,6 +42,23 @@ def _render(template, subst):
     return _VAR_RE.sub(lambda m: str(subst.get(m.group(1), m.group(0))), template)
 
 
+def split_reuse_policy(reuse_from):
+    """Split an optional trailing ``::<policy>`` off a ``--reuse-from`` value.
+
+    Sugar so ``--reuse-from cvmfs::relaxed`` (or ``<path>::relaxed``) can set the
+    reuse policy alongside the source. Returns ``(source, policy)`` where policy
+    is ``"strict"``/``"relaxed"`` or ``None`` when no valid suffix is present.
+    Absolute paths never contain ``::``, so splitting on the last ``::`` is
+    unambiguous. Pure; the caller reconciles it with an explicit --reuse-policy.
+    """
+    if not reuse_from:
+        return reuse_from, None
+    head, sep, tail = reuse_from.rpartition("::")
+    if sep and tail.strip().lower() in ("strict", "relaxed"):
+        return head, tail.strip().lower()
+    return reuse_from, None
+
+
 def resolve_reuse_from(reuse_from, layout):
     """Resolve ``--reuse-from`` to an absolute modules-tree path, or None.
 

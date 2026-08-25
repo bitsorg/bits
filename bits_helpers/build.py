@@ -2471,9 +2471,12 @@ def doBuild(args, parser):
 
   # Resolve --reuse-from into an absolute modules-tree path ('cvmfs' -> the
   # defaults system: layout module_path). Nothing consumes it yet (later step).
-  from bits_helpers.cvmfs_layout import resolve_reuse_from
+  from bits_helpers.cvmfs_layout import resolve_reuse_from, split_reuse_policy
+  # Sugar: a trailing '::relaxed'/'::strict' on --reuse-from sets the reuse
+  # policy alongside the source (reconciled with --reuse-policy below).
+  _reuse_src, _reuse_from_policy = split_reuse_policy(getattr(args, "reuseFrom", None))
   try:
-    args.reuseFrom = resolve_reuse_from(getattr(args, "reuseFrom", None), _cvmfs)
+    args.reuseFrom = resolve_reuse_from(_reuse_src, _cvmfs)
   except ValueError as exc:
     dieOnError(True, str(exc))
   # Build the local, re-anchored overlay from the deployment named by
@@ -2675,8 +2678,17 @@ def doBuild(args, parser):
   # the two above. Precedence: explicit --reuse-policy/--reuse-base  >  defaults
   # system.reuse_policy / reuse_base  >  strict / none. Default strict keeps the
   # simple aliBuild case bit-for-bit unchanged.
+  # An explicit --reuse-policy is canonical; the --reuse-from '::policy' suffix
+  # is sugar. If both are given they must agree; otherwise the suffix fills in.
+  # Precedence: --reuse-policy > --reuse-from ::policy > defaults > strict.
+  if getattr(args, "reusePolicy", None) is not None and _reuse_from_policy \
+     and args.reusePolicy != _reuse_from_policy:
+    dieOnError(True,
+               "--reuse-policy %s conflicts with --reuse-from ...::%s; "
+               "specify the policy once." % (args.reusePolicy, _reuse_from_policy))
   if getattr(args, "reusePolicy", None) is None:
-    args.reusePolicy = str(_system_opt("reuse_policy", "strict")).strip().lower()
+    args.reusePolicy = _reuse_from_policy \
+        or str(_system_opt("reuse_policy", "strict")).strip().lower()
   if args.reusePolicy not in ("strict", "relaxed"):
     args.reusePolicy = "strict"
   if getattr(args, "reuseBase", None) is None:
