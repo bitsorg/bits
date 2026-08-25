@@ -4510,13 +4510,23 @@ def doBuild(args, parser):
             f"with `export BITS_ARCHITECTURE={args.architecture}'.)")
       else:
         _arch_flag, _arch_note = "", ""
+      # A --docker build targets the container's OS: prefer_system deps
+      # (libxml2, ...) come from there, so `enter` must run inside a matching
+      # container, not the host. Point at the enter command shown above.
+      if getattr(args, "docker", False):
+        _container_note = (
+            "\n\nBuilt with --docker: run the `enter` command above inside a "
+            "matching container, not on the host (prefer_system deps such as "
+            "libxml2 come from the container's OS).")
+      else:
+        _container_note = ""
       banner(f"Build of {mainPackage} successfully completed on `{socket.gethostname()}'.\n"
              "Your software installation is at:"
              f"\n\n  {abspath(join(args.workDir, args.architecture))}\n"
              f"{_install_root_line}\n"
              "You can use this package by loading the environment:"
              f"\n\n  bits {_arch_flag}enter {mainPackage}/latest-{mainBuildFamily}"
-             f"{_arch_note}",
+             f"{_arch_note}{_container_note}",
              )
   else:
       banner("Successfully built dependencies for package %s on `%s'.\n",
