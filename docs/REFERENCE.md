@@ -107,10 +107,9 @@ bits resolves these to `install_path` / `module_path` and uses them to default:
 - **docker build:** `--cvmfs-prefix` ← `<cvmfs_dir>/<install_dir>`, so packages
   compile at their final CVMFS prefix and relocation on publish is a no-op
   (explicit `--cvmfs-prefix` still wins);
-- **reuse:** with `--reuse-cvmfs`, `--remote-store` ← `cvmfs://<cvmfs_dir>`, so
-  already-deployed components are reused via the `CVMFSRemoteSync` store (which
-  matches a deployed package's recorded `.build-hash`/`.meta.json` against the
-  hash bits computes — reuse happens only on a hash match).
+- **reuse:** `--reuse-from cvmfs` resolves the deployed modules tree from the
+  same layout, so already-deployed components are set up from their published
+  modulefiles (`--remote-store` stays the tarball store; it is never `cvmfs://`).
 
 Builds that don't set any of these fields are unaffected.
 
@@ -143,9 +142,9 @@ wins — and each has its own root of trust:
 1. **Local store on the build node** (`$WORK_DIR/TARS`, already-unpacked
    `INSTALLROOT`) — artifacts this node built or fetched earlier. Ultimately
    trusted (produced here) and cheapest, so it is consulted first.
-2. **CVMFS**, if mounted (`--reuse-cvmfs` / `cvmfs://`) — the published read-only
-   tree. Trusted by CVMFS itself: the repository is signed at Stratum-0 and the
-   client verifies it against the repo key in `/etc/cvmfs/keys`. No extra
+2. **CVMFS**, when reusing a deployed release (`--reuse-from`) — the published
+   read-only tree. Trusted by CVMFS itself: the repository is signed at Stratum-0
+   and the client verifies it against the repo key in `/etc/cvmfs/keys`. No extra
    bits-level attestation is needed for these artifacts.
 3. **Remote archive (S3/HTTP), verified against a signed manifest** — content-
    addressed tarballs. Integrity comes from the content hash + `tarball_sha256`;
@@ -862,10 +861,9 @@ bits build [options] PACKAGE [PACKAGE ...]
 |--------|-------------|
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `--flavour NAME[=VALUE]` | Set a build-wide flavour variable (repeatable, comma-separated). `NAME`→`true`, `NAME=VALUE`→`VALUE`, `!NAME`→`false`. Gates `(?NAME)` conditional requires/sources/patches and is exported into the build environment; overrides a defaults `variables:` entry of the same name. See [Flavours](#flavours). |
-| `--reuse-cvmfs` | Reuse already-deployed components from the defaults `cvmfs_dir:` area: sets `--remote-store cvmfs://<cvmfs_dir>` when no store is given. See [CVMFS layout](#cvmfs-layout). |
-| `--reuse-policy {strict,relaxed}` | How CVMFS reuse is matched. `strict` (default): reuse only on an exact content-hash match; the result is publishable. `relaxed`: also graft deployed packages of a blessed release matched by (name, architecture, `build_id`), for fast local dev on top of e.g. an LCG release — only the top of the stack is built. Relaxed artifacts are *loose-provenance* and are refused by the publish path. Falls back to the defaults `reuse_policy:` value. See [Relaxed CVMFS reuse](#relaxed-cvmfs-reuse). |
-| `--reuse-base BUILD_ID` | With `--reuse-policy relaxed`, the `build_id` of the deployed release to graft from (the value `bits` records under `build_id` in each deployed package's `.meta.json`). Falls back to the defaults `reuse_base:` value. |
-| `--build-local PKG[,PKG…]` | Packages to always build locally even under `--reuse-policy relaxed` (e.g. one you need patched), instead of grafting them from the base. |
+| `--reuse-from PATH\|cvmfs` | Reuse deployed components via their published modulefiles at this absolute modules-tree path (distinct from `--remote-store`, which is the tarball store). The literal `cvmfs` resolves the location from the defaults `system:` layout (`module_dir`/`cvmfs_dir`) or the `cvmfs_modules_template`. A trailing `::relaxed`/`::strict` also sets the reuse policy (e.g. `cvmfs::relaxed`). See [Reusing deployed components](#relaxed-cvmfs-reuse). |
+| `--reuse-policy {strict,relaxed}` | How a reused (`--reuse-from`) component is matched. `strict` (default): reuse only on an exact content-hash match; the result is publishable. `relaxed`: reuse any version present in the one-release overlay, for fast local dev on top of e.g. an LCG release — only the top of the stack is built. Relaxed builds are *loose-provenance* and are refused by the publish path. Falls back to the defaults `reuse_policy:` value. |
+| `--build-local PKG[,PKG…]` | Packages to always build locally even when they could be reused (e.g. one you need patched), instead of taking them from `--reuse-from`. |
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [§9](#9-architecture-overview)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
@@ -2696,18 +2694,22 @@ When either `--remote-store` or `--write-store` is given, bits automatically set
 | `http://` or `https://` | HTTP/HTTPS | ✓ | — | None (public) or TLS; use `--insecure` to skip cert check |
 | `s3://BUCKET/PATH` | Amazon S3 via `s3cmd` | ✓ | ✓ | `~/.s3cfg` config file |
 | `b3://BUCKET/PATH` | S3-compatible via `boto3` | ✓ | ✓ | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` env vars |
-| `cvmfs://REPO/PATH` | CernVM File System | ✓ | — | None (read-only filesystem) |
 | `rsync://HOST/PATH` or `/local/path` | rsync | ✓ | ✓ | SSH keys (`~/.ssh/`) or filesystem permissions |
+
+> `cvmfs://` is **not** a `--remote-store` backend. `--remote-store` is the
+> tarball store; to reuse components already deployed on CVMFS use
+> [`--reuse-from`](#relaxed-cvmfs-reuse). A `cvmfs://` `--remote-store` is
+> rejected with an error pointing at `--reuse-from`.
 
 #### Mixing a read-only remote with a separate write store
 
-A read-only `--remote-store` (`cvmfs://` or `http(s)://`) can be paired with a writable `--write-store` of a different backend, e.g. recall pre-built packages from a CVMFS release and upload newly-built ones to S3:
+A read-only `--remote-store` (`http(s)://`) can be paired with a writable `--write-store` of a different backend, e.g. recall pre-built packages from an HTTP mirror and upload newly-built ones to S3:
 
 ```bash
-bits build ... --remote-store cvmfs:///cvmfs/.../bits/ --write-store b3://mybucket
+bits build ... --remote-store https://mirror.example/bits/ --write-store b3://mybucket
 ```
 
-Reads (recall) go to the remote store; uploads go to the write store. **Only freshly-built packages are uploaded** — packages recalled from the read-only store keep their original provenance and are not re-published (a CVMFS-recalled package has only a synthetic tarball of symlinks into `/cvmfs`, so uploading it would publish a stub). This is *strict* reuse only; `--reuse-policy relaxed` (loose provenance) remains barred from any write store.
+Reads (recall) go to the remote store; uploads go to the write store. **Only freshly-built packages are uploaded** — packages recalled from the read-only store keep their original provenance and are not re-published.
 
 #### HTTP / HTTPS
 
@@ -2806,14 +2808,6 @@ with the **public** keys shipped in `bits/keys/`. This works on CERN's shared
 runners; if the key must never touch shared infrastructure, register one
 dedicated protected runner (it only dials out — no standing server). A ready
 template lives in `bits-console/.gitlab/sign-manifest.yml`.
-
-#### CernVM File System (`cvmfs://`)
-
-Read-only. Instead of unpacking a remote tarball, bits creates a small local tarball containing symlinks that point into the already-mounted CVMFS repository. The build environment is constructed from the CVMFS paths without copying data locally:
-
-```bash
-bits build --remote-store cvmfs://cvmfs.example.cern.ch/sw ROOT
-```
 
 #### rsync / local filesystem
 
@@ -2949,7 +2943,6 @@ SOURCES/cache/a1/a1b2c3d4.../libfoo-1.2.tar.gz
 | `RsyncRemoteSync` | ✓ | ✓ | Uses `rsync -vW`; skipped if `--write-store` is absent. |
 | `S3RemoteSync` | ✓ | ✓ | Uses `s3cmd get/put`; skipped if `--write-store` is absent. |
 | `Boto3RemoteSync` | ✓ | ✓ | Native boto3 API; skips upload if the key already exists. |
-| `CVMFSRemoteSync` | ✓ | — | Read-only filesystem mount; upload not supported. |
 
 #### Enabling source archive caching
 
@@ -3050,43 +3043,46 @@ Steps to investigate:
    ```
    The next build run will re-record the current digest and warn instead of aborting.
 
-### Relaxed CVMFS reuse
+<a id="relaxed-cvmfs-reuse"></a>
+### Reusing deployed components (`--reuse-from`)
 
-Strict reuse (the default) only reuses a deployed package when bits recomputes
-the **exact same content hash** — which guarantees reproducibility and keeps the
-result publishable, but means that to build one package on top of a blessed
-release (e.g. an LCG release on `/cvmfs`) you must reproduce every hashed input
-of the whole stack. **Relaxed reuse** trades that for speed in local
-development: it grafts deployed packages matched by **(name, architecture,
-`build_id`)** instead of by hash, so only the top of the stack is built and
-everything below it is symlinked from `/cvmfs`.
-
-`build_id` is the per-release coherence token bits records in each package's
-`.meta.json` (and which is identical for every package built together). Matching
-on it — together with the *combined* architecture string, which already encodes
-OS, compiler and build type — means the grafted set is ABI-consistent by
-construction, without re-verifying the dependency closure.
+To build on top of a release already deployed on CVMFS, point `--reuse-from` at
+its published **modules tree** (or the literal `cvmfs`, which resolves the
+location from the defaults `system:` layout / `cvmfs_modules_template`). Each
+reused component is set up from its deployed modulefile / `init.sh` — sourced in
+place from `/cvmfs`, not copied — so only the top of the stack is built and
+everything below it is consumed from the deployment. `--reuse-from` is distinct
+from `--remote-store`, which remains the tarball store.
 
 ```bash
-bits build --reuse-policy relaxed \
-           --reuse-base LCG_109-<digest> \
-           --remote-store cvmfs:///cvmfs/sft.cern.ch/lcg/releases \
-           --defaults dev4 key4hep
+bits build --reuse-from cvmfs::relaxed \
+           --docker --docker-image <img> \
+           --architecture x86_64-el9-gcc14-opt \
+           --defaults lcg::release::gcc14::opt \
+           --build-local xrootd  xrootd
 ```
 
-Grafted dependencies are logged as **Unpacking** (no recompilation); only the
-requested top package is **Compiling**. Use `--build-local PKG[,PKG…]` to force
-specific packages to build locally anyway (e.g. one you need patched).
+Reused components are logged as **Reuse: … (not built)**; only the requested top
+package is **Compiling**. Use `--build-local PKG[,PKG…]` to force specific
+packages to build locally anyway (e.g. one you need patched).
 
-**Provenance.** Any package built on top of a relaxed graft is *loose* — its
-closure includes binaries adopted by name/`build_id` rather than verified hash,
-so its own hash no longer certifies reproducible inputs. bits records
-`provenance: loose` in such a package's `.meta.json`, and the **publish path
-refuses loose artifacts** (`--reuse-policy relaxed` with `--write-store` or
-`--pipeline` is rejected). Relaxed reuse is therefore strictly a dev/iteration
-accelerator; production builds use `strict`. The matcher requires a `cvmfs://`
-`--remote-store` and a `--reuse-base`; without either, relaxed reuse warns and
-falls back to a normal build.
+**Policy.** `--reuse-policy strict` (default) reuses a component only on an exact
+content-hash match, so the build stays reproducible and publishable.
+`--reuse-policy relaxed` reuses any version present in the one-release overlay
+(matched via its `build_id`) — faster for local iteration, but **loose
+provenance**: the result is not reproducible from hash alone, so the **publish
+path refuses it** (`--reuse-policy relaxed` with `--write-store` or `--pipeline`
+is rejected). The `<src>::relaxed`/`::strict` suffix on `--reuse-from` sets the
+policy inline; an explicit `--reuse-policy` must agree with it.
+
+> The builder image must match the reused release's ABI (OS + compiler): reused
+> binaries carry the toolchain they were built with, so run them in an image that
+> provides a compatible runtime.
+
+> **Note.** Earlier versions reused deployed packages through a `cvmfs://`
+> `--remote-store` and a `--reuse-base <build_id>` graft; that path has been
+> removed in favour of `--reuse-from`. A `cvmfs://` `--remote-store` now errors
+> and points here.
 
 ---
 
