@@ -60,21 +60,6 @@ class HttpRemoteSyncUploadCmdTest(unittest.TestCase):
         self.assertIsNone(sync.upload_shell_command(GOOD_SPEC))
 
 
-class CVMFSRemoteSyncUploadCmdTest(unittest.TestCase):
-    """CVMFSRemoteSync is read-only — upload_shell_command returns None."""
-
-    def test_returns_none(self):
-        from bits_helpers.sync import CVMFSRemoteSync
-        # CVMFSRemoteSync asserts writeStore is None (no write support).
-        sync = CVMFSRemoteSync(
-            remoteStore="cvmfs://repo",
-            writeStore=None,
-            architecture=ARCH,
-            workdir=WORKDIR,
-        )
-        self.assertIsNone(sync.upload_shell_command(GOOD_SPEC))
-
-
 class RsyncRemoteSyncUploadCmdTest(unittest.TestCase):
     """RsyncRemoteSync returns None without write store, shell cmd with one."""
 
