@@ -819,24 +819,6 @@ def storeHashes(package, specs, considerRelocation):
     # subsequent calculations.
     return
 
-  # Relaxed CVMFS graft (ADR-0001): a grafted package adopts the *deployed*
-  # artifact's hash. The existing reuse path (CVMFSRemoteSync.fetch_symlinks +
-  # the reuse decision) then materialises and symlinks the deployed tree under
-  # that hash instead of building, and consumers hash against the real deployed
-  # dependency — so no separate build-skip branch is needed. Only triggers when
-  # the resolver tagged the spec from_cvmfs (relaxed mode); never in strict.
-  if spec.get("from_cvmfs") and spec.get("cvmfs_hash"):
-    _h = spec["cvmfs_hash"]
-    spec["remote_revision_hash"] = _h
-    spec["local_revision_hash"] = _h
-    spec["remote_hashes"] = [_h]
-    spec["local_hashes"] = [_h]
-    spec["hash"] = _h
-    # The grafted package has no followed dependencies; set deps_hash too (the
-    # normal path always sets it, and DEPS_HASH is read via spec.get downstream).
-    spec.setdefault("deps_hash", "")
-    return
-
   # For now, all the hashers share data -- they'll be split below.
   h_all = Hasher()
 
@@ -1509,21 +1491,11 @@ def create_provenance_info(package, specs, args):
   from bits_helpers.provenance import (
     compute_build_id, compute_abi_tag, recipe_tools_ref,
   )
-  # Contagious provenance (ADR-0001): a locally-built package is "loose" when its
-  # dependency closure contains a package grafted from CVMFS (adopted by
-  # name/build_id, not verified hash). Grafted packages are not built, so this
-  # function only ever runs for local builds.
-  def _closure_grafted():
-    for _key in ("full_build_requires", "full_runtime_requires"):
-      for _dep in specs[package].get(_key, ()):
-        _ds = specs.get(_dep)
-        if isinstance(_ds, dict) and _ds.get("from_cvmfs"):
-          return True
-    return False
-  # A build is also loose if its closure decoupled a dependency via
-  # untracked_requires: this package, or one below it, was hashed as if that
-  # dependency never changed, so its identity no longer certifies its full input
-  # closure. Contagious upward like grafted provenance.
+  # Contagious provenance: a build is "loose" when its closure decoupled a
+  # dependency via untracked_requires — this package, or one below it, was hashed
+  # as if that dependency never changed, so its identity no longer certifies its
+  # full input closure. (Relaxed --reuse-from builds are kept non-publishable by
+  # the reuse-policy publish guard, so they never reach a published record.)
   def _closure_untracked():
     if specs[package].get("untracked_requires"):
       return True
@@ -1534,7 +1506,7 @@ def create_provenance_info(package, specs, args):
           return True
     return False
   _untracked = list(specs[package].get("untracked_requires", ()))
-  _provenance = "loose" if (_closure_grafted() or _closure_untracked()) else "pure"
+  _provenance = "loose" if _closure_untracked() else "pure"
   return json.dumps({
     "comment": args.annotate.get(package),
     "bits_version": __version__,
