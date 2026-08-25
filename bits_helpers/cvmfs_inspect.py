@@ -82,6 +82,34 @@ def read_meta(cvmfs_root, arch, pkg, verrev):
         return json.load(fh)
 
 
+def _legacy_meta(arch, pkg, verrev):
+    """Minimal record inferred from the path for a pre-bits tree with no
+    .meta.json. Best-effort guess from directory names, marked as legacy; only
+    name, architecture, and the verrev dir (kept in `version`) are real —
+    everything else is unknown/blank."""
+    return {
+        "architecture": arch, "abi_tag": "", "build_id": "",
+        "provenance": "legacy (no .meta.json)", "reuse_policy": "",
+        "defaults": [], "bits_version": "", "dist": {},
+        "package": {"name": pkg, "version": verrev, "revision": "", "hash": ""},
+        "dependencies": {"direct": {"build": [], "runtime": []},
+                         "recursive": {"build": [], "runtime": []}},
+        "_legacy": True,
+    }
+
+
+def meta_or_legacy(cvmfs_root, arch, pkg, verrev):
+    """Read .meta.json; when it is simply absent, synthesize a legacy record from
+    the path. `lexists` so only a truly-missing file is legacy: a present-but-
+    unreadable file, or a dangling symlink, still raises (open fails) and is
+    surfaced as an error rather than masked as legacy."""
+    path = os.path.join(_packages_root(cvmfs_root, arch), pkg, verrev, ".meta.json")
+    if not os.path.lexists(path):
+        return _legacy_meta(arch, pkg, verrev)
+    with open(path) as fh:
+        return json.load(fh)
+
+
 # ── host compatibility (advisory, three-state) ───────────────────────────────
 
 def _norm_machine(tok):
@@ -110,10 +138,15 @@ def classify_platform(arch, host=None):
 
 # ── presentation ─────────────────────────────────────────────────────────────
 
+def _verrev(pkg):
+    """version-revision, dropping the dash when there is no revision (legacy)."""
+    ver, rev = pkg.get("version", "?"), pkg.get("revision", "")
+    return "%s-%s" % (ver, rev) if rev else ver
+
+
 def format_meta(meta, deps=False, provenance_only=False):
     pkg = meta.get("package", {}) or {}
-    L = ["%s  %s-%s" % (pkg.get("name", "?"), pkg.get("version", "?"),
-                        pkg.get("revision", "?"))]
+    L = ["%s  %s" % (pkg.get("name", "?"), _verrev(pkg))]
     L.append("  hash:         %s" % pkg.get("hash", ""))
     L.append("  architecture: %s" % meta.get("architecture", ""))
     L.append("  abi_tag:      %s" % meta.get("abi_tag", ""))
@@ -175,24 +208,70 @@ def _cmd_platforms(a):
     return 0
 
 
-def _cmd_show(a):
-    arch = a.arch or (list_platforms(a.cvmfs) or [None])[0]
-    if not arch:
-        print("no arch (pass --arch)"); return 1
-    pkg, _, ver = a.package.partition("/")
-    verrev = resolve_verrev(a.cvmfs, arch, pkg, ver or None)
+def _show_one(a, arch, pkg, ver, verrev=None):
+    """Full build/provenance detail for one platform."""
+    verrev = verrev or resolve_verrev(a.cvmfs, arch, pkg, ver)
     if not verrev:
         print("%s%s not found under %s/%s/Packages"
               % (pkg, "/" + ver if ver else "", a.cvmfs, arch)); return 1
     try:
-        meta = read_meta(a.cvmfs, arch, pkg, verrev)
+        meta = meta_or_legacy(a.cvmfs, arch, pkg, verrev)
     except (OSError, ValueError) as exc:
         print("cannot read %s/%s/%s/.meta.json: %s" % (arch, pkg, verrev, exc))
         return 1
     if a.json:
         print(json.dumps(meta, indent=2)); return 0
     print(format_meta(meta, deps=a.deps, provenance_only=a.provenance))
+    if meta.get("_legacy"):
+        print("  (legacy tree: no .meta.json — fields inferred from the path)")
     return 0
+
+
+def _show_across(a, pkg, hits):
+    """One compact line per platform that has *pkg*; --arch drills into detail."""
+    rows = []
+    for arch, verrev in hits:
+        try:
+            m = meta_or_legacy(a.cvmfs, arch, pkg, verrev)
+        except (OSError, ValueError):
+            # Present but unreadable/corrupt — keep it visible, don't drop it.
+            rows.append((arch, verrev, "", "", "unreadable .meta.json"))
+            continue
+        p = m.get("package", {}) or {}
+        rows.append((arch, _verrev(p),
+                     m.get("build_id", "") or "", (p.get("hash", "") or "")[:8],
+                     m.get("provenance", "") or ""))
+    if a.json:
+        print(json.dumps([{"arch": r[0], "verrev": r[1], "build_id": r[2],
+                           "hash": r[3], "provenance": r[4]} for r in rows], indent=2))
+        return 0
+    print("%s — %d platform%s" % (pkg, len(rows), "" if len(rows) == 1 else "s"))
+    for arch, verrev, bid, h, prov in rows:
+        print("  %-30s %-10s %-38s %-8s %s" % (arch, verrev, bid, h, prov))
+    print("  (add --arch <platform> for full build/provenance + --deps)")
+    return 0
+
+
+def _cmd_show(a):
+    pkg, _, ver = a.package.partition("/")
+    ver = ver or None
+    if a.arch:
+        return _show_one(a, a.arch, pkg, ver)
+    # No --arch: don't silently pick the first platform — show the package on
+    # every platform that has it, so provenance across the tree is visible.
+    hits = []
+    for arch in list_platforms(a.cvmfs):
+        verrev = resolve_verrev(a.cvmfs, arch, pkg, ver)
+        if verrev:
+            hits.append((arch, verrev))
+    if not hits:
+        print("%s%s not found on any platform under %s"
+              % (pkg, "/" + ver if ver else "", a.cvmfs)); return 1
+    # JSON keeps one stable shape for no-arch — always the per-platform list,
+    # regardless of hit count. Text shows full detail when there's a single hit.
+    if not a.json and len(hits) == 1:
+        return _show_one(a, hits[0][0], pkg, ver, hits[0][1])
+    return _show_across(a, pkg, hits)
 
 
 def _cmd_summary(a):
@@ -227,7 +306,7 @@ def main(argv=None):
     sp = sub.add_parser("show", parents=[common],
                         help="print a package's build/provenance")
     sp.add_argument("package", help="PKG or PKG/VERSION")
-    sp.add_argument("--arch", help="platform (default: first found)")
+    sp.add_argument("--arch", help="platform (default: all platforms that have it)")
     sp.add_argument("--deps", action="store_true", help="include dependency tree")
     sp.add_argument("--provenance", action="store_true", help="provenance fields only")
     ss = sub.add_parser("summary", parents=[common],
