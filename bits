@@ -405,6 +405,15 @@ if [[ "${1:-}" == "cvmfs" ]]; then
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_inspect import main; sys.exit(main())' "$@"
 fi
 
+# `bits preload …` → post-publish CVMFS filebundle generator. Traces a deployed
+# package's recipe-declared tests on the tree (strace, optionally --docker) and
+# writes .cvmfsbundle-* prefetch files into one tar. Reads the tree (and runs
+# binaries); no work dir, so handled here like `cvmfs`.
+if [[ "${1:-}" == "preload" ]]; then
+  shift
+  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.preload_cmd import main; sys.exit(main())' "$@"
+fi
+
 # `bits cvmfs-stage …` → producer-side CVMFS staging (ADR-0011).
 # Prepares a package into a staging S3 prefix with the canonical publisher and
 # names the catalog prepub must graft. Handled here, before work-dir/module

@@ -129,6 +129,83 @@ class DiscoveryTest(unittest.TestCase):
             os.path.join(self.root, "x86_64-el9-gcc14-opt/Packages/xrootd/5.9.1-1"))
 
 
+class TraceScriptTest(unittest.TestCase):
+    def test_contains_env_setup_and_strace(self):
+        s = C.build_trace_script(
+            "/cvmfs/r/x86_64-el9/Packages/xrootd/5.9.1-1", "bin/xrdcp",
+            ["--version"], "/tmp/log")
+        self.assertIn('export WORK_DIR=/cvmfs/r/x86_64-el9/Packages', s)
+        self.assertIn('BITS_ARCH_PREFIX="."', s)
+        self.assertIn("etc/profile.d/init.sh", s)
+        self.assertIn("strace -f -e trace=open,openat", s)
+        self.assertIn("bin/xrdcp --version", s)
+
+
+class SweepTest(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.root, True)
+        for v in ("5.9.1-1", "5.9.0-2"):
+            os.makedirs(os.path.join(self.root, "x86_64-el9/Packages/xrootd", v))
+        self.cfg = {"arch": ["x86_64-el9"],
+                    "packages": {"xrootd": {"tests": [("bin/xrdcp", [])],
+                                            "versions": []}}}
+
+    def _tracer(self, pdir, exe, args):
+        # one in-repo lib + one system lib (dropped)
+        return [os.path.join(pdir, "lib/libXrdCl.so.3"), "/usr/lib64/libc.so.6"]
+
+    def test_stages_bundle_per_version(self):
+        stage = tempfile.mkdtemp(); self.addCleanup(
+            __import__("shutil").rmtree, stage, True)
+        staged = C.sweep(self.root, self.cfg, lambda p: None, stage,
+                         self._tracer, repo_root=self.root)
+        self.assertEqual(staged, [
+            "x86_64-el9/Packages/xrootd/5.9.0-2/bin/.cvmfsbundle-xrdcp",
+            "x86_64-el9/Packages/xrootd/5.9.1-1/bin/.cvmfsbundle-xrdcp",
+        ])
+
+    def test_skips_existing_unless_update(self):
+        # pre-create the 5.9.1-1 bundle in the tree -> skipped by default
+        bdir = os.path.join(self.root, "x86_64-el9/Packages/xrootd/5.9.1-1/bin")
+        os.makedirs(bdir)
+        open(os.path.join(bdir, ".cvmfsbundle-xrdcp"), "w").close()
+        stage = tempfile.mkdtemp(); self.addCleanup(
+            __import__("shutil").rmtree, stage, True)
+        staged = C.sweep(self.root, self.cfg, lambda p: None, stage,
+                         self._tracer, repo_root=self.root)
+        self.assertEqual(staged,
+                         ["x86_64-el9/Packages/xrootd/5.9.0-2/bin/.cvmfsbundle-xrdcp"])
+        # with --update both are (re)generated
+        staged = C.sweep(self.root, self.cfg, lambda p: None, stage,
+                         self._tracer, update=True, repo_root=self.root)
+        self.assertEqual(len(staged), 2)
+
+    def test_recipe_fallback_when_config_has_no_tests(self):
+        cfg = {"arch": ["x86_64-el9"], "packages": {"xrootd": None}}
+        reader = lambda p: {"preload": [{"exe": "bin/xrdfs", "args": ["--help"]}]}
+        stage = tempfile.mkdtemp(); self.addCleanup(
+            __import__("shutil").rmtree, stage, True)
+        staged = C.sweep(self.root, cfg, reader, stage, self._tracer,
+                         repo_root=self.root)
+        self.assertTrue(all(s.endswith("/bin/.cvmfsbundle-xrdfs") for s in staged))
+        self.assertEqual(len(staged), 2)
+
+
+class MainGuardTest(unittest.TestCase):
+    def test_docker_requires_image(self):
+        import io, contextlib
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                C.main(["--cvmfs", "/cvmfs/r/lcg", "--docker"])
+
+    def test_missing_config_errors(self):
+        import io, contextlib
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                C.main(["--cvmfs", "/cvmfs/r/lcg", "--config", "/no/such.yaml"])
+
+
 class ParseStraceTest(unittest.TestCase):
     def test_success_only_abs_dedup(self):
         text = (

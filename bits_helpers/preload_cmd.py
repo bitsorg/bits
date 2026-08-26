@@ -207,6 +207,34 @@ def assemble_bundles(traces, repo_root, staging_dir):
     return sorted(staged)
 
 
+def packages_base(pkg_dir):
+    """The ``…/<arch>/Packages`` base for a ``…/Packages/<pkg>/<verrev>`` dir."""
+    return os.path.dirname(os.path.dirname(pkg_dir))
+
+
+def build_trace_script(pkg_dir, exe, args, log_path):
+    """Bash that sets up the deployed env and straces one trigger to *log_path*.
+
+    Sources the deployed ``init.sh`` with ``WORK_DIR=<Packages base>`` and
+    ``BITS_ARCH_PREFIX="."`` (so its ``$WORK_DIR/$BITS_ARCH_PREFIX/<dep>`` deps
+    resolve without doubling the arch — validated on the host), then runs
+    ``strace -f -e trace=open,openat``. No ``set -u``: init.sh references unset
+    vars by design. Returns the script text.
+    """
+    import shlex
+    exe_abs = os.path.join(pkg_dir, exe)
+    quoted = " ".join(shlex.quote(a) for a in (args or []))
+    return "\n".join([
+        "set -o pipefail",
+        "export WORK_DIR=%s" % shlex.quote(packages_base(pkg_dir)),
+        'export BITS_ARCH_PREFIX="."',
+        "INIT=%s/etc/profile.d/init.sh" % shlex.quote(pkg_dir),
+        '[ -r "$INIT" ] && . "$INIT" 2>/dev/null || true',
+        "strace -f -e trace=open,openat -o %s %s %s >/dev/null 2>&1 || true"
+        % (shlex.quote(log_path), shlex.quote(exe_abs), quoted),
+    ]) + "\n"
+
+
 def make_tar(staging_dir, out_tar):
     """Tar the staged bundle tree (paths relative to *staging_dir*) into *out_tar*.
 
@@ -222,3 +250,167 @@ def make_tar(staging_dir, out_tar):
         for full, arc in sorted(entries, key=lambda e: e[1]):
             tf.add(full, arcname=arc, recursive=False)
     return out_tar
+
+
+# ── host-only trace executors (proven by run-preload-xrootd.sh) ───────────────
+
+# A trigger that blocks (waits on stdin/network) must not stall the sweep.
+_TRACE_TIMEOUT = 300
+
+
+def _trace_native(pkg_dir, exe, args, log_dir):
+    """Run the trace script on the host; return the strace log text ("" on error)."""
+    import subprocess
+    log = os.path.join(log_dir, "strace.log")
+    script = build_trace_script(pkg_dir, exe, args, log)
+    try:
+        subprocess.run(["bash", "-c", script], check=False, timeout=_TRACE_TIMEOUT)
+        with open(log) as fh:
+            return fh.read()
+    except Exception:                    # never let one trace abort the sweep
+        return ""
+
+
+def _trace_docker(pkg_dir, exe, args, log_dir, image, cvmfs_mount="/cvmfs"):
+    """Run the trace script inside *image* with /cvmfs bind-mounted + SYS_PTRACE."""
+    import subprocess
+    script = build_trace_script(pkg_dir, exe, args, "/out/strace.log")
+    cmd = ["docker", "run", "--rm", "-i",
+           "--cap-add=SYS_PTRACE", "--security-opt", "seccomp=unconfined",
+           "-v", "%s:%s:ro,rslave" % (cvmfs_mount, cvmfs_mount),
+           "-v", "%s:/out" % log_dir, image, "bash", "-s"]
+    try:
+        subprocess.run(cmd, input=script, text=True, check=False,
+                       timeout=_TRACE_TIMEOUT)
+        with open(os.path.join(log_dir, "strace.log")) as fh:
+            return fh.read()
+    except Exception:                    # docker missing, timeout, bad image, …
+        return ""
+
+
+def _default_tracer(docker=False, image=None):
+    """Return a tracer(pkg_dir, exe, args) -> [opened_abs] for the sweep."""
+    import tempfile
+
+    def tracer(pkg_dir, exe, args):
+        d = tempfile.mkdtemp(prefix="preload-")
+        try:
+            text = (_trace_docker(pkg_dir, exe, args, d, image) if docker
+                    else _trace_native(pkg_dir, exe, args, d))
+        finally:
+            __import__("shutil").rmtree(d, ignore_errors=True)
+        return parse_strace_opens(text)
+    return tracer
+
+
+# ── the sweep ─────────────────────────────────────────────────────────────────
+
+def sweep(cvmfs_root, config, recipe_reader, staging_dir,
+          tracer, update=False, log=None, repo_root=None):
+    """Run the config-driven sweep, staging bundles into *staging_dir*.
+
+    *recipe_reader(pkg)* returns a package's parsed recipe front-matter (or None);
+    *tracer(pkg_dir, exe, args)* returns the opened absolute paths (injected so
+    the loop is testable without strace). Skips a test whose bundle already exists
+    unless *update*. *repo_root* defaults to the mount of *cvmfs_root* (override
+    only in tests). Returns the sorted list of staged bundle tar-paths.
+    """
+    log = log or (lambda *a: None)
+    repo_root = repo_root or B.repo_root_of(cvmfs_root)
+    if not repo_root:
+        raise ValueError("not a /cvmfs/<repo>/… path: %s" % cvmfs_root)
+    archs = config.get("arch") or discover_archs(cvmfs_root)
+    staged = []
+    for arch in archs:
+        for pkg, cfg_pkg in _sweep_packages(cvmfs_root, arch, config, recipe_reader):
+            tests = resolve_tests(cfg_pkg, recipe_reader(pkg))
+            if not tests:
+                continue
+            for verrev in package_versions(cvmfs_root, arch, pkg,
+                                           (cfg_pkg or {}).get("versions")):
+                pdir = package_dir(cvmfs_root, arch, pkg, verrev)
+                for exe, args in tests:
+                    if bundle_exists(pdir, exe) and not update:
+                        log("skip %s/%s %s (bundle exists)", arch, verrev, exe)
+                        continue
+                    exe_abs = os.path.join(pdir, exe)
+                    tar_rel, spec = B.build_bundle(exe_abs, tracer(pdir, exe, args),
+                                                   repo_root)
+                    if not tar_rel:
+                        log("empty %s/%s %s (no in-repo opens)", arch, verrev, exe)
+                        continue
+                    B.stage_bundle(staging_dir, tar_rel, spec)
+                    staged.append(tar_rel)
+                    log("staged %s", tar_rel)
+    return sorted(staged)
+
+
+def _sweep_packages(cvmfs_root, arch, config, recipe_reader):
+    """Yield ``(pkg, cfg_pkg)`` for the sweep: the config's packages, or — when
+    none are listed — every deployed package that carries a recipe ``preload:``."""
+    pkgs = config.get("packages") or {}
+    if pkgs:
+        for name, cfg_pkg in pkgs.items():
+            yield name, cfg_pkg
+        return
+    from bits_helpers import cvmfs_inspect as I
+    for name in sorted(I.list_packages(cvmfs_root, arch)):
+        if recipe_tests(recipe_reader(name)):
+            yield name, None
+
+
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(prog="bits preload",
+                                 description="Generate CVMFS filebundle prefetch "
+                                             "files for deployed packages.")
+    ap.add_argument("--cvmfs", required=True, metavar="ROOT",
+                    help="deployed tree root, e.g. /cvmfs/<repo>/lcg/bits")
+    ap.add_argument("--config", metavar="YAML", help="config/preload.yaml")
+    ap.add_argument("--config-dir", default=".", metavar="DIR",
+                    help="recipe directory (for preload: sections). Default: .")
+    ap.add_argument("--arch", action="append", metavar="ARCH",
+                    help="platform (repeatable); default: discover from the tree")
+    ap.add_argument("--update", action="store_true",
+                    help="regenerate even if a .cvmfsbundle-* already exists")
+    ap.add_argument("--docker", action="store_true", help="trace inside a container")
+    ap.add_argument("--docker-image", metavar="IMAGE", help="image for --docker")
+    ap.add_argument("--output", metavar="TAR", default="preload-bundles.tar",
+                    help="write the bundle tar here. Default: %(default)s")
+    a = ap.parse_args(argv)
+
+    if a.config and not os.path.isfile(a.config):
+        ap.error("config file not found: %s" % a.config)
+    config = load_config(open(a.config).read()) if a.config else {
+        "arch": None, "docker": False, "update": False, "packages": {}}
+    if a.arch:
+        config["arch"] = a.arch
+    update = a.update or config.get("update")
+    docker = a.docker or config.get("docker")
+    if docker and not a.docker_image:
+        ap.error("--docker requires --docker-image IMAGE")
+
+    def recipe_reader(pkg):
+        from bits_helpers.utilities import parseRecipe, FileReader
+        path = os.path.join(a.config_dir, pkg + ".sh")
+        if not os.path.isfile(path):
+            return None
+        try:
+            _err, spec, _body = parseRecipe(FileReader(path))
+            return spec
+        except Exception:
+            return None
+
+    import tempfile
+    staging = tempfile.mkdtemp(prefix="preload-stage-")
+    try:
+        staged = sweep(a.cvmfs, config, recipe_reader, staging,
+                       _default_tracer(docker, a.docker_image), update=update,
+                       log=lambda f, *ar: print(">> " + (f % ar)))
+        if not staged:
+            print("no bundles generated"); return 0
+        make_tar(staging, a.output)
+        print("wrote %d bundle(s) to %s" % (len(staged), a.output))
+    finally:
+        __import__("shutil").rmtree(staging, ignore_errors=True)
+    return 0
