@@ -99,7 +99,8 @@ def load_config(yaml_text):
             elif isinstance(item, dict) and len(item) == 1:
                 (name, spec), = item.items()
                 _add(name, spec)
-    return {"arch": arch or None,
+    return {"cvmfs": data.get("cvmfs") or None,
+            "arch": arch or None,
             "docker": bool(data.get("docker", False)),
             "update": bool(data.get("update", False)),
             "packages": pkgs}
@@ -364,9 +365,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="bits preload",
                                  description="Generate CVMFS filebundle prefetch "
                                              "files for deployed packages.")
-    ap.add_argument("--cvmfs", required=True, metavar="ROOT",
-                    help="deployed tree root, e.g. /cvmfs/<repo>/lcg/bits")
-    ap.add_argument("--config", metavar="YAML", help="config/preload.yaml")
+    ap.add_argument("--cvmfs", metavar="ROOT",
+                    help="deployed tree root, e.g. /cvmfs/<repo>/lcg/bits "
+                         "(overrides the config's cvmfs: key; required if the "
+                         "config has none)")
+    ap.add_argument("--config", metavar="YAML",
+                    help="preload.yaml: may fully specify cvmfs/arch/packages/tests "
+                         "(recipe-independent), or just select scope/policy")
     ap.add_argument("--config-dir", default=".", metavar="DIR",
                     help="recipe directory (for preload: sections). Default: .")
     ap.add_argument("--arch", action="append", metavar="ARCH",
@@ -382,9 +387,12 @@ def main(argv=None):
     if a.config and not os.path.isfile(a.config):
         ap.error("config file not found: %s" % a.config)
     config = load_config(open(a.config).read()) if a.config else {
-        "arch": None, "docker": False, "update": False, "packages": {}}
+        "cvmfs": None, "arch": None, "docker": False, "update": False, "packages": {}}
     if a.arch:
         config["arch"] = a.arch
+    cvmfs = a.cvmfs or config.get("cvmfs")
+    if not cvmfs:
+        ap.error("no CVMFS tree given: pass --cvmfs or set cvmfs: in the config")
     update = a.update or config.get("update")
     docker = a.docker or config.get("docker")
     if docker and not a.docker_image:
@@ -404,7 +412,7 @@ def main(argv=None):
     import tempfile
     staging = tempfile.mkdtemp(prefix="preload-stage-")
     try:
-        staged = sweep(a.cvmfs, config, recipe_reader, staging,
+        staged = sweep(cvmfs, config, recipe_reader, staging,
                        _default_tracer(docker, a.docker_image), update=update,
                        log=lambda f, *ar: print(">> " + (f % ar)))
         if not staged:

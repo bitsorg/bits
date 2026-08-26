@@ -39,6 +39,7 @@ class RecipeTestsTest(unittest.TestCase):
 class LoadConfigTest(unittest.TestCase):
     def test_bare_list_and_mapping_override(self):
         cfg = C.load_config(
+            "cvmfs: /cvmfs/sft-nightlies-test.cern.ch/lcg/bits\n"
             "arch: x86_64-el9-gcc14-opt\n"
             "docker: true\n"
             "packages:\n"
@@ -47,6 +48,7 @@ class LoadConfigTest(unittest.TestCase):
             "      versions: ['6.38.*']\n"
             "      tests:\n"
             "        - { exe: bin/root, args: [-b, -q] }\n")
+        self.assertEqual(cfg["cvmfs"], "/cvmfs/sft-nightlies-test.cern.ch/lcg/bits")
         self.assertEqual(cfg["arch"], ["x86_64-el9-gcc14-opt"])   # scalar -> list
         self.assertTrue(cfg["docker"])
         self.assertFalse(cfg["update"])
@@ -204,6 +206,12 @@ class MainGuardTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 C.main(["--cvmfs", "/cvmfs/r/lcg", "--config", "/no/such.yaml"])
+
+    def test_no_cvmfs_anywhere_errors(self):
+        import io, contextlib
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                C.main([])                       # neither --cvmfs nor config cvmfs:
 
 
 class ParseStraceTest(unittest.TestCase):
