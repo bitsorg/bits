@@ -46,6 +46,9 @@ def to_repo_absolute(abs_path, repo_root):
     filebundle spec's ``dependencies`` want.
     """
     root = (repo_root or "").rstrip("/")
+    # Canonicalise: env setup can leave '/./' or '//' in captured paths (e.g. the
+    # BITS_ARCH_PREFIX="." trick used to source a deployed init.sh).
+    abs_path = os.path.normpath(abs_path)
     if not root or abs_path == root or not abs_path.startswith(root + "/"):
         return None
     return abs_path[len(root):]            # keeps the leading '/'

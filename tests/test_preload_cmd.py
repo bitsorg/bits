@@ -70,13 +70,16 @@ class PreloadTriggersTest(unittest.TestCase):
 
 
 class ParseStraceTest(unittest.TestCase):
-    def test_open_and_openat_abs_only_dedup(self):
+    def test_success_only_abs_dedup(self):
         text = (
             'open("%s/lib/libXrdCl.so", O_RDONLY) = 3\n'
             'openat(AT_FDCWD, "/usr/lib64/libc.so.6", O_RDONLY) = 4\n'
             'openat(AT_FDCWD, "%s/lib/libXrdCl.so", O_RDONLY) = 5\n'   # dup
-            'openat(AT_FDCWD, "relative/path", O_RDONLY) = 6\n'        # dropped
-        ) % (PKGDIR, PKGDIR)
+            'openat(AT_FDCWD, "relative/path", O_RDONLY) = 6\n'        # relative -> dropped
+            # failed loader probes must be dropped, not listed:
+            'openat(AT_FDCWD, "%s/lib/tls/x86_64/libXrdCl.so", O_RDONLY) = -1 ENOENT (No such file or directory)\n'
+            'openat(AT_FDCWD, "%s/lib/glibc-hwcaps/x86-64-v3/libstdc++.so.6", O_RDONLY) = -1 ENOENT (No such file or directory)\n'
+        ) % (PKGDIR, PKGDIR, PKGDIR, PKGDIR)
         self.assertEqual(C.parse_strace_opens(text),
                          [PKGDIR + "/lib/libXrdCl.so", "/usr/lib64/libc.so.6"])
 

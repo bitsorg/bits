@@ -24,8 +24,10 @@ import tarfile
 from bits_helpers import preload_bundle as B
 
 _PRELOAD_DEF = re.compile(r'(?m)^[ \t]*(?:function[ \t]+)?Preload[ \t]*\([ \t]*\)')
-# open("/path", ...) and openat(AT_FDCWD, "/path", ...) — capture the path arg.
-_OPEN_RE = re.compile(r'(?:\bopen\(|\bopenat\(AT_FDCWD,\s*)"([^"]+)"')
+# open("/path", ...) = <ret> / openat(AT_FDCWD, "/path", ...) = <ret> — capture
+# the path AND the syscall return so failed probes (= -1 ENOENT) are dropped.
+_OPEN_RE = re.compile(
+    r'(?:\bopen\(|\bopenat\(AT_FDCWD,\s*)"([^"]+)"[^=\n]*=\s*(-?\d+)')
 
 
 def has_preload(recipe_body):
@@ -75,17 +77,21 @@ def preload_triggers(recipe_body):
 
 
 def parse_strace_opens(strace_text):
-    """Absolute paths opened in ``strace -e trace=open,openat`` output.
+    """Absolute paths SUCCESSFULLY opened in ``strace -e open,openat`` output.
 
-    Returns them in first-seen order, de-duplicated; relative paths (rare, from
-    an already-chdir'd process) are dropped since they cannot be mapped to a
-    repo-absolute location.
+    Keeps only opens whose syscall returned a valid fd (``= N`` with N >= 0), so
+    the dynamic loader's failed probes (``= -1 ENOENT`` in ``glibc-hwcaps/``,
+    ``tls/`` and arch subdirs) are excluded — otherwise the bundle lists files
+    that do not exist. First-seen order, de-duplicated; relative paths (from an
+    already-chdir'd process) are dropped as they cannot be mapped to the repo.
     """
     out, seen = [], set()
-    for p in _OPEN_RE.findall(strace_text or ""):
-        if p.startswith("/") and p not in seen:
-            seen.add(p)
-            out.append(p)
+    for path, ret in _OPEN_RE.findall(strace_text or ""):
+        if ret.startswith("-"):                 # failed syscall (-1 ENOENT, …)
+            continue
+        if path.startswith("/") and path not in seen:
+            seen.add(path)
+            out.append(path)
     return out
 
 

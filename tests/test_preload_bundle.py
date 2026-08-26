@@ -31,6 +31,12 @@ class RepoRootTest(unittest.TestCase):
         self.assertIsNone(P.to_repo_absolute("/usr/lib64/libc.so.6", REPO))
         self.assertIsNone(P.to_repo_absolute(REPO, REPO))          # the mount itself
 
+    def test_to_repo_absolute_normalizes_dot_and_slashes(self):
+        # '/./' and '//' from the BITS_ARCH_PREFIX="." env trick are collapsed.
+        self.assertEqual(
+            P.to_repo_absolute(REPO + "/lcg/./Packages//Boost/lib/l.so", REPO),
+            "/lcg/Packages/Boost/lib/l.so")
+
 
 class BuildBundleTest(unittest.TestCase):
     def test_build_bundle(self):
