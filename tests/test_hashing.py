@@ -163,6 +163,21 @@ class NormalizeRecipeMetadataExclusionTestCase(unittest.TestCase):
             "redistributable: false\n")
         self.assertEqual(self._n(base), self._n(extra))
 
+    def test_adding_preload_block_is_hash_invariant(self):
+        # The preload: test list (consumed post-publish by `bits preload`) is
+        # hash-excluded — its indented block is dropped and editing it must not
+        # change the build hash input.
+        withpl = self.HEADER.replace(
+            "requires:\n",
+            "preload:\n"
+            "  - exe: bin/xrdcp\n"
+            "    args: [--version]\n"
+            "  - exe: bin/xrdfs\n"
+            "requires:\n")
+        self.assertNotIn("preload:", self._n(withpl))
+        self.assertNotIn("xrdcp", self._n(withpl))
+        self.assertEqual(self._n(self.HEADER), self._n(withpl))
+
     def test_multiline_block_value_dropped_entirely(self):
         base = self.HEADER.replace("description: A physics tool\n", "")
         block = self.HEADER.replace(

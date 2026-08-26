@@ -723,6 +723,9 @@ _HEREDOC_START = re.compile(r"<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _HASH_EXCLUDED_META_KEYS = frozenset({
     "license", "description", "url", "homepage",
     "acknowledgment", "acknowledgement", "source_url", "redistributable",
+    # preload: CVMFS filebundle test list, consumed post-publish by `bits preload`;
+    # it never affects the build, so editing it must not force a rebuild.
+    "preload",
 })
 
 # Source-selection keys are ALSO dropped from the recipe TEXT hash — not because
