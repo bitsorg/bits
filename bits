@@ -20,6 +20,15 @@ fi
 
 ARGV=("$@"); ARGC=$#   # ARGC must be a plain integer, not an array
 
+# `bits preload …` MUST be handled before the global `--config` pre-parse below,
+# which would otherwise swallow preload's own `--config <yaml>` (a name clash with
+# the bits.rc `--config`). Post-publish CVMFS filebundle generator: traces the
+# deployed tests (strace, optionally --docker) and writes .cvmfsbundle-* into one
+# tar. Self-contained; needs no work dir. Uses the raw ARGV, unmangled.
+if [[ "${ARGV[0]:-}" == "preload" ]]; then
+  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.preload_cmd import main; sys.exit(main())' "${ARGV[@]:1}"
+fi
+
 # Optional phase timing for diagnosing slow load/enter: set BITS_TIMING=1 to
 # print the wall time of each phase to stderr. Uses bash EPOCHREALTIME (>=5),
 # else GNU date; no overhead when unset.
@@ -403,15 +412,6 @@ fi
 if [[ "${1:-}" == "cvmfs" ]]; then
   shift
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_inspect import main; sys.exit(main())' "$@"
-fi
-
-# `bits preload …` → post-publish CVMFS filebundle generator. Traces a deployed
-# package's recipe-declared tests on the tree (strace, optionally --docker) and
-# writes .cvmfsbundle-* prefetch files into one tar. Reads the tree (and runs
-# binaries); no work dir, so handled here like `cvmfs`.
-if [[ "${1:-}" == "preload" ]]; then
-  shift
-  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.preload_cmd import main; sys.exit(main())' "$@"
 fi
 
 # `bits cvmfs-stage …` → producer-side CVMFS staging (ADR-0011).
