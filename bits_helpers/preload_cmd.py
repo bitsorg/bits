@@ -411,6 +411,8 @@ def main(argv=None):
             print("no bundles generated"); return 0
         make_tar(staging, a.output)
         print("wrote %d bundle(s) to %s" % (len(staged), a.output))
+        print("publish with:  bits cvmfs-publish --tar %s --repo <repo> "
+              "--prepub-url <url> [--stratum0-url <url>]" % a.output)
     finally:
         __import__("shutil").rmtree(staging, ignore_errors=True)
     return 0

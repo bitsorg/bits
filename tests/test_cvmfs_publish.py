@@ -622,3 +622,40 @@ class TestIngestConcurrencyGate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPublishOverlayTars(unittest.TestCase):
+    """publish_overlay_tars stages each tar at the repo root (path=''), gives each
+    a distinct job_id_base, and preserves the caller's tar (a temp copy is
+    published). The actual stage/submit is proven on a build host separately."""
+
+    def test_overlay_publish(self):
+        import bits_helpers.cvmfs_publish as P
+        calls = []
+
+        def fake_publish_tar(ctx, path, tar, label, fp=None):
+            # mimic _publish_tar: it removes the (temp) tar it publishes
+            calls.append((ctx["job_id_base"], path, label, os.path.exists(tar)))
+            os.remove(tar)
+            return "job-" + label
+
+        orig = P._publish_tar
+        P._publish_tar = fake_publish_tar
+        try:
+            d = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, d, True)
+            t1 = os.path.join(d, "a.tar"); open(t1, "w").write("x")
+            t2 = os.path.join(d, "b.tar"); open(t2, "w").write("y")
+            jids = P.publish_overlay_tars(
+                {"job_id_base": "base", "tmp_dir": d}, [t1, t2])
+            self.assertEqual(jids, ["job-a.tar", "job-b.tar"])
+            self.assertEqual([c[1] for c in calls], ["", ""])            # root path
+            self.assertEqual([c[0] for c in calls], ["base-tar0", "base-tar1"])
+            self.assertTrue(all(c[3] for c in calls))                    # temp existed
+            self.assertTrue(os.path.exists(t1) and os.path.exists(t2))   # originals kept
+        finally:
+            P._publish_tar = orig
+
+
+if __name__ == "__main__":
+    unittest.main()
