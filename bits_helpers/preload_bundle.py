@@ -1,135 +1,61 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Generate CVMFS filebundle specs from a package's preload sidecars.
+"""CVMFS filebundle spec emitter for the post-publish `bits preload` tool.
 
-Background
-----------
-`PreloadRecipe` traces an application's startup with strace and drops a sidecar
-per traced executable at::
+The tool straces a trigger binary that already lives on a deployed CVMFS tree,
+so every opened path is already an absolute ``/cvmfs/<repo>.cern.ch/…`` path.
+Turning that into a filebundle spec (per
+https://cvmfs.readthedocs.io/en/stable/cpt-file-bundles/) is therefore just:
 
-    <pkgroot>/.bits-preload/<trigger-base>.paths
+  * keep the opens under the repo mount (drop system files, /proc, …);
+  * strip the mount to get repository-root-absolute paths (``/lcg/releases/…``);
+  * emit ``<dir>/.cvmfsbundle-<trigger>`` next to the trigger, listing those
+    paths as ``dependencies`` (the trigger itself excluded).
 
-The sidecar is dumb, deliberately: every line is a path the launch opened,
-written relative to the architecture install base
-(``<pkg>/<verrev>/<rest>`` — or the grouped ``<family>/<pkg>/<verrev>/<rest>``),
-so it is portable across the build-time and publish-time path prefixes. Line 1
-is the trigger executable itself (same coordinate system), so it can both locate
-the bundle and be excluded from its own dependency list. Dependency files appear
-as other packages' entries, which is the whole point (prefetch the closure, not
-just this package).
-
-This module turns those sidecars into the CVMFS filebundle spec files:
-
-    <dir>/.cvmfsbundle-<trigger-base>
-
-a versioned JSON document listing the dependencies as repository-root-absolute
-paths (see https://cvmfs.readthedocs.io/en/stable/cpt-file-bundles/)::
-
-    { "name": "CVMFS_BUNDLE", "version": "1.0.0", "encoding": "UTF-8",
-      "dependencies": [ "/el9/Packages/Boost/1.90.0/lib/libboost.so", ... ] }
-
-Because a dependency file belongs to a *different* package that publishes to its
-own CVMFS path, each entry is resolved through its owning package (found by
-walking up to the directory that holds a ``.meta.json``) and that package's
-resolved repo path — a release-aware step, but self-contained: every dependency's
-``.meta.json`` is present in the work tree at publish time.
+No relocation and no cross-package resolution: the deployed paths are already
+final. This module is the pure, unit-testable core; the tool driver
+(`preload_cmd`) handles recipe parsing, env setup, strace, tar and publish.
 """
 
 import json
 import os
 
-# CVMFS filebundle spec envelope (cpt-file-bundles).
+
 SPEC_NAME = "CVMFS_BUNDLE"
 SPEC_VERSION = "1.0.0"
 SPEC_ENCODING = "UTF-8"
 
-SIDECAR_DIR = ".bits-preload"
 
+def repo_root_of(cvmfs_path):
+    """The repo mount root of a ``/cvmfs/<repo>/…`` path, i.e. ``/cvmfs/<repo>``.
 
-def parse_sidecar(path):
-    """Return ``(trigger_rel, [file_rel, ...])`` from a sidecar file.
-
-    All lines are arch-base-relative; line 1 is the trigger, the rest are the
-    opened files. ``#`` comments and blank lines are ignored. Order is preserved
-    and duplicates dropped. Returns ``(None, [])`` on a read error or an empty
-    sidecar — a bad sidecar must never abort a publish.
+    E.g. ``/cvmfs/sft.cern.ch/lcg/releases`` -> ``/cvmfs/sft.cern.ch``. Returns
+    None when *cvmfs_path* is not under ``/cvmfs/<repo>/``.
     """
-    trigger, files, seen = None, [], set()
-    try:
-        with open(path) as fh:
-            for raw in fh:
-                line = raw.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if trigger is None:
-                    trigger = line
-                    continue
-                if line not in seen:
-                    seen.add(line)
-                    files.append(line)
-    except OSError:
-        return None, []
-    return trigger, files
+    parts = [p for p in (cvmfs_path or "").split("/") if p]
+    if len(parts) >= 2 and parts[0] == "cvmfs":
+        return "/cvmfs/" + parts[1]
+    return None
 
 
-def _owning_pkg_root(rel, meta_exists):
-    """Longest leading prefix of *rel* that is a package root (holds .meta.json).
+def to_repo_absolute(abs_path, repo_root):
+    """``/cvmfs/<repo>/a/b`` -> ``/a/b``; None if *abs_path* is not under the repo.
 
-    Handles both the 2-level ``<pkg>/<verrev>`` and grouped 3-level
-    ``<family>/<pkg>/<verrev>`` layouts by asking *meta_exists(prefix)* for
-    growing prefixes and taking the longest that matches. Returns
-    ``(pkg_root, rest)`` or ``(None, None)`` when no ancestor is a package.
+    The result is repository-root-absolute (leading slash), exactly the form the
+    filebundle spec's ``dependencies`` want.
     """
-    parts = [p for p in rel.split("/") if p not in ("", ".")]
-    best = None
-    for i in range(1, len(parts)):            # need at least one trailing component
-        prefix = "/".join(parts[:i])
-        if meta_exists(prefix):
-            best = i                           # keep the LONGEST matching prefix
-    if best is None:
-        return None, None
-    return "/".join(parts[:best]), "/".join(parts[best:])
+    root = (repo_root or "").rstrip("/")
+    if not root or abs_path == root or not abs_path.startswith(root + "/"):
+        return None
+    return abs_path[len(root):]            # keeps the leading '/'
 
 
 def _is_safe_rel(rel):
     """True if *rel* is a plain, in-tree relative path (no abs, no ``..``, no NUL)."""
     if not rel or rel.startswith("/") or "\x00" in rel:
         return False
-    return ".." not in [p for p in rel.split("/")]
-
-
-def _warn(fmt, *args):
-    """Best-effort warning; never raise (this runs on the publish path)."""
-    try:
-        from bits_helpers.log import warning
-        warning(fmt, *args)
-    except Exception:                          # pragma: no cover
-        pass
-
-
-def build_dependencies(files_rel, resolve_repo, meta_exists, skip=None):
-    """Map arch-base-relative files to repo-root-absolute bundle entries.
-
-    *resolve_repo(pkg_root)* returns the owning package's repo-relative CVMFS
-    path (e.g. ``"el9/Packages/Boost/1.90.0"``); *meta_exists(prefix)* reports
-    whether *prefix* is a package root. Entries that are unsafe, whose owner
-    cannot be found or resolved, or that equal *skip* (the trigger's own file)
-    are dropped. Result is sorted and de-duplicated.
-    """
-    skip = skip or set()
-    out = set()
-    for rel in files_rel:
-        if rel in skip or not _is_safe_rel(rel):
-            continue
-        pkg_root, rest = _owning_pkg_root(rel, meta_exists)
-        if not pkg_root or not rest:
-            continue
-        repo_path = resolve_repo(pkg_root)
-        if not repo_path:
-            continue
-        out.add("/" + repo_path.strip("/") + "/" + rest)
-    return sorted(out)
+    return ".." not in rel.split("/")
 
 
 def render_spec(dependencies):
@@ -142,69 +68,51 @@ def render_spec(dependencies):
     }
 
 
-def bundle_path_for(trigger_rel):
-    """``<dir>/.cvmfsbundle-<base>`` for a trigger's package-relative path."""
-    d, base = os.path.split(trigger_rel)
+def bundle_path_for(path):
+    """``<dir>/.cvmfsbundle-<base>`` for a trigger path (any form: abs or rel)."""
+    d, base = os.path.split(path)
     name = ".cvmfsbundle-" + base
-    return os.path.join(d, name) if d else name
+    return (d + "/" + name) if d else name
 
 
-def _generate_one(pkgroot, sidecar_path, resolve_repo, meta_exists):
-    """Write one bundle from one sidecar; return its pkgroot-relative path or None.
+def build_bundle(trigger_abs, opened_abs, repo_root):
+    """Build one bundle from a trigger and the files its launch opened.
 
-    None when the sidecar is unreadable/empty, its trigger owner cannot be
-    resolved, or it yields no dependencies (no empty bundle is written).
+    Returns ``(tar_relpath, spec_dict)`` — *tar_relpath* is the bundle's location
+    relative to the repo root (no leading slash), for placement in the staging
+    tar; *spec_dict* is the filebundle JSON. Returns ``(None, None)`` when the
+    trigger is not under the repo or nothing under the repo was opened (no empty
+    bundle). Opens outside the repo (system libs, /proc) and the trigger itself
+    are excluded; the result is sorted and de-duplicated.
     """
-    trigger_rel, files_rel = parse_sidecar(sidecar_path)
-    if not trigger_rel or not _is_safe_rel(trigger_rel):
-        return None
-    # The trigger is arch-base-relative too; its in-package location is the part
-    # after its own <pkg>/<verrev> root, which is where the bundle goes.
-    _pkg_root, trigger_rest = _owning_pkg_root(trigger_rel, meta_exists)
-    if not trigger_rest:
-        return None
-    deps = build_dependencies(files_rel, resolve_repo, meta_exists,
-                              skip={trigger_rel})
+    trig_rel = to_repo_absolute(trigger_abs, repo_root)
+    if not trig_rel:
+        return None, None
+    deps = set()
+    for p in opened_abs:
+        if p == trigger_abs:
+            continue
+        r = to_repo_absolute(p, repo_root)
+        if r:
+            deps.add(r)
     if not deps:
-        return None
-    rel = bundle_path_for(trigger_rest)
-    dest = os.path.join(pkgroot, rel)
-    os.makedirs(os.path.dirname(dest) or pkgroot, exist_ok=True)
-    with open(dest, "w", encoding="utf-8") as fh:
-        json.dump(render_spec(deps), fh, indent=2)
-        fh.write("\n")
-    return rel
+        return None, None
+    bundle_abs = bundle_path_for(trig_rel)     # '/…/bin/.cvmfsbundle-root'
+    return bundle_abs.lstrip("/"), render_spec(sorted(deps))
 
 
-def generate_for_package(pkgroot, resolve_repo, meta_exists):
-    """Turn every sidecar under ``<pkgroot>/.bits-preload/`` into a bundle file.
+def stage_bundle(staging_dir, tar_relpath, spec):
+    """Write *spec* as JSON to ``<staging_dir>/<tar_relpath>`` (dirs created).
 
-    Writes ``<pkgroot>/<dir>/.cvmfsbundle-<base>`` next to each trigger, then
-    removes the ``.bits-preload`` directory so it is not published. *resolve_repo*
-    and *meta_exists* provide the owning-package resolution. Returns the list of
-    bundle paths written (pkgroot-relative).
-
-    Fail-safe: one bad sidecar must never abort a publish, and the sidecar dir is
-    always removed — so a per-sidecar failure is logged and skipped, and the
-    cleanup runs in a ``finally`` even if something raises.
+    *tar_relpath* must be a safe in-tree relative path. Returns the file path
+    written. The staging tree mirrors the repo layout so a single tar of it
+    drops each bundle next to its trigger on publish.
     """
-    import shutil
-    sdir = os.path.join(pkgroot, SIDECAR_DIR)
-    if not os.path.isdir(sdir):
-        return []
-    written = []
-    try:
-        for name in sorted(os.listdir(sdir)):
-            if not name.endswith(".paths"):
-                continue
-            try:
-                rel = _generate_one(pkgroot, os.path.join(sdir, name),
-                                    resolve_repo, meta_exists)
-            except Exception as exc:           # never let one sidecar abort publish
-                _warn("preload bundle: skipping %s: %s", name, exc)
-                continue
-            if rel:
-                written.append(rel)
-    finally:
-        shutil.rmtree(sdir, ignore_errors=True)    # always drop sidecars
-    return written
+    if not _is_safe_rel(tar_relpath):
+        raise ValueError("unsafe bundle path: %r" % (tar_relpath,))
+    dest = os.path.join(staging_dir, tar_relpath)
+    os.makedirs(os.path.dirname(dest) or staging_dir, exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as fh:
+        json.dump(spec, fh, indent=2)
+        fh.write("\n")
+    return dest
