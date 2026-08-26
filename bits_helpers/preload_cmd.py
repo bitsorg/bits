@@ -23,57 +23,129 @@ import tarfile
 
 from bits_helpers import preload_bundle as B
 
-_PRELOAD_DEF = re.compile(r'(?m)^[ \t]*(?:function[ \t]+)?Preload[ \t]*\([ \t]*\)')
 # open("/path", ...) = <ret> / openat(AT_FDCWD, "/path", ...) = <ret> — capture
 # the path AND the syscall return so failed probes (= -1 ENOENT) are dropped.
 _OPEN_RE = re.compile(
     r'(?:\bopen\(|\bopenat\(AT_FDCWD,\s*)"([^"]+)"[^=\n]*=\s*(-?\d+)')
 
 
-def has_preload(recipe_body):
-    """True if a recipe's bash body defines a ``Preload()`` function."""
-    return bool(recipe_body and _PRELOAD_DEF.search(recipe_body))
+def _norm_tests(raw):
+    """Normalise a ``preload:`` / config ``tests:`` list to ``[(exe, [args]), …]``.
 
-
-def preload_triggers(recipe_body):
-    """Extract ``(exe, [args])`` for each ``cvmfs_preload`` call in ``Preload()``.
-
-    We parse the calls rather than source the recipe body: sourcing arbitrary
-    build-time bash (with its ``bits-include`` and top-level side effects) is
-    unsafe and unnecessary — a ``Preload()`` in practice just lists
-    ``cvmfs_preload <exe> [args...]`` invocations. The ``Preload()`` block is
-    isolated by brace matching; each ``cvmfs_preload`` line is shlex-split.
-    Lines that will not shlex-parse are skipped.
+    Accepts either mapping entries (``{exe: bin/x, args: [--v]}``) or bare
+    strings (``"bin/x --v"``, shlex-split). Entries without an exe are skipped.
     """
-    if not has_preload(recipe_body):
-        return []
-    m = _PRELOAD_DEF.search(recipe_body)
-    body = recipe_body[m.end():]
-    open_brace = body.find("{")
-    if open_brace < 0:
-        return []
-    depth, i, n = 0, open_brace, len(body)
-    while i < n:                                    # find the matching close brace
-        if body[i] == "{":
-            depth += 1
-        elif body[i] == "}":
-            depth -= 1
-            if depth == 0:
-                break
-        i += 1
-    block = body[open_brace + 1:i]
-    triggers = []
-    for line in block.replace(";", "\n").splitlines():
-        line = line.strip()
-        if not line.startswith("cvmfs_preload"):
+    out = []
+    for item in raw or []:
+        if isinstance(item, dict):
+            exe = item.get("exe")
+            args = item.get("args") or []
+            if isinstance(args, str):
+                args = shlex.split(args)
+            args = [str(a) for a in args]
+        elif isinstance(item, str):
+            try:
+                toks = shlex.split(item)
+            except ValueError:
+                continue
+            exe, args = (toks[0] if toks else None), toks[1:]
+        else:
             continue
-        try:
-            toks = shlex.split(line)
-        except ValueError:
-            continue
-        if len(toks) >= 2:                          # cvmfs_preload <exe> [args...]
-            triggers.append((toks[1], toks[2:]))
-    return triggers
+        if exe:
+            out.append((str(exe), args))
+    return out
+
+
+def recipe_tests(spec):
+    """Tests from a recipe's hash-excluded ``preload:`` section (via ``parseRecipe``).
+
+    *spec* is the parsed YAML front-matter; ``spec['preload']`` is the test list.
+    Returns ``[(exe, [args]), …]`` (empty when the recipe declares none).
+    """
+    if not isinstance(spec, dict):
+        return []
+    return _norm_tests(spec.get("preload"))
+
+
+def load_config(yaml_text):
+    """Parse ``config/preload.yaml`` into a normalised sweep config.
+
+    Returns ``{arch: [..]|None, docker: bool, update: bool, packages: {name:
+    {tests: [(exe,[args])], versions: [..]}}}``. ``packages`` accepts a bare list
+    (names defer to the recipe), a mapping, or a list mixing names and single-key
+    mappings; ``arch`` accepts a scalar or list (None ⇒ discover). An empty/{}
+    ``packages`` means "all packages that carry a recipe preload:".
+    """
+    from bits_helpers.utilities import yamlLoad
+    data = yamlLoad(yaml_text) or {}
+    arch = data.get("arch")
+    if isinstance(arch, str):
+        arch = [arch]
+    pkgs = {}
+
+    def _add(name, spec):
+        spec = spec or {}
+        pkgs[name] = {"tests": _norm_tests(spec.get("tests")),
+                      "versions": list(spec.get("versions") or [])}
+
+    raw = data.get("packages")
+    if isinstance(raw, dict):
+        for name, spec in raw.items():
+            _add(name, spec)
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str):
+                _add(item, {})
+            elif isinstance(item, dict) and len(item) == 1:
+                (name, spec), = item.items()
+                _add(name, spec)
+    return {"arch": arch or None,
+            "docker": bool(data.get("docker", False)),
+            "update": bool(data.get("update", False)),
+            "packages": pkgs}
+
+
+def resolve_tests(cfg_pkg, recipe_spec):
+    """Tests for a package: the config's ``tests`` if any, else the recipe's.
+
+    *cfg_pkg* is a ``load_config`` package entry (or None); *recipe_spec* the
+    package's parsed recipe front-matter (or None).
+    """
+    if cfg_pkg and cfg_pkg.get("tests"):
+        return list(cfg_pkg["tests"])
+    return recipe_tests(recipe_spec)
+
+
+def bundle_exists(pkg_dir, exe):
+    """True if ``<pkg_dir>/<dir(exe)>/.cvmfsbundle-<base(exe)>`` already exists."""
+    return os.path.exists(os.path.join(pkg_dir, B.bundle_path_for(exe)))
+
+
+def discover_archs(cvmfs_root):
+    """Deployed platforms under *cvmfs_root* (reuses cvmfs_inspect)."""
+    from bits_helpers import cvmfs_inspect as I
+    return I.list_platforms(cvmfs_root)
+
+
+def package_dir(cvmfs_root, arch, pkg, verrev):
+    """``<cvmfs_root>/<arch>/Packages/<pkg>/<verrev>`` — a deployed package dir."""
+    return os.path.join(cvmfs_root, arch, "Packages", pkg, verrev)
+
+
+def package_versions(cvmfs_root, arch, pkg, want=None):
+    """Deployed ``<verrev>`` dirs for *pkg* (reuses cvmfs_inspect), newest last.
+
+    *want* is an optional list of version globs (from config ``versions:``); a
+    bare version matches its ``<version>-<rev>`` dir too (``5.9.1`` ⇒ ``5.9.1-1``).
+    """
+    import fnmatch
+    from bits_helpers import cvmfs_inspect as I
+    vers = I.list_packages(cvmfs_root, arch).get(pkg, [])
+    if want:
+        vers = [v for v in vers
+                if any(fnmatch.fnmatch(v, w) or fnmatch.fnmatch(v, w + "-*")
+                       for w in want)]
+    return vers
 
 
 def parse_strace_opens(strace_text):

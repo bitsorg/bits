@@ -17,16 +17,64 @@ REPO = "/cvmfs/sft.cern.ch"
 PKGDIR = REPO + "/lcg/releases/x86_64-el9/xrootd/5.9.1"
 
 
-class HasPreloadTest(unittest.TestCase):
-    def test_detects_forms(self):
-        self.assertTrue(C.has_preload("function Preload() {\n cvmfs_preload bin/x\n}"))
-        self.assertTrue(C.has_preload("Preload () {\n :\n}"))
-        self.assertTrue(C.has_preload("  Preload(){ cvmfs_preload bin/root -b -q; }"))
+class RecipeTestsTest(unittest.TestCase):
+    def test_mapping_and_string_forms(self):
+        spec = {"package": "xrootd", "preload": [
+            {"exe": "bin/xrdcp", "args": ["--version"]},
+            {"exe": "bin/xrdfs", "args": "--help -v"},   # string args -> shlex
+            "bin/xrdmapc plain",                          # bare string entry
+            {"args": ["--x"]},                            # no exe -> skipped
+        ]}
+        self.assertEqual(C.recipe_tests(spec), [
+            ("bin/xrdcp", ["--version"]),
+            ("bin/xrdfs", ["--help", "-v"]),
+            ("bin/xrdmapc", ["plain"]),
+        ])
 
     def test_absent(self):
-        self.assertFalse(C.has_preload("function Build() { true; }"))
-        self.assertFalse(C.has_preload(""))
-        self.assertFalse(C.has_preload("# mentions Preload() in a comment only? no def"))
+        self.assertEqual(C.recipe_tests({"package": "x"}), [])
+        self.assertEqual(C.recipe_tests(None), [])
+
+
+class LoadConfigTest(unittest.TestCase):
+    def test_bare_list_and_mapping_override(self):
+        cfg = C.load_config(
+            "arch: x86_64-el9-gcc14-opt\n"
+            "docker: true\n"
+            "packages:\n"
+            "  - xrootd\n"                       # bare -> defer to recipe
+            "  - ROOT:\n"
+            "      versions: ['6.38.*']\n"
+            "      tests:\n"
+            "        - { exe: bin/root, args: [-b, -q] }\n")
+        self.assertEqual(cfg["arch"], ["x86_64-el9-gcc14-opt"])   # scalar -> list
+        self.assertTrue(cfg["docker"])
+        self.assertFalse(cfg["update"])
+        self.assertEqual(cfg["packages"]["xrootd"], {"tests": [], "versions": []})
+        self.assertEqual(cfg["packages"]["ROOT"]["tests"], [("bin/root", ["-b", "-q"])])
+        self.assertEqual(cfg["packages"]["ROOT"]["versions"], ["6.38.*"])
+
+    def test_arch_omitted_is_none_for_discovery(self):
+        self.assertIsNone(C.load_config("docker: false\n")["arch"])
+
+
+class ResolveAndSkipTest(unittest.TestCase):
+    def test_config_tests_override_else_recipe(self):
+        recipe = {"preload": [{"exe": "bin/xrdcp", "args": ["--version"]}]}
+        self.assertEqual(C.resolve_tests({"tests": [("bin/x", [])]}, recipe),
+                         [("bin/x", [])])                    # config wins
+        self.assertEqual(C.resolve_tests({"tests": []}, recipe),
+                         [("bin/xrdcp", ["--version"])])     # falls back to recipe
+        self.assertEqual(C.resolve_tests(None, recipe),
+                         [("bin/xrdcp", ["--version"])])
+
+    def test_bundle_exists(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        self.assertFalse(C.bundle_exists(d, "bin/xrdcp"))
+        os.makedirs(os.path.join(d, "bin"))
+        open(os.path.join(d, "bin", ".cvmfsbundle-xrdcp"), "w").close()
+        self.assertTrue(C.bundle_exists(d, "bin/xrdcp"))
 
 
 class LocatePackageTest(unittest.TestCase):
@@ -50,23 +98,35 @@ class LocatePackageTest(unittest.TestCase):
         self.assertIsNone(C.locate_package(self.root, "ROOT"))
 
 
-class PreloadTriggersTest(unittest.TestCase):
-    def test_extracts_exe_and_args(self):
-        body = ("MODULE_OPTIONS=x\n"
-                "function Preload() {\n"
-                "  cvmfs_preload bin/root -b -q\n"
-                "  cvmfs_preload bin/hadd\n"
-                "}\n"
-                "function Build(){ cvmfs_preload NOT_A_TRIGGER; }\n")
-        self.assertEqual(C.preload_triggers(body),
-                         [("bin/root", ["-b", "-q"]), ("bin/hadd", [])])
+class DiscoveryTest(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.root, True)
+        for rel in ("x86_64-el9-gcc14-opt/Packages/xrootd/5.9.1-1",
+                    "x86_64-el9-gcc14-opt/Packages/xrootd/5.9.0-2",
+                    "x86_64-el9-gcc14-opt/Packages/ROOT/6.38.00-1",
+                    "aarch64-el9-gcc14-opt/Packages/xrootd/5.9.1-1"):
+            os.makedirs(os.path.join(self.root, rel))
 
-    def test_semicolon_separated_and_quotes(self):
-        body = 'Preload() { cvmfs_preload bin/app "a b" -x; }'
-        self.assertEqual(C.preload_triggers(body), [("bin/app", ["a b", "-x"])])
+    def test_discover_archs(self):
+        self.assertEqual(sorted(C.discover_archs(self.root)),
+                         ["aarch64-el9-gcc14-opt", "x86_64-el9-gcc14-opt"])
 
-    def test_none_when_no_preload(self):
-        self.assertEqual(C.preload_triggers("Build(){ true; }"), [])
+    def test_package_versions_all_and_filtered(self):
+        a = "x86_64-el9-gcc14-opt"
+        self.assertEqual(sorted(C.package_versions(self.root, a, "xrootd")),
+                         ["5.9.0-2", "5.9.1-1"])
+        # bare version glob matches its <version>-<rev> dir
+        self.assertEqual(C.package_versions(self.root, a, "xrootd", ["5.9.1"]),
+                         ["5.9.1-1"])
+        self.assertEqual(C.package_versions(self.root, a, "ROOT", ["6.38.*"]),
+                         ["6.38.00-1"])
+        self.assertEqual(C.package_versions(self.root, a, "xrootd", ["9.9.9"]), [])
+
+    def test_package_dir(self):
+        self.assertEqual(
+            C.package_dir(self.root, "x86_64-el9-gcc14-opt", "xrootd", "5.9.1-1"),
+            os.path.join(self.root, "x86_64-el9-gcc14-opt/Packages/xrootd/5.9.1-1"))
 
 
 class ParseStraceTest(unittest.TestCase):
