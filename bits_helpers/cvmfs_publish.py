@@ -363,6 +363,29 @@ def _publish_tar(ctx, path, tar, label, fp=None):
     return jid
 
 
+def publish_overlay_tars(ctx, tars):
+    """Publish each overlay tar at the repo ROOT (path="") via the staged/ingest
+    path; return the job ids.
+
+    An overlay tar carries files at their repo-relative locations (e.g. the
+    ``.cvmfsbundle-*`` files `bits preload` writes next to their triggers), so a
+    single root lease drops each file into place — unlike a package tar staged at
+    one subtree. The caller's tar is preserved: a temp copy is published
+    (``_publish_tar`` removes what it publishes). Each tar gets a distinct
+    ``job_id_base`` so their leases do not collide.
+    """
+    import shutil
+    base = ctx.get("job_id_base", "local")
+    jids = []
+    for i, tar in enumerate(tars):
+        fd, tmp = tempfile.mkstemp(suffix=".tar", dir=ctx.get("tmp_dir") or None)
+        os.close(fd)
+        shutil.copyfile(tar, tmp)
+        jids.append(_publish_tar(dict(ctx, job_id_base="%s-tar%d" % (base, i)),
+                                 "", tmp, os.path.basename(tar)))
+    return jids
+
+
 def publish_one(spec, ctx):
     """Full producer pipeline for ONE package, staged OR ingest path. Mirrors the CI loop
     body: locate tar -> untar -> resolve path -> relocate -> relativise -> tar ->
@@ -537,7 +560,11 @@ def main(argv=None):
                     help="print the content fingerprint of a directory tree and "
                          "exit (the CI uses this to fingerprint its own relocated "
                          "tree with the identical algorithm); other args ignored")
-    ap.add_argument("--manifest")   # required unless --fingerprint (checked below)
+    ap.add_argument("--manifest")   # required unless --fingerprint/--tar (checked below)
+    ap.add_argument("--tar", action="append", default=[], metavar="FILE",
+                    help="publish overlay tar(s) at the repo root (e.g. the bundle "
+                         "tar from 'bits preload') via the staged/ingest path, "
+                         "instead of a build manifest. Repeatable.")
     ap.add_argument("--repo")
     ap.add_argument("--one", help="publish only this package (increment-1 test)")
     ap.add_argument("--tars-root", default=os.path.join(
@@ -593,6 +620,23 @@ def main(argv=None):
 
     if a.fingerprint:
         print(tree_fingerprint(a.fingerprint))
+        return 0
+    if a.tar:
+        if not a.repo:
+            ap.error("--tar requires --repo")
+        ctx = {"repo": a.repo, "stratum0_url": a.stratum0_url,
+               "prepub_url": a.prepub_url, "token": a.token,
+               "job_id_base": a.job_id_base, "build_id": a.build_id,
+               "swissknife": a.swissknife or None, "base_root": a.base_root or None,
+               "bearer_auth": a.bearer_auth, "no_stats_db": a.no_stats_db,
+               "no_prepare_lock": a.no_prepare_lock,
+               "replace_on_conflict": a.replace_on_conflict,
+               "publish_path": a.publish_path, "direct_s3": a.direct_s3,
+               "submit": not a.dry_run,
+               "tmp_dir": os.path.join(os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
+        os.makedirs(ctx["tmp_dir"], exist_ok=True)
+        for tar, jid in zip(a.tar, publish_overlay_tars(ctx, a.tar)):
+            print("published overlay %s -> %s" % (tar, jid))
         return 0
     if not a.manifest or not a.repo:
         ap.error("--manifest and --repo are required")
