@@ -1,0 +1,761 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The bits build system — documentation">
+      
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>ADR-0006: Codebase reduction — remove dead and duplicate functionality - bits</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#adr-0006-codebase-reduction-remove-dead-and-duplicate-functionality" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="bits" class="md-header__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            bits
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              ADR-0006: Codebase reduction — remove dead and duplicate functionality
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="bits" class="md-nav__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    bits
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../USERGUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../COOKBOOK/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cookbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../WORKFLOWS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design (ADR)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design (ADR)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../0001-cvmfs-relaxed-reuse.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Relaxed CVMFS reuse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../0001-implementation-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Context">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#removal-criteria" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removal criteria
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Decision">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-makeflow-qualifies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why --makeflow qualifies
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coupling-to-remove-together" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coupling to remove together
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#estimated-footprint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimated footprint
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audit-backlog-append-candidates-here" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audit backlog (append candidates here)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Open questions
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="adr-0006-codebase-reduction-remove-dead-and-duplicate-functionality">ADR-0006: Codebase reduction — remove dead and duplicate functionality<a class="headerlink" href="#adr-0006-codebase-reduction-remove-dead-and-duplicate-functionality" title="Permanent link">&para;</a></h1>
+<p>Status: <strong>Proposed</strong> — establishes a standing reduction effort and records its
+first concrete candidate (<code>--makeflow</code>). Individual removals land as their own
+reviewed, tested commits referencing this ADR.
+Date: 2026-07-23</p>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p>bits has accreted overlapping mechanisms as it evolved from its aliBuild
+ancestry into the current build/publish tool. Several capabilities now exist in
+two forms — one older, one newer and better-tuned — with the old form kept only
+for backward compatibility. Each such duplicate is a standing cost: extra code
+paths in the hot build loop, extra branches to reason about, a larger
+security-review surface, and extra external dependencies to ship in the builder
+images.</p>
+<p>We want to deliberately shrink the codebase by auditing for (a) <strong>dead code</strong> —
+paths no production caller reaches — and (b) <strong>duplicate functionality</strong> — two
+implementations of the same capability where one is strictly preferred. This ADR
+records the policy and its first worked example so the effort has a durable
+anchor; further candidates are appended to the backlog below and removed under
+this ADR.</p>
+<h3 id="removal-criteria">Removal criteria<a class="headerlink" href="#removal-criteria" title="Permanent link">&para;</a></h3>
+<p>A capability is a removal candidate when all of these hold:</p>
+<ol>
+<li>It is opt-in and <strong>not exercised by any production caller</strong> (the bits-console
+   CI pipelines, the recipe repos, or documented operator workflows).</li>
+<li>A <strong>preferred alternative covers its behaviour</strong> with no capability loss.</li>
+<li>Removing it <strong>reduces</strong> the maintenance / review / dependency surface.</li>
+</ol>
+<p>Anything failing (2) is ported to the preferred path first, or kept.</p>
+<h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
+<p>Adopt a periodic dead-code / duplicate-functionality audit, and remove
+candidates that meet the criteria above as individual tested commits.</p>
+<p><strong>First candidate: the <code>--makeflow</code> parallel-build backend</strong> (and its
+makeflow-only companions <code>--pipeline</code> and <code>--makeflow-jobs</code>), superseded by
+<code>--builders</code>.</p>
+<h3 id="why-makeflow-qualifies">Why <code>--makeflow</code> qualifies<a class="headerlink" href="#why-makeflow-qualifies" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Opt-in and unused in production.</strong> <code>--makeflow</code> defaults off (<code>args.py</code>),
+  and no bits-console CI pipeline or recipe passes it — every community build
+  runs through <code>--builders</code> (<code>build_parallelism_mode: builders</code>). <code>--builders</code>
+  is the actively tuned path (moldable/critical-path scheduling, the nice
+  ladder, per-package resource monitoring, container-aware resource detection).</li>
+<li><strong>No capability is lost.</strong> The two overlaps makeflow provided are already in
+  the <code>--builders</code> path:</li>
+<li><em>Download overlap</em> — the scheduler's <code>download</code> tasks plus
+    <code>--prefetch-workers</code> / <code>--parallel-downloads</code> compile ready packages while
+    others' sources are still fetching.</li>
+<li><em>Upload overlap</em> — <code>runBuildCommand</code> calls <code>doFinalSync</code> (tar + upload) at
+    the end of each <strong>per-package</strong> scheduler task, so one package's upload runs
+    concurrently with other builders' compiles. This is exactly what
+    <code>--pipeline</code>'s split <code>.build</code>/<code>.tar</code>/<code>.upload</code> targets achieved.</li>
+<li><strong>Drops an external dependency.</strong> makeflow is a CCTools binary that must be
+  installed in every builder image; removing the backend removes that
+  requirement.</li>
+<li><strong>Simplifies the hot path.</strong> The core dispatch in <code>build.py</code> branches
+  <code>if not args.makeflow … elif args.makeflow …</code>; removing makeflow collapses the
+  many <code>if not args.makeflow</code> guards into the single builders/serial path, and
+  deletes the Makeflow-file generation, the <code>Makeflow.jnj</code> template, and the
+  makeflow-specific injection tests.</li>
+</ul>
+<h3 id="coupling-to-remove-together">Coupling to remove together<a class="headerlink" href="#coupling-to-remove-together" title="Permanent link">&para;</a></h3>
+<p><code>--pipeline</code> is makeflow-only ("silently ignored without --makeflow") and
+<code>--makeflow-jobs</code> (<code>--max-local N</code>) configures only the makeflow run, so both go
+with <code>--makeflow</code>. <code>--prefetch-workers</code>, <code>--parallel-downloads</code> and
+<code>--parallel-sources</code> are <strong>not</strong> makeflow-specific (they work in all modes) and
+stay.</p>
+<h3 id="estimated-footprint">Estimated footprint<a class="headerlink" href="#estimated-footprint" title="Permanent link">&para;</a></h3>
+<p>Source: <code>build.py</code> (~38 refs, the dispatch), <code>args.py</code> (3 options),
+<code>sync.py</code>, <code>checkout_runner.py</code>, <code>upload_cmd.py</code>, <code>tar_template.sh</code>,
+<code>workarea.py</code>, <code>build_template.sh</code> (tendrils). Tests: <code>test_async_build.py</code>,
+<code>test_security.py</code>, <code>test_build.py</code>, <code>test_download_sentinels.py</code>. Docs:
+COOKBOOK, REFERENCE, USERGUIDE, and a mention in ADR-0005. Plus the
+<code>Makeflow.jnj</code> template. Moderate, concentrated in the build dispatch — one
+focused commit with the full suite green.</p>
+<h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
+<ul>
+<li>One parallel-build backend (<code>--builders</code>) instead of two; a smaller, more
+  auditable build loop and one fewer image dependency.</li>
+<li><code>--makeflow</code>, <code>--pipeline</code>, <code>--makeflow-jobs</code> disappear from the CLI. Since no
+  production caller sets them, no pipeline changes. A stale script passing them
+  would error on an unknown flag rather than silently degrade — acceptable, and
+  arguably safer than silent no-ops.</li>
+<li>Minor efficiency nuance, not a capability: makeflow's split <code>.tar</code>/<code>.upload</code>
+  could free a build slot <em>during</em> a slow upload, whereas <code>--builders</code> holds a
+  builder slot until its package's upload finishes. Only matters when uploads
+  dominate build time; if it ever does, decouple upload into its own scheduler
+  task class rather than reviving makeflow.</li>
+</ul>
+<h2 id="audit-backlog-append-candidates-here">Audit backlog (append candidates here)<a class="headerlink" href="#audit-backlog-append-candidates-here" title="Permanent link">&para;</a></h2>
+<ul>
+<li>[first] <code>--makeflow</code> / <code>--pipeline</code> / <code>--makeflow-jobs</code> — remove (this ADR).</li>
+<li>Arch-resolution: four separate arch-fallback/resolution sites that should
+  agree (long-standing) — de-duplicate into one helper.</li>
+<li>(Add further dead-code / duplication findings from the full-codebase pass here,
+  each with: what, why it's dead/duplicate, preferred replacement, footprint.)</li>
+</ul>
+<h2 id="open-questions">Open questions<a class="headerlink" href="#open-questions" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Deprecate-first vs. straight removal.</strong> The conservative norm is to make
+  <code>--makeflow</code> warn "use --builders" for one release before deleting. Given it
+  is internal and absent from CI, a clean removal with a changelog note is
+  defensible; pick one at execution time.</li>
+<li>Scope of the broader pass: whole-repo grep for unreferenced functions/flags,
+  or a targeted review of the modules most changed recently. To be decided when
+  the audit runs.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

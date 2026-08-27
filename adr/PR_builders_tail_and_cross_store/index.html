@@ -1,0 +1,778 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The bits build system — documentation">
+      
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>--builders tail utilisation, cross-backend stores, and two robustness fixes - bits</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#-builders-tail-utilisation-cross-backend-stores-and-two-robustness-fixes" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="bits" class="md-header__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            bits
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              --builders tail utilisation, cross-backend stores, and two robustness fixes
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="bits" class="md-nav__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    bits
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../USERGUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../COOKBOOK/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cookbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../WORKFLOWS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design (ADR)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design (ADR)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../0001-cvmfs-relaxed-reuse.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Relaxed CVMFS reuse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../0001-implementation-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#whats-included" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's included
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What&#39;s included">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-featbuilders-unleash-the-final-package-to-full-j-6d64434" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. feat(builders): unleash the final package to full -j (6d64434)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-fixcli-never-exit-non-zero-without-a-message-fec3303" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. fix(cli): never exit non-zero without a message (fec3303)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-fixsync-upload-freshly-built-packages-when-reading-from-cvmfs-28c6989" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. fix(sync): upload freshly-built packages when reading from CVMFS (28c6989)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-fixbuild-resolve-versions-in-the-build-order-banner-882ad22" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. fix(build): resolve %(version)s in the build-order banner (882ad22)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-records-proposed-no-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design records (Proposed, no code)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#docs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Docs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#notes-for-reviewers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notes for reviewers
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="-builders-tail-utilisation-cross-backend-stores-and-two-robustness-fixes"><code>--builders</code> tail utilisation, cross-backend stores, and two robustness fixes<a class="headerlink" href="#-builders-tail-utilisation-cross-backend-stores-and-two-robustness-fixes" title="Permanent link">&para;</a></h1>
+<h2 id="summary">Summary<a class="headerlink" href="#summary" title="Permanent link">&para;</a></h2>
+<p>Four small, self-contained commits plus two design records. The theme is making
+<code>--builders</code> builds finish faster and fail louder, and unblocking a real
+"recall from CVMFS, publish to S3" workflow:</p>
+<ol>
+<li><strong><code>feat(builders)</code></strong> — the final package now uses the full <code>-j</code> instead of the
+   per-builder share, since it always builds alone.</li>
+<li><strong><code>fix(cli)</code></strong> — a malformed defaults/recipe can no longer make bits exit
+   non-zero with no message.</li>
+<li><strong><code>fix(sync)</code></strong> — <code>--write-store</code> (S3) was silently dropped when
+   <code>--remote-store</code> was <code>cvmfs://</code>; freshly-built packages now upload.</li>
+<li><strong><code>fix(build)</code></strong> — the "build order" banner showed <code>%(version)s</code> unsubstituted.</li>
+</ol>
+<p>Each commit is independent and cherry-pickable. Everything is <strong>non-hashed
+build-host policy or display/robustness</strong> — no package hash changes, no forced
+rebuild. Full suite: <strong>1148 passed, 2 skipped</strong> (up from 1140; +8 sync tests).</p>
+<p>The two ADRs (<a href="adr/0002-moldable-scheduling.md">0002</a>,
+<a href="adr/0001-provenance-on-restore.md">0001-provenance-on-restore</a>) are <strong>Proposed,
+no code</strong> — they record the direction the first two fixes point toward.</p>
+<h2 id="whats-included">What's included<a class="headerlink" href="#whats-included" title="Permanent link">&para;</a></h2>
+<h3 id="1-featbuilders-unleash-the-final-package-to-full-j-6d64434">1. <code>feat(builders)</code>: unleash the final package to full <code>-j</code> (<code>6d64434</code>)<a class="headerlink" href="#1-featbuilders-unleash-the-final-package-to-full-j-6d64434" title="Permanent link">&para;</a></h3>
+<p>Under <code>--builders N</code>, <code>effective_jobs</code> divided every package's <code>-j</code> by <code>N</code>. But
+the final (top-level) target depends transitively on every other package, so it
+is always scheduled <strong>last and alone</strong> — dividing its <code>-j</code> needlessly starved the
+single largest compile of the run (e.g. ROOT getting <code>-j7</code> on a 32-core host).</p>
+<p>It now builds as if <code>builders = 1</code>: the full <code>-j</code>, with the <code>mem_per_job</code> cap
+still applied (and now computed against the full free RAM, since nothing else is
+running). New tri-state <code>--unleash-final</code> / <code>--no-unleash-final</code>, plus a
+<code>system.build_unleash_final</code> defaults knob; <strong>default on</strong> for <code>--builders &gt; 1</code>,
+no-op for serial builds. <code>JOBS</code> never enters a package hash, so this is
+wall-time-only policy.</p>
+<p><em>Files:</em> <code>bits_helpers/args.py</code>, <code>bits_helpers/build.py</code>.</p>
+<h3 id="2-fixcli-never-exit-non-zero-without-a-message-fec3303">2. <code>fix(cli)</code>: never exit non-zero without a message (<code>fec3303</code>)<a class="headerlink" href="#2-fixcli-never-exit-non-zero-without-a-message-fec3303" title="Permanent link">&para;</a></h3>
+<p>A malformed defaults/recipe could make bits exit <code>1</code> with no output. Root cause:
+a bare <code>sys.exit()</code> in the setup path raises <code>SystemExit</code>, which is a
+<code>BaseException</code> and so escaped <code>bitsBuild</code>'s <code>except Exception</code> (and any logging).
+<code>bitsBuild</code> now also catches <code>SystemExit</code>: for a non-zero code that argparse
+didn't already explain it logs an <code>ERROR</code> pointing at the likely cause, then
+re-raises to preserve the exit code. A companion <code>parseDefaults</code> bug
+(<code>dieOnError(err, None, None)</code> — three args to a two-arg function, <code>None</code>
+message) is fixed so bad defaults actually report the parse error.</p>
+<p><em>Files:</em> <code>bitsBuild</code>, <code>bits_helpers/utilities.py</code>.</p>
+<h3 id="3-fixsync-upload-freshly-built-packages-when-reading-from-cvmfs-28c6989">3. <code>fix(sync)</code>: upload freshly-built packages when reading from CVMFS (<code>28c6989</code>)<a class="headerlink" href="#3-fixsync-upload-freshly-built-packages-when-reading-from-cvmfs-28c6989" title="Permanent link">&para;</a></h3>
+<p><code>bits build ... --remote-store cvmfs:///cvmfs/.../bits/ --write-store b3://bucket</code>
+uploaded nothing. <code>remote_from_url()</code> chose the backend from the <strong>read</strong> scheme
+only, and the <code>cvmfs://</code> branch passed <code>write_url=None</code>, so the read-only
+<code>CVMFSRemoteSync</code> was used and the write store was silently dropped. (A
+second-order effect: with no write store visible, packages got a <code>local</code>
+revision, which the upload site skips — hence fully silent.)</p>
+<p>New <code>DualRemoteSync</code> pairs a read-only reader with a writer built from the write
+URL: reads (<code>fetch_*</code>) go to the reader, uploads (<code>upload_*</code>) to the writer.
+<strong>Only freshly-built packages are uploaded</strong> — a recalled package carries a
+non-empty <code>spec["cachedTarball"]</code> (for CVMFS, only a synthetic tarball of
+symlinks into <code>/cvmfs</code>), so uploading it would publish a stub or duplicate an
+artifact already on the read store. This matches build.py's own
+<code>built_from_source</code> vs <code>from_store</code> distinction.</p>
+<p>Scope is <strong>strict reuse only</strong>; loose-provenance (relaxed) builds remain barred
+from any write store by the existing guard. Same-backend stores are unchanged.</p>
+<p><em>Files:</em> <code>bits_helpers/sync.py</code>, <code>tests/test_sync.py</code> (+8 tests).</p>
+<h3 id="4-fixbuild-resolve-versions-in-the-build-order-banner-882ad22">4. <code>fix(build)</code>: resolve <code>%(version)s</code> in the build-order banner (<code>882ad22</code>)<a class="headerlink" href="#4-fixbuild-resolve-versions-in-the-build-order-banner-882ad22" title="Permanent link">&para;</a></h3>
+<p>The "Packages will be built in the following order" list printed
+<code>specs[x]["tag"]</code> verbatim, but per-spec tag expansion runs later, so a templated
+tag like <code>v%(version)s</code> showed raw. It now resolves the tag for display via
+<code>resolve_spec_data(..., strict=False)</code> — best-effort: known placeholders expand,
+unknown ones are left as-is, and it never aborts (it's only a banner).
+Display-only.</p>
+<p><em>Files:</em> <code>bits_helpers/build.py</code>.</p>
+<h2 id="design-records-proposed-no-code">Design records (Proposed, no code)<a class="headerlink" href="#design-records-proposed-no-code" title="Permanent link">&para;</a></h2>
+<ul>
+<li>
+<p><strong><a href="adr/0002-moldable-scheduling.md">ADR-0002 — moldable critical-path scheduling</a>.</strong>
+  Generalises fix #1: use the per-package timing already recorded in
+  <code>bits_build_stats.json</code> to order the DAG by critical path and vary <code>-j</code> per job
+  so <code>--builders</code> keeps the machine busy through the tail. Hard constraint:
+  stats are trustworthy <strong>only</strong> when collected serially (contention pollutes
+  them), so serial mode is the sole calibrator/writer and <code>--builders</code> mode is a
+  read-only optimizer. Phased: critical-path ordering first (low risk), dynamic
+  <code>-j</code> at dispatch second (the real win, A/B-gated).</p>
+</li>
+<li>
+<p><strong><a href="adr/0001-provenance-on-restore.md">ADR-0001 stage — provenance survives store→restore</a>.</strong>
+  Surfaced by fix #3: provenance (<code>pure</code>/<code>loose</code>) is computed at build time and
+  never re-read on recall, so contagion breaks across a store→restore boundary.
+  Decision: make provenance a property of the artifact, re-read on recall, and
+  <strong>weak by default</strong> — strong is earned only by an explicit <code>provenance: "pure"</code>
+  with a verifiable closure; segregate loose stores; strong publishes refuse
+  loose inputs. Only then may relaxed builds write to a (loose) store.</p>
+</li>
+</ul>
+<h2 id="docs">Docs<a class="headerlink" href="#docs" title="Permanent link">&para;</a></h2>
+<p><code>docs/REFERENCE.md</code> updated: the <code>--unleash-final</code> flag and the final-package
+<code>-j</code> exemption in [Memory- and load-aware parallelism], and a "Mixing a read-only
+remote with a separate write store" note in the stores section.</p>
+<h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>tests/test_sync.py</code>: +8 tests — cross-backend dispatch (<code>cvmfs</code> read + <code>b3</code>
+  write → <code>DualRemoteSync</code>), read/write routing, the freshly-built upload gate,
+  <code>writeStore</code> disable propagation, <code>cvmfs://</code> write-target rejection, and that
+  same-backend / no-write cases are unchanged.</li>
+<li>Full suite: <strong>1148 passed, 2 skipped.</strong></li>
+</ul>
+<blockquote>
+<p><strong>Not yet validated end-to-end:</strong> the <code>--write-store b3://</code> upload against a
+real S3 bucket + CVMFS mount (no credentials/mount in CI). The dispatch and
+routing are unit-tested; the upload itself goes through the existing,
+separately-tested Boto3 path. A build-host run is wanted before relying on it.</p>
+</blockquote>
+<h2 id="notes-for-reviewers">Notes for reviewers<a class="headerlink" href="#notes-for-reviewers" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Suggested order: <code>sync.py</code> (<code>remote_from_url</code> + <code>_writer_from_url</code> +
+  <code>DualRemoteSync</code>) → <code>build.py</code> (<code>effective_jobs</code> call site + banner) →
+  <code>bitsBuild</code>/<code>utilities.py</code> → the two ADRs.</li>
+<li>The only behavioural change to existing flows is fix #1 (final package <code>-j</code>);
+  it is default-on but trivially disabled (<code>--no-unleash-final</code>) and cannot
+  oversubscribe (the package provably runs alone).</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

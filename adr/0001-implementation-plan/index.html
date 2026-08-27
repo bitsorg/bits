@@ -1,0 +1,1016 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The bits build system — documentation">
+      
+      
+      
+      
+        <link rel="prev" href="../../ROADMAP/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Implementation plan - bits</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#implementation-plan-adr-0001-relaxed-cvmfs-reuse-build_id-importer" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="bits" class="md-header__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            bits
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Implementation plan
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="bits" class="md-nav__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    bits
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../USERGUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../COOKBOOK/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cookbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../WORKFLOWS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design (ADR)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design (ADR)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../0001-cvmfs-relaxed-reuse.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Relaxed CVMFS reuse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation plan
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#stage-0-build_id-provenance-metadata-foundation-1-small-pr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stage 0 — build_id + provenance metadata (foundation, ~1 small PR)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stage-1-relaxed-reuse-of-bits-native-releases-the-core-pr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stage 1 — relaxed reuse of bits-native releases (~the core PR)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stage-2-importer-for-foreign-lcg-deployments-the-big-pr-standalone-tool-first" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stage 2 — importer for foreign (LCG) deployments (~the big PR, standalone tool first)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stage-3-hardening-post-mvp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stage 3 — hardening (post-MVP)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backward-compatibility-hard-constraint-gates-every-pr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backward compatibility (HARD CONSTRAINT — gates every PR)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-cutting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-cutting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#risk-register-from-the-adr-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk register (from the ADR review)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#stage-0-build_id-provenance-metadata-foundation-1-small-pr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stage 0 — build_id + provenance metadata (foundation, ~1 small PR)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stage-1-relaxed-reuse-of-bits-native-releases-the-core-pr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stage 1 — relaxed reuse of bits-native releases (~the core PR)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stage-2-importer-for-foreign-lcg-deployments-the-big-pr-standalone-tool-first" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stage 2 — importer for foreign (LCG) deployments (~the big PR, standalone tool first)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stage-3-hardening-post-mvp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stage 3 — hardening (post-MVP)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backward-compatibility-hard-constraint-gates-every-pr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backward compatibility (HARD CONSTRAINT — gates every PR)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-cutting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-cutting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#risk-register-from-the-adr-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk register (from the ADR review)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="implementation-plan-adr-0001-relaxed-cvmfs-reuse-build_id-importer">Implementation Plan — ADR-0001 (Relaxed CVMFS reuse, <code>build_id</code>, importer)<a class="headerlink" href="#implementation-plan-adr-0001-relaxed-cvmfs-reuse-build_id-importer" title="Permanent link">&para;</a></h1>
+<p>Companion to <code>0001-cvmfs-relaxed-reuse.md</code>. Sequenced per the ADR's Rollout
+section. Each task lists the <strong>anchor</strong> (file:function as it exists today), the
+<strong>change</strong>, and the <strong>done-criteria / test</strong>. Guiding rules: the <code>strict</code> path
+stays byte-for-byte unchanged; every stage is independently shippable and behind
+a default-off switch; run <code>pytest tests/</code> before each commit.</p>
+<p>Verified anchors (current code):
+- <code>create_provenance_info</code> (<code>build.py:727</code>) → <code>.meta.json</code> written at
+  <code>build.py:2527</code>; already records <code>hash</code>, <code>bits_version</code>, <code>dist.commit</code>
+  (= <code>BITS_DIST_HASH</code>, the recipe-repo commit), and dependency lists.
+- <code>.build-hash</code> written at <code>build.py:2361</code>.
+- Reuse decision: <code>build.py</code> ~2090–2360 (<code>remote_hashes</code>/<code>local_hashes</code>,
+  <code>better_tarball</code>, revision/hash alignment).
+- <code>getPackageList</code> (<code>utilities.py:1396</code>); the <code>prefer_system</code> hook +
+  <code>prefer_system_replacement_specs</code> (<code>utilities.py</code> 1552–1607) — the model for
+  "this dep is provided externally → prune/substitute".
+- <code>CVMFSRemoteSync</code> (<code>sync.py:420</code>): read-only cvmfs:// store, reads deployed
+  <code>.build-hash</code>, grafts via dummy tarball.
+- Build env sources each dep's <code>etc/profile.d/init.sh</code> (<code>build.py</code> ~576–630,
+  <code>_dep_init_path</code>). bits-native deployed packages ship this file.
+- <code>BuildManifest</code> (<code>manifest.py:229</code>: <code>add_package</code>, <code>add_providers</code>, <code>_save</code>).
+- Fast module enumeration: <code>cvmfs_catalog.py</code> / <code>bitsModules</code> (already present).</p>
+<hr />
+<h2 id="stage-0-build_id-provenance-metadata-foundation-1-small-pr">Stage 0 — <code>build_id</code> + provenance metadata (foundation, ~1 small PR)<a class="headerlink" href="#stage-0-build_id-provenance-metadata-foundation-1-small-pr" title="Permanent link">&para;</a></h2>
+<p>Goal: every build is labelled and provenance-aware. No behaviour change.</p>
+<ol>
+<li><strong>Compute <code>abi_tag</code> and <code>build_id</code>.</strong></li>
+<li>Anchor: new helper <code>bits_helpers/provenance.py</code> (<code>compute_abi_tag(args, defaults_env)</code>, <code>compute_build_id(specs, args)</code>).</li>
+<li><code>abi_tag</code> = stable hash/string over: compiler id+version, <code>_GLIBCXX_USE_CXX11_ABI</code>, <code>CXXSTD</code>, OS/glibc, qualified arch.</li>
+<li><code>build_id</code> = <code>&lt;label&gt;</code> (from <code>defaults</code> var <code>build_id:</code> if set, else <code>build_family</code>) + short hash of the sorted manifest <code>{name, version, ver_rev, hash}</code> for the whole build set. <strong>Deterministic</strong> (no timestamps/host).</li>
+<li>
+<p>Test: <code>tests/test_provenance.py</code> — determinism (same inputs → same id), arch/flag sensitivity.</p>
+</li>
+<li>
+<p><strong>Stamp it into <code>.meta.json</code> and the manifest.</strong></p>
+</li>
+<li>Anchor: <code>create_provenance_info</code> (<code>build.py:727</code>) — add <code>build_id</code>, <code>abi_tag</code>, <code>reuse_policy</code> ("strict"|"relaxed"), <code>provenance</code> ("pure"|"loose"), and a <code>repro</code> block <code>{dist_commit, recipe_tools_version, defaults}</code> (dist_commit already present). For Stage 0 <code>reuse_policy="strict"</code>, <code>provenance="pure"</code> always.</li>
+<li>Anchor: <code>BuildManifest.add_package</code> (<code>manifest.py:330</code>) — carry <code>build_id</code>/<code>abi_tag</code>.</li>
+<li>
+<p>Test: extend <code>tests/test_build_stats.py</code>/a new <code>tests/test_provenance.py</code> to assert fields land in the written JSON.</p>
+</li>
+<li>
+<p><strong>Surface <code>build_id</code> in the modulefile — hash-neutrally.</strong>
+   <em>(DEFERRED to Stage 1/2.</em> There is no post-build modulefile step in
+   <code>build.py</code> today, so this would mean a new install-tree-mutation step on every
+   build — riskier than warranted while the resolver reads <code>build_id</code> from
+   <code>.meta.json</code>, not the modulefile. Do it when generating overlay modulefiles,
+   where modulefile content is already being written.)*</p>
+</li>
+<li><strong>Do NOT modify <code>bits-recipe-tools</code>/<code>MakeModule</code></strong>: that re-hashes every
+     package (bits-recipe-tools is a universal <code>build_requires</code>) and would force
+     a full rebuild for the simple aliBuild case — forbidden by the backward-
+     compatibility constraint below.</li>
+<li>Anchor instead: bits' own module finalization in <code>build.py</code> (the step that
+     writes/relocates <code>etc/modulefiles/&lt;pkg&gt;</code> after <code>MakeModule</code>). Append
+     <code>module-whatis "build_id: &lt;id&gt;"</code> / <code>"abi_tag: &lt;tag&gt;"</code> there, <strong>only when a
+     build_id is set</strong>. This touches <code>build.py</code> (not hashed) and leaves the
+     recipe, <code>MODULE_OPTIONS</code>, and <code>bits-recipe-tools</code> untouched → no rehash,
+     no rebuild, aliBuild unaffected.</li>
+<li>Test: build a trivial package; assert the whatis lines appear when build_id
+     is set and are absent (and the package hash is unchanged vs. baseline) when
+     it is not.</li>
+</ol>
+<p>Done when: a normal build writes <code>build_id</code>/<code>abi_tag</code>/provenance to <code>.meta.json</code>
+and the modulefile, deterministically, with the full suite green.</p>
+<hr />
+<h2 id="stage-1-relaxed-reuse-of-bits-native-releases-the-core-pr">Stage 1 — relaxed reuse of <em>bits-native</em> releases (~the core PR)<a class="headerlink" href="#stage-1-relaxed-reuse-of-bits-native-releases-the-core-pr" title="Permanent link">&para;</a></h2>
+<p>Goal: <code>bits build --reuse-policy relaxed --reuse-base &lt;build_id&gt;</code> grafts a
+bits-published release and builds only the top. No importer yet.</p>
+<ol>
+<li><strong>CLI + defaults plumbing.</strong></li>
+<li>Anchor: <code>args.py</code> build parser — add <code>--reuse-policy {strict,relaxed}</code>
+     (default <code>strict</code>), <code>--reuse-base &lt;build_id&gt;</code>, <code>--build-local &lt;pkg,...&gt;</code>.</li>
+<li>Defaults: read <code>reuse_policy:</code> / <code>reuse_base:</code> from <code>defaults</code> (the
+     <code>_read_bits_rc</code>/defaults plumbing already merges these).</li>
+<li>
+<p>Publish-guard: <code>bits publish</code> / write-store path refuses <code>provenance=="loose"</code>.</p>
+</li>
+<li>
+<p><strong>Frontier-cut at resolution time.</strong></p>
+</li>
+<li>Anchor: <code>getPackageList</code> (<code>utilities.py:1396</code>), alongside the
+     <code>prefer_system</code> block (1552–1607). Add a parallel "prefer_cvmfs" pass:
+     for each spec, if policy is relaxed and a deployed package matches
+     (name via alias map [Stage 2; identity map for native], qualified-arch,
+     <code>--reuse-base</code> build_id) and the package is not in <code>--build-local</code>, mark it
+     <code>from_cvmfs</code> and <strong>prune its subtree</strong> (same mechanism as system packages:
+     they're removed from the build closure and their <code>requires</code> not followed).</li>
+<li>Reuse <code>prefer_system_replacement_specs</code> semantics to substitute the spec
+     with the deployed one (path + env source = the deployed tree).</li>
+<li>
+<p>Test: <code>tests/test_reuse_policy.py</code> — graph with a base + top; assert the
+     base subtree is pruned and the top remains, under relaxed; assert nothing
+     pruned under strict; assert <code>--build-local X</code> keeps X.</p>
+</li>
+<li>
+<p><strong>Zero-copy graft (replace dummy-tarball round-trip).</strong></p>
+</li>
+<li>Anchor: <code>CVMFSRemoteSync.fetch_symlinks</code> (<code>sync.py:450</code>) + the reuse
+     decision (<code>build.py</code> ~2090–2360) + the dormant <code>islink &amp;&amp; isdir</code>
+     short-circuit (referenced in <code>reference_cvmfs_reuse</code> notes).</li>
+<li>For a <code>from_cvmfs</code> package: symlink <code>sw/&lt;arch&gt;/&lt;pkg&gt;/&lt;ver_rev&gt;</code> →
+     <code>/cvmfs/.../&lt;pkg&gt;/&lt;ver&gt;</code> and <code>MODULES/&lt;build_id&gt;/&lt;arch&gt;/&lt;pkg&gt;</code> →
+     deployed modulefile; skip build/unpack entirely. Guard all writes with
+     <code>[ -w ]</code> (already the pattern).</li>
+<li>Build env: the top's <code>_dep_init_path</code> (<code>build.py:630</code>) sources the grafted
+     dep's <code>/cvmfs/.../etc/profile.d/init.sh</code> — <strong>already build-sufficient for
+     bits-native deps</strong> (they ship init.sh). No new env work in Stage 1.</li>
+<li>
+<p>Test: integration-style test with a faked <code>/cvmfs</code> tree (init.sh present);
+     assert the consumer build env resolves the dep paths into the fake cvmfs
+     and no tarball is unpacked.</p>
+</li>
+<li>
+<p><strong>Contagious provenance.</strong></p>
+</li>
+<li>Anchor: after the frontier-cut, any spec whose closure contains a
+     <code>from_cvmfs</code> node (under relaxed, where the deployed hash ≠ recomputed
+     hash) is <code>provenance="loose"</code>. Propagate up in the dependency walk and
+     write to <code>.meta.json</code> (Stage 0 field).</li>
+<li>Test: assert a top built on a relaxed base is <code>loose</code>; a sibling built
+     purely locally on a <code>pure</code> base stays <code>pure</code>.</li>
+</ol>
+<p>Done when: <code>--reuse-policy relaxed --reuse-base &lt;id&gt;</code> against a bits-published
+release builds only the top, zero-copy, marks it <code>loose</code>, and <code>bits publish</code>
+rejects it; strict path unchanged; suite green.</p>
+<hr />
+<h2 id="stage-2-importer-for-foreign-lcg-deployments-the-big-pr-standalone-tool-first">Stage 2 — importer for foreign (LCG) deployments (~the big PR, standalone tool first)<a class="headerlink" href="#stage-2-importer-for-foreign-lcg-deployments-the-big-pr-standalone-tool-first" title="Permanent link">&para;</a></h2>
+<p>Goal: turn a non-bits CVMFS release into a Stage-1-consumable overlay.</p>
+<blockquote>
+<p><strong>As-built note (Stage 2 done).</strong> The command is <strong><code>bits import</code></strong> (not
+<code>cvmfs-import</code> — that read like a CernVM-FS-suite tool). There is <strong>no
+synthesised <code>init.sh</code></strong>: the generated modulefile is made <em>build-sufficient</em>
+(it carries <code>CMAKE_PREFIX_PATH</code>/<code>PKG_CONFIG_PATH</code>/<code>CPATH</code>/<code>&lt;Pkg&gt;_ROOT</code>, the
+path ones guarded on the deployed tree), so a grafted dep's environment is set
+up by <strong>loading its modulefile</strong> (<code>module load</code> / <code>bits printenv</code>) — the same
+single mechanism for imported and bits-native packages. Logic lives in
+<code>bits_helpers/cvmfs_import.py</code> (stdlib-only) with the CLI in
+<code>bits_helpers/cvmfs_import_cmd.py</code>.</p>
+</blockquote>
+<ol>
+<li><strong>Harvest → corpus.</strong></li>
+<li>New subcommand <code>bits import</code> (<code>bits_helpers/cvmfs_import_cmd.py</code>).</li>
+<li>Input modes: (a) modulefiles present → <code>MODULEPATH=&lt;lcg&gt; modulecmd sh
+     display &lt;pkg&gt;/&lt;ver&gt;</code> per package, parse the <em>resolved</em> ops; (b)
+     manifest-only → env from manifest paths + matched recipe template (fallback).</li>
+<li>Emit one JSON <strong>corpus</strong>: per package <code>{version, base_prefix, cvmfs_path,
+     env:{generic_options,[verbatim]}, deps:[…]}</code>; <code>module load</code>→structured
+     <code>deps</code> edges; prefix factored out.</li>
+<li>
+<p>Test: fixture LCG modulefiles → assert classification (generic vs verbatim)
+     and deps extraction.</p>
+</li>
+<li>
+<p><strong>Closure-check + <code>build_id</code>.</strong></p>
+</li>
+<li>Verify every <code>deps</code> edge target is in the corpus (refuse on dangling).</li>
+<li>Assign deterministic <code>build_id</code> (Stage 0 algorithm over the corpus).</li>
+<li>
+<p>Test: dangling-edge corpus → refused; complete corpus → stable id.</p>
+</li>
+<li>
+<p><strong>Generate overlay (D6/D10).</strong></p>
+</li>
+<li>Per package, emit into <code>MODULES/&lt;build_id&gt;/&lt;arch&gt;/&lt;pkg&gt;/&lt;ver&gt;</code>: a
+     <strong>build-sufficient</strong> bits modulefile (harvested env ops re-targeted to the
+     deployed path + remapped deps as <code>prereq</code> + <code>module-whatis build_id</code> + the
+     build hooks <code>CMAKE_PREFIX_PATH</code>/<code>PKG_CONFIG_PATH</code>/<code>CPATH</code>/<code>&lt;Pkg&gt;_ROOT</code>,
+     guarded on the tree), plus a hidden module-side <code>.meta.json</code>. <strong>No separate
+     <code>init.sh</code></strong> — the modulefile is the single env artifact.</li>
+<li>Validate generated paths exist in the CVMFS tree; per-package overrides for
+     the awkward ones (ROOT/Geant4 data, etc.).</li>
+<li>Drop a <code>.cvmfscatalog</code> per <code>build_id</code> dir (D9) → fast catalog enumeration.</li>
+<li>
+<p>Test: generated modulefile carries the build hooks (<code>CMAKE_PREFIX_PATH</code>,
+     <code>*_ROOT</code>, guarded <code>PKG_CONFIG_PATH</code>/<code>CPATH</code>).</p>
+</li>
+<li>
+<p><strong>Name-alias map (D8).</strong></p>
+</li>
+<li><code>alias.yaml</code>: lcg.bits-name ↔ foreign-name; bootstrap from corpus+recipe
+     names, hand-fix stragglers; consumed by the Stage-1 frontier-cut matcher.</li>
+<li>
+<p>Report unmatched packages.</p>
+</li>
+<li>
+<p><strong>Wire the overlay into Stage 1.</strong></p>
+</li>
+<li>The Stage-1 resolver reads module-side <code>.meta.json</code>/<code>build_id</code> from the
+     overlay (D6 out-of-tree read), uses the alias map for name matching, and
+     grafts as in Stage 1 — the grafted dep's build env now comes from loading
+     the <em>generated</em> build-sufficient modulefile (via <code>bits printenv</code>/module),
+     not an <code>init.sh</code>. End-to-end test: import a fixture release → relaxed-build
+     a top package against it.</li>
+</ol>
+<p>Done when: <code>bits import &lt;release&gt;</code> produces a loadable, catalog-backed,
+build-sufficient overlay that Stage 1 consumes to build a top package without
+rebuilding the base.</p>
+<hr />
+<h2 id="stage-3-hardening-post-mvp">Stage 3 — hardening (post-MVP)<a class="headerlink" href="#stage-3-hardening-post-mvp" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>base_build_id</code> lineage field + <code>abi_tag</code> compatibility check for cross-build
+  "work together" (owner-attested multi-reference, D10).</li>
+<li>Verify the <code>build_id</code> manifest signature (cvmfs-prepub transparency log)
+  before adoption.</li>
+<li><code>bits q --build-id &lt;id&gt;</code> filter and <code>bits avail</code> grouping by release.</li>
+<li><code>build_id</code>-as-reproducibility: <code>bits reproduce &lt;build_id&gt;</code> that checks out the
+  recorded <code>repro</code> inputs and rebuilds strict to confirm hash parity.</li>
+</ul>
+<hr />
+<h2 id="backward-compatibility-hard-constraint-gates-every-pr">Backward compatibility (HARD CONSTRAINT — gates every PR)<a class="headerlink" href="#backward-compatibility-hard-constraint-gates-every-pr" title="Permanent link">&para;</a></h2>
+<p>The simple case (a plain <code>bits build &lt;pkg&gt;</code> / aliBuild with a local alidist, no
+CVMFS, no <code>--reuse-policy</code>) must be <strong>bit-for-bit unaffected</strong>: identical package
+hashes, identical build graph, no forced rebuild, no schema break.</p>
+<p>Invariants every task must hold:</p>
+<ol>
+<li><strong>No rehash.</strong> Nothing in the hashed path changes — recipes, <code>MODULE_OPTIONS</code>,
+   and <code>bits-recipe-tools</code> are untouched. New metadata is produced by <code>build.py</code>
+   / helpers (not hashed). (This is why Stage 0.3 moved out of <code>MakeModule</code>.)</li>
+<li><strong>Defaults preserve today's behaviour.</strong> <code>--reuse-policy</code> defaults <code>strict</code>;
+   <code>--reuse-base</code>/<code>--build-local</code> absent ⇒ exact-hash reuse exactly as now.</li>
+<li><strong>Metadata is additive and defensively read.</strong> New <code>.meta.json</code> / manifest /
+   corpus keys are optional; every reader tolerates their absence (the existing
+   <code>fetch_symlinks</code> <code>jq .package.hash</code> keeps working). New provenance inputs use
+   <code>os.environ.get(...)</code>/<code>getattr(...)</code> with fallbacks — never a new hard-required
+   env var (contrast the existing <code>os.environ["BITS_DIST_HASH"]</code>, which we must
+   not add more of).</li>
+<li><strong><code>build_id</code> is harmless when unused.</strong> It is computed defensively even for a
+   minimal aliBuild build (label from <code>build_family</code>), written only as additive
+   <code>.meta.json</code>/whatis metadata; absence of a <code>defaults build_id:</code> never errors.</li>
+<li><strong>No new runtime deps for the simple path.</strong> The importer (<code>modulecmd</code>, <code>jq</code>,
+   alias map) is a separate tool; a normal build never invokes it.</li>
+</ol>
+<p><strong>Regression guard (add first, keep green):</strong> <code>tests/test_backward_compat.py</code>
+builds a representative package twice — once on <code>main</code>-equivalent behaviour and
+once with the new code, both with no new flags — and asserts identical
+<code>spec["hash"]</code>, identical resolved build graph, and that <code>.meta.json</code> differs
+only by <em>added</em> keys. CI fails if the simple path's hash moves.</p>
+<h2 id="cross-cutting">Cross-cutting<a class="headerlink" href="#cross-cutting" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Tests:</strong> new <code>tests/test_provenance.py</code>, <code>tests/test_reuse_policy.py</code>,
+  <code>tests/test_cvmfs_import.py</code>; extend <code>tests/test_sync.py</code> for zero-copy graft.</li>
+<li><strong>Docs:</strong> <code>REFERENCE.md</code> §21/§26 — <code>--reuse-policy</code>, <code>build_id</code>, the importer,
+  the overlay layout and nested-catalog requirement.</li>
+<li><strong>Defaults:</strong> <code>reuse_policy:</code> and <code>reuse_base:</code> in <code>defaults-*.sh</code>.</li>
+<li><strong>Backwards-compat:</strong> Stage 0 adds fields (additive); Stages 1–2 are behind
+  <code>--reuse-policy relaxed</code> (default strict) → zero impact on existing builds.</li>
+</ul>
+<h2 id="risk-register-from-the-adr-review">Risk register (from the ADR review)<a class="headerlink" href="#risk-register-from-the-adr-review" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Build-sufficient env</strong> — bits-native deps already ship <code>init.sh</code> (Stage 1
+   safe); the risk is concentrated in Stage 2's generated build-sufficient
+   <em>modulefile</em> (loaded via <code>bits printenv</code>/module — no init.sh). Mitigate
+   with the validation in Stage 2.3.</li>
+<li><strong>Strict cross-host hash reproducibility</strong> — the <code>repro</code> block (Stage 0.2)
+   records the inputs; <code>bits reproduce</code> (Stage 3) verifies. If parity fails in
+   practice, that's a blocker for the <em>publish</em> reuse path too and must be
+   chased independently.</li>
+<li><strong><code>build_id</code> stamped on an incoherent set</strong> — closure-check (Stage 2.2);
+   determinism (Stage 0.1).</li>
+<li><strong>Overlay collisions</strong> — namespacing by <code>build_id</code> (Stage 2.3 layout).</li>
+<li><strong>Forced rebuild of the simple/aliBuild path</strong> — <em>retired by design</em>: the
+   whatis lines are injected in <code>build.py</code> (hash-neutral), <code>bits-recipe-tools</code>
+   stays untouched, and the backward-compat regression guard fails CI if any
+   simple-path hash moves.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
