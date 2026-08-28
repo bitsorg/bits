@@ -213,7 +213,6 @@ Bits resolves the full transitive dependency graph of each requested package, co
 | `--builders N` | Number of packages to build simultaneously. Default: 1 (serial). With N>1 each build's `$JOBS` is divided across the builders (`-j ÷ N`) so the concurrent jobs together stay within one machine's worth of cores. |
 | `--build-nice` | Stagger concurrent builders across OS priority levels so CPU contention degrades gracefully — one build runs at full speed, the others are backed off, and the freed top slot is taken over as builds finish. Native builds use `nice`; `--docker` builds use `docker run --cpu-shares`. Opt-in; only affects `--builders > 1`. Memory is still capped separately. |
 | `--build-nice-step N` | Priority spread between concurrent build slots for `--build-nice` (slot *k* → nice `min(k×N, 19)`). `N=1` is a gentle ladder; larger separates slots more. Default: 5. |
-| `--makeflow` | Hand the dependency graph to the external [Makeflow](https://ccl.cse.nd.edu/software/makeflow/) engine. Mutually exclusive with `--builders`. |
 | `--prefetch-workers N` | Background threads that fetch remote tarballs ahead of the build loop. Default: 0. |
 | `-u`, `--fetch-repos` | Update all source mirrors before building. |
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
@@ -225,7 +224,7 @@ Bits resolves the full transitive dependency graph of each requested package, co
 | `--dry-run` | Print what would happen without executing. |
 | `--keep-tmp` | Preserve build directories after success (useful for debugging). |
 
-For parallel build modes (`--builders`, `--makeflow`, `--pipeline`, `--prefetch-workers`, `--parallel-sources`) and Docker/cross-compilation options, see [REFERENCE.md §5](REFERENCE.md#5-building-packages) and [REFERENCE.md §22](REFERENCE.md#22-docker-support).
+For parallel build modes (`--builders`, `--prefetch-workers`, `--parallel-sources`) and Docker/cross-compilation options, see [REFERENCE.md §5](REFERENCE.md#5-building-packages) and [REFERENCE.md §22](REFERENCE.md#22-docker-support).
 
 ---
 

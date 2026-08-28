@@ -276,26 +276,16 @@ bits build --builders 4 --jobs 8 my_large_stack
 
 The scheduler dispatches packages as soon as their dependencies are satisfied. Use `--resources` to declare per-package CPU and memory budgets and prevent overcommit (see [§5 Parallel build modes](REFERENCE.md#5-building-packages)).
 
-**Makeflow** — hand the dependency graph to the external [CCTools Makeflow](https://ccl.cse.nd.edu/software/) engine:
+**Prefetch remote tarballs** — with the `--builders` scheduler, hide network latency by fetching tarballs in the background while packages compile:
 
 ```bash
-bits build --makeflow my_large_stack
-
-# Inspect what Makeflow generated if a build fails
-cat sw/BUILD/*/makeflow/Makeflow
-cat sw/BUILD/*/makeflow/log
-```
-
-**Pipelined upload** — overlap tarball upload with downstream builds and prefetch remote tarballs in the background (Makeflow only):
-
-```bash
-bits build --makeflow --pipeline \
+bits build --builders 4 \
            --write-store b3://mybucket/store \
            --prefetch-workers 4 \
            my_large_stack
 ```
 
-`--pipeline` splits each rule into `.build` / `.tar` / `.upload` stages; `--prefetch-workers` hides network latency by fetching tarballs before the build loop needs them.
+`--prefetch-workers` fetches tarballs before the build loop needs them; the `--builders` scheduler already overlaps uploads with downstream builds.
 
 **Parallel source downloads** — fetch multiple source archives concurrently within each package:
 
