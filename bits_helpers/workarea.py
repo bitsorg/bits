@@ -831,8 +831,8 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     _apply_patches(spec, source_dir)
   elif not spec.get("source"):
     # There are no sources (neither tarball URLs nor a git repo), so just
-    # create an empty SOURCEDIR.  Also handles the Makeflow serialisation path
-    # where source is always present in the JSON but may be an empty string.
+    # create an empty SOURCEDIR.  Also handles a spec whose source key is
+    # present in the JSON but an empty string.
     os.makedirs(source_dir, exist_ok=True)
   elif spec["is_devel_pkg"]:
     shutil.rmtree(source_dir, ignore_errors=True)

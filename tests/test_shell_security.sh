@@ -4,7 +4,6 @@
 # Shell-level regression tests for the security fixes applied to:
 #   bits_helpers/relocate-me.sh  (R1, R2, R3)
 #   bits_helpers/build_template.sh  (B1–B7)
-#   bits_helpers/tar_template.sh    (T1)
 #
 # Each test is a plain bash function; the harness at the bottom runs them all
 # and reports PASS/FAIL.  No external test framework is required.
@@ -257,22 +256,6 @@ test_B7_hashprefix_with_space_in_hash_quoted() {
 }
 
 # ---------------------------------------------------------------------------
-# T1 — tar_template.sh: $gzip is quoted
-# ---------------------------------------------------------------------------
-
-test_T1_gzip_path_quoted() {
-    # Verify that a gzip path returned by 'command -v' can be invoked when quoted.
-    local gzip
-    gzip=$(command -v pigz 2>/dev/null) || gzip=$(command -v gzip 2>/dev/null)
-    [[ -n "$gzip" ]] || { echo "    (skip: no gzip found)"; return 0; }
-
-    # Invoke using the quoted form — must not error
-    local version_output
-    version_output=$("$gzip" --version 2>&1) || true
-    [[ $? -eq 0 ]] || [[ -n "$version_output" ]]
-}
-
-# ---------------------------------------------------------------------------
 # Harness
 # ---------------------------------------------------------------------------
 
@@ -291,7 +274,6 @@ tests=(
     test_B4_ln_snf_with_space_in_pkgpath
     test_B7_hashprefix_extraction
     test_B7_hashprefix_with_space_in_hash_quoted
-    test_T1_gzip_path_quoted
 )
 
 for t in "${tests[@]}"; do

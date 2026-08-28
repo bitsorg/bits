@@ -87,52 +87,12 @@ def apply_defaults_legacy_initdotsh(args, defaults_meta, explicit) -> bool:
   return True
 
 
-def _generate_create_links_sh(spec, specs, args) -> str:
-  """Generate a self-contained shell script that recreates the dist symlink trees.
-
-  Used by the Makeflow .build rule (--pipeline --makeflow) so that dist-link
-  creation runs inside the build rule instead of requiring Python's ``specs``
-  dict later.  The generated script bakes in all dependency information at
-  Python build time.
-  """
-  from bits_helpers.utilities import effective_arch, ver_rev, resolve_links_path
-  lines = ["#!/usr/bin/env bash", "set -e", ""]
-  for repo_type, requires_key in [
-    ("dist",         "full_requires"),
-    ("dist-direct",  "requires"),
-    ("dist-runtime", "full_runtime_requires"),
-  ]:
-    target_dir = (
-      "{work_dir}/TARS/{arch}/{repo}/{package}/{package}-{ver_rev}"
-      .format(
-        work_dir=args.workDir, arch=args.architecture,
-        repo=repo_type, ver_rev=ver_rev(spec), **spec,
-      )
-    )
-    lines.append("# -- %s --" % repo_type)
-    # FIX: quote() prevents spaces, semicolons, or other shell metacharacters in
-    # workDir or package names from being interpreted when the generated script runs.
-    lines.append("rm -rf %s" % quote(target_dir))
-    lines.append("mkdir -p %s" % quote(target_dir))
-    for pkg in [spec["package"]] + list(spec[requires_key]):
-      dep_spec = specs[pkg]
-      dep_arch = effective_arch(dep_spec, args.architecture)
-      dep_tarball = (
-        "../../../../../TARS/{arch}/store/{short_hash}/{hash}/{package}-{ver_rev}.{arch}.tar.gz"
-        .format(arch=dep_arch, short_hash=dep_spec["hash"][:2],
-                ver_rev=ver_rev(dep_spec), **dep_spec)
-      )
-      lines.append('ln -nfs %s %s/' % (quote(dep_tarball), quote(target_dir)))
-    lines.append("")
-  return "\n".join(lines)
-
-
 def _prefetch_package(spec, sync_helper, work_dir, build_arch) -> None:
   """Background task: prefetch the prebuilt tarball + all source archives.
 
   Uses the sentinel-file mechanism (``<path>.downloading`` files; see
-  ``bits_helpers.download``) so that the main build loop and Makeflow shell
-  rules can detect in-progress downloads and wait for completion.
+  ``bits_helpers.download``) so that the main build loop can detect
+  in-progress downloads and wait for completion.
 
   Sentinel for the tarball: ``<tar_hash_dir>.downloading``.
   Sentinels for source archives: ``<source_file>.downloading`` (managed inside
@@ -3629,8 +3589,7 @@ def doBuild(args, parser):
     # locally instead, so the single local artefact the CVMFS publish step reads
     # is present for BOTH built and reused packages.
     #
-    # Done for every package regardless of makeflow: makeflow's tar_template.sh
-    # only writes the link for FRESHLY-BUILT packages, so a makeflow *reused*
+    # Done for every package: a *reused*
     # package would otherwise get no local link now that the S3 version link is
     # gone (upload is hash-only and fetch_symlinks finds nothing). Recreating it
     # here is idempotent for the built case (same symlink, same target).
@@ -3701,7 +3660,7 @@ def doBuild(args, parser):
     # If the folder is a symlink that resolves to an existing directory,
     # we consider it to be on CVMFS and take the hash for good.
     # We must also check os.path.isdir() (which follows symlinks) so that
-    # dangling symlinks — e.g. created by a previous --makeflow run that
+    # dangling symlinks — e.g. created by a previous interrupted run that
     # wrote fetch_symlinks() entries before the actual tarball existed —
     # are NOT mistaken for a successfully installed package.
     if os.path.islink(hashPath) and os.path.isdir(hashPath):
@@ -3883,11 +3842,7 @@ def doBuild(args, parser):
       # must fire before compilation.  print/write are deferred to the
       # post-build phase so they work for already-cached packages too.
       #
-      # In Makeflow mode we skip the sequential checkout here and instead
-      # generate a .checkout Makeflow rule per package so that all clones and
-      # archive downloads run in parallel as part of the DAG.
-      #
-      # In --builders mode (args.builders > 1) we likewise defer the checkout:
+      # In --builders mode (args.builders > 1) we defer the checkout:
       # it is registered below as a scheduler "download" task (fetch:<pkg>) that
       # the build task depends on, so source downloads overlap compilation
       # instead of running serially here before any build starts.  Only the

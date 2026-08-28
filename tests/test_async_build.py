@@ -5,7 +5,6 @@
 
 Covers:
 * ``upload_shell_command()`` on every sync backend (§ Async build loop)
-* ``_generate_create_links_sh()`` — shell script content and structure
 * ``--prefetch-workers``, ``--parallel-sources`` CLI defaults
 * ``checkout_sources()`` with ``parallel_sources > 1`` (concurrent source downloads)
 """
@@ -166,116 +165,6 @@ class Boto3RemoteSyncUploadCmdTest(unittest.TestCase):
     def test_architecture_in_command(self):
         cmd = self._make_sync().upload_shell_command(GOOD_SPEC)
         self.assertIn(ARCH, cmd)
-
-
-# ---------------------------------------------------------------------------
-# 3. _generate_create_links_sh()
-# ---------------------------------------------------------------------------
-
-class GenerateCreateLinksShTest(unittest.TestCase):
-    """_generate_create_links_sh() must produce a correct shell script."""
-
-    ARCH = "slc7_x86-64"
-    WORKDIR = "/sw"
-
-    def _make_args(self):
-        from argparse import Namespace
-        return Namespace(workDir=self.WORKDIR, architecture=self.ARCH)
-
-    def _make_spec_and_specs(self):
-        """Minimal spec + specs dict for zlib depending on nothing."""
-        zlib_hash = "aaaa" * 10
-        zlib_spec = {
-            "package": "zlib",
-            "version": "v1.3.1",
-            "revision": "1",
-            "hash": zlib_hash,
-            "architecture": "",        # non-shared
-            "full_requires": [],
-            "requires": [],
-            "full_runtime_requires": [],
-        }
-        specs = {"zlib": zlib_spec}
-        return zlib_spec, specs
-
-    def test_returns_string(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        self.assertIsInstance(result, str)
-
-    def test_shebang_present(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        self.assertTrue(result.startswith("#!/usr/bin/env bash"), result[:40])
-
-    def test_set_e_present(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        self.assertIn("set -e", result)
-
-    def test_all_three_dist_types_created(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        for repo_type in ("dist", "dist-direct", "dist-runtime"):
-            self.assertIn(repo_type, result,
-                          "Script must handle %s" % repo_type)
-
-    def test_rm_rf_before_mkdir(self):
-        """Each dist directory must be wiped before recreation."""
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        self.assertIn("rm -rf", result)
-        self.assertIn("mkdir -p", result)
-
-    def test_package_symlink_created(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        # The package itself must be symlinked.
-        self.assertIn("zlib", result)
-        self.assertIn(".tar.gz", result)
-
-    def test_dependency_symlinks_created(self):
-        """All transitive requires must appear as symlinks in the script."""
-        from bits_helpers.build import _generate_create_links_sh
-        root_hash = "bbbb" * 10
-        zlib_hash = "aaaa" * 10
-        zlib_spec = {
-            "package": "zlib",
-            "version": "v1.3.1",
-            "revision": "1",
-            "hash": zlib_hash,
-            "architecture": "",
-            "full_requires": [],
-            "requires": [],
-            "full_runtime_requires": [],
-        }
-        root_spec = {
-            "package": "ROOT",
-            "version": "v6-08-30",
-            "revision": "1",
-            "hash": root_hash,
-            "architecture": "",
-            "full_requires": ["zlib"],
-            "requires": ["zlib"],
-            "full_runtime_requires": ["zlib"],
-        }
-        specs = {"ROOT": root_spec, "zlib": zlib_spec}
-        result = _generate_create_links_sh(root_spec, specs, self._make_args())
-        # Both ROOT and zlib must appear as symlink targets.
-        self.assertIn("ROOT", result)
-        self.assertIn("zlib", result)
-
-    def test_work_dir_in_paths(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        self.assertIn(self.WORKDIR, result)
 
 
 # ---------------------------------------------------------------------------

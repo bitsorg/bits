@@ -4,7 +4,7 @@
 """Tests for the sentinel-file helpers in bits_helpers.download.
 
 These helpers coordinate concurrent downloads between the prefetch thread pool
-and the main build loop (or Makeflow shell rules):
+and the main build loop:
 
 * ``_sentinel_path(path)`` — ``path + ".downloading"``
 * ``_acquire_download(path)`` — atomically claim the download slot (O_CREAT|O_EXCL)

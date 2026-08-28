@@ -379,7 +379,6 @@ class BuildTestCase(unittest.TestCase):
             builders=1,
             resources=None,
             resourceMonitoring=False,
-            makeflow=False,
             # Explicitly disable features whose mocking would require additional
             # filesystem or network setup.
             storeIntegrity=False,   # no ledger reads/writes

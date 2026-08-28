@@ -197,7 +197,7 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
     4. the built-in default.
   The resolved values are written back into os.environ under their canonical
   names so that the boto3 client (Boto3RemoteSync) and the
-  `bits_helpers.upload_cmd` subprocess spawned by --pipeline all see the same
+  `bits_helpers.upload_cmd` subprocess all see the same
   connection without threading secrets through the command line.
 
   Backward compatible: with no --s3-* flags and no env vars, the endpoint
@@ -248,7 +248,7 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
                     s3_region=None, s3_addressing_style=None):
   """Parse remote store URLs and return the correct RemoteSync instance for them."""
   # For S3-backed stores, resolve + export the connection config before any S3
-  # backend is built, so boto3 and the --pipeline subprocess share one
+  # backend is built, so boto3 and the upload subprocess share one
   # endpoint/credentials. No-op for non-S3 stores (rsync/cvmfs/https).
   if (read_url or "").startswith(("s3://", "b3://")) or \
      (write_url or "").startswith(("s3://", "b3://")):
@@ -783,14 +783,11 @@ rsync -avR --ignore-existing "{store_path}/$tarball" {remote}/
   def upload_shell_command(self, spec):
     """Return an inline shell command that uploads *spec*'s tarball and symlinks.
 
-    Used by --pipeline Makeflow .upload rules so that the upload runs as a
-    separate Makeflow target, concurrently with downstream package builds.
     Returns None when no write store is configured.
     """
     if not self.writeStore:
       return None
-    # Emit the script as a single shell -c '...' invocation so Makeflow can
-    # embed it directly in the Makeflow file without a wrapper script.
+    # Emit the script as a single shell -c '...' invocation.
     script = self._upload_script(spec).replace("'", "'\\''")
     return "bash -e -c '{}'".format(script)
 
@@ -962,7 +959,6 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
     """Return an inline shell command that uploads this package's artifacts.
 
     Returns None if there is no writable store configured.
-    Used by the Makeflow .upload rule when --pipeline is active.
     """
     if not self.writeStore:
       return None
@@ -1387,7 +1383,6 @@ class Boto3RemoteSync:
     """Return a shell command that uploads this package's artifacts via upload_cmd.py.
 
     Returns None if there is no writable store configured.
-    Used by the Makeflow .upload rule when --pipeline is active.
     The actual upload logic lives in bits_helpers/upload_cmd.py, which reads
     PKGNAME/PKGVERSION/PKGREVISION/PKGHASH from the environment and accepts
     the store URLs as CLI arguments.
