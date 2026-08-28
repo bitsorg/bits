@@ -130,13 +130,14 @@ DEFAULT_S3_STORE = os.environ.get("BITS_S3_STORE") or "https://s3.cern.ch/lcgapp
 BUILDERS_AUTO = 4
 
 
-class _StoreAlias(argparse.Action):
-  """Set the store value; warn once if the deprecated --store spelling was used."""
+class _WarnAliasAction(argparse.Action):
+  """Store the value (or const, for a nargs=0 flag); warn when a deprecated
+  spelling is used. The canonical spelling is the first option string."""
   def __call__(self, parser, namespace, values, option_string=None):
-    if option_string == "--store":
+    if option_string and option_string != self.option_strings[0]:
       from bits_helpers.log import warning
-      warning("--store is deprecated; use --remote-store (same meaning).")
-    setattr(namespace, self.dest, values)
+      warning("%s is deprecated; use %s.", option_string, self.option_strings[0])
+    setattr(namespace, self.dest, self.const if self.nargs == 0 else values)
 
 # Search order for bits.rc config files (highest priority first).
 # Each entry is evaluated at import time so that ~ is expanded once.
@@ -263,7 +264,7 @@ def doParseArgs():
   def add_remote_store(p, dest, help, default=DEFAULT_S3_STORE):
     # Canonical --remote-store with --store kept as a deprecated alias (warns).
     p.add_argument("--remote-store", "--store", dest=dest, metavar="URL",
-                   default=default, action=_StoreAlias, help=help)
+                   default=default, action=_WarnAliasAction, help=help)
 
   parser = argparse.ArgumentParser(epilog="""\
   For help about each option, specify --help after the option itself. For
@@ -453,8 +454,8 @@ def doParseArgs():
   import_parser.add_argument("--out", dest="importOut",
                              metavar="DIR", default=None,
                              help="Overlay root to write into (default: <work-dir>/MODULES).")
-  import_parser.add_argument("--force", dest="importForce",
-                             action="store_true",
+  import_parser.add_argument("--force-overwrite", "--force", dest="importForce",
+                             nargs=0, const=True, default=False, action=_WarnAliasAction,
                              help="Stamp and write even if the release is not closed (deps missing).")
 
 
@@ -846,7 +847,8 @@ def doParseArgs():
                              help="Do not clean up build directories automatically after a build.")
 
   build_system = build_parser.add_mutually_exclusive_group()
-  build_system.add_argument("--always-prefer-system", dest="preferSystem", action="store_true",
+  build_system.add_argument("--prefer-system", "--always-prefer-system", dest="preferSystem",
+                            nargs=0, const=True, default=False, action=_WarnAliasAction,
                             help="Always use system packages when compatible.")
   build_system.add_argument("--no-system", dest="noSystem", nargs="?", const="*", default=None, metavar="PACKAGES",
                             help="Never use system packages for the provided, command separated, PACKAGES, even if compatible.")
@@ -993,7 +995,8 @@ def doParseArgs():
                  help="The directory containing build recipes. Default '%(default)s'.")
 
   deps_system = deps_parser.add_mutually_exclusive_group()
-  deps_system.add_argument("--always-prefer-system", dest="preferSystem", action="store_true",
+  deps_system.add_argument("--prefer-system", "--always-prefer-system", dest="preferSystem",
+                           nargs=0, const=True, default=False, action=_WarnAliasAction,
                            help="Always use system packages when compatible.")
   deps_system.add_argument("--no-system", dest="noSystem", nargs="?", const="*", default=None, metavar="PACKAGES",
                            help="Never use system packages for PACKAGES, even if compatible.")
@@ -1017,7 +1020,8 @@ def doParseArgs():
                             help="KEY=VALUE binding to add to the build environment. May be specified multiple times.")
 
   doctor_system = doctor_parser.add_mutually_exclusive_group()
-  doctor_system.add_argument("--always-prefer-system", dest="preferSystem", action="store_true",
+  doctor_system.add_argument("--prefer-system", "--always-prefer-system", dest="preferSystem",
+                             nargs=0, const=True, default=False, action=_WarnAliasAction,
                              help="Always use system packages when compatible.")
   doctor_system.add_argument("--no-system", dest="noSystem", nargs="?", const="*", default=None, metavar="PACKAGES",
                              help="Never use system packages for the provided, command separated, PACKAGES, even if compatible.")
@@ -1203,10 +1207,7 @@ def doParseArgs():
                         help="Merge the new settings into an existing bits.rc rather than "
                              "overwriting it. Without this flag a fresh file is written.")
 
-  # Options for the version subcommand
-  add_architecture(version_parser,
-                   help=("Display the specified architecture next to the version number. Default is "
-                         "the current system architecture, which is '%(default)s'."))
+  # version takes no options; the architecture is auto-detected for display.
 
   # Options for the publish command
   publish_parser.add_argument("package", metavar="PACKAGE", nargs="?", default=None,

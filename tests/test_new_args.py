@@ -340,5 +340,42 @@ class BuildersParallelTest(unittest.TestCase):
         self.assertEqual(args.pkgname, ["ROOT", "GEANT4"])
 
 
+class RenameAliasesTest(unittest.TestCase):
+    """Canonical flag names with deprecated aliases that still work and warn."""
+
+    def test_prefer_system_canonical(self):
+        args = _parse(["build", "-a", _ARCH, "--prefer-system", "ROOT"])
+        self.assertTrue(args.preferSystem)
+
+    def test_prefer_system_canonical_silent(self):
+        with patch("bits_helpers.log.warning") as w:
+            _parse(["build", "-a", _ARCH, "--prefer-system", "ROOT"])
+        self.assertFalse(w.called)
+
+    def test_always_prefer_system_alias_warns(self):
+        with patch("bits_helpers.log.warning") as w:
+            args = _parse(["build", "-a", _ARCH, "--always-prefer-system", "ROOT"])
+        self.assertTrue(args.preferSystem)
+        self.assertTrue(w.called)
+
+    def test_force_overwrite_canonical(self):
+        args = _parse(["import", "--force-overwrite"])
+        self.assertTrue(args.importForce)
+
+    def test_force_alias_warns(self):
+        with patch("bits_helpers.log.warning") as w:
+            args = _parse(["import", "--force"])
+        self.assertTrue(args.importForce)
+        self.assertTrue(w.called)
+
+    def test_version_takes_no_architecture(self):
+        with self.assertRaises(SystemExit):
+            _parse(["version", "-a", _ARCH])
+
+    def test_version_parses_plain(self):
+        args = _parse(["version"])
+        self.assertEqual(args.action, "version")
+
+
 if __name__ == "__main__":
     unittest.main()

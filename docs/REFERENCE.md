@@ -895,9 +895,8 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--s3-region REGION` | S3 region. Overrides `$AWS_DEFAULT_REGION`. |
 | `--s3-addressing-style {auto,path,virtual}` | S3 addressing style for `b3://` stores. MinIO usually needs `path`. Overrides `$S3_ADDRESSING_STYLE`. |
 | `--disable PACKAGE` | Skip PACKAGE entirely (repeatable). |
-| `--prefer-system` | Use system-installed packages where supported. |
+| `--prefer-system` | Always prefer system packages where supported. (`--always-prefer-system` is a kept alias.) |
 | `--no-system` | Never use system-installed packages. |
-| `--always-prefer-system` | Always prefer system packages. |
 | `--check-system-packages` | Check system packages without building. |
 | `--docker` | Build inside a Docker container. |
 | `--docker-image IMAGE` | Docker image to use. Implies `--docker`. |

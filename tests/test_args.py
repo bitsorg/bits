@@ -29,7 +29,7 @@ PARSER_ERRORS = {
   "build --force-unknown-architecture zlib --foo": 'unrecognized arguments: --foo',
   "init --docker-image": 'unrecognized arguments: --docker-image',
   "builda --force-unknown-architecture zlib" : "argument action: invalid choice: 'builda'.*",
-  "build --force-unknown-architecture zlib --no-system --always-prefer-system" : 'argument --always-prefer-system: not allowed with argument --no-system',
+  "build --force-unknown-architecture zlib --no-system --always-prefer-system" : 'argument --prefer-system/--always-prefer-system: not allowed with argument --no-system',
   "build zlib --architecture foo": ARCHITECTURE_ERROR,
   "build --force-unknown-architecture zlib --remote-store rsync://test1.local/::rw --write-store rsync://test2.local/::rw ": 'cannot specify ::rw and --write-store at the same time',
   "build zlib -a osx_x86-64 --docker-image foo": 'cannot use `-a osx_x86-64` and --docker',
