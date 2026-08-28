@@ -126,6 +126,9 @@ DEFAULT_CHDIR = os.environ.get("BITS_CHDIR") or "."
 # one) > $BITS_S3_STORE > this literal. Same env var the bitsStore launcher reads.
 DEFAULT_S3_STORE = os.environ.get("BITS_S3_STORE") or "https://s3.cern.ch/lcgapp-bits-testing"
 
+# Worker count assumed when --parallel/--builders is given with no number.
+BUILDERS_AUTO = 4
+
 
 class _StoreAlias(argparse.Action):
   """Set the store value; warn once if the deprecated --store spelling was used."""
@@ -483,9 +486,11 @@ def doParseArgs():
   build_parser.add_argument("-j", "--jobs", dest="jobs", type=int, default=multiprocessing.cpu_count(),
                             help=("The number of parallel compilation processes to run. "
                                   "Default for this system: %(default)d."))
-  build_parser.add_argument("--builders", dest="builders", type=int, default=1,
-                            help=("The number of independent packages to build in parallel. "
-                                  "Default is: %(default)d."))
+  build_parser.add_argument("--parallel", "--builders", dest="builders", type=int,
+                            nargs="?", const=BUILDERS_AUTO, default=1, metavar="N",
+                            help=("Build N independent packages in parallel. Given with no "
+                                  "number it uses %(const)d; omitted entirely the build is "
+                                  "serial. (--builders is a kept alias.)"))
   build_parser.add_argument("--oversubscribe", dest="oversubscribe", type=float, default=None,
                             metavar="FACTOR",
                             help=("CPU oversubscription factor (>= 1.0) for the per-builder "
@@ -1715,6 +1720,17 @@ def doParseArgs():
   # Make sure old option ordering behavior is actually still working
   prog = sys.argv[0]
   rest = sys.argv[1:]
+  # A bare --parallel/--builders (no following integer) means "auto": insert the
+  # count so the nargs='?' optional never swallows the PACKAGE positional (argparse
+  # would otherwise read 'ROOT' in `build --parallel ROOT` as the worker count).
+  _norm = []
+  for _i, _tok in enumerate(rest):
+    _norm.append(_tok)
+    if _tok in ("--parallel", "--builders"):
+      _nxt = rest[_i + 1] if _i + 1 < len(rest) else None
+      if _nxt is None or not _nxt.lstrip("+-").isdigit():
+        _norm.append(str(BUILDERS_AUTO))
+  rest = _norm
   # Subcommands that define their OWN --dry-run/-n: hoisting the flag before
   # the subcommand would let the parent parser consume it, and the subparser's
   # default (False) would then overwrite it — silently turning a dry run into

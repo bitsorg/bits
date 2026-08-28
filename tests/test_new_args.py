@@ -305,5 +305,40 @@ class RemoteStoreUnificationTest(unittest.TestCase):
         self.assertEqual(args.retainStore, "b3://b")
 
 
+class BuildersParallelTest(unittest.TestCase):
+    """--parallel/--builders: no flag => serial (1), bare => 4, explicit => N."""
+
+    def test_no_flag_serial(self):
+        args = _parse(["build", "-a", _ARCH, "ROOT"])
+        self.assertEqual(args.builders, 1)
+
+    def test_parallel_bare_before_package(self):
+        args = _parse(["build", "-a", _ARCH, "--parallel", "ROOT"])
+        self.assertEqual(args.builders, 4)
+        self.assertEqual(args.pkgname, ["ROOT"])
+
+    def test_parallel_bare_after_package(self):
+        args = _parse(["build", "-a", _ARCH, "ROOT", "--parallel"])
+        self.assertEqual(args.builders, 4)
+
+    def test_parallel_with_number(self):
+        args = _parse(["build", "-a", _ARCH, "--parallel", "8", "ROOT"])
+        self.assertEqual(args.builders, 8)
+        self.assertEqual(args.pkgname, ["ROOT"])
+
+    def test_builders_alias_with_number(self):
+        args = _parse(["build", "-a", _ARCH, "--builders", "2", "ROOT"])
+        self.assertEqual(args.builders, 2)
+
+    def test_builders_bare(self):
+        args = _parse(["build", "-a", _ARCH, "ROOT", "--builders"])
+        self.assertEqual(args.builders, 4)
+
+    def test_parallel_bare_two_packages(self):
+        args = _parse(["build", "-a", _ARCH, "--parallel", "ROOT", "GEANT4"])
+        self.assertEqual(args.builders, 4)
+        self.assertEqual(args.pkgname, ["ROOT", "GEANT4"])
+
+
 if __name__ == "__main__":
     unittest.main()

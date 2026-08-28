@@ -268,24 +268,24 @@ Any mismatch or missing checksum aborts the build, catching supply-chain tamperi
 
 ### Speed up large builds
 
-**Built-in Python scheduler** — build up to N packages in parallel, each using M cores:
+**Built-in Python scheduler** — build up to N packages in parallel, each using M cores. `--parallel` on its own uses 4; omit it entirely for a serial build (`--builders` is a kept alias):
 
 ```bash
-bits build --builders 4 --jobs 8 my_large_stack
+bits build --parallel 4 --jobs 8 my_large_stack
 ```
 
 The scheduler dispatches packages as soon as their dependencies are satisfied. Use `--resources` to declare per-package CPU and memory budgets and prevent overcommit (see [§5 Parallel build modes](REFERENCE.md#5-building-packages)).
 
-**Prefetch remote tarballs** — with the `--builders` scheduler, hide network latency by fetching tarballs in the background while packages compile:
+**Prefetch remote tarballs** — with the `--parallel` scheduler, hide network latency by fetching tarballs in the background while packages compile:
 
 ```bash
-bits build --builders 4 \
+bits build --parallel 4 \
            --write-store b3://mybucket/store \
            --prefetch-workers 4 \
            my_large_stack
 ```
 
-`--prefetch-workers` fetches tarballs before the build loop needs them; the `--builders` scheduler already overlaps uploads with downstream builds.
+`--prefetch-workers` fetches tarballs before the build loop needs them; the `--parallel` scheduler already overlaps uploads with downstream builds.
 
 **Parallel source downloads** — fetch multiple source archives concurrently within each package:
 
@@ -300,11 +300,11 @@ Useful when a recipe lists several large `sources:` URLs.
 For packages whose parallel builds risk OOM, limit concurrent builds and/or declare per-package resource budgets:
 
 ```bash
-# Option 1: reduce concurrent package builds
-bits build --builders 1 --jobs 8 my_stack
+# Option 1: reduce concurrent package builds (serial is the default; omit --parallel)
+bits build --jobs 8 my_stack
 
 # Option 2: use a resource file
-bits build --builders 4 --resources my_resources.json my_stack
+bits build --parallel 4 --resources my_resources.json my_stack
 ```
 
 Where `my_resources.json` declares expected CPU and memory per package:
