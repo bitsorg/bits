@@ -5,7 +5,6 @@ from os.path import abspath, exists, basename, dirname, join, realpath
 from os import makedirs, unlink, readlink, rmdir
 from pathlib import Path
 from bits_helpers import __version__
-from bits_helpers.analytics import report_event
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
 from bits_helpers.repo_provider import fetch_repo_providers_iteratively, load_always_on_providers
@@ -1738,12 +1737,6 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       nice_ladder.release(nice_token)
   if args.builders==1:
     progress.end("failed" if err else "done", err)
-  report_event("BuildError" if err else "BuildSuccess", spec["package"], " ".join((
-  args.architecture,
-  spec["version"],
-  spec["commit_hash"],
-  os.environ["BITS_DIST_HASH"][:10],
-  )))
 
   # We do not use the override for devel packages, because we
   # want to avoid having to rebuild things when the /tmp gets cleaned.
@@ -3107,14 +3100,6 @@ def doBuild(args, parser):
   # We now iterate on all the packages, making sure we build correctly every
   # single one of them. This is done this way so that the second time we run we
   # can check if the build was consistent and if it is, we bail out.
-  report_event("install", "{p} disabled={dis} devel={dev} system={sys} own={own} deps={deps}".format(
-    p=args.pkgname,
-    dis=",".join(sorted(args.disable)),
-    dev=",".join(sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"])),
-    sys=",".join(sorted(systemPackages)),
-    own=",".join(sorted(ownPackages)),
-    deps=",".join(buildOrder[:-1]),
-  ), args.architecture)
 
   # Specs collected during the build loop for the post-build checksum phase.
   # Every processed spec is appended here, including those whose tarball was

@@ -231,10 +231,6 @@ def doParseArgs():
                       help="Print what would happen, without actually doing it.")
 
   subparsers = parser.add_subparsers(dest="action")
-  '''
-  analytics_parser = subparsers.add_parser("analytics", help="turn on / off analytics",
-                                           description="Control analytics state.")
-  '''
   subparsers.add_parser("architecture", help="display detected architecture",
                         description="Display the detected architecture.")
   build_parser = subparsers.add_parser("build", help="build a package",
@@ -419,8 +415,6 @@ def doParseArgs():
                              action="store_true",
                              help="Stamp and write even if the release is not closed (deps missing).")
 
-  # Options for the analytics command
-  # analytics_parser.add_argument("state", choices=["on", "off"], help="Whether to report analytics or not")
 
   # Options for the build command
   build_parser.add_argument("pkgname", metavar="PACKAGE", nargs="+",

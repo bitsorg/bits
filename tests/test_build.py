@@ -277,7 +277,6 @@ def dummy_exists(x):
        new=MagicMock(return_value=["--filter=blob:none"]))
 @patch("bits_helpers.build.BASH", new="/bin/bash")
 class BuildTestCase(unittest.TestCase):
-    @patch("bits_helpers.analytics", new=MagicMock())
     @patch("requests.Session.get", new=MagicMock())
     @patch("bits_helpers.sync.execute", new=dummy_execute)
     @patch("bits_helpers.git.git")
