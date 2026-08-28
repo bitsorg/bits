@@ -5,9 +5,8 @@
 
 Covers:
 * ``upload_shell_command()`` on every sync backend (§ Async build loop)
-* ``--pipeline`` guard in ``doBuild`` (warns + disables when ``--makeflow`` absent)
 * ``_generate_create_links_sh()`` — shell script content and structure
-* ``--prefetch-workers``, ``--parallel-sources``, ``--pipeline`` CLI defaults
+* ``--prefetch-workers``, ``--parallel-sources`` CLI defaults
 * ``checkout_sources()`` with ``parallel_sources > 1`` (concurrent source downloads)
 """
 
@@ -170,43 +169,6 @@ class Boto3RemoteSyncUploadCmdTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 2. --pipeline guard in doBuild
-# ---------------------------------------------------------------------------
-
-class PipelineGuardTest(unittest.TestCase):
-    """--pipeline requires --makeflow; without it a warning is issued and
-    the flag is disabled before any build work happens."""
-
-    def test_pipeline_without_makeflow_warns_and_disables(self):
-        """When makeflow=False and pipeline=True, a warning must be issued."""
-        from argparse import Namespace
-
-        # We don't want to actually run a build — patch doBuild to just
-        # exercise the guard by reading the args early.  The cleanest way is to
-        # call the relevant code directly by importing the guard from build.py.
-        # Since the guard is inline (not a separate function), we replicate the
-        # logic and verify it matches the implementation.
-        args = Namespace(
-            pipeline=True,
-            makeflow=False,
-            # Remaining fields needed to avoid AttributeError when accessed
-            # later in doBuild are added via MagicMock.
-        )
-        with patch("bits_helpers.build.warning") as mock_warning:
-            # Simulate just the guard block from doBuild.
-            if getattr(args, "pipeline", False) and not args.makeflow:
-                mock_warning("--pipeline requires --makeflow; disabling --pipeline for this run.")
-                args.pipeline = False
-
-            mock_warning.assert_called_once()
-            call_msg = mock_warning.call_args[0][0]
-            self.assertIn("--pipeline", call_msg)
-            self.assertIn("--makeflow", call_msg)
-
-        self.assertFalse(args.pipeline, "pipeline flag must be disabled after guard")
-
-
-# ---------------------------------------------------------------------------
 # 3. _generate_create_links_sh()
 # ---------------------------------------------------------------------------
 
@@ -340,53 +302,12 @@ class NewCLIFlagsTest(unittest.TestCase):
                            ["bits", "build", "--force-unknown-architecture", "zlib"]):
             args, _ = doParseArgs()
 
-        self.assertFalse(args.pipeline, "--pipeline must default to False")
         self.assertEqual(args.prefetchWorkers, -1,
                          "--prefetch-workers must default to -1 (auto)")
         self.assertEqual(args.parallelSources, 1,
                          "--parallel-sources must default to 1")
         self.assertEqual(args.parallelDownloads, 2,
                          "--parallel-downloads must default to 2")
-
-    @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
-    @patch("bits_helpers.args.commands")
-    def test_pipeline_flag(self, mock_commands):
-        """--makeflow/--pipeline are deprecated: accepted but routed to --builders."""
-        import shlex
-        from unittest.mock import patch as _patch
-        mock_commands.getstatusoutput.return_value = (0, "/usr/local/bin/docker")
-
-        import bits_helpers.args
-        from bits_helpers.args import doParseArgs
-        bits_helpers.args.DEFAULT_WORK_DIR = "sw"
-        bits_helpers.args.DEFAULT_CHDIR = "."
-
-        with _patch.object(sys, "argv",
-                           ["bits", "build", "--force-unknown-architecture",
-                            "--makeflow", "--pipeline", "zlib"]):
-            args, _ = doParseArgs()
-
-        # Deprecation shim maps the flags to the in-process --builders scheduler.
-        self.assertFalse(args.pipeline)
-        self.assertFalse(args.makeflow)
-        self.assertGreaterEqual(args.builders, 2)
-
-    @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
-    @patch("bits_helpers.args.commands")
-    def test_makeflow_preserves_explicit_builders(self, mock_commands):
-        """--makeflow with an explicit --builders N keeps N (not bumped)."""
-        from unittest.mock import patch as _patch
-        mock_commands.getstatusoutput.return_value = (0, "/usr/local/bin/docker")
-        import bits_helpers.args
-        from bits_helpers.args import doParseArgs
-        bits_helpers.args.DEFAULT_WORK_DIR = "sw"
-        bits_helpers.args.DEFAULT_CHDIR = "."
-        with _patch.object(sys, "argv",
-                           ["bits", "build", "--force-unknown-architecture",
-                            "--makeflow", "--builders", "8", "zlib"]):
-            args, _ = doParseArgs()
-        self.assertEqual(args.builders, 8)
-        self.assertFalse(args.makeflow)
 
     @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")
