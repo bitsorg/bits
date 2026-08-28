@@ -686,8 +686,8 @@ def doPublish(args, parser):
         _fm = "latest"
     if _fm is not None:
         architecture = getattr(args, "architecture", None) or detectArch()
-        store_url = (getattr(args, "publishStore", None)
-                     or "https://s3.cern.ch/lcgapp-bits-testing")
+        from bits_helpers.args import DEFAULT_S3_STORE
+        store_url = getattr(args, "publishStore", None) or DEFAULT_S3_STORE
         _res = _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
                                       manifest=_fm, dry_run=getattr(args, "dryRun", False))
         if _res:

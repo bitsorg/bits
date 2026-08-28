@@ -2772,7 +2772,7 @@ plus their named symlink objects.
 # Bulk: upload every package in the latest manifest. This is the default when
 # no PACKAGE is given, so bare `bits publish` is the whole-stack push:
 bits publish
-bits publish --store https://s3.cern.ch/lcgapp-bits-testing   # pick the bucket
+bits publish --remote-store https://s3.cern.ch/lcgapp-bits-testing  # pick the bucket
 bits publish --from-manifest /path/to/bits-manifest-XYZ.json  # a specific manifest
 
 # Single package (from its manifest entry):
@@ -2785,10 +2785,13 @@ bits publish --dry-run
 `--dry-run` (`-n`) lists exactly what would be uploaded and to which store,
 without contacting S3 — handy to check the package set and target before pushing.
 
-`--store` accepts an `https://<host>/<bucket>` URL (from which the boto3 endpoint
-and path-style addressing are derived), or `b3://<bucket>` / `s3://<bucket>`;
-default `https://s3.cern.ch/lcgapp-bits-testing`. `--from-manifest` also uploads
-the manifest itself under `MANIFESTS/`, so a CI job can fetch and sign it.
+`--remote-store` accepts an `https://<host>/<bucket>` URL (from which the boto3
+endpoint and path-style addressing are derived), or `b3://<bucket>` / `s3://<bucket>`.
+It is the canonical store flag across `publish`, `certify`, `gc`, `store-stats` and
+`compliance`; the old `--store` spelling still works but is deprecated and warns.
+The default is `$BITS_S3_STORE` if set, else `https://s3.cern.ch/lcgapp-bits-testing`.
+`--from-manifest` also uploads the manifest itself under `MANIFESTS/`, so a CI job
+can fetch and sign it.
 
 Under the current posture uploading requires only valid S3 keys, and unsigned
 manifests are trusted (reuse works without signatures). Signing becomes relevant

@@ -121,6 +121,20 @@ def _docker_memory_args():
 # cd to this directory before start
 DEFAULT_CHDIR = os.environ.get("BITS_CHDIR") or "."
 
+# Default S3 content store for the store-operating actions (certify, compliance,
+# gc, store-stats, publish). Precedence: CLI --remote-store (or a .bitsuse-recorded
+# one) > $BITS_S3_STORE > this literal. Same env var the bitsStore launcher reads.
+DEFAULT_S3_STORE = os.environ.get("BITS_S3_STORE") or "https://s3.cern.ch/lcgapp-bits-testing"
+
+
+class _StoreAlias(argparse.Action):
+  """Set the store value; warn once if the deprecated --store spelling was used."""
+  def __call__(self, parser, namespace, values, option_string=None):
+    if option_string == "--store":
+      from bits_helpers.log import warning
+      warning("--store is deprecated; use --remote-store (same meaning).")
+    setattr(namespace, self.dest, values)
+
 # Search order for bits.rc config files (highest priority first).
 # Each entry is evaluated at import time so that ~ is expanded once.
 _BITS_RC_SEARCH_PATHS = [
@@ -243,6 +257,10 @@ def doParseArgs():
   def add_defaults(p, help):
     p.add_argument("--defaults", dest="defaults", metavar="DEFAULT", default="release",
                    help=help)
+  def add_remote_store(p, dest, help, default=DEFAULT_S3_STORE):
+    # Canonical --remote-store with --store kept as a deprecated alias (warns).
+    p.add_argument("--remote-store", "--store", dest=dest, metavar="URL",
+                   default=default, action=_StoreAlias, help=help)
 
   parser = argparse.ArgumentParser(epilog="""\
   For help about each option, specify --help after the option itself. For
@@ -1235,11 +1253,10 @@ def doParseArgs():
                                     "'bits publish' uploads the latest manifest. Optionally give a "
                                     "manifest file path; 'latest' (default) uses the newest under "
                                     "WORKDIR/MANIFESTS. Use --store to pick the target."))
-  publish_parser.add_argument("--store", dest="publishStore", metavar="URL",
-                              default="https://s3.cern.ch/lcgapp-bits-testing",
-                              help=("S3 store URL/bucket for --from-manifest. Accepts an https URL "
-                                    "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>. "
-                                    "Default: %(default)s"))
+  add_remote_store(publish_parser, dest="publishStore",
+                   help=("S3 store URL/bucket for --from-manifest. Accepts an https URL "
+                         "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>. "
+                         "Default: %(default)s"))
   publish_parser.add_argument("--certify", dest="certify", action="store_true", default=False,
                               help=("After a successful upload, open a merge request in the manifests repo "
                                     "adding this build's manifest under manifests/<group>/. CI validates the "
@@ -1346,10 +1363,9 @@ def doParseArgs():
                                     "fail closed once it is past (offline anti-replay). Default: no expiry."))
   certify_parser.add_argument("--source-commit", dest="sourceCommit", metavar="SHA", default=None,
                               help="Record the certified manifests-repo commit SHA (default: $CI_COMMIT_SHA).")
-  certify_parser.add_argument("--store", dest="certifyStore", metavar="URL",
-                              default="https://s3.cern.ch/lcgapp-bits-testing",
-                              help=("S3 store URL/bucket to validate hashes against. Accepts https, "
-                                    "b3://<bucket>, or s3://<bucket>. Default: %(default)s"))
+  add_remote_store(certify_parser, dest="certifyStore",
+                   help=("S3 store URL/bucket to validate hashes against. Accepts https, "
+                         "b3://<bucket>, or s3://<bucket>. Default: %(default)s"))
   certify_parser.add_argument("--no-store-check", dest="noStoreCheck", action="store_true", default=False,
                               help=("Skip validating each hash against the store before signing. "
                                     "Only for offline dry merges; a real certification must verify the store."))
@@ -1379,10 +1395,9 @@ def doParseArgs():
   compliance_parser.add_argument("--recipes", dest="recipesDir", metavar="DIR", default=None,
                                  help=("Recipe repository to audit (a directory of *.sh recipes, "
                                        "e.g. an lcg.bits checkout). Default: the current directory."))
-  compliance_parser.add_argument("--store", dest="complianceStore", metavar="URL",
-                                 default="https://s3.cern.ch/lcgapp-bits-testing",
-                                 help=("S3 store to audit against the recipe flags. Accepts https, "
-                                       "b3://<bucket>, or s3://<bucket>. Default: %(default)s"))
+  add_remote_store(compliance_parser, dest="complianceStore",
+                   help=("S3 store to audit against the recipe flags. Accepts https, "
+                         "b3://<bucket>, or s3://<bucket>. Default: %(default)s"))
   compliance_parser.add_argument("--no-store-check", dest="noStoreCheck", action="store_true", default=False,
                                  help="Audit the recipes only; skip the store walk and the public-access probe.")
   add_work_dir(compliance_parser,
@@ -1403,9 +1418,8 @@ def doParseArgs():
   # Options for the gc subcommand
   gc_parser.add_argument("--trust-manifest", dest="trustManifest", required=True, metavar="PATH",
                          help="Signed common manifest whose hashes are the GC roots. Must verify.")
-  gc_parser.add_argument("--store", dest="gcStore", metavar="URL",
-                         default="https://s3.cern.ch/lcgapp-bits-testing",
-                         help="S3 store URL/bucket to sweep. Default: %(default)s")
+  add_remote_store(gc_parser, dest="gcStore",
+                   help="S3 store URL/bucket to sweep. Default: %(default)s")
   add_architecture(gc_parser,
                    help="Architecture store tree to sweep. Default: %(default)s.")
   add_work_dir(gc_parser,
@@ -1419,10 +1433,9 @@ def doParseArgs():
                          help="Report what would be swept without deleting anything.")
 
   # Options for the store-stats subcommand
-  store_stats_parser.add_argument("--store", dest="storeStatsStore", metavar="URL",
-                                  default="https://s3.cern.ch/lcgapp-bits-testing",
-                                  help=("S3 store URL/bucket to summarise. Accepts https, b3://<bucket>, "
-                                        "or s3://<bucket>. Default: %(default)s"))
+  add_remote_store(store_stats_parser, dest="storeStatsStore",
+                   help=("S3 store URL/bucket to summarise. Accepts https, b3://<bucket>, "
+                         "or s3://<bucket>. Default: %(default)s"))
   store_stats_parser.add_argument("--manifests", dest="manifests", metavar="PATH", nargs="*", default=None,
                                   help=("Build-manifest JSON files/directories that attribute hashes to a "
                                         "build (manifest). Default: WORKDIR/MANIFESTS."))
@@ -1469,11 +1482,11 @@ def doParseArgs():
   cleanup_parser.add_argument("--keep-builds", dest="keepBuilds", type=int, default=2, metavar="N",
                               help="With --retain: keep the newest %(metavar)s build manifests per "
                                    "architecture. Default %(default)s.")
-  cleanup_parser.add_argument("--store", dest="retainStore", metavar="URL", default=None,
-                              help=("With --retain: remote store to reconstruct the signed common "
-                                    "manifests from, one per architecture found on disk (plus 'shared') — "
-                                    "same derivation as bits build's signed reuse. http(s) and b3:///s3:// "
-                                    "forms accepted."))
+  add_remote_store(cleanup_parser, dest="retainStore", default=None,
+                   help=("With --retain: remote store to reconstruct the signed common "
+                         "manifests from, one per architecture found on disk (plus 'shared') — "
+                         "same derivation as bits build's signed reuse. http(s) and b3:///s3:// "
+                         "forms accepted."))
   cleanup_parser.add_argument("--trust-manifest", dest="trustManifests", metavar="PATH|URL",
                               action="append", default=[],
                               help=("With --retain: explicit signed common manifest(s) in addition to (or "
