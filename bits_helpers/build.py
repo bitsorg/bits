@@ -1984,8 +1984,7 @@ def _doCheckout(spec, workDir, referenceSources, docker, enforce_mode,
   Used by the --builders path so that source clones/archive downloads run as
   scheduler tasks (capped by --parallel-downloads) overlapping compilation,
   instead of being executed serially in the preparation loop before any build
-  starts.  Mirrors the work the Makeflow path does in its parallel .checkout
-  rules (bits_helpers.checkout_runner).
+  starts.
 
   Returns an empty string on success or an error message on failure, matching
   the scheduler convention (a falsy result means the task succeeded).
