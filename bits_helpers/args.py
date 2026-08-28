@@ -221,6 +221,29 @@ def bits_string(s):
 
 def doParseArgs():
   detectedArch = detectArch()
+
+  # Shared adders for the cross-cutting options, so every action gets the same
+  # flag string, dest, metavar and default by construction (no per-action drift).
+  # Help stays per-action (passed in). config-dir also takes a per-action default
+  # because `bits init` places recipes under DEVELPREFIX, not BITS_REPO_DIR.
+  def add_architecture(p, help):
+    p.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH",
+                   default=detectedArch, help=help)
+  def add_work_dir(p, help):
+    p.add_argument("-w", "--work-dir", dest="workDir", metavar="WORKDIR",
+                   default=DEFAULT_WORK_DIR, help=help)
+  def add_config_dir(p, help, default=None):
+    p.add_argument("-c", "--config-dir", "--config", dest="configDir",
+                   metavar="CONFIGDIR",
+                   default=os.environ.get("BITS_REPO_DIR", ".") if default is None else default,
+                   help=help)
+  def add_chdir(p, help):
+    p.add_argument("-C", "--chdir", dest="chdir", metavar="DIR",
+                   default=DEFAULT_CHDIR, help=help)
+  def add_defaults(p, help):
+    p.add_argument("--defaults", dest="defaults", metavar="DEFAULT", default="release",
+                   help=help)
+
   parser = argparse.ArgumentParser(epilog="""\
   For help about each option, specify --help after the option itself. For
   complete documentation please refer to https://alisw.github.io/alibuild.
@@ -357,8 +380,8 @@ def doParseArgs():
           "packages, and flags likely memory or parallelism problems."
       ),
   )
-  stats_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
-                            help="Build work area to read stats from (default: %(default)s).")
+  add_work_dir(stats_parser,
+               help="Build work area to read stats from (default: %(default)s).")
   stats_parser.add_argument("--package", dest="package", metavar="NAME", default=None,
                             help="Show the resource timeline detail for a single package.")
   stats_parser.add_argument("--top", dest="top", type=int, default=10, metavar="N",
@@ -380,12 +403,10 @@ def doParseArgs():
           "recompiling."
       ),
   )
-  import_parser.add_argument("-w", "--work-dir", dest="workDir",
-                             default=DEFAULT_WORK_DIR,
-                             help="Build work area (overlay defaults to <work-dir>/MODULES).")
-  import_parser.add_argument("-a", "--architecture", dest="architecture",
-                             metavar="ARCH", default=detectedArch,
-                             help="Architecture the deployment was built for (default: %(default)s).")
+  add_work_dir(import_parser,
+               help="Build work area (overlay defaults to <work-dir>/MODULES).")
+  add_architecture(import_parser,
+                   help="Architecture the deployment was built for (default: %(default)s).")
   import_parser.add_argument("--modulepath", dest="importModulepath",
                              metavar="DIR", default=None,
                              help="MODULEPATH of the foreign deployment to harvest via modulecmd.")
@@ -420,8 +441,8 @@ def doParseArgs():
   build_parser.add_argument("pkgname", metavar="PACKAGE", nargs="+",
                             help="One of the packages in CONFIGDIR. May be specified multiple times.")
 
-  build_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
-                            help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  add_defaults(build_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
 
   build_parser.add_argument("--flavour", "--flavor", dest="flavours", action="append",
                             default=[], metavar="NAME[=VALUE]",
@@ -431,10 +452,10 @@ def doParseArgs():
                                   "into the build environment; they override a defaults `variables:` "
                                   "entry of the same name."))
 
-  build_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                            help=("Build as if on the specified architecture. When used with --docker, build "
-                                  "inside a Docker image for the specified architecture. Default is the current "
-                                  "system architecture, which is '%(default)s'."))
+  add_architecture(build_parser,
+                   help=("Build as if on the specified architecture. When used with --docker, build "
+                         "inside a Docker image for the specified architecture. Default is the current "
+                         "system architecture, which is '%(default)s'."))
   build_parser.add_argument("--force-unknown-architecture", dest="forceUnknownArch", action="store_true",
                             help="Build on this system, even if it doesn't have a supported architecture.")
   build_parser.add_argument("-z", "--devel-prefix", nargs="?", dest="develPrefix", default=argparse.SUPPRESS,
@@ -782,14 +803,14 @@ def doParseArgs():
                             """)
 
   build_dirs = build_parser.add_argument_group(title="Customise bits directories")
-  build_dirs.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
-                          help=("Change to the specified directory before building. "
-                                "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
-  build_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
-                          help=("The toplevel directory under which builds should be done and build results "
-                                "should be installed. Default '%(default)s'."))
-  build_dirs.add_argument("-c", "--config-dir", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
-                          help="The directory containing build recipes. Default '%(default)s'.")
+  add_chdir(build_dirs,
+            help=("Change to the specified directory before building. "
+                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
+  add_work_dir(build_dirs,
+               help=("The toplevel directory under which builds should be done and build results "
+                     "should be installed. Default '%(default)s'."))
+  add_config_dir(build_dirs,
+                 help="The directory containing build recipes. Default '%(default)s'.")
   build_dirs.add_argument("--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
                           default="%(workDir)s/MIRROR",
                           help=("The directory where reference git repositories will be cloned. "
@@ -893,28 +914,28 @@ def doParseArgs():
   )
 
   # Options for clean subcommand
-  clean_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                            help=("Clean up build results for this architecture. Default is the current system "
-                                  "architecture, which is '%(default)s'."))
+  add_architecture(clean_parser,
+                   help=("Clean up build results for this architecture. Default is the current system "
+                         "architecture, which is '%(default)s'."))
   clean_parser.add_argument("--aggressive-cleanup", dest="aggressiveCleanup", action="store_true",
                             help="Delete as much build data as possible when cleaning up.")
   clean_dirs = clean_parser.add_argument_group(title="Customise bits directories")
-  clean_dirs.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
-                          help=("Change to the specified directory before cleaning up. "
-                                "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
-  clean_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
-                          help="The toplevel directory used in previous builds. Default '%(default)s'.")
+  add_chdir(clean_dirs,
+            help=("Change to the specified directory before cleaning up. "
+                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
+  add_work_dir(clean_dirs,
+               help="The toplevel directory used in previous builds. Default '%(default)s'.")
 
   # Options for the deps subcommand
   deps_parser.add_argument("package", metavar="PACKAGE",
                            help="Calculate dependency tree for %(metavar)s.")
 
-  deps_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                           help=("Resolve dependencies as if on the specified architecture. When used with "
-                                 "--docker, use a Docker image for the specified architecture. Default is "
-                                 "the current system architecture, which is '%(default)s'."))
-  deps_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
-                           help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  add_architecture(deps_parser,
+                   help=("Resolve dependencies as if on the specified architecture. When used with "
+                         "--docker, use a Docker image for the specified architecture. Default is "
+                         "the current system architecture, which is '%(default)s'."))
+  add_defaults(deps_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
   deps_parser.add_argument("--disable", dest="disable", default=[], metavar="PACKAGE", action="append",
                            help=("Assume we're not building %(metavar)s and all its (unique) dependencies. "
                                  "You can specify this option multiple times or separate multiple arguments "
@@ -945,9 +966,8 @@ def doParseArgs():
                                  "Passed through verbatim -- separate multiple arguments "
                                  "with spaces, and make sure quoting is correct! Implies --docker."))
 
-  deps_parser.add_argument_group(title="Customise bits directories") \
-             .add_argument("-c", "--config-dir", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
-                           help="The directory containing build recipes. Default '%(default)s'.")
+  add_config_dir(deps_parser.add_argument_group(title="Customise bits directories"),
+                 help="The directory containing build recipes. Default '%(default)s'.")
 
   deps_system = deps_parser.add_mutually_exclusive_group()
   deps_system.add_argument("--always-prefer-system", dest="preferSystem", action="store_true",
@@ -960,12 +980,12 @@ def doParseArgs():
                              help=("Check whether all system requirements of %(metavar)s are satisfied. "
                                    "May be specified multiple times. "
                                    "Optional when --runner is used."))
-  doctor_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                             help=("Resolve requirements as if on the specified architecture. When used with "
-                                   "--docker, use a Docker image for the specified architecture. Default is "
-                                   "the current system architecture, which is '%(default)s'."))
-  doctor_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
-                             help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  add_architecture(doctor_parser,
+                   help=("Resolve requirements as if on the specified architecture. When used with "
+                         "--docker, use a Docker image for the specified architecture. Default is "
+                         "the current system architecture, which is '%(default)s'."))
+  add_defaults(doctor_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
   doctor_parser.add_argument("--disable", dest="disable", default=[], metavar="PACKAGE", action="append",
                              help=("Assume we're not building %(metavar)s and all its (unique) dependencies. "
                                    "You can specify this option multiple times or separate multiple arguments "
@@ -1019,14 +1039,14 @@ def doParseArgs():
   _add_s3_connection_opts(doctor_remote)
 
   doctor_dirs = doctor_parser.add_argument_group(title="Customise bits directories")
-  doctor_dirs.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
-                           help=("Change to the specified directory before doing anything. "
-                                 "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
-  doctor_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,  # TODO: previous default was "workDir".
-                           help=("The toplevel directory under which builds should be done and build results "
-                                 "should be installed. Default '%(default)s'."))
-  doctor_dirs.add_argument("-c", "--config", "--config-dir", dest="configDir", default=os.environ.get("BITS_REPO_DIR","."),
-                           help="The directory containing build recipes. Default '%(default)s'.")
+  add_chdir(doctor_dirs,
+            help=("Change to the specified directory before doing anything. "
+                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
+  add_work_dir(doctor_dirs,
+               help=("The toplevel directory under which builds should be done and build results "
+                     "should be installed. Default '%(default)s'."))
+  add_config_dir(doctor_dirs,
+                 help="The directory containing build recipes. Default '%(default)s'.")
 
   # Mode flags — apply to --runner, --check-store, and future modes
   doctor_parser.add_argument(
@@ -1082,11 +1102,11 @@ def doParseArgs():
   )
 
   # Options for the brew subcommand
-  brew_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                           help=("Generate the Brewfile for the specified architecture. Only recipes whose "
-                                 "prefer_system matches this architecture are included. Default '%(default)s'."))
-  brew_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
-                           help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  add_architecture(brew_parser,
+                   help=("Generate the Brewfile for the specified architecture. Only recipes whose "
+                         "prefer_system matches this architecture are included. Default '%(default)s'."))
+  add_defaults(brew_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
   brew_parser.add_argument("-o", "--output", dest="output", metavar="FILE", default=None,
                            help=("Write the Brewfile to %(metavar)s. Use '-' for stdout. "
                                  "Default: <CONFIGDIR>/macos/Brewfile (next to the recipes, "
@@ -1094,21 +1114,21 @@ def doParseArgs():
   brew_parser.add_argument("--check", dest="check", action="store_true", default=False,
                            help=("Do not write; exit non-zero if FILE is missing or differs from what "
                                  "would be generated (for CI / pre-commit)."))
-  brew_parser.add_argument("-c", "--config", "--config-dir", dest="configDir", default=os.environ.get("BITS_REPO_DIR", "."),
-                           help="The directory containing build recipes. Default '%(default)s'.")
-  brew_parser.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
-                           help=("Change to the specified directory before doing anything. "
-                                 "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
+  add_config_dir(brew_parser,
+                 help="The directory containing build recipes. Default '%(default)s'.")
+  add_chdir(brew_parser,
+            help=("Change to the specified directory before doing anything. "
+                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
 
   # Options for the init subcommand
   init_parser.add_argument("pkgname", nargs="?", default="", metavar="PACKAGE",
                            help="Package to clone locally. One of the packages in CONFIGDIR.")
-  init_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                           help=("Parse defaults using the specified architecture. Default is "
-                                 "the current system architecture, which is '%(default)s'."))
+  add_architecture(init_parser,
+                   help=("Parse defaults using the specified architecture. Default is "
+                         "the current system architecture, which is '%(default)s'."))
 
-  init_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
-                           help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  add_defaults(init_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
   init_parser.add_argument("-z", "--devel-prefix", dest="develPrefix", default=".",
                            help=("Directory under which to clone the repository of build recipes. "
                                  "See also: -c/--config-dir. Default '%(default)s'."))
@@ -1121,15 +1141,15 @@ def doParseArgs():
                                  "repository's main branch."))
 
   init_dirs = init_parser.add_argument_group(title="Customise bits directories")
-  init_dirs.add_argument("-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
-                         help=("Change to the specified directory before doing anything. "
-                               "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
-  init_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
-                         help=("The toplevel directory under which builds should be done and "
-                               "build results should be installed. Default '%(default)s'."))
-  init_dirs.add_argument("-c", "--config-dir", "--config", dest="configDir", default="%(prefix)salidist",
-                         help=("The directory where build recipes will be placed. '%%(prefix)s' will "
-                               "be replaced with 'DEVELPREFIX/'. Default '%(default)s'."))
+  add_chdir(init_dirs,
+            help=("Change to the specified directory before doing anything. "
+                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
+  add_work_dir(init_dirs,
+               help=("The toplevel directory under which builds should be done and "
+                     "build results should be installed. Default '%(default)s'."))
+  add_config_dir(init_dirs, default="%(prefix)salidist",
+                 help=("The directory where build recipes will be placed. '%%(prefix)s' will "
+                       "be replaced with 'DEVELPREFIX/'. Default '%(default)s'."))
   init_dirs.add_argument("--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
                          default="%(workDir)s/MIRROR",
                          help=("The directory where reference git repositories will be cloned. "
@@ -1161,9 +1181,9 @@ def doParseArgs():
                              "overwriting it. Without this flag a fresh file is written.")
 
   # Options for the version subcommand
-  version_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                              help=("Display the specified architecture next to the version number. Default is "
-                                    "the current system architecture, which is '%(default)s'."))
+  add_architecture(version_parser,
+                   help=("Display the specified architecture next to the version number. Default is "
+                         "the current system architecture, which is '%(default)s'."))
 
   # Options for the publish command
   publish_parser.add_argument("package", metavar="PACKAGE", nargs="?", default=None,
@@ -1188,10 +1208,10 @@ def doParseArgs():
   publish_parser.add_argument("--spool", dest="spool", default=None, metavar="[USER@HOST:]PATH",
                               help=("Ingestion spool root.  Either a local directory or a remote rsync "
                                     "target (user@host:/path).  Required unless --prepub-url is given."))
-  publish_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
-                              help="bits work directory containing the installed packages. Default: %(default)s.")
-  publish_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                              help="Target architecture. Default: %(default)s.")
+  add_work_dir(publish_parser,
+               help="bits work directory containing the installed packages. Default: %(default)s.")
+  add_architecture(publish_parser,
+                   help="Target architecture. Default: %(default)s.")
   publish_parser.add_argument("--scratch-dir", dest="scratchDir", default=None, metavar="DIR",
                               help="Directory for the temporary CVMFS working copy. Defaults to a system temp dir.")
   publish_parser.add_argument("--rsync-opts", dest="rsyncOpts", default=None, metavar="OPTS",
@@ -1333,10 +1353,10 @@ def doParseArgs():
   certify_parser.add_argument("--no-store-check", dest="noStoreCheck", action="store_true", default=False,
                               help=("Skip validating each hash against the store before signing. "
                                     "Only for offline dry merges; a real certification must verify the store."))
-  certify_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
-                              help="bits work directory (source of MANIFESTS when no MANIFEST is given). Default: %(default)s.")
-  certify_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                              help="Architecture for store-path resolution. Default: %(default)s.")
+  add_work_dir(certify_parser,
+               help="bits work directory (source of MANIFESTS when no MANIFEST is given). Default: %(default)s.")
+  add_architecture(certify_parser,
+                   help="Architecture for store-path resolution. Default: %(default)s.")
 
   # Options for the compliance subcommand
   compliance_parser.add_argument("packages", metavar="PACKAGE", nargs="*", default=[],
@@ -1346,14 +1366,13 @@ def doParseArgs():
                                        "is audited. Typically the group's meta-package(s), e.g. 'externals "
                                        "generators'. Without %(metavar)s, one recipe directory is scanned "
                                        "(--recipes, default the current directory)."))
-  compliance_parser.add_argument("-c", "--config-dir", "--config", dest="configDir",
-                                 default=os.environ.get("BITS_REPO_DIR", "."),
-                                 help="The directory containing build recipes (group mode). Default '%(default)s'.")
-  compliance_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                                 help=("Resolve the closure as if on %(metavar)s (group mode). Default is the "
-                                       "current system architecture, '%(default)s'."))
-  compliance_parser.add_argument("--defaults", dest="defaults", default="release", metavar="DEFAULT",
-                                 help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh (group mode).")
+  add_config_dir(compliance_parser,
+                 help="The directory containing build recipes (group mode). Default '%(default)s'.")
+  add_architecture(compliance_parser,
+                   help=("Resolve the closure as if on %(metavar)s (group mode). Default is the "
+                         "current system architecture, '%(default)s'."))
+  add_defaults(compliance_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh (group mode).")
   compliance_parser.add_argument("--disable", dest="disable", default=[], metavar="PACKAGE", action="append",
                                  help=("Assume we're not building %(metavar)s and all its (unique) dependencies "
                                        "(group mode). Repeat or comma-separate."))
@@ -1366,8 +1385,8 @@ def doParseArgs():
                                        "b3://<bucket>, or s3://<bucket>. Default: %(default)s"))
   compliance_parser.add_argument("--no-store-check", dest="noStoreCheck", action="store_true", default=False,
                                  help="Audit the recipes only; skip the store walk and the public-access probe.")
-  compliance_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
-                                 help="bits work directory (scratch for the store client). Default: %(default)s.")
+  add_work_dir(compliance_parser,
+               help="bits work directory (scratch for the store client). Default: %(default)s.")
   compliance_parser.add_argument("--enforce", dest="enforce", action="store_true", default=False,
                                  help=("ADMIN: remove non-compliant packages from the store — delete their "
                                        "TARS objects, rev-index markers and SOURCES archives, rewrite the "
@@ -1387,10 +1406,10 @@ def doParseArgs():
   gc_parser.add_argument("--store", dest="gcStore", metavar="URL",
                          default="https://s3.cern.ch/lcgapp-bits-testing",
                          help="S3 store URL/bucket to sweep. Default: %(default)s")
-  gc_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                         help="Architecture store tree to sweep. Default: %(default)s.")
-  gc_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
-                         help="bits work directory (for the S3 client). Default: %(default)s.")
+  add_architecture(gc_parser,
+                   help="Architecture store tree to sweep. Default: %(default)s.")
+  add_work_dir(gc_parser,
+               help="bits work directory (for the S3 client). Default: %(default)s.")
   gc_parser.add_argument("--grace-days", dest="graceDays", type=float, default=7.0, metavar="DAYS",
                          help=("Never sweep an object younger than DAYS, so artifacts from an in-flight "
                                "build not yet in any signed manifest are not raced away. Default: %(default)s."))
@@ -1416,18 +1435,16 @@ def doParseArgs():
                                   help="Path to write the store document. Default: %(default)s")
   store_stats_parser.add_argument("--monitor-url", dest="monitorUrl", metavar="URL", default=None,
                                   help="Also POST Prometheus gauges here (falls back to $METRICS_URL).")
-  store_stats_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="WORKDIR",
-                                  help="bits work directory (S3 client + default MANIFESTS). Default: %(default)s.")
-  store_stats_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=detectedArch,
-                                  help="Architecture for store-path resolution. Default: %(default)s.")
+  add_work_dir(store_stats_parser,
+               help="bits work directory (S3 client + default MANIFESTS). Default: %(default)s.")
+  add_architecture(store_stats_parser,
+                   help="Architecture for store-path resolution. Default: %(default)s.")
 
   # Options for the cleanup subcommand
-  cleanup_parser.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,
-                              metavar="WORKDIR",
-                              help="Persistent bits work directory to clean. Default: %(default)s.")
-  cleanup_parser.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH",
-                              default=detectedArch,
-                              help="Architecture sub-directory to scan. Default: %(default)s.")
+  add_work_dir(cleanup_parser,
+               help="Persistent bits work directory to clean. Default: %(default)s.")
+  add_architecture(cleanup_parser,
+                   help="Architecture sub-directory to scan. Default: %(default)s.")
   cleanup_parser.add_argument("--max-age", dest="maxAgeDays", type=float, default=7.0, metavar="DAYS",
                               help=("Evict packages whose sentinel has not been touched in more than "
                                     "DAYS days. Default: %(default)s. Set to 0 to disable age-based "
@@ -1484,11 +1501,9 @@ def doParseArgs():
             "(e.g. /cvmfs/alice.cern.ch).  "
             "Searched before --work-dir."),
   )
-  verify_parser.add_argument(
-      "-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="DIR",
-      help=("Local bits work directory containing the TARS/ store.  "
-            "Default '%(default)s'."),
-  )
+  add_work_dir(verify_parser,
+               help=("Local bits work directory containing the TARS/ store.  "
+                     "Default '%(default)s'."))
   verify_parser.add_argument(
       "--no-providers", dest="noProviders", action="store_true", default=False,
       help="Skip verification of provider checkout commits.",
@@ -1503,30 +1518,18 @@ def doParseArgs():
       "pkgname", metavar="PACKAGE", nargs="+",
       help="One or more packages to resolve (including all dependencies).",
   )
-  status_parser.add_argument(
-      "--defaults", dest="defaults", default="release", metavar="DEFAULT",
-      help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.",
-  )
-  status_parser.add_argument(
-      "-a", "--architecture", dest="architecture", metavar="ARCH",
-      default=detectedArch,
-      help=("Target architecture. Default is the current system architecture, "
-            "which is '%(default)s'."),
-  )
-  status_parser.add_argument(
-      "-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR, metavar="DIR",
-      help=("The bits work directory to inspect. Default '%(default)s'."),
-  )
-  status_parser.add_argument(
-      "-c", "--config", "--config-dir", dest="configDir",
-      default=os.environ.get("BITS_REPO_DIR", "."),
-      help="The directory containing build recipes. Default '%(default)s'.",
-  )
-  status_parser.add_argument(
-      "-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
-      help=("Change to the specified directory before doing anything. "
-            "Default '%(default)s'."),
-  )
+  add_defaults(status_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  add_architecture(status_parser,
+                   help=("Target architecture. Default is the current system architecture, "
+                         "which is '%(default)s'."))
+  add_work_dir(status_parser,
+               help="The bits work directory to inspect. Default '%(default)s'.")
+  add_config_dir(status_parser,
+                 help="The directory containing build recipes. Default '%(default)s'.")
+  add_chdir(status_parser,
+            help=("Change to the specified directory before doing anything. "
+                  "Default '%(default)s'."))
   status_parser.add_argument(
       "--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
       default="%(workDir)s/MIRROR",
@@ -1622,21 +1625,15 @@ def doParseArgs():
       "--prefix", dest="prefix", metavar="ROOT", default="",
       help="Fallback CVMFS root used only when the loaded defaults declare no "
            "system.prefix (for recipe sets that cannot declare their own).")
-  cvmfs_path_parser.add_argument(
-      "--defaults", dest="defaults", default="release", metavar="DEFAULT",
-      help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
-  cvmfs_path_parser.add_argument(
-      "-a", "--architecture", dest="architecture", metavar="ARCH",
-      default=detectedArch,
-      help="Target architecture used to load the defaults. Default '%(default)s'.")
-  cvmfs_path_parser.add_argument(
-      "-c", "--config", "--config-dir", dest="configDir",
-      default=os.environ.get("BITS_REPO_DIR", "."),
-      help="The directory containing build recipes. Default '%(default)s'.")
-  cvmfs_path_parser.add_argument(
-      "-C", "--chdir", metavar="DIR", dest="chdir", default=DEFAULT_CHDIR,
-      help="Change to the specified directory before doing anything. "
-           "Default '%(default)s'.")
+  add_defaults(cvmfs_path_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  add_architecture(cvmfs_path_parser,
+                   help="Target architecture used to load the defaults. Default '%(default)s'.")
+  add_config_dir(cvmfs_path_parser,
+                 help="The directory containing build recipes. Default '%(default)s'.")
+  add_chdir(cvmfs_path_parser,
+            help="Change to the specified directory before doing anything. "
+                 "Default '%(default)s'.")
   cvmfs_path_parser.add_argument(
       "--disable", dest="disable", metavar="PACKAGE", default=[], action="append",
       help="Disable the given package(s) when loading defaults. May be repeated.")
