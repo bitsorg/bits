@@ -351,7 +351,7 @@ class NewCLIFlagsTest(unittest.TestCase):
     @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")
     def test_pipeline_flag(self, mock_commands):
-        """--pipeline sets pipeline=True."""
+        """--makeflow/--pipeline are deprecated: accepted but routed to --builders."""
         import shlex
         from unittest.mock import patch as _patch
         mock_commands.getstatusoutput.return_value = (0, "/usr/local/bin/docker")
@@ -366,7 +366,27 @@ class NewCLIFlagsTest(unittest.TestCase):
                             "--makeflow", "--pipeline", "zlib"]):
             args, _ = doParseArgs()
 
-        self.assertTrue(args.pipeline)
+        # Deprecation shim maps the flags to the in-process --builders scheduler.
+        self.assertFalse(args.pipeline)
+        self.assertFalse(args.makeflow)
+        self.assertGreaterEqual(args.builders, 2)
+
+    @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
+    @patch("bits_helpers.args.commands")
+    def test_makeflow_preserves_explicit_builders(self, mock_commands):
+        """--makeflow with an explicit --builders N keeps N (not bumped)."""
+        from unittest.mock import patch as _patch
+        mock_commands.getstatusoutput.return_value = (0, "/usr/local/bin/docker")
+        import bits_helpers.args
+        from bits_helpers.args import doParseArgs
+        bits_helpers.args.DEFAULT_WORK_DIR = "sw"
+        bits_helpers.args.DEFAULT_CHDIR = "."
+        with _patch.object(sys, "argv",
+                           ["bits", "build", "--force-unknown-architecture",
+                            "--makeflow", "--builders", "8", "zlib"]):
+            args, _ = doParseArgs()
+        self.assertEqual(args.builders, 8)
+        self.assertFalse(args.makeflow)
 
     @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")

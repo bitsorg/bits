@@ -567,7 +567,8 @@ def doParseArgs():
                                   "PACKAGE is compiled or downloaded during this run; if it "
                                   "already exists, this does not happen."))
   build_parser.add_argument("--makeflow", default=False, action="store_true",
-                            help=("Use makeflow for paralle workflow execution. "))
+                            help=("[DEPRECATED] Retired in favour of --builders; this flag is "
+                                  "now mapped to --builders and will be removed."))
   build_parser.add_argument("--only-deps", dest="onlyDeps", default=False, action="store_true",
                             help="Only build dependencies, not the main package (e.g. for caching)")
 
@@ -766,6 +767,7 @@ def doParseArgs():
   _add_s3_connection_opts(build_remote)
   build_remote.add_argument("--pipeline", dest="pipeline", action="store_true", default=False,
                             help="""\
+                            [DEPRECATED] Retired with --makeflow (mapped to --builders), to be removed.
                             (Requires --makeflow) Activates Options 1 and 4: split each package's Makeflow
                             rules into three targets (.build, .tar, .upload) so tarball creation and remote
                             upload run concurrently with downstream package builds. Silently ignored without
@@ -798,6 +800,7 @@ def doParseArgs():
   build_remote.add_argument("--makeflow-jobs", dest="makeflowJobs", type=int, default=4,
                             metavar="N",
                             help="""\
+                            [DEPRECATED] Retired with --makeflow; use --builders N instead.
                             (Requires --makeflow) Maximum number of build jobs Makeflow runs in parallel
                             on the local machine (passed as --max-local N to makeflow). Each build job
                             itself uses all available CPU cores (controlled by -j / --jobs), so running
@@ -1907,6 +1910,21 @@ def finaliseArgs(args, parser):
   # if args.action in ["version", "analytics", "architecture"]:
   if args.action in ["version", "architecture", "verify", "stats"]:
     return args
+
+  # DEPRECATION SHIM (consolidation): --makeflow / --pipeline / --makeflow-jobs are
+  # being retired in favour of the in-process --builders scheduler. Keep the flags
+  # accepted — bits-console still emits --makeflow by default — but route them to
+  # --builders and warn, so nothing breaks while the console is switched over. The
+  # makeflow code path itself is removed in a later commit. Runs before doBuild.
+  if args.action == "build" and (getattr(args, "makeflow", False)
+                                 or getattr(args, "pipeline", False)):
+    from bits_helpers.log import warning
+    if getattr(args, "builders", 1) <= 1:
+      args.builders = max(2, getattr(args, "makeflowJobs", 4) or 4)
+    warning("--makeflow/--pipeline are deprecated and will be removed; "
+            "building with --builders %d instead.", args.builders)
+    args.makeflow = False
+    args.pipeline = False
 
   # Minimal finalisation for cvmfs-path: only the defaults profile is loaded
   # (no package/version resolution), so just normalise the defaults + disable
