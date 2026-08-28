@@ -16,6 +16,7 @@ Covers:
 
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -513,6 +514,87 @@ class TestLoadAlwaysOnProviders(unittest.TestCase):
             provider_name="prepend-recipes",
             policy={},
         )
+
+
+class TestLocalProviderShadowing(unittest.TestCase):
+    """A declared provider that is also checked out locally in config_dir is
+    used from that checkout instead of being cloned."""
+
+    @staticmethod
+    def _git(d, *args):
+        subprocess.run(["git", "-C", d, *args], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.config_dir = os.path.join(self.tmp, "cfg")
+        self.work_dir = os.path.join(self.tmp, "sw")
+        self.ref_dir = os.path.join(self.tmp, "mirror")
+        for d in (self.config_dir, self.work_dir, self.ref_dir):
+            os.makedirs(d)
+        # A declared provider recipe, plus a local checkout named after it.
+        _make_provider_sh(self.config_dir, "myprov.bits",
+                          "https://invalid.example/nope.git")
+        self.local = os.path.join(self.config_dir, "myprov.bits")
+        os.makedirs(self.local)
+        with open(os.path.join(self.local, "foo.sh"), "w") as fh:
+            fh.write('package: "foo"\nversion: "1"\n---\n')
+        self._git(self.local, "init", "-q")
+        self._git(self.local, "config", "user.email", "t@t")
+        self._git(self.local, "config", "user.name", "t")
+        self._git(self.local, "add", "-A")
+        self._git(self.local, "commit", "-qm", "init")
+        self._saved_path = os.environ.pop("BITS_PATH", None)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.environ.pop("BITS_PATH", None)
+        if self._saved_path is not None:
+            os.environ["BITS_PATH"] = self._saved_path
+
+    def _load(self, **kw):
+        return load_always_on_providers(
+            config_dir=self.config_dir, work_dir=self.work_dir,
+            reference_sources=self.ref_dir, fetch_repos=False, **kw)
+
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    def test_local_checkout_used_instead_of_clone(self, mock_clone):
+        result = self._load()
+        mock_clone.assert_not_called()
+        self.assertIn(self.local, result)
+        pkg, commit = result[self.local]
+        self.assertEqual(pkg, "myprov.bits")
+        self.assertRegex(commit, r"^[0-9a-f]{7,40}$")
+        self.assertIn(self.local, os.environ.get("BITS_PATH", "").split(","))
+
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    def test_force_tracked_falls_back_to_clone(self, mock_clone):
+        clone_dir = os.path.join(self.work_dir, "clone")
+        os.makedirs(clone_dir, exist_ok=True)
+        mock_clone.return_value = (clone_dir, "deadbeef")
+        result = self._load(force_tracked=True)
+        mock_clone.assert_called_once()
+        self.assertNotIn(self.local, result)
+
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    def test_dirty_checkout_marked(self, mock_clone):
+        with open(os.path.join(self.local, "untracked.sh"), "w") as fh:
+            fh.write("x")
+        _, commit = self._load()[self.local]
+        mock_clone.assert_not_called()
+        self.assertTrue(commit.endswith("-dirty"))
+
+    def test_local_provider_dir_helper(self):
+        from bits_helpers.repo_provider import _local_provider_dir
+        self.assertEqual(_local_provider_dir(self.config_dir, "myprov.bits"),
+                         self.local)
+        self.assertIsNone(_local_provider_dir(self.config_dir, "nonexistent.bits"))
+
+    def test_non_git_dir_hashes_to_local(self):
+        from bits_helpers.repo_provider import _local_provider_hash
+        plain = os.path.join(self.tmp, "plaindir")
+        os.makedirs(plain)
+        self.assertEqual(_local_provider_hash(plain), "local")
 
 
 if __name__ == "__main__":

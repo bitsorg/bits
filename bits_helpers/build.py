@@ -2678,6 +2678,7 @@ def doBuild(args, parser):
     bits_providers    = getattr(args, "bits_providers", None),
     taps              = taps,
     provider_policy   = getattr(args, "provider_policy", {}),
+    force_tracked     = getattr(args, "forceTracked", False),
   )
 
   # Phase 2 – Iterative scan: walk the top-level package list for any packages
@@ -2718,6 +2719,7 @@ def doBuild(args, parser):
     overrides         = overrides,
     defaults          = args.defaults,
     default_vars      = defaultsMeta.get("variables"),
+    force_tracked     = getattr(args, "forceTracked", False),
   )
   provider_dirs.update(always_on_dirs)
 

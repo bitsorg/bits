@@ -452,6 +452,7 @@ def load_always_on_providers(
   bits_providers: str = None,
   taps: dict = None,
   provider_policy: dict = None,
+  force_tracked: bool = False,
 ) -> dict:
   """Clone providers that must be loaded unconditionally before any
   dependency-graph traversal.
@@ -530,9 +531,15 @@ def load_always_on_providers(
       continue
     debug("Always-loading provider '%s' from config dir", pkg)
     try:
-      checkout_dir, commit_hash = clone_or_update_provider(
-        spec, work_dir, reference_sources, fetch_repos,
-      )
+      _local = None if force_tracked else _local_provider_dir(config_dir, pkg)
+      if _local:
+        checkout_dir, commit_hash = _local, _local_provider_hash(_local)
+        info("Using local checkout of provider '%s' at %s (commit %s)",
+             pkg, _local, commit_hash[:12])
+      else:
+        checkout_dir, commit_hash = clone_or_update_provider(
+          spec, work_dir, reference_sources, fetch_repos,
+        )
       _add_to_bits_path(
         checkout_dir,
         recipe_position=spec.get("repository_position", "append"),
@@ -572,6 +579,41 @@ def cwd_is_recipe_dir() -> bool:
   can be called on every ``bits build`` invocation without measurable overhead.
   """
   return os.path.exists("defaults-release.sh")
+
+
+# ── Local provider shadowing ────────────────────────────────────────────────
+
+def _local_provider_dir(config_dir, package):
+  """Return ``<config_dir>/<package>`` when it is a local directory of recipes.
+
+  Lets a repository provider that is already DECLARED (a ``provides_repository``
+  recipe) but also checked out locally next to its recipe be used from that
+  checkout instead of cloned — mirroring how a locally checked-out package
+  shadows its source. Only a declared provider is ever shadowed; this never
+  scans for undeclared directories, so the recipe/package discovery path is
+  unchanged (the local dir simply takes the clone's place on ``BITS_PATH``).
+  """
+  d = join(abspath(config_dir), package)
+  if os.path.isdir(d) and glob.glob(join(d, "*.sh")):
+    return d
+  return None
+
+
+def _local_provider_hash(directory):
+  """Best-effort reproducible identity of a local provider checkout: the git
+  HEAD commit (plus a ``-dirty`` marker when the tree has changes), or
+  ``local`` when the directory is not a git checkout."""
+  scm = Git()
+  err, out = scm.exec(("rev-parse", "HEAD"), directory=directory, check=False)
+  if err or not out.strip():
+    return "local"
+  commit = out.strip()
+  err2, dirty = scm.exec(("status", "--porcelain"), directory=directory, check=False)
+  if not err2 and dirty.strip():
+    warning("Local provider checkout %s has uncommitted changes; recording "
+            "provenance as %s-dirty.", directory, commit[:10])
+    return commit + "-dirty"
+  return commit
 
 
 # ── Backward-compat bootstrap ───────────────────────────────────────────────
@@ -758,6 +800,7 @@ def fetch_repo_providers_iteratively(
     overrides: dict = None,
     defaults: list = None,
     default_vars: dict = None,
+    force_tracked: bool = False,
 ) -> dict:
     """Discover, clone, and register all repository-provider packages
     reachable from the *packages* list.
@@ -827,9 +870,15 @@ def fetch_repo_providers_iteratively(
 
             # ── New provider found ───────────────────────────────────────
             if spec.get("provides_repository") and pkg not in cloned:
-                checkout_dir, commit_hash = clone_or_update_provider(
-                    spec, work_dir, reference_sources, fetch_repos,
-                )
+                _local = None if force_tracked else _local_provider_dir(config_dir, pkg)
+                if _local:
+                    checkout_dir, commit_hash = _local, _local_provider_hash(_local)
+                    info("Using local checkout of provider '%s' at %s (commit %s)",
+                         pkg, _local, commit_hash[:12])
+                else:
+                    checkout_dir, commit_hash = clone_or_update_provider(
+                        spec, work_dir, reference_sources, fetch_repos,
+                    )
                 _add_to_bits_path(
                     checkout_dir,
                     recipe_position=spec.get("repository_position", "append"),

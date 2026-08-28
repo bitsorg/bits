@@ -1498,8 +1498,9 @@ def getConfigPaths(configDir):
   Each entry in the ``BITS_PATH`` environment variable is interpreted as:
 
   * An **absolute path** – used directly (no ``.bits`` suffix appended).
-    This is used by repository-provider checkouts, which are stored at
-    absolute paths under ``$BITS_WORK_DIR/REPOS/``.
+    Used by repository-provider checkouts: a cloned provider under
+    ``$BITS_WORK_DIR/REPOS/``, or a locally-shadowed provider under the
+    config dir (see repo_provider._local_provider_dir).
   * A **relative name** – resolved as ``<configDir>/<name>.bits`` (the
     original behaviour for named recipe repositories).
   """
