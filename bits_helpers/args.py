@@ -261,6 +261,12 @@ def doParseArgs():
   def add_defaults(p, help):
     p.add_argument("--defaults", dest="defaults", metavar="DEFAULT", default="release",
                    help=help)
+  def add_search_path(p, help=("Comma-separated recipe sub-repos to search besides "
+                               "CONFIGDIR (relative NAME -> <config-dir>/NAME.bits, "
+                               "absolute used as-is). Seeds BITS_PATH; wins over a "
+                               "bits.rc search_path, loses to an explicit $BITS_PATH.")):
+    p.add_argument("--search-path", dest="searchPath", metavar="NAMES", default=None,
+                   help=help)
   def add_remote_store(p, dest, help, default=DEFAULT_S3_STORE):
     # Canonical --remote-store with --store kept as a deprecated alias (warns).
     p.add_argument("--remote-store", "--store", dest=dest, metavar="URL",
@@ -835,6 +841,7 @@ def doParseArgs():
                      "should be installed. Default '%(default)s'."))
   add_config_dir(build_dirs,
                  help="The directory containing build recipes. Default '%(default)s'.")
+  add_search_path(build_dirs)
   build_dirs.add_argument("--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
                           default="%(workDir)s/MIRROR",
                           help=("The directory where reference git repositories will be cloned. "
@@ -993,6 +1000,7 @@ def doParseArgs():
 
   add_config_dir(deps_parser.add_argument_group(title="Customise bits directories"),
                  help="The directory containing build recipes. Default '%(default)s'.")
+  add_search_path(deps_parser)
 
   deps_system = deps_parser.add_mutually_exclusive_group()
   deps_system.add_argument("--prefer-system", "--always-prefer-system", dest="preferSystem",
@@ -1074,6 +1082,7 @@ def doParseArgs():
                      "should be installed. Default '%(default)s'."))
   add_config_dir(doctor_dirs,
                  help="The directory containing build recipes. Default '%(default)s'.")
+  add_search_path(doctor_dirs)
 
   # Mode flags — apply to --runner, --check-store, and future modes
   doctor_parser.add_argument(
@@ -1390,6 +1399,7 @@ def doParseArgs():
                                        "(--recipes, default the current directory)."))
   add_config_dir(compliance_parser,
                  help="The directory containing build recipes (group mode). Default '%(default)s'.")
+  add_search_path(compliance_parser)
   add_architecture(compliance_parser,
                    help=("Resolve the closure as if on %(metavar)s (group mode). Default is the "
                          "current system architecture, '%(default)s'."))
@@ -1546,6 +1556,7 @@ def doParseArgs():
                help="The bits work directory to inspect. Default '%(default)s'.")
   add_config_dir(status_parser,
                  help="The directory containing build recipes. Default '%(default)s'.")
+  add_search_path(status_parser)
   add_chdir(status_parser,
             help=("Change to the specified directory before doing anything. "
                   "Default '%(default)s'."))
@@ -1650,6 +1661,7 @@ def doParseArgs():
                    help="Target architecture used to load the defaults. Default '%(default)s'.")
   add_config_dir(cvmfs_path_parser,
                  help="The directory containing build recipes. Default '%(default)s'.")
+  add_search_path(cvmfs_path_parser)
   add_chdir(cvmfs_path_parser,
             help="Change to the specified directory before doing anything. "
                  "Default '%(default)s'.")
@@ -1692,8 +1704,10 @@ def doParseArgs():
   # getConfigPaths). Required so that building a single package whose recipe lives
   # in a sub-repo — e.g. `bits build ROOT` where ROOT is in ./lcg.bits — finds it,
   # not only the primary config_dir. Comma-separated relative names resolve to
-  # <config_dir>/<name>.bits; an explicit BITS_PATH environment variable wins.
-  if _rc_early.get("search_path") and not os.environ.get("BITS_PATH"):
+  # <config_dir>/<name>.bits. Precedence: explicit $BITS_PATH > --search-path
+  # (applied after parsing below) > bits.rc search_path.
+  _explicit_bits_path = bool(os.environ.get("BITS_PATH"))
+  if _rc_early.get("search_path") and not _explicit_bits_path:
     os.environ["BITS_PATH"] = str(_rc_early["search_path"]).strip()
   if _rc_defaults:
     # set_defaults on the *parent* parser is overridden by each subparser's own
@@ -1771,6 +1785,11 @@ def doParseArgs():
       _init_explicit_flags.add(_tok[1:])
 
   args = finaliseArgs(parser.parse_args(), parser)
+  # --search-path (CLI) seeds BITS_PATH, winning over a bits.rc search_path but
+  # never over an explicit $BITS_PATH the user set in the environment.
+  _sp = getattr(args, "searchPath", None)
+  if _sp and not _explicit_bits_path:
+    os.environ["BITS_PATH"] = str(_sp).strip()
   args._init_explicit = _init_explicit_flags
   return (args, parser)
 

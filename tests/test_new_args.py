@@ -9,6 +9,7 @@ Covers:
   - bits publish --no-relocate: accepted and stored correctly
   - Backward compatibility: omitting new flags leaves existing defaults unchanged
 """
+import os
 import sys
 import types
 import unittest
@@ -375,6 +376,56 @@ class RenameAliasesTest(unittest.TestCase):
     def test_version_parses_plain(self):
         args = _parse(["version"])
         self.assertEqual(args.action, "version")
+
+
+class SearchPathTest(unittest.TestCase):
+    """--search-path seeds BITS_PATH; explicit $BITS_PATH wins."""
+
+    def setUp(self):
+        self._saved = os.environ.pop("BITS_PATH", None)
+
+    def tearDown(self):
+        os.environ.pop("BITS_PATH", None)
+        if self._saved is not None:
+            os.environ["BITS_PATH"] = self._saved
+
+    def test_seeds_bits_path(self):
+        _parse(["build", "-a", _ARCH, "--search-path", "lcg", "ROOT"])
+        self.assertEqual(os.environ.get("BITS_PATH"), "lcg")
+
+    def test_comma_separated(self):
+        _parse(["build", "-a", _ARCH, "--search-path", "lcg,foo", "ROOT"])
+        self.assertEqual(os.environ.get("BITS_PATH"), "lcg,foo")
+
+    def test_no_flag_leaves_unset(self):
+        _parse(["build", "-a", _ARCH, "ROOT"])
+        self.assertIsNone(os.environ.get("BITS_PATH"))
+
+    def test_explicit_env_wins(self):
+        os.environ["BITS_PATH"] = "envwins"
+        _parse(["build", "-a", _ARCH, "--search-path", "lcg", "ROOT"])
+        self.assertEqual(os.environ.get("BITS_PATH"), "envwins")
+
+    def test_dest_recorded_on_deps(self):
+        args = _parse(["deps", "-a", _ARCH, "--search-path", "bar", "ROOT"])
+        self.assertEqual(args.searchPath, "bar")
+
+    def test_precedence_over_bits_rc(self):
+        import tempfile, shutil
+        d = tempfile.mkdtemp()
+        cwd = os.getcwd()
+        try:
+            with open(os.path.join(d, "bits.rc"), "w") as fh:
+                fh.write("search_path = fromrc\n")
+            os.chdir(d)
+            _parse(["build", "-a", _ARCH, "ROOT"])
+            self.assertEqual(os.environ.get("BITS_PATH"), "fromrc")  # bits.rc seeds
+            os.environ.pop("BITS_PATH", None)
+            _parse(["build", "-a", _ARCH, "--search-path", "cli", "ROOT"])
+            self.assertEqual(os.environ.get("BITS_PATH"), "cli")     # CLI wins
+        finally:
+            os.chdir(cwd)
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -695,7 +695,7 @@ This second seed is what allows a defaults file to trigger provider loading (see
 
 This naturally handles **nested providers**: a provider whose own recipe repository contains a further provider recipe.
 
-**Local checkout shadowing.** In both phases, before cloning a declared provider `<pkg>`, bits checks for a local checkout at `<config_dir>/<pkg>/`. If that directory exists and contains recipes, it is used **from there** — added to `BITS_PATH` with its git `HEAD` recorded as provenance (a `-dirty` suffix when the working tree has uncommitted changes) — and the remote clone is skipped. This mirrors how a locally checked-out package shadows its `source`, so a provider you are actively editing (e.g. `lcg.bits/` next to `lcg.bits.sh`) is picked up without re-cloning. Only an already-declared provider is ever shadowed — bits never scans for undeclared `*.bits/` directories, so the recipe/package discovery path is unchanged. `--force-tracked` disables this (and all local-checkout pickup), forcing the remote clone. For an *undeclared* local sub-repo, put it on `BITS_PATH` (via `search_path` in `bits.rc`).
+**Local checkout shadowing.** In both phases, before cloning a declared provider `<pkg>`, bits checks for a local checkout at `<config_dir>/<pkg>/`. If that directory exists and contains recipes, it is used **from there** — added to `BITS_PATH` with its git `HEAD` recorded as provenance (a `-dirty` suffix when the working tree has uncommitted changes) — and the remote clone is skipped. This mirrors how a locally checked-out package shadows its `source`, so a provider you are actively editing (e.g. `lcg.bits/` next to `lcg.bits.sh`) is picked up without re-cloning. Only an already-declared provider is ever shadowed — bits never scans for undeclared `*.bits/` directories, so the recipe/package discovery path is unchanged. `--force-tracked` disables this (and all local-checkout pickup), forcing the remote clone. For an *undeclared* local sub-repo, put it on `BITS_PATH` with `--search-path NAMES` (or `search_path` in `bits.rc`).
 
 ### Triggering providers from a defaults file
 
@@ -888,6 +888,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--no-local PACKAGE` | Do not use a local checkout for PACKAGE (repeatable). |
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
 | `--config-dir DIR` | Directory containing recipe files. |
+| `--search-path NAMES` | Comma-separated recipe sub-repos to search besides the config dir. A relative NAME resolves to `<config-dir>/NAME.bits`; absolute paths are used as-is. Seeds `BITS_PATH` (wins over `bits.rc` `search_path`; an explicit `$BITS_PATH` wins over both). |
 | `--reference-sources DIR` | Local mirror of git repositories. |
 | `--remote-store URL` | Binary store to fetch pre-built tarballs from. Append `::rw` to also upload to it. |
 | `--write-store URL` | Binary store to upload built tarballs to. |
