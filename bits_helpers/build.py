@@ -2003,12 +2003,6 @@ def _doCheckout(spec, workDir, referenceSources, docker, enforce_mode,
 
 
 def doFinalSync(spec, specs, args, syncHelper):
-  # When --pipeline --makeflow is active, the Makeflow .build rule runs
-  # create_links.sh (dist symlinks) and the .upload rule handles the upload.
-  # Nothing to do here in that mode.
-  if getattr(args, "pipeline", False) and args.makeflow:
-    return
-
   # We need to create 2 sets of links, once with the full requires,
   # once with only direct dependencies, since that's required to
   # register packages.
@@ -2671,10 +2665,10 @@ def doBuild(args, parser):
   # Publish guard: relaxed builds are loose-provenance (their closure includes
   # unverified deployed binaries) and must never reach a write store / publish
   # pipeline. Refuse early and clearly.
-  if args.reusePolicy == "relaxed" and (getattr(args, "writeStore", "") or getattr(args, "pipeline", False)):
+  if args.reusePolicy == "relaxed" and getattr(args, "writeStore", ""):
     dieOnError(True,
                "--reuse-policy relaxed produces loose-provenance artifacts that cannot be "
-               "published. Drop --write-store/--pipeline, or rebuild with --reuse-policy strict.")
+               "published. Drop --write-store, or rebuild with --reuse-policy strict.")
 
   # syncHelper is constructed after defaults loading so that it receives the
   # (potentially combined) architecture string.
@@ -3151,11 +3145,6 @@ def doBuild(args, parser):
     info("--dry-run / -n specified. Not building.")
     return
 
-  # Validate --pipeline: it requires --makeflow.
-  if getattr(args, "pipeline", False) and not args.makeflow:
-    warning("--pipeline requires --makeflow; disabling --pipeline for this run.")
-    args.pipeline = False
-
   # We now iterate on all the packages, making sure we build correctly every
   # single one of them. This is done this way so that the second time we run we
   # can check if the build was consistent and if it is, we bail out.
@@ -3168,7 +3157,6 @@ def doBuild(args, parser):
     deps=",".join(buildOrder[:-1]),
   ), args.architecture)
 
-  buildList=[]
   # Specs collected during the build loop for the post-build checksum phase.
   # Every processed spec is appended here, including those whose tarball was
   # already cached, so that --print-checksums / --write-checksums (and the
@@ -3905,7 +3893,7 @@ def doBuild(args, parser):
       # the build task depends on, so source downloads overlap compilation
       # instead of running serially here before any build starts.  Only the
       # single-builder path still checks out inline.
-      if not args.makeflow and args.builders == 1:
+      if args.builders == 1:
         try:
           checkout_sources(spec, workDir, args.referenceSources, args.docker,
                            enforce_mode=_download_time_mode(effective_checksum_mode),
@@ -4041,63 +4029,6 @@ def doBuild(args, parser):
     # Add the computed track_env environment
     buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
 
-    # -- Pipeline mode: prepare tar/upload commands and write helper scripts ----
-    # Requires --makeflow. Compatible with --docker because tar.sh, create_links.sh,
-    # and upload_command all run on the HOST after the container exits; they access
-    # the build output via args.workDir, which the container already volume-mounts.
-    _is_config_pkg = spec["package"].startswith("defaults-")
-    _use_pipeline = getattr(args, "pipeline", False) and args.makeflow and not _is_config_pkg
-    tar_command = None
-    upload_command = None
-    if _use_pipeline:
-      import stat as _stat
-      # Signal build_template.sh to skip tarball creation.
-      buildEnvironment.append(("SKIP_TARBALL", "1"))
-
-      # Write tar.sh from the installed template.
-      _tar_tpl_path = join(dirname(realpath(__file__)), "tar_template.sh")
-      with open(_tar_tpl_path) as _f:
-        _tar_tpl = _f.read()
-      writeAll(scriptDir + "/tar.sh", _tar_tpl)
-      os.chmod(scriptDir + "/tar.sh",
-               _stat.S_IRWXU | _stat.S_IRGRP | _stat.S_IXGRP | _stat.S_IROTH | _stat.S_IXOTH)
-
-      # Write create_links.sh (bakes in dependency symlink commands so the
-      # shell rule does not need Python's specs dict).
-      writeAll(scriptDir + "/create_links.sh",
-               _generate_create_links_sh(spec, specs, args))
-      os.chmod(scriptDir + "/create_links.sh",
-               _stat.S_IRWXU | _stat.S_IRGRP | _stat.S_IXGRP | _stat.S_IROTH | _stat.S_IXOTH)
-
-      # Build the tar command (env vars for tar_template.sh).
-      _tar_env = " ".join(
-        "{}={}".format(k, quote(v)) for k, v in [
-          ("WORK_DIR",               workDir),
-          ("PKGNAME",                spec["package"]),
-          ("PKGVERSION",             spec["version"]),
-          ("PKGREVISION",            spec["revision"]),
-          ("PKGHASH",                spec["hash"]),
-          ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
-          ("CACHED_TARBALL",         cachedTarball),
-        ]
-      )
-      tar_command = "env {} {} -e -x {}/tar.sh 2>&1".format(_tar_env, BASH, quote(scriptDir))
-
-      # Build the upload command (wrapped with the env vars that upload_cmd.py
-      # / the inline s3cmd script read from the environment).
-      _raw_upload = syncHelper.upload_shell_command(spec)
-      if _raw_upload:
-        _upload_env = " ".join(
-          "{}={}".format(k, quote(v)) for k, v in [
-            ("PKGNAME",                spec["package"]),
-            ("PKGVERSION",            spec["version"]),
-            ("PKGREVISION",           spec["revision"]),
-            ("PKGHASH",               spec["hash"]),
-            ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
-            ("BUILD_ARCH",            args.architecture),
-          ]
-        )
-        upload_command = "env {} {} 2>&1".format(_upload_env, _raw_upload)
 
     # In case the --docker options is passed, we setup a docker container which
     # will perform the actual build. Otherwise build as usual using bash.
@@ -4203,96 +4134,28 @@ def doBuild(args, parser):
         docker_image=getattr(args, "dockerImage", None),
     )
 
-    # defaults-* packages are pure build-time configuration with no source to
-    # compile. In Makeflow mode, run them synchronously in the preparation phase
-    # instead of emitting Makeflow rules. This removes them from the DAG critical
-    # path and allows dependent packages to start without waiting for a Makeflow slot.
-    if args.makeflow and _is_config_pkg:
-      runBuildCommand(scheduler, p, specs, args, build_command,
-                      cachedTarball, scriptDir, workDir, syncHelper)
-      continue  # skip buildTargets.append and buildList.append
 
     buildTargets.append(p)
-    if not args.makeflow:
-      if args.builders == 1:
-        runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper)
-      else:
-        build_deps = ["build:%s" % d for d in specs[p]["full_requires"] if d in buildTargets]
-        # When the package must be built from source, register its checkout as a
-        # scheduler "download" task (capped by --parallel-downloads) and make the
-        # build wait on it.  The scheduler then compiles ready packages while
-        # other packages' sources are still downloading, removing the up-front
-        # serial download loop.  Packages restored from a cached tarball need no
-        # source download, so they get no fetch task.
-        if not cachedTarball:
-          fetch_id = "fetch:%s" % p
-          scheduler.parallel(fetch_id, [], "download", _doCheckout, spec, workDir,
-                             args.referenceSources, args.docker,
-                             _download_time_mode(effective_checksum_mode), syncHelper,
-                             getattr(args, "parallelSources", 1), raw_architecture)
-          build_deps = build_deps + [fetch_id]
-        scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
+    if args.builders == 1:
+      runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper)
     else:
-      breq = " ".join([str(element) + ".build" for element in spec["full_requires"] if element in buildTargets])
-      # In pipeline mode, append create_links.sh to the .build command so that
-      # dist symlinks are created inside the same rule (before .tar/.upload run).
-      _build_cmd = build_command
-      if _use_pipeline:
-        _build_cmd = "{} && {} -e -x {}/create_links.sh".format(
-            build_command, BASH, quote(scriptDir))
-
-      # --- Makeflow checkout rule -----------------------------------------
-      # When the package needs to be built from source (no cached tarball),
-      # generate a spec_checkout.json + checkout.sh in scriptDir and record
-      # the command so the Jinja template can emit a parallel .checkout rule.
-      # This moves all git clones / archive downloads out of the sequential
-      # Python preparation phase and into independent Makeflow tasks.
-      checkout_cmd = ""
+      build_deps = ["build:%s" % d for d in specs[p]["full_requires"] if d in buildTargets]
+      # When the package must be built from source, register its checkout as a
+      # scheduler "download" task (capped by --parallel-downloads) and make the
+      # build wait on it.  The scheduler then compiles ready packages while
+      # other packages' sources are still downloading, removing the up-front
+      # serial download loop.  Packages restored from a cached tarball need no
+      # source download, so they get no fetch task.
       if not cachedTarball:
-        _scm_type = "sapling" if isinstance(spec.get("scm"), Sapling) else "git"
-        _checkout_spec = {
-          "scm_type":         _scm_type,
-          "package":          spec["package"],
-          "version":          spec["version"],
-          "commit_hash":      spec.get("commit_hash", ""),
-          "tag":              spec.get("tag", spec["version"]),
-          "pkgdir":           spec.get("pkgdir", ""),
-          "source":           spec.get("source", ""),
-          "is_devel_pkg":     spec.get("is_devel_pkg", False),
-          "reference":        spec.get("reference", ""),
-          "write_repo":       spec.get("write_repo", ""),
-          "patches":          spec.get("patches", []),
-          "auto_patch":       spec.get("auto_patch", True),
-          "sources":          spec.get("sources", []),
-          "source_checksums": spec.get("source_checksums") or {},
-          "patch_checksums":  spec.get("patch_checksums") or {},
-        }
-        _checkout_json = join(scriptDir, "spec_checkout.json")
-        with open(_checkout_json, "w") as _fh:
-          json.dump(_checkout_spec, _fh)
-        _ref = quote(args.referenceSources) if args.referenceSources else "''"
-        _enforce = quote(_download_time_mode(effective_checksum_mode))
-        _psrc = str(getattr(args, "parallelSources", 1))
-        checkout_cmd = (
-          "PYTHONPATH={bits_dir} {py} -m bits_helpers.checkout_runner"
-          " --spec-json {json}"
-          " --work-dir {wd}"
-          " --reference-sources {ref}"
-          " --enforce-mode {enforce}"
-          " --parallel-sources {psrc}"
-        ).format(
-          bits_dir=quote(bits_dir),
-          py=quote(sys.executable),
-          json=quote(_checkout_json),
-          wd=quote(workDir),
-          ref=_ref,
-          enforce=_enforce,
-          psrc=_psrc,
-        )
+        fetch_id = "fetch:%s" % p
+        scheduler.parallel(fetch_id, [], "download", _doCheckout, spec, workDir,
+                           args.referenceSources, args.docker,
+                           _download_time_mode(effective_checksum_mode), syncHelper,
+                           getattr(args, "parallelSources", 1), raw_architecture)
+        build_deps = build_deps + [fetch_id]
+      scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
 
-      buildList.append((p, _build_cmd, tar_command, upload_command, cachedTarball, breq, checkout_cmd))
-
-  if (not args.makeflow) and (args.builders > 1) and buildTargets:
+  if (args.builders > 1) and buildTargets:
     _run_t0 = time.monotonic()
     try:
       scheduler.run()
@@ -4336,140 +4199,6 @@ def doBuild(args, parser):
              default_stats_path(workDir, args.architecture), _tuning["recommendation"])
     if scheduler.brokenJobs:
       dieOnError(True, "Please fix the above errors.")
-  elif args.makeflow and buildTargets:
-    mFlow = "makeflow"
-    mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
-    mfFile = mfDir + "/Makeflow"
-    makedirs(mfDir, exist_ok=True)
-    _mf_max_local = getattr(args, "makeflowJobs", 4)
-    _mf_local_flag = "--max-local {}".format(_mf_max_local) if _mf_max_local > 0 else ""
-    # FIX: quote(mfDir) prevents shell injection when workDir contains spaces,
-    # semicolons, or other shell metacharacters (shell=True is still needed for
-    # the cd+semicolon compound command pattern).
-    mfCmd = "(cd {dir}; {mf} --clean; {mf} {local})".format(
-        dir=quote(mfDir), mf=mFlow, local=_mf_local_flag)
-    makedirs(mfDir, exist_ok=True)
-    jnj = ""
-    try:
-      with open(dirname(realpath(__file__))+'/Makeflow.jnj') as fp:
-        jnj = fp.read()
-    except Exception:
-      from pkg_resources import resource_string
-      jnj = resource_string("bits_helpers", 'Makeflow.jnj')
-    with open(mfFile, 'w') as mf:
-      mf.write (SandboxedEnvironment(autoescape=False)
-              .from_string(jnj)
-              .render(specs=specs, args=args, ToDo=buildList)
-              )
-    for (p, build_command, tar_command, upload_command, cachedTarball, breq, checkout_cmd) in buildList:
-      spec = specs[p]
-      print (
-        ("Unpacking %s@%s" if cachedTarball else
-        "Compiling %s@%s (use --debug for full output)") %
-        (spec["package"],
-        args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
-      )
-    child = subprocess.run(mfCmd, shell=True, capture_output=True, text=True)
-    err = child.returncode
-    
-    buildErrMsg = ""
-    if(err):
-      print(child.stdout)
-      
-      # Color codes for error message (if TTY)
-      bold = "\033[1m" if sys.stderr.isatty() else ""
-      red = "\033[31m" if sys.stderr.isatty() else ""
-      reset = "\033[0m" if sys.stderr.isatty() else ""
-      
-      # Determine paths
-      log_path = f"{mfDir}/log"
-      
-      # Use relative paths if we're inside the work directory
-      try:
-        from os.path import relpath
-        log_path = relpath(log_path, os.getcwd())
-        mfDir_rel = relpath(mfDir, os.getcwd())
-      except (ValueError, OSError):
-        mfDir_rel = mfDir  # Keep absolute paths if relpath fails
-      
-      # Build the error message
-      buildErrMsg = f"{red}{bold}MAKEFLOW BUILD FAILED{reset}\n"
-      buildErrMsg += "=" * 70 + "\n\n"
-      
-      buildErrMsg += f"{bold}Makeflow Command:{reset}\n"
-      buildErrMsg += f"  {mfCmd}\n\n"
-      
-      buildErrMsg += f"{bold}Log File:{reset}\n"
-      buildErrMsg += f"  {log_path}\n\n"
-      
-      buildErrMsg += f"{bold}Makeflow Directory:{reset}\n"
-      buildErrMsg += f"  {mfDir_rel}\n"
-      
-      # Gather build info for the error message
-      try:
-        detected_arch = detectArch()
-
-        # Only show safe arguments (no tokens/secrets) in CLI-usable format
-        safe_args = {
-          "pkgname", "defaults", "architecture", "forceUnknownArch",
-          "develPrefix", "jobs", "noSystem", "noDevel", "forceTracked", "plugin",
-          "disable", "annotate", "onlyDeps", "docker", "makeflow"
-        }
-        
-        cli_args = []
-        for k, v in vars(args).items():
-          if not v or k not in safe_args:
-            continue
-          
-          # Format based on type for CLI usage
-          if isinstance(v, bool):
-            if v:  # Only show if True
-              cli_args.append(f"--{k}")
-          elif isinstance(v, list):
-            if v:  # Only show non-empty lists
-              seen = set()
-              for item in v:
-                if item not in seen:
-                  seen.add(item)
-                  cli_args.append(f"--{k}={quote(str(item))}")
-          else:
-            # Quote if needed
-            cli_args.append(f"--{k}={quote(str(v))}")
-        
-        args_str = " ".join(cli_args)
-
-        buildErrMsg += f"\n{bold}Environment:{reset}\n"
-        buildErrMsg += f"  OS: {detected_arch}\n"
-        buildErrMsg += f"  bits: {__version__ or 'unknown'} (bits@{os.environ['BITS_DIST_HASH'][:10]})\n"
-
-        if detected_arch.startswith("osx"):
-          xcode_info = getstatusoutput("xcodebuild -version")[1]
-          # Combine XCode version lines into one
-          xcode_lines = xcode_info.strip().split('\n')
-          if len(xcode_lines) >= 2:
-            xcode_str = f"{xcode_lines[0]} ({xcode_lines[1]})"
-          else:
-            xcode_str = xcode_lines[0] if xcode_lines else "Unknown"
-          buildErrMsg += f"  XCode: {xcode_str}\n"
-
-        buildErrMsg += f"  Arguments: {args_str}\n"
-
-      except Exception as exc:
-        warning("Failed to gather build info", exc_info=exc)
-      
-      # Add Next Steps section
-      buildErrMsg += f"\n{bold}Next Steps:{reset}\n"
-      buildErrMsg += f"  • View makeflow log:       cat {log_path}\n"
-      buildErrMsg += f"  • View makeflow file:      cat {mfDir_rel}/Makeflow\n"
-      if not args.debug:
-        buildErrMsg += f"  • Rebuild with debug:      bitsBuild build {' '.join(args.pkgname)} --debug --makeflow\n"
-      buildErrMsg += f"  • Please upload the full log to CERNBox/Dropbox if you intend to request support.\n"
-      
-    else:
-      debug(child.stdout)
-    dieOnError(err, buildErrMsg.strip())
-    for (p, _, _, _, _, _, _) in buildList:
-      doFinalSync(specs[p], specs, args, syncHelper)
 
   # ── Post-build checksum phase ──────────────────────────────────────────────
   # Runs after all packages have been built (or confirmed up-to-date) so that
