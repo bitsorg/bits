@@ -1335,6 +1335,8 @@ bits init --rc-file ~/.bitsrc --remote-store https://store.example.com/store
 
 **Search order for bits.rc.** Bits searches for persistent configuration in the following locations (highest priority first): `bits.rc`, `.bitsrc`, `~/.bitsrc`. The first file found is used. Only the `[bits]` INI section is read.
 
+**Saving frequently-used CLI args (`bits use`).** Distinct from `bits.rc` (typed `key = value` settings), `bits use` records raw command-line arguments per directory so you don't retype them. `bits use --architecture X` saves to the `[common]` section (applied to every arch-aware command); `bits use build --docker --sandbox off` saves to `[build]` (that command only). Saved args are injected right after the action and before your own args, so an explicit flag still wins. `bits use` (no args) shows the active profile and its source; `bits use --clear [SECTION]` clears it. Storage is two-tier: a local `./.bitsuse` when the directory is writeable and owned by you, otherwise a per-directory record under `~/.bits/use/` — so a choice persists even in a read-only checkout. A local `.bitsuse` is honoured only when owned by the invoking user (it is injected before parsing, so an untrusted one is ignored in favour of the home record). `.bitscmd` is the previous name, still read as a fallback.
+
 **Example `bits.rc` created by config mode:**
 
 ```ini

@@ -1,12 +1,14 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Tests for bits_helpers/bits_use — the .bitscmd saved-arg-profile."""
+"""Tests for bits_helpers/bits_use — the .bitsuse saved-arg profile."""
 
 import os
+import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -131,6 +133,92 @@ class BitsUseTest(unittest.TestCase):
             fh.write('[build]\n--foo "unbalanced\n')     # bad quoting
         self.assertEqual(U.read_all(self.p), {})          # fail safe, no raise
         self.assertEqual(U.rewrite_argv(["build", "x"], self.p), ["build", "x"])
+
+
+class BitsUseTwoTierTest(unittest.TestCase):
+    """Two-tier storage: local ./.bitsuse (owned) or ~/.bits/use/<key>."""
+
+    def setUp(self):
+        self.cwd0 = os.getcwd()
+        self.work = tempfile.mkdtemp()
+        self.home = tempfile.mkdtemp()
+        os.chdir(self.work)
+        self._patch = patch.object(U, "HOME_STORE", os.path.join(self.home, "use"))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.chdir(self.cwd0)
+        try:
+            os.chmod(self.work, 0o755)
+        except OSError:
+            pass
+        shutil.rmtree(self.work, ignore_errors=True)
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def test_writes_local_bitsuse(self):
+        p = U.write_section("build", ["--docker"])
+        self.assertEqual(os.path.basename(p), ".bitsuse")
+        self.assertTrue(os.path.exists(os.path.join(self.work, ".bitsuse")))
+        self.assertEqual(U.read_all(U._read_path())["build"], ["--docker"])
+
+    def test_legacy_bitscmd_read_fallback(self):
+        with open(os.path.join(self.work, ".bitscmd"), "w") as fh:
+            fh.write("[build]\n--docker\n")
+        self.assertEqual(os.path.basename(U._read_path()), ".bitscmd")
+        self.assertEqual(U.rewrite_argv(["build", "x"]), ["build", "--docker", "x"])
+
+    def test_bitsuse_preferred_over_bitscmd(self):
+        with open(os.path.join(self.work, ".bitscmd"), "w") as fh:
+            fh.write("[build]\n--old\n")
+        with open(os.path.join(self.work, ".bitsuse"), "w") as fh:
+            fh.write("[build]\n--new\n")
+        self.assertEqual(os.path.basename(U._read_path()), ".bitsuse")
+        out = U.rewrite_argv(["build", "x"])
+        self.assertIn("--new", out)
+        self.assertNotIn("--old", out)
+
+    @patch("bits_helpers.bits_use.os.access", return_value=False)
+    def test_home_fallback_when_cwd_not_writeable(self, _access):
+        p = U.write_section("build", ["--docker"])
+        self.assertTrue(U._is_home_path(p))
+        self.assertTrue(os.path.exists(p))
+        self.assertIn("# dir:", open(p).read())          # dir header recorded
+        self.assertEqual(os.path.abspath(U._read_path()), os.path.abspath(p))
+        self.assertEqual(U.rewrite_argv(["build", "x"]), ["build", "--docker", "x"])
+
+    def test_first_write_migrates_legacy_content(self):
+        with open(os.path.join(self.work, ".bitscmd"), "w") as fh:
+            fh.write("[common]\n--architecture X\n")
+        U.write_section("build", ["--docker"])            # path=None -> resolves
+        sec = U.read_all(U._read_path())
+        self.assertEqual(sec.get("common"), ["--architecture", "X"])  # carried over
+        self.assertEqual(sec.get("build"), ["--docker"])
+        self.assertEqual(os.path.basename(U._read_path()), ".bitsuse")
+
+    @patch("bits_helpers.bits_use.os.access")
+    def test_updates_local_when_dir_readonly(self, access):
+        # A local .bitsuse exists; the dir is not writeable but the file is.
+        with open(os.path.join(self.work, ".bitsuse"), "w") as fh:
+            fh.write("[common]\n--architecture X\n")
+        access.side_effect = lambda p, mode: p.endswith(".bitsuse")
+        p = U.write_section("build", ["--docker"])
+        self.assertEqual(os.path.basename(p), ".bitsuse")   # updated local, not home
+        self.assertFalse(U._is_home_path(p))
+
+    def test_untrusted_local_ignored_falls_to_home(self):
+        with open(os.path.join(self.work, ".bitsuse"), "w") as fh:
+            fh.write("[build]\n--planted\n")
+        home, _ = U._home_paths()
+        os.makedirs(os.path.dirname(home), exist_ok=True)
+        with open(home, "w") as fh:
+            fh.write("[build]\n--trusted\n")
+        with patch("bits_helpers.bits_use._owned_by_user", return_value=False):
+            path = U._read_path()
+            out = U.rewrite_argv(["build", "x"])
+        self.assertTrue(U._is_home_path(path))
+        self.assertIn("--trusted", out)
+        self.assertNotIn("--planted", out)
 
 
 if __name__ == "__main__":

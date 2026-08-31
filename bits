@@ -5,12 +5,13 @@
 
 BITSDIR="$(dirname "$0")"
 
-# `.bitscmd` saved-arg profile (see `bits use`): inject the [common] + [<action>]
+# `.bitsuse` saved-arg profile (see `bits use`): inject the [common] + [<action>]
 # tokens right after the action, BEFORE anything is parsed, so both the build
 # path and the module commands (q/enter/…, which read ARGV below) see them.
-# Runs python only when a profile exists; `use` opts out; explicit args stay last
-# (they win on single-value options). Safe no-op if the action isn't first.
-if [[ -f .bitscmd ]]; then
+# The profile is a local ./.bitsuse (or legacy ./.bitscmd) or a per-directory
+# record under ~/.bits/use; the guard fires for any of them and python resolves
+# which applies (a no-op when none does). `use` opts out; explicit args stay last.
+if [[ -f .bitsuse || -f .bitscmd || -d "$HOME/.bits/use" ]]; then
   _bits_prof=()
   while IFS= read -r -d '' _bits_t; do _bits_prof+=("$_bits_t"); done \
     < <(BITS_SELF="${BITSDIR}" python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' --rewrite0 -- "$@")
@@ -397,9 +398,10 @@ if [[ "${1:-}" == "store" ]]; then
   exec "$BITSDIR/bitsStore" "$@"
 fi
 
-# `bits use …` → save/show/clear a per-command arg profile in ./.bitscmd, so
-# repeated commands stay short (the injection at the top of this script consumes
-# it). Handled here, before work-dir/module setup: it only touches ./.bitscmd.
+# `bits use …` → save/show/clear a per-directory arg profile (./.bitsuse, or a
+# ~/.bits/use record when the cwd is not writeable), so repeated commands stay
+# short (the injection at the top of this script consumes it). Handled here,
+# before work-dir/module setup: it only touches the profile.
 if [[ "${1:-}" == "use" ]]; then
   shift
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' "$@"
