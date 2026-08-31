@@ -86,14 +86,23 @@ def machine_resources() -> dict:
     return {"cpu": cpu, "rss": rss}
 
 
-def _peak_from_trace(path: str):
-    """Return ``{cpu, rss, time}`` peak from one monitor trace, or None."""
+def parse_trace(path):
+    """Load a monitor trace (a JSON list of per-second samples). Returns the
+    list, or None when it is missing, unreadable, empty, or not a list."""
     try:
         with open(path) as fh:
             samples = json.load(fh)
     except (OSError, ValueError):
         return None
     if not isinstance(samples, list) or not samples:
+        return None
+    return samples
+
+
+def _peak_from_trace(path: str):
+    """Return ``{cpu, rss, time}`` peak from one monitor trace, or None."""
+    samples = parse_trace(path)
+    if samples is None:
         return None
     cpu = max((int(s.get("cpu", 0)) for s in samples), default=0)
     rss = max((int(s.get("rss", 0)) for s in samples), default=0)
@@ -117,12 +126,8 @@ def _integral_from_trace(path: str):
     yields the *core-seconds* of useful work that package consumed — the basis
     for the whole-run CPU-utilisation estimate.
     """
-    try:
-        with open(path) as fh:
-            samples = json.load(fh)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(samples, list) or not samples:
+    samples = parse_trace(path)
+    if samples is None:
         return None
     core_seconds = 0.0
     prev_t = 0

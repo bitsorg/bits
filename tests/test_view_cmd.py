@@ -162,8 +162,8 @@ class TestPublishedPreference(unittest.TestCase):
             with open(os.path.join(a, ".meta.json"), "w") as fh:
                 json.dump({"build_id": "L-1",
                            "cvmfs_layout": {"views_dir": "release-views"}}, fh)
-            self.assertEqual(view_cmd.closure_views_dir([a]), "release-views")
-            self.assertEqual(view_cmd.closure_views_dir(
+            self.assertEqual(view_cmd.layout_views_dir([a]), "release-views")
+            self.assertEqual(view_cmd.layout_views_dir(
                 [os.path.join(d, "nope")]), "Views")          # default
 
     def test_prefers_published_view_under_custom_views_dir(self):

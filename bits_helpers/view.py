@@ -38,6 +38,22 @@ CATALOG_FILE = ".cvmfscatalog"
 DEFAULT_SUBDIRS = ("bin", "lib", "lib64", "include", "share")
 
 
+def layout_views_dir(roots):
+    """The ``views_dir`` recorded in the release's package metadata
+    (``cvmfs_layout.views_dir``, default ``Views``), read from the first
+    ``.meta.json`` found under *roots*. Lets a client honour a non-default views
+    directory without loading the defaults profile."""
+    for root in roots:
+        try:
+            with open(os.path.join(root, ".meta.json")) as fh:
+                layout = json.load(fh).get("cvmfs_layout")
+        except Exception:
+            continue
+        if isinstance(layout, dict) and layout.get("views_dir"):
+            return layout["views_dir"]
+    return "Views"
+
+
 def _link_target(src, dest, relative):
     if relative:
         return os.path.relpath(src, os.path.dirname(dest))

@@ -160,7 +160,6 @@ def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None,
     only via the `bits store-stats --trust-manifest` CLI. Without it (or if the
     manifests are absent/unverifiable), builds degrade to uncertified.
     """
-    import urllib.request
     try:
         hash_to_build = {}
         if work_dir:
@@ -190,11 +189,8 @@ def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None,
                 debug("store-stats: trust-manifest derivation skipped: %s", exc)
         if signed:
             stats = summarise(objects, hash_to_build, signed)
-        req = urllib.request.Request(
-            monitor_url.rstrip("/") + "/api/v1/import/prometheus",
-            data=to_prometheus(stats).encode("utf-8"),
-            headers={"Content-Type": "text/plain"}, method="POST")
-        urllib.request.urlopen(req, timeout=15).close()
+        from bits_helpers.metrics import push_prometheus
+        push_prometheus(monitor_url, to_prometheus(stats), timeout=15)
         info("store-stats: pushed store gauges to %s (%d objects, %d arch)",
              monitor_url, stats["total_objects"], len(stats["arch"]))
         return True
@@ -278,13 +274,9 @@ def doStoreStats(args, parser):
 
     murl = (getattr(args, "monitorUrl", None) or os.environ.get("METRICS_URL") or "").strip().rstrip("/")
     if murl:
-        import urllib.request
+        from bits_helpers.metrics import push_prometheus
         try:
-            req = urllib.request.Request(
-                murl + "/api/v1/import/prometheus",
-                data=to_prometheus(stats).encode("utf-8"),
-                headers={"Content-Type": "text/plain"}, method="POST")
-            urllib.request.urlopen(req, timeout=15).close()
+            push_prometheus(murl, to_prometheus(stats), timeout=15)
             banner("store-stats: pushed gauges to %s", murl)
         except Exception as exc:  # never fail on a metrics push
             warning("store-stats: metrics push failed: %s", exc)

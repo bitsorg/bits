@@ -20,7 +20,7 @@ import os
 import shutil
 import sys
 
-from bits_helpers.view import build_view, find_published_view
+from bits_helpers.view import build_view, find_published_view, layout_views_dir
 
 READY_STAMP = ".bits_view_ready"
 # Client-built views are cached here (distinct from the published `Views/` tree).
@@ -66,22 +66,6 @@ def closure_build_id(roots):
         only = ids.pop()
         return only or None
     return None
-
-
-def closure_views_dir(roots):
-    """The ``views_dir`` the release was published under, read from the closure's
-    ``.meta.json`` ``cvmfs_layout`` (default ``Views``). Lets the client honour a
-    non-default views directory without loading the defaults profile.
-    """
-    for root in roots:
-        try:
-            with open(os.path.join(root, ".meta.json")) as fh:
-                layout = json.load(fh).get("cvmfs_layout")
-        except Exception:
-            continue
-        if isinstance(layout, dict) and layout.get("views_dir"):
-            return layout["views_dir"]
-    return "Views"
 
 
 def view_dir_for(roots, cache_root):
@@ -184,7 +168,7 @@ def resolve_view_dir(roots, work_dir, architecture, _ensure=ensure_view):
     build_id = closure_build_id(roots)
     if build_id:
         pub = find_published_view(work_dir, build_id, architecture,
-                                  views_dir=closure_views_dir(roots))
+                                  views_dir=layout_views_dir(roots))
         if pub:
             return pub, True
     cache_root = os.path.join(work_dir, CLIENT_CACHE_SUBDIR, architecture)

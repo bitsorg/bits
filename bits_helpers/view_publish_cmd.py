@@ -18,7 +18,7 @@ import json
 import os
 
 from bits_helpers.log import debug, error, info, warning
-from bits_helpers.view import collect_build_id_roots, build_published_view
+from bits_helpers.view import collect_build_id_roots, build_published_view, layout_views_dir
 
 
 def _build_id_of_package(work_dir, architecture, package):
@@ -44,20 +44,6 @@ def _build_id_of_package(work_dir, architecture, package):
         if pkg_name == name and meta.get("build_id"):
             return meta["build_id"]
     return None
-
-
-def _layout_views_dir(roots):
-    """The ``views_dir`` recorded in the release's package metadata (default
-    ``Views``), so the published view honours a non-default profile layout."""
-    for root in roots:
-        try:
-            with open(os.path.join(root, ".meta.json")) as fh:
-                layout = json.load(fh).get("cvmfs_layout")
-        except Exception:
-            continue
-        if isinstance(layout, dict) and layout.get("views_dir"):
-            return layout["views_dir"]
-    return "Views"
 
 
 def _build_ids_in_area(work_dir, architecture):
@@ -121,7 +107,7 @@ def doPublishView(args, parser):
               "(publish the packages first).", build_id, store)
         return False
 
-    views_dir = _layout_views_dir(roots)
+    views_dir = layout_views_dir(roots)
     result = build_published_view(roots, name, build_id, architecture, store,
                                   views_dir=views_dir)
     # Compliance obligations live at the release root: place NOTICE and the

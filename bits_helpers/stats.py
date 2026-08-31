@@ -20,7 +20,7 @@ import os
 from glob import glob
 from os.path import join, isfile
 
-from bits_helpers.build_stats import default_stats_path, STATS_FILENAME
+from bits_helpers.build_stats import default_stats_path, STATS_FILENAME, parse_trace
 from bits_helpers.log import error, info
 from bits_helpers.utilities import human_bytes
 
@@ -83,12 +83,8 @@ def find_trace(work_dir, package):
 def trace_metrics(path):
     """Derive {avg_cpu, peak_cpu, peak_rss, peak_threads, cpu_seconds, duration}
     from a monitor trace, or None when it is unusable."""
-    try:
-        with open(path) as fh:
-            samples = json.load(fh)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(samples, list) or not samples:
+    samples = parse_trace(path)
+    if samples is None:
         return None
 
     prev_t = 0
