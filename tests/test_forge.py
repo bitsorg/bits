@@ -10,40 +10,6 @@ from unittest.mock import patch
 from bits_helpers import forge
 
 
-class TestApprovedBy(unittest.TestCase):
-
-    def test_case_insensitive_intersection(self):
-        self.assertTrue(forge.approved_by(["Alice"], ["alice", "bob"]))
-        self.assertTrue(forge.approved_by(["bob", "eve"], ["BOB"]))
-
-    def test_no_overlap_is_false(self):
-        self.assertFalse(forge.approved_by(["eve"], ["alice", "bob"]))
-
-    def test_empty_sides_are_false(self):
-        self.assertFalse(forge.approved_by([], ["alice"]))
-        self.assertFalse(forge.approved_by(["alice"], []))
-
-
-class TestLoadAdmins(unittest.TestCase):
-
-    def test_plain_list_with_comments(self):
-        text = "# admins\nalice\n\nbob   # lead\n"
-        self.assertEqual(forge.load_admins(text), {"alice", "bob"})
-
-    def test_at_handles_and_codeowners_style(self):
-        text = "@Alice\n/manifests/lcg @bob @carol  # owners\n"
-        self.assertEqual(forge.load_admins(text), {"alice", "bob", "carol"})
-
-    def test_reads_from_file(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
-            fh.write("@dave\n")
-            path = fh.name
-        try:
-            self.assertEqual(forge.load_admins(path), {"dave"})
-        finally:
-            os.remove(path)
-
-
 class TestGitLabForge(unittest.TestCase):
 
     def test_from_env_needs_all_vars(self):
@@ -305,20 +271,6 @@ class TestMRPrimitives(unittest.TestCase):
         payload = [{"iid": 3, "state": "opened"}, {"iid": 5, "state": "merged"}]
         with patch("requests.get", return_value=self._Resp(payload)):
             self.assertEqual(forge.gitlab_mr_iid_for_commit("https://gl/api/v4", "t", "p", "sha"), 5)
-
-
-class TestVerifyApproval(unittest.TestCase):
-
-    def test_ok_when_admin_approved(self):
-        fg = forge.StaticForge(["alice", "eve"])
-        ok, approvers = forge.verify_approval(fg, {"alice"})
-        self.assertTrue(ok)
-        self.assertEqual(approvers, {"alice", "eve"})
-
-    def test_not_ok_when_only_non_admins_approved(self):
-        fg = forge.StaticForge(["eve"])
-        ok, _ = forge.verify_approval(fg, {"alice"})
-        self.assertFalse(ok)
 
 
 if __name__ == "__main__":

@@ -14,41 +14,8 @@ actually approved before anything is signed.
 """
 
 import os
-import re
 
 from bits_helpers.log import warning
-
-
-def load_admins(source) -> set:
-    """Parse group-admin usernames from a file path or text.
-
-    One username per line; ``#`` comments and blank lines ignored; a leading
-    ``@`` and surrounding whitespace are stripped. Case is normalised to lower.
-    Also tolerates CODEOWNERS-style lines (``/path @a @b``) by taking every
-    ``@handle`` on the line.
-    """
-    if isinstance(source, str) and os.path.isfile(source):
-        with open(source) as fh:
-            text = fh.read()
-    else:
-        text = source or ""
-    admins = set()
-    for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        handles = re.findall(r"@([A-Za-z0-9._-]+)", line)
-        if handles:
-            admins.update(h.lower() for h in handles)
-        else:
-            admins.add(line.lower())
-    return admins
-
-
-def approved_by(approvers, admins) -> bool:
-    """True if at least one approver is a listed group admin (case-insensitive)."""
-    a = {str(x).lower() for x in (approvers or [])}
-    return bool(a & {str(x).lower() for x in (admins or [])})
 
 
 def load_admin_policy(source) -> dict:
@@ -487,7 +454,3 @@ def forge_from_env(env=None):
     return GitLabForge.from_env(env)
 
 
-def verify_approval(forge, admins):
-    """Return ``(ok, approvers)`` — ok iff a listed admin approved via *forge*."""
-    approvers = forge.list_approvers()
-    return approved_by(approvers, admins), approvers
