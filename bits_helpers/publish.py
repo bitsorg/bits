@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""bits publish — copy, relocate, and stream a built package to a CVMFS ingestion spool.
+"""bits publish — copy, relocate, and hand a built package to cvmfs-prepub.
 
 Pipeline on the build host
 ---------------------------
@@ -9,22 +9,15 @@ Pipeline on the build host
 2. ``rsync`` it to a temporary CVMFS working copy (scratch directory).
 3. Run ``relocate-me.sh`` inside the copy, rewriting all embedded paths to
    the final CVMFS target path.
-4. Start an ``inotifywait`` watcher on the working copy *before* relocation
-   so that every file written by the relocation script is immediately queued
-   for transfer; relocation and transfer therefore overlap in time.
-5. ``rsync`` each modified file (or the whole tree on systems without
-   inotifywait) to the ingestion spool ``incoming/<pkg-id>/`` directory.
-6. Write a ``<pkg-id>.done`` sentinel to the spool inbox.  The ingestion
-   daemon treats sentinel arrival as the signal that all file content has
-   landed and it can begin finalisation for this package.
-7. Remove the working copy from the scratch directory.
+4. Package the relocated tree as a tar and POST it to the cvmfs-prepub REST
+   API (``--prepub-url``), which ingests it into CVMFS; poll until published.
+5. Remove the working copy from the scratch directory.
 
 The original INSTALLROOT under *workDir* is never modified.
 """
 
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -93,11 +86,12 @@ def _pkg_id(package, version_dir, architecture):
     Format: ``<pkg>-<ver_rev>-<arch>`` with slashes replaced by underscores.
 
     All three components have '/' replaced so that the resulting ID is always a
-    single path segment — it can never escape ``spool/incoming/`` via traversal.
+    single path segment — it can never traverse out of a directory when used as
+    a path component (e.g. the prepub tar's per-package subpath).
     """
-    # FIX: replace '/' in package just as we do for architecture and version_dir.
+    # Replace '/' in package just as we do for architecture and version_dir.
     # Without this, a package name like '../../etc' would produce a pkg_id that
-    # traverses out of spool/incoming/ when used as a path component.
+    # traverses out of its directory when used as a path component.
     pkg_tag  = package.replace("/", "_")
     arch_tag = architecture.replace("/", "_").replace("-", "_")
     ver_tag  = version_dir.replace("/", "_")
@@ -532,124 +526,10 @@ def _submit_certification_mr(args, parser, build_id, bom):
            mr.get("web_url") or ("!%s" % mr.get("iid")))
 
 
-def _spool_is_remote(spool):
-    """Return True when *spool* is a remote ``[user@]host:path`` spec."""
-    # A single colon that is not a Windows drive letter indicates remote.
-    return bool(re.match(r'^(?:[^/]+@)?[^/:]+:.+', spool))
 
 
-def _rsync_to_spool(src, spool, pkg_id, extra_opts=None, remove_source=False):
-    """rsync *src* (file or directory) to ``<spool>/incoming/<pkg_id>/``.
-
-    *spool* may be a local path or a remote ``[user@]host:path``.
-    """
-    dest_base = f"{spool}/incoming/{pkg_id}/"
-    cmd = ["rsync", "-a", "--mkpath"]
-    if remove_source:
-        cmd.append("--remove-source-files")
-    if extra_opts:
-        cmd.extend(shlex.split(extra_opts))
-    cmd += [src, dest_base]
-    debug("rsync: %s", " ".join(shlex.quote(c) for c in cmd))
-    result = subprocess.run(cmd, check=False)
-    if result.returncode not in (0, 24):   # 24 = "vanished source files" — benign
-        error("rsync failed with exit code %d", result.returncode)
-        sys.exit(result.returncode)
 
 
-def _write_sentinel(spool, pkg_id, cvmfs_target, rsync_opts=None):
-    """Write and transfer the ``.done`` sentinel for *pkg_id*.
-
-    The sentinel is a small text file that carries the *cvmfs_target* so the
-    ingestion daemon can construct graft paths without additional out-of-band
-    configuration.
-    """
-    # FIX: the sentinel uses a line-oriented key=value format; a newline in
-    # either value would inject a spurious field that the ingestion daemon
-    # might misinterpret.  Reject before writing.
-    for _field, _val in (("pkg_id", pkg_id), ("cvmfs_target", cvmfs_target)):
-        if "\n" in _val or "\r" in _val:
-            raise ValueError(
-                f"Sentinel field '{_field}' contains a newline character which "
-                f"would corrupt the sentinel file: {_val!r}"
-            )
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".done", prefix=pkg_id, delete=False
-    ) as fh:
-        fh.write(f"pkg_id={pkg_id}\ncvmfs_target={cvmfs_target}\n")
-        sentinel_path = fh.name
-
-    dest = f"{spool}/incoming/{pkg_id}.done"
-    if _spool_is_remote(spool):
-        cmd = ["rsync", "-a"]
-        if rsync_opts:
-            cmd.extend(shlex.split(rsync_opts))
-        cmd += [sentinel_path, dest]
-    else:
-        os.makedirs(f"{spool}/incoming", exist_ok=True)
-        cmd = ["cp", sentinel_path, dest]
-
-    debug("sentinel: %s -> %s", sentinel_path, dest)
-    result = subprocess.run(cmd, check=False)
-    os.unlink(sentinel_path)
-    if result.returncode != 0:
-        error("Failed to write sentinel (exit %d)", result.returncode)
-        sys.exit(result.returncode)
-
-
-# ---------------------------------------------------------------------------
-# inotifywait-based streaming transfer
-# ---------------------------------------------------------------------------
-
-def _stream_with_inotify(copy_dir, spool, pkg_id, rsync_opts=None):
-    """Watch *copy_dir* with inotifywait and rsync each closed file immediately.
-
-    Returns a watcher ``Popen`` object.  The caller must call
-    ``watcher.terminate()`` after relocation is complete and all queued files
-    have been transferred.
-
-    Falls back to ``None`` (silent no-op) when inotifywait is not available;
-    in that case the caller performs a single bulk rsync after relocation.
-    """
-    if shutil.which("inotifywait") is None:
-        debug("inotifywait not available — will fall back to bulk rsync after relocation")
-        return None
-
-    # inotifywait outputs one line per event: "<dir> <event> <filename>"
-    inotify_cmd = [
-        "inotifywait",
-        "--monitor",
-        "--recursive",
-        "--format", "%w%f",
-        "--event", "close_write",
-        copy_dir,
-    ]
-    debug("starting inotifywait: %s", " ".join(inotify_cmd))
-    watcher = subprocess.Popen(
-        inotify_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
-
-    # Drain the watcher output in a background thread so we don't block.
-    import threading
-
-    def _drain():
-        for line in watcher.stdout:
-            path = line.rstrip("\n")
-            if not path or not os.path.isfile(path):
-                continue
-            rel = os.path.relpath(path, copy_dir)
-            dest_dir = f"{spool}/incoming/{pkg_id}/{os.path.dirname(rel)}"
-            if not _spool_is_remote(spool):
-                os.makedirs(dest_dir, exist_ok=True)
-            _rsync_to_spool(path, spool, join(pkg_id, os.path.dirname(rel)).rstrip("/"),
-                            extra_opts=rsync_opts)
-
-    t = threading.Thread(target=_drain, daemon=True)
-    t.start()
-    return watcher
 
 
 # ---------------------------------------------------------------------------
@@ -659,16 +539,9 @@ def _stream_with_inotify(copy_dir, spool, pkg_id, rsync_opts=None):
 def doPublish(args, parser):
     """Orchestrate the build-host publishing pipeline.
 
-    Two mutually exclusive delivery paths are supported:
-
-    Legacy spool path (bits-ingest + bits-cvmfs-publisher runners):
-        Requires ``--spool``.  Rsyncs the relocated tree to the spool's
-        ``incoming/<pkg_id>/`` directory and writes a ``.done`` sentinel.
-
-    cvmfs-prepub direct path:
-        Requires ``--prepub-url``.  Packages the relocated tree as a tar,
-        POSTs it to the cvmfs-prepub REST API, and polls until the job
-        reaches ``published``.
+    cvmfs-prepub path (``--prepub-url``, required for CVMFS publish):
+        Relocate the package, package the tree as a tar, POST it to the
+        cvmfs-prepub REST API, and poll until the job reaches ``published``.
 
     View mode (``--release-view NAME``):
         Publishes the merged release view rather than a package; delegated to
@@ -717,9 +590,7 @@ def doPublish(args, parser):
     package      = args.package
     version      = getattr(args, "version", None)
     cvmfs_target = args.cvmfsTarget
-    spool        = getattr(args, "spool", None)
     scratch_dir  = getattr(args, "scratchDir", None)
-    rsync_opts   = getattr(args, "rsyncOpts", None)
 
     prepub_url          = getattr(args, "prepubUrl", None)
     prepub_token        = getattr(args, "prepubToken", None)
@@ -731,9 +602,6 @@ def doPublish(args, parser):
     prepub_no_verify_tls = getattr(args, "prepubNoVerifyTls", False)
     prepub_bearer_auth   = getattr(args, "prepubBearerAuth", False)
 
-    # ------------------------------------------------------------------
-    # Validate: exactly one of --spool / --prepub-url must be provided.
-    # ------------------------------------------------------------------
     # ── Resolve publish target(s) ─────────────────────────────────────────────
     # Backward-compatible default: 'cvmfs' when --cvmfs-target is given (the
     # existing pipeline call), otherwise 's3'. --to overrides.
@@ -755,13 +623,11 @@ def doPublish(args, parser):
         if "cvmfs" not in targets:
             return
 
-    # CVMFS publish needs a target path and exactly one sink (--spool | --prepub-url).
+    # CVMFS publish goes through the cvmfs-prepub service.
     if not cvmfs_target:
         parser.error("--to cvmfs requires --cvmfs-target.")
-    if prepub_url and spool:
-        parser.error("--prepub-url and --spool are mutually exclusive; use one or the other.")
-    if not prepub_url and not spool:
-        parser.error("one of --spool or --prepub-url is required.")
+    if not prepub_url:
+        parser.error("--to cvmfs requires --prepub-url.")
 
     # ------------------------------------------------------------------
     # 0. Redistribution policy gate
@@ -794,10 +660,7 @@ def doPublish(args, parser):
     info("installroot : %s", installroot)
     info("pkg_id      : %s", pkg_id)
     info("cvmfs target: %s", cvmfs_target)
-    if spool:
-        info("spool       : %s", spool)
-    else:
-        info("prepub url  : %s", prepub_url)
+    info("prepub url  : %s", prepub_url)
 
     no_relocate = getattr(args, "noRelocate", False)
     relocate_script = join(installroot, "relocate-me.sh")
@@ -829,27 +692,13 @@ def doPublish(args, parser):
 
     if no_relocate:
         # ------------------------------------------------------------------
-        # 3–5. Skip relocation: package was built with --cvmfs-prefix so
-        #      all embedded paths are already correct for CVMFS.
+        # 3. Skip relocation: package was built with --cvmfs-prefix so all
+        #    embedded paths are already correct for CVMFS.
         # ------------------------------------------------------------------
         info("--no-relocate: skipping relocation (package built at final CVMFS path)")
-        if spool:
-            info("Transferring tree to spool …")
-            _rsync_to_spool(copy_dir + "/", spool, pkg_id,
-                            extra_opts=rsync_opts, remove_source=False)
     else:
         # ------------------------------------------------------------------
         # 3. Relocate working copy to final CVMFS target path.
-        #
-        # For the spool path, start inotifywait before relocation so that
-        # modified files are streamed to the spool concurrently.  For the
-        # prepub path we skip inotify — the final tar is built after
-        # relocation completes, so there is nothing to stream incrementally.
-        # ------------------------------------------------------------------
-        watcher = _stream_with_inotify(copy_dir, spool, pkg_id, rsync_opts) if spool else None
-
-        # ------------------------------------------------------------------
-        # 4. Relocate working copy to final CVMFS target path
         # ------------------------------------------------------------------
         info("Relocating to %s …", cvmfs_target)
         env = {**os.environ, "INSTALL_BASE": cvmfs_target}
@@ -861,45 +710,10 @@ def doPublish(args, parser):
         )
         if result.returncode != 0:
             error("relocate-me.sh failed (exit %d)", result.returncode)
-            if watcher:
-                watcher.terminate()
             sys.exit(result.returncode)
 
-        # ------------------------------------------------------------------
-        # 5. Stop watcher (spool path) or skip (prepub path)
-        # ------------------------------------------------------------------
-        if spool:
-            if watcher:
-                import time
-                # Give the drain thread a moment to flush the last events.
-                time.sleep(1)
-                watcher.terminate()
-                watcher.wait()
-            else:
-                info("Transferring relocated tree to spool …")
-                _rsync_to_spool(copy_dir + "/", spool, pkg_id,
-                                extra_opts=rsync_opts, remove_source=False)
-
     # ------------------------------------------------------------------
-    # 6a. Legacy spool path — write .done sentinel
-    # ------------------------------------------------------------------
-    if spool:
-        info("Writing sentinel %s.done …", pkg_id)
-        _write_sentinel(spool, pkg_id, cvmfs_target, rsync_opts=rsync_opts)
-
-        # ------------------------------------------------------------------
-        # 7a. Cleanup working copy (spool path)
-        # ------------------------------------------------------------------
-        info("Cleaning up working copy …")
-        shutil.rmtree(copy_dir, ignore_errors=True)
-        if not scratch_dir:
-            shutil.rmtree(_tmpparent, ignore_errors=True)
-
-        info("Done — package %s queued for ingestion.", pkg_id)
-        return
-
-    # ------------------------------------------------------------------
-    # 6b. cvmfs-prepub direct path — each independent directory tree is
+    # 4. cvmfs-prepub path — each independent directory tree is
     #     tar'd and submitted to *its own* CVMFS path.  The package payload
     #     and the modulefiles live in different trees (install_dir vs
     #     module_dir), so a single tar would land the modulefiles inside the

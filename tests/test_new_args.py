@@ -137,14 +137,14 @@ class PublishNoRelocateTest(unittest.TestCase):
     def test_default_is_false(self):
         args = _parse(["publish", "ROOT",
                        "--cvmfs-target", "/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0",
-                       "--spool", "user@host:/spool",
+                       "--prepub-url", "https://prepub.example.org",
                        "-a", _ARCH])
         self.assertFalse(args.noRelocate)
 
     def test_no_relocate_flag_set(self):
         args = _parse(["publish", "ROOT",
                        "--cvmfs-target", "/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0",
-                       "--spool", "user@host:/spool",
+                       "--prepub-url", "https://prepub.example.org",
                        "-a", _ARCH,
                        "--no-relocate"])
         self.assertTrue(args.noRelocate)
@@ -153,9 +153,8 @@ class PublishNoRelocateTest(unittest.TestCase):
         """Existing publish invocations without --no-relocate are unaffected."""
         args = _parse(["publish", "ROOT", "6.32.0-1",
                        "--cvmfs-target", "/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0",
-                       "--spool", "user@host:/spool",
+                       "--prepub-url", "https://prepub.example.org",
                        "-a", _ARCH,
-                       "--rsync-opts", "-e 'ssh -i key'",
                        "--scratch-dir", "/tmp/bits-scratch"])
         self.assertFalse(args.noRelocate)
         self.assertEqual(args.workDir, "sw")

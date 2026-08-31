@@ -6,8 +6,7 @@
 Each test class corresponds to one reported finding:
 
   F3 – sandbox.py: make_sbpl_profile rejects builddir containing '"'
-  F4 – publish.py: _pkg_id replaces '/' in package (path traversal into spool)
-  F5 – publish.py: _write_sentinel rejects newlines in pkg_id / cvmfs_target
+  F4 – publish.py: _pkg_id replaces '/' in package (keeps it a single path segment)
   F6 – publish.py: _find_installroot rejects package names that escape work_dir
 """
 
@@ -111,49 +110,6 @@ class TestPkgIdSlashReplacement(unittest.TestCase):
     def test_version_slashes_replaced(self):
         result = self._call("zlib", version_dir="1.0/patch1")
         self.assertNotIn("/", result)
-
-
-# ===========================================================================
-# F5 — _write_sentinel rejects newlines in pkg_id / cvmfs_target
-# ===========================================================================
-
-class TestWriteSentinelRejectsNewlines(unittest.TestCase):
-    """F5: The sentinel key=value file must not be corrupted by newlines
-    embedded in pkg_id or cvmfs_target.
-    """
-
-    def test_newline_in_pkg_id_raises(self):
-        from bits_helpers.publish import _write_sentinel
-        with self.assertRaises(ValueError) as ctx:
-            _write_sentinel("/tmp/spool", "zlib-1.0\nevil=injected", "/cvmfs/sft.cern.ch/test")
-        self.assertIn("pkg_id", str(ctx.exception))
-
-    def test_newline_in_cvmfs_target_raises(self):
-        from bits_helpers.publish import _write_sentinel
-        with self.assertRaises(ValueError) as ctx:
-            _write_sentinel("/tmp/spool", "zlib-1.0", "/cvmfs/sft.cern.ch/test\nevil=injected")
-        self.assertIn("cvmfs_target", str(ctx.exception))
-
-    def test_carriage_return_in_pkg_id_raises(self):
-        from bits_helpers.publish import _write_sentinel
-        with self.assertRaises(ValueError):
-            _write_sentinel("/tmp/spool", "zlib\r1.0", "/cvmfs/sft.cern.ch/test")
-
-    def test_clean_values_write_sentinel_file(self):
-        """Normal values must produce a correctly formatted sentinel file."""
-        from bits_helpers.publish import _write_sentinel
-        with tempfile.TemporaryDirectory() as spool:
-            os.makedirs(os.path.join(spool, "incoming"), exist_ok=True)
-            _write_sentinel(spool, "zlib-1.3.1-1-slc7_x86_64",
-                            "/cvmfs/sft.cern.ch/lcg/releases/zlib/1.3.1/x86_64-el9")
-            sentinel = os.path.join(spool, "incoming", "zlib-1.3.1-1-slc7_x86_64.done")
-            self.assertTrue(os.path.exists(sentinel))
-            with open(sentinel) as fh:
-                lines = fh.readlines()
-            # Must have exactly two lines (pkg_id= and cvmfs_target=)
-            self.assertEqual(len(lines), 2)
-            self.assertTrue(lines[0].startswith("pkg_id="))
-            self.assertTrue(lines[1].startswith("cvmfs_target="))
 
 
 # ===========================================================================

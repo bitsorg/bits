@@ -186,8 +186,8 @@ class TestPublishFromManifest(unittest.TestCase):
         args = SimpleNamespace(
             publishView=None, fromManifest=None, package="Secret", version=None,
             workDir=self.work, architecture=ARCH, cvmfsTarget="/cvmfs/x",
-            spool="/tmp/spool", scratchDir=None, rsyncOpts=None,
-            prepubUrl=None, prepubToken=None, prepubRepo=None, prepubPath=None,
+            scratchDir=None,
+            prepubUrl="https://prepub.example.org", prepubToken=None, prepubRepo=None, prepubPath=None,
             prepubWebhook=None, prepubPollInterval=10, prepubTimeout=1800,
             prepubNoVerifyTls=False, publishTo=None, dryRun=False,
         )

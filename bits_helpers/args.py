@@ -271,11 +271,11 @@ def doParseArgs():
                                          description="Display %(prog)s and architecture.")
   publish_parser = subparsers.add_parser(
       "publish",
-      help="copy, relocate, and stream a built package to a CVMFS ingestion spool",
+      help="copy, relocate, and hand a built package to cvmfs-prepub",
       description=(
           "Copies the immutable installation from WORKDIR, relocates it to the "
-          "final CVMFS target path, and streams the result to an ingestion spool "
-          "for content-addressed pre-staging before the CVMFS transaction."
+          "final CVMFS target path, and submits the result to the cvmfs-prepub "
+          "service (--prepub-url) for ingestion into CVMFS."
       ),
   )
   certify_parser = subparsers.add_parser(
@@ -1191,18 +1191,12 @@ def doParseArgs():
                                    "independent job here, since modulefiles live in a different tree "
                                    "(module_dir) from the payload — so they are installed even with "
                                    "--no-relocate.")
-  # --spool is required for the legacy rsync-to-spool path; omit it when using --prepub-url.
-  publish_parser.add_argument("--spool", dest="spool", default=None, metavar="[USER@HOST:]PATH",
-                              help=("Ingestion spool root.  Either a local directory or a remote rsync "
-                                    "target (user@host:/path).  Required unless --prepub-url is given."))
   add_work_dir(publish_parser,
                help="bits work directory containing the installed packages. Default: %(default)s.")
   add_architecture(publish_parser,
                    help="Target architecture. Default: %(default)s.")
   publish_parser.add_argument("--scratch-dir", dest="scratchDir", default=None, metavar="DIR",
                               help="Directory for the temporary CVMFS working copy. Defaults to a system temp dir.")
-  publish_parser.add_argument("--rsync-opts", dest="rsyncOpts", default=None, metavar="OPTS",
-                              help="Extra options passed verbatim to rsync (e.g. '-e \"ssh -i key\"').  Legacy spool path only.")
   publish_parser.add_argument("--no-relocate", dest="noRelocate", action="store_true", default=False,
                               help=("Skip the relocation step. Use this when the package was built "
                                     "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
@@ -1210,7 +1204,7 @@ def doParseArgs():
   publish_parser.add_argument("--to", dest="publishTo", default=None,
                               choices=["s3", "cvmfs", "both"],
                               help=("Where to publish: 's3' (upload to the write store for reuse), "
-                                    "'cvmfs' (via --spool/--prepub-url), or 'both'. Default: 'cvmfs' "
+                                    "'cvmfs' (via --prepub-url), or 'both'. Default: 'cvmfs' "
                                     "when --cvmfs-target is given (backward compatible), else 's3'."))
   publish_parser.add_argument("--write-store", dest="writeStore", default="", metavar="STORE",
                               help=("S3 write store for '--to s3' (e.g. b3://<bucket> or s3://<bucket>). "
@@ -1256,12 +1250,12 @@ def doParseArgs():
   # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
   _prepub = publish_parser.add_argument_group(
       "cvmfs-prepub direct upload",
-      "Upload the package directly to a running cvmfs-prepub service over HTTPS, "
-      "bypassing the rsync-to-spool pipeline.  Requires cvmfs-prepub ≥ 0.1.0.",
+      "Upload the package directly to a running cvmfs-prepub service over HTTPS.  "
+      "Requires cvmfs-prepub ≥ 0.1.0.",
   )
   _prepub.add_argument("--prepub-url", dest="prepubUrl", default=None, metavar="URL",
                        help=("Base URL of the cvmfs-prepub API (no trailing slash), e.g. "
-                             "https://prepub.example.org:8080.  When set, --spool is not required."))
+                             "https://prepub.example.org:8080.  Required for CVMFS publish."))
   _prepub.add_argument("--prepub-token", dest="prepubToken", default=None, metavar="TOKEN",
                        help=("Bearer token for the cvmfs-prepub API.  If omitted the value of the "
                              "PREPUB_API_TOKEN environment variable is used."))
