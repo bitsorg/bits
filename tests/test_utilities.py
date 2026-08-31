@@ -14,7 +14,6 @@ from bits_helpers.utilities import asList
 from bits_helpers.utilities import prunePaths
 from bits_helpers.utilities import resolve_version, resolve_spec_data, resolve_tag
 from bits_helpers.utilities import topological_sort
-from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
 from bits_helpers.matchers import _parse_req_matcher, _collect_version_pins
 from bits_helpers.utilities import asDict, merge_dicts
 from bits_helpers.matchers import _version_compare, _parse_patch_entry, filterPatches, _matcher_active

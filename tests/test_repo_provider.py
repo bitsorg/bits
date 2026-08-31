@@ -30,7 +30,8 @@ from bits_helpers.repo_provider import (
     cwd_is_recipe_dir,
     fetch_repo_providers_iteratively,
 )
-from bits_helpers.utilities import getConfigPaths, getPackageList
+from bits_helpers.utilities import getPackageList
+from bits_helpers.paths import getConfigPaths
 
 
 # ── Recipe text helpers ─────────────────────────────────────────────────────
@@ -94,14 +95,14 @@ class TestGetConfigPaths(unittest.TestCase):
         else:
             os.environ["BITS_PATH"] = self._orig
 
-    @patch("bits_helpers.utilities.exists", return_value=True)
+    @patch("bits_helpers.paths.exists", return_value=True)
     def test_relative_name_gets_bits_suffix(self, _exists):
         os.environ["BITS_PATH"] = "alice,common"
         paths = getConfigPaths("/base")
         self.assertIn("/base/alice.bits", paths)
         self.assertIn("/base/common.bits", paths)
 
-    @patch("bits_helpers.utilities.exists", return_value=True)
+    @patch("bits_helpers.paths.exists", return_value=True)
     def test_absolute_path_used_directly(self, _exists):
         """An absolute entry in BITS_PATH must not get .bits appended."""
         os.environ["BITS_PATH"] = "/abs/path/my-provider"
@@ -109,7 +110,7 @@ class TestGetConfigPaths(unittest.TestCase):
         self.assertIn("/abs/path/my-provider", paths)
         self.assertNotIn("/base//abs/path/my-provider.bits", paths)
 
-    @patch("bits_helpers.utilities.exists", return_value=True)
+    @patch("bits_helpers.paths.exists", return_value=True)
     def test_mixed_relative_and_absolute(self, _exists):
         os.environ["BITS_PATH"] = "alice,/abs/provider,common"
         paths = getConfigPaths("/base")
@@ -595,7 +596,7 @@ class MockReaderPkgList:
 
 
 @mock.patch("bits_helpers.utilities.getRecipeReader", new=MockReaderPkgList)
-@mock.patch("bits_helpers.utilities.exists",
+@mock.patch("bits_helpers.paths.exists",
             new=lambda f: f in _PKGLIST_RECIPES)
 class TestGetPackageListProviderDirs(unittest.TestCase):
     """Verify that recipe_provider / recipe_provider_hash are populated."""

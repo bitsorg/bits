@@ -83,9 +83,10 @@ class DoctorTestCase(unittest.TestCase):
     @patch("bits_helpers.doctor.warning")
     @patch("bits_helpers.doctor.error")
     @patch("bits_helpers.doctor.exists")
+    @patch("bits_helpers.paths.exists")
     @patch("bits_helpers.utilities.exists")
     @patch("bits_helpers.utilities.open")
-    def test_doctor(self, mockOpen, mockUtilitiesExists, mockDoctorExists,
+    def test_doctor(self, mockOpen, mockUtilitiesExists, mockPathsExists, mockDoctorExists,
                     mockPrintError, mockPrintWarning, mockPrintBanner):
         recipes = lambda: {
             "/dist/package1.sh":         StringIO(RECIPE_PACKAGE1),
@@ -104,6 +105,7 @@ class DoctorTestCase(unittest.TestCase):
             return f in recipes()
 
         mockUtilitiesExists.side_effect = mockExists
+        mockPathsExists.side_effect = mockExists
         mockDoctorExists.side_effect = mockExists
 
         def resetOut():

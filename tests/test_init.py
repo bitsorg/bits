@@ -134,7 +134,7 @@ class InitTestCase(unittest.TestCase):
     @patch("bits_helpers.init.banner")
     @patch("bits_helpers.init.info")
     @patch("bits_helpers.init.path")
-    @patch("bits_helpers.utilities.exists")
+    @patch("bits_helpers.paths.exists")
     @patch("bits_helpers.init.os")
     @patch("bits_helpers.init.git")
     @patch("bits_helpers.init.updateReferenceRepoSpec")

@@ -23,7 +23,8 @@ from bits_helpers.matchers import resolve_variables
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults, incompatibleFlavorDefaults
 from bits_helpers.utilities import Hasher
-from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash, resolve_spec_data, resolveLocalPath
+from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash, resolve_spec_data
+from bits_helpers.paths import resolveLocalPath
 from bits_helpers.git import Git, git
 from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
