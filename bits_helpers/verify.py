@@ -60,7 +60,8 @@ _RESET = "\033[0m"
 
 def _store_rel(pkg_hash: str, tarball: str, arch: str) -> str:
     """Return the store-relative path for a content-addressed tarball."""
-    return os.path.join("TARS", arch, "store", pkg_hash[:2], pkg_hash, tarball)
+    from bits_helpers.utilities import resolve_store_path
+    return os.path.join(resolve_store_path(arch, pkg_hash), tarball)
 
 
 def _find_tarball(tarball: str, pkg_hash: str, arch: str,

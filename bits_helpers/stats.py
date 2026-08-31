@@ -22,17 +22,10 @@ from os.path import join, isfile
 
 from bits_helpers.build_stats import default_stats_path, STATS_FILENAME
 from bits_helpers.log import error, info
+from bits_helpers.utilities import human_bytes
 
 
 # ── formatting helpers ──────────────────────────────────────────────────────
-
-def human_bytes(n):
-    n = float(n or 0)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if n < 1024 or unit == "TiB":
-            return ("%.0f %s" % (n, unit)) if unit == "B" else ("%.1f %s" % (n, unit))
-        n /= 1024.0
-
 
 def human_time(seconds):
     s = int(seconds or 0)

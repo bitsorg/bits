@@ -223,14 +223,9 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
     reject a corrupted upload. direct_s3=True adds the direct_s3 field so
     cvmfs_server writes objects straight to S3 (bypassing the gateway). Signed by
     default; bearer puts the token on the request instead. Returns the job id."""
-    import hashlib
     from bits_helpers import prepub as _pp
     url = "%s/api/v1/jobs" % prepub_url.rstrip("/")
-    h = hashlib.sha256()
-    with open(tar_file, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    tar_sha256 = h.hexdigest()
+    tar_sha256 = _pp.sha256_file(tar_file)
     # The signed set MUST equal the fields prepub parses, or the digest differs
     # and the publish 401s (reads as auth failure). tar itself is not signed —
     # its sha256 is, and prepub re-hashes the upload to bind them.
@@ -283,11 +278,8 @@ def tar_path(spec, tars_root, default_arch):
 
 def _human(n):
     """Bytes as a short human string (1.8G, 212M, 4K, 0B). For log cross-checks."""
-    n = float(n)
-    for u in ("B", "K", "M", "G", "T"):
-        if n < 1024 or u == "T":
-            return ("%.0f%s" % (n, u)) if u == "B" else ("%.1f%s" % (n, u))
-        n /= 1024.0
+    from bits_helpers.utilities import human_bytes
+    return human_bytes(n, units=("B", "K", "M", "G", "T"), sep="")
 
 
 def payload_size(spec, tars_root, default_arch):

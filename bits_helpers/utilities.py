@@ -275,6 +275,17 @@ def ver_rev(spec):
   return "{}-{}".format(spec["version"], rev) if rev else spec["version"]
 
 
+def human_bytes(n, units=("B", "KiB", "MiB", "GiB", "TiB"), sep=" "):
+  """Bytes as a short human string. Default gives binary units with a space
+  ('5.0 KiB', '0 B'); pass units=('B','K','M','G','T'), sep='' for the compact
+  form ('1.8G', '0B')."""
+  n = float(n or 0)
+  for u in units:
+    if n < 1024 or u == units[-1]:
+      return ("%.0f%s%s" % (n, sep, u)) if u == "B" else ("%.1f%s%s" % (n, sep, u))
+    n /= 1024.0
+
+
 def resolve_store_path(architecture, spec_hash):
   """Return the path where a tarball with the given hash is to be stored.
 
