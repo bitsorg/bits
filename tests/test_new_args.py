@@ -16,7 +16,7 @@ import unittest
 from unittest.mock import patch
 
 from bits_helpers.args import doParseArgs, _parse_flavours
-from bits_helpers.utilities import filterByArchitectureDefaults
+from bits_helpers.matchers import filterByArchitectureDefaults
 
 # Shared architecture that passes validation checks.
 _ARCH = "slc7_x86-64"

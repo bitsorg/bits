@@ -67,8 +67,8 @@ from bits_helpers.utilities import (
     parseRecipe,
     resolve_spec_data,
     symlink,
-    _parse_req_matcher,
 )
+from bits_helpers.matchers import _parse_req_matcher
 
 # Maximum provider-discovery iterations (guards against run-away recursion)
 MAX_PROVIDER_ITERATIONS = 20

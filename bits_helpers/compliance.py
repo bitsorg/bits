@@ -115,7 +115,8 @@ def resolve_group_specs(args, parser):
         fetch_repo_providers_iteratively, load_always_on_providers)
     from bits_helpers.utilities import (
         getConfigPaths, getPackageList, parseDefaults, readDefaults,
-        resolve_variables, validateDefaults)
+        validateDefaults)
+    from bits_helpers.matchers import resolve_variables
 
     config_dir = os.path.abspath(args.configDir)
 

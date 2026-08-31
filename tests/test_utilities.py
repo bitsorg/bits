@@ -6,8 +6,8 @@ import unittest
 # Assuming you are using the mock library to ... mock things
 from unittest.mock import patch
 
-from bits_helpers.utilities import filterByArchitectureDefaults, disabledByArchitectureDefaults
-from bits_helpers.utilities import resolve_variables
+from bits_helpers.matchers import filterByArchitectureDefaults, disabledByArchitectureDefaults
+from bits_helpers.matchers import resolve_variables
 from bits_helpers.arch import doDetectArch, predefined_arch_vars
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import asList
@@ -15,9 +15,9 @@ from bits_helpers.utilities import prunePaths
 from bits_helpers.utilities import resolve_version, resolve_spec_data, resolve_tag
 from bits_helpers.utilities import topological_sort
 from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
-from bits_helpers.utilities import _parse_req_matcher, _collect_version_pins
+from bits_helpers.matchers import _parse_req_matcher, _collect_version_pins
 from bits_helpers.utilities import asDict, merge_dicts
-from bits_helpers.utilities import _version_compare, _parse_patch_entry, filterPatches, _matcher_active
+from bits_helpers.matchers import _version_compare, _parse_patch_entry, filterPatches, _matcher_active
 from collections import OrderedDict
 import bits_helpers
 import bits_helpers.log
