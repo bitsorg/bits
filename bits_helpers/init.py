@@ -2,10 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # Standard library
-import configparser
 import os
 import sys
-from io import StringIO
 from os.path import join
 import os.path as path
 
@@ -64,60 +62,76 @@ def _explicit_rc_keys(explicit_flags):
     return keys
 
 
+# Where each persistable setting is recorded in the bits use profile.
+# (section, canonical flag, args attribute). --architecture is broadly accepted
+# so it goes to [common]; the rest to [build] (kept out of [common] so the module
+# commands q/enter are unaffected). organisation/providers have no build-time
+# flag and are handled via the environment (see _INIT_ENV_ONLY).
+_INIT_PROFILE_MAP = {
+    "architecture":      ("common", "--architecture",      "architecture"),
+    "work_dir":          ("build",  "--work-dir",          "workDir"),
+    "config_dir":        ("build",  "--config-dir",        "configDir"),
+    "defaults":          ("build",  "--defaults",          "defaults"),
+    "reference_sources": ("build",  "--reference-sources", "referenceSources"),
+    "remote_store":      ("build",  "--remote-store",      "initRemoteStore"),
+    "write_store":       ("build",  "--write-store",       "initWriteStore"),
+}
+_INIT_ENV_ONLY = {"organisation": ("BITS_ORGANISATION", "organisation"),
+                  "providers":    ("BITS_PROVIDERS",    "providers")}
+
+
 def doInitConfig(args):
-    """Write (or update) a bits.rc from the options supplied on the CLI.
+    """Record the options supplied on the CLI as a reusable ``bits use`` profile
+    (``./.bitsuse`` or a ~/.bits/use record), so they need not be repeated on
+    every build. Only settings the user explicitly named are saved:
+    ``--architecture`` goes to the ``[common]`` section, the rest to ``[build]``.
 
-    Only settings that the user explicitly named on the command line are
-    written; default values for options the user did not mention are skipped
-    so that bits.rc stays minimal and authoritative.
-
-    With --dry-run the resulting INI content is printed without touching the
-    file system.
+    ``organisation``/``providers`` have no build-time flag; for those the user is
+    pointed at ``$BITS_ORGANISATION`` / ``$BITS_PROVIDERS``. With --dry-run the
+    resulting profile is printed without writing.
     """
-    rc_file   = getattr(args, "rcFile",    "bits.rc")
-    append    = getattr(args, "appendRc",  False)
-    explicit  = getattr(args, "_init_explicit", set())
+    from bits_helpers import bits_use
 
-    # Which bits.rc keys did the user explicitly request?
-    rc_keys_to_write = _explicit_rc_keys(explicit)
+    explicit = getattr(args, "_init_explicit", set())
+    rc_keys  = _explicit_rc_keys(explicit)
 
-    if not rc_keys_to_write:
-        info("No configuration options specified — nothing to write.\n"
-             "Run 'bits init --help' to see available persistent settings.\n"
+    if not rc_keys:
+        info("No configuration options specified — nothing to save.\n"
+             "Run 'bits init --help' to see the settings you can persist.\n"
              "To clone package sources for development, supply a PACKAGE name:\n"
              "  bits init [--dist USER/REPO@BRANCH] PACKAGE")
         return
 
-    cfg = configparser.ConfigParser()
-    if append and path.exists(rc_file):
-        cfg.read(rc_file)
-        debug("Merging into existing %s", rc_file)
-    if not cfg.has_section("bits"):
-        cfg.add_section("bits")
-
-    for attr, rc_key, _short in _INIT_RC_MAP:
-        if rc_key not in rc_keys_to_write:
+    tokens = {"common": [], "build": []}
+    for key in rc_keys:
+        if key in _INIT_ENV_ONLY:
+            env, attr = _INIT_ENV_ONLY[key]
+            val = getattr(args, attr, None)
+            warning("'%s' has no build-time flag and is not saved to the profile; "
+                    "set it globally with %s=%s", key, env,
+                    val if val is not None else "…")
             continue
+        section, flag, attr = _INIT_PROFILE_MAP[key]
         val = getattr(args, attr, None)
         if val is None:
             continue
-        # args.defaults is already split into a list by finaliseArgs
-        if isinstance(val, list):
+        if isinstance(val, list):          # defaults is a list after finaliseArgs
             val = "::".join(val)
-        cfg.set("bits", rc_key, str(val))
-        debug("bits.rc: %s = %s", rc_key, val)
-
-    buf = StringIO()
-    cfg.write(buf)
-    ini_text = buf.getvalue()
+        tokens[section] += [flag, str(val)]
 
     if args.dryRun:
-        info("Would write to %s:\n\n%s", rc_file, ini_text)
+        preview = "\n".join("[%s] %s" % (s, " ".join(t)) for s, t in tokens.items() if t)
+        info("Would save to the bits use profile:\n%s", preview or "(nothing)")
         return
 
-    with open(rc_file, "w") as fh:
-        fh.write(ini_text)
-    banner("Configuration written to %s", rc_file)
+    saved_to = None
+    for section in ("common", "build"):
+        if tokens[section]:
+            saved_to = bits_use.write_section(section, tokens[section])
+    if saved_to:
+        banner("Saved to the bits use profile (%s).", bits_use._src_label(saved_to))
+    else:
+        info("Nothing saved (organisation/providers use environment variables).")
 
 
 def _checkout_recipes_only(args):
@@ -199,8 +213,8 @@ def doInit(args):
   if not pkgs:
     # aliBuild compatibility: `aliBuild init` with no PACKAGE checks out the
     # recipe (alidist) repository for development and exits, like classic
-    # aliBuild. Plain `bits init` instead writes (or updates) bits.rc from the
-    # supplied options — backward-compatible: callers that supply a PACKAGE are
+    # aliBuild. Plain `bits init` instead records the supplied options as a
+    # `bits use` profile — backward-compatible: callers that supply a PACKAGE are
     # unaffected either way.
     if os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild":
       return _checkout_recipes_only(args)

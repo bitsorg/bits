@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2015-2026 CERN
+bits_helpers/args.py # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import argparse
@@ -1191,30 +1191,27 @@ def doParseArgs():
                          help=("The directory where reference git repositories will be cloned. "
                                "'%%(workDir)s' will be substituted by WORKDIR. Default '%(default)s'."))
 
-  # Options for creating / updating bits.rc (config mode: no PACKAGE given)
+  # Options recorded as a `bits use` profile (config mode: no PACKAGE given)
   init_cfg = init_parser.add_argument_group(
-      title="Persistent configuration (bits.rc)",
-      description="These options write settings to bits.rc so you do not need to repeat them "
-                  "on every 'bits build' invocation. When no PACKAGE is given, 'bits init' "
-                  "writes the supplied options to bits.rc and exits.")
+      title="Persistent configuration (bits use)",
+      description="With no PACKAGE, 'bits init' records the supplied options as a "
+                  "'bits use' profile (./.bitsuse or a ~/.bits/use record) so you do not "
+                  "repeat them on every build, then exits. --architecture goes to [common], "
+                  "the rest to [build]. organisation/providers have no build flag — set "
+                  "$BITS_ORGANISATION / $BITS_PROVIDERS for those.")
   init_cfg.add_argument("--providers", dest="providers", default=None, metavar="URL",
-                        help="URL of the bits-providers repository (written as 'providers' in bits.rc). "
-                             "Equivalent to the BITS_PROVIDERS environment variable.")
+                        help="URL of the bits-providers repository. Has no build-time flag; "
+                             "set the BITS_PROVIDERS environment variable instead.")
   init_cfg.add_argument("--remote-store", dest="initRemoteStore", default=None, metavar="URL",
-                        help="Binary store to fetch pre-built tarballs from (written as 'remote_store' "
-                             "in bits.rc). Accepts the same URL formats as 'bits build --remote-store'.")
+                        help="Binary store to fetch pre-built tarballs from (saved as "
+                             "'--remote-store' in the [build] profile).")
   init_cfg.add_argument("--write-store", dest="initWriteStore", default=None, metavar="URL",
-                        help="Binary store to upload newly-built tarballs to (written as 'write_store' "
-                             "in bits.rc). Accepts the same URL formats as 'bits build --write-store'.")
+                        help="Binary store to upload newly-built tarballs to (saved as "
+                             "'--write-store' in the [build] profile).")
   init_cfg.add_argument("--organisation", dest="organisation", default=None, metavar="NAME",
-                        help="Organisation name selecting the registry/provider 'home' repo, also "
-                             "stored under the 'organisation' key in bits.rc. Defaults to the "
-                             "BITS_ORGANISATION environment variable (set by the aliBuild wrapper).")
-  init_cfg.add_argument("--rc-file", dest="rcFile", default="bits.rc", metavar="FILE",
-                        help="Path of the bits.rc file to create or update. Default '%(default)s'.")
-  init_cfg.add_argument("--append", dest="appendRc", action="store_true", default=False,
-                        help="Merge the new settings into an existing bits.rc rather than "
-                             "overwriting it. Without this flag a fresh file is written.")
+                        help="Organisation selecting the registry/provider 'home' repo. Has no "
+                             "build-time flag; set the BITS_ORGANISATION environment variable "
+                             "instead (the aliBuild wrapper sets it).")
 
   # version takes no options; the architecture is auto-detected for display.
 
