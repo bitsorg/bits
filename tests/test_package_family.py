@@ -23,7 +23,9 @@ from bits_helpers.utilities import resolve_tag
 from bits_helpers.defaults import resolve_pkg_family
 from bits_helpers.packages import getPackageList
 from bits_helpers.recipe import parseRecipe
-from bits_helpers.build import _pkg_install_path, generate_initdotsh, storeHashes
+from bits_helpers.build import _pkg_install_path
+from bits_helpers.hashing import storeHashes
+from bits_helpers.initdotsh import generate_initdotsh
 
 
 # ---------------------------------------------------------------------------

@@ -688,7 +688,7 @@ class TestRunCheckStoreChecks(unittest.TestCase):
             specs[pkg]["remote_hashes"] = ["deadbeef01234567" * 2]
             specs[pkg]["local_hashes"]  = ["deadbeef01234567" * 2]
 
-        with patch("bits_helpers.build.storeHashes", side_effect=fake_store_hashes), \
+        with patch("bits_helpers.hashing.storeHashes", side_effect=fake_store_hashes), \
              patch("bits_helpers.doctor._probe_tarball_in_store",
                    return_value=(PASS, "available")) as mock_probe:
             checks = _run_check_store_checks(
@@ -711,7 +711,7 @@ class TestRunCheckStoreChecks(unittest.TestCase):
             specs_[pkg].setdefault("remote_hashes", [])
             specs_[pkg].setdefault("local_hashes",  [])
 
-        with patch("bits_helpers.build.storeHashes", side_effect=fake_store_hashes):
+        with patch("bits_helpers.hashing.storeHashes", side_effect=fake_store_hashes):
             checks = _run_check_store_checks(
                 self._args(), specs,
                 own={"Foo"}, always_built=set())
@@ -806,7 +806,7 @@ class TestRunCheckStoreChecks(unittest.TestCase):
              patch("bits_helpers.doctor.readDefaults", return_value={}), \
              patch("bits_helpers.doctor.validateDefaults",
                    return_value=(True, "", ["release"])), \
-             patch("bits_helpers.build.storeHashes", side_effect=fake_store_hashes), \
+             patch("bits_helpers.hashing.storeHashes", side_effect=fake_store_hashes), \
              patch("urllib.request.urlopen",
                    side_effect=__import__("urllib.error", fromlist=["HTTPError"])
                    .HTTPError(None, 404, "Not Found", {}, None)), \

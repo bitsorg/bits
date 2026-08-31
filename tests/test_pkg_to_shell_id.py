@@ -12,7 +12,7 @@ Covers:
 
 import unittest
 from bits_helpers.utilities import pkg_to_shell_id
-from bits_helpers.build import generate_initdotsh
+from bits_helpers.initdotsh import generate_initdotsh
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,8 @@ Covers:
 
 import unittest
 from bits_helpers.arch import compute_combined_arch, effective_arch, SHARED_ARCH
-from bits_helpers.build import _pkg_install_path, generate_initdotsh
+from bits_helpers.build import _pkg_install_path
+from bits_helpers.initdotsh import generate_initdotsh
 
 
 # ---------------------------------------------------------------------------

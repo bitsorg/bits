@@ -461,7 +461,7 @@ def _run_check_store_checks(args, specs: dict, own: set,
     Returns ``[(name, status, detail), ...]``.
     """
     # Lazy import — bits_helpers.build is heavy (jinja2, analytics, slow init).
-    from bits_helpers.build import storeHashes as _storeHashes
+    from bits_helpers.hashing import storeHashes as _storeHashes
 
     store_url = (getattr(args, "remoteStore", "") or "").rstrip("/")
     arch      = getattr(args, "architecture", "")

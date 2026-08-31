@@ -529,7 +529,7 @@ class TestDoStatus(unittest.TestCase):
     @patch("bits_helpers.status.getPackageList")
     @patch("bits_helpers.status.parseDefaults")
     @patch("bits_helpers.status.readDefaults")
-    @patch("bits_helpers.build.storeHashes")
+    @patch("bits_helpers.hashing.storeHashes")
     @patch("bits_helpers.build.storeHook")
     def test_build_from_source_reported(self, mock_hook, mock_store_hashes,
                                         mock_read_defaults, mock_parse_defaults,
@@ -574,7 +574,7 @@ class TestDoStatus(unittest.TestCase):
     @patch("bits_helpers.status.getPackageList")
     @patch("bits_helpers.status.parseDefaults")
     @patch("bits_helpers.status.readDefaults")
-    @patch("bits_helpers.build.storeHashes")
+    @patch("bits_helpers.hashing.storeHashes")
     @patch("bits_helpers.build.storeHook")
     def test_already_installed_reported(self, mock_hook, mock_store_hashes,
                                         mock_read_defaults, mock_parse_defaults,
@@ -621,7 +621,7 @@ class TestDoStatus(unittest.TestCase):
     @patch("bits_helpers.status.getPackageList")
     @patch("bits_helpers.status.parseDefaults")
     @patch("bits_helpers.status.readDefaults")
-    @patch("bits_helpers.build.storeHashes")
+    @patch("bits_helpers.hashing.storeHashes")
     @patch("bits_helpers.build.storeHook")
     def test_json_output_structure(self, mock_hook, mock_store_hashes,
                                    mock_read_defaults, mock_parse_defaults,
@@ -667,7 +667,7 @@ class TestDoStatus(unittest.TestCase):
     @patch("bits_helpers.status.getPackageList")
     @patch("bits_helpers.status.parseDefaults")
     @patch("bits_helpers.status.readDefaults")
-    @patch("bits_helpers.build.storeHashes")
+    @patch("bits_helpers.hashing.storeHashes")
     @patch("bits_helpers.build.storeHook")
     def test_hash_unknown_on_storeHashes_failure(self, mock_hook, mock_store_hashes,
                                                   mock_read_defaults, mock_parse_defaults,

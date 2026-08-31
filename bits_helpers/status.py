@@ -355,7 +355,8 @@ def _emit_json(rows: List[dict], architecture: str) -> None:
 def doStatus(args, parser) -> None:
     """Resolve the dependency tree and report the build state of each package."""
     # Deferred heavy imports (build.py pulls in jinja2, analytics, etc.)
-    from bits_helpers.build import storeHashes, storeHook, hash_local_changes
+    from bits_helpers.build import storeHook, hash_local_changes
+    from bits_helpers.hashing import storeHashes
     from bits_helpers.log import dieOnError
     from bits_helpers.git import git
 

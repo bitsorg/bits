@@ -8,7 +8,7 @@ import unittest
 
 from collections import OrderedDict
 
-from bits_helpers.build import storeHashes
+from bits_helpers.hashing import storeHashes
 
 LOGFILE = "build.log"
 SPEC_RE = re.compile(r"spec = (OrderedDict\(\[\('package', '([^']+)'.*\)\]\))")
@@ -74,7 +74,7 @@ class NormalizeRecipeForHashTestCase(unittest.TestCase):
     """normalize_recipe_for_hash strips comments/blank lines for hashing only."""
 
     def _n(self, s):
-        from bits_helpers.build import normalize_recipe_for_hash
+        from bits_helpers.hashing import normalize_recipe_for_hash
         return normalize_recipe_for_hash(s)
 
     def test_drops_full_line_comments_and_blanks(self):
@@ -128,7 +128,7 @@ class NormalizeRecipeMetadataExclusionTestCase(unittest.TestCase):
               "make install\n")
 
     def _n(self, s):
-        from bits_helpers.build import normalize_recipe_for_hash
+        from bits_helpers.hashing import normalize_recipe_for_hash
         return normalize_recipe_for_hash(s)
 
     def test_metadata_keys_removed_from_header(self):
@@ -222,7 +222,7 @@ class SourceKeysExcludedFromTextHashTestCase(unittest.TestCase):
     git alternative on a tarball recipe is hash-neutral."""
 
     def _n(self, s):
-        from bits_helpers.build import normalize_recipe_for_hash
+        from bits_helpers.hashing import normalize_recipe_for_hash
         return normalize_recipe_for_hash(s)
 
     def test_source_sources_tag_stripped_from_header(self):
@@ -242,7 +242,7 @@ class SourceKeysExcludedFromTextHashTestCase(unittest.TestCase):
         self.assertIn("echo 'source: not a header'", self._n(r))
 
     def _h(self, **over):
-        from bits_helpers.build import storeHashes
+        from bits_helpers.hashing import storeHashes
         s = {"package": "foo", "version": "1.2.3", "commit_hash": "1.2.3", "tag": "1.2.3",
              "scm_refs": {}, "requires": [], "build_requires": [], "runtime_requires": [],
              "is_devel_pkg": False, "pkg_family": "",

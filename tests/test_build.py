@@ -15,7 +15,9 @@ from collections import OrderedDict
 
 from bits_helpers.utilities import resolve_tag
 from bits_helpers.recipe import parseRecipe
-from bits_helpers.build import doBuild, storeHashes, generate_initdotsh
+from bits_helpers.build import doBuild
+from bits_helpers.hashing import storeHashes
+from bits_helpers.initdotsh import generate_initdotsh
 
 # Determine architecture based on platform
 def get_test_architecture():

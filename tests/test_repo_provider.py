@@ -971,7 +971,7 @@ class TestStoreHashesProviderHash(unittest.TestCase):
         return spec
 
     def _call_store_hashes(self, spec):
-        from bits_helpers.build import storeHashes
+        from bits_helpers.hashing import storeHashes
         specs = {spec["package"]: spec, "defaults-release": self._make_spec(
             package="defaults-release", version="v1", requires=[])}
         storeHashes(spec["package"], specs, considerRelocation=False)
