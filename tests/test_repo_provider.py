@@ -30,7 +30,7 @@ from bits_helpers.repo_provider import (
     cwd_is_recipe_dir,
     fetch_repo_providers_iteratively,
 )
-from bits_helpers.utilities import getPackageList
+from bits_helpers.packages import getPackageList
 from bits_helpers.paths import getConfigPaths
 
 
@@ -595,7 +595,7 @@ class MockReaderPkgList:
         return self._contents
 
 
-@mock.patch("bits_helpers.utilities.getRecipeReader", new=MockReaderPkgList)
+@mock.patch("bits_helpers.packages.getRecipeReader", new=MockReaderPkgList)
 @mock.patch("bits_helpers.paths.exists",
             new=lambda f: f in _PKGLIST_RECIPES)
 class TestGetPackageListProviderDirs(unittest.TestCase):

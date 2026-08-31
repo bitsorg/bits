@@ -19,7 +19,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from bits_helpers.utilities import resolve_pkg_family, getPackageList, resolve_tag
+from bits_helpers.utilities import resolve_pkg_family, resolve_tag
+from bits_helpers.packages import getPackageList
 from bits_helpers.recipe import parseRecipe
 from bits_helpers.build import _pkg_install_path, generate_initdotsh, storeHashes
 
@@ -218,15 +219,15 @@ class TestGetPackageListPkgFamily(unittest.TestCase):
             content = self.RECIPES.get(pkg, "package: {p}\nversion: v1\n---\n".format(p=pkg))
             return lambda: content
 
-        with patch("bits_helpers.utilities.resolveFilename",
+        with patch("bits_helpers.packages.resolveFilename",
                    side_effect=fake_resolveFilename), \
-             patch("bits_helpers.utilities.getRecipeReader",
+             patch("bits_helpers.packages.getRecipeReader",
                    side_effect=fake_getRecipeReader), \
-             patch("bits_helpers.utilities.getGeneratedPackages",
+             patch("bits_helpers.packages.getGeneratedPackages",
                    return_value={"/pkgdir": {}}), \
-             patch("bits_helpers.utilities.load_for_spec",
+             patch("bits_helpers.packages.load_for_spec",
                    return_value=None), \
-             patch("bits_helpers.utilities.merge_into_spec",
+             patch("bits_helpers.packages.merge_into_spec",
                    return_value=None):
             getPackageList(
                 packages=["myapp"],

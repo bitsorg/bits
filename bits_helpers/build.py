@@ -20,7 +20,8 @@ from bits_helpers.utilities import resolve_store_path, resolve_links_path, pkg_t
 from bits_helpers.arch import detectArch, effective_arch, SHARED_ARCH, compute_combined_arch
 from bits_helpers.utilities import parseDefaults, readDefaults
 from bits_helpers.matchers import resolve_variables
-from bits_helpers.utilities import getPackageList, asList
+from bits_helpers.utilities import asList
+from bits_helpers.packages import getPackageList
 from bits_helpers.utilities import validateDefaults, incompatibleFlavorDefaults
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash, resolve_spec_data

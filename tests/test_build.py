@@ -286,8 +286,9 @@ class BuildTestCase(unittest.TestCase):
     @patch("os.path.exists", new=MagicMock(side_effect=dummy_exists))
     @patch("os.path.isfile", new=MagicMock(side_effect=dummy_isfile))
     @patch("bits_helpers.build.dieOnError", new=MagicMock())
+    @patch("bits_helpers.packages.dieOnError", new=MagicMock())
     @patch("bits_helpers.utilities.dieOnError", new=MagicMock())
-    @patch("bits_helpers.utilities.warning")
+    @patch("bits_helpers.packages.warning")
     @patch("bits_helpers.build.readDefaults",
            new=MagicMock(return_value=(OrderedDict({"package": "defaults-release", "disable": []}), "")))
     @patch("shutil.rmtree", new=MagicMock(return_value=None))

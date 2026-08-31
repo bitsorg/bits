@@ -9,7 +9,7 @@ from unittest.mock import patch
 import tempfile
 
 from bits_helpers.cmd import getstatusoutput
-from bits_helpers.utilities import getPackageList
+from bits_helpers.packages import getPackageList
 
 
 RECIPES = {
@@ -121,7 +121,7 @@ def getPackageListWithDefaults(packages, force_rebuild=()):
     return (specs, *return_values)
 
 
-@mock.patch("bits_helpers.utilities.getRecipeReader", new=MockReader)
+@mock.patch("bits_helpers.packages.getRecipeReader", new=MockReader)
 @mock.patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)
 class ReplacementTestCase(unittest.TestCase):
     """Test that system package replacements are working."""
@@ -175,7 +175,7 @@ class ReplacementTestCase(unittest.TestCase):
         self.assertNotIn("with-replacement-recipe", systemPkgs)
         self.assertIn("with-replacement-recipe", ownPkgs)
 
-    @mock.patch("bits_helpers.utilities.warning")
+    @mock.patch("bits_helpers.packages.warning")
     def test_missing_replacement_spec(self, mock_warning) -> None:
         """Check a warning is displayed when the replacement spec is not found."""
         warning_msg = "falling back to building the package ourselves"
@@ -199,7 +199,7 @@ class ReplacementTestCase(unittest.TestCase):
             self.assertFalse("HEREE" in os.listdir())
 
 
-@mock.patch("bits_helpers.utilities.getRecipeReader", new=MockReader)
+@mock.patch("bits_helpers.packages.getRecipeReader", new=MockReader)
 @mock.patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)
 class ForceRebuildTestCase(unittest.TestCase):
     """Test that force_rebuild keys are applied properly."""

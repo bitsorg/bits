@@ -4,8 +4,8 @@
 """Requirement/variable/version matching for recipe `requires:`, defaults
 `variables:` gates, patch `when:` entries and version pins. Split out of
 utilities.py; pure logic. Imports the arch-derived variables (for `(?osx)`-style
-gates) from bits_helpers.arch, so this sits above utilities in the import graph
-(utilities imports back the few matcher entry points getPackageList needs)."""
+gates) from bits_helpers.arch, so this sits low in the import graph; the higher
+layers (packages, repo_provider) import the few matcher entry points they need."""
 
 import re
 from collections import OrderedDict

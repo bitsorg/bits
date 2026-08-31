@@ -486,7 +486,7 @@ class TestDefaultsRequiresNoCycle(unittest.TestCase):
 
     def _call_getPackageList(self, packages, overrides=None, architecture="slc7_x86-64"):
         """Thin wrapper around getPackageList using the test config dir."""
-        from bits_helpers.utilities import getPackageList
+        from bits_helpers.packages import getPackageList
         from bits_helpers.cmd import getstatusoutput
 
         specs = {}

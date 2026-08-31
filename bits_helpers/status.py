@@ -37,8 +37,8 @@ from typing import Dict, List, Optional, Tuple
 from bits_helpers.git import Git
 from bits_helpers.sl import Sapling
 from bits_helpers.log import debug, info, warning, banner
+from bits_helpers.packages import getPackageList
 from bits_helpers.utilities import (
-    getPackageList,
     parseDefaults,
     prunePaths,
     readDefaults,
