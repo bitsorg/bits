@@ -1297,9 +1297,9 @@ Clones the upstream source repository for each named package into a writable loc
 | `-a ARCH` | Architecture. |
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 
-#### Config mode — write persistent settings to bits.rc
+#### Config mode — record persistent settings with `bits use`
 
-When **no PACKAGE** is given, `bits init` writes the supplied options to a `bits.rc` file and exits. All subsequent `bits` invocations in that directory (or globally, if written to `~/.bitsrc`) will use those settings as defaults without requiring them to be repeated on every command line. Explicit CLI flags always take precedence over bits.rc values.
+When **no PACKAGE** is given, `bits init` records the supplied options as a `bits use` profile (`./.bitsuse`, or a `~/.bits/use` record when the directory is not writeable) and exits, so you do not repeat them on every build. `--architecture` is saved to the `[common]` section (applied to every arch-aware command); the rest to `[build]`. Explicit CLI flags always take precedence.
 
 ```bash
 # Persist a remote binary store for the current project
@@ -1309,45 +1309,25 @@ bits init --remote-store https://store.example.com/store
 bits init --remote-store https://store.example.com/store \
           --write-store b3://mybucket/store
 
-# Record the organisation and update (not replace) the existing bits.rc
-bits init --organisation ALICE --append
-
-# Preview what would be written without touching the file
+# Preview what would be saved without touching the profile
 bits init --dry-run --remote-store https://store.example.com/store
-
-# Write to a specific file (default is bits.rc in the current directory)
-bits init --rc-file ~/.bitsrc --remote-store https://store.example.com/store
 ```
 
-| Config option | bits.rc key | Description |
-|---------------|-------------|-------------|
-| `--remote-store URL` | `remote_store` | Binary store to fetch pre-built tarballs from. |
-| `--write-store URL` | `write_store` | Binary store to upload newly-built tarballs to. |
-| `--providers URL` | `providers` | URL of the bits-providers repository (overrides `BITS_PROVIDERS`). |
-| `--organisation NAME` | `organisation` | Organisation selecting the registry/provider "home" repo. Also settable via the `BITS_ORGANISATION` environment variable (the `aliBuild` wrapper sets it). |
-| `-w DIR`, `--work-dir DIR` | `work_dir` | Default work/output directory (overrides `BITS_WORK_DIR`). |
-| `-a ARCH`, `--architecture ARCH` | `architecture` | Default target architecture. |
-| `--defaults PROFILE` | `defaults` | Default profile(s), `::` separated. |
-| `-c DIR`, `--config-dir DIR` | `config_dir` | Default recipe directory. |
-| `--reference-sources DIR` | `reference_sources` | Default mirror directory. |
-| `--rc-file FILE` | — | Destination file. Default: `bits.rc` in the current directory. |
-| `--append` | — | Merge new settings into the existing file rather than replacing it. |
+| Config option | Saved to | Description |
+|---------------|----------|-------------|
+| `--remote-store URL` | `[build]` | Binary store to fetch pre-built tarballs from. |
+| `--write-store URL` | `[build]` | Binary store to upload newly-built tarballs to. |
+| `-a ARCH`, `--architecture ARCH` | `[common]` | Default target architecture. |
+| `--defaults PROFILE` | `[build]` | Default profile(s), `::` separated. |
+| `-c DIR`, `--config-dir DIR` | `[build]` | Default recipe directory. |
+| `-w DIR`, `--work-dir DIR` | `[build]` | Default work/output directory. |
+| `--reference-sources DIR` | `[build]` | Default mirror directory. |
+| `--organisation NAME` | env only | No build-time flag; set `$BITS_ORGANISATION` (the `aliBuild` wrapper sets it). |
+| `--providers URL` | env only | No build-time flag; set `$BITS_PROVIDERS`. |
 
-**Search order for bits.rc.** Bits searches for persistent configuration in the following locations (highest priority first): `bits.rc`, `.bitsrc`, `~/.bitsrc`. The first file found is used. Only the `[bits]` INI section is read.
+> **`bits.rc` has been retired.** Earlier versions read a `bits.rc` / `.bitsrc` / `~/.bitsrc` file; it is no longer read. Per-directory settings now live in a `bits use` profile (above); global settings come from environment variables: `$BITS_WORK_DIR`, `$BITS_REPO_DIR` (config dir), `$BITS_ORGANISATION`, `$BITS_PROVIDERS`, `$BITS_PATH` (recipe search path — see `--search-path`), `$BITS_S3_STORE`, `$BITS_PREREQUISITES_URL`, `$BITS_CVMFS_REPOS`. Display prefix and branding (`$BITS_PKG_PREFIX`, `$BITS_BRANDING`) are set by the `aliBuild` wrapper.
 
-**Saving frequently-used CLI args (`bits use`).** Distinct from `bits.rc` (typed `key = value` settings), `bits use` records raw command-line arguments per directory so you don't retype them. `bits use --architecture X` saves to the `[common]` section (applied to every arch-aware command); `bits use build --docker --sandbox off` saves to `[build]` (that command only). Saved args are injected right after the action and before your own args, so an explicit flag still wins. `bits use` (no args) shows the active profile and its source; `bits use --clear [SECTION]` clears it. Storage is two-tier: a local `./.bitsuse` when the directory is writeable and owned by you, otherwise a per-directory record under `~/.bits/use/` — so a choice persists even in a read-only checkout. A local `.bitsuse` is honoured only when owned by the invoking user (it is injected before parsing, so an untrusted one is ignored in favour of the home record). `.bitscmd` is the previous name, still read as a fallback.
-
-**Example `bits.rc` created by config mode:**
-
-```ini
-[bits]
-remote_store = https://store.example.com/store
-write_store  = b3://mybucket/store
-work_dir     = /opt/sw
-organisation = MYORG
-```
-
-> **Format note.** `bits.rc` may be a flat `key = value` file or a single `[bits]` INI section — a header-less file is read as the `[bits]` section. The old per-organisation `[NAME]` sections and the keys `sw_dir`, `repo_dir`, `pkg_prefix`, and `branding` are no longer accepted: `bits` detects such a file, prints the required renames (`sw_dir`→`work_dir`, `repo_dir`→`config_dir`), and exits. `search_path` **is** still supported — it seeds `BITS_PATH` (comma-separated relative names resolve to `<config_dir>/<name>.bits`), which is required so that building a single package whose recipe lives in a sub-repo (e.g. `bits build ROOT` where `ROOT` is in `./lcg.bits`) finds it; an explicit `BITS_PATH` environment variable wins. Display prefix and branding (`BITS_PKG_PREFIX`, `BITS_BRANDING`) are environment concerns the `aliBuild` wrapper sets automatically.
+**Saving frequently-used CLI args (`bits use`).** `bits use` records raw command-line arguments per directory so you don't retype them. `bits use --architecture X` saves to the `[common]` section (applied to every arch-aware command); `bits use build --docker --sandbox off` saves to `[build]` (that command only). Saved args are injected right after the action and before your own args, so an explicit flag still wins. `bits use` (no args) shows the active profile and its source; `bits use --clear [SECTION]` clears it. Storage is two-tier: a local `./.bitsuse` when the directory is writeable and owned by you, otherwise a per-directory record under `~/.bits/use/` — so a choice persists even in a read-only checkout. A local `.bitsuse` is honoured only when owned by the invoking user (it is injected before parsing, so an untrusted one is ignored in favour of the home record). `.bitscmd` is the previous name, still read as a fallback.
 
 ---
 

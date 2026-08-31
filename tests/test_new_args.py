@@ -410,23 +410,5 @@ class SearchPathTest(unittest.TestCase):
         args = _parse(["deps", "-a", _ARCH, "--search-path", "bar", "ROOT"])
         self.assertEqual(args.searchPath, "bar")
 
-    def test_precedence_over_bits_rc(self):
-        import tempfile, shutil
-        d = tempfile.mkdtemp()
-        cwd = os.getcwd()
-        try:
-            with open(os.path.join(d, "bits.rc"), "w") as fh:
-                fh.write("search_path = fromrc\n")
-            os.chdir(d)
-            _parse(["build", "-a", _ARCH, "ROOT"])
-            self.assertEqual(os.environ.get("BITS_PATH"), "fromrc")  # bits.rc seeds
-            os.environ.pop("BITS_PATH", None)
-            _parse(["build", "-a", _ARCH, "--search-path", "cli", "ROOT"])
-            self.assertEqual(os.environ.get("BITS_PATH"), "cli")     # CLI wins
-        finally:
-            os.chdir(cwd)
-            shutil.rmtree(d, ignore_errors=True)
-
-
 if __name__ == "__main__":
     unittest.main()

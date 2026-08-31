@@ -73,17 +73,6 @@ def _colour(status: str, text: str) -> str:
     return _COLOUR.get(status, "") + text + _RESET
 
 
-# ── bits.rc helper ─────────────────────────────────────────────────────────────
-
-def _bits_rc_value(key: str) -> str:
-    """Return *key* from the first bits.rc / .bitsrc / ~/.bitsrc found, or ''."""
-    import configparser
-    cfg = configparser.ConfigParser()
-    for path in ["bits.rc", ".bitsrc", expanduser("~/.bitsrc")]:
-        if exists(path):
-            cfg.read(path)
-            break
-    return cfg.get("bits", key, fallback="").strip()
 
 
 # ── Existing helpers (unchanged) ───────────────────────────────────────────────
@@ -655,8 +644,8 @@ def _run_runner_checks(args) -> List[CheckResult]:
     # ── CVMFS repos ──────────────────────────────────────────────────────────
     cvmfs_repos = list(getattr(args, "cvmfsRepos", None) or [])
     if not cvmfs_repos:
-        # Fall back to bits.rc cvmfs_repos (comma-separated paths)
-        rc_repos = _bits_rc_value("cvmfs_repos")
+        # Fall back to $BITS_CVMFS_REPOS (comma-separated paths).
+        rc_repos = os.environ.get("BITS_CVMFS_REPOS", "")
         if rc_repos:
             cvmfs_repos = [r.strip() for r in rc_repos.split(",") if r.strip()]
     for repo_path in cvmfs_repos:
@@ -758,8 +747,8 @@ def doDoctor(args, parser):
                 "environment in hidden ways.\nPlease review it and make sure "
                 "you are not force-loading any library.")
 
-    # ── Prerequisite URL: read from bits.rc so each community can customise ──
-    _prereq_url  = _bits_rc_value("prerequisites_url") or \
+    # ── Prerequisite URL: a community can customise it via $BITS_PREREQUISITES_URL.
+    _prereq_url  = os.environ.get("BITS_PREREQUISITES_URL") or \
                    "https://alice-doc.github.io/alice-analysis-tutorial/building/"
     _prereq_hint = "Please consult the prerequisites guide:\n  %s" % _prereq_url
 

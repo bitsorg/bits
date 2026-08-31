@@ -326,7 +326,6 @@ class ProviderPathFrontendTestCase(unittest.TestCase):
     with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
          mock.patch("bits_helpers.args.commands") as mock_cmd, \
-         mock.patch("bits_helpers.args._read_bits_rc", return_value={}), \
          mock.patch.dict(os.environ, set_env, clear=False), \
          patch.object(sys, "argv", ["x", "build", "--force-unknown-architecture", "zlib"]):
       for k in ("BITS_BRANDING", "BITS_PROVIDERS"):
@@ -348,59 +347,6 @@ class ProviderPathFrontendTestCase(unittest.TestCase):
       self._bits_providers({"BITS_BRANDING": "aliBuild",
                             "BITS_PROVIDERS": "https://example.com/p"}),
       "https://example.com/p")
-
-
-class ReadBitsRcTestCase(unittest.TestCase):
-  """_read_bits_rc accepts the simplified flat layout and the [bits] section."""
-
-  def _read(self, content):
-    import tempfile, os
-    import bits_helpers.args as A
-    p = os.path.join(tempfile.mkdtemp(), "bits.rc")
-    with open(p, "w") as fh:
-      fh.write(content)
-    with mock.patch.object(A, "_BITS_RC_SEARCH_PATHS", [p]):
-      return A._read_bits_rc()
-
-  def test_flat_headerless_file(self):
-    # The simplified format (no [bits] section), incl. a trailing space.
-    rc = self._read("organisation = stacks \nconfig_dir=.\n")
-    self.assertEqual(rc.get("organisation"), "stacks")
-    self.assertEqual(rc.get("config_dir"), ".")
-
-  def test_explicit_bits_section_still_works(self):
-    rc = self._read("[bits]\norganisation = stacks\nconfig_dir = .\n")
-    self.assertEqual(rc.get("organisation"), "stacks")
-    self.assertEqual(rc.get("config_dir"), ".")
-
-  def test_missing_file_returns_empty(self):
-    import bits_helpers.args as A
-    with mock.patch.object(A, "_BITS_RC_SEARCH_PATHS", ["/no/such/bits.rc"]):
-      self.assertEqual(A._read_bits_rc(), {})
-
-  def test_search_path_seeds_bits_path(self):
-    # bits.rc search_path must seed BITS_PATH so a single-package build finds
-    # recipes in a sub-repo (e.g. ./lcg.bits). An explicit env BITS_PATH wins.
-    import os, tempfile
-    import bits_helpers.args as A
-    p = os.path.join(tempfile.mkdtemp(), "bits.rc")
-    with open(p, "w") as fh:
-      fh.write("config_dir=.\nsearch_path=lcg\n")
-    saved = os.environ.pop("BITS_PATH", None)
-    try:
-      with mock.patch.object(A, "_BITS_RC_SEARCH_PATHS", [p]), \
-           mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
-           mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
-           mock.patch("bits_helpers.args.commands") as mc, \
-           patch.object(sys, "argv",
-                        ["alibuild", "build", "--force-unknown-architecture", "zlib"]):
-        mc.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
-        doParseArgs()
-      self.assertEqual(os.environ.get("BITS_PATH"), "lcg")
-    finally:
-      os.environ.pop("BITS_PATH", None)
-      if saved is not None:
-        os.environ["BITS_PATH"] = saved
 
 
 if __name__ == '__main__':

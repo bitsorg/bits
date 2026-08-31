@@ -4,7 +4,6 @@
 """Tests for the always-on provider loading machinery.
 
 Covers:
- - _read_bits_rc(): searches bits.rc search paths; returns [bits] section
  - _parse_provider_url(): splits url@tag; defaults tag to "main"
  - _make_bits_providers_spec(): correct spec shape and constant fields
  - load_always_on_providers():
@@ -114,88 +113,6 @@ class TestMakeBitsProvidersSpec(unittest.TestCase):
     def test_default_tag_main(self):
         spec = _make_bits_providers_spec("https://example.com/repo.git", "main")
         self.assertEqual(spec["tag"], "main")
-
-
-# ---------------------------------------------------------------------------
-# _read_bits_rc
-# ---------------------------------------------------------------------------
-
-class TestReadBitsRc(unittest.TestCase):
-    """Tests for args._read_bits_rc() and its search-path logic."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self._orig_cwd = os.getcwd()
-        os.chdir(self.tmp)
-
-    def tearDown(self):
-        os.chdir(self._orig_cwd)
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def _write_rc(self, filename, content):
-        path = os.path.join(self.tmp, filename)
-        with open(path, "w") as fh:
-            fh.write(textwrap.dedent(content))
-        return path
-
-    def _read_bits_rc(self):
-        # Import fresh each time so _BITS_RC_SEARCH_PATHS is re-evaluated
-        # with the current working directory.
-        from bits_helpers.args import _read_bits_rc
-        return _read_bits_rc()
-
-    def test_returns_empty_dict_when_no_rc_file(self):
-        result = self._read_bits_rc()
-        # May include user's ~/.bitsrc if present; we only assert type.
-        self.assertIsInstance(result, dict)
-
-    def test_reads_bits_section(self):
-        self._write_rc("bits.rc", """
-            [bits]
-            providers = https://github.com/org/recipes.git
-            sw_dir = /opt/sw
-        """)
-        result = self._read_bits_rc()
-        self.assertEqual(result.get("providers"), "https://github.com/org/recipes.git")
-        self.assertEqual(result.get("sw_dir"), "/opt/sw")
-
-    def test_ignores_other_sections(self):
-        self._write_rc("bits.rc", """
-            [other]
-            key = value
-        """)
-        result = self._read_bits_rc()
-        self.assertNotIn("key", result)
-
-    def test_bits_rc_takes_priority_over_bitsrc(self):
-        self._write_rc("bits.rc", """
-            [bits]
-            providers = from-bits-rc
-        """)
-        self._write_rc(".bitsrc", """
-            [bits]
-            providers = from-bitsrc
-        """)
-        result = self._read_bits_rc()
-        self.assertEqual(result.get("providers"), "from-bits-rc")
-
-    def test_falls_back_to_bitsrc_when_bits_rc_absent(self):
-        self._write_rc(".bitsrc", """
-            [bits]
-            providers = from-bitsrc
-        """)
-        result = self._read_bits_rc()
-        self.assertEqual(result.get("providers"), "from-bitsrc")
-
-    def test_keys_are_lowercase(self):
-        self._write_rc("bits.rc", """
-            [bits]
-            Providers = https://example.com/repo.git
-        """)
-        result = self._read_bits_rc()
-        # configparser lower-cases keys by default
-        self.assertIn("providers", result)
-        self.assertNotIn("Providers", result)
 
 
 # ---------------------------------------------------------------------------

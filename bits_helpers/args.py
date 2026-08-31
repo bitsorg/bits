@@ -1,4 +1,4 @@
-bits_helpers/args.py # SPDX-FileCopyrightText: 2015-2026 CERN
+# SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import argparse
@@ -7,7 +7,6 @@ from bits_helpers.utilities import (arch_distro_token, arch_machine_token,
                                     normalise_arch_key, detectArchComponents,
                                     apply_arch_template, readDefaults)
 from bits_helpers.workarea import cleanup_git_log
-import configparser
 import multiprocessing
 
 import re
@@ -16,7 +15,7 @@ import platform
 import shlex
 
 import subprocess as commands
-from os.path import abspath, dirname, basename, exists
+from os.path import abspath, dirname, basename
 import sys
 
 # Default workdir: fall back on "sw" if env is not set or empty
@@ -139,14 +138,6 @@ class _WarnAliasAction(argparse.Action):
       warning("%s is deprecated; use %s.", option_string, self.option_strings[0])
     setattr(namespace, self.dest, self.const if self.nargs == 0 else values)
 
-# Search order for bits.rc config files (highest priority first).
-# Each entry is evaluated at import time so that ~ is expanded once.
-_BITS_RC_SEARCH_PATHS = [
-    "bits.rc",
-    ".bitsrc",
-    os.path.expanduser("~/.bitsrc"),
-]
-
 
 def _parse_provider_policy(value: str) -> dict:
   """Parse a ``provider_policy`` string into a ``{provider_name: position}`` dict.
@@ -160,9 +151,8 @@ def _parse_provider_policy(value: str) -> dict:
   and unrecognised position values are skipped with a warning printed to
   stderr.  Returns an empty dict for an empty or missing *value*.
 
-  This is the sole parsing point used by both the ``bits.rc`` key
-  ``provider_policy`` and the ``--provider-policy`` CLI flag so that
-  both inputs share identical validation logic.
+  This is the sole parsing point for the ``--provider-policy`` CLI flag so
+  that all inputs share identical validation logic.
   """
   from bits_helpers.log import warning as log_warning
   result = {}
@@ -189,40 +179,6 @@ def _parse_provider_policy(value: str) -> dict:
       continue
     result[name] = pos
   return result
-
-
-def _read_bits_rc() -> dict:
-  """Return settings from the first bits.rc / .bitsrc / ~/.bitsrc found.
-
-  Accepts either the simplified flat ``key = value`` layout (no section header)
-  or an explicit ``[bits]`` INI section; a header-less file is treated as the
-  ``[bits]`` section. All keys are lower-cased. Returns an empty dict when no
-  readable config file is present.
-
-  Example bits.rc::
-
-      organisation = stacks
-      config_dir   = .
-  """
-  cfg = configparser.ConfigParser()
-  for path in _BITS_RC_SEARCH_PATHS:
-    if not exists(path):
-      continue
-    try:
-      with open(path) as fh:
-        content = fh.read()
-    except OSError:
-      return {}
-    # Tolerate a flat, header-less file: synthesise the [bits] section so the
-    # same parser handles both the flat and the explicit-[bits] layouts.
-    if not any(line.lstrip().startswith("[") for line in content.splitlines()):
-      content = "[bits]\n" + content
-    try:
-      cfg.read_string(content, source=path)
-    except configparser.Error:
-      return {}
-    break
-  return dict(cfg["bits"]) if "bits" in cfg else {}
 
 
 # This is syntactic sugar for the --dist option (which should really be called
@@ -263,8 +219,8 @@ def doParseArgs():
                    help=help)
   def add_search_path(p, help=("Comma-separated recipe sub-repos to search besides "
                                "CONFIGDIR (relative NAME -> <config-dir>/NAME.bits, "
-                               "absolute used as-is). Seeds BITS_PATH; wins over a "
-                               "bits.rc search_path, loses to an explicit $BITS_PATH.")):
+                               "absolute used as-is). Seeds BITS_PATH; an explicit "
+                               "$BITS_PATH wins.")):
     p.add_argument("--search-path", dest="searchPath", metavar="NAMES", default=None,
                    help=help)
   def add_remote_store(p, dest, help, default=DEFAULT_S3_STORE):
@@ -911,7 +867,7 @@ def doParseArgs():
           "recall the digest is recomputed and compared; a mismatch is a fatal error "
           "that indicates the file may have been tampered with in the remote store.  "
           "Disabled by default for backward compatibility.  "
-          "May also be enabled persistently with 'store_integrity = true' in bits.rc."
+          "Record it with 'bits use build --store-integrity' to enable it persistently."
       ),
   )
 
@@ -924,9 +880,8 @@ def doParseArgs():
           "where POSITION is either 'prepend' or 'append' (case-insensitive).  "
           "Example: --provider-policy bits-providers:prepend,myorg:append  "
           "By default every provider uses 'append' (safe mode) regardless of "
-          "what its recipe declares.  This flag (or the equivalent bits.rc key "
-          "'provider_policy') is the only way to grant a provider prepend "
-          "access."
+          "what its recipe declares.  This flag is the only way to grant a "
+          "provider prepend access."
       ),
   )
 
@@ -1121,7 +1076,7 @@ def doParseArgs():
       "--cvmfs-repos", dest="cvmfsRepos", metavar="PATH", action="append", default=[],
       help=("CVMFS repository path to check (e.g. /cvmfs/alice.cern.ch).  "
             "May be specified multiple times.  "
-            "Can also be set as 'cvmfs_repos' (comma-separated) in bits.rc."),
+            "Can also be set as $BITS_CVMFS_REPOS (comma-separated)."),
   )
   doctor_runner.add_argument(
       "--min-disk", dest="minDisk", type=float, default=10.0, metavar="GIB",
@@ -1596,7 +1551,7 @@ def doParseArgs():
   )
   status_parser.add_argument(
       "--no-remote-store", dest="no_remote_store", action="store_true", default=False,
-      help="Disable any remote store (even if set in bits.rc).",
+      help="Disable any remote store (even if a default is configured).",
   )
   status_parser.add_argument(
       "--check-store", dest="checkStore", action="store_true", default=False,
@@ -1666,68 +1621,22 @@ def doParseArgs():
       "--disable", dest="disable", metavar="PACKAGE", default=[], action="append",
       help="Disable the given package(s) when loading defaults. May be repeated.")
 
-  # Apply bits.rc values as default overrides so that persistent settings written
-  # by "bits init" (config mode) take effect on every subsequent invocation.
-  # CLI flags still win: set_defaults only fills gaps not covered by the user.
-  _rc_early = _read_bits_rc()
-  _rc_defaults: dict = {}
-  _RC_KEY_TO_DEST = [
-      # (bits.rc key,        argparse dest)
-      ("work_dir",           "workDir"),
-      ("architecture",       "architecture"),
-      ("defaults",           "defaults"),
-      ("config_dir",         "configDir"),
-      ("reference_sources",  "referenceSources"),
-      ("remote_store",       "remoteStore"),
-      ("write_store",        "writeStore"),
-      ("organisation",       "organisation"),
-      # provider_policy is handled separately in finaliseArgs (needs parsing),
-      # but listing it here causes the raw string to be set as a default so
-      # the CLI flag still wins via normal argparse precedence.
-      ("provider_policy",    "providerPolicy"),
-      # prerequisites_url: community-specific URL shown when compiler/git absent.
-      ("prerequisites_url",  "prerequisitesUrl"),
-  ]
-  for _rc_key, _dest in _RC_KEY_TO_DEST:
-    if _rc_early.get(_rc_key):
-      _rc_defaults[_dest] = _rc_early[_rc_key]
-  # organisation may also arrive via the environment (the aliBuild wrapper
-  # exports BITS_ORGANISATION). Honour it when bits.rc doesn't set it, so the
-  # registry/provider "home" is selected for build/etc., not just init. An
-  # explicit --organisation on the CLI still wins via normal argparse order.
-  if not _rc_defaults.get("organisation") and os.environ.get("BITS_ORGANISATION"):
-    _rc_defaults["organisation"] = os.environ["BITS_ORGANISATION"]
-  # bits.rc `search_path` seeds BITS_PATH (the recipe search order read by
-  # getConfigPaths). Required so that building a single package whose recipe lives
-  # in a sub-repo — e.g. `bits build ROOT` where ROOT is in ./lcg.bits — finds it,
-  # not only the primary config_dir. Comma-separated relative names resolve to
-  # <config_dir>/<name>.bits. Precedence: explicit $BITS_PATH > --search-path
-  # (applied after parsing below) > bits.rc search_path.
-  _explicit_bits_path = bool(os.environ.get("BITS_PATH"))
-  if _rc_early.get("search_path") and not _explicit_bits_path:
-    os.environ["BITS_PATH"] = str(_rc_early["search_path"]).strip()
-  if _rc_defaults:
-    # set_defaults on the *parent* parser is overridden by each subparser's own
-    # argument-level defaults (add_argument(..., default=...)).  We must call
-    # set_defaults on every subparser individually so that bits.rc values win
-    # over hardcoded argument defaults while still losing to explicit CLI flags.
-    _legacy_rc_parsers = [build_parser, clean_parser, cleanup_parser, deps_parser,
-                          doctor_parser, init_parser, verify_parser, status_parser]
-    for _sp in _legacy_rc_parsers:
-      _sp.set_defaults(**_rc_defaults)
-    # Every OTHER subcommand honours bits.rc too, but only for options it
-    # actually declares: previously publish/certify/gc/store-stats/compliance
-    # ignored a configured work_dir/architecture entirely (build honoured it,
-    # the publish pipeline didn't — surprising), while blanket set_defaults
-    # would inject attributes for options a subparser doesn't have (e.g. a
-    # `defaults` value appearing on parsers with no --defaults flag).
+  # $BITS_ORGANISATION (the aliBuild wrapper exports it) selects the registry/
+  # provider "home" so build/etc. — not just init — pick it up. An explicit
+  # --organisation still wins via normal argparse precedence. Injected as a
+  # default on the actions that consume it.
+  _org_env = os.environ.get("BITS_ORGANISATION")
+  if _org_env:
+    _org_parsers = [build_parser, clean_parser, cleanup_parser, deps_parser,
+                    doctor_parser, init_parser, verify_parser, status_parser]
+    for _sp in _org_parsers:
+      _sp.set_defaults(organisation=_org_env)
     for _sp in subparsers.choices.values():
-      if _sp in _legacy_rc_parsers:
-        continue
-      _declared = {_a.dest for _a in _sp._actions}
-      _vals = {k: v for k, v in _rc_defaults.items() if k in _declared}
-      if _vals:
-        _sp.set_defaults(**_vals)
+      if _sp not in _org_parsers and any(_a.dest == "organisation" for _a in _sp._actions):
+        _sp.set_defaults(organisation=_org_env)
+  # BITS_PATH is seeded by --search-path (applied after parsing) or an explicit
+  # $BITS_PATH; the explicit env var always wins.
+  _explicit_bits_path = bool(os.environ.get("BITS_PATH"))
 
   # Make sure old option ordering behavior is actually still working
   prog = sys.argv[0]
@@ -1782,8 +1691,8 @@ def doParseArgs():
       _init_explicit_flags.add(_tok[1:])
 
   args = finaliseArgs(parser.parse_args(), parser)
-  # --search-path (CLI) seeds BITS_PATH, winning over a bits.rc search_path but
-  # never over an explicit $BITS_PATH the user set in the environment.
+  # --search-path (CLI) seeds BITS_PATH, but never over an explicit $BITS_PATH
+  # the user set in the environment.
   _sp = getattr(args, "searchPath", None)
   if _sp and not _explicit_bits_path:
     os.environ["BITS_PATH"] = str(_sp).strip()
@@ -1947,20 +1856,18 @@ def finaliseArgs(args, parser):
     # `bits status` reports what `bits build` WOULD do, so it must resolve
     # recipes through the same provider repositories — without this it
     # reported provider-supplied packages as missing/hash_unknown.
-    _rc_status = _read_bits_rc()
     _alibuild = os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild"
     args.bits_providers = (
       os.environ.get("BITS_PROVIDERS")
-      or _rc_status.get("providers")
       or ("" if _alibuild else "https://github.com/bitsorg/bits-providers"))
     if args.bits_providers:
       os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
     args.provider_policy = _parse_provider_policy(
-      getattr(args, "providerPolicy", None) or _rc_status.get("provider_policy", ""))
+      getattr(args, "providerPolicy", None) or "")
     return args
 
   # compliance group mode rides the general finalisation: it needs the
-  # defaults split, the disable normalisation and — crucially — the bits.rc /
+  # defaults split, the disable normalisation and — crucially — the
   # BITS_PROVIDERS / provider_policy resolution below for repo discovery.
   if hasattr(args, "defaults"):
     args.defaults = _with_release_base(args.defaults.split("::"))
@@ -1973,49 +1880,24 @@ def finaliseArgs(args, parser):
   if hasattr(args, "buildLocal"):
     args.buildLocal = [p for p in (args.buildLocal or "").replace(",", " ").split() if p]
 
-  # ── bits.rc / BITS_PROVIDERS ─────────────────────────────────────────────
-  # Read persistent configuration from the first bits.rc / .bitsrc /
-  # ~/.bitsrc found, then resolve ``bits_providers``.  Precedence:
-  #   1. BITS_PROVIDERS environment variable (explicit override)
-  #   2. ``providers`` key in the [bits] section of the config file
-  #   3. Built-in default: the official bitsorg/bits-providers repository
-  #
-  # The resolved value is stored on ``args`` and also written back to the
-  # environment so that child processes inherit it.
+  # ── BITS_PROVIDERS ───────────────────────────────────────────────────────
+  # Resolve ``bits_providers``.  Precedence: $BITS_PROVIDERS (explicit override,
+  # also settable via 'bits init --providers') then a built-in default. The
+  # resolved value is stored on ``args`` and written back to the environment so
+  # child processes inherit it. Under the aliBuild wrapper (BITS_BRANDING=aliBuild)
+  # the built-in default is off (classic aliBuild uses a local alidist checkout);
+  # native `bits` defaults to the provider path.
   _BITS_PROVIDERS_DEFAULT = "https://github.com/bitsorg/bits-providers"
-  # Legacy vs provider path is chosen by the front-end: the aliBuild
-  # compatibility wrapper (BITS_BRANDING=aliBuild) emulates classic aliBuild,
-  # whose recipes come from a local alidist checkout (`aliBuild init`) — NOT the
-  # bits-providers bootstrap. So under aliBuild the built-in providers default is
-  # off; native `bits` defaults to the provider path. An explicit BITS_PROVIDERS,
-  # --providers, or bits.rc `providers` still wins in either mode.
   _alibuild_mode = os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild"
   _providers_default = "" if _alibuild_mode else _BITS_PROVIDERS_DEFAULT
-  _rc = _read_bits_rc()
-  args.bits_providers = (
-    os.environ.get("BITS_PROVIDERS")
-    or _rc.get("providers")
-    or _providers_default
-  )
+  args.bits_providers = os.environ.get("BITS_PROVIDERS") or _providers_default
   if args.bits_providers:
     os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
 
-  # ── store_integrity ───────────────────────────────────────────────────────
-  # The flag is off by default.  It can be activated either by the CLI flag
-  # (--store-integrity) or by adding 'store_integrity = true' to bits.rc.
-  # The CLI flag always wins when present; the rc key serves as a persistent
-  # opt-in so the feature does not need to be spelled out on every invocation.
-  if not getattr(args, "storeIntegrity", False):
-    args.storeIntegrity = _rc.get("store_integrity", "").strip().lower() in ("1", "true", "yes")
-
   # ── provider_policy ──────────────────────────────────────────────────────
-  # Resolve the effective provider-position policy from (highest priority):
-  #   1. --provider-policy CLI flag
-  #   2. provider_policy key in bits.rc / .bitsrc
-  # The raw string is parsed into {name: "prepend"|"append"} and stored on
-  # args so that build.py can pass it straight through to the provider loader.
-  _raw_policy = getattr(args, "providerPolicy", None) or _rc.get("provider_policy", "")
-  args.provider_policy = _parse_provider_policy(_raw_policy)
+  # Effective provider-position policy from the --provider-policy flag, parsed
+  # into {name: "prepend"|"append"} for build.py to pass to the provider loader.
+  args.provider_policy = _parse_provider_policy(getattr(args, "providerPolicy", None) or "")
 
   # ── from-manifest (build replay) ─────────────────────────────────────────
   # When --from-manifest is given, the manifest's ``requested_packages`` list
@@ -2162,15 +2044,15 @@ def finaliseArgs(args, parser):
 
   if args.action in ("build", "doctor"):
 
-    # Store URL from the environment when not set on the CLI/bits.rc. Precedence:
-    # CLI/bits.rc > BITS_REMOTE_STORE (runner env) > REMOTE_STORE (CI common) >
+    # Store URL from the environment when not set on the CLI. Precedence:
+    # CLI > BITS_REMOTE_STORE (runner env) > REMOTE_STORE (CI common) >
     # built-in default. --no-remote-store below still clears it.
     if not args.remoteStore:
       args.remoteStore = os.environ.get("BITS_REMOTE_STORE") or os.environ.get("REMOTE_STORE") or ""
     if not args.writeStore:
       args.writeStore = os.environ.get("BITS_WRITE_STORE") or os.environ.get("WRITE_STORE") or ""
 
-    # Explicit = came from CLI/bits.rc/env. If so it wins over a defaults
+    # Explicit = came from CLI/env. If so it wins over a defaults
     # `system: remote_store:` (applied later in build.py, where defaults load);
     # otherwise system.remote_store overrides the built-in arch default below.
     args.remoteStoreExplicit = bool(args.remoteStore)
