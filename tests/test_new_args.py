@@ -369,6 +369,18 @@ class RenameAliasesTest(unittest.TestCase):
         self.assertTrue(args.importForce)
         self.assertTrue(w.called)
 
+    def test_release_view_canonical(self):
+        args = _parse(["publish", "--release-view", "lcg",
+                       "--cvmfs-target", "/cvmfs/x", "-a", _ARCH])
+        self.assertEqual(args.publishView, "lcg")
+
+    def test_view_alias_warns(self):
+        with patch("bits_helpers.log.warning") as w:
+            args = _parse(["publish", "--view", "lcg",
+                           "--cvmfs-target", "/cvmfs/x", "-a", _ARCH])
+        self.assertEqual(args.publishView, "lcg")
+        self.assertTrue(w.called)
+
     def test_version_takes_no_architecture(self):
         with self.assertRaises(SystemExit):
             _parse(["version", "-a", _ARCH])

@@ -107,7 +107,7 @@ def doMain(args, parser):
     sys.exit(0)
 
   if args.action == "publish":
-    _rc = doPublish(args, parser)        # --view returns a bool; package path returns None
+    _rc = doPublish(args, parser)        # --release-view returns a bool; package path returns None
     sys.exit(0 if _rc is None or _rc else 1)
 
   if args.action == "certify":

@@ -1172,17 +1172,18 @@ def doParseArgs():
 
   # Options for the publish command
   publish_parser.add_argument("package", metavar="PACKAGE", nargs="?", default=None,
-                              help="Name of the package to publish. With --view, optional: names the "
-                                   "release's top package to pick its build_id when the build area "
+                              help="Name of the package to publish. With --release-view, optional: names "
+                                   "the release's top package to pick its build_id when the build area "
                                    "holds more than one.")
   publish_parser.add_argument("version", metavar="VERSION", nargs="?", default=None,
                               help="Version (and optional revision) to publish. Defaults to the latest build.")
-  publish_parser.add_argument("--view", dest="publishView", metavar="NAME", default=None,
+  publish_parser.add_argument("--release-view", "--view", dest="publishView", metavar="NAME",
+                              default=None, action=_WarnAliasAction,
                               help="Instead of a package, publish the merged VIEW for a release to "
                                    "<cvmfs-target>/Views/NAME-<build_id>/<arch>/. The build_id is read "
                                    "from the packages' .meta.json, not given here.")
   publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=False, metavar="PATH",
-                              help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9). With --view, the CVMFS root the Views/ tree lives under.")
+                              help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9). With --release-view, the CVMFS root the Views/ tree lives under.")
   publish_parser.add_argument("--module-target", dest="moduleTarget", metavar="PATH", default=None,
                               help="CVMFS path of the separate modules tree. When given (prepub path), "
                                    "the package's etc/modulefiles are tar'd and published as an "

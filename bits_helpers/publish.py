@@ -670,7 +670,7 @@ def doPublish(args, parser):
         POSTs it to the cvmfs-prepub REST API, and polls until the job
         reaches ``published``.
 
-    View mode (``--view NAME``):
+    View mode (``--release-view NAME``):
         Publishes the merged release view rather than a package; delegated to
         :func:`bits_helpers.view_publish_cmd.doPublishView`. Returns its bool.
     """
@@ -710,7 +710,7 @@ def doPublish(args, parser):
         return
 
     if not getattr(args, "package", None):
-        parser.error("publish: PACKAGE is required (or use --view NAME to publish a release view).")
+        parser.error("publish: PACKAGE is required (or use --release-view NAME to publish a release view).")
 
     architecture = getattr(args, "architecture", None) or detectArch()
     work_dir     = abspath(args.workDir)

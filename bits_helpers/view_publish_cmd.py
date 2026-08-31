@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""`bits publish --view <name>` — publish the merged view for a release.
+"""`bits publish --release-view <name>` — publish the merged view for a release.
 
 Unions every package of one release (one ``build_id``) into
 ``<cvmfs-target>/Views/<name>-<build_id>/<arch>/`` with relative symlinks + a
@@ -85,17 +85,17 @@ def _resolve_build_id(args, work_dir, architecture):
     if package:
         bid = _build_id_of_package(work_dir, architecture, package)
         if not bid:
-            error("publish --view: no build_id found for package %s under %s/%s",
+            error("publish --release-view: no build_id found for package %s under %s/%s",
                   package, work_dir, architecture)
         return bid
     ids = _build_ids_in_area(work_dir, architecture)
     if not ids:
-        error("publish --view: no packages with a build_id found under %s/%s",
+        error("publish --release-view: no packages with a build_id found under %s/%s",
               work_dir, architecture)
         return None
     if len(ids) > 1:
-        error("publish --view: %d build_ids in the build area: %s. Name the "
-              "release's top package to pick one (e.g. `bits publish --view %s "
+        error("publish --release-view: %d build_ids in the build area: %s. Name the "
+              "release's top package to pick one (e.g. `bits publish --release-view %s "
               "ROOT/<ver>`).", len(ids), ", ".join(sorted(ids)),
               getattr(args, "publishView", "<name>"))
         return None
@@ -117,7 +117,7 @@ def doPublishView(args, parser):
 
     roots = collect_build_id_roots(store, build_id, architecture=architecture)
     if not roots:
-        error("publish --view: no deployed packages for build_id %s under %s "
+        error("publish --release-view: no deployed packages for build_id %s under %s "
               "(publish the packages first).", build_id, store)
         return False
 
@@ -137,14 +137,14 @@ def doPublishView(args, parser):
                                          man.get("packages") or [], build_id)
                 break
         else:
-            debug("publish --view: no local manifest for %s — NOTICE skipped",
+            debug("publish --release-view: no local manifest for %s — NOTICE skipped",
                   build_id)
     except Exception as exc:              # pylint: disable=broad-except
-        warning("publish --view: could not write NOTICE/source-offer: %s", exc)
-    info("publish --view: '%s' (%s) — %d package(s) -> %s (%d link(s))",
+        warning("publish --release-view: could not write NOTICE/source-offer: %s", exc)
+    info("publish --release-view: '%s' (%s) — %d package(s) -> %s (%d link(s))",
          name, build_id, len(roots), result["view_dir"], len(result["linked"]))
     if result["conflicts"]:
-        warning("publish --view: %d file conflict(s), first writer kept; e.g. %s",
+        warning("publish --release-view: %d file conflict(s), first writer kept; e.g. %s",
                 len(result["conflicts"]),
                 ", ".join(c[0] for c in result["conflicts"][:5]))
     return True
