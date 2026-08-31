@@ -287,7 +287,7 @@ class BuildTestCase(unittest.TestCase):
     @patch("os.path.isfile", new=MagicMock(side_effect=dummy_isfile))
     @patch("bits_helpers.build.dieOnError", new=MagicMock())
     @patch("bits_helpers.packages.dieOnError", new=MagicMock())
-    @patch("bits_helpers.utilities.dieOnError", new=MagicMock())
+    @patch("bits_helpers.defaults.dieOnError", new=MagicMock())
     @patch("bits_helpers.packages.warning")
     @patch("bits_helpers.build.readDefaults",
            new=MagicMock(return_value=(OrderedDict({"package": "defaults-release", "disable": []}), "")))

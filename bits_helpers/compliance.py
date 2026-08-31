@@ -113,8 +113,7 @@ def resolve_group_specs(args, parser):
     from bits_helpers.cmd import getstatusoutput
     from bits_helpers.repo_provider import (
         fetch_repo_providers_iteratively, load_always_on_providers)
-    from bits_helpers.utilities import (
-        parseDefaults, readDefaults, validateDefaults)
+    from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults
     from bits_helpers.packages import getPackageList
     from bits_helpers.paths import getConfigPaths
     from bits_helpers.matchers import resolve_variables

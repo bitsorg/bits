@@ -19,7 +19,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from bits_helpers.utilities import resolve_pkg_family, resolve_tag
+from bits_helpers.utilities import resolve_tag
+from bits_helpers.defaults import resolve_pkg_family
 from bits_helpers.packages import getPackageList
 from bits_helpers.recipe import parseRecipe
 from bits_helpers.build import _pkg_install_path, generate_initdotsh, storeHashes

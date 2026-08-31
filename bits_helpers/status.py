@@ -39,14 +39,12 @@ from bits_helpers.sl import Sapling
 from bits_helpers.log import debug, info, warning, banner
 from bits_helpers.packages import getPackageList
 from bits_helpers.utilities import (
-    parseDefaults,
     prunePaths,
-    readDefaults,
     resolve_tag,
     topological_sort,
     ver_rev,
-    validateDefaults,
 )
+from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults
 from bits_helpers.arch import (
     SHARED_ARCH,
     compute_combined_arch,

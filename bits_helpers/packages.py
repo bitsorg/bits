@@ -18,7 +18,8 @@ from bits_helpers.matchers import (_collect_version_pins, _matcher_active,
                                    filterByArchitectureDefaults, filterPatches)
 from bits_helpers.recipe import getRecipeReader, parseRecipe, getGeneratedPackages
 from bits_helpers.paths import resolveFilename
-from bits_helpers.utilities import recipeSourceLabel, resolve_pkg_family, resolve_version
+from bits_helpers.utilities import recipeSourceLabel, resolve_version
+from bits_helpers.defaults import resolve_pkg_family
 
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,

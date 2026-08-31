@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import argparse
-from bits_helpers.utilities import normalise_multiple_options, readDefaults
+from bits_helpers.utilities import normalise_multiple_options
+from bits_helpers.defaults import readDefaults
 from bits_helpers.arch import (detectArch, arch_distro_token, arch_machine_token,
                                normalise_arch_key, detectArchComponents,
                                apply_arch_template)

@@ -12,7 +12,7 @@ from bits_helpers.cmd import DockerRunner, execute, getstatusoutput
 from bits_helpers.log import debug, dieOnError, error, info
 from bits_helpers.repo_provider import (
     fetch_repo_providers_iteratively, load_always_on_providers)
-from bits_helpers.utilities import parseDefaults, readDefaults, validateDefaults, incompatibleFlavorDefaults
+from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults, incompatibleFlavorDefaults
 from bits_helpers.packages import getPackageList
 from bits_helpers.matchers import resolve_variables
 

@@ -467,7 +467,7 @@ def _system_from_manifest(manifest_doc):
     if not cfg or not os.path.isdir(cfg):
         return {}
     try:
-        from bits_helpers.utilities import readDefaults
+        from bits_helpers.defaults import readDefaults
         meta, _ = readDefaults(cfg, defs, lambda _m: None, None)
         sysd = meta.get("system")
         return sysd if isinstance(sysd, dict) else {}

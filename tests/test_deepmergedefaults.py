@@ -4,7 +4,7 @@
 import unittest
 import yaml
 import bits_helpers.utilities
-from bits_helpers.utilities import merge_dicts
+from bits_helpers.defaults import merge_dicts
 
 class DeepMergeTest(unittest.TestCase):
     # Test overwriting existing top-level keys from dict1 with top-level keys from dict2.
@@ -85,12 +85,12 @@ class ReadDefaultsExemptTest(unittest.TestCase):
 
     def _read(self, chain, metas):
         from unittest.mock import patch
-        from bits_helpers.utilities import readDefaults
-        with patch("bits_helpers.utilities.resolveDefaultsFilename",
+        from bits_helpers.defaults import readDefaults
+        with patch("bits_helpers.defaults.resolveDefaultsFilename",
                    side_effect=lambda name, cfg, failOnError=False: name), \
-             patch("bits_helpers.utilities.exists", return_value=True), \
-             patch("bits_helpers.utilities.getRecipeReader", side_effect=lambda p: p), \
-             patch("bits_helpers.utilities.parseRecipe",
+             patch("bits_helpers.defaults.exists", return_value=True), \
+             patch("bits_helpers.defaults.getRecipeReader", side_effect=lambda p: p), \
+             patch("bits_helpers.defaults.parseRecipe",
                    side_effect=lambda reader: (None, dict(metas[reader]), "")):
             return readDefaults("/cfg", chain, lambda m: None, "x86_64-el8")
 

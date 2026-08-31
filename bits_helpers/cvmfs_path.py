@@ -23,7 +23,8 @@ import sys
 import re
 
 from bits_helpers.log import debug, dieOnError
-from bits_helpers.utilities import parseDefaults, readDefaults, git
+from bits_helpers.utilities import git
+from bits_helpers.defaults import parseDefaults, readDefaults
 from bits_helpers.cvmfs_layout import (
     resolve_cvmfs_templates, resolve_release, path_release, bake_release)
 

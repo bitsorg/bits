@@ -45,10 +45,9 @@ from typing import List, Tuple
 
 from bits_helpers.cmd import DockerRunner, getstatusoutput
 from bits_helpers.log import banner, debug, error, info, logger, success, warning
-from bits_helpers.utilities import (
-    parseDefaults, readDefaults, validateDefaults,
-    incompatibleFlavorDefaults, ver_rev,
-)
+from bits_helpers.utilities import ver_rev
+from bits_helpers.defaults import (parseDefaults, readDefaults, validateDefaults,
+                                   incompatibleFlavorDefaults)
 from bits_helpers.packages import getPackageList
 from bits_helpers.arch import effective_arch
 

@@ -11,7 +11,7 @@ import os.path as path
 from bits_helpers.cmd import getstatusoutput
 from bits_helpers.git import git, Git
 from bits_helpers.log import banner, debug, dieOnError, error, info, warning
-from bits_helpers.utilities import parseDefaults, readDefaults, validateDefaults, incompatibleFlavorDefaults
+from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults, incompatibleFlavorDefaults
 from bits_helpers.packages import getPackageList
 from bits_helpers.workarea import updateReferenceRepoSpec
 
