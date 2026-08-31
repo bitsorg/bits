@@ -10,8 +10,6 @@ class SCM:
     raise NotImplementedError
   def branchOrRef(self, directory):
     raise NotImplementedError
-  def lsRemote(self, remote):
-    raise NotImplementedError
   def listRefsCmd(self, repository):
     raise NotImplementedError
   def parseRefs(self, output):

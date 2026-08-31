@@ -206,8 +206,3 @@ def tick(package):
     _post("running", pct, desc)
 
 
-def finish(success=True):
-    """Post a terminal status. Normally called from the CI after_script."""
-    with _lock:
-        total = _state["total"] or _state["done"]
-    _post("success" if success else "failed", 100, "{0}/{0} done".format(total))

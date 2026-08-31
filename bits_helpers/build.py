@@ -13,7 +13,6 @@ from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
                                     enforcement_mode as checksum_enforcement_mode,
                                     write_checksums_enabled,
                                     checksum_file as compute_checksum_file)
-from bits_helpers.checksum_store import write_checksum_file as write_pkg_checksum_file
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.sandbox import wrap_build_command
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch

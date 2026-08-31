@@ -1218,19 +1218,6 @@ def yamlLoad(s):
                                         construct_mapping)
   return yaml.load(s, YamlSafeOrderedLoader)
 
-def yamlDump(s):
-  class YamlOrderedDumper(yaml.SafeDumper):
-    pass
-  def represent_ordereddict(dumper, data):
-    rep = []
-    for k,v in data.items():
-      k = dumper.represent_data(k)
-      v = dumper.represent_data(v)
-      rep.append((k, v))
-    return yaml.nodes.MappingNode('tag:yaml.org,2002:map', rep)
-  YamlOrderedDumper.add_representer(OrderedDict, represent_ordereddict)
-  return yaml.dump(s, Dumper=YamlOrderedDumper)
-
 # Whole-line recipe-body include directive:
 #     #!include <repo/qualified/path.sh>   (resolved under the recipes repo root)
 #     #!include "local/path.sh"            (resolved relative to the recipe's dir)

@@ -80,16 +80,6 @@ def hash_from_store_key(key: str):
     return None
 
 
-def reachable_hashes(common_manifest) -> set:
-    """The root hash set: every ``hash`` in the common manifest's packages."""
-    roots = set()
-    for e in (common_manifest.get("packages") or []) if isinstance(common_manifest, dict) else []:
-        h = e.get("hash") if isinstance(e, dict) else None
-        if h:
-            roots.add(h)
-    return roots
-
-
 def plan_sweep(objects, roots, now=None, grace_seconds=0, architecture=None) -> dict:
     """Decide which store objects to sweep.
 

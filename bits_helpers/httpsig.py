@@ -38,7 +38,7 @@ import hashlib
 import hmac
 import secrets
 import time
-from typing import Dict, Mapping, Optional
+from typing import Mapping, Optional
 
 HEADER_NAME = "X-Bits-Auth"
 SCHEME = "v1"
@@ -47,10 +47,6 @@ KEY_ID = "prepub"
 
 #: Placeholder for ``bh`` when a request carries no payload.
 NO_BODY = "-"
-
-#: Digest of an empty field set (SHA-256 of the empty string). Requests that
-#: are not multipart bind their whole body instead, so their ``fd`` is this.
-NO_FIELDS = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
 def fields_digest(fields: Mapping[str, str]) -> str:
@@ -76,11 +72,6 @@ def fields_digest(fields: Mapping[str, str]) -> str:
         h.update(b"%d:%s=%d:%s\n" % (len(key_bytes), key_bytes,
                                      len(value_bytes), value_bytes))
     return h.hexdigest()
-
-
-def body_digest(raw: bytes) -> str:
-    """Hex SHA-256 of a request body, for the non-multipart endpoints."""
-    return hashlib.sha256(raw).hexdigest()
 
 
 def canonical(method: str, uri: str, fd: str, bh: str, ts: int, nonce: str) -> str:
@@ -122,25 +113,3 @@ def sign(
             f"fd={fd} bh={body_hash or NO_BODY} mac={mac}")
 
 
-def auth_header(
-    secret: str,
-    method: str,
-    uri: str,
-    fields: Optional[Mapping[str, str]] = None,
-    body_hash: str = NO_BODY,
-    sign_requests: bool = True,
-) -> Dict[str, str]:
-    """Return the auth header dict for one request: signed OR bearer.
-
-    Never both. Sending the token alongside a signature hands an observer the
-    very credential the signature exists to keep off the wire, which would
-    make the whole exercise decorative.
-
-    ``sign_requests=False`` selects the legacy bearer, for talking to a
-    deployment running ``auth_mode: bearer``.
-    """
-    if not secret:
-        return {}
-    if not sign_requests:
-        return {"Authorization": f"Bearer {secret}"}
-    return {HEADER_NAME: sign(secret, method, uri, fields, body_hash)}

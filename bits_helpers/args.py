@@ -1700,7 +1700,6 @@ def doParseArgs():
   args._init_explicit = _init_explicit_flags
   return (args, parser)
 
-VALID_ARCHS_RE = "^slc[5-9]_(x86-64|ppc64|aarch64)$|^(ubuntu|ubt|osx|fedora)[0-9]*_(x86-64|arm64)$"
 
 def matchValidArch(architecture):
   # Recognise an architecture by content rather than by a fixed string layout,
