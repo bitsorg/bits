@@ -19,7 +19,7 @@ import os
 import sys
 
 try:
-    from bits_helpers.utilities import (
+    from bits_helpers.arch import (
         detectArchComponents, arch_machine_token, arch_distro_token)
 except Exception:                       # standalone / partial import fallback
     detectArchComponents = None

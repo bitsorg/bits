@@ -32,7 +32,7 @@ from bits_helpers.verify import doVerify
 from bits_helpers.status import doStatus
 from bits_helpers.stats import doStats
 from bits_helpers.log import debug, error, info, logger
-from bits_helpers.utilities import detectArch
+from bits_helpers.arch import detectArch
 
 
 def doMain(args, parser):

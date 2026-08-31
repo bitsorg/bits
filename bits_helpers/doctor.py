@@ -47,8 +47,9 @@ from bits_helpers.cmd import DockerRunner, getstatusoutput
 from bits_helpers.log import banner, debug, error, info, logger, success, warning
 from bits_helpers.utilities import (
     getPackageList, parseDefaults, readDefaults, validateDefaults,
-    incompatibleFlavorDefaults, effective_arch, ver_rev,
+    incompatibleFlavorDefaults, ver_rev,
 )
+from bits_helpers.arch import effective_arch
 
 # ── Status constants ───────────────────────────────────────────────────────────
 PASS = "PASS"

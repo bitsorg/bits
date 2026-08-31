@@ -83,7 +83,7 @@ def main():
     # We reconstruct this from EFFECTIVE_ARCHITECTURE: if it equals "shared"
     # (i.e. SHARED_ARCH), mark the spec accordingly so that the upload goes to
     # the correct path.
-    from bits_helpers.utilities import SHARED_ARCH
+    from bits_helpers.arch import SHARED_ARCH
     spec = {
         "package":      pkgname,
         "version":      pkgversion,

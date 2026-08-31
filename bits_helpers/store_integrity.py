@@ -56,7 +56,8 @@ import os
 
 from bits_helpers.checksum import checksum_file
 from bits_helpers.log import debug, warning, error
-from bits_helpers.utilities import resolve_store_path, effective_arch, ver_rev
+from bits_helpers.utilities import resolve_store_path, ver_rev
+from bits_helpers.arch import effective_arch
 
 # Sub-directory inside $WORK_DIR that holds all ledger files.
 # Kept separate from TARS/ so that it is clearly local-only and is not

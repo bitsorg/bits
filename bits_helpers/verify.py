@@ -181,7 +181,7 @@ def _print_prov_row(status: str, name: str, detail: str) -> None:
 
 def doVerify(args, parser) -> None:  # noqa: N802
     """Verify a live deployment against a build manifest."""
-    from bits_helpers.utilities import detectArch
+    from bits_helpers.arch import detectArch
 
     manifest_path = args.fromManifest
     if not os.path.isfile(manifest_path):

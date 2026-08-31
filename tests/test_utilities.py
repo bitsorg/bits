@@ -6,8 +6,9 @@ import unittest
 # Assuming you are using the mock library to ... mock things
 from unittest.mock import patch
 
-from bits_helpers.utilities import doDetectArch, filterByArchitectureDefaults, disabledByArchitectureDefaults
-from bits_helpers.utilities import resolve_variables, predefined_arch_vars
+from bits_helpers.utilities import filterByArchitectureDefaults, disabledByArchitectureDefaults
+from bits_helpers.utilities import resolve_variables
+from bits_helpers.arch import doDetectArch, predefined_arch_vars
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import asList
 from bits_helpers.utilities import prunePaths
@@ -696,7 +697,7 @@ class ArchTemplateTest(unittest.TestCase):
     UBUNTU = ("ubuntu", "25.10", "")
 
     def _comp(self, processor="x86_64"):
-        from bits_helpers.utilities import arch_components
+        from bits_helpers.arch import arch_components
         return arch_components(True, [], self.UBUNTU, "Linux", processor)
 
     def test_components(self):
@@ -705,35 +706,35 @@ class ArchTemplateTest(unittest.TestCase):
 
     def test_default_layout_unchanged(self):
         # The built-in template must reproduce today's string byte-for-byte.
-        from bits_helpers.utilities import doDetectArch, DEFAULT_ARCH_TEMPLATE, apply_arch_template
+        from bits_helpers.arch import doDetectArch, DEFAULT_ARCH_TEMPLATE, apply_arch_template
         self.assertEqual(DEFAULT_ARCH_TEMPLATE, "%(os)s_%(machine)s")
         self.assertEqual(doDetectArch(True, [], self.UBUNTU, "Linux", "x86_64"), "ubuntu2510_x86-64")
         self.assertEqual(apply_arch_template(DEFAULT_ARCH_TEMPLATE, self._comp()), "ubuntu2510_x86-64")
 
     def test_three_layouts(self):
-        from bits_helpers.utilities import apply_arch_template
+        from bits_helpers.arch import apply_arch_template
         c = self._comp()
         self.assertEqual(apply_arch_template("%(os)s_%(machine)s", c), "ubuntu2510_x86-64")
         self.assertEqual(apply_arch_template("%(os)s_%(_machine)s", c), "ubuntu2510_x86_64")
         self.assertEqual(apply_arch_template("%(_machine)s-%(os)s", c), "x86_64-ubuntu2510")
 
     def test_literal_template_passthrough(self):
-        from bits_helpers.utilities import apply_arch_template
+        from bits_helpers.arch import apply_arch_template
         self.assertEqual(apply_arch_template("ubuntu2510_x86-64", self._comp()), "ubuntu2510_x86-64")
 
     def test_bad_template_raises(self):
-        from bits_helpers.utilities import apply_arch_template
+        from bits_helpers.arch import apply_arch_template
         with self.assertRaises(ValueError):
             apply_arch_template("%(nope)s", self._comp())
 
     def test_osx_components(self):
-        from bits_helpers.utilities import arch_components
+        from bits_helpers.arch import arch_components
         c = arch_components(False, [], ("", "", ""), "Darwin", "arm64")
         self.assertEqual(c["os"], "osx")
         self.assertEqual(c["machine"], "arm64")
 
     def test_tokens(self):
-        from bits_helpers.utilities import arch_distro_token, arch_machine_token
+        from bits_helpers.arch import arch_distro_token, arch_machine_token
         self.assertEqual(arch_distro_token("x86_64-ubuntu2510"), "ubuntu2510")
         self.assertEqual(arch_distro_token("slc9_aarch64"), "slc9")
         self.assertEqual(arch_machine_token("ubuntu2510_x86_64"), "x86_64")
@@ -741,7 +742,7 @@ class ArchTemplateTest(unittest.TestCase):
         self.assertIsNone(arch_distro_token("garbage123"))
 
     def test_normalise_arch_key_equivalence(self):
-        from bits_helpers.utilities import normalise_arch_key
+        from bits_helpers.arch import normalise_arch_key
         # underscore and dash machine forms collapse to the same key
         self.assertEqual(normalise_arch_key("ubuntu2404_x86_64"),
                          normalise_arch_key("ubuntu2404_x86-64"))

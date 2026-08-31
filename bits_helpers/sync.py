@@ -15,7 +15,8 @@ from urllib.parse import quote
 
 from bits_helpers.cmd import execute
 from bits_helpers.log import debug, info, error, warning, dieOnError, ProgressPrint
-from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, effective_arch, ver_rev
+from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, ver_rev
+from bits_helpers.arch import effective_arch
 
 
 # Default S3 endpoint. Kept for backward compatibility with aliBuild: when no

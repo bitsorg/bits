@@ -83,7 +83,7 @@ class TestReconstructLayout(unittest.TestCase):
 
     def test_shared_noarch_uses_shared_arch(self):
         # A package with architecture: shared installs under TARS/shared/…
-        from bits_helpers.utilities import SHARED_ARCH
+        from bits_helpers.arch import SHARED_ARCH
         specs = _specs()
         specs["fftw"]["architecture"] = SHARED_ARCH
         with tempfile.TemporaryDirectory() as d:

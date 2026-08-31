@@ -270,7 +270,7 @@ class TestDoVerify(unittest.TestCase):
     def setUp(self):
         # Patch detectArch so the architecture check always matches ARCH.
         # doVerify imports from bits_helpers.utilities so patch it there.
-        patcher = patch("bits_helpers.utilities.detectArch", return_value=self.ARCH)
+        patcher = patch("bits_helpers.arch.detectArch", return_value=self.ARCH)
         self.mock_detectArch = patcher.start()
         self.addCleanup(patcher.stop)
 

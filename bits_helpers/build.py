@@ -15,8 +15,9 @@ from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
                                     checksum_file as compute_checksum_file)
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.sandbox import wrap_build_command
-from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
-from bits_helpers.utilities import resolve_store_path, resolve_links_path, effective_arch, SHARED_ARCH, compute_combined_arch, pkg_to_shell_id, ver_rev
+from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort
+from bits_helpers.utilities import resolve_store_path, resolve_links_path, pkg_to_shell_id, ver_rev
+from bits_helpers.arch import detectArch, effective_arch, SHARED_ARCH, compute_combined_arch
 from bits_helpers.utilities import parseDefaults, readDefaults, resolve_variables
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults, incompatibleFlavorDefaults
@@ -1998,7 +1999,8 @@ def doFinalSync(spec, specs, args, syncHelper):
   # the upload is done, reclaim the space — mirroring the in-build CAN_DELETE
   # behaviour for the no-write-store case. Safe if it was never created.
   if getattr(args, "aggressiveCleanup", False) and getattr(syncHelper, "writeStore", ""):
-    from bits_helpers.utilities import resolve_store_path, effective_arch, ver_rev
+    from bits_helpers.utilities import resolve_store_path, ver_rev
+    from bits_helpers.arch import effective_arch
     _arch = effective_arch(spec, args.architecture)
     _tar = os.path.join(args.workDir, resolve_store_path(_arch, spec["hash"]),
                         "{}-{}.{}.tar.gz".format(spec["package"], ver_rev(spec), _arch))
@@ -2025,7 +2027,8 @@ def doFinalSync(spec, specs, args, syncHelper):
       _rh.add(spec["hash"])
 
   if getattr(args, "manifest", None) is not None:
-    from bits_helpers.utilities import resolve_store_path, effective_arch, ver_rev
+    from bits_helpers.utilities import resolve_store_path, ver_rev
+    from bits_helpers.arch import effective_arch
     _cached = spec.get("cachedTarball", "")
     _outcome = "from_store" if _cached else "built_from_source"
     # Locate the local tarball for checksum recording.

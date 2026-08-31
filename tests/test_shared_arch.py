@@ -13,7 +13,7 @@ Covers:
 import unittest
 from unittest.mock import patch
 
-from bits_helpers.utilities import effective_arch, SHARED_ARCH
+from bits_helpers.arch import effective_arch, SHARED_ARCH
 from bits_helpers.build import _pkg_install_path, generate_initdotsh
 
 

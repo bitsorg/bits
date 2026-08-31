@@ -38,9 +38,6 @@ from bits_helpers.git import Git
 from bits_helpers.sl import Sapling
 from bits_helpers.log import debug, info, warning, banner
 from bits_helpers.utilities import (
-    SHARED_ARCH,
-    compute_combined_arch,
-    effective_arch,
     getPackageList,
     parseDefaults,
     prunePaths,
@@ -48,8 +45,12 @@ from bits_helpers.utilities import (
     resolve_tag,
     topological_sort,
     ver_rev,
-    detectArch,
     validateDefaults,
+)
+from bits_helpers.arch import (
+    SHARED_ARCH,
+    compute_combined_arch,
+    effective_arch,
 )
 from bits_helpers.workarea import updateReferenceRepoSpec
 

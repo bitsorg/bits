@@ -33,7 +33,7 @@ import tempfile
 from os.path import abspath, basename, exists, join
 
 from bits_helpers.log import debug, error, info, warning, banner
-from bits_helpers.utilities import detectArch
+from bits_helpers.arch import detectArch
 
 
 # ---------------------------------------------------------------------------

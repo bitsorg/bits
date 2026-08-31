@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import argparse
-from bits_helpers.utilities import detectArch, normalise_multiple_options
-from bits_helpers.utilities import (arch_distro_token, arch_machine_token,
-                                    normalise_arch_key, detectArchComponents,
-                                    apply_arch_template, readDefaults)
+from bits_helpers.utilities import normalise_multiple_options, readDefaults
+from bits_helpers.arch import (detectArch, arch_distro_token, arch_machine_token,
+                               normalise_arch_key, detectArchComponents,
+                               apply_arch_template)
 from bits_helpers.workarea import cleanup_git_log
 import multiprocessing
 
@@ -2017,7 +2017,7 @@ def finaliseArgs(args, parser):
       if getattr(args, "dockerPlatform", None) == "native":
         args.dockerPlatform = None
       elif not getattr(args, "dockerPlatform", None):
-        from bits_helpers.utilities import docker_platform_for_arch, detectArch as _detectArch
+        from bits_helpers.arch import docker_platform_for_arch, detectArch as _detectArch
         target_plat = docker_platform_for_arch(args.architecture)
         host_plat   = docker_platform_for_arch(_detectArch())
         if target_plat and target_plat != host_plat:
