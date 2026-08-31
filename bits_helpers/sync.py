@@ -296,7 +296,24 @@ def _writer_from_url(write_url, architecture, work_dir):
   return RsyncRemoteSync(write_url, write_url, architecture, work_dir)
 
 
-class DualRemoteSync:
+class RemoteSync:
+  """Base for remote-store backends. Supplies documented no-op defaults for the
+  optional STORE-METADATA queries (ADR-0005 rev-index markers and content-object
+  listings), so a caller may invoke them on ANY backend without hasattr/getattr
+  reflection — a backend that records no such metadata simply reports 'nothing'.
+  Concrete fetch/upload behaviour is defined by each subclass (NoRemoteSync
+  implements it as no-ops)."""
+
+  def read_rev_markers(self, *args, **kwargs):
+    """{revision: hash} rev-index markers recorded in the store, or {}."""
+    return {}
+
+  def list_store_tarballs(self, *args, **kwargs):
+    """Store tarball object names for an (architecture, hash), or []."""
+    return []
+
+
+class DualRemoteSync(RemoteSync):
   """Read packages from one backend, upload freshly-built ones to another.
 
   Used when packages are recalled from a read-only store (e.g. a CVMFS mount)
@@ -337,36 +354,35 @@ class DualRemoteSync:
   def fetch_symlinks(self, spec):
     return self.reader.fetch_symlinks(spec)
 
-  def _first_supporting(self, method, default, *args, **kwargs):
-    """Call *method* on the first backend that implements it, reader before writer.
-
-    Store metadata (ADR-0005 rev-index markers, content-object listings) lives in
-    the STORE, and a read-only reader (e.g. HttpRemoteSync) may not
-    implement the lookup at all. In the common ``--remote-store https://…::rw``
-    setup both sides are the very same bucket (http read URL + b3 writer); in an
-    http-read/s3-write setup the metadata only ever exists on the writer.
-
-    Delegating to the reader alone silently returned the empty default, so the
-    revision counter never saw the markers: it could not reuse the recorded
-    revision, took a stale (revision, hash) pair from the signed manifest as
-    "revision busy", assigned a fresh revision N+1, and then unpacked revision N's
-    tarball into the N+1 install root — failing every reused package.
-    """
-    for backend in (self.reader, self.writer):
-      fn = getattr(backend, method, None)
-      if fn is None:
-        continue
-      try:
-        return fn(*args, **kwargs)
-      except Exception as exc:   # best-effort supplement; try the other backend
-        debug("%s failed on %s (%s)", method, type(backend).__name__, exc)
-    return default
-
   def read_rev_markers(self, *args, **kwargs):
-    return self._first_supporting("read_rev_markers", {}, *args, **kwargs)
+    return self._first_nonempty(
+        self.reader.read_rev_markers, self.writer.read_rev_markers, {}, *args, **kwargs)
 
   def list_store_tarballs(self, *args, **kwargs):
-    return self._first_supporting("list_store_tarballs", [], *args, **kwargs)
+    return self._first_nonempty(
+        self.reader.list_store_tarballs, self.writer.list_store_tarballs, [], *args, **kwargs)
+
+  @staticmethod
+  def _first_nonempty(reader_fn, writer_fn, default, *args, **kwargs):
+    """The reader's answer if it is non-empty, else the writer's. Store metadata
+    (ADR-0005 rev-index markers, content-object listings) lives on whichever
+    backend actually holds it; a read-only reader (an http / CVMFS mount) keeps
+    none and returns the empty default, which must then fall through to the
+    writer. Delegating to the reader alone silently returned empty, so the
+    revision counter never saw the markers: it reused a stale (revision, hash)
+    pair, assigned a fresh revision N+1, then unpacked revision N's tarball into
+    the N+1 install root — failing every reused package. Best-effort: a backend
+    that errors is skipped."""
+    for fn in (reader_fn, writer_fn):
+      try:
+        result = fn(*args, **kwargs)
+      except Exception as exc:   # best-effort supplement; try the other backend
+        debug("rev-metadata query failed on %s (%s)",
+              getattr(fn, "__qualname__", fn), exc)
+        result = None
+      if result:
+        return result
+    return default
 
   def fetch_source(self, *args, **kwargs):
     return self.reader.fetch_source(*args, **kwargs)
@@ -402,7 +418,7 @@ def _source_remote_path(url_checksum, filename):
   return "SOURCES/cache/{}/{}/{}".format(url_checksum[:2], url_checksum, filename)
 
 
-class NoRemoteSync:
+class NoRemoteSync(RemoteSync):
   """Helper class which does not do anything to sync"""
   def fetch_symlinks(self, spec) -> None:
     pass
@@ -426,7 +442,7 @@ class PartialDownloadError(Exception):
     return "only %d out of %d bytes downloaded" % (self.downloaded, self.size)
 
 
-class HttpRemoteSync:
+class HttpRemoteSync(RemoteSync):
   def __init__(self, remoteStore, architecture, workdir, insecure) -> None:
     self.remoteStore = remoteStore
     self.writeStore = ""
@@ -698,7 +714,7 @@ class HttpRemoteSync:
     pass  # HTTP backend is read-only; uploads must use rsync/S3/boto3
 
 
-class RsyncRemoteSync:
+class RsyncRemoteSync(RemoteSync):
   """Helper class to sync package build directory using RSync."""
 
   def __init__(self, remoteStore, writeStore, architecture, workdir) -> None:
@@ -819,7 +835,7 @@ rsync -avR --ignore-existing "{store_path}/$tarball" {remote}/
     dieOnError(err, "Unable to upload source archive to store.")
 
 
-class S3RemoteSync:
+class S3RemoteSync(RemoteSync):
   """Sync package build directory from and to S3 using s3cmd.
 
   s3cmd must be installed separately in order for this to work.
@@ -993,7 +1009,7 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
     dieOnError(err, "Unable to upload source archive to store.")
 
 
-class Boto3RemoteSync:
+class Boto3RemoteSync(RemoteSync):
   """Sync package build directory from and to S3 using boto3.
 
   As boto3 doesn't support Python 2, this class can only be used under Python

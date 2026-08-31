@@ -180,7 +180,7 @@ class Boto3ListStoreTarballsTestCase(unittest.TestCase):
         self.assertEqual(s.list_store_tarballs(ARCH, "aabb"), [])
 
 
-class _BareReader:
+class _BareReader(sync.RemoteSync):
     """A read-only backend with no store-metadata support (CVMFS, rsync, http)."""
     architecture = ARCH
     workdir = "/sw"
@@ -232,6 +232,16 @@ class DualDelegationTestCase(unittest.TestCase):
             sync.DualRemoteSync(reader=_BareReader(),
                                 writer=_BareReader()).list_store_tarballs(ARCH, "aa"),
             [])
+
+
+class RemoteSyncBaseContractTestCase(unittest.TestCase):
+    """The RemoteSync base gives every backend the store-metadata queries, so
+    build.py can call them on any sync helper without hasattr/getattr guards."""
+
+    def test_backends_default_metadata_to_empty(self):
+        for backend in (sync.NoRemoteSync(), _BareReader()):
+            self.assertEqual(backend.read_rev_markers("p", "v", ARCH), {})
+            self.assertEqual(backend.list_store_tarballs(ARCH, "aa"), [])
 
 
 if __name__ == "__main__":

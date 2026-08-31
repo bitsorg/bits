@@ -349,7 +349,6 @@ def _store_revision_records(spec, spec_arch, work_dir, sync_helper):
   itself.
   """
   from bits_helpers import rev_index
-  lister = getattr(sync_helper, "list_store_tarballs", None)
 
   def _revs(names):
     # Skip revision-less objects (force_revision="" -> ""), and localN objects:
@@ -372,8 +371,8 @@ def _store_revision_records(spec, spec_arch, work_dir, sync_helper):
     # downloading. Never let that suppress the remote lookup — an empty local
     # listing is "unknown", not "absent".
     revs = _revs(local)
-    if not revs and lister:
-      revs = _revs(lister(spec_arch, pkg_hash))
+    if not revs:
+      revs = _revs(sync_helper.list_store_tarballs(spec_arch, pkg_hash))
     if revs:
       if len(revs) > 1:
         warning("Store holds %s revisions %s for %s %s under one hash (%s); "
@@ -437,10 +436,7 @@ def _revision_index_records(spec, spec_arch, args, work_dir, sync_helper):
   manifest_recs = rev_index.manifest_records(
     trusted_reuse_records(args, work_dir),
     spec["package"], spec["version"], spec_arch)
-  markers = {}
-  reader = getattr(sync_helper, "read_rev_markers", None)
-  if reader:
-    markers = reader(spec["package"], spec["version"], spec_arch)
+  markers = sync_helper.read_rev_markers(spec["package"], spec["version"], spec_arch)
 
   store_recs = _store_revision_records(spec, spec_arch, work_dir, sync_helper)
   covered = {h for _, h in store_recs}
