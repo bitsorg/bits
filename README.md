@@ -66,43 +66,38 @@ bits doctor ROOT
 
 ## Configuration
 
-Use `bits init` to write persistent settings to `bits.rc` (created in the current directory):
+Run `bits init` with configuration options (and no package) to record them as a
+per-directory profile, so you do not repeat them on every build:
 
 ```bash
-bits init --organisation LHCB \
-          --work-dir /path/to/sw \
+bits init --work-dir /path/to/sw \
           --remote-store https://mybucket/builds
 ```
 
-Or write `bits.rc` by hand (INI format, `[bits]` section):
+The profile is stored in `./.bitsuse` (or under `~/.bits/use/` when the current
+directory is not writeable). `--architecture` is saved to its `[common]` section;
+`--remote-store`, `--write-store`, `--defaults`, `-c/--config-dir`,
+`-w/--work-dir` and `--reference-sources` are saved to `[build]`. `bits use`
+records the same kind of profile from any command's flags (e.g.
+`bits use build --docker`, or `bits use build --store-integrity` to enable
+SHA-256 verification of every recalled tarball).
 
-```ini
-[bits]
-organisation      = LHCB
-work_dir          = /path/to/sw
-remote_store      = https://s3.cern.ch/swift/v1/alibuild-repo
-prerequisites_url = https://lhcb-software.web.cern.ch/
-cvmfs_repos       = /cvmfs/lhcbdev.cern.ch,/cvmfs/sft.cern.ch
-```
+Global settings come from environment variables:
 
-`organisation` is written **uppercase** (`ALICE`, `LHCB`, …).  Bits lowercases it
+| Variable | Related flag | Description |
+|----------|--------------|-------------|
+| `$BITS_ORGANISATION` | `--organisation` | Community name (uppercase). Used to auto-bootstrap the recipe repo. |
+| `$BITS_WORK_DIR` | `-w` / `--work-dir` | Output directory for built packages (default: `sw`). |
+| `$BITS_REPO_DIR` | `-c` / `--config-dir` | Root directory for recipe repositories. |
+| `$BITS_PROVIDERS` | `--providers` | Repository provider set URL(s). |
+| `$BITS_PATH` | `--search-path` | Recipe search path. |
+| `$BITS_S3_STORE` | `--remote-store` (store ops) | Default S3 store for `gc` / `certify` / `publish` / `store-stats` / `compliance`. |
+| `$BITS_PREREQUISITES_URL` | — | URL shown when `bits doctor` cannot find the C++ compiler or git. |
+| `$BITS_CVMFS_REPOS` | `--cvmfs-repos` | Comma-separated CVMFS mount paths checked by `bits doctor --runner`. |
+
+`$BITS_ORGANISATION` is set **uppercase** (`ALICE`, `LHCB`, …).  Bits lowercases it
 internally when resolving the community recipe repository from bits-providers
 (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`).
-
-Bits looks for `bits.rc` in: `--rc-file FILE` → `./bits.rc` → `./.bitsrc` → `~/.bitsrc`.
-
-Useful `[bits]` keys:
-
-| Key | CLI flag | Description |
-|-----|----------|-------------|
-| `organisation` | `--organisation` | Community name (uppercase). Used to auto-bootstrap the recipe repo. |
-| `work_dir` | `-w` / `--work-dir` | Output directory for built packages (default: `sw`). |
-| `remote_store` | `--remote-store` | Binary store URL for pre-built tarball retrieval. |
-| `write_store` | `--write-store` | Binary store URL for uploading newly built tarballs. |
-| `prerequisites_url` | — | URL shown when `bits doctor` cannot find the C++ compiler or git. |
-| `cvmfs_repos` | — | Comma-separated CVMFS mount paths checked by `bits doctor --runner`. |
-| `provider_policy` | — | `name:prepend\|append` pairs controlling `BITS_PATH` insertion order. |
-| `store_integrity` | `--store-integrity` | `true` to enable SHA-256 verification of every recalled tarball. |
 
 [Configuration details](docs/USERGUIDE.md#4-configuration)
 

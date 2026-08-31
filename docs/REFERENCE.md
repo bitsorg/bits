@@ -545,9 +545,8 @@ BITS_PROVIDERS=https://github.com/bitsorg/bits-providers  (default)
 # Use a private provider repository instead
 export BITS_PROVIDERS=https://github.com/myorg/my-recipes.git@main
 
-# Or set it persistently in bits.rc / .bitsrc / ~/.bitsrc:
-# [bits]
-# providers = https://github.com/myorg/my-recipes.git@stable
+# Or pass it per-run
+bits build --providers https://github.com/myorg/my-recipes.git@stable ROOT
 
 # Pin to a specific tag
 export BITS_PROVIDERS=https://github.com/bitsorg/bits-providers@v2.0
@@ -562,7 +561,7 @@ Which path is used is chosen by the front-end:
 - **Native `bits`** uses the **provider path**: `bits_providers` defaults to the official `bitsorg/bits-providers` registry, so the always-on provider and the org-pointer bootstrap are active.
 - **The `aliBuild` wrapper** (it exports `BITS_BRANDING=aliBuild`) emulates **legacy aliBuild**: the providers default is *empty*, so no registry is loaded and recipes come from a local `alidist` checkout instead. `aliBuild init` clones `alisw/alidist`, `aliBuild build <PKG>` uses it directly, and the legacy build-time `init.sh` is kept (`BITS_LEGACY_INITDOTSH=1`, alidist-compatible hashes; `--legacy-initdotsh` selects it explicitly).
 
-An explicit `BITS_PROVIDERS` / `--providers` / `bits.rc providers` overrides the default in either mode.
+An explicit `BITS_PROVIDERS` / `--providers` overrides the default in either mode.
 
 ### Bootstrapping a recipe repository from the registry
 
@@ -594,17 +593,15 @@ repository_position: prepend
 
 This package is loaded in Phase 1 (before the iterative scan), so its recipes are visible from the very first dependency-resolution pass. Because the package name `bits-providers` is reserved, any recipe file of that name found in the config directory is skipped during the Phase 2 config-dir scan to prevent double-cloning.
 
-### `bits.rc` configuration
+### Provider configuration
 
-Provider settings can be stored persistently in a bits configuration file. Bits searches for the following files in order and reads the first one found:
+The active provider set is configured through the environment, not a config
+file. Set `$BITS_PROVIDERS` to override or disable the built-in default, or pass
+`--providers URL` per run; an explicit `$BITS_PROVIDERS` takes precedence over
+`--providers`.
 
-Relevant keys in the `[bits]` section:
-
-```ini
-[bits]
-# Override or disable the default BITS_PROVIDERS URL.
-# An explicit BITS_PROVIDERS environment variable takes precedence.
-providers = https://github.com/myorg/my-recipes.git@stable
+```bash
+export BITS_PROVIDERS=https://github.com/myorg/my-recipes.git@stable
 ```
 
 ### Provider policy
@@ -615,24 +612,19 @@ A provider that needs to appear *before* other directories — for example to sh
 
 #### Configuration
 
-In `bits.rc` (persistent, applies to every run in this work tree):
-
-```ini
-[bits]
-# Grant one provider prepend access; keep all others at the safe default.
-provider_policy = bits-providers:prepend
-
-# Multiple entries are comma-separated.
-provider_policy = bits-providers:prepend, myorg-extras:append
-```
-
-On the command line (per-invocation override):
+Grant prepend access with the `--provider-policy` flag (format
+`name:prepend|append`, entries comma-separated):
 
 ```bash
+# Grant one provider prepend access; keep all others at the safe default.
 bits build --provider-policy bits-providers:prepend MyPackage
+
+# Multiple entries are comma-separated.
+bits build --provider-policy bits-providers:prepend,myorg-extras:append MyPackage
 ```
 
-The CLI flag takes precedence over `bits.rc`.
+Persist it for the current directory with `bits use build --provider-policy …`.
+Provider recipes cannot self-elevate.
 
 #### How position is resolved
 
@@ -642,19 +634,14 @@ For each provider, bits evaluates the policy in this order:
 |----------|--------|--------|
 | 1 (highest) | `provider_policy` entry for this provider | Exact position used, overrides recipe |
 | 2 | Recipe's `repository_position` field, **only if `append`** | Respected as-is |
-| 3 (default) | Recipe's `repository_position: prepend` **without policy** | Downgraded to `append`; a warning names the required `bits.rc` line |
+| 3 (default) | Recipe's `repository_position: prepend` **without policy** | Downgraded to `append`; a warning names the required `--provider-policy` entry |
 | 4 | No field in recipe | `append` |
 
-When a provider is about to be prepended (whether from policy or recipe), bits scans recipes already visible on `BITS_PATH` and warns for every name collision, listing the affected recipes and the `bits.rc` line that would suppress the warning.  The primary config directory (passed via `-c / --config-dir`) is always position 0 in the search order and **cannot** be shadowed by any provider.
+When a provider is about to be prepended (whether from policy or recipe), bits scans recipes already visible on `BITS_PATH` and warns for every name collision, listing the affected recipes and the `--provider-policy` entry that would suppress the warning.  The primary config directory (passed via `-c / --config-dir`) is always position 0 in the search order and **cannot** be shadowed by any provider.
 
 #### Example: patching a default recipe
 
 Suppose `myorg-patches` contains a modified `zlib.sh` that you want to take precedence over the version in the upstream provider:
-
-```ini
-[bits]
-provider_policy = myorg-patches:prepend
-```
 
 ```bash
 bits build --provider-policy myorg-patches:prepend ROOT
@@ -668,7 +655,7 @@ bits build --provider-policy myorg-patches:prepend ROOT
 | Priority | Source | Example |
 |----------|--------|---------|
 | 1 (highest) | `BITS_PROVIDERS` environment variable | `export BITS_PROVIDERS=…` |
-| 2 | `providers` key in `bits.rc` / `.bitsrc` / `~/.bitsrc` | `providers = …` |
+| 2 | `--providers` command-line flag | `--providers …` |
 | 3 (default) | Built-in default | `https://github.com/bitsorg/bits-providers` |
 
 ### How providers are discovered (two-phase)
@@ -695,7 +682,7 @@ This second seed is what allows a defaults file to trigger provider loading (see
 
 This naturally handles **nested providers**: a provider whose own recipe repository contains a further provider recipe.
 
-**Local checkout shadowing.** In both phases, before cloning a declared provider `<pkg>`, bits checks for a local checkout at `<config_dir>/<pkg>/`. If that directory exists and contains recipes, it is used **from there** — added to `BITS_PATH` with its git `HEAD` recorded as provenance (a `-dirty` suffix when the working tree has uncommitted changes) — and the remote clone is skipped. This mirrors how a locally checked-out package shadows its `source`, so a provider you are actively editing (e.g. `lcg.bits/` next to `lcg.bits.sh`) is picked up without re-cloning. Only an already-declared provider is ever shadowed — bits never scans for undeclared `*.bits/` directories, so the recipe/package discovery path is unchanged. `--force-tracked` disables this (and all local-checkout pickup), forcing the remote clone. For an *undeclared* local sub-repo, put it on `BITS_PATH` with `--search-path NAMES` (or `search_path` in `bits.rc`).
+**Local checkout shadowing.** In both phases, before cloning a declared provider `<pkg>`, bits checks for a local checkout at `<config_dir>/<pkg>/`. If that directory exists and contains recipes, it is used **from there** — added to `BITS_PATH` with its git `HEAD` recorded as provenance (a `-dirty` suffix when the working tree has uncommitted changes) — and the remote clone is skipped. This mirrors how a locally checked-out package shadows its `source`, so a provider you are actively editing (e.g. `lcg.bits/` next to `lcg.bits.sh`) is picked up without re-cloning. Only an already-declared provider is ever shadowed — bits never scans for undeclared `*.bits/` directories, so the recipe/package discovery path is unchanged. `--force-tracked` disables this (and all local-checkout pickup), forcing the remote clone. For an *undeclared* local sub-repo, put it on `BITS_PATH` with `--search-path NAMES`.
 
 ### Triggering providers from a defaults file
 
@@ -888,7 +875,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--no-local PACKAGE` | Do not use a local checkout for PACKAGE (repeatable). |
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
 | `--config-dir DIR` | Directory containing recipe files. |
-| `--search-path NAMES` | Comma-separated recipe sub-repos to search besides the config dir. A relative NAME resolves to `<config-dir>/NAME.bits`; absolute paths are used as-is. Seeds `BITS_PATH` (wins over `bits.rc` `search_path`; an explicit `$BITS_PATH` wins over both). |
+| `--search-path NAMES` | Comma-separated recipe sub-repos to search besides the config dir. A relative NAME resolves to `<config-dir>/NAME.bits`; absolute paths are used as-is. Seeds `BITS_PATH` (an explicit `$BITS_PATH` wins). |
 | `--reference-sources DIR` | Local mirror of git repositories. |
 | `--remote-store URL` | Binary store to fetch pre-built tarballs from. Append `::rw` to also upload to it. |
 | `--write-store URL` | Binary store to upload built tarballs to. |
@@ -918,7 +905,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--enforce-checksums` | Abort on source/patch checksum mismatch or missing checksum. |
 | `--print-checksums` | Print checksums for all sources/patches in YAML format after the build. |
 | `--write-checksums` | Write or update `checksums/<package>.checksum` after the build. |
-| `--store-integrity` | Record and verify SHA-256 of every recalled tarball. Can also be set with `store_integrity = true` in `bits.rc`. See [§21 Store integrity verification](#store-integrity-verification). |
+| `--store-integrity` | Record and verify SHA-256 of every recalled tarball. Persist it with `bits use build --store-integrity`. See [§21 Store integrity verification](#store-integrity-verification). |
 | `--provider-policy POLICY` | Control `BITS_PATH` insertion order for repository providers. Format: `name:prepend\|append` pairs. See [§13 Provider policy](#provider-policy). |
 | `--from-manifest FILE` | Replay a build from a manifest JSON file; verifies each tarball against `tarball_sha256`. See [§25 Build Manifest](#25-build-manifest). |
 
@@ -1014,7 +1001,7 @@ bits doctor --check-store PACKAGE ...        # pre-build store availability repo
 | Docker daemon reachable | `--docker` or `--runner` |
 | QEMU binfmt handler for the target architecture | when `--docker` is set |
 | podman availability and user-namespace support | always |
-| CVMFS repository path(s) accessible and non-empty | `--cvmfs-repos` / `bits.rc cvmfs_repos` |
+| CVMFS repository path(s) accessible and non-empty | `--cvmfs-repos` / `$BITS_CVMFS_REPOS` |
 | Free disk space in `--work-dir` ≥ `--min-disk` GiB | always |
 | Remote store reachable and credentials present | when `--remote-store` is configured |
 
@@ -1060,7 +1047,7 @@ bits doctor --check-store  —  architecture: slc9_x86-64
 | `--check-store` | off | Probe the remote store for each package bits would build. Requires `--remote-store`. Always exits 0. |
 | `--runner` | off | Validate the full build-runner environment instead of checking package recipes. |
 | `--json` | off | Emit a machine-readable JSON report (works with `--runner` and `--check-store`). |
-| `--cvmfs-repos PATH` | _(none)_ | CVMFS mount path to check (repeatable, `--runner` mode only). Can also be set as `cvmfs_repos = /cvmfs/a,/cvmfs/b` in `bits.rc`. |
+| `--cvmfs-repos PATH` | _(none)_ | CVMFS mount path to check (repeatable, `--runner` mode only). Can also be set as `$BITS_CVMFS_REPOS=/cvmfs/a,/cvmfs/b`. |
 | `--min-disk GIB` | `10.0` | Minimum free disk in `--work-dir` (`--runner` mode). Lower triggers WARN, not FAIL. |
 | `-a ARCH`, `--architecture ARCH` | auto-detected | Target architecture. |
 | `--defaults PROFILE` | `release` | Defaults profile for dependency resolution. |
@@ -1108,12 +1095,12 @@ bits doctor --runner --json \
     --remote-store https://s3.cern.ch/swift/v1/alibuild-repo
 ```
 
-**bits.rc keys relevant to `bits doctor`:**
+**Environment variables relevant to `bits doctor`:**
 
-| Key | Description |
-|-----|-------------|
-| `prerequisites_url` | URL shown when the C++ compiler or git is missing. Defaults to the ALICE prerequisite guide. |
-| `cvmfs_repos` | Comma-separated list of CVMFS paths checked in `--runner` mode (e.g. `/cvmfs/alice.cern.ch,/cvmfs/sft.cern.ch`). |
+| Variable | Description |
+|----------|-------------|
+| `$BITS_PREREQUISITES_URL` | URL shown when the C++ compiler or git is missing. Defaults to the ALICE prerequisite guide. |
+| `$BITS_CVMFS_REPOS` | Comma-separated list of CVMFS paths checked in `--runner` mode (e.g. `/cvmfs/alice.cern.ch,/cvmfs/sft.cern.ch`). |
 
 ---
 
@@ -2624,12 +2611,12 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `BITS_BRANDING` | _(empty)_ | Cosmetic program-name branding; set by the `aliBuild` wrapper. |
-| `BITS_ORGANISATION` | _(empty)_ | Organisation selecting the registry/provider "home" repo. Empty by default; the `aliBuild` wrapper sets `ALICE`, or use `--organisation` / `bits.rc`. |
+| `BITS_ORGANISATION` | _(empty)_ | Organisation selecting the registry/provider "home" repo. Empty by default; the `aliBuild` wrapper sets `ALICE`, or use `--organisation`. |
 | `BITS_PKG_PREFIX` | _(empty)_ | Display prefix for `bits q`. Empty prints native `PKG/VERSION`; when set (e.g. `VO_ALICE` via `aliBuild`) output becomes `PREFIX@PKG::VERSION`. |
 | `BITS_REPO_DIR` | `alidist` | Root directory for recipe repositories. |
 | `BITS_WORK_DIR` | `sw` | Output and work directory. |
 | `BITS_PATH` | _(empty)_ | Comma-separated list of additional recipe search directories. Absolute paths are used directly; relative names have `.bits` appended and are resolved under `BITS_REPO_DIR`. |
-| `BITS_PROVIDERS` | `https://github.com/bitsorg/bits-providers` | URL(s) of the repository provider set to use. Can be set in the environment, in `bits.rc` as `providers = …`, or overridden per-run. The built-in default points to the official bits-providers repository. |
+| `BITS_PROVIDERS` | `https://github.com/bitsorg/bits-providers` | URL(s) of the repository provider set to use. Can be set in the environment or overridden per-run with `--providers`. The built-in default points to the official bits-providers repository. |
 
 ### Environment module variables
 
@@ -2981,14 +2968,13 @@ Per-invocation:
 bits build --store-integrity --remote-store b3://mybucket/bits-cache::rw ROOT
 ```
 
-Persistent opt-in via `bits.rc` (recommended for teams that have adopted the feature):
+Persistent opt-in for the current directory (recommended for teams that have adopted the feature):
 
-```ini
-[bits]
-store_integrity = true
+```bash
+bits use build --store-integrity
 ```
 
-Accepted values for the config key: `true`, `1`, `yes` (case-insensitive).
+This saves `--store-integrity` to the profile's `[build]` section so every `bits build` in this directory verifies recalled tarballs.
 
 #### Strict mode for CI (no unverified tarballs)
 

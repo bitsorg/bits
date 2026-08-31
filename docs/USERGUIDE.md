@@ -131,8 +131,10 @@ exit                      # return to your normal shell
 ### Another community (e.g. LHCb) — one-time setup
 
 ```bash
-# Write community and work-directory to bits.rc once
-bits init --organisation LHCB --work-dir /path/to/sw
+# Select the community once (auto-bootstraps its recipe repo) and
+# record the work directory in a per-directory profile
+export BITS_ORGANISATION=LHCB
+bits init --work-dir /path/to/sw
 
 # Then build as normal — bits auto-bootstraps the LHCb recipe repo
 bits build DaVinci
@@ -152,38 +154,29 @@ bits build DaVinci
 
 ## 4. Configuration
 
-Bits reads an optional INI-style configuration file at startup. Create one with `bits init`:
+Record per-directory build settings once with `bits init` (given configuration options and no package), so you do not repeat them on every build:
 
 ```bash
-bits init --organisation LHCB \
-          --work-dir /path/to/sw \
+bits init --work-dir /path/to/sw \
           --remote-store https://s3.cern.ch/swift/v1/mybucket
 ```
 
-This writes a `bits.rc` file in the current directory. You can also write it by hand (INI format, `[bits]` section):
+This writes a `bits use` profile — `./.bitsuse` in the current directory, or a record under `~/.bits/use/` when the directory is not writeable. `--architecture` is saved to the profile's `[common]` section; `--remote-store`, `--write-store`, `--defaults`, `-c/--config-dir`, `-w/--work-dir` and `--reference-sources` are saved to `[build]`. `bits use` records the same kind of profile from any command's flags (e.g. `bits use build --docker`, or `bits use build --store-integrity` to enable SHA-256 verification of every recalled tarball).
 
-```ini
-[bits]
-organisation  = LHCB
-work_dir      = /path/to/sw
-remote_store  = https://s3.cern.ch/swift/v1/mybucket
-```
+Global settings come from environment variables:
 
-`organisation` is written **uppercase** (`ALICE`, `LHCB`, …). Bits lowercases it internally when resolving the community recipe repository from bits-providers (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`).
+| Variable | Related flag | Description |
+|----------|--------------|-------------|
+| `$BITS_ORGANISATION` | `--organisation` | Community name (uppercase). Used to auto-bootstrap the recipe repo. |
+| `$BITS_WORK_DIR` | `-w` / `--work-dir` | Output directory for built packages (default: `sw`). |
+| `$BITS_REPO_DIR` | `-c` / `--config-dir` | Root directory for recipe repositories. |
+| `$BITS_PROVIDERS` | `--providers` | Repository provider set URL(s). |
+| `$BITS_PATH` | `--search-path` | Recipe search path. |
+| `$BITS_S3_STORE` | `--remote-store` (store ops) | Default S3 store for `gc` / `certify` / `publish` / `store-stats` / `compliance`. |
 
-Bits looks for `bits.rc` in: `--rc-file FILE` → `./bits.rc` → `./.bitsrc` → `~/.bitsrc`.
+`$BITS_ORGANISATION` is set **uppercase** (`ALICE`, `LHCB`, …). Bits lowercases it internally when resolving the community recipe repository from bits-providers (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`).
 
-Commonly used `[bits]` keys:
-
-| Key | CLI flag | Description |
-|-----|----------|-------------|
-| `organisation` | `--organisation` | Community name (uppercase). Used to auto-bootstrap the recipe repo. |
-| `work_dir` | `-w` / `--work-dir` | Output directory for built packages (default: `sw`). |
-| `remote_store` | `--remote-store` | Binary store URL for pre-built tarball retrieval. |
-| `write_store` | `--write-store` | Binary store URL for uploading newly built tarballs. |
-| `store_integrity` | `--store-integrity` | `true` to enable SHA-256 verification of every recalled tarball. |
-
-Settings follow the precedence `CLI flag > environment variable > bits.rc value > built-in default`. For the full list of configuration keys, environment variables, and the organisation-section override mechanism, see [REFERENCE.md §19](REFERENCE.md#19-environment-variables).
+Settings follow the precedence `CLI flag > bits use profile > environment variable > built-in default`. For the full list of environment variables and the organisation-section override mechanism, see [REFERENCE.md §19](REFERENCE.md#19-environment-variables).
 
 ---
 

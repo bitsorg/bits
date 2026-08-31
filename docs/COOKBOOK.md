@@ -218,16 +218,16 @@ Useful for building private packages that depend on public recipes, or for maint
 Instead of passing `--remote-store` on every `bits build` invocation, write it once with `bits init`:
 
 ```bash
-# One-time setup — writes bits.rc in the current directory
+# One-time setup — records a per-directory bits use profile
+export BITS_ORGANISATION=MYORG
 bits init --remote-store https://store.example.com/store \
-          --write-store  b3://mybucket/store \
-          --organisation MYORG
+          --write-store  b3://mybucket/store
 
 # Every subsequent invocation picks up the settings automatically
 bits build ROOT
 ```
 
-To check what will be written before touching the file system, add `--dry-run`. To update a single key in an existing `bits.rc` without replacing the whole file, add `--append`.
+The store settings are saved to the profile's `[build]` section (`./.bitsuse`, or a record under `~/.bits/use/` when the directory is not writeable); the organisation comes from `$BITS_ORGANISATION`. To check what would be saved before touching the file system, add `--dry-run`.
 
 ### Share pre-built artifacts over S3
 
