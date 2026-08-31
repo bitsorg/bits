@@ -18,9 +18,7 @@ Authorization (who may publish where) stays in the pipeline: it decides admin
 vs user and passes --admin/--login. This command only resolves paths.
 """
 
-import os
 import sys
-from os.path import exists
 
 import re
 
@@ -47,16 +45,8 @@ def doCvmfsPath(args, parser):
     the group declares no CVMFS prefix or a non-admin path is requested without
     a login.
     """
-    if not exists(args.configDir):
-        from bits_helpers.repo_provider import cwd_is_recipe_dir
-        _default_config_dir = os.environ.get("BITS_REPO_DIR", "alidist")
-        if args.configDir == _default_config_dir and cwd_is_recipe_dir():
-            debug("Recipe files detected in current directory; using '.' as config dir")
-            args.configDir = "."
-    dieOnError(not exists(args.configDir),
-               'Cannot find recipes under directory "%s".\n'
-               'Maybe you need to "cd" to the right directory or '
-               'you forgot to run "bits init"?' % args.configDir)
+    from bits_helpers.repo_provider import resolve_config_dir
+    resolve_config_dir(args)
 
     # Load the defaults profile exactly like `bits status` — only the group's
     # system: block (templates) is consulted; no recipe/version resolution.

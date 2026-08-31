@@ -581,6 +581,23 @@ def cwd_is_recipe_dir() -> bool:
   return os.path.exists("defaults-release.sh")
 
 
+def resolve_config_dir(args):
+  """Resolve ``args.configDir`` in place: when it is the default and the current
+  directory looks like a checked-out recipe repo, use ``.``; then abort with a
+  'bits init' hint if no recipes are found. This is the read-only form used by
+  ``status``/``cvmfs-path``; the ``build`` path additionally network-bootstraps a
+  config dir before the same final check."""
+  if not exists(args.configDir):
+    _default = os.environ.get("BITS_REPO_DIR", "alidist")
+    if args.configDir == _default and cwd_is_recipe_dir():
+      debug("Recipe files detected in current directory; using '.' as config dir")
+      args.configDir = "."
+  dieOnError(not exists(args.configDir),
+             'Cannot find recipes under directory "%s".\n'
+             'Maybe you need to "cd" to the right directory or '
+             'you forgot to run "bits init"?' % args.configDir)
+
+
 # ── Local provider shadowing ────────────────────────────────────────────────
 
 def _local_provider_dir(config_dir, package):

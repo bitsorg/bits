@@ -30,7 +30,7 @@ import shutil
 import sys
 from collections import OrderedDict
 from glob import glob
-from os.path import abspath, basename, dirname, exists, join
+from os.path import abspath, basename, dirname, join
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -366,16 +366,8 @@ def doStatus(args, parser) -> None:
     work_dir = abspath(args.workDir)
     prunePaths(work_dir)
 
-    if not exists(args.configDir):
-      from bits_helpers.repo_provider import cwd_is_recipe_dir
-      _default_config_dir = os.environ.get("BITS_REPO_DIR", "alidist")
-      if args.configDir == _default_config_dir and cwd_is_recipe_dir():
-        debug("Recipe files detected in current directory; using '.' as config dir")
-        args.configDir = "."
-    dieOnError(not exists(args.configDir),
-               'Cannot find recipes under directory "%s".\n'
-               'Maybe you need to "cd" to the right directory or '
-               'you forgot to run "bits init"?' % args.configDir)
+    from bits_helpers.repo_provider import resolve_config_dir
+    resolve_config_dir(args)
 
     # ── Defaults and overrides ─────────────────────────────────────────────────
     defaults_reader = lambda: readDefaults(

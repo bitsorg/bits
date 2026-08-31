@@ -19,6 +19,7 @@ from contextlib import redirect_stdout
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bits_helpers import cvmfs_path as CP
+from bits_helpers import repo_provider as RP
 
 
 _META = {"system": {
@@ -53,14 +54,16 @@ class _Parser:
 
 class CvmfsPathHandlerTest(unittest.TestCase):
     def setUp(self):
-        # Stub the defaults loading so no recipe checkout is needed.
-        self._orig = (CP.exists, CP.parseDefaults, CP.readDefaults)
-        CP.exists = lambda p: True
+        # Stub the defaults loading so no recipe checkout is needed. The configDir
+        # existence check now lives in repo_provider.resolve_config_dir, so the
+        # "exists" stub is applied there.
+        self._orig = (RP.exists, CP.parseDefaults, CP.readDefaults)
+        RP.exists = lambda p: True
         CP.readDefaults = lambda *a, **k: ({}, "")
         CP.parseDefaults = lambda *a, **k: ("", {}, {}, _META)
 
     def tearDown(self):
-        CP.exists, CP.parseDefaults, CP.readDefaults = self._orig
+        RP.exists, CP.parseDefaults, CP.readDefaults = self._orig
 
     def _run(self, **kw):
         buf = io.StringIO()
