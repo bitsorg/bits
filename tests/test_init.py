@@ -138,7 +138,7 @@ class InitTestCase(unittest.TestCase):
     @patch("bits_helpers.init.os")
     @patch("bits_helpers.init.git")
     @patch("bits_helpers.init.updateReferenceRepoSpec")
-    @patch("bits_helpers.utilities.open")
+    @patch("bits_helpers.recipe.open")
     @patch("bits_helpers.init.readDefaults")
     def test_doRealInit(self, mock_read_defaults, mock_open, mock_update_reference, mock_git, mock_os, mock_exists, mock_path,  mock_info, mock_banner) -> None:
       fake_dist = {"repo": "alisw/alidist", "ver": "master"}

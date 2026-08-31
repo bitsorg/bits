@@ -89,7 +89,7 @@ GETSTATUSOUTPUT_MOCKS = {
 }
 
 class ArgsTestCase(unittest.TestCase):
-  @mock.patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")   # for uname -m
+  @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
   @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
   # Neutralise the host-dependent --memory/--memory-swap docker injection so
   # the exact docker_extra_args expectations below hold on any test host
@@ -107,7 +107,7 @@ class ArgsTestCase(unittest.TestCase):
         for k, v in effects:
           self.assertEqual(args[k], v)
 
-  @mock.patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")   # for uname -m
+  @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
   @mock.patch('bits_helpers.args.argparse.ArgumentParser.error')
   def test_failingParsing(self, mock_print):
     mock_print.side_effect = FakeExit("raised")
@@ -135,7 +135,7 @@ class CpusetInjectionTestCase(unittest.TestCase):
 
   def _parse(self, cmd, cpuset_return="0-7"):
     """Helper: parse a build command with a mocked _host_online_cpus."""
-    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value=cpuset_return), \
          mock.patch("bits_helpers.args._docker_memory_args", return_value=[]), \
          mock.patch("bits_helpers.args.commands") as mock_cmd, \
@@ -236,7 +236,7 @@ class DockerMemoryCapTestCase(unittest.TestCase):
 
   def test_user_memory_flag_suppresses_injection(self):
     # Parse-level: a user-supplied --memory* in --docker-extra-args wins.
-    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
          mock.patch("bits_helpers.args._docker_memory_args",
                     return_value=["--memory=59g", "--memory-swap=59g"]), \
@@ -250,7 +250,7 @@ class DockerMemoryCapTestCase(unittest.TestCase):
 
   def test_injected_when_absent(self):
     # Parse-level: the helper's flags land in docker_extra_args by default.
-    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
          mock.patch("bits_helpers.args._docker_memory_args",
                     return_value=["--memory=59g", "--memory-swap=59g"]), \
@@ -283,7 +283,7 @@ class ReusePolicyArgsTestCase(unittest.TestCase):
   """ADR-0001 relaxed-reuse CLI flags parse and default safely."""
 
   def _parse(self, cmd):
-    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
          mock.patch("bits_helpers.args.commands") as mock_cmd, \
          patch.object(sys, "argv", ["alibuild"] + shlex.split(cmd)):
@@ -323,7 +323,7 @@ class ProviderPathFrontendTestCase(unittest.TestCase):
   native bits defaults to the provider path. Explicit BITS_PROVIDERS wins."""
 
   def _bits_providers(self, set_env):
-    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
          mock.patch("bits_helpers.args.commands") as mock_cmd, \
          mock.patch.dict(os.environ, set_env, clear=False), \

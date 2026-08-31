@@ -13,7 +13,8 @@ from unittest.mock import call, patch, MagicMock, DEFAULT
 from io import StringIO
 from collections import OrderedDict
 
-from bits_helpers.utilities import parseRecipe, resolve_tag
+from bits_helpers.utilities import resolve_tag
+from bits_helpers.recipe import parseRecipe
 from bits_helpers.build import doBuild, storeHashes, generate_initdotsh
 
 # Determine architecture based on platform
@@ -294,7 +295,7 @@ class BuildTestCase(unittest.TestCase):
     @patch("bits_helpers.build.makedirs", new=MagicMock(return_value=None))
     @patch("bits_helpers.build.symlink", new=MagicMock(return_value=None))
     @patch("bits_helpers.workarea.symlink", new=MagicMock(return_value=None))
-    @patch("bits_helpers.utilities.open", new=lambda x: {
+    @patch("bits_helpers.recipe.open", new=lambda x: {
         "/alidist/root.sh": StringIO(TEST_ROOT_RECIPE),
         "/alidist/zlib.sh": StringIO(TEST_ZLIB_RECIPE),
         "/alidist/defaults-release.sh": StringIO(TEST_DEFAULT_RELEASE)

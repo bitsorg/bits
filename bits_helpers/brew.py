@@ -28,7 +28,7 @@ import sys
 import glob
 
 from bits_helpers.log import debug, error, info
-from bits_helpers.utilities import parseRecipe, FileReader
+from bits_helpers.recipe import parseRecipe, FileReader
 
 
 def _as_list(value):

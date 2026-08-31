@@ -3,9 +3,11 @@
 
 import unittest
 import platform
-from bits_helpers.utilities import parseRecipe, getRecipeReader, parseDefaults
-from bits_helpers.utilities import FileReader, GitReader
-from bits_helpers.utilities import validateDefaults, SpecError, incompatibleFlavorDefaults
+from bits_helpers.utilities import parseDefaults
+from bits_helpers.recipe import parseRecipe, getRecipeReader
+from bits_helpers.recipe import FileReader, GitReader
+from bits_helpers.utilities import validateDefaults, incompatibleFlavorDefaults
+from bits_helpers.recipe import SpecError
 from collections import OrderedDict
 
 TEST1="""package: foo

@@ -174,7 +174,7 @@ class Boto3RemoteSyncUploadCmdTest(unittest.TestCase):
 class NewCLIFlagsTest(unittest.TestCase):
     """Verify the three new flags parse correctly with their defaults."""
 
-    @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
+    @patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")
     def test_defaults(self, mock_commands):
         """All three new flags must have the documented defaults."""
@@ -198,7 +198,7 @@ class NewCLIFlagsTest(unittest.TestCase):
         self.assertEqual(args.parallelDownloads, 2,
                          "--parallel-downloads must default to 2")
 
-    @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
+    @patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")
     def test_prefetch_workers_flag(self, mock_commands):
         """--prefetch-workers N sets prefetchWorkers=N."""
@@ -217,7 +217,7 @@ class NewCLIFlagsTest(unittest.TestCase):
 
         self.assertEqual(args.prefetchWorkers, 4)
 
-    @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
+    @patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")
     def test_parallel_sources_flag(self, mock_commands):
         """--parallel-sources N sets parallelSources=N."""

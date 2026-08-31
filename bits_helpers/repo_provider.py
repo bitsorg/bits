@@ -59,13 +59,8 @@ from typing import Optional
 from bits_helpers.log import debug, info, warning, banner, dieOnError
 from bits_helpers.git import Git
 from bits_helpers.workarea import updateReferenceRepoSpec, logged_scm
-from bits_helpers.utilities import (
-    getGeneratedPackages,
-    getRecipeReader,
-    parseRecipe,
-    resolve_spec_data,
-    symlink,
-)
+from bits_helpers.utilities import resolve_spec_data, symlink
+from bits_helpers.recipe import getGeneratedPackages, getRecipeReader, parseRecipe
 from bits_helpers.paths import checkForFilename, getConfigPaths
 from bits_helpers.matchers import _parse_req_matcher
 

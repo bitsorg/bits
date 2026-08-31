@@ -9,7 +9,8 @@ import shutil
 import tempfile
 import unittest
 
-from bits_helpers.utilities import resolveIncludes, parseRecipe, resolve_spec_data
+from bits_helpers.utilities import resolve_spec_data
+from bits_helpers.recipe import resolveIncludes, parseRecipe
 
 
 class BufferReader:

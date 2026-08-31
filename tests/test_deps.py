@@ -42,7 +42,7 @@ class DepsTestCase(unittest.TestCase):
 
     @patch("bits_helpers.deps.open")
     @patch("bits_helpers.deps.execute", new=lambda cmd: True)
-    @patch("bits_helpers.utilities.open", new=lambda f: StringIO(RECIPES[f]))
+    @patch("bits_helpers.recipe.open", new=lambda f: StringIO(RECIPES[f]))
     @patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)
     @patch("bits_helpers.utilities.exists", new=lambda f: f in RECIPES)
     def test_deps(self, mockDepsOpen):

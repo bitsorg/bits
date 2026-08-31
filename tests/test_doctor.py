@@ -85,7 +85,7 @@ class DoctorTestCase(unittest.TestCase):
     @patch("bits_helpers.doctor.exists")
     @patch("bits_helpers.paths.exists")
     @patch("bits_helpers.utilities.exists")
-    @patch("bits_helpers.utilities.open")
+    @patch("bits_helpers.recipe.open")
     def test_doctor(self, mockOpen, mockUtilitiesExists, mockPathsExists, mockDoctorExists,
                     mockPrintError, mockPrintWarning, mockPrintBanner):
         recipes = lambda: {

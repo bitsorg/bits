@@ -76,7 +76,7 @@ def load_config(yaml_text):
     mappings; ``arch`` accepts a scalar or list (None ⇒ discover). An empty/{}
     ``packages`` means "all packages that carry a recipe preload:".
     """
-    from bits_helpers.utilities import yamlLoad
+    from bits_helpers.recipe import yamlLoad
     data = yamlLoad(yaml_text) or {}
     arch = data.get("arch")
     if isinstance(arch, str):
@@ -399,7 +399,7 @@ def main(argv=None):
         ap.error("--docker requires --docker-image IMAGE")
 
     def recipe_reader(pkg):
-        from bits_helpers.utilities import parseRecipe, FileReader
+        from bits_helpers.recipe import parseRecipe, FileReader
         path = os.path.join(a.config_dir, pkg + ".sh")
         if not os.path.isfile(path):
             return None
