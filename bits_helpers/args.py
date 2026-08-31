@@ -194,6 +194,29 @@ def bits_string(s):
   return {"repo": repo, "ver": ver}
 
 
+# Deprecated command aliases: old name -> replacement tokens. Single source of
+# truth, so retiring one is deleting a row (aliases never appear in --help). Each
+# prints a one-line deprecation warning and forwards to the new name.
+DEPRECATED_ALIASES = {
+    "cleanup": ["prune"],
+}
+
+
+def _apply_deprecated_aliases(rest):
+  """Rewrite a leading deprecated subcommand alias in *rest* to its replacement
+  tokens, warning once. Only the subcommand slot (the first non-flag token) is
+  considered, so an option value that happens to equal an old name is left alone."""
+  for i, tok in enumerate(rest):
+    if tok in DEPRECATED_ALIASES:
+      new = DEPRECATED_ALIASES[tok]
+      sys.stderr.write("warning: 'bits %s' is deprecated; use 'bits %s'\n"
+                       % (tok, " ".join(new)))
+      return rest[:i] + new + rest[i + 1:]
+    if not tok.startswith("-"):
+      break   # first non-flag token is the subcommand; not an alias
+  return rest
+
+
 def doParseArgs():
   detectedArch = detectArch()
 
@@ -246,8 +269,8 @@ def doParseArgs():
   clean_parser = subparsers.add_parser("clean", help="clean up build area",
                                        description="Clean up the build area.")
   cleanup_parser = subparsers.add_parser(
-      "cleanup",
-      help="evict stale packages from a persistent workDir",
+      "prune",
+      help="evict stale packages from a persistent workDir (was: cleanup)",
       description=(
           "Evict packages from the persistent build workDir whose sentinel files "
           "have not been touched within the configured age window, and/or free space "
@@ -1636,7 +1659,7 @@ def doParseArgs():
 
   # Make sure old option ordering behavior is actually still working
   prog = sys.argv[0]
-  rest = sys.argv[1:]
+  rest = _apply_deprecated_aliases(sys.argv[1:])
   # A bare --parallel/--builders (no following integer) means "auto": insert the
   # count so the nargs='?' optional never swallows the PACKAGE positional (argparse
   # would otherwise read 'ROOT' in `build --parallel ROOT` as the worker count).
@@ -1657,7 +1680,7 @@ def doParseArgs():
   # package named gc, --disable gc, a path segment) appears after the real
   # subcommand and must not flip this guard — matching on set(rest) did.
   _subcommand = next((x for x in rest if x in subparsers.choices), None)
-  _own_dry_run = _subcommand in ("cleanup", "compliance", "gc")
+  _own_dry_run = _subcommand in ("prune", "compliance", "gc")
   def optionOrder(x):
     # --debug/-d must come before any subcommand so the parent parser sees them.
     # --dry-run/-n is also a top-level flag (for build), BUT some subparsers

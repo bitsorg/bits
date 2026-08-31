@@ -94,7 +94,7 @@ def doMain(args, parser):
             aggressiveCleanup=args.aggressiveCleanup, dryRun=args.dryRun)
     sys.exit(0)
 
-  if args.action == "cleanup":
+  if args.action == "prune":
     doCleanup(args, parser)
     sys.exit(0)
 

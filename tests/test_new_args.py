@@ -40,14 +40,19 @@ def _parse_with_docker(argv):
 
 
 class CleanupSubparserTest(unittest.TestCase):
-    """bits cleanup subparser is registered and has correct defaults."""
+    """bits prune subparser is registered (renamed from cleanup) with correct defaults."""
 
-    def test_action_is_cleanup(self):
+    def test_action_is_prune(self):
+        args = _parse(["prune"])
+        self.assertEqual(args.action, "prune")
+
+    def test_cleanup_alias_forwards_to_prune(self):
+        # 'cleanup' is a deprecated alias that warns and forwards to 'prune'.
         args = _parse(["cleanup"])
-        self.assertEqual(args.action, "cleanup")
+        self.assertEqual(args.action, "prune")
 
     def test_defaults(self):
-        args = _parse(["cleanup"])
+        args = _parse(["prune"])
         self.assertEqual(args.maxAgeDays, 7.0)
         self.assertIsNone(args.minFreeGb)
         self.assertFalse(args.diskPressureOnly)
