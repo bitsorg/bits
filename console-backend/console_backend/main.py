@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
-from . import audit, authz, config, oauth, session
+from . import audit, authz, ci_auth, config, oauth, session
 
 try:  # bits_helpers is provided by the surrounding bits repo (on PYTHONPATH).
     from bits_helpers import forge, trust
@@ -149,19 +149,47 @@ def _groups_of(manifest) -> list:
     return sorted(groups) or ["common"]
 
 
-@app.post("/sign")
-async def sign(request: Request):
-    """Mode 1: sign a completed common manifest through the security-proxy.
+async def _authorize_sign(request: Request, groups):
+    """Resolve the signing principal and the groups it is NOT allowed to sign.
 
-    Signs the EXACT submitted bytes (so the signature matches what consumers
-    verify). Authorization is derived from the manifest content — the caller must
-    be a community admin of *every* group present — and the proxy key must be
-    authorized for those groups (bits key-policy). The GitLab token and the gate
-    token never appear in the response or the audit record.
+    CI (``Authorization: Bearer <GitLab CI ID token>``) is authorized by the
+    token's project against the CI-signer policy; a human is authorized by the
+    session + community-admin policy. Returns ``(signer, principal_fields,
+    denied_groups)``; raises 401 for a bad/absent principal.
     """
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth[len("Bearer "):].strip()
+        try:
+            claims = await run_in_threadpool(ci_auth.verify_ci_token, token, settings)
+        except Exception:
+            raise HTTPException(401, "invalid CI token")
+        project = str(claims.get("project_path") or "")
+        pol = ci_auth.load_ci_signers(settings)
+        denied = [g for g in groups if not ci_auth.is_ci_authorized(project, g, pol)]
+        return ("ci:%s" % project,
+                {"principal": "ci", "project": project, "ref": claims.get("ref")},
+                denied)
     data = _current(request)
     if not data:
         raise HTTPException(401, "not authenticated")
+    user = data["user"]
+    resolved = _resolved_policy(data["token"])
+    denied = [g for g in groups if not authz.is_admin_for(user, g, resolved)]
+    return user, {"principal": "human"}, denied
+
+
+@app.post("/sign")
+async def sign(request: Request):
+    """Sign a completed common manifest through the security-proxy (Mode 1).
+
+    Signs the EXACT submitted bytes (so the signature matches what consumers
+    verify). Authorization is derived from the manifest content: the principal
+    (a community admin via session, or a CI project via a GitLab CI ID token)
+    must be allowed to sign *every* group present, and the proxy key must be
+    authorized for those groups (bits key-policy). Neither token appears in the
+    response or the audit record.
+    """
     if not settings.sign_proxy_configured():
         raise HTTPException(503, "signing proxy is not configured")
     proxy_token = os.environ.get(settings.sign_proxy_token_env)
@@ -182,14 +210,12 @@ async def sign(request: Request):
         raise HTTPException(400, "request body is not a JSON manifest")
     groups = _groups_of(manifest)
 
-    user = data["user"]
-    resolved = _resolved_policy(data["token"])
-    denied = [g for g in groups if not authz.is_admin_for(user, g, resolved)]
+    signer, principal, denied = await _authorize_sign(request, groups)
     if denied:
-        audit.record("sign_denied", user=user, groups=groups,
-                     reason="not_community_admin", denied=denied)
-        raise HTTPException(403, "%s is not a community admin for: %s"
-                            % (user, ", ".join(denied)))
+        audit.record("sign_denied", signer=signer, groups=groups, denied=denied,
+                     **principal)
+        raise HTTPException(403, "%s is not authorized to sign: %s"
+                            % (signer, ", ".join(denied)))
 
     # Producer-side key-policy: the proxy key must be allowed to certify these
     # groups (mirrors certify._prepare_common). Blocking urllib calls are run off
@@ -203,8 +229,9 @@ async def sign(request: Request):
     if policy is not None:
         badk = [g for g in groups if not trust.key_authorized(kid, g, policy)]
         if badk:
-            audit.record("sign_denied", user=user, groups=groups,
-                         reason="key_not_authorized", key_id=kid, denied=badk)
+            audit.record("sign_denied", signer=signer, groups=groups,
+                         reason="key_not_authorized", key_id=kid, denied=badk,
+                         **principal)
             raise HTTPException(403, "signing key %s is not authorized for: %s"
                                 % (kid, ", ".join(badk)))
 
@@ -215,9 +242,9 @@ async def sign(request: Request):
         raise HTTPException(502, "signing failed: %s" % exc)
 
     digest = hashlib.sha256(body).hexdigest()
-    audit.record("sign", user=user, groups=groups, digest=digest,
-                 key_id=envelope["key_id"])
-    return {"envelope": envelope, "groups": groups, "signed_by": user, "digest": digest}
+    audit.record("sign", signer=signer, groups=groups, digest=digest,
+                 key_id=envelope["key_id"], **principal)
+    return {"envelope": envelope, "groups": groups, "signed_by": signer, "digest": digest}
 
 
 @app.post("/logout")

@@ -38,6 +38,14 @@ class Settings:
         self.session_ttl_seconds = int(e.get("BITS_SESSION_TTL", "28800"))
         self.session_cookie_secure = e.get("BITS_SESSION_COOKIE_SECURE", "1") != "0"
 
+        # GitLab CI ID token (OIDC workload identity) verification (B4).
+        self.oidc_issuer = e.get("BITS_OIDC_ISSUER", "")            # e.g. https://gitlab.cern.ch
+        self.oidc_ci_audience = e.get("BITS_OIDC_CI_AUDIENCE", "")  # required 'aud' claim
+        self.jwks_url = e.get("BITS_OIDC_JWKS_URL", "")             # GitLab JWKS endpoint
+        # Which CI projects may sign which groups (ADMINS-like text: "<project> <g>...";
+        # "*" = any group). A file path or inline text.
+        self.ci_signers_source = e.get("BITS_CI_SIGNERS", "")
+
     def sign_proxy_configured(self) -> bool:
         return bool(self.sign_proxy_url)
 
