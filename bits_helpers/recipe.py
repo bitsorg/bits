@@ -82,6 +82,22 @@ class GitReader:
                          .format(dist=self.configDir, gh=gh, fn=fn))
     return d
 
+def yamlDump(s):
+  # Ordered-map YAML dumper. Kept for external recipe generators (e.g. cms.bits)
+  # that import yamlLoad/yamlDump from bits_helpers to re-emit a recipe header.
+  class YamlOrderedDumper(yaml.SafeDumper):
+    pass
+  def represent_ordereddict(dumper, data):
+    rep = []
+    for k, v in data.items():
+      k = dumper.represent_data(k)
+      v = dumper.represent_data(v)
+      rep.append((k, v))
+    return yaml.nodes.MappingNode('tag:yaml.org,2002:map', rep)
+  YamlOrderedDumper.add_representer(OrderedDict, represent_ordereddict)
+  return yaml.dump(s, Dumper=YamlOrderedDumper)
+
+
 def yamlLoad(s):
   class YamlSafeOrderedLoader(yaml.SafeLoader):
     """YAML Loader with `!include` constructor."""

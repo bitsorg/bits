@@ -15,6 +15,11 @@ from os.path import basename, isdir, islink, join
 from bits_helpers.git import git
 from bits_helpers.log import dieOnError
 
+# Backward-compatibility re-exports: yamlLoad moved to bits_helpers.recipe and
+# yamlDump was restored there. External recipe generators (e.g. cms.bits) import
+# both from bits_helpers.utilities, so keep them importable at the old location.
+from bits_helpers.recipe import yamlLoad, yamlDump  # noqa: F401
+
 
 
 

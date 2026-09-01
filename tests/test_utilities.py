@@ -871,5 +871,25 @@ class TestResolveTag(unittest.TestCase):
         self.assertIn("release", die.call_args[0][1])
 
 
+class YamlCompatReexportTest(unittest.TestCase):
+    """External recipe generators (e.g. cms.bits) import yamlLoad/yamlDump from
+    bits_helpers.utilities. yamlLoad moved to bits_helpers.recipe and yamlDump was
+    restored there; both must stay importable at the OLD utilities location so a
+    future move does not silently break out-of-repo callers."""
+
+    def test_reexported_from_utilities(self):
+        from bits_helpers.utilities import yamlLoad, yamlDump
+        from bits_helpers import recipe
+        self.assertIs(yamlLoad, recipe.yamlLoad)
+        self.assertIs(yamlDump, recipe.yamlDump)
+
+    def test_round_trip_preserves_content(self):
+        from bits_helpers.utilities import yamlLoad, yamlDump
+        d = yamlLoad("package: Foo\nversion: 1.0\ntag: v1\n")
+        out = yamlDump(d)
+        self.assertIn("package: Foo", out)
+        self.assertEqual(dict(yamlLoad(out)), dict(d))
+
+
 if __name__ == '__main__':
     unittest.main()
