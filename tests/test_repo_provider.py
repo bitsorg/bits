@@ -230,6 +230,50 @@ class TestCloneOrUpdateProvider(unittest.TestCase):
             directory=".", check=False,
         )
 
+    # ── M2: optional commit-SHA integrity pin ────────────────────────────────
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_commit_pin_match_proceeds(self, MockGit, mock_logged_scm, mock_update_ref):
+        commit = "abcdef1234567890"
+        scm = self._mock_scm(commit)
+        MockGit.return_value = scm
+        mock_logged_scm.return_value = "abcdef1234567890\trefs/tags/v1"
+        spec = self._spec()
+        spec["commit"] = "abcdef12"          # 8-char prefix of the resolved commit
+        _, got_hash = clone_or_update_provider(
+            spec, self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertEqual(got_hash, commit)
+
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_commit_pin_mismatch_dies(self, MockGit, mock_logged_scm, mock_update_ref):
+        # A pin that does not match the resolved commit must fail closed.
+        commit = "abcdef1234567890"
+        scm = self._mock_scm(commit)
+        MockGit.return_value = scm
+        mock_logged_scm.return_value = "abcdef1234567890\trefs/tags/v1"
+        spec = self._spec()
+        spec["commit"] = "deadbeefdead"      # branch moved / wrong pin
+        with self.assertRaises(SystemExit):
+            clone_or_update_provider(spec, self.work_dir, self.ref_dir, fetch_repos=False)
+
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_commit_pin_blank_is_no_pin(self, MockGit, mock_logged_scm, mock_update_ref):
+        # A present-but-blank `commit:` (YAML null) means "no pin", not a failure.
+        commit = "abcdef1234567890"
+        scm = self._mock_scm(commit)
+        MockGit.return_value = scm
+        mock_logged_scm.return_value = "abcdef1234567890\trefs/tags/v1"
+        spec = self._spec()
+        spec["commit"] = None
+        _, got_hash = clone_or_update_provider(
+            spec, self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertEqual(got_hash, commit)
+
     @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
     @patch("bits_helpers.repo_provider.logged_scm")
     @patch("bits_helpers.repo_provider.Git")

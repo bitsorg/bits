@@ -346,6 +346,22 @@ def clone_or_update_provider(
                "commit_hash resolved to empty string for provider '%s' tag '%s' — "
                "refusing to construct checkout_dir to prevent clobbering the "
                "package cache." % (package, tag))
+
+    # M2: optional integrity pin. When the provider recipe declares ``commit:``,
+    # the resolved commit MUST match it — so a force-push or account compromise
+    # that moves ``tag`` to a different commit fails the build fail-closed instead
+    # of silently changing what is cloned and built. Accepts a full hash or a
+    # >= 7-char prefix; moving the pin is a deliberate, reviewed recipe change.
+    pin = str(spec.get("commit") or "").strip().lower()   # blank/None -> no pin
+    if pin:
+        got = str(commit_hash).lower()
+        dieOnError(len(pin) < 7 or not got.startswith(pin),
+                   "Repository provider '%s' is pinned to commit '%s' but tag '%s' "
+                   "resolves to '%s' — refusing to build (the branch moved, or the "
+                   "pin is malformed). Update the `commit:` pin deliberately if this "
+                   "change is intended." % (package, pin, tag, commit_hash))
+        debug("provider %s: commit %s verified against pin %s", package, short_hash, pin)
+
     checkout_dir = join(cache_root, short_hash)
 
     # ── 3. Cache-hit check ───────────────────────────────────────────────
