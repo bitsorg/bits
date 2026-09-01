@@ -21,6 +21,8 @@ import glob
 import hashlib
 import json
 import os
+import urllib.error
+import urllib.request
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -160,6 +162,88 @@ def verify_manifest(manifest_path: str, sig_path=None, dirs=None):
   except Exception:
     return None
   return verify_bytes(data, envelope, load_trusted_keys(dirs))
+
+
+# ---- Signing via the security-proxy (M1) --------------------------------
+# The proxy holds the Ed25519 seed in memory and signs opaque bytes over its
+# /sign route; the producer never holds the key. Its response keyid is the full
+# sha256(pubkey) hex, so we truncate to our 16-char key_id. Ed25519 is
+# deterministic, so a proxy signature equals a local one byte-for-byte.
+
+_PROXY_TIMEOUT = 30
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+  # A signing proxy must never redirect; treat a 3xx as an error rather than a
+  # hop that could downgrade POST->GET or resend the bearer token to another host.
+  def redirect_request(self, *args, **kwargs):
+    return None
+
+
+_PROXY_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _bearer(token):
+  if not token or not isinstance(token, str):
+    raise ValueError("sign proxy gate token is empty")
+  return "Bearer " + token
+
+
+def _proxy_json(req, url):
+  """Open *req*, returning parsed JSON. Every failure — transport, HTTP status,
+  redirect, non-JSON body — becomes a RuntimeError naming *url* (never the token)."""
+  try:
+    with _PROXY_OPENER.open(req, timeout=_PROXY_TIMEOUT) as fh:
+      return json.load(fh)
+  except urllib.error.HTTPError as e:
+    raise RuntimeError("sign proxy %s failed: HTTP %s %s"
+                       % (url, e.code, e.reason))
+  except urllib.error.URLError as e:
+    raise RuntimeError("sign proxy %s unreachable: %s" % (url, e.reason))
+  except ValueError:  # includes json.JSONDecodeError
+    raise RuntimeError("sign proxy %s returned a non-JSON body" % url)
+
+
+def sign_bytes_via_proxy(data: bytes, url: str, token: str) -> dict:
+  """Envelope over *data*, signed by the security-proxy sign route at *url*.
+
+  Same shape as :func:`sign_bytes`; the proxy's full-length keyid is truncated
+  to our 16-char key_id. Raises RuntimeError on any transport/HTTP/shape error.
+  """
+  req = urllib.request.Request(
+      url, data=data, method="POST",
+      headers={"Authorization": _bearer(token),
+               "Content-Type": "application/octet-stream"})
+  resp = _proxy_json(req, url)
+  try:
+    keyid, sig = str(resp["keyid"]), resp["sig"]
+  except (TypeError, KeyError):
+    raise RuntimeError("sign proxy %s returned an unexpected response" % url)
+  return {"alg": _ALG, "key_id": keyid[:16], "sig": sig}
+
+
+def proxy_pubkey(url: str, token: str):
+  """Return ``(key_id, Ed25519PublicKey)`` from the sign route's ``/pubkey``."""
+  u = url.rstrip("/") + "/pubkey"
+  req = urllib.request.Request(u, headers={"Authorization": _bearer(token)})
+  resp = _proxy_json(req, u)
+  try:
+    pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(resp["publicKey"]))
+  except (TypeError, KeyError, ValueError):
+    raise RuntimeError("sign proxy %s returned an invalid public key" % u)
+  return key_id(pub), pub
+
+
+def sign_manifest_via_proxy(manifest_path: str, url: str, token: str,
+                            sig_path=None) -> str:
+  """Like :func:`sign_manifest`, but sign via the security-proxy at *url*."""
+  with open(manifest_path, "rb") as fh:
+    data = fh.read()
+  envelope = sign_bytes_via_proxy(data, url, token)
+  sig_path = sig_path or (manifest_path + ".sig")
+  with open(sig_path, "w") as fh:
+    json.dump(envelope, fh)
+  return sig_path
 
 
 def load_key_policy(dirs=None):
