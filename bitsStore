@@ -772,10 +772,45 @@ def main():
     tp.add_argument("-w", "--work-dir", dest="workDir", metavar="WORKDIR", default=_WORKDIR,
                     help="bits work directory (S3 client + default MANIFESTS) (default: %(default)s)")
 
+    up = sub.add_parser("upload", help="upload one built package's tarball to the S3 store")
+    up.add_argument("package", metavar="PACKAGE", help="package name to upload (build it first)")
+    up.add_argument("--version", dest="version", metavar="VER", default=None,
+                    help="package version (default: the newest built)")
+    up.add_argument("--remote-store", "--store", "--write-store", dest="uploadStore", metavar="URL",
+                    default=STORE, help="S3 store to write to (default: %(default)s)")
+    up.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=None,
+                    help="architecture (default: detected)")
+    up.add_argument("-w", "--work-dir", dest="workDir", metavar="WORKDIR", default=_WORKDIR,
+                    help="bits work directory holding the built package (default: %(default)s)")
+    up.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
+                    help="report what would be uploaded without writing")
+
     argv = sys.argv[1:]
-    if not argv or argv[0] not in ("ls", "rm", "verify", "cat", "gc", "stats", "-h", "--help"):
+    if not argv or argv[0] not in ("ls", "rm", "verify", "cat", "gc", "stats", "upload", "-h", "--help"):
         argv = ["ls"] + argv                          # default verb
     args = ap.parse_args(argv)
+
+    # Store-scoped verbs (gc/stats/upload) delegate to bits_helpers handlers and
+    # do NOT use the ls/rm selection machinery — handle them before the
+    # selection-attr normalisation below (which would csv-mangle package/version).
+    if args.verb in ("gc", "stats", "upload"):
+        if not os.environ.get("AWS_ACCESS_KEY_ID"):
+            sys.exit(f"{PROG}: no S3 credentials — put them in ~/.bits/s3keys "
+                     "(or set $BITS_AWS_KEYS_FILE / AWS_ACCESS_KEY_ID).")
+        if not getattr(args, "architecture", None):
+            from bits_helpers.arch import detectArch
+            args.architecture = detectArch()
+        if args.verb == "gc":
+            from bits_helpers.gc import doGc
+            doGc(args, ap)
+            return 0
+        if args.verb == "stats":
+            from bits_helpers.store_stats import doStoreStats
+            return doStoreStats(args, ap) or 0
+        from bits_helpers.publish import _publish_s3       # upload
+        _publish_s3(args.package, args.version, args.architecture, args.workDir,
+                    args.uploadStore, ap, dry_run=args.dryRun)
+        return 0
 
     # Normalise multi-value filters; give safe defaults for attrs absent on a verb.
     for name in ("arch", "group", "package", "version", "bits_version", "bits_dist"):
@@ -796,19 +831,6 @@ def main():
     if not os.environ.get("AWS_ACCESS_KEY_ID"):
         sys.exit(f"{PROG}: no S3 credentials — put them in ~/.bits/s3keys "
                  "(or set $BITS_AWS_KEYS_FILE / AWS_ACCESS_KEY_ID).")
-
-    # gc / stats delegate to their bits_helpers handlers, which build their own
-    # S3 client and do their own reporting — so return before the ls/rm setup.
-    if args.verb in ("gc", "stats"):
-        if not args.architecture:
-            from bits_helpers.arch import detectArch
-            args.architecture = detectArch()
-        if args.verb == "gc":
-            from bits_helpers.gc import doGc
-            doGc(args, ap)
-            return 0
-        from bits_helpers.store_stats import doStoreStats
-        return doStoreStats(args, ap) or 0
 
     # rm pre-flight guards (before touching S3).
     if args.verb == "rm":

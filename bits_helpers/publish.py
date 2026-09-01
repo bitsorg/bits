@@ -602,32 +602,13 @@ def doPublish(args, parser):
     prepub_no_verify_tls = getattr(args, "prepubNoVerifyTls", False)
     prepub_bearer_auth   = getattr(args, "prepubBearerAuth", False)
 
-    # ── Resolve publish target(s) ─────────────────────────────────────────────
-    # Backward-compatible default: 'cvmfs' when --cvmfs-target is given (the
-    # existing pipeline call), otherwise 's3'. --to overrides.
-    _to = getattr(args, "publishTo", None)
-    if _to == "both":
-        targets = {"s3", "cvmfs"}
-    elif _to:
-        targets = {_to}
-    else:
-        targets = {"cvmfs"} if cvmfs_target else {"s3"}
-
-    if "s3" in targets:
-        write_store = (getattr(args, "writeStore", "") or os.environ.get("BITS_WRITE_STORE")
-                       or os.environ.get("WRITE_STORE") or "")
-        if not write_store:
-            parser.error("--to s3 requires a write store (--write-store, or WRITE_STORE / BITS_WRITE_STORE).")
-        _publish_s3(package, version, architecture, work_dir, write_store, parser,
-                    dry_run=getattr(args, "dryRun", False))
-        if "cvmfs" not in targets:
-            return
-
-    # CVMFS publish goes through the cvmfs-prepub service.
+    # Single-package publish is CVMFS-only via the cvmfs-prepub service. The
+    # S3-store write is a separate command now: `bits store upload PACKAGE`.
     if not cvmfs_target:
-        parser.error("--to cvmfs requires --cvmfs-target.")
+        parser.error("publish PACKAGE publishes to CVMFS and requires --cvmfs-target; "
+                     "to upload a package to the S3 store use `bits store upload`.")
     if not prepub_url:
-        parser.error("--to cvmfs requires --prepub-url.")
+        parser.error("publishing to CVMFS requires --prepub-url.")
 
     # ------------------------------------------------------------------
     # 0. Redistribution policy gate

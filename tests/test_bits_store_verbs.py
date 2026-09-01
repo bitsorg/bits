@@ -51,6 +51,19 @@ class TestStoreVerbs(unittest.TestCase):
         r = _run(["stats"])
         self.assertIn("no S3 credentials", r.stderr)
 
+    def test_upload_help_lists_package(self):
+        r = _run(["upload", "-h"])
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("PACKAGE", r.stdout)
+
+    def test_upload_requires_package(self):
+        r = _run(["upload"])
+        self.assertEqual(r.returncode, 2)                 # argparse usage error
+
+    def test_upload_recognized_and_reaches_cred_gate(self):
+        r = _run(["upload", "zlib"])
+        self.assertIn("no S3 credentials", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

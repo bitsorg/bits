@@ -1205,14 +1205,9 @@ def doParseArgs():
                               help=("Skip the relocation step. Use this when the package was built "
                                     "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
                                     "so all embedded paths are already correct."))
-  publish_parser.add_argument("--to", dest="publishTo", default=None,
-                              choices=["s3", "cvmfs", "both"],
-                              help=("Where to publish: 's3' (upload to the write store for reuse), "
-                                    "'cvmfs' (via --prepub-url), or 'both'. Default: 'cvmfs' "
-                                    "when --cvmfs-target is given (backward compatible), else 's3'."))
-  publish_parser.add_argument("--write-store", dest="writeStore", default="", metavar="STORE",
-                              help=("S3 write store for '--to s3' (e.g. b3://<bucket> or s3://<bucket>). "
-                                    "Falls back to WRITE_STORE / BITS_WRITE_STORE in the environment."))
+  # `bits publish PACKAGE` is CVMFS-only (Phase 3.4). The single-package S3-store
+  # write moved to `bits store upload`; the bulk `--from-manifest` S3 upload below
+  # is unchanged. `--to`/`--write-store` were removed with the single-package s3 path.
   publish_parser.add_argument("--from-manifest", dest="fromManifest", nargs="?",
                               const="latest", default=None, metavar="MANIFEST",
                               help=("Bulk-upload every package in a build manifest to the S3 store. "

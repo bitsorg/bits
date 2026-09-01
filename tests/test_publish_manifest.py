@@ -189,7 +189,7 @@ class TestPublishFromManifest(unittest.TestCase):
             scratchDir=None,
             prepubUrl="https://prepub.example.org", prepubToken=None, prepubRepo=None, prepubPath=None,
             prepubWebhook=None, prepubPollInterval=10, prepubTimeout=1800,
-            prepubNoVerifyTls=False, publishTo=None, dryRun=False,
+            prepubNoVerifyTls=False, dryRun=False,
         )
         with patch.object(publish, "_find_installroot",
                           side_effect=AssertionError("must gate BEFORE locating "

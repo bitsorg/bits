@@ -310,6 +310,24 @@ class RemoteStoreUnificationTest(unittest.TestCase):
         self.assertEqual(args.retainStore, "b3://b")
 
 
+class PublishToRemovalTest(unittest.TestCase):
+    """Phase 3.4: `bits publish` is CVMFS-only; `--to` and `--write-store` are
+    gone (the S3-store write moved to `bits store upload`)."""
+
+    def test_to_flag_rejected(self):
+        with self.assertRaises(SystemExit):
+            _parse(["publish", "--to", "s3"])
+
+    def test_write_store_flag_rejected(self):
+        with self.assertRaises(SystemExit):
+            _parse(["publish", "--write-store", "b3://x"])
+
+    def test_bare_publish_still_parses(self):
+        # The bulk-manifest community path (`bits publish` / --from-manifest) stays.
+        args = _parse(["publish"])
+        self.assertFalse(hasattr(args, "publishTo"))
+
+
 class BuildersParallelTest(unittest.TestCase):
     """--parallel/--builders: no flag => serial (1), bare => 4, explicit => N."""
 
