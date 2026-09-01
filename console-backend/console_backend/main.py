@@ -12,7 +12,7 @@ import secrets
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from . import config, oauth, session
+from . import authz, config, oauth, session
 
 try:  # bits_helpers is provided by the surrounding bits repo (on PYTHONPATH).
     from bits_helpers import forge, trust  # noqa: F401  (trust used by B3)
@@ -97,14 +97,35 @@ def oauth_callback(request: Request, code: str = "", state: str = "", error: str
     return resp
 
 
-@app.get("/me")
-def me(request: Request):
-    """The authenticated user. 401 when there is no valid session. The GitLab
-    access token stays server-side and is never returned."""
+def _resolved_policy(token):
+    return authz.resolved_admin_policy(settings, token)
+
+
+def require_community_admin(request: Request, group: str) -> str:
+    """Gate for signing (B3): 401 if not logged in, 400 if no group is given,
+    403 if the session user is not an admin of *group*. Returns the username on
+    success. A falsy *group* must NOT fall through to any default (fail closed)."""
     data = _current(request)
     if not data:
         raise HTTPException(401, "not authenticated")
-    return {"user": data["user"]}   # community-admin roles added in B2b
+    if not group:
+        raise HTTPException(400, "no group specified")
+    user = data["user"]
+    if not authz.is_admin_for(user, group, _resolved_policy(data["token"])):
+        raise HTTPException(403, "%s is not a community admin for '%s'" % (user, group))
+    return user
+
+
+@app.get("/me")
+def me(request: Request):
+    """The authenticated user and their community-admin roles. 401 when there is
+    no valid session. The GitLab access token stays server-side and is never
+    returned."""
+    data = _current(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    overall, groups = authz.admin_groups(data["user"], _resolved_policy(data["token"]))
+    return {"user": data["user"], "overall_admin": overall, "admin_groups": groups}
 
 
 @app.post("/logout")

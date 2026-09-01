@@ -60,7 +60,7 @@ class TestAuthFlow(unittest.TestCase):
         self.assertNotIn("gl-access-tok", r.headers.get("set-cookie", ""))
         me = self.client.get("/me", cookies={"bits_session": sid})
         self.assertEqual(me.status_code, 200)
-        self.assertEqual(me.json(), {"user": "alice"})
+        self.assertEqual(me.json()["user"], "alice")
         self.assertNotIn("gl-access-tok", me.text)
 
     def test_me_without_session_is_401(self):

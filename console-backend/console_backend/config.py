@@ -15,6 +15,13 @@ class Settings:
 
         # GitLab API for identity / authorization (forge.py).
         self.gitlab_api_url = e.get("GITLAB_API_URL") or e.get("CI_API_V4_URL", "")
+        # Community-admin policy: a file path or inline text in the ADMINS format
+        # that bits' `certify --admins` uses (same source of truth).
+        self.admin_policy_source = e.get("BITS_ADMINS_POLICY", "")
+        # A dedicated READ-ONLY GitLab token used to resolve `&group` admin refs,
+        # so the admin set is deterministic and not observer-dependent. Falls back
+        # to the caller's token if unset (dev).
+        self.admin_resolve_token = e.get("BITS_ADMIN_RESOLVE_TOKEN", "")
 
         # GitLab OIDC / OAuth2 (Authorization Code + PKCE), server-side.
         self.oidc_authorize_url = e.get("BITS_OIDC_AUTHORIZE_URL", "")
