@@ -67,8 +67,16 @@ class TestBrew(unittest.TestCase):
 
     def test_collect_osx(self):
         formulae, taps = collect_homebrew(self.tmp, "osx_arm64")
-        self.assertEqual(formulae, {"readline", "libpng"})
+        # recipe formulae + the build-system base (gnu-tar).
+        self.assertEqual(formulae, {"readline", "libpng", "gnu-tar"})
         self.assertEqual(taps, {"example/tap"})
+
+    def test_base_formula_gnu_tar_always_on_osx(self):
+        # gnu-tar (gtar) is required by build_template.sh for reproducible
+        # tarballs, so it must be emitted even with no recipes declaring it.
+        empty = tempfile.mkdtemp(prefix="bits_brew_empty_")
+        formulae, _ = collect_homebrew(empty, "osx_arm64")
+        self.assertIn("gnu-tar", formulae)
 
     def test_collect_excludes_linux_only_on_osx(self):
         formulae, _ = collect_homebrew(self.tmp, "osx_arm64")
