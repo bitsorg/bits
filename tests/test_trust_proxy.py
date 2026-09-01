@@ -13,13 +13,15 @@ import hashlib
 import http.server
 import json
 import os
+import shutil
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from bits_helpers import trust
+from bits_helpers import certify, trust
 
 
 class _SignHandler(http.server.BaseHTTPRequestHandler):
@@ -123,6 +125,52 @@ class TestSignViaProxy(unittest.TestCase):
                              trust.key_id(self.priv.public_key()))
         finally:
             import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class TestCertifyViaProxy(TestSignViaProxy):
+    """certify() end-to-end through the proxy signer (Increment 2)."""
+
+    def _bom(self, d):
+        man = {"build_id": "b1", "packages": [
+            {"package": "A", "version": "1", "revision": "1",
+             "effective_architecture": "slc7_x86-64", "hash": "h1",
+             "tarball_sha256": "sha256:aa", "tarball": "A.tar.gz"}]}
+        mpath = os.path.join(d, "bom.json")
+        with open(mpath, "w") as fh:
+            json.dump(man, fh)
+        return mpath
+
+    def test_certify_signs_verifiably_via_proxy(self):
+        d = tempfile.mkdtemp()
+        try:
+            out = os.path.join(d, "common.json")
+            with patch("bits_helpers.certify.trust.load_key_policy",
+                       return_value=None):
+                op, sp = certify.certify([self._bom(d)], None, out, probe=None,
+                                         sign_proxy=(self.url, "gate-token"))
+            with open(op, "rb") as fh:
+                data = fh.read()
+            with open(sp) as fh:
+                env = json.load(fh)
+            trusted = {trust.key_id(self.priv.public_key()): self.priv.public_key()}
+            self.assertEqual(trust.verify_bytes(data, env, trusted),
+                             trust.key_id(self.priv.public_key()))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_policy_check_uses_proxy_key_id(self):
+        # The producer-side group-policy check must get its key_id from the proxy
+        # (there is no local private key). A deny-all policy must refuse to sign.
+        d = tempfile.mkdtemp()
+        try:
+            out = os.path.join(d, "common.json")
+            with patch("bits_helpers.certify.trust.load_key_policy",
+                       return_value={"default": []}):
+                with self.assertRaises(certify.CertifyError):
+                    certify.certify([self._bom(d)], None, out, probe=None,
+                                    sign_proxy=(self.url, "gate-token"))
+        finally:
             shutil.rmtree(d, ignore_errors=True)
 
 

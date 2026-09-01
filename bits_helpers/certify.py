@@ -283,9 +283,47 @@ def validate_against_store(common, probe):
     return fatal, missing
 
 
+class _LocalSigner:
+    """Sign with a local Ed25519 PEM key (the default)."""
+
+    def __init__(self, key_pem_path):
+        self._path = key_pem_path
+
+    def key_id(self):
+        return trust.key_id(trust.load_private_key(self._path).public_key())
+
+    def sign_manifest(self, manifest_path, sig_path):
+        return trust.sign_manifest(manifest_path, self._path, sig_path)
+
+
+class _ProxySigner:
+    """Sign via the security-proxy sign route — no local private key (M1)."""
+
+    def __init__(self, url, token):
+        self._url, self._token = url, token
+
+    def key_id(self):
+        return trust.proxy_pubkey(self._url, self._token)[0]
+
+    def sign_manifest(self, manifest_path, sig_path):
+        return trust.sign_manifest_via_proxy(manifest_path, self._url,
+                                             self._token, sig_path)
+
+
+def _make_signer(key_pem_path, sign_proxy):
+    """The signer for this run: a proxy signer when *sign_proxy* is a
+    ``(url, token)`` tuple, else a local-key signer over *key_pem_path*."""
+    if sign_proxy:
+        if not (isinstance(sign_proxy, (tuple, list)) and len(sign_proxy) == 2):
+            raise ValueError("sign_proxy must be a (url, token) pair")
+        url, token = sign_proxy
+        return _ProxySigner(url, token)
+    return _LocalSigner(key_pem_path)
+
+
 def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
             default_group=None, valid_days=None, source_commit=None,
-            approval_check=None) -> tuple:
+            approval_check=None, sign_proxy=None) -> tuple:
     """Merge → (approve) → (store-validate) → sign. Returns ``(out_path, sig_path)``.
 
     Raises :class:`CertifyConflict` on a hash/sha256 conflict and
@@ -297,9 +335,10 @@ def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
     it returns approver usernames, they are recorded as ``certified_by`` so the
     identity that authorised the certification travels with the signature.
     """
-    common = _prepare_common(manifests, key_pem_path, probe, default_group,
+    signer = _make_signer(key_pem_path, sign_proxy)
+    common = _prepare_common(manifests, signer, probe, default_group,
                              valid_days, source_commit, approval_check)
-    out_abs, sig_path = _write_signed(common, key_pem_path, out_path, sig_path)
+    out_abs, sig_path = _write_signed(common, signer, out_path, sig_path)
     debug("certify: signed common manifest %s (%d pkgs) -> %s",
           out_abs, len(common["packages"]), sig_path)
     return out_abs, sig_path
@@ -337,7 +376,7 @@ def _drop_local_revisions(common) -> list:
     return local
 
 
-def _prepare_common(manifests, key_pem_path, probe, default_group, valid_days,
+def _prepare_common(manifests, signer, probe, default_group, valid_days,
                     source_commit, approval_check) -> dict:
     """Merge → (approve) → (store-validate) → key-policy check. Returns the
     validated common-manifest dict (with certified_by/at stamped), ready to
@@ -377,7 +416,7 @@ def _prepare_common(manifests, key_pem_path, probe, default_group, valid_days,
     # authorised for, so an unauthorised signature is never even produced.
     policy = trust.load_key_policy()
     if policy is not None:
-        kid = trust.key_id(trust.load_private_key(key_pem_path).public_key())
+        kid = signer.key_id()
         bad = sorted({(p.get("group") or "common") for p in common["packages"]
                       if not trust.key_authorized(kid, p.get("group"), policy)})
         if bad:
@@ -390,7 +429,7 @@ def _prepare_common(manifests, key_pem_path, probe, default_group, valid_days,
     return common
 
 
-def _write_signed(common, key_pem_path, out_path, sig_path=None) -> tuple:
+def _write_signed(common, signer, out_path, sig_path=None) -> tuple:
     """Atomically write *common* as JSON and sign it. A failed signing must never
     leave an *unsigned* manifest at *out_path*: sign the temp file, then move both
     into place. Returns ``(out_path, sig_path)``.
@@ -403,7 +442,7 @@ def _write_signed(common, key_pem_path, out_path, sig_path=None) -> tuple:
     try:
         with open(tmp, "w") as fh:
             json.dump(common, fh, indent=1, sort_keys=True)
-        trust.sign_manifest(tmp, key_pem_path, tmp_sig)
+        signer.sign_manifest(tmp, tmp_sig)
         os.replace(tmp, out_abs)
         os.replace(tmp_sig, sig_path)
     except BaseException:
@@ -424,7 +463,7 @@ def _arch_stem(out_path, arch) -> str:
 
 def certify_by_arch(manifests, key_pem_path, out_path, probe=None,
                     default_group=None, valid_days=None, source_commit=None,
-                    approval_check=None, only_archs=None) -> list:
+                    approval_check=None, only_archs=None, sign_proxy=None) -> list:
     """Certify per platform and emit one signed manifest per architecture.
 
     Certification is scoped by platform: object identity in the store is
@@ -459,7 +498,8 @@ def certify_by_arch(manifests, key_pem_path, out_path, probe=None,
         debug("certify: scoped to %s — %d of %d manifest(s) kept",
               ", ".join(sorted(only)), len(kept), len(loaded))
         loaded = kept
-    common = _prepare_common(loaded, key_pem_path, probe, default_group,
+    signer = _make_signer(key_pem_path, sign_proxy)
+    common = _prepare_common(loaded, signer, probe, default_group,
                              valid_days, source_commit, approval_check)
     buckets = {}
     for p in common["packages"]:
@@ -478,7 +518,7 @@ def certify_by_arch(manifests, key_pem_path, out_path, probe=None,
         sub = dict(common)
         sub["architecture"] = arch
         sub["packages"] = buckets[arch]
-        op, sp = _write_signed(sub, key_pem_path, _arch_stem(out_path, arch))
+        op, sp = _write_signed(sub, signer, _arch_stem(out_path, arch))
         debug("certify: signed %s manifest %s (%d pkgs)", arch, op, len(buckets[arch]))
         outputs.append((op, sp, arch))
     return outputs
