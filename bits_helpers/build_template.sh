@@ -463,14 +463,36 @@ if [ "$CAN_DELETE" = 1 ] && [ -z "$BITS_HAS_WRITE_STORE" ]; then
   # we fall through and create it; doFinalSync removes it again after upload.)
   rm -f "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
 elif [ -z "$CACHED_TARBALL" ]; then
-  # Use pigz to compress, if we can, because it's multicore.
-  gzip=$(command -v pigz) || gzip=$(command -v gzip)
-  # We don't have an existing tarball, and we want to keep the one we create now.
-  tar -cC "$WORK_DIR/INSTALLROOT/$PKGHASH" . |
-    # Avoid having broken left overs if the tar fails.
-    $gzip -c > "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing"
-  mv "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing" \
-     "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
+  # Deterministic packaging (finding R1): the store tarball must be byte-identical
+  # across build nodes, or two builds of the same hash record different
+  # tarball_sha256 and certification fails. So: archive a SORTED member list with
+  # zeroed numeric owner/group and a fixed mtime, and PIN the compressor. Default
+  # is gzip -n (fully deterministic); a farm with a uniform pigz may override
+  # BITS_TAR_COMPRESSOR (e.g. "pigz -n -p4") — never plain pigz, whose output
+  # depends on the node's thread count. Byte-identity across nodes assumes a
+  # uniform tar + compressor toolchain (same gzip/pigz version). Check a platform
+  # with tools/verify-deterministic-tarball.sh.
+  _comp=${BITS_TAR_COMPRESSOR:-gzip -n}
+  _dst="$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing"
+  # Prefer GNU tar: it normalises mtime/owner IN THE ARCHIVE (no on-disk change).
+  if command -v gtar >/dev/null 2>&1; then _tar=gtar
+  elif tar --version 2>/dev/null | grep -qi 'GNU tar'; then _tar=tar
+  else _tar=; fi
+  if [ -n "$_tar" ]; then
+    "$_tar" --sort=name --owner=0 --group=0 --numeric-owner --mtime='@0' \
+        -cC "$WORK_DIR/INSTALLROOT/$PKGHASH" . | $_comp -c > "$_dst"
+  else
+    # bsdtar (e.g. macOS without gtar): deterministic order + numeric zero owner.
+    # bsdtar cannot set a uniform archive mtime, so packages are byte-reproducible
+    # here only if file mtimes already match — install GNU tar (brew install
+    # gnu-tar) on macOS build nodes for fully reproducible packages.
+    echo "bits: WARNING: GNU tar not found; $PKGNAME tarball may not be byte-reproducible (install gnu-tar)." >&2
+    ( cd "$WORK_DIR/INSTALLROOT/$PKGHASH" && find . -print | LC_ALL=C sort > "$_dst.list" )
+    ( cd "$WORK_DIR/INSTALLROOT/$PKGHASH" && tar --no-recursion --uid 0 --gid 0 \
+        --numeric-owner -T "$_dst.list" -cf - ) | $_comp -c > "$_dst"
+    rm -f "$_dst.list"
+  fi
+  mv "$_dst" "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
   ln -nfs "../../$HASH_PATH/$PACKAGE_WITH_REV" \
      "$WORK_DIR/TARS/$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PACKAGE_WITH_REV"
 fi
