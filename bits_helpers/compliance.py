@@ -466,10 +466,26 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
         from bits_helpers import certify as _certify
         out = os.path.join(tempfile.mkdtemp(prefix="bits-enforce-"),
                            "common-manifest.json")
-        outputs = _certify.certify_by_arch(
-            remaining_boms, key_pem, out,
-            probe=_certify.make_s3_probe(store_url, work_dir, "enforce"),
-            only_archs=sorted(affected_archs))
+        # The restricted objects are already deleted. Re-certification can still
+        # fail on a PRE-EXISTING manifest problem (e.g. two BOMs disagree on a
+        # package's tarball_sha256 — a non-reproducible build). Don't crash with a
+        # traceback: report that the purge succeeded but the signed manifests are
+        # now stale, and how to finish. Deletions are idempotent, so re-running
+        # after resolving the conflict completes the re-sign.
+        try:
+            outputs = _certify.certify_by_arch(
+                remaining_boms, key_pem, out,
+                probe=_certify.make_s3_probe(store_url, work_dir, "enforce"),
+                only_archs=sorted(affected_archs))
+        except Exception as exc:              # pylint: disable=broad-except
+            error("Restricted objects were removed, but RE-CERTIFICATION FAILED: %s",
+                  exc)
+            error("The signed manifests for %s still reference the removed objects. "
+                  "Resolve the conflict above (it is unrelated to the restricted "
+                  "packages — remove one of the two conflicting build manifests), "
+                  "then re-run this command (deletions are idempotent) or run "
+                  "`bits certify` to re-sign.", ", ".join(sorted(affected_archs)))
+            return 1
         for op, sp, arch in outputs:
             for src, dst in ((op, "MANIFESTS/common-manifest-%s.json" % arch),
                              (sp, "MANIFESTS/common-manifest-%s.json.sig" % arch)):

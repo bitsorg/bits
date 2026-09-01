@@ -192,6 +192,21 @@ class EnforceTestCase(unittest.TestCase):
         kept = json.loads(self.put["MANIFESTS/b1/x.el9.json"])
         self.assertEqual([p["package"] for p in kept["packages"]], ["Good"])
 
+    def test_recert_failure_reported_not_crash(self):
+        # Objects are deleted, then a PRE-EXISTING manifest conflict makes the
+        # re-certification raise. enforce_store must catch it, report, and return
+        # 1 — not propagate a traceback and not undo the (idempotent) deletions.
+        from bits_helpers import certify as _certify
+        from bits_helpers.utilities import resolve_store_path
+        with patch.object(_certify, "certify_by_arch",
+                          side_effect=_certify.CertifyConflict("pre-existing sha256 conflict")):
+            rc = compliance.enforce_store("b3://bkt", self.rec, self.d,
+                                          key_pem="/tmp/does-not-need-to-exist.pem")
+        self.assertEqual(rc, 1)
+        # the restricted tarball was still deleted before the re-cert failed
+        self.assertIn(resolve_store_path("el9", "beef01") + "/Secret-1-1.el9.tar.gz",
+                      self.deleted)
+
 
 class RecipeSourcePrefixNameTest(unittest.TestCase):
     """_recipe_source_prefixes must resolve %(name)s (the package name) in a
