@@ -485,17 +485,38 @@ _ARCH_GIVEN=; [[ -n "$ARCHITECTURE" ]] && _ARCH_GIVEN=1
 # back to python only to disambiguate several installed arches (prefer the host's)
 # or when nothing is installed yet (e.g. a first build).
 if [[ -z "$_ARCH_GIVEN" ]]; then
+  # A real arch dir carries a CPU token (x86-64/aarch64/arm64/ppc64...). The
+  # reuse-from-modules overlays live under MODULES/<build_id>/<arch>, so MODULES/
+  # can also hold <build_id> dirs with no CPU token — exclude those so an overlay
+  # is never mistaken for an architecture.
   _present=()
   for _a in $(ls -1t "$WORK_DIR/MODULES" 2> /dev/null); do
-    [[ -d "$WORK_DIR/MODULES/$_a" ]] && _present+=("$_a")
+    [[ -d "$WORK_DIR/MODULES/$_a" ]] || continue
+    [[ "$_a" =~ (x86[-_]64|aarch64|arm64|ppc64le|ppc64) ]] || continue
+    _present+=("$_a")
   done
   if [[ ${#_present[@]} -eq 1 ]]; then
     ARCHITECTURE="${_present[0]}"            # sole installed arch — no python spawn
   elif [[ ${#_present[@]} -gt 1 ]]; then
-    # Several present: prefer the host's native arch if installed, else newest.
+    # Several present: prefer the host's native arch if installed.
     _host="$("bitsBuild" architecture 2> /dev/null || "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
     ARCHITECTURE=
-    for _a in "${_present[@]}"; do [[ "$_a" == "$_host" ]] && { ARCHITECTURE="$_a"; break; }; done
+    if [[ -n "$_host" ]]; then
+      for _a in "${_present[@]}"; do [[ "$_a" == "$_host" ]] && { ARCHITECTURE="$_a"; break; }; done
+    fi
+    # No host match (or the host-arch probe momentarily failed → empty $_host):
+    # do not blindly pick the newest tree — prefer an arch whose module tree
+    # actually holds the requested package, so a failed probe cannot send
+    # q/enter/load to a tree that lacks the module.
+    if [[ -z "$ARCHITECTURE" ]]; then
+      _want=
+      for _m in "${ARGS[@]}"; do [[ "$_m" == -* ]] && continue; _want="${_m%%/*}"; break; done
+      if [[ -n "$_want" ]]; then
+        for _a in "${_present[@]}"; do
+          [[ -d "$WORK_DIR/MODULES/$_a/$_want" ]] && { ARCHITECTURE="$_a"; break; }
+        done
+      fi
+    fi
     if [[ -z "$ARCHITECTURE" ]]; then
       ARCHITECTURE="${_present[0]}"          # ls -1t → most recently built
       printf "${EY}NOTE: several architectures present; selected most recent: %s${EZ}\n" "$ARCHITECTURE" >&2
