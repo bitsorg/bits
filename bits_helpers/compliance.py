@@ -310,7 +310,7 @@ def _recipe_source_prefixes(recipes_dir, rec, restricted):
     ``SOURCES/cache/<h2>/<url_md5>/`` prefix. Returns ``(prefixes, unresolved)``.
     """
     from bits_helpers.download import getUrlChecksum
-    url_re = re.compile(r"^(source|version|tag):[ \t]*(.*?)[ \t]*$", re.M)
+    url_re = re.compile(r"^(source|version|tag|package):[ \t]*(.*?)[ \t]*$", re.M)
     prefixes, unresolved = [], []
     for pkg in sorted(restricted):
         name = rec["by_package"].get(pkg, {}).get("recipe")
@@ -333,11 +333,16 @@ def _recipe_source_prefixes(recipes_dir, rec, restricted):
         if meta.get("source"):
             urls.append(meta["source"])
         from bits_helpers.checksum import parse_entry
+        # %(name)s in a source URL is the package name at build time
+        # (build.py uses spec["package"]); resolve it too so restricted packages
+        # whose URLs template the name (qgraf, kkmcee, starlight, …) are cleaned.
+        pkgname = meta.get("package") or (name[:-3] if name.endswith(".sh") else name)
         for url in urls:
             url, _cs = parse_entry(url)       # strip a ',algo:hex' checksum suffix
-            for key in ("version", "tag"):
-                url = url.replace("%%(%s)s" % key,
-                                  meta.get(key) or meta.get("version") or "")
+            for key, val in (("version", meta.get("version") or ""),
+                             ("tag", meta.get("tag") or meta.get("version") or ""),
+                             ("name", pkgname)):
+                url = url.replace("%%(%s)s" % key, val)
             if "%(" in url:
                 unresolved.append("%s: %s" % (name, url))
                 continue

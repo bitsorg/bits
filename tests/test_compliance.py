@@ -193,5 +193,26 @@ class EnforceTestCase(unittest.TestCase):
         self.assertEqual([p["package"] for p in kept["packages"]], ["Good"])
 
 
+class RecipeSourcePrefixNameTest(unittest.TestCase):
+    """_recipe_source_prefixes must resolve %(name)s (the package name) in a
+    source URL, so restricted packages whose URL templates the name (qgraf,
+    kkmcee, starlight, …) have their SOURCES/cache/ archives purged too."""
+
+    def test_name_substitution_resolves_prefix(self):
+        from bits_helpers.download import getUrlChecksum
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        base = "https://example.cern.ch/src"
+        _recipe(d, "qgraf.sh",
+                'package: qgraf\nversion: "3.1.4"\nredistributable: none\n'
+                'sources:\n  - %s/%%(name)s-%%(version)s.tgz' % base)
+        rec = compliance.scan_recipes(d)
+        prefixes, unresolved = compliance._recipe_source_prefixes(d, rec, {"qgraf"})
+        self.assertEqual(unresolved, [])           # %(name)s no longer unresolved
+        h = getUrlChecksum("%s/qgraf-3.1.4.tgz" % base)
+        self.assertIn("SOURCES/cache/%s/%s/" % (h[:2], h),
+                      [p for p, _why in prefixes])
+
+
 if __name__ == "__main__":
     unittest.main()
