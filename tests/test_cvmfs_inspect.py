@@ -204,5 +204,46 @@ class CvmfsInspectTest(unittest.TestCase):
         self.assertIn("no .meta.json", out)
 
 
+class TestGroupDispatch(unittest.TestCase):
+    """Phase 3.4: `bits cvmfs stage|publish` delegate to the producer CLIs, and
+    everything else still goes through the inspect subparser."""
+
+    def test_stage_delegates_with_remaining_argv(self):
+        import bits_helpers.cvmfs_stage_cmd as S
+        seen = {}
+        orig = S.main
+        def fake(argv=None):
+            seen["argv"] = argv
+            return 0
+        S.main = fake
+        try:
+            rc = I.main(["stage", "--repo", "r", "--tar", "t"])
+        finally:
+            S.main = orig
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["argv"], ["--repo", "r", "--tar", "t"])
+
+    def test_publish_delegates_with_remaining_argv(self):
+        import bits_helpers.cvmfs_publish as P
+        seen = {}
+        orig = P.main
+        def fake(argv=None):
+            seen["argv"] = argv
+            return 0
+        P.main = fake
+        try:
+            rc = I.main(["publish", "--manifest", "m", "--repo", "r"])
+        finally:
+            P.main = orig
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["argv"], ["--manifest", "m", "--repo", "r"])
+
+    def test_non_producer_verb_is_not_delegated(self):
+        # Negative control: an inspect verb must NOT reach the producer CLIs;
+        # a missing --cvmfs still errors through the inspect subparser.
+        with self.assertRaises(SystemExit):
+            I.main(["platforms"])
+
+
 if __name__ == "__main__":
     unittest.main()

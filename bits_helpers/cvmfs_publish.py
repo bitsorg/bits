@@ -547,7 +547,7 @@ def stage_tar(repo, tar_path, path, job_id, stratum0_url,
 
 def main(argv=None):
     import argparse
-    ap = argparse.ArgumentParser(prog="bits cvmfs-publish")
+    ap = argparse.ArgumentParser(prog="bits cvmfs publish")
     ap.add_argument("--fingerprint", default="",
                     help="print the content fingerprint of a directory tree and "
                          "exit (the CI uses this to fingerprint its own relocated "

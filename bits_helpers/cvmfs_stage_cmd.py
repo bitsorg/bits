@@ -241,7 +241,7 @@ def prepare_lock(repo, spool=None, timeout=1800):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="bits cvmfs-stage")
+    ap = argparse.ArgumentParser(prog="bits cvmfs stage")
     ap.add_argument("--repo", required=True)
     ap.add_argument("--path", required=True, help="CVMFS path to publish at")
     ap.add_argument("--tar", required=True)

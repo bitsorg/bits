@@ -291,6 +291,17 @@ def _cmd_summary(a):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+
+    # Producer-side ops are folded into this group (`bits cvmfs stage|publish`).
+    # They have their own arg sets (no --cvmfs), so dispatch before argparse.
+    if argv and argv[0] == "stage":
+        from bits_helpers.cvmfs_stage_cmd import main as _stage_main
+        return _stage_main(argv[1:])
+    if argv and argv[0] == "publish":
+        from bits_helpers.cvmfs_publish import main as _publish_main
+        return _publish_main(argv[1:])
+
     # Shared options live on a parent parser so they work AFTER the subcommand
     # too (`bits cvmfs platforms --cvmfs ROOT`), not only before it.
     common = argparse.ArgumentParser(add_help=False)
@@ -298,8 +309,11 @@ def main(argv=None):
                         help="root holding <arch>/Packages/<pkg>/<verrev>/.meta.json")
     common.add_argument("--json", action="store_true", help="machine-readable output")
 
-    ap = argparse.ArgumentParser(prog="bits cvmfs",
-                                 description="Inspect a deployed CVMFS bits tree.")
+    ap = argparse.ArgumentParser(
+        prog="bits cvmfs",
+        description="Inspect a deployed CVMFS bits tree.",
+        epilog="producer-side ops (own --help): stage, publish "
+               "(e.g. `bits cvmfs stage --help`).")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("platforms", parents=[common],
                    help="list platforms + host compatibility")

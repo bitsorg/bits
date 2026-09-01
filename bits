@@ -305,6 +305,19 @@ function configBits() {
 
 configBits
 
+# Deprecated command aliases (Phase 3.4): warn once and forward to the grouped
+# form. One arm per alias — retiring one is deleting its arm. Kept one release
+# for callers in sibling repos (see Phase 3.4 §7). Runs before the group arms
+# below so a rewritten command flows into the right one.
+case "${1:-}" in
+  cvmfs-stage)
+    echo "warning: 'bits cvmfs-stage' is deprecated; use 'bits cvmfs stage'" >&2
+    shift; set -- cvmfs stage "$@" ;;
+  cvmfs-publish)
+    echo "warning: 'bits cvmfs-publish' is deprecated; use 'bits cvmfs publish'" >&2
+    shift; set -- cvmfs publish "$@" ;;
+esac
+
 # `bits store …` → bitsStore (S3 content-store inspection, verification, cleanup).
 # Handled before work-dir/module setup: the store tool talks to S3, not the local
 # install tree, so it needs neither a work dir nor an architecture. The leading
@@ -323,35 +336,14 @@ if [[ "${1:-}" == "use" ]]; then
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' "$@"
 fi
 
-# `bits cvmfs {platforms,show,summary} …` → read-only inspection of a deployed
-# CVMFS bits tree: platforms + host compatibility, a package's build/provenance
-# from .meta.json (no jq), and a per-build_id summary. Reads the tree only, so it
-# needs no work dir; distinct from cvmfs-stage/cvmfs-publish (producer side).
+# `bits cvmfs {platforms,show,summary,stage,publish} …` → the CVMFS group.
+# platforms/show/summary read a deployed tree (no work dir); stage/publish are
+# the producer-side ops (ADR-0011), delegated inside cvmfs_inspect.main to their
+# own CLIs. Handled here, before work-dir/module setup: it talks to the tree /
+# S3, not the local install tree.
 if [[ "${1:-}" == "cvmfs" ]]; then
   shift
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_inspect import main; sys.exit(main())' "$@"
-fi
-
-# `bits cvmfs-stage …` → producer-side CVMFS staging (ADR-0011).
-# Prepares a package into a staging S3 prefix with the canonical publisher and
-# names the catalog prepub must graft. Handled here, before work-dir/module
-# setup, for the same reason as `store`: it talks to S3 and a tar, not to the
-# local install tree.
-#
-# Run like the view helper — source dir on sys.path via BITS_SELF, never
-# PYTHONPATH — so the helper's imports cannot leak into the caller's
-# environment. stdout is the two eval-able assignments and nothing else;
-# progress goes to stderr.
-if [[ "${1:-}" == "cvmfs-stage" ]]; then
-  shift
-  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_stage_cmd import main; sys.exit(main())' "$@"
-fi
-
-# `bits cvmfs-publish …` → producer-side staged publish of a build's packages
-# (concurrent, biggest-first). Same source-on-sys.path convention as cvmfs-stage.
-if [[ "${1:-}" == "cvmfs-publish" ]]; then
-  shift
-  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_publish import main; sys.exit(main())' "$@"
 fi
 
 for arg in "$@"
