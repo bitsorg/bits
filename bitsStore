@@ -738,7 +738,7 @@ def main():
     # gc / stats: store-scoped ops folded in from the old top-level `bits gc` /
     # `bits store-stats`. Their handlers live in bits_helpers and build their own
     # S3 client, so the dest names below must match what they read.
-    gp = sub.add_parser("gc", help="reachability GC of the shared store (ADR-0004 §6)")
+    gp = sub.add_parser("gc", help="reachability GC of the shared store")
     gp.add_argument("--trust-manifest", dest="trustManifest", required=True, metavar="PATH",
                     help="signed common manifest whose hashes are the GC roots (must verify)")
     gp.add_argument("--remote-store", "--store", dest="gcStore", metavar="URL", default=STORE,

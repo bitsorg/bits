@@ -119,7 +119,7 @@ After iterating on several packages, the workDir accumulates stale build directo
 
 ```bash
 bits clean            # remove stale BUILD/ directories and TMP/ staging area
-bits cleanup --max-age 14   # evict packages not used in the last 14 days
+bits prune --max-age 14   # evict packages not used in the last 14 days (was `bits cleanup`)
 ```
 
 ---

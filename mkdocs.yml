@@ -18,6 +18,3 @@ nav:
   - Workflows: WORKFLOWS.md
   - Reference: REFERENCE.md
   - Roadmap: ROADMAP.md
-  - Design (ADR):
-      - Relaxed CVMFS reuse: adr/0001-cvmfs-relaxed-reuse.md
-      - Implementation plan: adr/0001-implementation-plan.md

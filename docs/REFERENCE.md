@@ -276,9 +276,9 @@ objects are streamed once and stamped), so every manifest converges on the
 one stable object that certification verifies. Store objects are never
 overwritten.
 
-#### Store garbage collection — `bits gc`
+#### Store garbage collection — `bits store gc`
 
-`bits gc --trust-manifest <signed-common-manifest>` sweeps unreferenced objects
+`bits store gc --trust-manifest <signed-common-manifest>` sweeps unreferenced objects
 from the shared S3 store. The roots are every content hash in the *verified*
 signed common manifest; any store object whose hash is not a root and is older
 than `--grace-days` (default 7) is removed. It is deliberately conservative:
@@ -304,8 +304,7 @@ user or CI job with write keys can upload artifacts and the build manifest.
 Certification (signing) is a separate, deliberate step performed by a **group
 admin** via bits-console (SSO-authenticated), which triggers a CI job to sign the
 manifest with the single trust anchor key. Consumers reuse only artifacts listed
-in a verified signed manifest (`--require-signed-reuse` + `--trust-manifest`). See
-`docs/adr/0004-group-signed-trusted-reuse.md` for the full model.
+in a verified signed manifest (`--require-signed-reuse` + `--trust-manifest`).
 
 #### Licence compliance and redistribution policy
 
@@ -395,7 +394,7 @@ pylint bits_helpers/
 | `bits_helpers/init.py` | `bits init` — writable development checkouts |
 | `bits_helpers/doctor.py` | `bits doctor` — system-requirements checking |
 | `bits_helpers/clean.py` | `bits clean` — stale artifact removal from temporary build area |
-| `bits_helpers/cleanup.py` | `bits cleanup` — LRU + disk-pressure eviction from persistent workDir; sentinel management |
+| `bits_helpers/cleanup.py` | `bits prune` (was `bits cleanup`) — LRU + disk-pressure eviction from persistent workDir; sentinel management |
 | `bits_helpers/publish.py` | `bits publish` — copy, relocate, and stream packages to a CVMFS ingestion spool |
 | `bits_helpers/scheduler.py` | Multi-threaded parallel build scheduler |
 | `bits_helpers/sync.py` | Remote binary store backends (HTTP, S3, Boto3, CVMFS, rsync) |
@@ -763,7 +762,7 @@ tox -e darwin  # reduced matrix for macOS
 | Test file | What it covers |
 |-----------|---------------|
 | `test_args.py` | CLI argument parsing (legacy tests) |
-| `test_new_args.py` | New CLI arguments: `bits cleanup` subparser, `--cvmfs-prefix`, `--no-relocate`; backward-compatibility assertions |
+| `test_new_args.py` | New CLI arguments: `bits prune`/`cleanup` subparser, `--cvmfs-prefix`, `--no-relocate`; store/publish group renames; backward-compatibility assertions |
 | `test_cleanup.py` | `bits_helpers/cleanup.py`: sentinel paths, LRU eviction, age-based eviction, disk-pressure mode, flock concurrency safety |
 | `test_container_workdir.py` | `container_workDir` / `cachedTarball` path rewriting logic in `build.py`; all four flag combinations; `re.escape()` correctness for paths with regex metacharacters |
 | `test_always_on_providers.py` | `_read_bits_rc`, `_parse_provider_url`, `_make_bits_providers_spec`, `load_always_on_providers` (BITS_PROVIDERS path, `always_load` scan, double-clone prevention, failure isolation) |
@@ -1335,12 +1334,12 @@ bits clean [options]
 
 ---
 
-### bits cleanup
+### bits prune
 
-Evict packages from a **persistent workDir** based on last-use age and/or available disk space. Intended for shared CI build caches where packages accumulate over time. See [§7 bits cleanup](#bits-cleanup--evict-packages-from-a-persistent-workdir) for full details.
+Evict packages from a **persistent workDir** based on last-use age and/or available disk space. Intended for shared CI build caches where packages accumulate over time. (Formerly `bits cleanup`, which still works as a deprecated alias that warns.) See [§7 bits cleanup](#bits-cleanup--evict-packages-from-a-persistent-workdir) for full details.
 
 ```bash
-bits cleanup [options]
+bits prune [options]
 ```
 
 | Option | Default | Description |
@@ -1467,6 +1466,44 @@ bits architecture   # print only the architecture string (e.g. ubuntu2204_x86-64
 
 ---
 
+### bits store / bits cvmfs (admin & CI groups)
+
+Two `bits <noun> <verb>` groups act on shared infrastructure rather than a local build.
+
+**`bits store <verb>`** — the shared S3 binary store:
+
+```bash
+bits store ls                         # list manifests / store objects (default verb)
+bits store verify --arch <A>          # check signed manifests against the store
+bits store gc --trust-manifest <M>    # reachability GC (was `bits gc`)
+bits store stats                      # per-arch/per-build usage report (was `bits store-stats`)
+bits store upload <PKG>               # upload one built package to the store (was `publish --to s3`)
+bits store rm <selection>             # delete objects (narrowed selection required)
+```
+
+**`bits cvmfs <verb>`** — a deployed CVMFS tree and the producer-side publish pipeline:
+
+```bash
+bits cvmfs platforms|show|summary     # inspect a deployed tree (read-only)
+bits cvmfs stage   …                  # producer-side staging (was `bits cvmfs-stage`)
+bits cvmfs publish …                  # producer-side staged publish (was `bits cvmfs-publish`)
+```
+
+The deprecated hyphenated names (`store-stats`, `cvmfs-stage`, `cvmfs-publish`) still
+work for one release and warn; `bits gc` and `bits publish --to s3` were removed outright.
+
+### Confusing command pairs
+
+| Pair | Acts on | Which is which |
+|---|---|---|
+| `clean` vs `prune` | local build dir vs persistent workDir | `clean` wipes the build area; `prune` evicts old packages from a kept workDir |
+| `prune` vs `store gc` | persistent workDir vs shared S3 store | `prune` is local disk/age eviction; `store gc` is reachability GC of the S3 store |
+| `stats` vs `store stats` | local build logs vs S3 store | `stats` reports a monitored build; `store stats` summarises store usage |
+| `publish` vs `store upload` | CVMFS vs S3 store | `publish` puts a package on CVMFS; `store upload` writes a tarball to the S3 reuse store |
+| `publish` vs `cvmfs publish` | consumer vs producer side | `bits publish` is the consumer-facing CVMFS publish; `bits cvmfs publish` is the producer-side staged publish that feeds the gateway |
+
+---
+
 ### Work Directory Layout
 
 After `bits build ROOT` the work directory (`sw/` by default) has this structure:
@@ -1516,7 +1553,7 @@ sw/
     └── TARS/<arch>/store/…/<tarball>.sha256
 ```
 
-`BUILD/` directories are removed after a successful build unless `--keep-tmp` is given. Use `bits clean` to remove stale `BUILD/` and `TMP/` trees, or `bits cleanup` to evict old packages from `<arch>/` and `TARS/` based on age or disk pressure.
+`BUILD/` directories are removed after a successful build unless `--keep-tmp` is given. Use `bits clean` to remove stale `BUILD/` and `TMP/` trees, or `bits prune` to evict old packages from `<arch>/` and `TARS/` based on age or disk pressure.
 
 ---
 
@@ -2746,20 +2783,25 @@ bits publish
 bits publish --remote-store https://s3.cern.ch/lcgapp-bits-testing  # pick the bucket
 bits publish --from-manifest /path/to/bits-manifest-XYZ.json  # a specific manifest
 
-# Single package (from its manifest entry):
-bits publish ROOT --to s3 --write-store b3://lcgapp-bits-testing
+# Single package to the S3 store (from its manifest entry):
+bits store upload ROOT --remote-store b3://lcgapp-bits-testing
 
 # Preview without uploading (no credentials/network needed):
 bits publish --dry-run
 ```
+
+Modes: bare `bits publish` (or `--from-manifest`) bulk-uploads a build manifest to the
+S3 store — the community push shown above. `bits publish PACKAGE --cvmfs-target … --prepub-url …`
+publishes one package to CVMFS. The single-package S3-store write is now `bits store upload`
+(the old `bits publish --to s3`, which is removed along with `--to`/`--write-store`).
 
 `--dry-run` (`-n`) lists exactly what would be uploaded and to which store,
 without contacting S3 — handy to check the package set and target before pushing.
 
 `--remote-store` accepts an `https://<host>/<bucket>` URL (from which the boto3
 endpoint and path-style addressing are derived), or `b3://<bucket>` / `s3://<bucket>`.
-It is the canonical store flag across `publish`, `certify`, `gc`, `store-stats` and
-`compliance`; the old `--store` spelling still works but is deprecated and warns.
+It is the canonical store flag across `publish`, `certify`, `bits store` (`gc`/`stats`/
+`upload`) and `compliance`; the old `--store` spelling still works but is deprecated and warns.
 The default is `$BITS_S3_STORE` if set, else `https://s3.cern.ch/lcgapp-bits-testing`.
 `--from-manifest` also uploads the manifest itself under `MANIFESTS/`, so a CI job
 can fetch and sign it.
@@ -3105,7 +3147,7 @@ bits publish ROOT \
            --no-relocate
 ```
 
-**Persistent workDir across CI jobs.** For communities that publish to CVMFS regularly, keeping the workDir alive between CI jobs (on a persistent build runner) turns `--cvmfs-prefix` into an incremental cache: only packages whose recipe or source changed are rebuilt; already-installed dependencies are reused from the previous run. The `bits cleanup` subcommand manages the cache size over time (see [§7 bits cleanup](#bits-cleanup--evict-packages-from-a-persistent-workdir)).
+**Persistent workDir across CI jobs.** For communities that publish to CVMFS regularly, keeping the workDir alive between CI jobs (on a persistent build runner) turns `--cvmfs-prefix` into an incremental cache: only packages whose recipe or source changed are rebuilt; already-installed dependencies are reused from the previous run. The `bits prune` subcommand manages the cache size over time (see [§7 bits cleanup](#bits-cleanup--evict-packages-from-a-persistent-workdir)).
 
 ---
 

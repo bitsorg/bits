@@ -55,10 +55,15 @@ bits doctor ROOT
 | `bits load <pkg>` | Print commands to load a module (must be `eval`'d). |
 | `bits q [regex]` | List available modules. |
 | `bits clean` | Remove stale build artifacts from a temporary build area. |
-| `bits cleanup` | Evict old or infrequently used packages from a persistent workDir. |
+| `bits prune` | Evict old or infrequently used packages from a persistent workDir (was `bits cleanup`, still accepted as a deprecated alias). |
 | `bits doctor <pkg> [<pkg>...]` | Check that the system satisfies all recipe requirements before building. |
 | `bits doctor --runner` | Validate the full build-runner environment (compiler, git, Docker, podman, CVMFS, disk, store). |
 | `bits verify --from-manifest FILE` | Confirm a live deployment matches the build manifest (SHA-256 and provider commits). |
+
+Two admin/CI groups act on shared infrastructure: **`bits store`** (`ls`, `verify`,
+`gc`, `stats`, `upload`) manages the S3 binary store, and **`bits cvmfs`**
+(`platforms`, `show`, `summary`, `stage`, `publish`) inspects a deployed CVMFS tree
+and drives producer-side publishing. `bits publish` now means publish-to-CVMFS only.
 
 [Full command reference](docs/REFERENCE.md#16-command-line-reference)
 
@@ -91,7 +96,7 @@ Global settings come from environment variables:
 | `$BITS_REPO_DIR` | `-c` / `--config-dir` | Root directory for recipe repositories. |
 | `$BITS_PROVIDERS` | `--providers` | Repository provider set URL(s). |
 | `$BITS_PATH` | `--search-path` | Recipe search path. |
-| `$BITS_S3_STORE` | `--remote-store` (store ops) | Default S3 store for `gc` / `certify` / `publish` / `store-stats` / `compliance`. |
+| `$BITS_S3_STORE` | `--remote-store` (store ops) | Default S3 store for `bits store` (`gc`/`stats`/`upload`), `certify`, `publish`, `compliance`. |
 | `$BITS_PREREQUISITES_URL` | — | URL shown when `bits doctor` cannot find the C++ compiler or git. |
 | `$BITS_CVMFS_REPOS` | `--cvmfs-repos` | Comma-separated CVMFS mount paths checked by `bits doctor --runner`. |
 
@@ -100,6 +105,31 @@ internally when resolving the community recipe repository from bits-providers
 (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`).
 
 [Configuration details](docs/USERGUIDE.md#4-configuration)
+
+---
+
+## Repositories: hierarchy, discovery & reuse
+
+bits keeps the tool, the policy, and the recipes in **separate versioned
+repositories**. The registry [`bits-providers`](https://github.com/bitsorg/bits-providers)
+maps a community name to its repo; a *community/policy* repo such as
+[`stacks.bits`](https://github.com/bitsorg/stacks.bits) sets defaults and CVMFS layout and
+`requires:` a shared *recipe pool* like [`lcg.bits`](https://github.com/bitsorg/lcg.bits)
+(~1100 recipes). Any recipe with `provides_repository: true` is cloned on demand and added
+to the search path, so a build pulls in the pools it needs automatically — and because the
+binary store is content-addressed, matching artifacts are reused across communities.
+
+```bash
+# Build an LCG-stack package: run from the community repo; bits auto-pulls lcg.bits
+git clone https://github.com/bitsorg/stacks.bits && cd stacks.bits
+bits build ROOT --defaults gcc15
+```
+
+The entry point is `defaults-release.sh` (composition: `stacks.bits` →
+`defaults-release.sh` → `lcg.bits`). For the full model see
+[`bits-providers`](https://github.com/bitsorg/bits-providers) and each `*.bits` repository
+(e.g. [`stacks.bits`](https://github.com/bitsorg/stacks.bits),
+[`alice.bits`](https://github.com/bitsorg/alice.bits)).
 
 ---
 
@@ -131,9 +161,9 @@ bits clean                # remove temporary build directories
 bits clean --aggressive-cleanup   # also remove source mirrors and tarballs
 
 # Persistent workDir cache management (evict old / low-disk-space packages)
-bits cleanup --max-age 14         # evict packages not used in the last 14 days
-bits cleanup --min-free 100       # free space until at least 100 GiB available
-bits cleanup -n                   # dry-run: show what would be removed
+bits prune --max-age 14           # evict packages not used in the last 14 days
+bits prune --min-free 100         # free space until at least 100 GiB available
+bits prune -n                     # dry-run: show what would be removed
 ```
 
 [Cleaning options](docs/USERGUIDE.md#7-cleaning-up)

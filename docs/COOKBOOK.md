@@ -322,16 +322,16 @@ The Python scheduler will not start a new build unless the declared resources ar
 
 ```bash
 # Evict packages not used in the last 14 days
-bits cleanup --max-age 14
+bits prune --max-age 14
 
 # Free space until at least 50 GiB is available, removing least-recently-used packages first
-bits cleanup --min-free 50
+bits prune --min-free 50
 
 # Dry run: show what would be removed without deleting anything
-bits cleanup --max-age 7 --min-free 100 -n
+bits prune --max-age 7 --min-free 100 -n
 ```
 
-Bits tracks a sentinel file for each installed package; `bits cleanup` sorts by last-touched time and evicts the oldest entries first. Combine both flags to enforce both a time limit and a disk-space floor in a single pass. See [§7 bits cleanup](USERGUIDE.md#7-cleaning-up) for full options.
+Bits tracks a sentinel file for each installed package; `bits prune` (formerly `bits cleanup`) sorts by last-touched time and evicts the oldest entries first. Combine both flags to enforce both a time limit and a disk-space floor in a single pass. See [§7 bits cleanup](USERGUIDE.md#7-cleaning-up) for full options.
 
 ### Verify a live deployment against a build manifest
 

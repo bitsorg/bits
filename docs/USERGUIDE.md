@@ -172,7 +172,7 @@ Global settings come from environment variables:
 | `$BITS_REPO_DIR` | `-c` / `--config-dir` | Root directory for recipe repositories. |
 | `$BITS_PROVIDERS` | `--providers` | Repository provider set URL(s). |
 | `$BITS_PATH` | `--search-path` | Recipe search path. |
-| `$BITS_S3_STORE` | `--remote-store` (store ops) | Default S3 store for `gc` / `certify` / `publish` / `store-stats` / `compliance`. |
+| `$BITS_S3_STORE` | `--remote-store` (store ops) | Default S3 store for `bits store` (`gc`/`stats`/`upload`), `certify`, `publish`, `compliance`. |
 
 `$BITS_ORGANISATION` is set **uppercase** (`ALICE`, `LHCB`, …). Bits lowercases it internally when resolving the community recipe repository from bits-providers (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`).
 
@@ -297,10 +297,13 @@ The default (non-aggressive) clean removes the `TMP/` staging area, stale `BUILD
 
 ### bits cleanup — evict packages from a persistent workDir
 
-`bits cleanup` manages a long-lived, shared workDir by evicting packages that have not been used recently or when disk space falls below a threshold. It is intended for **persistent CI build caches** where packages accumulate over time.
+> **Renamed to `bits prune`.** `bits cleanup` still works as a deprecated alias that
+> warns and forwards; use `bits prune` in new scripts.
+
+`bits prune` manages a long-lived, shared workDir by evicting packages that have not been used recently or when disk space falls below a threshold. It is intended for **persistent CI build caches** where packages accumulate over time.
 
 ```bash
-bits cleanup [options]
+bits prune [options]
 ```
 
 | Option | Default | Description |
@@ -312,19 +315,19 @@ bits cleanup [options]
 | `--disk-pressure-only` | — | Run only the disk-pressure eviction pass; skip age-based eviction. |
 | `-n`, `--dry-run` | — | Show which packages would be evicted without removing anything. |
 
-**How it works.** Every time a package is built or confirmed already installed, bits touches a *sentinel file* at `$WORK_DIR/.packages/<arch>/<package>/<version>`. The `cleanup` command reads these sentinels, sorts packages by last-touched time (oldest first), and evicts those that are too old or that need to be removed to recover disk space.
+**How it works.** Every time a package is built or confirmed already installed, bits touches a *sentinel file* at `$WORK_DIR/.packages/<arch>/<package>/<version>`. The `prune` command reads these sentinels, sorts packages by last-touched time (oldest first), and evicts those that are too old or that need to be removed to recover disk space.
 
 **Typical usage patterns:**
 
 ```bash
 # Pre-build: free space if below 50 GiB, evicting LRU packages first
-bits cleanup --min-free 50 --disk-pressure-only || true
+bits prune --min-free 50 --disk-pressure-only || true
 
 # Nightly cron: evict packages not used in 7 days
-bits cleanup --max-age 7
+bits prune --max-age 7
 
 # See what would be removed without touching anything
-bits cleanup --max-age 3 --min-free 100 --dry-run
+bits prune --max-age 3 --min-free 100 --dry-run
 ```
 
 ---
