@@ -53,6 +53,11 @@ class TestTrustedRecords(unittest.TestCase):
             fh.write(priv.public_key().public_bytes(
                 serialization.Encoding.PEM,
                 serialization.PublicFormat.SubjectPublicKeyInfo))
+        # The shipped keys/key-policy.json is strict ("default": []); this harness
+        # trusts its own generated key for every group ("default": ["*"] overrides
+        # the shipped strict default, most-specific-last).
+        with open(os.path.join(trust_dir, "key-policy.json"), "w") as fh:
+            fh.write('{"default": ["*"]}\n')
         self._old = os.environ.get("BITS_TRUST_KEYS")
         os.environ["BITS_TRUST_KEYS"] = trust_dir
 

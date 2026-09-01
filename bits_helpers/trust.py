@@ -295,9 +295,23 @@ def _verified_entries(manifest_path, sig_path, dirs, accept_groups, now):
   # Per-key group binding: a signing key vouches only for the groups it is
   # authorised for (policy file opt-in; absent = no restriction).
   policy = load_key_policy(dirs)
-  entries = [e for e in data.get("packages", [])
-             if accepts_group(e.get("group"), accept_groups)
-             and key_authorized(kid, e.get("group"), policy)]
+  entries, denied = [], {}
+  for e in data.get("packages", []):
+    if not accepts_group(e.get("group"), accept_groups):
+      continue
+    if key_authorized(kid, e.get("group"), policy):
+      entries.append(e)
+    else:
+      # Signature verified and the group is accepted, but key-policy denies this
+      # key for this group — the entry is dropped. Diagnose it so a missing
+      # key-policy.json enrolment is not a silent no-reuse (fail-closed default).
+      denied[e.get("group") or "common"] = denied.get(e.get("group") or "common", 0) + 1
+  if denied:
+    from bits_helpers.log import warning
+    warning("trust: signing key %s verified but is not authorised by "
+            "key-policy.json for group(s) %s — %d entr(y/ies) dropped. If this is "
+            "unexpected, enrol the key in keys/key-policy.json.",
+            kid[:16], ", ".join(sorted(denied)), sum(denied.values()))
   return kid, entries
 
 
