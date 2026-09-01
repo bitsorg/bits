@@ -65,6 +65,9 @@ except Exception:
 STORE = os.environ["BITSSTORE_STORE"]
 PROG = "bitsStore"
 NOW = datetime.datetime.now(datetime.timezone.utc)
+# Default bits work dir (S3 client + default MANIFESTS) for the gc/stats verbs;
+# mirrors bits_helpers.args without importing that heavy module on every call.
+_WORKDIR = os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR") or "sw"
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────
@@ -732,8 +735,45 @@ def main():
                     help="S3 object key, e.g. MANIFESTS/rev-index/<arch>/<pkg>/<ver-rev> "
                          "or TARS/<arch>/store/<h2>/<hash>/<file>")
 
+    # gc / stats: store-scoped ops folded in from the old top-level `bits gc` /
+    # `bits store-stats`. Their handlers live in bits_helpers and build their own
+    # S3 client, so the dest names below must match what they read.
+    gp = sub.add_parser("gc", help="reachability GC of the shared store (ADR-0004 §6)")
+    gp.add_argument("--trust-manifest", dest="trustManifest", required=True, metavar="PATH",
+                    help="signed common manifest whose hashes are the GC roots (must verify)")
+    gp.add_argument("--remote-store", "--store", dest="gcStore", metavar="URL", default=STORE,
+                    help="S3 store URL/bucket to sweep (default: %(default)s)")
+    gp.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=None,
+                    help="architecture store tree to sweep (default: detected)")
+    gp.add_argument("-w", "--work-dir", dest="workDir", metavar="WORKDIR", default=_WORKDIR,
+                    help="bits work directory for the S3 client (default: %(default)s)")
+    gp.add_argument("--grace-days", dest="graceDays", type=float, default=7.0, metavar="DAYS",
+                    help="never sweep an object younger than DAYS (default: %(default)s)")
+    gp.add_argument("--allow-empty", dest="allowEmpty", action="store_true", default=False,
+                    help="permit sweeping when the verified manifest has zero roots (dangerous)")
+    gp.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
+                    help="report what would be swept without deleting")
+
+    tp = sub.add_parser("stats", help="summarise store usage (per-arch + per-build/signed)")
+    tp.add_argument("--remote-store", "--store", dest="storeStatsStore", metavar="URL", default=STORE,
+                    help="S3 store URL/bucket to summarise (default: %(default)s)")
+    tp.add_argument("--manifests", dest="manifests", metavar="PATH", nargs="*", default=None,
+                    help="build-manifest JSON files/dirs (default: WORKDIR/MANIFESTS)")
+    tp.add_argument("--trust-manifest", dest="trustManifest", metavar="PATH", default=None,
+                    help="comma-separated signed common manifests marking which builds are signed")
+    tp.add_argument("--tars-prefix", dest="tarsPrefix", metavar="PREFIX", default="TARS/",
+                    help="store root prefix under which <arch>/store/... lives (default: %(default)s)")
+    tp.add_argument("-o", "--out", dest="out", metavar="FILE", default="store.json",
+                    help="path to write the store document (default: %(default)s)")
+    tp.add_argument("--monitor-url", dest="monitorUrl", metavar="URL", default=None,
+                    help="also POST Prometheus gauges here (falls back to $METRICS_URL)")
+    tp.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=None,
+                    help="architecture for store-path resolution (default: detected)")
+    tp.add_argument("-w", "--work-dir", dest="workDir", metavar="WORKDIR", default=_WORKDIR,
+                    help="bits work directory (S3 client + default MANIFESTS) (default: %(default)s)")
+
     argv = sys.argv[1:]
-    if not argv or argv[0] not in ("ls", "rm", "verify", "cat", "-h", "--help"):
+    if not argv or argv[0] not in ("ls", "rm", "verify", "cat", "gc", "stats", "-h", "--help"):
         argv = ["ls"] + argv                          # default verb
     args = ap.parse_args(argv)
 
@@ -756,6 +796,19 @@ def main():
     if not os.environ.get("AWS_ACCESS_KEY_ID"):
         sys.exit(f"{PROG}: no S3 credentials — put them in ~/.bits/s3keys "
                  "(or set $BITS_AWS_KEYS_FILE / AWS_ACCESS_KEY_ID).")
+
+    # gc / stats delegate to their bits_helpers handlers, which build their own
+    # S3 client and do their own reporting — so return before the ls/rm setup.
+    if args.verb in ("gc", "stats"):
+        if not args.architecture:
+            from bits_helpers.arch import detectArch
+            args.architecture = detectArch()
+        if args.verb == "gc":
+            from bits_helpers.gc import doGc
+            doGc(args, ap)
+            return 0
+        from bits_helpers.store_stats import doStoreStats
+        return doStoreStats(args, ap) or 0
 
     # rm pre-flight guards (before touching S3).
     if args.verb == "rm":

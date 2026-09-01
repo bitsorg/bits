@@ -311,27 +311,8 @@ def doParseArgs():
           "is what clients trust for binary reuse (see docs/adr/0004)."
       ),
   )
-  gc_parser = subparsers.add_parser(
-      "gc",
-      help="sweep unreferenced objects from the shared S3 store (reachability GC)",
-      description=(
-          "Reachability garbage collection (ADR-0004 §6): the roots are every "
-          "content hash in the verified signed common manifest; any store object "
-          "whose hash is not a root and is older than the grace period is swept. "
-          "Fail-closed: refuses to run if the manifest does not verify."
-      ),
-  )
-  store_stats_parser = subparsers.add_parser(
-      "store-stats",
-      help="summarise S3 binary-store usage (per-arch + per-build/signed)",
-      description=(
-          "Walk the S3 binary store and write a store.json the Monitoring "
-          "dashboard consumes: per-architecture byte/object totals plus a "
-          "per-build (manifest) breakdown with a signed flag. Runs where bits "
-          "already has the S3 credentials + manifests, replacing the standalone "
-          "store-stats CI collector. Optionally pushes Prometheus gauges."
-      ),
-  )
+  # `gc` and `store-stats` moved into the `store` group (Phase 3.4): they are now
+  # `bits store gc` / `bits store stats`, handled by the bitsStore tool.
   compliance_parser = subparsers.add_parser(
       "compliance",
       help="audit recipe licence metadata and the binary store",
@@ -1402,43 +1383,8 @@ def doParseArgs():
                                        "architectures' common manifests after the purge. Without it the next "
                                        "CI certification heals them (removed objects are dropped as missing)."))
 
-  # Options for the gc subcommand
-  gc_parser.add_argument("--trust-manifest", dest="trustManifest", required=True, metavar="PATH",
-                         help="Signed common manifest whose hashes are the GC roots. Must verify.")
-  add_remote_store(gc_parser, dest="gcStore",
-                   help="S3 store URL/bucket to sweep. Default: %(default)s")
-  add_architecture(gc_parser,
-                   help="Architecture store tree to sweep. Default: %(default)s.")
-  add_work_dir(gc_parser,
-               help="bits work directory (for the S3 client). Default: %(default)s.")
-  gc_parser.add_argument("--grace-days", dest="graceDays", type=float, default=7.0, metavar="DAYS",
-                         help=("Never sweep an object younger than DAYS, so artifacts from an in-flight "
-                               "build not yet in any signed manifest are not raced away. Default: %(default)s."))
-  gc_parser.add_argument("--allow-empty", dest="allowEmpty", action="store_true", default=False,
-                         help="Permit sweeping when the verified manifest has zero roots (dangerous).")
-  gc_parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
-                         help="Report what would be swept without deleting anything.")
-
-  # Options for the store-stats subcommand
-  add_remote_store(store_stats_parser, dest="storeStatsStore",
-                   help=("S3 store URL/bucket to summarise. Accepts https, b3://<bucket>, "
-                         "or s3://<bucket>. Default: %(default)s"))
-  store_stats_parser.add_argument("--manifests", dest="manifests", metavar="PATH", nargs="*", default=None,
-                                  help=("Build-manifest JSON files/directories that attribute hashes to a "
-                                        "build (manifest). Default: WORKDIR/MANIFESTS."))
-  store_stats_parser.add_argument("--trust-manifest", dest="trustManifest", metavar="PATH", default=None,
-                                  help=("Comma-separated signed common manifests; their verified 'sources' "
-                                        "mark which builds are signed. Optional (unset ⇒ all unsigned)."))
-  store_stats_parser.add_argument("--tars-prefix", dest="tarsPrefix", metavar="PREFIX", default="TARS/",
-                                  help="Store root prefix under which <arch>/store/... lives. Default: %(default)s")
-  store_stats_parser.add_argument("-o", "--out", dest="out", metavar="FILE", default="store.json",
-                                  help="Path to write the store document. Default: %(default)s")
-  store_stats_parser.add_argument("--monitor-url", dest="monitorUrl", metavar="URL", default=None,
-                                  help="Also POST Prometheus gauges here (falls back to $METRICS_URL).")
-  add_work_dir(store_stats_parser,
-               help="bits work directory (S3 client + default MANIFESTS). Default: %(default)s.")
-  add_architecture(store_stats_parser,
-                   help="Architecture for store-path resolution. Default: %(default)s.")
+  # gc / store-stats options moved to the bitsStore tool (Phase 3.4:
+  # `bits store gc` / `bits store stats`).
 
   # Options for the cleanup subcommand
   add_work_dir(cleanup_parser,
@@ -1680,7 +1626,7 @@ def doParseArgs():
   # package named gc, --disable gc, a path segment) appears after the real
   # subcommand and must not flip this guard — matching on set(rest) did.
   _subcommand = next((x for x in rest if x in subparsers.choices), None)
-  _own_dry_run = _subcommand in ("prune", "compliance", "gc")
+  _own_dry_run = _subcommand in ("prune", "compliance")
   def optionOrder(x):
     # --debug/-d must come before any subcommand so the parent parser sees them.
     # --dry-run/-n is also a top-level flag (for build), BUT some subparsers

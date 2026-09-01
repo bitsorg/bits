@@ -279,27 +279,27 @@ class RemoteStoreUnificationTest(unittest.TestCase):
     """--remote-store is the canonical store flag; --store is a deprecated alias."""
 
     def test_remote_store_sets_dest(self):
-        args = _parse(["store-stats", "--remote-store", "b3://mybucket"])
-        self.assertEqual(args.storeStatsStore, "b3://mybucket")
+        args = _parse(["publish", "--remote-store", "b3://mybucket"])
+        self.assertEqual(args.publishStore, "b3://mybucket")
 
     def test_store_alias_sets_dest(self):
-        args = _parse(["store-stats", "--store", "b3://mybucket"])
-        self.assertEqual(args.storeStatsStore, "b3://mybucket")
+        args = _parse(["publish", "--store", "b3://mybucket"])
+        self.assertEqual(args.publishStore, "b3://mybucket")
 
     def test_store_alias_warns(self):
         with patch("bits_helpers.log.warning") as w:
-            _parse(["store-stats", "--store", "b3://x"])
+            _parse(["publish", "--store", "b3://x"])
         self.assertTrue(w.called)
 
     def test_remote_store_does_not_warn(self):
         with patch("bits_helpers.log.warning") as w:
-            _parse(["store-stats", "--remote-store", "b3://x"])
+            _parse(["publish", "--remote-store", "b3://x"])
         self.assertFalse(w.called)
 
     def test_default_is_default_s3_store(self):
         from bits_helpers.args import DEFAULT_S3_STORE
-        args = _parse(["store-stats"])
-        self.assertEqual(args.storeStatsStore, DEFAULT_S3_STORE)
+        args = _parse(["publish"])
+        self.assertEqual(args.publishStore, DEFAULT_S3_STORE)
 
     def test_cleanup_store_default_stays_none(self):
         args = _parse(["cleanup"])

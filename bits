@@ -316,6 +316,9 @@ case "${1:-}" in
   cvmfs-publish)
     echo "warning: 'bits cvmfs-publish' is deprecated; use 'bits cvmfs publish'" >&2
     shift; set -- cvmfs publish "$@" ;;
+  store-stats)
+    echo "warning: 'bits store-stats' is deprecated; use 'bits store stats'" >&2
+    shift; set -- store stats "$@" ;;
 esac
 
 # `bits store …` → bitsStore (S3 content-store inspection, verification, cleanup).
@@ -349,7 +352,7 @@ fi
 for arg in "$@"
 do
   case $arg in
-    architecture|brew|build|certify|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|gc|import|init|publish|stats|status|store-stats|verify|version|-debug|-d)
+    architecture|brew|build|certify|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|stats|status|verify|version|-debug|-d)
          mkdir -p "$BITS_WORK_DIR" || echo "Cannot create directory: $BITS_WORK_DIR"
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?

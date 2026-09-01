@@ -115,15 +115,6 @@ def doMain(args, parser):
     doCertify(args, parser)
     sys.exit(0)
 
-  if args.action == "gc":
-    from bits_helpers.gc import doGc
-    doGc(args, parser)
-    sys.exit(0)
-
-  if args.action == "store-stats":
-    from bits_helpers.store_stats import doStoreStats
-    sys.exit(doStoreStats(args, parser) or 0)
-
   if args.action == "compliance":
     from bits_helpers.compliance import doCompliance
     sys.exit(doCompliance(args, parser))
