@@ -322,5 +322,34 @@ class TestPublishFromManifest(unittest.TestCase):
             self.assertRegex(leaf, r"^[A-Za-z0-9._-]+-\d{8}T\d{6}Z-[0-9a-f]+\.json$")
 
 
+class TestStoreUploadRedistributable(unittest.TestCase):
+    """H1 mitigation: `bits store upload` (_publish_s3) must refuse a package whose
+    recipe forbids binary redistribution — mirroring the build-time and bulk gates
+    so no upload path leaks a restricted binary into a world-readable store."""
+
+    def _run(self, entry):
+        writer = _FakeWriter()
+        with patch.object(publish, "_load_manifest_spec", return_value=entry), \
+             patch.object(sync, "remote_from_url", return_value=writer):
+            publish._publish_s3(entry["package"], entry.get("version"), ARCH,
+                                "/wd", "b3://bucket", _Parser())
+        return writer
+
+    def test_refuses_non_redistributable(self):
+        w = self._run({"package": "QGRAF", "version": "3.6", "revision": "1",
+                       "hash": "h1", "redistributable": "none"})
+        self.assertEqual(w.tarballs, [])
+
+    def test_refuses_unrecognised_fail_closed(self):
+        w = self._run({"package": "X", "version": "1", "revision": "1",
+                       "hash": "h9", "redistributable": "weird-typo"})
+        self.assertEqual(w.tarballs, [])
+
+    def test_uploads_shareable_default(self):
+        # No redistributable key -> default 'all' -> uploaded.
+        w = self._run({"package": "ROOT", "version": "6.30", "revision": "1", "hash": "h2"})
+        self.assertEqual(w.tarballs, ["h2"])
+
+
 if __name__ == "__main__":
     unittest.main()

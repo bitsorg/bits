@@ -123,11 +123,20 @@ def _load_manifest_spec(work_dir, package, version):
 
 def _publish_s3(package, version, architecture, work_dir, write_store, parser, dry_run=False):
     """Upload an already-built package's tarball to the S3 write store for reuse."""
-    from bits_helpers.sync import remote_from_url
+    from bits_helpers.sync import remote_from_url, binary_redistributable
     e = _load_manifest_spec(work_dir, package, version)
     if not e or not e.get("hash"):
         parser.error("no built manifest entry for %s%s in %s — build it first"
                      % (package, (" " + version) if version else "", work_dir))
+    # redistributable: sources|none (QGRAF, CPC, vendor EULAs …): the binary must
+    # not land in a potentially world-readable store — uploading IS redistribution.
+    # Skip it, matching the build-time and bulk-publish upload gates (fail closed).
+    if not binary_redistributable(e):
+        banner("NOT uploading %s to the S3 store: its recipe declares "
+               "redistributable: %s (the licence forbids public binary "
+               "redistribution). Build it locally where it is needed.",
+               package, e.get("redistributable"))
+        return
     spec = {"package": e["package"], "version": e.get("version"),
             "revision": e.get("revision"), "hash": e["hash"]}
     arch = e.get("effective_architecture") or architecture
