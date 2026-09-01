@@ -128,6 +128,15 @@ class TestSignViaProxy(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class _ParserError(Exception):
+    pass
+
+
+class _FakeParser:
+    def error(self, msg):
+        raise _ParserError(msg)
+
+
 class TestCertifyViaProxy(TestSignViaProxy):
     """certify() end-to-end through the proxy signer (Increment 2)."""
 
@@ -170,6 +179,60 @@ class TestCertifyViaProxy(TestSignViaProxy):
                 with self.assertRaises(certify.CertifyError):
                     certify.certify([self._bom(d)], None, out, probe=None,
                                     sign_proxy=(self.url, "gate-token"))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class TestCertifyCLIViaProxy(TestSignViaProxy):
+    """The `bits certify --sign-via-proxy` CLI wiring (Increment 3)."""
+
+    def _bom(self, d):
+        return TestCertifyViaProxy._bom(self, d)
+
+    def _args(self, d, **over):
+        from types import SimpleNamespace
+        a = dict(manifests=[self._bom(d)], out=os.path.join(d, "common.json"),
+                 workDir=d, noStoreCheck=True, architecture="slc7_x86-64",
+                 certifyStore=None, architectures=None, group=None,
+                 validDays=None, sourceCommit=None, requireApproval=False,
+                 key=None, signViaProxy=False, signProxyUrl=None)
+        a.update(over)
+        return SimpleNamespace(**a)
+
+    def test_cli_sign_via_proxy_produces_verifiable_manifest(self):
+        d = tempfile.mkdtemp()
+        os.environ["BITS_SIGN_PROXY_TOKEN"] = "gate-token"
+        try:
+            args = self._args(d, signViaProxy=True, signProxyUrl=self.url)
+            with patch("bits_helpers.certify.trust.load_key_policy", return_value=None):
+                certify.doCertify(args, _FakeParser())
+            op = os.path.join(d, "common-slc7_x86-64.json")
+            with open(op, "rb") as fh:
+                data = fh.read()
+            with open(op + ".sig") as fh:
+                env = json.load(fh)
+            trusted = {trust.key_id(self.priv.public_key()): self.priv.public_key()}
+            self.assertEqual(trust.verify_bytes(data, env, trusted),
+                             trust.key_id(self.priv.public_key()))
+        finally:
+            os.environ.pop("BITS_SIGN_PROXY_TOKEN", None)
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_cli_proxy_without_token_errors(self):
+        d = tempfile.mkdtemp()
+        os.environ.pop("BITS_SIGN_PROXY_TOKEN", None)
+        try:
+            args = self._args(d, signViaProxy=True, signProxyUrl=self.url)
+            with self.assertRaises(_ParserError):
+                certify.doCertify(args, _FakeParser())
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_cli_no_key_no_proxy_errors(self):
+        d = tempfile.mkdtemp()
+        try:
+            with self.assertRaises(_ParserError):
+                certify.doCertify(self._args(d), _FakeParser())
         finally:
             shutil.rmtree(d, ignore_errors=True)
 

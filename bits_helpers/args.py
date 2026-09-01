@@ -1290,8 +1290,20 @@ def doParseArgs():
                                     "is scanned recursively for *.json. Default: WORKDIR/MANIFESTS."))
   certify_parser.add_argument("-o", "--out", dest="out", metavar="FILE", required=True,
                               help="Path to write the merged common manifest (its .sig is written alongside).")
-  certify_parser.add_argument("--key", dest="key", metavar="PEM", required=True,
-                              help="Ed25519 private key (PEM) to sign the common manifest with.")
+  certify_parser.add_argument("--key", dest="key", metavar="PEM", required=False,
+                              help=("Ed25519 private key (PEM) to sign the common manifest with. "
+                                    "Required unless --sign-via-proxy is given."))
+  certify_parser.add_argument("--sign-via-proxy", dest="signViaProxy",
+                              action="store_true", default=False,
+                              help=("Sign via the security-proxy instead of a local --key. "
+                                    "Endpoint from --sign-proxy-url or BITS_SIGN_PROXY_URL; "
+                                    "gate token from BITS_SIGN_PROXY_TOKEN (never on the "
+                                    "command line)."))
+  certify_parser.add_argument("--sign-proxy-url", dest="signProxyUrl", metavar="URL",
+                              default=None,
+                              help=("security-proxy sign route, e.g. "
+                                    "http://host:port/sign/bits. Falls back to "
+                                    "BITS_SIGN_PROXY_URL."))
   certify_parser.add_argument("--group", dest="group", metavar="GROUP", default=None,
                               help=("Tag entries that lack a group with GROUP, so the consumer trust filter "
                                     "(--trust-groups) can scope reuse. Use 'common' for the shared base layer."))

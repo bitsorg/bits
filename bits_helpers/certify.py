@@ -691,13 +691,29 @@ def doCertify(args, parser):
     only_archs = None
     if getattr(args, "architectures", None):
         only_archs = [a for a in args.architectures.split(",") if a.strip()]
+    # Signer: local --key by default, or the security-proxy when --sign-via-proxy
+    # is set. The gate token is read from the environment, never the command line.
+    sign_proxy = None
+    if getattr(args, "signViaProxy", False):
+        url = getattr(args, "signProxyUrl", None) or os.environ.get("BITS_SIGN_PROXY_URL")
+        token = os.environ.get("BITS_SIGN_PROXY_TOKEN")
+        if not url:
+            parser.error("--sign-via-proxy requires --sign-proxy-url or BITS_SIGN_PROXY_URL")
+        if not token:
+            parser.error("--sign-via-proxy requires the gate token in BITS_SIGN_PROXY_TOKEN")
+        if getattr(args, "key", None):
+            warning("certify: --key is ignored because --sign-via-proxy is set")
+        sign_proxy = (url, token)
+    elif not getattr(args, "key", None):
+        parser.error("certify requires --key (or --sign-via-proxy)")
     try:
         outputs = certify_by_arch(sources, args.key, args.out, probe=probe,
                                   default_group=getattr(args, "group", None),
                                   valid_days=valid_days,
                                   source_commit=source_commit,
                                   approval_check=approval_check,
-                                  only_archs=only_archs)
+                                  only_archs=only_archs,
+                                  sign_proxy=sign_proxy)
     except CertifyError as exc:
         parser.error(str(exc))
     from bits_helpers.log import banner
