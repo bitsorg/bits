@@ -4,4 +4,5 @@ distro
 jinja2
 boto3
 botocore
+qrcode
 

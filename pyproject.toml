@@ -35,6 +35,7 @@ dependencies = [
   'jinja2',
   'boto3',
   'cryptography',
+  'qrcode',
 ]
 
 [project.optional-dependencies]
