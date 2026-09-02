@@ -84,3 +84,29 @@ class LoginStateStore(_BoundedStore):
             return None
         verifier, exp = entry
         return verifier if exp >= time.time() else None
+
+
+class SignRequestStore(_BoundedStore):
+    """Pending sign requests between /sign/request and /sign/approve. Holds the
+    manifest bytes + digest so approval signs exactly what was authorized."""
+
+    def __init__(self, ttl_seconds=300, max_entries=10000):
+        super().__init__(ttl_seconds, max_entries)
+
+    def _exps(self):
+        return [(k, e["exp"]) for k, e in self._store.items()]
+
+    def put(self, req_id, data):
+        self._make_room()
+        data = dict(data)
+        data["exp"] = time.time() + self._ttl
+        self._store[req_id] = data
+
+    def pop(self, req_id):
+        """Atomically claim (remove + return) a pending request. Single-process +
+        no await inside, so this is atomic against the event loop — two concurrent
+        approvals cannot both claim the same request."""
+        entry = self._store.pop(req_id, None)
+        if not entry:
+            return None
+        return entry if entry["exp"] >= time.time() else None

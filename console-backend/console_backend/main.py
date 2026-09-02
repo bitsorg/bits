@@ -7,6 +7,7 @@ server-side, so the browser never holds the access token — it lives in the
 server-side session. B3 (signing) and B4 (CI identity) layer on top.
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ settings = config.Settings()
 sessions = session.SessionStore(settings.session_ttl_seconds)
 login_states = session.LoginStateStore()
 credstore = credentials.CredentialStore(settings.credentials_path)
+sign_requests = session.SignRequestStore()
 
 app = FastAPI(title="bits-console backend", version="0.1.0")
 
@@ -136,6 +138,7 @@ def me(request: Request):
 
 
 _MAX_BODY = 32 * 1024 * 1024   # 32 MiB cap on a submitted manifest
+_APPROVE_MAX = 256 * 1024      # a request_id + WebAuthn assertion is small
 
 
 def _groups_of(manifest) -> list:
@@ -181,47 +184,38 @@ async def _authorize_sign(request: Request, groups):
     return user, {"principal": "human"}, denied
 
 
-@app.post("/sign")
-async def sign(request: Request):
-    """Sign a completed common manifest through the security-proxy (Mode 1).
-
-    Signs the EXACT submitted bytes (so the signature matches what consumers
-    verify). Authorization is derived from the manifest content: the principal
-    (a community admin via session, or a CI project via a GitLab CI ID token)
-    must be allowed to sign *every* group present, and the proxy key must be
-    authorized for those groups (bits key-policy). Neither token appears in the
-    response or the audit record.
-    """
+def _proxy_token_or_503():
     if not settings.sign_proxy_configured():
         raise HTTPException(503, "signing proxy is not configured")
-    proxy_token = os.environ.get(settings.sign_proxy_token_env)
-    if not proxy_token:
+    token = os.environ.get(settings.sign_proxy_token_env)
+    if not token:
         raise HTTPException(503, "signing proxy token is not available")
+    return token
 
+
+async def _read_capped(request: Request, maxb: int) -> bytes:
     cl = request.headers.get("content-length")
-    if cl and cl.isdigit() and int(cl) > _MAX_BODY:
-        raise HTTPException(413, "manifest too large")
-    body = await request.body()          # the exact bytes to sign
-    if len(body) > _MAX_BODY:
-        raise HTTPException(413, "manifest too large")
+    if cl and cl.isdigit() and int(cl) > maxb:
+        raise HTTPException(413, "request too large")
+    body = await request.body()
+    if len(body) > maxb:
+        raise HTTPException(413, "request too large")
+    return body
+
+
+def _parse_manifest(body: bytes) -> list:
     try:
         manifest = json.loads(body)
         if not isinstance(manifest, dict):
             raise ValueError
     except (ValueError, RecursionError):
         raise HTTPException(400, "request body is not a JSON manifest")
-    groups = _groups_of(manifest)
+    return _groups_of(manifest)
 
-    signer, principal, denied = await _authorize_sign(request, groups)
-    if denied:
-        audit.record("sign_denied", signer=signer, groups=groups, denied=denied,
-                     **principal)
-        raise HTTPException(403, "%s is not authorized to sign: %s"
-                            % (signer, ", ".join(denied)))
 
-    # Producer-side key-policy: the proxy key must be allowed to certify these
-    # groups (mirrors certify._prepare_common). Blocking urllib calls are run off
-    # the event loop so a slow proxy cannot stall other requests.
+async def _do_sign(body, groups, signer, principal, proxy_token):
+    """Key-policy check + sign the EXACT bytes via the proxy + audit. Assumes
+    authorization (and, on the approval path, the WebAuthn assertion) passed."""
     try:
         kid, _pub = await run_in_threadpool(
             trust.proxy_pubkey, settings.sign_proxy_url, proxy_token)
@@ -236,17 +230,121 @@ async def sign(request: Request):
                          **principal)
             raise HTTPException(403, "signing key %s is not authorized for: %s"
                                 % (kid, ", ".join(badk)))
-
     try:
         envelope = await run_in_threadpool(
             trust.sign_bytes_via_proxy, body, settings.sign_proxy_url, proxy_token)
     except RuntimeError as exc:
         raise HTTPException(502, "signing failed: %s" % exc)
-
     digest = hashlib.sha256(body).hexdigest()
     audit.record("sign", signer=signer, groups=groups, digest=digest,
                  key_id=envelope["key_id"], **principal)
     return {"envelope": envelope, "groups": groups, "signed_by": signer, "digest": digest}
+
+
+@app.post("/sign")
+async def sign(request: Request):
+    """Single-shot sign: CI (Bearer ID token), or a human when WebAuthn is not in
+    force. If WebAuthn is configured and the human has an enrolled passkey, they
+    must use the digest-bound /sign/request + /sign/approve flow instead."""
+    proxy_token = _proxy_token_or_503()
+    body = await _read_capped(request, _MAX_BODY)
+    groups = _parse_manifest(body)
+    signer, principal, denied = await _authorize_sign(request, groups)
+    if denied:
+        audit.record("sign_denied", signer=signer, groups=groups, denied=denied,
+                     **principal)
+        raise HTTPException(403, "%s is not authorized to sign: %s"
+                            % (signer, ", ".join(denied)))
+    if (principal.get("principal") == "human" and settings.webauthn_configured()
+            and credstore.get(signer)):
+        raise HTTPException(409, "WebAuthn approval required; use /sign/request "
+                                 "then /sign/approve")
+    return await _do_sign(body, groups, signer, principal, proxy_token)
+
+
+@app.post("/sign/request")
+async def sign_request(request: Request):
+    """Human approval, step 1: authorize and return a WebAuthn challenge that IS
+    the manifest digest (content binding). The manifest is held server-side so
+    approval signs exactly these bytes."""
+    data = _current(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    if not settings.webauthn_configured():
+        raise HTTPException(503, "WebAuthn is not configured")
+    body = await _read_capped(request, _MAX_BODY)
+    groups = _parse_manifest(body)
+    user = data["user"]
+    resolved = _resolved_policy(data["token"])
+    denied = [g for g in groups if not authz.is_admin_for(user, g, resolved)]
+    if denied:
+        audit.record("sign_denied", signer=user, groups=groups, denied=denied,
+                     principal="human")
+        raise HTTPException(403, "%s is not a community admin for: %s"
+                            % (user, ", ".join(denied)))
+    creds = credstore.get(user)
+    if not creds:
+        raise HTTPException(400, "no passkey enrolled; POST /webauthn/register/begin first")
+    # Store only the digest + metadata (not the manifest) so the pending store
+    # can't be flooded with large bodies; the manifest is re-submitted at approve
+    # and checked against this digest.
+    digest = hashlib.sha256(body).digest()
+    req_id = secrets.token_urlsafe(24)
+    sign_requests.put(req_id, {"digest": digest, "groups": groups, "user": user})
+    options = json.loads(webauthn_rp.authentication_options(settings, digest, creds))
+    return {"request_id": req_id, "publicKey": options}
+
+
+@app.post("/sign/approve")
+async def sign_approve(request: Request):
+    """Human approval, step 2: re-submit the manifest with the digest-bound
+    WebAuthn assertion. The manifest must hash to the approved digest AND the
+    assertion must verify over it; then persist the sign counter and sign."""
+    data = _current(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    proxy_token = _proxy_token_or_503()
+    raw = await _read_capped(request, 2 * _MAX_BODY)   # base64 manifest + assertion
+    try:
+        payload = json.loads(raw)
+        req_id = payload["request_id"]
+        assertion = payload["assertion"]
+        body = base64.b64decode(payload["manifest"], validate=True)
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "expected {request_id, assertion, manifest(base64)}")
+    if len(body) > _MAX_BODY:
+        raise HTTPException(413, "manifest too large")
+
+    req = sign_requests.pop(req_id)   # atomic single-use claim (double-sign race)
+    if not req or req["user"] != data["user"]:
+        raise HTTPException(400, "unknown or expired sign request")
+    # Content binding: the re-submitted manifest must hash to the approved digest.
+    if hashlib.sha256(body).digest() != req["digest"]:
+        raise HTTPException(400, "manifest does not match the approved request")
+    # Re-check community-admin now (close the revoke-within-window gap).
+    resolved = _resolved_policy(data["token"])
+    denied = [g for g in req["groups"] if not authz.is_admin_for(data["user"], g, resolved)]
+    if denied:
+        audit.record("sign_denied", signer=data["user"], groups=req["groups"],
+                     denied=denied, principal="human")
+        raise HTTPException(403, "%s is not a community admin for: %s"
+                            % (data["user"], ", ".join(denied)))
+    cred_id = (assertion.get("rawId") or assertion.get("id")
+               if isinstance(assertion, dict) else None)
+    cred = next((c for c in credstore.get(req["user"]) if c["id"] == cred_id), None)
+    if not cred:
+        raise HTTPException(400, "unknown credential")
+    try:
+        new_count = await run_in_threadpool(
+            webauthn_rp.verify_authentication, settings, json.dumps(assertion),
+            req["digest"], cred)
+    except Exception:
+        audit.record("sign_denied", signer=req["user"], groups=req["groups"],
+                     reason="approval_failed", principal="human")
+        raise HTTPException(403, "approval verification failed")
+    credstore.update_sign_count(req["user"], cred_id, new_count)   # clone detection
+    return await _do_sign(body, req["groups"], req["user"],
+                          {"principal": "human", "approval": "webauthn"}, proxy_token)
 
 
 @app.post("/webauthn/register/begin")
