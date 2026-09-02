@@ -54,6 +54,14 @@ class Settings:
         # Require user verification (biometric/PIN, not just presence). ON by
         # default; set 0 only for test authenticators that cannot do UV.
         self.webauthn_require_uv = e.get("BITS_WEBAUTHN_REQUIRE_UV", "1") != "0"
+        # Enrolment authority (C6): a first passkey needs a bits-admin grant; a
+        # further passkey needs step-up with an existing one. ON by default; set 0
+        # only for dev/transition (reverts to session-only self-enrolment).
+        self.enrollment_authority = e.get("BITS_ENROLLMENT_AUTHORITY", "1") != "0"
+        # Require WebAuthn approval for ALL human signing (mandatory 2nd factor).
+        # OFF by default so you can roll out: enable WebAuthn, have admins enrol,
+        # then set 1 to enforce — otherwise a never-enrolled admin signs single-shot.
+        self.webauthn_required = e.get("BITS_WEBAUTHN_REQUIRED", "0") == "1"
 
     def sign_proxy_configured(self) -> bool:
         return bool(self.sign_proxy_url)

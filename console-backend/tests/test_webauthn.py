@@ -65,7 +65,8 @@ def _assertion(device, options_json):
 def _settings(creds_path=None):
     env = {"BITS_WEBAUTHN_RP_ID": RP_ID, "BITS_WEBAUTHN_ORIGIN": ORIGIN,
            "BITS_SESSION_COOKIE_SECURE": "0",
-           "BITS_WEBAUTHN_REQUIRE_UV": "0"}   # soft authenticator can't do UV
+           "BITS_WEBAUTHN_REQUIRE_UV": "0",       # soft authenticator can't do UV
+           "BITS_ENROLLMENT_AUTHORITY": "0"}      # self-service path (C6 tested separately)
     if creds_path:
         env["BITS_WEBAUTHN_CREDENTIALS"] = creds_path
     return config.Settings(env=env)
@@ -98,8 +99,10 @@ class TestEnrollEndpoints(unittest.TestCase):
         c = {"bits_session": sid}
         begin = self.client.post("/webauthn/register/begin", cookies=c)
         self.assertEqual(begin.status_code, 200)
-        att = _attestation(self.device, begin.text)
-        finish = self.client.post("/webauthn/register/finish", content=att, cookies=c)
+        pk = begin.json()["publicKey"]
+        att = _attestation(self.device, json.dumps(pk))
+        finish = self.client.post("/webauthn/register/finish",
+                                  json={"attestation": json.loads(att)}, cookies=c)
         self.assertEqual(finish.status_code, 200)
         self.assertEqual(finish.json()["status"], "enrolled")
         self.assertEqual(len(main.credstore.get("alice")), 1)

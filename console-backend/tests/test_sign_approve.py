@@ -130,6 +130,18 @@ class TestApproval(unittest.TestCase):
         r = self.client.post("/sign", content=self._manifest(), cookies=c)
         self.assertEqual(r.status_code, 409)
 
+    def test_webauthn_required_blocks_passkeyless_human(self):
+        # root is a 'common' admin with NO passkey; with WebAuthn required, even a
+        # single-shot /sign must be blocked (mandatory 2nd factor).
+        main.settings.webauthn_required = True
+        try:
+            sid = main.sessions.create({"user": "root", "token": "t"})
+            r = self.client.post("/sign", content=self._manifest(group="common"),
+                                 cookies={"bits_session": sid})
+            self.assertEqual(r.status_code, 409)
+        finally:
+            main.settings.webauthn_required = False
+
     def test_request_requires_admin(self):
         c = self._alice()
         r = self.client.post("/sign/request", content=self._manifest(group="common"), cookies=c)

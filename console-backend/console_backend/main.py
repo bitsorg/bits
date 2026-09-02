@@ -33,6 +33,7 @@ sessions = session.SessionStore(settings.session_ttl_seconds)
 login_states = session.LoginStateStore()
 credstore = credentials.CredentialStore(settings.credentials_path)
 sign_requests = session.SignRequestStore()
+enroll_grants = session.EnrollmentGrantStore()
 
 app = FastAPI(title="bits-console backend", version="0.1.0")
 
@@ -256,7 +257,7 @@ async def sign(request: Request):
         raise HTTPException(403, "%s is not authorized to sign: %s"
                             % (signer, ", ".join(denied)))
     if (principal.get("principal") == "human" and settings.webauthn_configured()
-            and credstore.get(signer)):
+            and (settings.webauthn_required or credstore.get(signer))):
         raise HTTPException(409, "WebAuthn approval required; use /sign/request "
                                  "then /sign/approve")
     return await _do_sign(body, groups, signer, principal, proxy_token)
@@ -347,19 +348,52 @@ async def sign_approve(request: Request):
                           {"principal": "human", "approval": "webauthn"}, proxy_token)
 
 
-@app.post("/webauthn/register/begin")
-def webauthn_register_begin(request: Request):
-    """Start passkey enrolment for the logged-in user (self-enrolment of a 2nd
-    factor; a master-key enrolment authority is a later increment)."""
+@app.post("/webauthn/grant")
+async def webauthn_grant(request: Request):
+    """A bits-admin grants a user permission to enrol their FIRST passkey."""
     data = _current(request)
     if not data:
         raise HTTPException(401, "not authenticated")
     if not settings.webauthn_configured():
         raise HTTPException(503, "WebAuthn is not configured")
+    overall, _ = authz.admin_groups(data["user"], _resolved_policy(data["token"]))
+    if not overall:
+        raise HTTPException(403, "only a bits admin may grant enrolment")
+    raw = await _read_capped(request, 65536)
+    try:
+        target = json.loads(raw)["user"]
+        if not isinstance(target, str) or not target:
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "expected {user}")
+    enroll_grants.put(target)
+    audit.record("enroll_grant", granted_by=data["user"], user=target)
+    return {"status": "granted", "user": target}
+
+
+@app.post("/webauthn/register/begin")
+def webauthn_register_begin(request: Request):
+    """Start passkey enrolment. A first passkey needs a bits-admin grant (checked
+    at finish); adding another needs step-up with an existing passkey (challenged
+    here)."""
+    data = _current(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    if not settings.webauthn_configured():
+        raise HTTPException(503, "WebAuthn is not configured")
+    existing = credstore.get(data["user"])
     options_json, challenge = webauthn_rp.registration_options(
-        settings, data["user"], credstore.get(data["user"]))
-    data["reg_challenge"] = bytes_to_base64url(challenge)   # stash in the session
-    return Response(options_json, media_type="application/json")
+        settings, data["user"], existing)
+    data["reg_challenge"] = bytes_to_base64url(challenge)
+    resp = {"publicKey": json.loads(options_json)}
+    if existing and settings.enrollment_authority:
+        stepup = secrets.token_bytes(32)
+        data["stepup_challenge"] = bytes_to_base64url(stepup)
+        resp["stepup"] = json.loads(
+            webauthn_rp.authentication_options(settings, stepup, existing))
+    else:
+        data.pop("stepup_challenge", None)
+    return resp
 
 
 @app.post("/webauthn/register/finish")
@@ -368,21 +402,47 @@ async def webauthn_register_finish(request: Request):
     if not data:
         raise HTTPException(401, "not authenticated")
     challenge = data.pop("reg_challenge", None)
+    stepup_challenge = data.pop("stepup_challenge", None)
     if not challenge:
         raise HTTPException(400, "no registration in progress")
-    cl = request.headers.get("content-length")
-    if cl and cl.isdigit() and int(cl) > 65536:
-        raise HTTPException(413, "attestation too large")
-    body = await request.body()
-    if len(body) > 65536:
-        raise HTTPException(413, "attestation too large")
+    body = await _read_capped(request, 65536)
+    try:
+        payload = json.loads(body)
+        attestation = payload["attestation"]
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "expected {attestation, [stepup]}")
+
+    user = data["user"]
+    existing = credstore.get(user)
+    if settings.enrollment_authority:
+        if existing:
+            # Adding another passkey: prove control of an existing one (step-up).
+            su = payload.get("stepup")
+            if not stepup_challenge or not isinstance(su, dict):
+                raise HTTPException(403, "step-up with an existing passkey required")
+            su_id = su.get("rawId") or su.get("id")
+            su_cred = next((c for c in existing if c["id"] == su_id), None)
+            if not su_cred:
+                raise HTTPException(400, "unknown step-up credential")
+            try:
+                su_count = await run_in_threadpool(
+                    webauthn_rp.verify_authentication, settings, json.dumps(su),
+                    base64url_to_bytes(stepup_challenge), su_cred)
+            except Exception:
+                raise HTTPException(403, "step-up verification failed")
+            credstore.update_sign_count(user, su_cred["id"], su_count)   # clone detection
+        elif not enroll_grants.take(user):
+            # First passkey: requires a one-time bits-admin grant.
+            raise HTTPException(403, "first enrolment requires a bits-admin grant")
+
     try:
         cred = webauthn_rp.verify_registration(
-            settings, body.decode("utf-8"), base64url_to_bytes(challenge))
+            settings, json.dumps(attestation), base64url_to_bytes(challenge))
     except Exception:
         raise HTTPException(400, "registration verification failed")
-    credstore.add(data["user"], cred)
-    audit.record("enroll", user=data["user"], credential_id=cred["id"])
+    credstore.add(user, cred)
+    audit.record("enroll", user=user, credential_id=cred["id"],
+                 authority=("stepup" if existing else "grant"))
     return {"status": "enrolled", "credential_id": cred["id"]}
 
 
