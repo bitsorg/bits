@@ -13,10 +13,11 @@ import os
 import secrets
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import audit, authz, ci_auth, config, oauth, session
+from . import audit, authz, ci_auth, config, credentials, oauth, session, webauthn_rp
+from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
 try:  # bits_helpers is provided by the surrounding bits repo (on PYTHONPATH).
     from bits_helpers import forge, trust
@@ -29,6 +30,7 @@ except Exception:  # pragma: no cover - environment check only
 settings = config.Settings()
 sessions = session.SessionStore(settings.session_ttl_seconds)
 login_states = session.LoginStateStore()
+credstore = credentials.CredentialStore(settings.credentials_path)
 
 app = FastAPI(title="bits-console backend", version="0.1.0")
 
@@ -245,6 +247,45 @@ async def sign(request: Request):
     audit.record("sign", signer=signer, groups=groups, digest=digest,
                  key_id=envelope["key_id"], **principal)
     return {"envelope": envelope, "groups": groups, "signed_by": signer, "digest": digest}
+
+
+@app.post("/webauthn/register/begin")
+def webauthn_register_begin(request: Request):
+    """Start passkey enrolment for the logged-in user (self-enrolment of a 2nd
+    factor; a master-key enrolment authority is a later increment)."""
+    data = _current(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    if not settings.webauthn_configured():
+        raise HTTPException(503, "WebAuthn is not configured")
+    options_json, challenge = webauthn_rp.registration_options(
+        settings, data["user"], credstore.get(data["user"]))
+    data["reg_challenge"] = bytes_to_base64url(challenge)   # stash in the session
+    return Response(options_json, media_type="application/json")
+
+
+@app.post("/webauthn/register/finish")
+async def webauthn_register_finish(request: Request):
+    data = _current(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    challenge = data.pop("reg_challenge", None)
+    if not challenge:
+        raise HTTPException(400, "no registration in progress")
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > 65536:
+        raise HTTPException(413, "attestation too large")
+    body = await request.body()
+    if len(body) > 65536:
+        raise HTTPException(413, "attestation too large")
+    try:
+        cred = webauthn_rp.verify_registration(
+            settings, body.decode("utf-8"), base64url_to_bytes(challenge))
+    except Exception:
+        raise HTTPException(400, "registration verification failed")
+    credstore.add(data["user"], cred)
+    audit.record("enroll", user=data["user"], credential_id=cred["id"])
+    return {"status": "enrolled", "credential_id": cred["id"]}
 
 
 @app.post("/logout")

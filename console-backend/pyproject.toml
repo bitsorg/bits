@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn==0.49.0",
     "httpx==0.28.1",
     "pyjwt[crypto]==2.10.1",
+    "webauthn==2.5.2",
 ]
 # bits_helpers is provided by the surrounding bits repo (on PYTHONPATH / copied
 # alongside in the image), not a PyPI dependency.

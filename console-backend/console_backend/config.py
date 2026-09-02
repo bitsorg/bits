@@ -46,6 +46,15 @@ class Settings:
         # "*" = any group). A file path or inline text.
         self.ci_signers_source = e.get("BITS_CI_SIGNERS", "")
 
+        # WebAuthn RP (Stage C) — the per-operation 2nd-factor approval.
+        self.rp_id = e.get("BITS_WEBAUTHN_RP_ID", "")          # e.g. bits-console.web.cern.ch
+        self.rp_name = e.get("BITS_WEBAUTHN_RP_NAME", "bits-console")
+        self.rp_origin = e.get("BITS_WEBAUTHN_ORIGIN", "")     # e.g. https://bits-console.web.cern.ch
+        self.credentials_path = e.get("BITS_WEBAUTHN_CREDENTIALS", "")  # JSON store path
+        # Require user verification (biometric/PIN, not just presence). ON by
+        # default; set 0 only for test authenticators that cannot do UV.
+        self.webauthn_require_uv = e.get("BITS_WEBAUTHN_REQUIRE_UV", "1") != "0"
+
     def sign_proxy_configured(self) -> bool:
         return bool(self.sign_proxy_url)
 
@@ -53,3 +62,8 @@ class Settings:
         return bool(self.oidc_authorize_url and self.oidc_token_url
                     and self.oidc_client_id and self.oidc_redirect_uri
                     and self.gitlab_api_url)
+
+    def webauthn_configured(self) -> bool:
+        # credentials_path is required: without it enrolments are held in memory
+        # and lost on restart — dangerous for a factor that gates signing.
+        return bool(self.rp_id and self.rp_origin and self.credentials_path)
