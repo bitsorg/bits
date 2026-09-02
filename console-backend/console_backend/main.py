@@ -14,7 +14,7 @@ import os
 import secrets
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from . import audit, authz, ci_auth, config, credentials, oauth, session, webauthn_rp
@@ -37,7 +37,15 @@ enroll_grants = session.EnrollmentGrantStore()
 
 app = FastAPI(title="bits-console backend", version="0.1.0")
 
+_STATIC = os.path.join(os.path.dirname(__file__), "static")
 _COOKIE = "bits_session"
+
+
+@app.get("/")
+def index():
+    """Serve the approver PWA (same origin, so WebAuthn rp_id/origin and the
+    session cookie just work). In production web.cern.ch may serve it instead."""
+    return FileResponse(os.path.join(_STATIC, "index.html"))
 _STATE_COOKIE = "bits_oauth_state"
 
 

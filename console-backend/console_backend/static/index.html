@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bits-console — signing</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 760px; margin: 1.5rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin-top: 1.6rem; }
+  section { border: 1px solid #8884; border-radius: 8px; padding: .8rem 1rem; margin: 1rem 0; }
+  button { padding: .45rem .9rem; border-radius: 6px; border: 1px solid #8886; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  input, textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; }
+  textarea { min-height: 8rem; }
+  .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+  .muted { color: #8889; } code { font-family: ui-monospace, monospace; }
+  #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .8rem;
+         background: #8881; border-radius: 6px; padding: .6rem; max-height: 16rem; overflow: auto; }
+  .ok { color: #2a7; } .err { color: #c33; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<h1>bits-console — manifest signing</h1>
+
+<section id="who">
+  <div class="row">
+    <strong id="whoami">Checking session…</strong>
+    <span class="muted" id="roles"></span>
+    <span style="flex:1"></span>
+    <button id="loginBtn" class="hidden" onclick="location='/login'">Sign in with GitLab</button>
+    <button id="logoutBtn" class="hidden" onclick="logout()">Sign out</button>
+  </div>
+</section>
+
+<section id="enrollSec" class="hidden">
+  <h2>Passkey</h2>
+  <div class="muted" id="enrollHint"></div>
+  <div class="row" style="margin-top:.6rem">
+    <button id="enrollBtn" onclick="enroll()">Enrol / add a passkey</button>
+  </div>
+</section>
+
+<section id="grantSec" class="hidden">
+  <h2>Enrolment grant (bits-admin)</h2>
+  <div class="muted">Authorise a user to enrol their <em>first</em> passkey.</div>
+  <div class="row" style="margin-top:.6rem">
+    <input id="grantUser" placeholder="GitLab username" style="flex:1">
+    <button onclick="grant()">Grant</button>
+  </div>
+</section>
+
+<section id="signSec" class="hidden">
+  <h2>Sign a manifest</h2>
+  <div class="muted">Paste the common-manifest JSON. You'll approve the exact
+    content with your passkey (the challenge is its sha256 digest).</div>
+  <textarea id="manifest">{
+  "architecture": "slc7_x86-64",
+  "packages": [{"package": "Demo", "version": "1", "hash": "h1", "group": "lcg"}]
+}</textarea>
+  <div class="row" style="margin-top:.6rem">
+    <button id="signBtn" onclick="signManifest()">Request approval &amp; sign</button>
+  </div>
+</section>
+
+<h2>Log</h2>
+<div id="log"></div>
+
+<script>
+// ---- base64url / base64 helpers ------------------------------------------------
+const b64urlToBuf = s => {
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  s += '='.repeat((4 - s.length % 4) % 4);
+  const bin = atob(s), buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+};
+const bufToB64url = buf => {
+  const bytes = new Uint8Array(buf); let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+};
+const utf8ToB64 = str => btoa(unescape(encodeURIComponent(str)));  // std base64 of UTF-8
+
+const log = (msg, cls) => {
+  const el = document.getElementById('log');
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+  el.appendChild(line); el.scrollTop = el.scrollHeight;
+};
+const errText = async r => { try { return (await r.json()).detail || r.statusText; }
+                             catch (e) { return r.statusText; } };
+
+// ---- WebAuthn response packers -------------------------------------------------
+function packAttestation(cred) {
+  return { id: cred.id, rawId: bufToB64url(cred.rawId), type: cred.type,
+    response: { clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+                attestationObject: bufToB64url(cred.response.attestationObject) } };
+}
+function packAssertion(asr) {
+  const r = asr.response;
+  const out = { id: asr.id, rawId: bufToB64url(asr.rawId), type: asr.type,
+    response: { clientDataJSON: bufToB64url(r.clientDataJSON),
+                authenticatorData: bufToB64url(r.authenticatorData),
+                signature: bufToB64url(r.signature) } };
+  if (r.userHandle) out.response.userHandle = bufToB64url(r.userHandle);
+  return out;
+}
+function decodeRequestOptions(pk) {
+  pk.challenge = b64urlToBuf(pk.challenge);
+  if (pk.user) pk.user.id = b64urlToBuf(pk.user.id);
+  (pk.excludeCredentials || []).forEach(c => c.id = b64urlToBuf(c.id));
+  (pk.allowCredentials || []).forEach(c => c.id = b64urlToBuf(c.id));
+  return pk;
+}
+
+// ---- session ------------------------------------------------------------------
+let ME = null;
+async function refreshMe() {
+  const r = await fetch('/me');
+  if (r.status === 401) { ME = null; renderSession(); return; }
+  ME = await r.json(); renderSession();
+}
+function renderSession() {
+  const inn = !!ME;
+  document.getElementById('loginBtn').classList.toggle('hidden', inn);
+  document.getElementById('logoutBtn').classList.toggle('hidden', !inn);
+  ['enrollSec', 'signSec'].forEach(id => document.getElementById(id).classList.toggle('hidden', !inn));
+  document.getElementById('grantSec').classList.toggle('hidden', !(inn && ME.overall_admin));
+  if (!inn) { document.getElementById('whoami').textContent = 'Not signed in';
+              document.getElementById('roles').textContent = ''; return; }
+  document.getElementById('whoami').textContent = ME.user;
+  document.getElementById('roles').textContent =
+    (ME.overall_admin ? 'bits-admin' : 'admin: ' + (ME.admin_groups.join(', ') || 'none'));
+  document.getElementById('enrollHint').textContent =
+    'Adding another passkey requires step-up with an existing one; your first '
+    + 'needs a bits-admin grant.';
+}
+async function logout() { await fetch('/logout', { method: 'POST' }); await refreshMe(); log('Signed out'); }
+
+// ---- enrolment ----------------------------------------------------------------
+async function enroll() {
+  const btn = document.getElementById('enrollBtn'); btn.disabled = true;
+  try {
+    log('Enrol: requesting options…');
+    const r = await fetch('/webauthn/register/begin', { method: 'POST' });
+    if (!r.ok) { log('Enrol denied: ' + await errText(r), 'err'); return; }
+    const opts = await r.json();
+    const cred = await navigator.credentials.create({ publicKey: decodeRequestOptions(opts.publicKey) });
+    const payload = { attestation: packAttestation(cred) };
+    if (opts.stepup) {
+      log('Step-up: approve with an existing passkey…');
+      const su = await navigator.credentials.get({ publicKey: decodeRequestOptions(opts.stepup) });
+      payload.stepup = packAssertion(su);
+    }
+    const f = await fetch('/webauthn/register/finish',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    if (!f.ok) { log('Enrol failed: ' + await errText(f), 'err'); return; }
+    log('Passkey enrolled ✓', 'ok');
+  } catch (e) { log('Enrol error: ' + e, 'err'); }
+  finally { btn.disabled = false; }
+}
+
+// ---- grant --------------------------------------------------------------------
+async function grant() {
+  const user = document.getElementById('grantUser').value.trim();
+  if (!user) return;
+  const r = await fetch('/webauthn/grant',
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user }) });
+  log(r.ok ? ('Granted first-passkey enrolment to ' + user + ' ✓') : ('Grant failed: ' + await errText(r)),
+      r.ok ? 'ok' : 'err');
+}
+
+// ---- sign ---------------------------------------------------------------------
+async function signManifest() {
+  const btn = document.getElementById('signBtn'); btn.disabled = true;
+  const manifest = document.getElementById('manifest').value;
+  try {
+    log('Requesting approval (computing digest, checking admin rights)…');
+    const rq = await fetch('/sign/request', { method: 'POST', body: manifest });
+    if (!rq.ok) { log('Request denied: ' + await errText(rq), 'err'); return; }
+    const { request_id, publicKey } = await rq.json();
+    log('Approve on your device — the challenge is the manifest digest.');
+    const asr = await navigator.credentials.get({ publicKey: decodeRequestOptions(publicKey) });
+    const ap = await fetch('/sign/approve',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ request_id, assertion: packAssertion(asr), manifest: utf8ToB64(manifest) }) });
+    if (!ap.ok) { log('Approval/sign failed: ' + await errText(ap), 'err'); return; }
+    const out = await ap.json();
+    log('Signed ✓  key_id=' + out.envelope.key_id + '  groups=' + out.groups.join(','), 'ok');
+    log('signature: ' + out.envelope.sig);
+  } catch (e) { log('Sign error: ' + e, 'err'); }
+  finally { btn.disabled = false; }
+}
+
+if (!window.PublicKeyCredential) log('This browser has no WebAuthn support.', 'err');
+refreshMe();
+</script>
+</body>
+</html>

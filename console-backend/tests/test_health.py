@@ -22,6 +22,12 @@ class TestHealth(unittest.TestCase):
         self.assertTrue(body["bits_helpers"])
         self.assertIn("sign_proxy_configured", body)
 
+    def test_index_serves_pwa(self):
+        r = self.client.get("/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("manifest signing", r.text)
+        self.assertIn("navigator.credentials", r.text)
+
     def test_no_secret_in_health(self):
         # The health response must never leak the gate token or key material.
         text = self.client.get("/healthz").text.lower()
