@@ -1,15 +1,12 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""In-memory server-side session store + a short-lived login-state store.
-
-Sessions are keyed by an opaque high-entropy id carried in an httponly cookie;
-the id IS the secret (256-bit, unguessable), so no cookie signing is needed. Both
-stores are bounded (expiry sweep + oldest-eviction past a cap) so unauthenticated
-traffic cannot grow them without limit. Single-process only — a multi-instance
-deployment needs a shared store.
+"""In-memory, bounded stores for the backend's short-lived server-side state:
+pending sign requests, cross-device CLI requests, enrolment grants, and in-flight
+passkey-enrolment challenges. Each is bounded (expiry sweep + oldest-eviction past
+a cap) so unauthenticated traffic cannot grow it without limit. Single-process
+only — a multi-instance deployment needs a shared store.
 """
 
-import secrets
 import time
 
 
@@ -32,58 +29,6 @@ class _BoundedStore:
             self._sweep()
         while len(self._store) >= self._max:      # still full: drop the oldest
             self._store.pop(next(iter(self._store)), None)
-
-
-class SessionStore(_BoundedStore):
-    def __init__(self, ttl_seconds=28800, max_entries=50000):
-        super().__init__(ttl_seconds, max_entries)
-
-    def _exps(self):
-        return [(k, e["exp"]) for k, e in self._store.items()]
-
-    def create(self, data) -> str:
-        self._make_room()
-        sid = secrets.token_urlsafe(32)
-        self._store[sid] = {"data": data, "exp": time.time() + self._ttl}
-        return sid
-
-    def get(self, sid):
-        if not sid:
-            return None
-        entry = self._store.get(sid)
-        if not entry:
-            return None
-        if entry["exp"] < time.time():
-            self._store.pop(sid, None)
-            return None
-        return entry["data"]
-
-    def delete(self, sid):
-        if sid:
-            self._store.pop(sid, None)
-
-
-class LoginStateStore(_BoundedStore):
-    """Holds the PKCE verifier per ``state`` between /login and the callback.
-    Entries are single-use and expire quickly (CSRF + replay protection)."""
-
-    def __init__(self, ttl_seconds=600, max_entries=20000):
-        super().__init__(ttl_seconds, max_entries)
-
-    def _exps(self):
-        return [(k, exp) for k, (_v, exp) in self._store.items()]
-
-    def put(self, state: str, verifier: str):
-        self._make_room()
-        self._store[state] = (verifier, time.time() + self._ttl)
-
-    def take(self, state: str):
-        """Pop and return the verifier for *state*, or None if absent/expired."""
-        entry = self._store.pop(state, None)
-        if not entry:
-            return None
-        verifier, exp = entry
-        return verifier if exp >= time.time() else None
 
 
 class SignRequestStore(_BoundedStore):
@@ -156,3 +101,28 @@ class EnrollmentGrantStore(_BoundedStore):
     def take(self, user) -> bool:
         exp = self._store.pop(user, None)
         return exp is not None and exp >= time.time()
+
+
+class RegChallengeStore(_BoundedStore):
+    """In-flight passkey-enrolment challenges between /webauthn/register/begin and
+    /finish, keyed by username. Auth is stateless (no server session), so the
+    ceremony's challenge is held here instead of on a session. Short-lived and
+    single-use (popped at finish)."""
+
+    def __init__(self, ttl_seconds=300, max_entries=10000):
+        super().__init__(ttl_seconds, max_entries)
+
+    def _exps(self):
+        return [(k, e["exp"]) for k, e in self._store.items()]
+
+    def put(self, user, data):
+        self._make_room()
+        data = dict(data)
+        data["exp"] = time.time() + self._ttl
+        self._store[user] = data
+
+    def pop(self, user):
+        entry = self._store.pop(user, None)
+        if not entry:
+            return None
+        return entry if entry["exp"] >= time.time() else None

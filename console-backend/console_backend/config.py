@@ -38,6 +38,12 @@ class Settings:
         self.session_ttl_seconds = int(e.get("BITS_SESSION_TTL", "28800"))
         self.session_cookie_secure = e.get("BITS_SESSION_COOKIE_SECURE", "1") != "0"
 
+        # The GitLab Pages frontend origin (scheme+host) allowed to call this API
+        # cross-origin (CORS). Humans authenticate by sending the GitLab token their
+        # browser already holds as a bearer; this backend verifies it (identity.py)
+        # instead of running its own OAuth/session.
+        self.frontend_origin = e.get("BITS_FRONTEND_ORIGIN", "")
+
         # GitLab CI ID token (OIDC workload identity) verification (B4).
         self.oidc_issuer = e.get("BITS_OIDC_ISSUER", "")            # e.g. https://gitlab.cern.ch
         self.oidc_ci_audience = e.get("BITS_OIDC_CI_AUDIENCE", "")  # required 'aud' claim

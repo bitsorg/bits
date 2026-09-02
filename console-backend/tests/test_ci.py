@@ -92,7 +92,9 @@ class TestVerify(unittest.TestCase):
 class TestCISign(unittest.TestCase):
     def setUp(self):
         main.settings = _settings("proj/manifests lcg")   # may sign lcg only
-        main.sessions = main.session.SessionStore(60)
+        # A non-CI bearer would fall through to the human path; reject it fast so
+        # these CI tests never make a real GitLab /user call.
+        main.identity.verify_gitlab_token = lambda a, t, *x, **k: None
         self.client = TestClient(main.app, follow_redirects=False)
         self.sign_key = Ed25519PrivateKey.generate()
         os.environ["BITS_SIGN_PROXY_TOKEN"] = "gate"
@@ -126,8 +128,9 @@ class TestCISign(unittest.TestCase):
         for p in ps:
             p.start()
         try:
+            # JWT-shaped token so _authorize_sign routes it to the CI path.
             return self.client.post("/sign", content=body,
-                                    headers={"Authorization": "Bearer faketoken"})
+                                    headers={"Authorization": "Bearer aa.bb.cc"})
         finally:
             for p in ps:
                 p.stop()
@@ -153,7 +156,7 @@ class TestCISign(unittest.TestCase):
         with patch.object(main.ci_auth, "verify_ci_token",
                           side_effect=Exception("bad")):
             r = self.client.post("/sign", content=self._manifest(),
-                                 headers={"Authorization": "Bearer bad"})
+                                 headers={"Authorization": "Bearer aa.bb.cc"})
         self.assertEqual(r.status_code, 401)
 
 

@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bits-console backend — relying party and the ONLY client of the security-proxy.
 
-B1: health + config. B2: GitLab OAuth2 (Authorization Code + PKCE) performed
-server-side, so the browser never holds the access token — it lives in the
-server-side session. B3 (signing) and B4 (CI identity) layer on top.
+Humans are identified by the GitLab bearer token their browser already holds (the
+bits-console SPA obtains it via OAuth PKCE); this backend verifies it against
+GitLab rather than running its own OAuth/session. CI uses a GitLab ID token. The
+frontend is a separate origin (GitLab Pages), allowed via CORS.
 """
 
 import base64
@@ -14,44 +15,86 @@ import os
 import secrets
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import audit, authz, ci_auth, config, credentials, oauth, session, webauthn_rp
+from . import audit, authz, ci_auth, config, credentials, identity, session, webauthn_rp
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
 try:  # bits_helpers is provided by the surrounding bits repo (on PYTHONPATH).
-    from bits_helpers import forge, trust
+    from bits_helpers import trust
     _BITS_HELPERS = True
 except Exception:  # pragma: no cover - environment check only
-    forge = None
     trust = None
     _BITS_HELPERS = False
 
 settings = config.Settings()
-sessions = session.SessionStore(settings.session_ttl_seconds)
-login_states = session.LoginStateStore()
 credstore = credentials.CredentialStore(settings.credentials_path)
 sign_requests = session.SignRequestStore()
 cli_signs = session.CliSignStore()
 enroll_grants = session.EnrollmentGrantStore()
+reg_challenges = session.RegChallengeStore()
 
 app = FastAPI(title="bits-console backend", version="0.1.0")
 
 _STATIC = os.path.join(os.path.dirname(__file__), "static")
-_COOKIE = "bits_session"
+
+
+@app.middleware("http")
+async def _cors(request: Request, call_next):
+    """Allow the GitLab Pages frontend (a different origin) to call this API. The
+    page authenticates by sending the user's GitLab bearer token; no cookies are
+    used, so credentials are not allowed and the origin is matched exactly."""
+    origin = request.headers.get("origin")
+    allow = settings.frontend_origin
+    ok = bool(origin and allow and origin == allow)
+    if request.method == "OPTIONS" and ok:
+        resp = Response(status_code=204)
+    else:
+        resp = await call_next(request)
+    # Vary on Origin whether or not this one matched, so a shared cache never
+    # serves a CORS/no-CORS response to the wrong origin.
+    vary = resp.headers.get("vary")
+    if not vary:
+        resp.headers["Vary"] = "Origin"
+    elif "origin" not in vary.lower():
+        resp.headers["Vary"] = vary + ", Origin"
+    if ok:
+        resp.headers["Access-Control-Allow-Origin"] = allow
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+        resp.headers["Access-Control-Max-Age"] = "600"
+    return resp
 
 
 @app.get("/")
 def index():
-    """Serve the approver PWA (same origin, so WebAuthn rp_id/origin and the
-    session cookie just work). In production web.cern.ch may serve it instead."""
+    """Dev convenience: serve the bundled approver page. In the split-origin
+    deployment the real UI is the bits-console GitLab Pages site and this backend
+    is API-only."""
     return FileResponse(os.path.join(_STATIC, "index.html"))
-_STATE_COOKIE = "bits_oauth_state"
 
 
 def _current(request: Request):
-    return sessions.get(request.cookies.get(_COOKIE))
+    """Identify the caller from the GitLab bearer token their browser already holds
+    (verified against GitLab, briefly cached). Returns {'user','token'} or None. The
+    token doubles as the credential used to resolve the admin policy."""
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth[len("Bearer "):].strip()
+    if not token:
+        return None
+    user = identity.verify_gitlab_token(settings.gitlab_api_url, token)
+    if not user:
+        return None
+    return {"user": user, "token": token}
+
+
+async def _current_async(request: Request):
+    """`_current` does blocking GitLab I/O, so async endpoints offload it to a
+    thread rather than call it directly and stall the event loop."""
+    return await run_in_threadpool(_current, request)
 
 
 @app.get("/healthz")
@@ -65,74 +108,8 @@ def healthz():
     }
 
 
-@app.get("/login")
-def login():
-    """Start GitLab OAuth: redirect to the authorize endpoint with PKCE + state."""
-    if not settings.oidc_configured():
-        raise HTTPException(503, "OIDC is not configured")
-    verifier, challenge = oauth.new_pkce()
-    state = secrets.token_urlsafe(24)
-    login_states.put(state, verifier)
-    resp = RedirectResponse(oauth.authorize_url(settings, state, challenge),
-                            status_code=302)
-    # Bind the state to THIS browser (login-CSRF defence): the callback must
-    # present the same value back in a cookie, so an attacker cannot complete a
-    # login they started into the victim's browser.
-    resp.set_cookie(_STATE_COOKIE, state, httponly=True,
-                    secure=settings.session_cookie_secure, samesite="lax",
-                    max_age=600, path="/")
-    return resp
-
-
-@app.get("/oauth-callback")
-def oauth_callback(request: Request, code: str = "", state: str = "", error: str = ""):
-    """Exchange the code server-side, identify the user, establish a session."""
-    if error:
-        raise HTTPException(400, "authorization was denied or failed")
-    if not code or not state:
-        raise HTTPException(400, "missing code or state")
-    # Login-CSRF: the state must match the one bound to this browser at /login.
-    if request.cookies.get(_STATE_COOKIE) != state:
-        raise HTTPException(400, "state does not match this browser")
-    verifier = login_states.take(state)   # single-use; None if unknown/expired
-    if verifier is None:
-        raise HTTPException(400, "invalid or expired login state")
-    try:
-        token = oauth.exchange_code(settings, code, verifier)
-    except RuntimeError as exc:
-        raise HTTPException(502, str(exc))
-    try:
-        user = forge.gitlab_identify(settings.gitlab_api_url, token) if forge else None
-    except Exception:
-        raise HTTPException(502, "GitLab identity lookup failed")
-    if not user:
-        raise HTTPException(401, "could not identify the GitLab user")
-    sid = sessions.create({"user": user, "token": token})
-    # Fixed redirect target (never a user-supplied URL) to avoid open redirects.
-    resp = RedirectResponse("/", status_code=302)
-    resp.set_cookie(_COOKIE, sid, httponly=True, secure=settings.session_cookie_secure,
-                    samesite="lax", max_age=settings.session_ttl_seconds, path="/")
-    resp.delete_cookie(_STATE_COOKIE, path="/")
-    return resp
-
-
 def _resolved_policy(token):
     return authz.resolved_admin_policy(settings, token)
-
-
-def require_community_admin(request: Request, group: str) -> str:
-    """Gate for signing (B3): 401 if not logged in, 400 if no group is given,
-    403 if the session user is not an admin of *group*. Returns the username on
-    success. A falsy *group* must NOT fall through to any default (fail closed)."""
-    data = _current(request)
-    if not data:
-        raise HTTPException(401, "not authenticated")
-    if not group:
-        raise HTTPException(400, "no group specified")
-    user = data["user"]
-    if not authz.is_admin_for(user, group, _resolved_policy(data["token"])):
-        raise HTTPException(403, "%s is not a community admin for '%s'" % (user, group))
-    return user
 
 
 @app.get("/me")
@@ -171,25 +148,27 @@ def _groups_of(manifest) -> list:
 async def _authorize_sign(request: Request, groups):
     """Resolve the signing principal and the groups it is NOT allowed to sign.
 
-    CI (``Authorization: Bearer <GitLab CI ID token>``) is authorized by the
-    token's project against the CI-signer policy; a human is authorized by the
-    session + community-admin policy. Returns ``(signer, principal_fields,
+    A JWT-shaped bearer is tried as a GitLab CI ID token (verified against GitLab's
+    JWKS) and authorized by its project against the CI-signer policy. Any other
+    bearer is treated as a human's GitLab token (verified via GET /user) and
+    authorized by the community-admin policy. Returns ``(signer, principal_fields,
     denied_groups)``; raises 401 for a bad/absent principal.
     """
     auth = request.headers.get("authorization", "")
-    if auth.startswith("Bearer "):
-        token = auth[len("Bearer "):].strip()
+    token = auth[len("Bearer "):].strip() if auth.startswith("Bearer ") else ""
+    if token and token.count(".") == 2:      # JWT-shaped -> the CI ID-token path
         try:
             claims = await run_in_threadpool(ci_auth.verify_ci_token, token, settings)
         except Exception:
-            raise HTTPException(401, "invalid CI token")
-        project = str(claims.get("project_path") or "")
-        pol = ci_auth.load_ci_signers(settings)
-        denied = [g for g in groups if not ci_auth.is_ci_authorized(project, g, pol)]
-        return ("ci:%s" % project,
-                {"principal": "ci", "project": project, "ref": claims.get("ref")},
-                denied)
-    data = _current(request)
+            claims = None
+        if claims is not None:
+            project = str(claims.get("project_path") or "")
+            pol = ci_auth.load_ci_signers(settings)
+            denied = [g for g in groups if not ci_auth.is_ci_authorized(project, g, pol)]
+            return ("ci:%s" % project,
+                    {"principal": "ci", "project": project, "ref": claims.get("ref")},
+                    denied)
+    data = await _current_async(request)   # human: the bearer is the user's GitLab token
     if not data:
         raise HTTPException(401, "not authenticated")
     user = data["user"]
@@ -281,7 +260,7 @@ async def sign_request(request: Request):
     """Human approval, step 1: authorize and return a WebAuthn challenge that IS
     the manifest digest (content binding). The manifest is held server-side so
     approval signs exactly these bytes."""
-    data = _current(request)
+    data = await _current_async(request)
     if not data:
         raise HTTPException(401, "not authenticated")
     if not settings.webauthn_configured():
@@ -314,7 +293,7 @@ async def sign_approve(request: Request):
     """Human approval, step 2: re-submit the manifest with the digest-bound
     WebAuthn assertion. The manifest must hash to the approved digest AND the
     assertion must verify over it; then persist the sign counter and sign."""
-    data = _current(request)
+    data = await _current_async(request)
     if not data:
         raise HTTPException(401, "not authenticated")
     proxy_token = _proxy_token_or_503()
@@ -408,7 +387,7 @@ def cli_pending(req_id: str, request: Request):
 async def cli_approve(req_id: str, request: Request):
     """Browser approver: verify the digest-bound assertion and sign the stored
     manifest, storing the result for the CLI to poll."""
-    data = _current(request)
+    data = await _current_async(request)
     if not data:
         raise HTTPException(401, "not authenticated")
     proxy_token = _proxy_token_or_503()
@@ -471,7 +450,7 @@ def cli_result(req_id: str):
 @app.post("/webauthn/grant")
 async def webauthn_grant(request: Request):
     """A bits-admin grants a user permission to enrol their FIRST passkey."""
-    data = _current(request)
+    data = await _current_async(request)
     if not data:
         raise HTTPException(401, "not authenticated")
     if not settings.webauthn_configured():
@@ -495,34 +474,36 @@ async def webauthn_grant(request: Request):
 def webauthn_register_begin(request: Request):
     """Start passkey enrolment. A first passkey needs a bits-admin grant (checked
     at finish); adding another needs step-up with an existing passkey (challenged
-    here)."""
+    here). The in-flight challenge is held server-side keyed by user (auth is
+    stateless)."""
     data = _current(request)
     if not data:
         raise HTTPException(401, "not authenticated")
     if not settings.webauthn_configured():
         raise HTTPException(503, "WebAuthn is not configured")
-    existing = credstore.get(data["user"])
-    options_json, challenge = webauthn_rp.registration_options(
-        settings, data["user"], existing)
-    data["reg_challenge"] = bytes_to_base64url(challenge)
+    user = data["user"]
+    existing = credstore.get(user)
+    options_json, challenge = webauthn_rp.registration_options(settings, user, existing)
+    entry = {"reg_challenge": bytes_to_base64url(challenge), "stepup_challenge": None}
     resp = {"publicKey": json.loads(options_json)}
     if existing and settings.enrollment_authority:
         stepup = secrets.token_bytes(32)
-        data["stepup_challenge"] = bytes_to_base64url(stepup)
+        entry["stepup_challenge"] = bytes_to_base64url(stepup)
         resp["stepup"] = json.loads(
             webauthn_rp.authentication_options(settings, stepup, existing))
-    else:
-        data.pop("stepup_challenge", None)
+    reg_challenges.put(user, entry)
     return resp
 
 
 @app.post("/webauthn/register/finish")
 async def webauthn_register_finish(request: Request):
-    data = _current(request)
+    data = await _current_async(request)
     if not data:
         raise HTTPException(401, "not authenticated")
-    challenge = data.pop("reg_challenge", None)
-    stepup_challenge = data.pop("stepup_challenge", None)
+    user = data["user"]
+    pending = reg_challenges.pop(user)   # single-use
+    challenge = pending.get("reg_challenge") if pending else None
+    stepup_challenge = pending.get("stepup_challenge") if pending else None
     if not challenge:
         raise HTTPException(400, "no registration in progress")
     body = await _read_capped(request, 65536)
@@ -532,7 +513,6 @@ async def webauthn_register_finish(request: Request):
     except (ValueError, KeyError, TypeError):
         raise HTTPException(400, "expected {attestation, [stepup]}")
 
-    user = data["user"]
     existing = credstore.get(user)
     if settings.enrollment_authority:
         if existing:
@@ -566,9 +546,3 @@ async def webauthn_register_finish(request: Request):
     return {"status": "enrolled", "credential_id": cred["id"]}
 
 
-@app.post("/logout")
-def logout(request: Request):
-    sessions.delete(request.cookies.get(_COOKIE))
-    resp = JSONResponse({"status": "logged out"})
-    resp.delete_cookie(_COOKIE, path="/")
-    return resp

@@ -57,7 +57,8 @@ class TestEnrollmentAuthority(unittest.TestCase):
             "BITS_WEBAUTHN_CREDENTIALS": path, "BITS_WEBAUTHN_REQUIRE_UV": "0",
             "BITS_ADMINS_POLICY": "* @root\nlcg @alice",   # root overall, alice lcg
             "BITS_SESSION_COOKIE_SECURE": "0"})            # authority ON (default)
-        main.sessions = main.session.SessionStore(60)
+        main.identity.verify_gitlab_token = lambda a, t, *x, **k: t or None
+        main.reg_challenges = main.session.RegChallengeStore()
         main.credstore = credentials.CredentialStore(path)
         main.enroll_grants = main.session.EnrollmentGrantStore()
         self.client = TestClient(main.app, follow_redirects=False)
@@ -66,20 +67,20 @@ class TestEnrollmentAuthority(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _sess(self, user):
-        return {"bits_session": main.sessions.create({"user": user, "token": "t"})}
+        return {"Authorization": "Bearer %s" % user}
 
     def _begin(self, cookies):
-        return self.client.post("/webauthn/register/begin", cookies=cookies).json()
+        return self.client.post("/webauthn/register/begin", headers=cookies).json()
 
     def _finish(self, payload, cookies):
-        return self.client.post("/webauthn/register/finish", json=payload, cookies=cookies)
+        return self.client.post("/webauthn/register/finish", json=payload, headers=cookies)
 
     def test_only_bits_admin_can_grant(self):
         # alice administers lcg but is not a bits (overall) admin -> 403
-        r = self.client.post("/webauthn/grant", json={"user": "alice"}, cookies=self._sess("alice"))
+        r = self.client.post("/webauthn/grant", json={"user": "alice"}, headers=self._sess("alice"))
         self.assertEqual(r.status_code, 403)
         # root is overall -> 200
-        r = self.client.post("/webauthn/grant", json={"user": "alice"}, cookies=self._sess("root"))
+        r = self.client.post("/webauthn/grant", json={"user": "alice"}, headers=self._sess("root"))
         self.assertEqual(r.status_code, 200)
 
     def test_first_enrolment_denied_without_grant(self):
@@ -89,20 +90,20 @@ class TestEnrollmentAuthority(unittest.TestCase):
         self.assertEqual(r.status_code, 403)
 
     def test_first_enrolment_allowed_with_grant(self):
-        self.client.post("/webauthn/grant", json={"user": "alice"}, cookies=self._sess("root"))
+        self.client.post("/webauthn/grant", json={"user": "alice"}, headers=self._sess("root"))
         c = self._sess("alice")
         att = _attestation(SoftWebauthnDevice(), json.dumps(self._begin(c)["publicKey"]))
         self.assertEqual(self._finish({"attestation": att}, c).status_code, 200)
         self.assertEqual(len(main.credstore.get("alice")), 1)
 
     def test_grant_is_single_use(self):
-        self.client.post("/webauthn/grant", json={"user": "alice"}, cookies=self._sess("root"))
+        self.client.post("/webauthn/grant", json={"user": "alice"}, headers=self._sess("root"))
         c = self._sess("alice")
         att = _attestation(SoftWebauthnDevice(), json.dumps(self._begin(c)["publicKey"]))
         self._finish({"attestation": att}, c)                    # consumes the grant
         # a would-be second FIRST enrolment... but now alice has a cred, so it's a
         # step-up path; the point is the grant is gone. Verify via a fresh user:
-        self.client.post("/webauthn/grant", json={"user": "bob"}, cookies=self._sess("root"))
+        self.client.post("/webauthn/grant", json={"user": "bob"}, headers=self._sess("root"))
         cb = self._sess("bob")
         a1 = _attestation(SoftWebauthnDevice(), json.dumps(self._begin(cb)["publicKey"]))
         self.assertEqual(self._finish({"attestation": a1}, cb).status_code, 200)   # grant used
@@ -112,7 +113,7 @@ class TestEnrollmentAuthority(unittest.TestCase):
 
     def test_subsequent_enrolment_requires_stepup(self):
         # Bootstrap alice's first passkey (device1) via a grant.
-        self.client.post("/webauthn/grant", json={"user": "alice"}, cookies=self._sess("root"))
+        self.client.post("/webauthn/grant", json={"user": "alice"}, headers=self._sess("root"))
         c = self._sess("alice")
         dev1 = SoftWebauthnDevice()
         a1 = _attestation(dev1, json.dumps(self._begin(c)["publicKey"]))

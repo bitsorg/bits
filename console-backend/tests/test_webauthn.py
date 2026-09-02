@@ -77,7 +77,8 @@ class TestEnrollEndpoints(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         path = os.path.join(self.dir, "creds.json")
         main.settings = _settings(path)
-        main.sessions = main.session.SessionStore(60)
+        main.identity.verify_gitlab_token = lambda a, t, *x, **k: t or None
+        main.reg_challenges = main.session.RegChallengeStore()
         main.credstore = credentials.CredentialStore(path)
         self.client = TestClient(main.app, follow_redirects=False)
         self.device = SoftWebauthnDevice()
@@ -85,32 +86,30 @@ class TestEnrollEndpoints(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def test_begin_requires_session(self):
+    def test_begin_requires_auth(self):
         self.assertEqual(self.client.post("/webauthn/register/begin").status_code, 401)
 
     def test_begin_requires_config(self):
-        main.settings = config.Settings(env={"BITS_SESSION_COOKIE_SECURE": "0"})
-        sid = main.sessions.create({"user": "alice", "token": "t"})
-        r = self.client.post("/webauthn/register/begin", cookies={"bits_session": sid})
+        main.settings = config.Settings(env={})
+        r = self.client.post("/webauthn/register/begin",
+                             headers={"Authorization": "Bearer alice"})
         self.assertEqual(r.status_code, 503)
 
     def test_full_enrollment(self):
-        sid = main.sessions.create({"user": "alice", "token": "t"})
-        c = {"bits_session": sid}
-        begin = self.client.post("/webauthn/register/begin", cookies=c)
+        c = {"Authorization": "Bearer alice"}
+        begin = self.client.post("/webauthn/register/begin", headers=c)
         self.assertEqual(begin.status_code, 200)
         pk = begin.json()["publicKey"]
         att = _attestation(self.device, json.dumps(pk))
         finish = self.client.post("/webauthn/register/finish",
-                                  json={"attestation": json.loads(att)}, cookies=c)
+                                  json={"attestation": json.loads(att)}, headers=c)
         self.assertEqual(finish.status_code, 200)
         self.assertEqual(finish.json()["status"], "enrolled")
         self.assertEqual(len(main.credstore.get("alice")), 1)
 
     def test_finish_without_begin_400(self):
-        sid = main.sessions.create({"user": "alice", "token": "t"})
         r = self.client.post("/webauthn/register/finish", content=b"{}",
-                             cookies={"bits_session": sid})
+                             headers={"Authorization": "Bearer alice"})
         self.assertEqual(r.status_code, 400)
 
 
@@ -160,6 +159,17 @@ class TestDigestBinding(unittest.TestCase):
         webauthn_rp.verify_authentication(s_nouv, assertion, digest, cred)   # UV off: ok
         with self.assertRaises(Exception):
             webauthn_rp.verify_authentication(s_uv, assertion, digest, cred)  # UV on: reject
+
+
+class TestRegChallengeStore(unittest.TestCase):
+    def test_bounded_and_single_use(self):
+        st = main.session.RegChallengeStore(ttl_seconds=600, max_entries=5)
+        for i in range(50):
+            st.put("u%d" % i, {"reg_challenge": "c"})
+        self.assertLessEqual(len(st._store), 5)      # bounded (anti-DoS)
+        st.put("alice", {"reg_challenge": "x"})
+        self.assertIsNotNone(st.pop("alice"))
+        self.assertIsNone(st.pop("alice"))           # single-use
 
 
 if __name__ == "__main__":

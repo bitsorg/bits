@@ -1,130 +1,93 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""B2 tests: server-side OAuth login/callback/session, without a real GitLab.
-
-The token exchange and gitlab_identify are patched; we assert the flow logic —
-PKCE+state on /login, single-use state, a server-side session cookie, /me
-gated by it, and that the access token never reaches the client.
+"""Auth tests: the backend identifies a caller from the GitLab bearer token the
+bits-console SPA already holds (no server-side OAuth/session), and CORS allows the
+configured Pages frontend origin.
 """
 
 import unittest
-import urllib.parse
-from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from console_backend import config, main
 
+FRONT = "https://bits-console.web.cern.ch"
 
-def _configure():
-    # Point the app at a fake, fully-configured OIDC + non-secure cookie for http.
+
+def _configure(identity_ok=True):
     main.settings = config.Settings(env={
         "GITLAB_API_URL": "https://gitlab.example/api/v4",
-        "BITS_OIDC_AUTHORIZE_URL": "https://gitlab.example/oauth/authorize",
-        "BITS_OIDC_TOKEN_URL": "https://gitlab.example/oauth/token",
-        "BITS_CONSOLE_OIDC_CLIENT_ID": "cid",
-        "BITS_OIDC_REDIRECT_URI": "https://console.example/oauth-callback",
-        "BITS_SESSION_COOKIE_SECURE": "0",
+        "BITS_ADMINS_POLICY": "* @root\nlcg @alice",
+        "BITS_FRONTEND_ORIGIN": FRONT,
     })
-    main.sessions = main.session.SessionStore(60)
-    main.login_states = main.session.LoginStateStore()
+    # Test double: the bearer token IS the username (no GitLab round-trip). When
+    # identity_ok is False, every token is rejected (simulates an invalid token).
+    main.identity.verify_gitlab_token = (
+        (lambda api, tok, *a, **k: tok or None) if identity_ok
+        else (lambda api, tok, *a, **k: None))
 
 
-class TestAuthFlow(unittest.TestCase):
+class TestBearerAuth(unittest.TestCase):
     def setUp(self):
         _configure()
         self.client = TestClient(main.app, follow_redirects=False)
 
-    def _login_state(self):
-        r = self.client.get("/login")
-        self.assertEqual(r.status_code, 302)
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(r.headers["location"]).query)
-        self.assertEqual(q["code_challenge_method"], ["S256"])
-        self.assertIn("code_challenge", q)
-        return q["state"][0]
+    def _bearer(self, user):
+        return {"Authorization": "Bearer %s" % user}
 
-    def test_login_redirects_with_pkce_and_state(self):
-        state = self._login_state()
-        self.assertTrue(state)
-
-    def test_callback_establishes_session_and_me_works(self):
-        state = self._login_state()
-        with patch.object(main.oauth, "exchange_code", return_value="gl-access-tok"), \
-             patch.object(main.forge, "gitlab_identify", return_value="alice"):
-            r = self.client.get("/oauth-callback",
-                                params={"code": "c", "state": state})
-        self.assertEqual(r.status_code, 302)
-        self.assertIn("bits_session", r.cookies)
-        sid = r.cookies["bits_session"]
-        # The access token must NOT be exposed to the client anywhere.
-        self.assertNotIn("gl-access-tok", r.headers.get("set-cookie", ""))
-        me = self.client.get("/me", cookies={"bits_session": sid})
-        self.assertEqual(me.status_code, 200)
-        self.assertEqual(me.json()["user"], "alice")
-        self.assertNotIn("gl-access-tok", me.text)
-
-    def test_me_without_session_is_401(self):
+    def test_me_requires_a_bearer(self):
         self.assertEqual(self.client.get("/me").status_code, 401)
 
-    def test_bad_state_rejected(self):
-        with patch.object(main.oauth, "exchange_code", return_value="x"), \
-             patch.object(main.forge, "gitlab_identify", return_value="alice"):
-            r = self.client.get("/oauth-callback",
-                                params={"code": "c", "state": "forged"})
-        self.assertEqual(r.status_code, 400)
+    def test_me_with_valid_bearer(self):
+        r = self.client.get("/me", headers=self._bearer("alice"))
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["user"], "alice")
+        self.assertEqual(body["admin_groups"], ["lcg"])
+        self.assertFalse(body["overall_admin"])
 
-    def test_state_is_single_use(self):
-        state = self._login_state()
-        with patch.object(main.oauth, "exchange_code", return_value="x"), \
-             patch.object(main.forge, "gitlab_identify", return_value="alice"):
-            first = self.client.get("/oauth-callback",
-                                    params={"code": "c", "state": state})
-            second = self.client.get("/oauth-callback",
-                                     params={"code": "c", "state": state})
-        self.assertEqual(first.status_code, 302)
-        self.assertEqual(second.status_code, 400)   # state consumed
+    def test_me_overall_admin(self):
+        r = self.client.get("/me", headers=self._bearer("root"))
+        self.assertTrue(r.json()["overall_admin"])
 
-    def test_login_csrf_state_must_be_bound_to_browser(self):
-        # Attacker's browser (A) starts a login and captures a live state.
-        a = TestClient(main.app, follow_redirects=False)
-        loc = a.get("/login").headers["location"]
-        state = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)["state"][0]
-        # Victim's browser (B) has no matching state cookie -> must be rejected,
-        # so the attacker cannot log the victim in under the attacker's identity.
-        b = TestClient(main.app, follow_redirects=False)
-        with patch.object(main.oauth, "exchange_code", return_value="x"), \
-             patch.object(main.forge, "gitlab_identify", return_value="attacker"):
-            r = b.get("/oauth-callback", params={"code": "c", "state": state})
-        self.assertEqual(r.status_code, 400)
+    def test_invalid_token_is_401(self):
+        _configure(identity_ok=False)
+        self.assertEqual(
+            self.client.get("/me", headers=self._bearer("whoever")).status_code, 401)
 
-    def test_callback_error_param_rejected(self):
-        r = self.client.get("/oauth-callback",
-                            params={"error": "access_denied", "state": "x"})
-        self.assertEqual(r.status_code, 400)
+    def test_malformed_authorization_header_401(self):
+        self.assertEqual(
+            self.client.get("/me", headers={"Authorization": "Basic x"}).status_code, 401)
 
-    def test_callback_missing_params_rejected(self):
-        self.assertEqual(self.client.get("/oauth-callback").status_code, 400)
+    def test_no_access_token_stored_or_returned(self):
+        # /me must not echo the bearer back to the caller anywhere.
+        r = self.client.get("/me", headers=self._bearer("alice"))
+        self.assertNotIn("Authorization", r.text)
 
-    def test_login_state_store_is_bounded(self):
-        st = main.session.LoginStateStore(ttl_seconds=600, max_entries=5)
-        for i in range(50):
-            st.put("s%d" % i, "v")
-        self.assertLessEqual(len(st._store), 5)
 
-    def test_session_store_is_bounded(self):
-        ss = main.session.SessionStore(ttl_seconds=600, max_entries=5)
-        for i in range(50):
-            ss.create({"user": "u%d" % i})
-        self.assertLessEqual(len(ss._store), 5)
+class TestCORS(unittest.TestCase):
+    def setUp(self):
+        _configure()
+        self.client = TestClient(main.app, follow_redirects=False)
 
-    def test_logout_clears_session(self):
-        state = self._login_state()
-        with patch.object(main.oauth, "exchange_code", return_value="x"), \
-             patch.object(main.forge, "gitlab_identify", return_value="bob"):
-            r = self.client.get("/oauth-callback", params={"code": "c", "state": state})
-        sid = r.cookies["bits_session"]
-        self.client.post("/logout", cookies={"bits_session": sid})
-        self.assertEqual(self.client.get("/me", cookies={"bits_session": sid}).status_code, 401)
+    def test_preflight_from_frontend_is_allowed(self):
+        r = self.client.options("/sign/request", headers={
+            "Origin": FRONT,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization"})
+        self.assertEqual(r.status_code, 204)
+        self.assertEqual(r.headers.get("access-control-allow-origin"), FRONT)
+        self.assertIn("Authorization", r.headers.get("access-control-allow-headers", ""))
+
+    def test_response_carries_allow_origin_for_frontend(self):
+        r = self.client.get("/me", headers={
+            "Origin": FRONT, "Authorization": "Bearer alice"})
+        self.assertEqual(r.headers.get("access-control-allow-origin"), FRONT)
+
+    def test_other_origin_gets_no_allow_header(self):
+        r = self.client.get("/me", headers={
+            "Origin": "https://evil.example", "Authorization": "Bearer alice"})
+        self.assertIsNone(r.headers.get("access-control-allow-origin"))
 
 
 if __name__ == "__main__":

@@ -68,7 +68,7 @@ class TestApproval(unittest.TestCase):
             "BITS_SIGN_PROXY_URL": "http://proxy/sign/bits",
             "BITS_ADMINS_POLICY": "lcg @alice\ncommon @root",
             "BITS_SESSION_COOKIE_SECURE": "0"})
-        main.sessions = main.session.SessionStore(60)
+        main.identity.verify_gitlab_token = lambda a, t, *x, **k: t or None
         main.credstore = credentials.CredentialStore(path)
         main.sign_requests = main.session.SignRequestStore()
         self.client = TestClient(main.app, follow_redirects=False)
@@ -98,7 +98,7 @@ class TestApproval(unittest.TestCase):
         ]
 
     def _alice(self):
-        return {"bits_session": main.sessions.create({"user": "alice", "token": "t"})}
+        return {"Authorization": "Bearer alice"}
 
     @staticmethod
     def _b64(body):
@@ -107,13 +107,13 @@ class TestApproval(unittest.TestCase):
     def test_approval_signs_over_exact_bytes(self):
         c = self._alice()
         body = self._manifest()
-        rj = self.client.post("/sign/request", content=body, cookies=c).json()
+        rj = self.client.post("/sign/request", content=body, headers=c).json()
         assertion = _assertion(self.device, rj["publicKey"])
         ps = self._patch_proxy()
         for p in ps:
             p.start()
         try:
-            appr = self.client.post("/sign/approve", cookies=c,
+            appr = self.client.post("/sign/approve", headers=c,
                                     json={"request_id": rj["request_id"], "assertion": assertion,
                                           "manifest": self._b64(body)})
         finally:
@@ -127,7 +127,7 @@ class TestApproval(unittest.TestCase):
 
     def test_single_shot_blocked_when_enrolled(self):
         c = self._alice()
-        r = self.client.post("/sign", content=self._manifest(), cookies=c)
+        r = self.client.post("/sign", content=self._manifest(), headers=c)
         self.assertEqual(r.status_code, 409)
 
     def test_webauthn_required_blocks_passkeyless_human(self):
@@ -135,25 +135,24 @@ class TestApproval(unittest.TestCase):
         # single-shot /sign must be blocked (mandatory 2nd factor).
         main.settings.webauthn_required = True
         try:
-            sid = main.sessions.create({"user": "root", "token": "t"})
             r = self.client.post("/sign", content=self._manifest(group="common"),
-                                 cookies={"bits_session": sid})
+                                 headers={"Authorization": "Bearer root"})
             self.assertEqual(r.status_code, 409)
         finally:
             main.settings.webauthn_required = False
 
     def test_request_requires_admin(self):
         c = self._alice()
-        r = self.client.post("/sign/request", content=self._manifest(group="common"), cookies=c)
+        r = self.client.post("/sign/request", content=self._manifest(group="common"), headers=c)
         self.assertEqual(r.status_code, 403)
 
     def test_approval_for_a_different_digest_rejected(self):
         # Approve request A with an assertion produced for request B's challenge.
         c = self._alice()
-        ra = self.client.post("/sign/request", content=self._manifest("A"), cookies=c).json()
-        rb = self.client.post("/sign/request", content=self._manifest("B"), cookies=c).json()
+        ra = self.client.post("/sign/request", content=self._manifest("A"), headers=c).json()
+        rb = self.client.post("/sign/request", content=self._manifest("B"), headers=c).json()
         assertion_for_b = _assertion(self.device, rb["publicKey"])
-        appr = self.client.post("/sign/approve", cookies=c,
+        appr = self.client.post("/sign/approve", headers=c,
                                 json={"request_id": ra["request_id"], "assertion": assertion_for_b,
                                       "manifest": self._b64(self._manifest("A"))})
         self.assertEqual(appr.status_code, 403)
@@ -161,10 +160,10 @@ class TestApproval(unittest.TestCase):
     def test_resubmitted_manifest_must_match_digest(self):
         c = self._alice()
         body = self._manifest("A")
-        rj = self.client.post("/sign/request", content=body, cookies=c).json()
+        rj = self.client.post("/sign/request", content=body, headers=c).json()
         assertion = _assertion(self.device, rj["publicKey"])
         # A different manifest than was approved must be rejected before signing.
-        appr = self.client.post("/sign/approve", cookies=c,
+        appr = self.client.post("/sign/approve", headers=c,
             json={"request_id": rj["request_id"], "assertion": assertion,
                   "manifest": self._b64(self._manifest("TAMPERED"))})
         self.assertEqual(appr.status_code, 400)
@@ -172,7 +171,7 @@ class TestApproval(unittest.TestCase):
     def test_request_is_single_use(self):
         c = self._alice()
         body = self._manifest("A")
-        rj = self.client.post("/sign/request", content=body, cookies=c).json()
+        rj = self.client.post("/sign/request", content=body, headers=c).json()
         payload = {"request_id": rj["request_id"],
                    "assertion": _assertion(self.device, rj["publicKey"]),
                    "manifest": self._b64(body)}
@@ -180,8 +179,8 @@ class TestApproval(unittest.TestCase):
         for p in ps:
             p.start()
         try:
-            first = self.client.post("/sign/approve", cookies=c, json=payload)
-            second = self.client.post("/sign/approve", cookies=c, json=payload)
+            first = self.client.post("/sign/approve", headers=c, json=payload)
+            second = self.client.post("/sign/approve", headers=c, json=payload)
         finally:
             for p in ps:
                 p.stop()
@@ -190,10 +189,10 @@ class TestApproval(unittest.TestCase):
 
     def test_foreign_request_rejected(self):
         c = self._alice()
-        ra = self.client.post("/sign/request", content=self._manifest(), cookies=c).json()
+        ra = self.client.post("/sign/request", content=self._manifest(), headers=c).json()
         assertion = _assertion(self.device, ra["publicKey"])
-        bob = {"bits_session": main.sessions.create({"user": "bob", "token": "t"})}
-        appr = self.client.post("/sign/approve", cookies=bob,
+        bob = {"Authorization": "Bearer bob"}
+        appr = self.client.post("/sign/approve", headers=bob,
                                 json={"request_id": ra["request_id"], "assertion": assertion,
                                       "manifest": self._b64(self._manifest())})
         self.assertEqual(appr.status_code, 400)

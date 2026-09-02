@@ -25,7 +25,7 @@ def _configure(policy="lcg @alice\ncommon @root"):
         "BITS_SIGN_PROXY_URL": "http://proxy/sign/bits",
         "BITS_SESSION_COOKIE_SECURE": "0",
     })
-    main.sessions = main.session.SessionStore(60)
+    main.identity.verify_gitlab_token = lambda a, t, *x, **k: t or None
 
 
 def _manifest(group="lcg"):
@@ -44,7 +44,7 @@ class TestSign(unittest.TestCase):
         os.environ.pop("BITS_SIGN_PROXY_TOKEN", None)
 
     def _session(self, user):
-        return main.sessions.create({"user": user, "token": "t"})
+        return {"Authorization": "Bearer %s" % user}
 
     def _patched(self, policy=None):
         # Fake proxy: sign with our known key; pubkey/keyid from it.
@@ -68,7 +68,7 @@ class TestSign(unittest.TestCase):
         for p in ps:
             p.start()
         try:
-            r = self.client.post("/sign", content=body, cookies={"bits_session": sid})
+            r = self.client.post("/sign", content=body, headers=sid)
         finally:
             for p in ps:
                 p.stop()
@@ -92,7 +92,7 @@ class TestSign(unittest.TestCase):
         for p in ps:
             p.start()
         try:
-            r = self.client.post("/sign", content=body, cookies={"bits_session": sid})
+            r = self.client.post("/sign", content=body, headers=sid)
         finally:
             for p in ps:
                 p.stop()
@@ -107,7 +107,7 @@ class TestSign(unittest.TestCase):
         for p in ps:
             p.start()
         try:
-            r = self.client.post("/sign", content=body, cookies={"bits_session": sid})
+            r = self.client.post("/sign", content=body, headers=sid)
         finally:
             for p in ps:
                 p.stop()
@@ -115,7 +115,7 @@ class TestSign(unittest.TestCase):
 
     def test_sign_bad_json_400(self):
         sid = self._session("alice")
-        r = self.client.post("/sign", content=b"not json", cookies={"bits_session": sid})
+        r = self.client.post("/sign", content=b"not json", headers=sid)
         self.assertEqual(r.status_code, 400)
 
     def test_sign_rejects_oversized_body(self):
@@ -124,7 +124,7 @@ class TestSign(unittest.TestCase):
         main._MAX_BODY = 10
         try:
             r = self.client.post("/sign", content=_manifest("lcg"),
-                                 cookies={"bits_session": sid})
+                                 headers=sid)
         finally:
             main._MAX_BODY = orig
         self.assertEqual(r.status_code, 413)
@@ -138,7 +138,7 @@ class TestSign(unittest.TestCase):
             p.start()
         try:
             r = self.client.post("/sign", content=b'{"packages": ["junk"]}',
-                                 cookies={"bits_session": sid})
+                                 headers=sid)
         finally:
             for p in ps:
                 p.stop()
@@ -147,7 +147,7 @@ class TestSign(unittest.TestCase):
     def test_sign_no_proxy_token_503(self):
         os.environ.pop("BITS_SIGN_PROXY_TOKEN", None)
         sid = self._session("alice")
-        r = self.client.post("/sign", content=_manifest(), cookies={"bits_session": sid})
+        r = self.client.post("/sign", content=_manifest(), headers=sid)
         self.assertEqual(r.status_code, 503)
 
 

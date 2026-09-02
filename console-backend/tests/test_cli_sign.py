@@ -62,7 +62,7 @@ class TestCliSign(unittest.TestCase):
             "BITS_SIGN_PROXY_URL": "http://proxy/sign/bits",
             "BITS_ADMINS_POLICY": "lcg @alice",
             "BITS_SESSION_COOKIE_SECURE": "0"})
-        main.sessions = main.session.SessionStore(60)
+        main.identity.verify_gitlab_token = lambda a, t, *x, **k: t or None
         main.credstore = credentials.CredentialStore(path)
         main.cli_signs = main.session.CliSignStore()
         self.client = TestClient(main.app, follow_redirects=False)
@@ -91,7 +91,7 @@ class TestCliSign(unittest.TestCase):
         ]
 
     def _alice(self):
-        return {"bits_session": main.sessions.create({"user": "alice", "token": "t"})}
+        return {"Authorization": "Bearer alice"}
 
     def test_request_is_unauthenticated(self):
         r = self.client.post("/sign/cli/request", content=self._manifest())
@@ -103,7 +103,7 @@ class TestCliSign(unittest.TestCase):
         rid = self.client.post("/sign/cli/request",
                                content=self._manifest("common")).json()["request_id"]
         # alice admins lcg, not common
-        r = self.client.get("/sign/cli/" + rid, cookies=self._alice())
+        r = self.client.get("/sign/cli/" + rid, headers=self._alice())
         self.assertEqual(r.status_code, 403)
 
     def test_full_cross_device_flow(self):
@@ -113,7 +113,7 @@ class TestCliSign(unittest.TestCase):
         self.assertEqual(self.client.get("/sign/cli/" + rid + "/result").json()["status"], "pending")
         # Browser approver (alice) reviews + approves
         c = self._alice()
-        pend = self.client.get("/sign/cli/" + rid, cookies=c).json()
+        pend = self.client.get("/sign/cli/" + rid, headers=c).json()
         self.assertEqual(pend["status"], "pending")
         self.assertIn("Demo" if False else "A", pend["manifest"])
         assertion = _assertion(self.device, pend["publicKey"])
@@ -121,7 +121,7 @@ class TestCliSign(unittest.TestCase):
         for p in ps:
             p.start()
         try:
-            appr = self.client.post("/sign/cli/" + rid + "/approve", cookies=c,
+            appr = self.client.post("/sign/cli/" + rid + "/approve", headers=c,
                                     json={"assertion": assertion})
         finally:
             for p in ps:
