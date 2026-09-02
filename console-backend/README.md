@@ -1,18 +1,22 @@
 # bits-console backend
 
 The relying party for manifest signing and the **only** client of the
-security-proxy. A Python/FastAPI service that reuses `bits_helpers` (`forge` for
-GitLab identity/authorization, `trust`/`certify` for signing via the proxy).
-Deployed as a `bits-services` container on `signer-net`; `web.cern.ch` is the
-public TLS front. Holds **no** signing key.
+security-proxy. A Python/FastAPI service that reuses `bits_helpers` (`trust` for
+signing via the proxy, `forge`/authz for GitLab group policy). Runs on its **own
+origin** (e.g. `bits.cern.ch`), reached by the GitLab Pages frontend
+(`bits-console.web.cern.ch`); holds **no** signing key.
 
-Build-out (see `bits-M1-implementation-roadmap-*.md`, Stage B):
+Auth is **stateless**: the bits-console SPA logs the user in with GitLab (OAuth
+PKCE in the browser) and calls this API with `Authorization: Bearer <gitlab-token>`.
+The backend verifies that token against GitLab (`GET /user`, `identity.py`) — there
+is no server-side OAuth or session here. CI callers send a GitLab CI **ID token**
+on the same header. The Pages frontend is a different origin, allowed via CORS
+(`BITS_FRONTEND_ORIGIN`); the WebAuthn `rp_id`/origin are the **Pages** host, not
+this backend's.
 
-- **B1** skeleton — health + config + `bits_helpers` wiring *(this)*.
-- **B2** GitLab OIDC confidential client — server-side login + session.
-- **B3** sign endpoint (Mode 1) — authenticated + community-admin → `certify`
-  via the proxy → signed manifest + audit entry.
-- **B4** CI identity — GitLab CI ID token for automated signs.
+Endpoints: `/healthz`, `/me`, `/sign` (CI single-shot), `/sign/request` +
+`/sign/approve` (human passkey approval), `/sign/cli/*` (cross-device), and
+`/webauthn/*` (enrolment + bits-admin grant).
 
 ## Run / test (dev)
 

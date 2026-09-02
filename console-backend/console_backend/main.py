@@ -104,7 +104,7 @@ def healthz():
         "status": "ok",
         "bits_helpers": _BITS_HELPERS,
         "sign_proxy_configured": settings.sign_proxy_configured(),
-        "oidc_configured": settings.oidc_configured(),
+        "webauthn_configured": settings.webauthn_configured(),
     }
 
 

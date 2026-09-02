@@ -23,21 +23,6 @@ class Settings:
         # to the caller's token if unset (dev).
         self.admin_resolve_token = e.get("BITS_ADMIN_RESOLVE_TOKEN", "")
 
-        # GitLab OIDC / OAuth2 (Authorization Code + PKCE), server-side.
-        self.oidc_authorize_url = e.get("BITS_OIDC_AUTHORIZE_URL", "")
-        self.oidc_token_url = e.get("BITS_OIDC_TOKEN_URL", "")
-        self.oidc_client_id = e.get("BITS_CONSOLE_OIDC_CLIENT_ID", "")
-        # Optional: present it only for a *confidential* app. PKCE alone (public
-        # app) also works because the exchange happens server-side.
-        self.oidc_client_secret = e.get("BITS_CONSOLE_OIDC_CLIENT_SECRET", "")
-        self.oidc_redirect_uri = e.get("BITS_OIDC_REDIRECT_URI", "")
-        self.oidc_scopes = e.get("BITS_OIDC_SCOPES", "read_api")
-
-        # Session cookie. secure=True by default; set BITS_SESSION_COOKIE_SECURE=0
-        # only for local http dev.
-        self.session_ttl_seconds = int(e.get("BITS_SESSION_TTL", "28800"))
-        self.session_cookie_secure = e.get("BITS_SESSION_COOKIE_SECURE", "1") != "0"
-
         # The GitLab Pages frontend origin (scheme+host) allowed to call this API
         # cross-origin (CORS). Humans authenticate by sending the GitLab token their
         # browser already holds as a bearer; this backend verifies it (identity.py)
@@ -52,7 +37,11 @@ class Settings:
         # "*" = any group). A file path or inline text.
         self.ci_signers_source = e.get("BITS_CI_SIGNERS", "")
 
-        # WebAuthn RP (Stage C) — the per-operation 2nd-factor approval.
+        # WebAuthn RP (Stage C) — the per-operation 2nd-factor approval. rp_id and
+        # origin are the PAGES FRONTEND host the passkey ceremony runs on (where the
+        # SPA is served), NOT this backend's host — the browser matches them against
+        # the page's own origin. In the split-origin deployment they equal
+        # frontend_origin (host) / frontend_origin (full).
         self.rp_id = e.get("BITS_WEBAUTHN_RP_ID", "")          # e.g. bits-console.web.cern.ch
         self.rp_name = e.get("BITS_WEBAUTHN_RP_NAME", "bits-console")
         self.rp_origin = e.get("BITS_WEBAUTHN_ORIGIN", "")     # e.g. https://bits-console.web.cern.ch
@@ -71,11 +60,6 @@ class Settings:
 
     def sign_proxy_configured(self) -> bool:
         return bool(self.sign_proxy_url)
-
-    def oidc_configured(self) -> bool:
-        return bool(self.oidc_authorize_url and self.oidc_token_url
-                    and self.oidc_client_id and self.oidc_redirect_uri
-                    and self.gitlab_api_url)
 
     def webauthn_configured(self) -> bool:
         # credentials_path is required: without it enrolments are held in memory
