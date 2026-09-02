@@ -112,6 +112,33 @@ class SignRequestStore(_BoundedStore):
         return entry if entry["exp"] >= time.time() else None
 
 
+class CliSignStore(_BoundedStore):
+    """Cross-device (CLI-initiated) sign requests: a terminal creates one, a human
+    approves it in the browser, the CLI polls the result. Entries are mutable
+    (status/envelope updated in place)."""
+
+    def __init__(self, ttl_seconds=600, max_entries=64):
+        super().__init__(ttl_seconds, max_entries)
+
+    def _exps(self):
+        return [(k, e["exp"]) for k, e in self._store.items()]
+
+    def put(self, req_id, data):
+        self._make_room()
+        data = dict(data)
+        data["exp"] = time.time() + self._ttl
+        self._store[req_id] = data
+
+    def get(self, req_id):
+        entry = self._store.get(req_id)
+        if not entry:
+            return None
+        if entry["exp"] < time.time():
+            self._store.pop(req_id, None)
+            return None
+        return entry
+
+
 class EnrollmentGrantStore(_BoundedStore):
     """One-time, short-lived grants that let a user enrol their FIRST passkey.
     Issued by a bits-admin; consumed on enrolment. Keyed by target username."""

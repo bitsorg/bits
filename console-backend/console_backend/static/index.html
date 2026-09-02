@@ -52,6 +52,13 @@
   </div>
 </section>
 
+<section id="cliApproveSec" class="hidden">
+  <h2>Approve a CLI signing request</h2>
+  <div class="muted" id="cliInfo"></div>
+  <pre id="cliManifest" style="max-height:12rem;overflow:auto;background:#8881;padding:.5rem;border-radius:6px"></pre>
+  <div class="row"><button id="cliApproveBtn" onclick="cliApprove()">Approve &amp; sign</button></div>
+</section>
+
 <section id="signSec" class="hidden">
   <h2>Sign a manifest</h2>
   <div class="muted">Paste the common-manifest JSON. You'll approve the exact
@@ -123,6 +130,7 @@ async function refreshMe() {
   const r = await fetch('/me');
   if (r.status === 401) { ME = null; renderSession(); return; }
   ME = await r.json(); renderSession();
+  loadCliRequest();
 }
 function renderSession() {
   const inn = !!ME;
@@ -131,7 +139,8 @@ function renderSession() {
   ['enrollSec', 'signSec'].forEach(id => document.getElementById(id).classList.toggle('hidden', !inn));
   document.getElementById('grantSec').classList.toggle('hidden', !(inn && ME.overall_admin));
   if (!inn) { document.getElementById('whoami').textContent = 'Not signed in';
-              document.getElementById('roles').textContent = ''; return; }
+              document.getElementById('roles').textContent = '';
+              document.getElementById('cliApproveSec').classList.add('hidden'); return; }
   document.getElementById('whoami').textContent = ME.user;
   document.getElementById('roles').textContent =
     (ME.overall_admin ? 'bits-admin' : 'admin: ' + (ME.admin_groups.join(', ') || 'none'));
@@ -194,6 +203,35 @@ async function signManifest() {
     log('signature: ' + out.envelope.sig);
   } catch (e) { log('Sign error: ' + e, 'err'); }
   finally { btn.disabled = false; }
+}
+
+// ---- CLI cross-device approval ------------------------------------------------
+let CLI_REQ = null;
+const cliReqId = () => new URLSearchParams(location.search).get('approve');
+async function loadCliRequest() {
+  const id = cliReqId(); if (!id || !ME) return;
+  const sec = document.getElementById('cliApproveSec');
+  const info = document.getElementById('cliInfo'), btn = document.getElementById('cliApproveBtn');
+  sec.classList.remove('hidden');
+  const r = await fetch('/sign/cli/' + encodeURIComponent(id));
+  if (!r.ok) { info.textContent = 'Cannot load request: ' + await errText(r); btn.disabled = true; return; }
+  const req = await r.json();
+  if (req.status !== 'pending') { info.textContent = 'This request is ' + req.status + '.'; btn.disabled = true; return; }
+  CLI_REQ = req; btn.disabled = false;
+  info.textContent = 'groups: ' + req.groups.join(', ') + '  •  digest ' + req.digest.slice(0, 16) + '…';
+  document.getElementById('cliManifest').textContent = req.manifest;
+}
+async function cliApprove() {
+  const id = cliReqId(); const btn = document.getElementById('cliApproveBtn'); btn.disabled = true;
+  try {
+    const asr = await navigator.credentials.get({ publicKey: decodeRequestOptions(CLI_REQ.publicKey) });
+    const r = await fetch('/sign/cli/' + encodeURIComponent(id) + '/approve',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assertion: packAssertion(asr) }) });
+    if (!r.ok) { log('CLI approve failed: ' + await errText(r), 'err'); btn.disabled = false; return; }
+    log('CLI request signed ✓ — the terminal will pick it up.', 'ok');
+    document.getElementById('cliInfo').textContent = 'Signed ✓ — you can close this.';
+  } catch (e) { log('CLI approve error: ' + e, 'err'); btn.disabled = false; }
 }
 
 if (!window.PublicKeyCredential) log('This browser has no WebAuthn support.', 'err');

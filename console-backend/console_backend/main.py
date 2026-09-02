@@ -33,6 +33,7 @@ sessions = session.SessionStore(settings.session_ttl_seconds)
 login_states = session.LoginStateStore()
 credstore = credentials.CredentialStore(settings.credentials_path)
 sign_requests = session.SignRequestStore()
+cli_signs = session.CliSignStore()
 enroll_grants = session.EnrollmentGrantStore()
 
 app = FastAPI(title="bits-console backend", version="0.1.0")
@@ -148,6 +149,10 @@ def me(request: Request):
 
 _MAX_BODY = 32 * 1024 * 1024   # 32 MiB cap on a submitted manifest
 _APPROVE_MAX = 256 * 1024      # a request_id + WebAuthn assertion is small
+# The CLI store retains the manifest until approval and is reachable
+# unauthenticated, so cap it hard (manifests are KiB/low-MiB JSON) — bounds
+# memory. A per-IP rate limit at the reverse proxy is the belt-and-suspenders.
+_CLI_MANIFEST_MAX = 4 * 1024 * 1024
 
 
 def _groups_of(manifest) -> list:
@@ -354,6 +359,113 @@ async def sign_approve(request: Request):
     credstore.update_sign_count(req["user"], cred_id, new_count)   # clone detection
     return await _do_sign(body, req["groups"], req["user"],
                           {"principal": "human", "approval": "webauthn"}, proxy_token)
+
+
+@app.post("/sign/cli/request")
+async def cli_request(request: Request):
+    """CLI, step 1: submit a manifest to be approved in the browser. Unauthenticated
+    (the human approval is the authorization); bounded/expiring store limits abuse."""
+    if not settings.webauthn_configured():
+        raise HTTPException(503, "WebAuthn is not configured")
+    body = await _read_capped(request, _CLI_MANIFEST_MAX)
+    groups = _parse_manifest(body)
+    digest = hashlib.sha256(body).digest()
+    req_id = secrets.token_urlsafe(24)
+    cli_signs.put(req_id, {"digest": digest, "groups": groups, "manifest": body,
+                           "status": "pending", "envelope": None, "signed_by": None})
+    approve_url = (settings.rp_origin or "").rstrip("/") + "/?approve=" + req_id
+    return {"request_id": req_id, "approve_url": approve_url,
+            "digest": digest.hex(), "groups": groups}
+
+
+@app.get("/sign/cli/{req_id}")
+def cli_pending(req_id: str, request: Request):
+    """Browser approver: review a pending CLI request and get the WebAuthn
+    challenge (== the digest). Requires community-admin of the request's groups."""
+    data = _current(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    req = cli_signs.get(req_id)
+    if not req:
+        raise HTTPException(404, "no such request")
+    if req["status"] != "pending":
+        return {"status": req["status"], "groups": req["groups"]}
+    user = data["user"]
+    resolved = _resolved_policy(data["token"])
+    denied = [g for g in req["groups"] if not authz.is_admin_for(user, g, resolved)]
+    if denied:
+        raise HTTPException(403, "%s is not a community admin for: %s"
+                            % (user, ", ".join(denied)))
+    creds = credstore.get(user)
+    if not creds:
+        raise HTTPException(400, "no passkey enrolled; enrol first")
+    options = json.loads(webauthn_rp.authentication_options(settings, req["digest"], creds))
+    return {"status": "pending", "groups": req["groups"], "digest": req["digest"].hex(),
+            "manifest": req["manifest"].decode("utf-8", "replace"), "publicKey": options}
+
+
+@app.post("/sign/cli/{req_id}/approve")
+async def cli_approve(req_id: str, request: Request):
+    """Browser approver: verify the digest-bound assertion and sign the stored
+    manifest, storing the result for the CLI to poll."""
+    data = _current(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    proxy_token = _proxy_token_or_503()
+    raw = await _read_capped(request, _APPROVE_MAX)
+    try:
+        assertion = json.loads(raw)["assertion"]
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "expected {assertion}")
+    req = cli_signs.get(req_id)
+    if not req or req["status"] != "pending":
+        raise HTTPException(400, "unknown or already-handled request")
+    user = data["user"]
+    resolved = _resolved_policy(data["token"])
+    denied = [g for g in req["groups"] if not authz.is_admin_for(user, g, resolved)]
+    if denied:
+        raise HTTPException(403, "%s is not a community admin for: %s"
+                            % (user, ", ".join(denied)))
+    cred_id = (assertion.get("rawId") or assertion.get("id")
+               if isinstance(assertion, dict) else None)
+    cred = next((c for c in credstore.get(user) if c["id"] == cred_id), None)
+    if not cred:
+        raise HTTPException(400, "unknown credential")
+    req["status"] = "signing"   # claim before await so it can't be double-approved
+    try:
+        new_count = await run_in_threadpool(
+            webauthn_rp.verify_authentication, settings, json.dumps(assertion),
+            req["digest"], cred)
+    except Exception:
+        req["status"] = "pending"
+        audit.record("sign_denied", signer=user, groups=req["groups"],
+                     reason="approval_failed", principal="human", via="cli")
+        raise HTTPException(403, "approval verification failed")
+    credstore.update_sign_count(user, cred_id, new_count)
+    try:
+        result = await _do_sign(
+            req["manifest"], req["groups"], user,
+            {"principal": "human", "approval": "webauthn", "via": "cli"}, proxy_token)
+    except BaseException:      # any failure leaves it retryable, not stuck "signing"
+        req["status"] = "pending"
+        raise
+    req["status"] = "signed"
+    req["envelope"] = result["envelope"]
+    req["signed_by"] = user
+    return {"status": "signed"}
+
+
+@app.get("/sign/cli/{req_id}/result")
+def cli_result(req_id: str):
+    """CLI, step 2: poll for the signature. The signature is public, so this is
+    unauthenticated (the request id is a 192-bit secret)."""
+    req = cli_signs.get(req_id)
+    if not req:
+        raise HTTPException(404, "no such request")
+    if req["status"] == "signed":
+        return {"status": "signed", "envelope": req["envelope"],
+                "signed_by": req["signed_by"], "groups": req["groups"]}
+    return {"status": req["status"]}
 
 
 @app.post("/webauthn/grant")

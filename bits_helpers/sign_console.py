@@ -1,0 +1,97 @@
+# SPDX-FileCopyrightText: 2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Sign a manifest via the bits-console (cross-device, human-approved).
+
+Submits the manifest to the console backend, shows a QR/URL to approve on a
+phone with a passkey, polls for the signature, and writes the .sig envelope.
+The CLI is a thin requester — all authorization and signing happen server-side.
+"""
+
+import argparse
+import hashlib
+import json
+import time
+import urllib.error
+import urllib.request
+
+from bits_helpers import trust
+
+_TIMEOUT = 30
+
+
+def _post(url, data, ctype="application/octet-stream"):
+    req = urllib.request.Request(url, data=data, method="POST",
+                                 headers={"Content-Type": ctype})
+    with urllib.request.urlopen(req, timeout=_TIMEOUT) as fh:
+        return json.load(fh)
+
+
+def _get(url):
+    with urllib.request.urlopen(url, timeout=_TIMEOUT) as fh:
+        return json.load(fh)
+
+
+def _print_qr(url):
+    try:
+        import qrcode
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(url)
+        qr.make()
+        qr.print_ascii(invert=True)
+    except Exception:
+        pass   # qrcode optional; the URL below is always printed
+    print("\nApprove on your phone: %s\n" % url)
+
+
+def sign_via_console(backend, manifest_path, sig_path=None, timeout=300):
+    """Submit *manifest_path* to *backend*, wait for a human passkey approval, and
+    write the signature envelope to *sig_path* (default: <manifest>.sig)."""
+    base = backend.rstrip("/")
+    with open(manifest_path, "rb") as fh:
+        body = fh.read()
+    local_digest = hashlib.sha256(body).hexdigest()
+    resp = _post(base + "/sign/cli/request", body)
+    # Cross-check the digest the backend reports against our own bytes.
+    if resp.get("digest") != local_digest:
+        raise SystemExit("backend digest %s != local %s" % (resp.get("digest"), local_digest))
+    print("digest %s   groups: %s"
+          % (local_digest, ", ".join(resp.get("groups", []))))
+    _print_qr(resp["approve_url"])
+    print("Waiting for approval (Ctrl-C to cancel) ...", flush=True)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        res = _get(base + "/sign/cli/%s/result" % resp["request_id"])
+        status = res.get("status")
+        if status == "signed":
+            env = res["envelope"]
+            # Do NOT trust the backend blindly: verify the envelope over OUR bytes
+            # against the shipped trust anchor before writing it.
+            kid = trust.verify_bytes(body, env, trust.load_trusted_keys())
+            if not kid:
+                raise SystemExit("signature does not verify against the trust anchor")
+            out = sig_path or (manifest_path + ".sig")
+            with open(out, "w") as fh:
+                json.dump(env, fh)
+            print("signed by %s (key %s) -> %s" % (res.get("signed_by"), kid, out))
+            return out
+        if status == "denied":
+            raise SystemExit("approval was denied")
+        time.sleep(2)
+    raise SystemExit("timed out waiting for approval")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description="Sign a manifest via bits-console (human passkey approval).")
+    ap.add_argument("manifest", help="the common-manifest JSON to sign")
+    ap.add_argument("--console", required=True,
+                    help="bits-console backend URL (e.g. https://bits-console.web.cern.ch)")
+    ap.add_argument("-o", "--sig", default=None,
+                    help="output .sig path (default: <manifest>.sig)")
+    ap.add_argument("--timeout", type=int, default=300, help="seconds to wait")
+    a = ap.parse_args(argv)
+    sign_via_console(a.console, a.manifest, a.sig, a.timeout)
+
+
+if __name__ == "__main__":
+    main()
