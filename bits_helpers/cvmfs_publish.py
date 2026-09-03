@@ -450,10 +450,19 @@ def publish_one(spec, ctx):
             if mod_path:
                 _mfd, mod_tar = tempfile.mkstemp(suffix=".tar", dir=ctx.get("tmp_dir") or None)
                 os.close(_mfd)
-                # arcname is the bare filename (tar -C the modulefiles dir, add
-                # <pkg>) so prepub extracts it as <modules_path>/<pkg>.
-                subprocess.run(["tar", "-cf", mod_tar, "--hard-dereference",
-                                "-C", os.path.dirname(modfile), pkg], check=True)
+                # The modulefile must be published under the VERSION name (the
+                # environment-modules 'name/version' convention), so it lands at
+                # <modules_path>/<vdir>, e.g. Modules/modulefiles/ROOT/v6-36-10-alice2-2
+                # — NOT .../ROOT/ROOT. The package ships it as etc/modulefiles/<pkg>,
+                # so stage a copy named <vdir> and add that as the tar entry.
+                import shutil
+                _mstage = tempfile.mkdtemp(prefix="mod-", dir=ctx.get("tmp_dir") or None)
+                try:
+                    shutil.copy2(modfile, os.path.join(_mstage, vdir))
+                    subprocess.run(["tar", "-cf", mod_tar, "--hard-dereference",
+                                    "-C", _mstage, vdir], check=True)
+                finally:
+                    _safe_rmtree(_mstage)
                 _mlbl = "%s@%s(modules)" % (pkg, vdir)
                 mjid = _publish_tar(ctx, mod_path, mod_tar, _mlbl)
                 jobs.append((mjid, _mlbl))
