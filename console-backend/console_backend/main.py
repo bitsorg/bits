@@ -352,7 +352,16 @@ async def cli_request(request: Request):
     req_id = secrets.token_urlsafe(24)
     cli_signs.put(req_id, {"digest": digest, "groups": groups, "manifest": body,
                            "status": "pending", "envelope": None, "signed_by": None})
-    approve_url = (settings.rp_origin or "").rstrip("/") + "/?approve=" + req_id
+    # The approve link is community-scoped so the SPA boots into that community and
+    # opens the Signing view. bits-services serves many communities, so the caller
+    # (CLI/build, which knows its community) passes ?community=<name>; the base is
+    # the configured frontend origin. Falls back to the site root when absent.
+    base = (settings.frontend_origin or settings.rp_origin or "").rstrip("/")
+    community = request.query_params.get("community", "").strip()
+    if community and all(c.isalnum() or c in "-_." for c in community):
+        approve_url = "%s/%s/?approve=%s" % (base, community, req_id)
+    else:
+        approve_url = "%s/?approve=%s" % (base, req_id)
     return {"request_id": req_id, "approve_url": approve_url,
             "digest": digest.hex(), "groups": groups}
 

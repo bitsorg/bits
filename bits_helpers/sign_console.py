@@ -12,6 +12,7 @@ import hashlib
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from bits_helpers import trust
@@ -43,14 +44,19 @@ def _print_qr(url):
     print("\nApprove on your phone: %s\n" % url)
 
 
-def sign_via_console(backend, manifest_path, sig_path=None, timeout=300):
+def sign_via_console(backend, manifest_path, sig_path=None, timeout=300, community=""):
     """Submit *manifest_path* to *backend*, wait for a human passkey approval, and
-    write the signature envelope to *sig_path* (default: <manifest>.sig)."""
+    write the signature envelope to *sig_path* (default: <manifest>.sig). *community*
+    (optional) is passed so the approve URL/QR points at that community's Signing
+    view instead of the site root."""
     base = backend.rstrip("/")
     with open(manifest_path, "rb") as fh:
         body = fh.read()
     local_digest = hashlib.sha256(body).hexdigest()
-    resp = _post(base + "/sign/cli/request", body)
+    url = base + "/sign/cli/request"
+    if community:
+        url += "?community=" + urllib.parse.quote(community)
+    resp = _post(url, body)
     # Cross-check the digest the backend reports against our own bytes.
     if resp.get("digest") != local_digest:
         raise SystemExit("backend digest %s != local %s" % (resp.get("digest"), local_digest))
@@ -85,12 +91,15 @@ def main(argv=None):
         description="Sign a manifest via bits-console (human passkey approval).")
     ap.add_argument("manifest", help="the common-manifest JSON to sign")
     ap.add_argument("--console", required=True,
-                    help="bits-console backend URL (e.g. https://bits-console.web.cern.ch)")
+                    help="signing backend URL (e.g. https://bits.cern.ch)")
+    ap.add_argument("--community", default="",
+                    help="community whose Signing view approves this, for the "
+                         "approve URL/QR (e.g. Testbed). Omit to point at the site root.")
     ap.add_argument("-o", "--sig", default=None,
                     help="output .sig path (default: <manifest>.sig)")
     ap.add_argument("--timeout", type=int, default=300, help="seconds to wait")
     a = ap.parse_args(argv)
-    sign_via_console(a.console, a.manifest, a.sig, a.timeout)
+    sign_via_console(a.console, a.manifest, a.sig, a.timeout, a.community)
 
 
 if __name__ == "__main__":
