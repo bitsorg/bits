@@ -10,6 +10,8 @@ The CLI is a thin requester — all authorization and signing happen server-side
 import argparse
 import hashlib
 import json
+import ssl
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -18,17 +20,21 @@ import urllib.request
 from bits_helpers import trust
 
 _TIMEOUT = 30
+# TLS context for backend calls. None = the system default (verifies). Set by
+# sign_via_console when --cafile / --insecure is given (e.g. the CERN CA isn't in
+# this host's Python trust store).
+_CTX = None
 
 
 def _post(url, data, ctype="application/octet-stream"):
     req = urllib.request.Request(url, data=data, method="POST",
                                  headers={"Content-Type": ctype})
-    with urllib.request.urlopen(req, timeout=_TIMEOUT) as fh:
+    with urllib.request.urlopen(req, timeout=_TIMEOUT, context=_CTX) as fh:
         return json.load(fh)
 
 
 def _get(url):
-    with urllib.request.urlopen(url, timeout=_TIMEOUT) as fh:
+    with urllib.request.urlopen(url, timeout=_TIMEOUT, context=_CTX) as fh:
         return json.load(fh)
 
 
@@ -44,11 +50,19 @@ def _print_qr(url):
     print("\nApprove on your phone: %s\n" % url)
 
 
-def sign_via_console(backend, manifest_path, sig_path=None, timeout=300, community=""):
+def sign_via_console(backend, manifest_path, sig_path=None, timeout=300, community="",
+                     cafile=None, insecure=False):
     """Submit *manifest_path* to *backend*, wait for a human passkey approval, and
     write the signature envelope to *sig_path* (default: <manifest>.sig). *community*
     (optional) is passed so the approve URL/QR points at that community's Signing
-    view instead of the site root."""
+    view instead of the site root. *cafile*/*insecure* control TLS verification of
+    the backend when its CA is not in this host's default trust store."""
+    global _CTX
+    if insecure:
+        _CTX = ssl._create_unverified_context()
+        print("WARNING: TLS verification disabled (--insecure).", file=sys.stderr)
+    elif cafile:
+        _CTX = ssl.create_default_context(cafile=cafile)
     base = backend.rstrip("/")
     with open(manifest_path, "rb") as fh:
         body = fh.read()
@@ -98,8 +112,14 @@ def main(argv=None):
     ap.add_argument("-o", "--sig", default=None,
                     help="output .sig path (default: <manifest>.sig)")
     ap.add_argument("--timeout", type=int, default=300, help="seconds to wait")
+    ap.add_argument("--cafile", default=None,
+                    help="CA bundle to verify the backend cert (e.g. the CERN CA "
+                         "chain) when it is not in this host's default trust store")
+    ap.add_argument("--insecure", action="store_true",
+                    help="skip TLS verification (testing only, on a trusted network)")
     a = ap.parse_args(argv)
-    sign_via_console(a.console, a.manifest, a.sig, a.timeout, a.community)
+    sign_via_console(a.console, a.manifest, a.sig, a.timeout, a.community,
+                     a.cafile, a.insecure)
 
 
 if __name__ == "__main__":
