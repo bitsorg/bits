@@ -13,6 +13,7 @@ from webauthn import (generate_authentication_options, generate_registration_opt
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 from webauthn.helpers.structs import (AuthenticatorSelectionCriteria,
                                        PublicKeyCredentialDescriptor,
+                                       ResidentKeyRequirement,
                                        UserVerificationRequirement)
 
 
@@ -24,10 +25,16 @@ def registration_options(settings, user, existing):
     """Return ``(options_json, challenge_bytes)`` for navigator.credentials.create."""
     uv = (UserVerificationRequirement.REQUIRED if settings.webauthn_require_uv
           else UserVerificationRequirement.PREFERRED)
+    # residentKey=required: the passkey MUST be discoverable, because the
+    # cross-device approve page offers it without naming the user (usernameless
+    # get() with empty allowCredentials). Required (not preferred) fails fast at
+    # enrolment rather than silently minting a non-resident key that later can't be
+    # surfaced to approve. Platform passkeys (Face ID / Hello / iCloud) satisfy it.
     opts = generate_registration_options(
         rp_id=settings.rp_id, rp_name=settings.rp_name,
         user_name=user, user_id=user.encode("utf-8"),
-        authenticator_selection=AuthenticatorSelectionCriteria(user_verification=uv),
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            resident_key=ResidentKeyRequirement.REQUIRED, user_verification=uv),
         exclude_credentials=_descriptors(existing))
     return options_to_json(opts), opts.challenge
 

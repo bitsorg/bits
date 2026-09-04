@@ -48,6 +48,19 @@ class CredentialStore:
         with self._lock:
             return [dict(c) for c in self._data.get(user, [])]
 
+    def user_for(self, cred_id):
+        """Reverse lookup: (user, cred) owning *cred_id*, or None. Lets the
+        passkey-only approve path identify the approver from the assertion alone
+        (no bearer). Low volume — a linear scan is fine."""
+        if not cred_id:
+            return None
+        with self._lock:
+            for user, creds in self._data.items():
+                for c in creds:
+                    if c["id"] == cred_id:
+                        return user, dict(c)
+        return None
+
     def update_sign_count(self, user, cred_id, count):
         with self._lock:
             for c in self._data.get(user, []):

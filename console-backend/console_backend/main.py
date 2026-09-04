@@ -367,27 +367,20 @@ async def cli_request(request: Request):
 
 
 @app.get("/sign/cli/{req_id}")
-def cli_pending(req_id: str, request: Request):
+def cli_pending(req_id: str):
     """Browser approver: review a pending CLI request and get the WebAuthn
-    challenge (== the digest). Requires community-admin of the request's groups."""
-    data = _current(request)
-    if not data:
-        raise HTTPException(401, "not authenticated")
+    challenge (== the digest). Unauthenticated by bearer: the 192-bit req_id is
+    the secret (as with /result), and the approver is identified by their passkey
+    at approve time. Uses discoverable credentials (empty allowCredentials) so the
+    device can offer any enrolled passkey for the RP — no user is named here."""
+    if not settings.webauthn_configured():
+        raise HTTPException(503, "WebAuthn is not configured")
     req = cli_signs.get(req_id)
     if not req:
         raise HTTPException(404, "no such request")
     if req["status"] != "pending":
         return {"status": req["status"], "groups": req["groups"]}
-    user = data["user"]
-    resolved = _resolved_policy(data["token"])
-    denied = [g for g in req["groups"] if not authz.is_admin_for(user, g, resolved)]
-    if denied:
-        raise HTTPException(403, "%s is not a community admin for: %s"
-                            % (user, ", ".join(denied)))
-    creds = credstore.get(user)
-    if not creds:
-        raise HTTPException(400, "no passkey enrolled; enrol first")
-    options = json.loads(webauthn_rp.authentication_options(settings, req["digest"], creds))
+    options = json.loads(webauthn_rp.authentication_options(settings, req["digest"], []))
     return {"status": "pending", "groups": req["groups"], "digest": req["digest"].hex(),
             "manifest": req["manifest"].decode("utf-8", "replace"), "publicKey": options}
 
@@ -395,10 +388,10 @@ def cli_pending(req_id: str, request: Request):
 @app.post("/sign/cli/{req_id}/approve")
 async def cli_approve(req_id: str, request: Request):
     """Browser approver: verify the digest-bound assertion and sign the stored
-    manifest, storing the result for the CLI to poll."""
-    data = await _current_async(request)
-    if not data:
-        raise HTTPException(401, "not authenticated")
+    manifest, storing the result for the CLI to poll. Passkey-only (no bearer):
+    the approver is the enrolled user the assertion's credential maps to — which
+    is safe because enrolment is the gated step (admin + grant). Admin authority
+    is re-checked from that user against the service-token-resolved policy."""
     proxy_token = _proxy_token_or_503()
     raw = await _read_capped(request, _APPROVE_MAX)
     try:
@@ -408,18 +401,27 @@ async def cli_approve(req_id: str, request: Request):
     req = cli_signs.get(req_id)
     if not req or req["status"] != "pending":
         raise HTTPException(400, "unknown or already-handled request")
-    user = data["user"]
-    resolved = _resolved_policy(data["token"])
-    denied = [g for g in req["groups"] if not authz.is_admin_for(user, g, resolved)]
-    if denied:
-        raise HTTPException(403, "%s is not a community admin for: %s"
-                            % (user, ", ".join(denied)))
     cred_id = (assertion.get("rawId") or assertion.get("id")
                if isinstance(assertion, dict) else None)
-    cred = next((c for c in credstore.get(user) if c["id"] == cred_id), None)
-    if not cred:
+    found = credstore.user_for(cred_id)
+    if not found:
         raise HTTPException(400, "unknown credential")
-    req["status"] = "signing"   # claim before await so it can't be double-approved
+    user, cred = found
+    # Re-check admin from the passkey's user. No approver token is available on
+    # this path, so resolve with the service token (static `* @user` policies
+    # need no token at all).
+    resolved = _resolved_policy(None)
+    denied = [g for g in req["groups"] if not authz.is_admin_for(user, g, resolved)]
+    if denied:
+        audit.record("sign_denied", signer=user, groups=req["groups"],
+                     denied=denied, principal="human", via="cli")
+        raise HTTPException(403, "%s is not a community admin for: %s"
+                            % (user, ", ".join(denied)))
+    # Claim before the first await so concurrent approves can't both sign. The
+    # section above (get -> user_for -> policy -> is_admin_for) is all synchronous,
+    # so under the single-threaded event loop it runs to here atomically — keep it
+    # await-free or this guarantee breaks.
+    req["status"] = "signing"
     try:
         new_count = await run_in_threadpool(
             webauthn_rp.verify_authentication, settings, json.dumps(assertion),
@@ -429,12 +431,12 @@ async def cli_approve(req_id: str, request: Request):
         audit.record("sign_denied", signer=user, groups=req["groups"],
                      reason="approval_failed", principal="human", via="cli")
         raise HTTPException(403, "approval verification failed")
-    credstore.update_sign_count(user, cred_id, new_count)
-    try:
+    try:      # any failure past the claim leaves it retryable, not stuck "signing"
+        credstore.update_sign_count(user, cred_id, new_count)
         result = await _do_sign(
             req["manifest"], req["groups"], user,
             {"principal": "human", "approval": "webauthn", "via": "cli"}, proxy_token)
-    except BaseException:      # any failure leaves it retryable, not stuck "signing"
+    except BaseException:
         req["status"] = "pending"
         raise
     req["status"] = "signed"
