@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import secrets
+import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
@@ -118,6 +119,27 @@ def healthz():
     }
 
 
+_pubkey_cache = {"kid": None, "exp": 0.0}
+
+
+@app.get("/trust/pubkey")
+def trust_pubkey():
+    """Public: the current signing key's id, so a signer (e.g. the certify CI job)
+    can do its producer-side key/group check without holding the key. Read from the
+    proxy; the private key never leaves it. Cached briefly so an unauthenticated
+    flood doesn't translate 1:1 into proxy calls (the key rarely rotates)."""
+    proxy_token = _proxy_token_or_503()
+    now = time.time()
+    if _pubkey_cache["kid"] and _pubkey_cache["exp"] > now:
+        return {"key_id": _pubkey_cache["kid"]}
+    try:
+        kid, _pub = trust.proxy_pubkey(settings.sign_proxy_url, proxy_token)
+    except RuntimeError as exc:
+        raise HTTPException(502, "signing proxy pubkey failed: %s" % exc)
+    _pubkey_cache.update(kid=kid, exp=now + 60)
+    return {"key_id": kid}
+
+
 def _resolved_policy(token):
     return authz.resolved_admin_policy(settings, token)
 
@@ -136,6 +158,11 @@ def me(request: Request):
 
 _MAX_BODY = 32 * 1024 * 1024   # 32 MiB cap on a submitted manifest
 _APPROVE_MAX = 256 * 1024      # a request_id + WebAuthn assertion is small
+# A build's pre-approval signs one manifest PER ARCHITECTURE (certify signs each),
+# so it is bounded multi-use, not single-use: this caps how many signatures one
+# human pre-approval can produce — generous for a build's arches (+ shared), tight
+# enough to bound a compromised CI reusing a live pre-approval within its TTL.
+_PREAPPROVAL_SIGN_CAP = 16
 # The CLI store retains the manifest until approval and is reachable
 # unauthenticated, so cap it hard (manifests are KiB/low-MiB JSON) — bounds
 # memory. A per-IP rate limit at the reverse proxy is the belt-and-suspenders.
@@ -511,10 +538,10 @@ async def preapprove_request(request: Request):
                      principal="human")
         raise HTTPException(403, "%s is not a community admin for: %s"
                             % (user, ", ".join(denied)))
-    # Don't let a fresh request silently destroy an approval CI hasn't consumed yet
-    # (approved), nor one being signed right now (consuming).
+    # Don't let a fresh request silently destroy a live approval CI may still be
+    # consuming (a build signs once per architecture over the record's TTL).
     existing = preapprovals.get(build_id)
-    if existing and existing["status"] in ("approved", "consuming"):
+    if existing and existing["status"] == "approved":
         raise HTTPException(409, "build %s is already pre-approved" % build_id)
     creds = credstore.get(user)
     if not creds:
@@ -586,8 +613,9 @@ async def preapprove_approve(request: Request):
 async def sign_preapproved(request: Request):
     """CI signs a manifest for a build a human PRE-APPROVED. Requires BOTH a CI OIDC
     identity (the BITS_CI_SIGNERS gate) AND an approved pre-approval for build_id whose
-    groups cover the manifest. Signs the exact bytes via the proxy, stamps provenance
-    'pre-approved by <user>', and consumes the pre-approval (single use)."""
+    groups cover the manifest. Signs the exact bytes via the proxy and stamps provenance
+    'pre-approved by <user>'. Bounded multi-use: one build is signed once per arch, so
+    the same pre-approval signs several manifests up to a cap, within its TTL."""
     proxy_token = _proxy_token_or_503()
     build_id = request.query_params.get("build_id", "").strip()
     if not _valid_build_id(build_id):
@@ -616,17 +644,23 @@ async def sign_preapproved(request: Request):
                      reason="preapproval_group_mismatch", build_id=build_id, **principal)
         raise HTTPException(403, "pre-approval for build %s does not cover: %s"
                             % (build_id, ", ".join(ungranted)))
-    # Claim before the sign await so two concurrent CI calls can't both sign; a
-    # transient sign failure restores it to approved (retriable), success consumes it.
-    pre["status"] = "consuming"
+    # Bounded multi-use: one build is signed once per architecture, so the same
+    # pre-approval signs several manifests — capped, and only within its TTL. RESERVE
+    # the slot before the sign await (this check+increment is synchronous, so it is
+    # atomic against the event loop — concurrent calls cannot both pass the cap), and
+    # release it on failure so a failed sign does not burn the build's budget.
+    if pre.get("signs", 0) >= _PREAPPROVAL_SIGN_CAP:
+        audit.record("sign_denied", signer=signer, groups=groups, build_id=build_id,
+                     reason="preapproval_sign_cap", **principal)
+        raise HTTPException(429, "pre-approval for build %s reached its sign limit" % build_id)
+    pre["signs"] = pre.get("signs", 0) + 1
     meta = {"principal": "ci", "project": principal.get("project"),
             "approval": "preapproved", "preapproved_by": pre["user"], "build_id": build_id}
     try:
         result = await _do_sign(body, groups, signer, meta, proxy_token)
     except BaseException:
-        pre["status"] = "approved"
+        pre["signs"] = max(0, pre.get("signs", 1) - 1)   # release the reserved slot
         raise
-    preapprovals.pop(build_id)   # single-use consume
     # Provenance is ADVISORY and authoritative in the audit log. Do NOT put it inside
     # the envelope: the signature covers the manifest bytes only, so envelope fields
     # would look signed but are forgeable. Return as sibling fields for CI to record.

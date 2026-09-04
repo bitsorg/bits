@@ -1304,6 +1304,21 @@ def doParseArgs():
                               help=("security-proxy sign route, e.g. "
                                     "http://host:port/sign/bits. Falls back to "
                                     "BITS_SIGN_PROXY_URL."))
+  certify_parser.add_argument("--sign-via-service", dest="signViaService",
+                              action="store_true", default=False,
+                              help=("Sign via the console-backend signing service (M1): "
+                                    "no key or gate token in CI — the CI ID token (OIDC) "
+                                    "authenticates and the build's human pre-approval gates "
+                                    "the signature. URL from --sign-service-url or "
+                                    "BITS_SIGN_SERVICE_URL; CI token from BITS_SIGN_SERVICE_TOKEN."))
+  certify_parser.add_argument("--sign-service-url", dest="signServiceUrl", metavar="URL",
+                              default=None,
+                              help=("signing-service base URL, e.g. https://bits.cern.ch. "
+                                    "Falls back to BITS_SIGN_SERVICE_URL."))
+  certify_parser.add_argument("--build-id", dest="buildId", metavar="ID", default=None,
+                              help=("the pre-approved build's pipeline id (the build_id the "
+                                    "manifest is keyed on). Required with --sign-via-service; "
+                                    "falls back to BITS_BUILD_ID."))
   certify_parser.add_argument("--group", dest="group", metavar="GROUP", default=None,
                               help=("Tag entries that lack a group with GROUP, so the consumer trust filter "
                                     "(--trust-groups) can scope reuse. Use 'common' for the shared base layer."))

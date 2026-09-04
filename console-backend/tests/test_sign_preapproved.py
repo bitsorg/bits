@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""F2 tests: CI signs a pre-approved build. Requires a CI OIDC identity AND an
+"""F2/F4 tests: CI signs a pre-approved build. Requires a CI OIDC identity AND an
 approved human pre-approval for the build_id; signs via the proxy, stamps
-'pre-approved by X', consumes the record. The proxy is faked with a real key."""
+'pre-approved by X'. Bounded multi-use (one build signs once per arch), capped. The
+proxy is faked with a real key."""
 
 import json
 import os
@@ -70,7 +71,7 @@ class TestSignPreapproved(unittest.TestCase):
             for p in ps:
                 p.stop()
 
-    def test_ci_sign_with_preapproval_verifies_and_consumes(self):
+    def test_ci_sign_with_preapproval_verifies_and_records(self):
         body = _manifest("lcg")
         self._preapprove("p1", ["lcg"])
         r = self._sign("p1", "lcg")
@@ -83,8 +84,10 @@ class TestSignPreapproved(unittest.TestCase):
         self.assertEqual(out["approval"], "preapproved")
         # provenance is advisory (NOT inside the signed envelope)
         self.assertNotIn("approved_by", out["envelope"])
-        # single-use: the pre-approval is consumed
-        self.assertIsNone(main.preapprovals.get("p1"))
+        # bounded multi-use: the record persists (a build signs per-arch), sign counted
+        rec = main.preapprovals.get("p1")
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["signs"], 1)
 
     def test_no_preapproval_403(self):
         r = self._sign("nope", "lcg")
@@ -122,14 +125,36 @@ class TestSignPreapproved(unittest.TestCase):
         r = self._sign("p1", "lcg")
         self.assertEqual(r.status_code, 403)
 
+    def test_failed_sign_releases_slot(self):
+        self._preapprove("p1", ["lcg"])
+        # deny via key policy -> _do_sign raises inside the try -> reserved slot released
+        ps = self._patched(policy={"default": []})
+        for p in ps:
+            p.start()
+        try:
+            r = self.client.post("/sign/preapproved?build_id=p1",
+                                 content=_manifest("lcg"), headers=self._ci())
+        finally:
+            for p in ps:
+                p.stop()
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(main.preapprovals.get("p1").get("signs", 0), 0)   # budget not burned
+        self.assertEqual(self._sign("p1", "lcg").status_code, 200)          # good sign still works
+        self.assertEqual(main.preapprovals.get("p1")["signs"], 1)
+
     def test_missing_build_id_400(self):
         r = self.client.post("/sign/preapproved", content=_manifest("lcg"), headers=self._ci())
         self.assertEqual(r.status_code, 400)
 
-    def test_single_use_second_call_403(self):
+    def test_bounded_multi_use_then_cap(self):
+        # A build signs one manifest per arch, so the same pre-approval signs several
+        # times — up to a cap, then 429.
         self._preapprove("p1", ["lcg"])
-        self.assertEqual(self._sign("p1", "lcg").status_code, 200)
-        self.assertEqual(self._sign("p1", "lcg").status_code, 403)   # consumed
+        cap = main._PREAPPROVAL_SIGN_CAP
+        for _ in range(cap):
+            self.assertEqual(self._sign("p1", "lcg").status_code, 200)
+        self.assertEqual(self._sign("p1", "lcg").status_code, 429)   # cap reached
+        self.assertEqual(main.preapprovals.get("p1")["signs"], cap)
 
 
 if __name__ == "__main__":

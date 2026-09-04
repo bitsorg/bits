@@ -86,9 +86,11 @@ class CliSignStore(_BoundedStore):
 
 class PreapprovalStore(_BoundedStore):
     """Build/publish pre-approvals: a logged-in admin passkey-approves a BUILD (by
-    build_id) before its manifest exists; CI signs that build's manifest later,
-    gated by this record. Keyed by build_id, mutable (status pending -> approved ->
-    consumed). Long TTL so a slow build+publish can still reach the certify step."""
+    build_id) before its manifest exists; CI signs that build's manifests later,
+    gated by this record. Keyed by build_id, mutable (status pending -> approved; a
+    per-record `signs` counter enforces bounded multi-use — one build signs once per
+    architecture). Long TTL so a slow build+publish can still reach the certify step;
+    the TTL is anchored at approval and never refreshed by signing."""
 
     def __init__(self, ttl_seconds=86400, max_entries=256):
         super().__init__(ttl_seconds, max_entries)
@@ -110,10 +112,6 @@ class PreapprovalStore(_BoundedStore):
             self._store.pop(build_id, None)
             return None
         return entry
-
-    def pop(self, build_id):
-        """Remove and return the record (single-use consume by the CI sign step)."""
-        return self._store.pop(build_id, None)
 
     def _make_room(self):
         # Evict oldest PENDING (or expired) first; an approved-but-not-yet-consumed

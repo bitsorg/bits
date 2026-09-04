@@ -23,6 +23,9 @@ a signature can never outrun what is actually in the bucket.
 import glob
 import json
 import os
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from bits_helpers import trust
@@ -310,20 +313,74 @@ class _ProxySigner:
                                              self._token, sig_path)
 
 
-def _make_signer(key_pem_path, sign_proxy):
-    """The signer for this run: a proxy signer when *sign_proxy* is a
-    ``(url, token)`` tuple, else a local-key signer over *key_pem_path*."""
+class _ServiceSigner:
+    """Sign via the console-backend signing SERVICE (M1). No local key and no proxy
+    gate token in CI: the job authenticates with its GitLab CI ID token (OIDC), and
+    the build's human passkey PRE-APPROVAL gates the signature. The returned envelope
+    is verified over our bytes against the shipped trust anchor before it is written."""
+
+    def __init__(self, url, build_id, ci_token):
+        self._url = url.rstrip("/")
+        self._build_id = str(build_id)
+        self._token = ci_token
+
+    def _call(self, path, data=None):
+        req = urllib.request.Request(
+            self._url + path, data=data, method=("POST" if data is not None else "GET"),
+            headers={"Authorization": "Bearer " + self._token})
+        if data is not None:
+            req.add_header("Content-Type", "application/octet-stream")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as fh:
+                return json.load(fh)
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = (json.load(e) or {}).get("detail", "")
+            except Exception:
+                pass
+            raise CertifyError("signing service error (HTTP %s): %s" % (e.code, detail or e.reason))
+        except urllib.error.URLError as e:
+            raise CertifyError("signing service unreachable: %s" % e.reason)
+
+    def key_id(self):
+        return self._call("/trust/pubkey")["key_id"]
+
+    def sign_manifest(self, manifest_path, sig_path):
+        with open(manifest_path, "rb") as fh:
+            body = fh.read()
+        resp = self._call("/sign/preapproved?build_id=" + urllib.parse.quote(self._build_id), data=body)
+        env = resp["envelope"]
+        # Don't trust the service blindly: verify the returned signature over OUR
+        # bytes against the shipped anchor before writing it.
+        if not trust.verify_bytes(body, env, trust.load_trusted_keys()):
+            raise CertifyError("service signature does not verify against the trust anchor")
+        with open(sig_path, "w") as fh:
+            json.dump(env, fh)
+        return sig_path
+
+
+def _make_signer(key_pem_path, sign_proxy, sign_service=None):
+    """The signer for this run: the console-backend service signer when
+    *sign_service* is a ``(url, build_id, ci_token)`` triple; else a proxy signer
+    when *sign_proxy* is a ``(url, token)`` pair; else a local-key signer."""
+    if sign_service:
+        if not (isinstance(sign_service, (tuple, list)) and len(sign_service) == 3):
+            raise ValueError("sign_service must be a (url, build_id, ci_token) triple")
+        return _ServiceSigner(*sign_service)
     if sign_proxy:
         if not (isinstance(sign_proxy, (tuple, list)) and len(sign_proxy) == 2):
             raise ValueError("sign_proxy must be a (url, token) pair")
         url, token = sign_proxy
         return _ProxySigner(url, token)
+    if not key_pem_path:
+        raise ValueError("no signer configured: pass a key, sign_proxy, or sign_service")
     return _LocalSigner(key_pem_path)
 
 
 def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
             default_group=None, valid_days=None, source_commit=None,
-            approval_check=None, sign_proxy=None) -> tuple:
+            approval_check=None, sign_proxy=None, sign_service=None) -> tuple:
     """Merge → (approve) → (store-validate) → sign. Returns ``(out_path, sig_path)``.
 
     Raises :class:`CertifyConflict` on a hash/sha256 conflict and
@@ -335,7 +392,7 @@ def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
     it returns approver usernames, they are recorded as ``certified_by`` so the
     identity that authorised the certification travels with the signature.
     """
-    signer = _make_signer(key_pem_path, sign_proxy)
+    signer = _make_signer(key_pem_path, sign_proxy, sign_service)
     common = _prepare_common(manifests, signer, probe, default_group,
                              valid_days, source_commit, approval_check)
     out_abs, sig_path = _write_signed(common, signer, out_path, sig_path)
@@ -463,7 +520,8 @@ def _arch_stem(out_path, arch) -> str:
 
 def certify_by_arch(manifests, key_pem_path, out_path, probe=None,
                     default_group=None, valid_days=None, source_commit=None,
-                    approval_check=None, only_archs=None, sign_proxy=None) -> list:
+                    approval_check=None, only_archs=None, sign_proxy=None,
+                    sign_service=None) -> list:
     """Certify per platform and emit one signed manifest per architecture.
 
     Certification is scoped by platform: object identity in the store is
@@ -498,7 +556,7 @@ def certify_by_arch(manifests, key_pem_path, out_path, probe=None,
         debug("certify: scoped to %s — %d of %d manifest(s) kept",
               ", ".join(sorted(only)), len(kept), len(loaded))
         loaded = kept
-    signer = _make_signer(key_pem_path, sign_proxy)
+    signer = _make_signer(key_pem_path, sign_proxy, sign_service)
     common = _prepare_common(loaded, signer, probe, default_group,
                              valid_days, source_commit, approval_check)
     buckets = {}
@@ -691,10 +749,30 @@ def doCertify(args, parser):
     only_archs = None
     if getattr(args, "architectures", None):
         only_archs = [a for a in args.architectures.split(",") if a.strip()]
-    # Signer: local --key by default, or the security-proxy when --sign-via-proxy
-    # is set. The gate token is read from the environment, never the command line.
+    # Signer, in order of preference:
+    #   --sign-via-service : the console-backend signing SERVICE (M1). No key and no
+    #       gate token in CI — the CI ID token (OIDC) authenticates and the build's
+    #       human pre-approval gates the signature. Tokens come from the environment.
+    #   --sign-via-proxy   : the security-proxy directly (gate token, no human gate).
+    #   --key              : a local private key (legacy).
     sign_proxy = None
-    if getattr(args, "signViaProxy", False):
+    sign_service = None
+    if getattr(args, "signViaService", False):
+        url = getattr(args, "signServiceUrl", None) or os.environ.get("BITS_SIGN_SERVICE_URL")
+        token = os.environ.get("BITS_SIGN_SERVICE_TOKEN")
+        build_id = getattr(args, "buildId", None) or os.environ.get("BITS_BUILD_ID")
+        if not url:
+            parser.error("--sign-via-service requires --sign-service-url or BITS_SIGN_SERVICE_URL")
+        if not (url.startswith("https://") or "://localhost" in url or "://127.0.0.1" in url):
+            parser.error("--sign-via-service URL must be https (the CI ID token is sent as a bearer)")
+        if not token:
+            parser.error("--sign-via-service requires the CI ID token in BITS_SIGN_SERVICE_TOKEN")
+        if not build_id:
+            parser.error("--sign-via-service requires --build-id (the pre-approved build's pipeline id)")
+        if getattr(args, "key", None):
+            warning("certify: --key is ignored because --sign-via-service is set")
+        sign_service = (url, build_id, token)
+    elif getattr(args, "signViaProxy", False):
         url = getattr(args, "signProxyUrl", None) or os.environ.get("BITS_SIGN_PROXY_URL")
         token = os.environ.get("BITS_SIGN_PROXY_TOKEN")
         if not url:
@@ -705,7 +783,7 @@ def doCertify(args, parser):
             warning("certify: --key is ignored because --sign-via-proxy is set")
         sign_proxy = (url, token)
     elif not getattr(args, "key", None):
-        parser.error("certify requires --key (or --sign-via-proxy)")
+        parser.error("certify requires --key (or --sign-via-proxy / --sign-via-service)")
     try:
         outputs = certify_by_arch(sources, args.key, args.out, probe=probe,
                                   default_group=getattr(args, "group", None),
@@ -713,7 +791,7 @@ def doCertify(args, parser):
                                   source_commit=source_commit,
                                   approval_check=approval_check,
                                   only_archs=only_archs,
-                                  sign_proxy=sign_proxy)
+                                  sign_proxy=sign_proxy, sign_service=sign_service)
     except CertifyError as exc:
         parser.error(str(exc))
     from bits_helpers.log import banner
