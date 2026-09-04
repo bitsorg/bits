@@ -32,6 +32,7 @@ settings = config.Settings()
 credstore = credentials.CredentialStore(settings.credentials_path)
 sign_requests = session.SignRequestStore()
 cli_signs = session.CliSignStore()
+preapprovals = session.PreapprovalStore()
 enroll_grants = session.EnrollmentGrantStore()
 reg_challenges = session.RegChallengeStore()
 
@@ -469,6 +470,108 @@ def cli_result(req_id: str):
         return {"status": "signed", "envelope": req["envelope"],
                 "signed_by": req["signed_by"], "groups": req["groups"]}
     return {"status": req["status"]}
+
+
+@app.post("/preapprove/request")
+async def preapprove_request(request: Request):
+    """Build/publish pre-approval, step 1. A logged-in admin authorizes signing the
+    manifest a specific build (build_id) will produce, BEFORE it exists. Returns a
+    WebAuthn challenge; the human approves the BUILD, and CI signs the resulting
+    manifest later (F2), gated by this pre-approval and stamped "pre-approved by X"."""
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    if not settings.webauthn_configured():
+        raise HTTPException(503, "WebAuthn is not configured")
+    raw = await _read_capped(request, _APPROVE_MAX)
+    try:
+        payload = json.loads(raw)
+        bid = payload["build_id"]
+        if not isinstance(bid, (str, int)):
+            raise ValueError
+        build_id = str(bid).strip()
+        groups = payload.get("groups") or []
+        if not build_id or not isinstance(groups, list) \
+                or not all(isinstance(g, str) and g for g in groups):
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "expected {build_id, groups[]}")
+    user = data["user"]
+    resolved = _resolved_policy(data["token"])
+    denied = [g for g in groups if not authz.is_admin_for(user, g, resolved)]
+    if denied:
+        audit.record("preapprove_denied", signer=user, groups=groups, denied=denied,
+                     principal="human")
+        raise HTTPException(403, "%s is not a community admin for: %s"
+                            % (user, ", ".join(denied)))
+    # Don't let a fresh request silently destroy an approval CI hasn't consumed yet.
+    existing = preapprovals.get(build_id)
+    if existing and existing["status"] == "approved":
+        raise HTTPException(409, "build %s is already pre-approved" % build_id)
+    creds = credstore.get(user)
+    if not creds:
+        raise HTTPException(400, "no passkey enrolled; enrol first")
+    # No manifest yet, so the challenge is a fresh nonce; the pre-approval RECORD
+    # binds build_id + groups + user, which the sign step (F2) checks.
+    challenge = secrets.token_bytes(32)
+    preapprovals.put(build_id, {"groups": groups, "user": user, "challenge": challenge,
+                                "status": "pending"})
+    options = json.loads(webauthn_rp.authentication_options(settings, challenge, creds))
+    return {"build_id": build_id, "groups": groups, "publicKey": options}
+
+
+@app.post("/preapprove/approve")
+async def preapprove_approve(request: Request):
+    """Build/publish pre-approval, step 2. Verify the passkey assertion and mark the
+    build_id pre-approved for signing (by this admin). CI consumes it later (F2)."""
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    raw = await _read_capped(request, _APPROVE_MAX)
+    try:
+        payload = json.loads(raw)
+        build_id = str(payload["build_id"]).strip()
+        assertion = payload["assertion"]
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "expected {build_id, assertion}")
+    req = preapprovals.get(build_id)
+    if not req or req["status"] != "pending":
+        raise HTTPException(400, "unknown or already-handled pre-approval")
+    user = data["user"]
+    if req["user"] != user:
+        raise HTTPException(403, "pre-approval belongs to another user")
+    # Re-check admin now (close the revoke-within-window gap).
+    resolved = _resolved_policy(data["token"])
+    denied = [g for g in req["groups"] if not authz.is_admin_for(user, g, resolved)]
+    if denied:
+        audit.record("preapprove_denied", signer=user, groups=req["groups"],
+                     denied=denied, principal="human")
+        raise HTTPException(403, "%s is not a community admin for: %s"
+                            % (user, ", ".join(denied)))
+    cred_id = (assertion.get("rawId") or assertion.get("id")
+               if isinstance(assertion, dict) else None)
+    cred = next((c for c in credstore.get(user) if c["id"] == cred_id), None)
+    if not cred:
+        raise HTTPException(400, "unknown credential")
+    try:
+        new_count = await run_in_threadpool(
+            webauthn_rp.verify_authentication, settings, json.dumps(assertion),
+            req["challenge"], cred)
+    except Exception:
+        audit.record("preapprove_denied", signer=user, groups=req["groups"],
+                     reason="approval_failed", principal="human")
+        raise HTTPException(403, "approval verification failed")
+    credstore.update_sign_count(user, cred_id, new_count)
+    # Re-fetch the live record: a concurrent request could have replaced it (or a
+    # second approve already flipped it) during the verify await. Only flip if it is
+    # still the same pending record for this user.
+    live = preapprovals.get(build_id)
+    if not live or live["status"] != "pending" or live.get("user") != user:
+        raise HTTPException(409, "pre-approval changed during approval; retry")
+    live["status"] = "approved"
+    audit.record("preapproved", signer=user, groups=live["groups"], build_id=build_id,
+                 principal="human")
+    return {"status": "approved", "build_id": build_id}
 
 
 @app.post("/webauthn/grant")

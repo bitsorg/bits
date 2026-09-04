@@ -84,6 +84,45 @@ class CliSignStore(_BoundedStore):
         return entry
 
 
+class PreapprovalStore(_BoundedStore):
+    """Build/publish pre-approvals: a logged-in admin passkey-approves a BUILD (by
+    build_id) before its manifest exists; CI signs that build's manifest later,
+    gated by this record. Keyed by build_id, mutable (status pending -> approved ->
+    consumed). Long TTL so a slow build+publish can still reach the certify step."""
+
+    def __init__(self, ttl_seconds=86400, max_entries=256):
+        super().__init__(ttl_seconds, max_entries)
+
+    def _exps(self):
+        return [(k, e["exp"]) for k, e in self._store.items()]
+
+    def put(self, build_id, data):
+        self._make_room()
+        data = dict(data)
+        data["exp"] = time.time() + self._ttl
+        self._store[build_id] = data
+
+    def get(self, build_id):
+        entry = self._store.get(build_id)
+        if not entry:
+            return None
+        if entry["exp"] < time.time():
+            self._store.pop(build_id, None)
+            return None
+        return entry
+
+    def _make_room(self):
+        # Evict oldest PENDING (or expired) first; an approved-but-not-yet-consumed
+        # record is still needed by the CI sign step, so keep it unless the store is
+        # entirely approved records.
+        if len(self._store) >= self._max:
+            self._sweep()
+        while len(self._store) >= self._max:
+            victim = next((k for k, e in self._store.items()
+                           if e.get("status") != "approved"), None)
+            self._store.pop(victim if victim is not None else next(iter(self._store)), None)
+
+
 class EnrollmentGrantStore(_BoundedStore):
     """One-time, short-lived grants that let a user enrol their FIRST passkey.
     Issued by a bits-admin; consumed on enrolment. Keyed by target username."""
