@@ -255,11 +255,19 @@ async def sign(request: Request):
     return await _do_sign(body, groups, signer, principal, proxy_token)
 
 
+def _new_challenge(digest):
+    """A per-request WebAuthn challenge binding the manifest digest (content) AND a
+    fresh 128-bit nonce. The digest keeps the assertion tied to these exact bytes;
+    the nonce makes it single-use — a captured assertion for a manifest can't be
+    replayed against a NEW request for the same (identical) manifest."""
+    return hashlib.sha256(digest + secrets.token_bytes(16)).digest()
+
+
 @app.post("/sign/request")
 async def sign_request(request: Request):
-    """Human approval, step 1: authorize and return a WebAuthn challenge that IS
-    the manifest digest (content binding). The manifest is held server-side so
-    approval signs exactly these bytes."""
+    """Human approval, step 1: authorize and return a per-request WebAuthn challenge
+    binding the manifest digest (content) plus a nonce (freshness). The manifest is
+    held server-side so approval signs exactly these bytes."""
     data = await _current_async(request)
     if not data:
         raise HTTPException(401, "not authenticated")
@@ -282,9 +290,11 @@ async def sign_request(request: Request):
     # can't be flooded with large bodies; the manifest is re-submitted at approve
     # and checked against this digest.
     digest = hashlib.sha256(body).digest()
+    challenge = _new_challenge(digest)
     req_id = secrets.token_urlsafe(24)
-    sign_requests.put(req_id, {"digest": digest, "groups": groups, "user": user})
-    options = json.loads(webauthn_rp.authentication_options(settings, digest, creds))
+    sign_requests.put(req_id, {"digest": digest, "challenge": challenge,
+                               "groups": groups, "user": user})
+    options = json.loads(webauthn_rp.authentication_options(settings, challenge, creds))
     return {"request_id": req_id, "publicKey": options}
 
 
@@ -330,7 +340,7 @@ async def sign_approve(request: Request):
     try:
         new_count = await run_in_threadpool(
             webauthn_rp.verify_authentication, settings, json.dumps(assertion),
-            req["digest"], cred)
+            req["challenge"], cred)
     except Exception:
         audit.record("sign_denied", signer=req["user"], groups=req["groups"],
                      reason="approval_failed", principal="human")
@@ -350,7 +360,8 @@ async def cli_request(request: Request):
     groups = _parse_manifest(body)
     digest = hashlib.sha256(body).digest()
     req_id = secrets.token_urlsafe(24)
-    cli_signs.put(req_id, {"digest": digest, "groups": groups, "manifest": body,
+    cli_signs.put(req_id, {"digest": digest, "challenge": _new_challenge(digest),
+                           "groups": groups, "manifest": body,
                            "status": "pending", "envelope": None, "signed_by": None})
     # The approve link is community-scoped so the SPA boots into that community and
     # opens the Signing view. bits-services serves many communities, so the caller
@@ -380,7 +391,7 @@ def cli_pending(req_id: str):
         raise HTTPException(404, "no such request")
     if req["status"] != "pending":
         return {"status": req["status"], "groups": req["groups"]}
-    options = json.loads(webauthn_rp.authentication_options(settings, req["digest"], []))
+    options = json.loads(webauthn_rp.authentication_options(settings, req["challenge"], []))
     return {"status": "pending", "groups": req["groups"], "digest": req["digest"].hex(),
             "manifest": req["manifest"].decode("utf-8", "replace"), "publicKey": options}
 
@@ -425,7 +436,7 @@ async def cli_approve(req_id: str, request: Request):
     try:
         new_count = await run_in_threadpool(
             webauthn_rp.verify_authentication, settings, json.dumps(assertion),
-            req["digest"], cred)
+            req["challenge"], cred)
     except Exception:
         req["status"] = "pending"
         audit.record("sign_denied", signer=user, groups=req["groups"],
