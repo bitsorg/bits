@@ -111,7 +111,11 @@ async function approve() {
   const btn = $('approveBtn'); btn.disabled = true;
   try {
     log('Approve with your passkey…');
-    const asr = await navigator.credentials.get({ publicKey: decodeRequestOptions(REQ.publicKey) });
+    // Decode a FRESH copy each attempt: decodeRequestOptions rewrites challenge/
+    // allowCredentials from base64url strings into ArrayBuffers in place, so reusing
+    // REQ.publicKey on a retry would feed buffers back in and throw.
+    const pk = decodeRequestOptions(JSON.parse(JSON.stringify(REQ.publicKey)));
+    const asr = await navigator.credentials.get({ publicKey: pk });
     const r = await fetch('/sign/cli/' + encodeURIComponent(reqId) + '/approve',
       { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assertion: packAssertion(asr) }) });
