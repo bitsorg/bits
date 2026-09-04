@@ -25,8 +25,8 @@ class TestSignConsole(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _req(self):
-        return {"request_id": "r1", "approve_url": "http://x/?approve=r1",
-                "digest": self.digest, "groups": ["lcg"]}
+        # The backend no longer returns approve_url; the CLI builds it itself.
+        return {"request_id": "r1", "digest": self.digest, "groups": ["lcg"]}
 
     def test_flow_verifies_and_writes_sig(self):
         results = iter([
@@ -40,6 +40,20 @@ class TestSignConsole(unittest.TestCase):
              patch.object(sign_console.time, "sleep", lambda s: None):
             out = sign_console.sign_via_console("http://x", self.mp, timeout=10)
         self.assertEqual(json.load(open(out))["key_id"], "k")
+
+    def test_builds_approve_url_from_console(self):
+        captured = {}
+        results = iter([{"status": "signed",
+                         "envelope": {"alg": "ed25519", "key_id": "k", "sig": "s"},
+                         "signed_by": "a", "groups": ["lcg"]}])
+        with patch.object(sign_console, "_post", lambda url, data, ctype="": self._req()), \
+             patch.object(sign_console, "_get", lambda url: next(results)), \
+             patch.object(sign_console, "_print_qr", lambda u: captured.__setitem__("u", u)), \
+             patch.object(sign_console.trust, "load_trusted_keys", lambda: {}), \
+             patch.object(sign_console.trust, "verify_bytes", lambda b, e, t: "kid"), \
+             patch.object(sign_console.time, "sleep", lambda s: None):
+            sign_console.sign_via_console("https://bits.cern.ch/", self.mp, timeout=10)
+        self.assertEqual(captured["u"], "https://bits.cern.ch/approve?approve=r1")
 
     def test_unverifiable_signature_rejected(self):
         with patch.object(sign_console, "_post", lambda url, data, ctype="": self._req()), \

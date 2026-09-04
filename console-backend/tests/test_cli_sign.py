@@ -90,20 +90,27 @@ class TestCliSign(unittest.TestCase):
             patch.object(main.trust, "load_key_policy", return_value=None),
         ]
 
-    def _alice(self):
-        return {"Authorization": "Bearer alice"}
-
-    def test_request_is_unauthenticated(self):
+    def test_request_returns_id_no_url(self):
         r = self.client.post("/sign/cli/request", content=self._manifest())
         self.assertEqual(r.status_code, 200)
-        self.assertIn("request_id", r.json())
-        self.assertIn("/?approve=", r.json()["approve_url"])
+        j = r.json()
+        self.assertIn("request_id", j)
+        self.assertIn("digest", j)
+        self.assertEqual(j["groups"], ["lcg"])
+        self.assertNotIn("approve_url", j)   # the CLI builds the approve URL itself
 
-    def test_pending_requires_admin(self):
+    def test_pending_is_open_admin_enforced_at_approve(self):
+        # GET is unauthenticated now (the 192-bit req_id is the secret) and does no
+        # admin check — it returns discoverable options (empty allowCredentials).
         rid = self.client.post("/sign/cli/request",
                                content=self._manifest("common")).json()["request_id"]
-        # alice admins lcg, not common
-        r = self.client.get("/sign/cli/" + rid, headers=self._alice())
+        pend = self.client.get("/sign/cli/" + rid)   # no bearer
+        self.assertEqual(pend.status_code, 200)
+        self.assertEqual(pend.json()["publicKey"].get("allowCredentials", []), [])
+        # Admin is enforced at APPROVE, from the passkey's user: alice admins lcg,
+        # not common -> 403 (before any signing).
+        assertion = _assertion(self.device, pend.json()["publicKey"])
+        r = self.client.post("/sign/cli/" + rid + "/approve", json={"assertion": assertion})
         self.assertEqual(r.status_code, 403)
 
     def test_full_cross_device_flow(self):
@@ -111,17 +118,17 @@ class TestCliSign(unittest.TestCase):
         rid = self.client.post("/sign/cli/request", content=body).json()["request_id"]
         # CLI polling: still pending
         self.assertEqual(self.client.get("/sign/cli/" + rid + "/result").json()["status"], "pending")
-        # Browser approver (alice) reviews + approves
-        c = self._alice()
-        pend = self.client.get("/sign/cli/" + rid, headers=c).json()
+        # Approver reviews + approves with a passkey — NO login/bearer; identity
+        # comes from the assertion's credential.
+        pend = self.client.get("/sign/cli/" + rid).json()
         self.assertEqual(pend["status"], "pending")
-        self.assertIn("Demo" if False else "A", pend["manifest"])
+        self.assertIn("A", pend["manifest"])
         assertion = _assertion(self.device, pend["publicKey"])
         ps = self._patch_proxy()
         for p in ps:
             p.start()
         try:
-            appr = self.client.post("/sign/cli/" + rid + "/approve", headers=c,
+            appr = self.client.post("/sign/cli/" + rid + "/approve",
                                     json={"assertion": assertion})
         finally:
             for p in ps:

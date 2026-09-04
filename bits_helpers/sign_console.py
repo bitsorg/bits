@@ -63,13 +63,13 @@ def _print_qr(url):
     print("\nApprove on your phone: %s\n" % url)
 
 
-def sign_via_console(backend, manifest_path, sig_path=None, timeout=300, community="",
+def sign_via_console(backend, manifest_path, sig_path=None, timeout=300,
                      cafile=None, insecure=False):
     """Submit *manifest_path* to *backend*, wait for a human passkey approval, and
-    write the signature envelope to *sig_path* (default: <manifest>.sig). *community*
-    (optional) is passed so the approve URL/QR points at that community's Signing
-    view instead of the site root. *cafile*/*insecure* control TLS verification of
-    the backend when its CA is not in this host's default trust store."""
+    write the signature envelope to *sig_path* (default: <manifest>.sig). The approve
+    URL/QR is built from *backend* + /approve — the backend serves the approve page
+    on its own origin, so the approver needs no login. *cafile*/*insecure* control
+    TLS verification when the backend's CA is not in this host's default trust store."""
     global _CTX
     if insecure:
         _CTX = ssl._create_unverified_context()
@@ -80,16 +80,16 @@ def sign_via_console(backend, manifest_path, sig_path=None, timeout=300, communi
     with open(manifest_path, "rb") as fh:
         body = fh.read()
     local_digest = hashlib.sha256(body).hexdigest()
-    url = base + "/sign/cli/request"
-    if community:
-        url += "?community=" + urllib.parse.quote(community)
-    resp = _post(url, body)
+    resp = _post(base + "/sign/cli/request", body)
     # Cross-check the digest the backend reports against our own bytes.
     if resp.get("digest") != local_digest:
         raise SystemExit("backend digest %s != local %s" % (resp.get("digest"), local_digest))
     print("digest %s   groups: %s"
           % (local_digest, ", ".join(resp.get("groups", []))))
-    _print_qr(resp["approve_url"])
+    # Build the approve URL ourselves from the backend we connected to; the approve
+    # page is served there at /approve. Nothing origin-related comes from the server.
+    approve_url = base + "/approve?approve=" + urllib.parse.quote(resp["request_id"])
+    _print_qr(approve_url)
     print("Waiting for approval (Ctrl-C to cancel) ...", flush=True)
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -118,10 +118,8 @@ def main(argv=None):
         description="Sign a manifest via bits-console (human passkey approval).")
     ap.add_argument("manifest", help="the common-manifest JSON to sign")
     ap.add_argument("--console", required=True,
-                    help="signing backend URL (e.g. https://bits.cern.ch)")
-    ap.add_argument("--community", default="",
-                    help="community whose Signing view approves this, for the "
-                         "approve URL/QR (e.g. Testbed). Omit to point at the site root.")
+                    help="signing backend URL (e.g. https://bits.cern.ch); the "
+                         "approve page is served there at /approve")
     ap.add_argument("-o", "--sig", default=None,
                     help="output .sig path (default: <manifest>.sig)")
     ap.add_argument("--timeout", type=int, default=300, help="seconds to wait")
@@ -131,8 +129,7 @@ def main(argv=None):
     ap.add_argument("--insecure", action="store_true",
                     help="skip TLS verification (testing only, on a trusted network)")
     a = ap.parse_args(argv)
-    sign_via_console(a.console, a.manifest, a.sig, a.timeout, a.community,
-                     a.cafile, a.insecure)
+    sign_via_console(a.console, a.manifest, a.sig, a.timeout, a.cafile, a.insecure)
 
 
 if __name__ == "__main__":

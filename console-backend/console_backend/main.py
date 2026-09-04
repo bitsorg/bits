@@ -372,16 +372,11 @@ async def cli_request(request: Request):
     cli_signs.put(req_id, {"digest": digest, "challenge": _new_challenge(digest),
                            "groups": groups, "manifest": body,
                            "status": "pending", "envelope": None, "signed_by": None})
-    # The approve link points at THIS backend's own approve page — its own origin,
-    # NOT the SSO-gated Pages frontend. The phone opens it and approves with a
-    # passkey; identity comes from the passkey, so no login is needed. Prefer the
-    # configured backend_origin; fall back to the request's own base URL. No
-    # community in the link — the page loads the request by id and the groups come
-    # from the stored manifest.
-    base = settings.backend_origin or str(request.base_url).rstrip("/")
-    approve_url = "%s/approve?approve=%s" % (base, req_id)
-    return {"request_id": req_id, "approve_url": approve_url,
-            "digest": digest.hex(), "groups": groups}
+    # The caller (CLI) builds the approve URL itself from the backend URL it already
+    # connected to (its --console arg) + /approve?approve=<request_id>. The backend
+    # does NOT construct it: that avoids trusting a proxied Host header and needs no
+    # backend-origin config. The approve page is served here at /approve.
+    return {"request_id": req_id, "digest": digest.hex(), "groups": groups}
 
 
 @app.get("/sign/cli/{req_id}")

@@ -50,9 +50,6 @@ class Settings:
         # falls back to the single rp_origin when unset (single-origin deployments).
         _origins = e.get("BITS_WEBAUTHN_ORIGINS", "")
         self.rp_origins = [o.strip() for o in _origins.split(",") if o.strip()]
-        # This backend's own public origin (scheme+host), e.g. https://bits.cern.ch.
-        # Used to build the cross-device approve URL and to serve the approve page.
-        self.backend_origin = e.get("BITS_BACKEND_ORIGIN", "").rstrip("/")
         self.credentials_path = e.get("BITS_WEBAUTHN_CREDENTIALS", "")  # JSON store path
         # Require user verification (biometric/PIN, not just presence). ON by
         # default; set 0 only for test authenticators that cannot do UV.
