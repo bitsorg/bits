@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bits — approve signing</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 640px; margin: 1.2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.25rem; }
+  section { border: 1px solid #8884; border-radius: 8px; padding: .8rem 1rem; margin: 1rem 0; }
+  button { padding: .6rem 1.1rem; border-radius: 6px; border: 1px solid #8886;
+           font-size: 1rem; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .muted { color: #8889; } code { font-family: ui-monospace, monospace; }
+  pre { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, monospace;
+        font-size: .8rem; background: #8881; border-radius: 6px; padding: .6rem;
+        max-height: 14rem; overflow: auto; }
+  .digest { font-family: ui-monospace, monospace; font-size: .82rem; word-break: break-all; }
+  #status { font-weight: 600; }
+  #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .78rem;
+         background: #8881; border-radius: 6px; padding: .6rem; max-height: 10rem; overflow: auto; }
+  .ok { color: #2a7; } .err { color: #c33; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<h1>Approve manifest signing</h1>
+<div id="status" class="muted">Loading request…</div>
+
+<section id="reqSec" class="hidden">
+  <div class="muted">Review what you are approving, then confirm with your passkey.
+    The passkey approves this exact content — nothing is signed without it.</div>
+  <p class="muted" style="margin:.8rem 0 .2rem">Groups: <span id="groups"></span></p>
+  <p class="muted" style="margin:.2rem 0">Digest (sha256):</p>
+  <div class="digest" id="digest"></div>
+  <p class="muted" style="margin:.8rem 0 .2rem">Manifest:</p>
+  <pre id="manifest"></pre>
+  <button id="approveBtn" onclick="approve()">Approve &amp; sign</button>
+</section>
+
+<h2 style="font-size:1rem">Log</h2>
+<div id="log"></div>
+
+<script>
+'use strict';
+// Same-origin backend (this page is served BY the backend), so fetches are relative
+// and need no bearer — the passkey assertion is the authorization.
+const $ = id => document.getElementById(id);
+const reqId = new URLSearchParams(location.search).get('approve');
+
+const log = (msg, cls) => {
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+  $('log').appendChild(line); $('log').scrollTop = $('log').scrollHeight;
+};
+const setStatus = (msg, cls) => { $('status').textContent = msg; $('status').className = cls || ''; };
+const errText = async r => { try { return (await r.json()).detail || r.statusText; }
+                             catch (e) { return r.statusText; } };
+
+// base64url <-> ArrayBuffer, and WebAuthn assertion packing (standard).
+const b64urlToBuf = s => {
+  s = s.replace(/-/g, '+').replace(/_/g, '/'); s += '='.repeat((4 - s.length % 4) % 4);
+  const bin = atob(s), buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+};
+const bufToB64url = buf => {
+  const bytes = new Uint8Array(buf); let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+};
+function packAssertion(asr) {
+  const r = asr.response;
+  const out = { id: asr.id, rawId: bufToB64url(asr.rawId), type: asr.type,
+    response: { clientDataJSON: bufToB64url(r.clientDataJSON),
+                authenticatorData: bufToB64url(r.authenticatorData),
+                signature: bufToB64url(r.signature) } };
+  if (r.userHandle) out.response.userHandle = bufToB64url(r.userHandle);
+  return out;
+}
+function decodeRequestOptions(pk) {
+  pk.challenge = b64urlToBuf(pk.challenge);
+  (pk.allowCredentials || []).forEach(c => c.id = b64urlToBuf(c.id));
+  return pk;
+}
+
+let REQ = null;
+async function load() {
+  if (!window.PublicKeyCredential) { setStatus('This browser has no passkey (WebAuthn) support.', 'err'); return; }
+  if (!reqId) { setStatus('No request id in the link.', 'err'); return; }
+  let r;
+  try { r = await fetch('/sign/cli/' + encodeURIComponent(reqId)); }
+  catch (e) { setStatus('Cannot reach the signing backend. On CERN Wi-Fi/VPN?', 'err'); return; }
+  if (!r.ok) { setStatus('Cannot load request: ' + await errText(r), 'err'); return; }
+  const req = await r.json();
+  if (req.status !== 'pending') {
+    setStatus('This request is ' + req.status + '.', req.status === 'signed' ? 'ok' : 'err'); return;
+  }
+  REQ = req;
+  $('groups').textContent = (req.groups || []).join(', ') || '(none)';
+  $('digest').textContent = req.digest;
+  $('manifest').textContent = req.manifest;
+  setStatus('Ready to approve.', '');
+  $('reqSec').classList.remove('hidden');
+}
+
+async function approve() {
+  const btn = $('approveBtn'); btn.disabled = true;
+  try {
+    log('Approve with your passkey…');
+    const asr = await navigator.credentials.get({ publicKey: decodeRequestOptions(REQ.publicKey) });
+    const r = await fetch('/sign/cli/' + encodeURIComponent(reqId) + '/approve',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assertion: packAssertion(asr) }) });
+    if (!r.ok) { log('Approve failed: ' + await errText(r), 'err'); btn.disabled = false; return; }
+    log('Signed ✓ — the terminal will pick it up.', 'ok');
+    setStatus('Signed ✓ — you can close this.', 'ok');
+    $('reqSec').classList.add('hidden');
+  } catch (e) { log('Approve error: ' + e, 'err'); btn.disabled = false; }
+}
+
+load();
+</script>
+</body>
+</html>

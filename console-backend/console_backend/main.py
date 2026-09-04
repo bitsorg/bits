@@ -75,6 +75,15 @@ def index():
     return FileResponse(os.path.join(_STATIC, "index.html"))
 
 
+@app.get("/approve")
+def approve_page():
+    """The cross-device passkey approve page, served from THIS backend's own origin
+    (not the SSO-gated Pages frontend). A phone opens the QR link here and approves
+    with a passkey — identity comes from the passkey, so there is no login. Fetches
+    to /sign/cli/* are same-origin (no CORS, no bearer)."""
+    return FileResponse(os.path.join(_STATIC, "approve.html"))
+
+
 def _current(request: Request):
     """Identify the caller from the GitLab bearer token their browser already holds
     (verified against GitLab, briefly cached). Returns {'user','token'} or None. The
@@ -363,16 +372,14 @@ async def cli_request(request: Request):
     cli_signs.put(req_id, {"digest": digest, "challenge": _new_challenge(digest),
                            "groups": groups, "manifest": body,
                            "status": "pending", "envelope": None, "signed_by": None})
-    # The approve link is community-scoped so the SPA boots into that community and
-    # opens the Signing view. bits-services serves many communities, so the caller
-    # (CLI/build, which knows its community) passes ?community=<name>; the base is
-    # the configured frontend origin. Falls back to the site root when absent.
-    base = (settings.frontend_origin or settings.rp_origin or "").rstrip("/")
-    community = request.query_params.get("community", "").strip()
-    if community and all(c.isalnum() or c in "-_." for c in community):
-        approve_url = "%s/%s/?approve=%s" % (base, community, req_id)
-    else:
-        approve_url = "%s/?approve=%s" % (base, req_id)
+    # The approve link points at THIS backend's own approve page — its own origin,
+    # NOT the SSO-gated Pages frontend. The phone opens it and approves with a
+    # passkey; identity comes from the passkey, so no login is needed. Prefer the
+    # configured backend_origin; fall back to the request's own base URL. No
+    # community in the link — the page loads the request by id and the groups come
+    # from the stored manifest.
+    base = settings.backend_origin or str(request.base_url).rstrip("/")
+    approve_url = "%s/approve?approve=%s" % (base, req_id)
     return {"request_id": req_id, "approve_url": approve_url,
             "digest": digest.hex(), "groups": groups}
 
