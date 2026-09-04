@@ -265,6 +265,13 @@ async def sign(request: Request):
     return await _do_sign(body, groups, signer, principal, proxy_token)
 
 
+def _valid_build_id(build_id) -> bool:
+    """A build_id is a CI pipeline id: short, alnum plus - _ . only. Bounding it
+    keeps it safe as a store key and in audit lines (no log injection / bloat)."""
+    return bool(build_id) and len(build_id) <= 64 \
+        and all(c.isalnum() or c in "-_." for c in build_id)
+
+
 def _new_challenge(digest):
     """A per-request WebAuthn challenge binding the manifest digest (content) AND a
     fresh 128-bit nonce. The digest keeps the assertion tied to these exact bytes;
@@ -491,7 +498,7 @@ async def preapprove_request(request: Request):
             raise ValueError
         build_id = str(bid).strip()
         groups = payload.get("groups") or []
-        if not build_id or not isinstance(groups, list) \
+        if not _valid_build_id(build_id) or not isinstance(groups, list) \
                 or not all(isinstance(g, str) and g for g in groups):
             raise ValueError
     except (ValueError, KeyError, TypeError):
@@ -504,9 +511,10 @@ async def preapprove_request(request: Request):
                      principal="human")
         raise HTTPException(403, "%s is not a community admin for: %s"
                             % (user, ", ".join(denied)))
-    # Don't let a fresh request silently destroy an approval CI hasn't consumed yet.
+    # Don't let a fresh request silently destroy an approval CI hasn't consumed yet
+    # (approved), nor one being signed right now (consuming).
     existing = preapprovals.get(build_id)
-    if existing and existing["status"] == "approved":
+    if existing and existing["status"] in ("approved", "consuming"):
         raise HTTPException(409, "build %s is already pre-approved" % build_id)
     creds = credstore.get(user)
     if not creds:
@@ -572,6 +580,60 @@ async def preapprove_approve(request: Request):
     audit.record("preapproved", signer=user, groups=live["groups"], build_id=build_id,
                  principal="human")
     return {"status": "approved", "build_id": build_id}
+
+
+@app.post("/sign/preapproved")
+async def sign_preapproved(request: Request):
+    """CI signs a manifest for a build a human PRE-APPROVED. Requires BOTH a CI OIDC
+    identity (the BITS_CI_SIGNERS gate) AND an approved pre-approval for build_id whose
+    groups cover the manifest. Signs the exact bytes via the proxy, stamps provenance
+    'pre-approved by <user>', and consumes the pre-approval (single use)."""
+    proxy_token = _proxy_token_or_503()
+    build_id = request.query_params.get("build_id", "").strip()
+    if not _valid_build_id(build_id):
+        raise HTTPException(400, "valid build_id query parameter required")
+    body = await _read_capped(request, _MAX_BODY)
+    groups = _parse_manifest(body)
+    if not groups:                       # _parse_manifest is fail-closed; belt-and-braces
+        raise HTTPException(400, "manifest has no package groups")
+    signer, principal, denied = await _authorize_sign(request, groups)
+    if principal.get("principal") != "ci":
+        raise HTTPException(403, "this endpoint requires a CI identity")
+    if denied:
+        audit.record("sign_denied", signer=signer, groups=groups, denied=denied,
+                     build_id=build_id, **principal)
+        raise HTTPException(403, "%s is not authorized to sign: %s"
+                            % (signer, ", ".join(denied)))
+    # A human must have pre-approved THIS build, covering these groups.
+    pre = preapprovals.get(build_id)
+    if not pre or pre["status"] != "approved":
+        audit.record("sign_denied", signer=signer, groups=groups, build_id=build_id,
+                     reason="no_preapproval", **principal)
+        raise HTTPException(403, "no human pre-approval for build %s" % build_id)
+    ungranted = [g for g in groups if g not in pre["groups"]]
+    if ungranted:
+        audit.record("sign_denied", signer=signer, groups=groups, denied=ungranted,
+                     reason="preapproval_group_mismatch", build_id=build_id, **principal)
+        raise HTTPException(403, "pre-approval for build %s does not cover: %s"
+                            % (build_id, ", ".join(ungranted)))
+    # Claim before the sign await so two concurrent CI calls can't both sign; a
+    # transient sign failure restores it to approved (retriable), success consumes it.
+    pre["status"] = "consuming"
+    meta = {"principal": "ci", "project": principal.get("project"),
+            "approval": "preapproved", "preapproved_by": pre["user"], "build_id": build_id}
+    try:
+        result = await _do_sign(body, groups, signer, meta, proxy_token)
+    except BaseException:
+        pre["status"] = "approved"
+        raise
+    preapprovals.pop(build_id)   # single-use consume
+    # Provenance is ADVISORY and authoritative in the audit log. Do NOT put it inside
+    # the envelope: the signature covers the manifest bytes only, so envelope fields
+    # would look signed but are forgeable. Return as sibling fields for CI to record.
+    result["approval"] = "preapproved"
+    result["preapproved_by"] = pre["user"]
+    result["build_id"] = build_id
+    return result
 
 
 @app.post("/webauthn/grant")

@@ -111,6 +111,10 @@ class PreapprovalStore(_BoundedStore):
             return None
         return entry
 
+    def pop(self, build_id):
+        """Remove and return the record (single-use consume by the CI sign step)."""
+        return self._store.pop(build_id, None)
+
     def _make_room(self):
         # Evict oldest PENDING (or expired) first; an approved-but-not-yet-consumed
         # record is still needed by the CI sign step, so keep it unless the store is
