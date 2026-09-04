@@ -26,16 +26,29 @@ _TIMEOUT = 30
 _CTX = None
 
 
+def _urlopen(req_or_url):
+    """Open a request and parse JSON, turning a backend 4xx/5xx into a clean
+    message (the FastAPI ``detail``) instead of a urllib traceback."""
+    try:
+        with urllib.request.urlopen(req_or_url, timeout=_TIMEOUT, context=_CTX) as fh:
+            return json.load(fh)
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = (json.load(e) or {}).get("detail", "")
+        except Exception:
+            pass
+        raise SystemExit("signing backend error (HTTP %s): %s" % (e.code, detail or e.reason))
+
+
 def _post(url, data, ctype="application/octet-stream"):
     req = urllib.request.Request(url, data=data, method="POST",
                                  headers={"Content-Type": ctype})
-    with urllib.request.urlopen(req, timeout=_TIMEOUT, context=_CTX) as fh:
-        return json.load(fh)
+    return _urlopen(req)
 
 
 def _get(url):
-    with urllib.request.urlopen(url, timeout=_TIMEOUT, context=_CTX) as fh:
-        return json.load(fh)
+    return _urlopen(url)
 
 
 def _print_qr(url):

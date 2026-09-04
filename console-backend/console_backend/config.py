@@ -37,14 +37,22 @@ class Settings:
         # "*" = any group). A file path or inline text.
         self.ci_signers_source = e.get("BITS_CI_SIGNERS", "")
 
-        # WebAuthn RP (Stage C) — the per-operation 2nd-factor approval. rp_id and
-        # origin are the PAGES FRONTEND host the passkey ceremony runs on (where the
-        # SPA is served), NOT this backend's host — the browser matches them against
-        # the page's own origin. In the split-origin deployment they equal
-        # frontend_origin (host) / frontend_origin (full).
-        self.rp_id = e.get("BITS_WEBAUTHN_RP_ID", "")          # e.g. bits-console.web.cern.ch
+        # WebAuthn RP (Stage C) — the per-operation 2nd-factor approval. rp_id is a
+        # registrable domain the ceremony's page origin is under. Set it to a shared
+        # parent (e.g. cern.ch) so the SAME passkey works both on the Pages frontend
+        # (enrolment) and on this backend's own approve page (cross-device approval,
+        # no SSO). A per-host rp_id would scope the credential to one origin only.
+        self.rp_id = e.get("BITS_WEBAUTHN_RP_ID", "")          # e.g. cern.ch
         self.rp_name = e.get("BITS_WEBAUTHN_RP_NAME", "bits-console")
         self.rp_origin = e.get("BITS_WEBAUTHN_ORIGIN", "")     # e.g. https://bits-console.web.cern.ch
+        # Every origin the ceremony may run on — enrolment on the Pages frontend AND
+        # approval on this backend. All are accepted at verification. Comma-separated;
+        # falls back to the single rp_origin when unset (single-origin deployments).
+        _origins = e.get("BITS_WEBAUTHN_ORIGINS", "")
+        self.rp_origins = [o.strip() for o in _origins.split(",") if o.strip()]
+        # This backend's own public origin (scheme+host), e.g. https://bits.cern.ch.
+        # Used to build the cross-device approve URL and to serve the approve page.
+        self.backend_origin = e.get("BITS_BACKEND_ORIGIN", "").rstrip("/")
         self.credentials_path = e.get("BITS_WEBAUTHN_CREDENTIALS", "")  # JSON store path
         # Require user verification (biometric/PIN, not just presence). ON by
         # default; set 0 only for test authenticators that cannot do UV.
@@ -64,4 +72,5 @@ class Settings:
     def webauthn_configured(self) -> bool:
         # credentials_path is required: without it enrolments are held in memory
         # and lost on restart — dangerous for a factor that gates signing.
-        return bool(self.rp_id and self.rp_origin and self.credentials_path)
+        return bool(self.rp_id and (self.rp_origin or self.rp_origins)
+                    and self.credentials_path)

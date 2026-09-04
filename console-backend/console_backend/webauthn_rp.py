@@ -36,7 +36,8 @@ def verify_registration(settings, credential_json, expected_challenge):
     """Verify an attestation and return a storable credential dict."""
     v = verify_registration_response(
         credential=credential_json, expected_challenge=expected_challenge,
-        expected_rp_id=settings.rp_id, expected_origin=settings.rp_origin,
+        expected_rp_id=settings.rp_id,
+        expected_origin=settings.rp_origins or settings.rp_origin,
         require_user_verification=settings.webauthn_require_uv)
     return {"id": bytes_to_base64url(v.credential_id),
             "public_key": bytes_to_base64url(v.credential_public_key),
@@ -58,7 +59,8 @@ def verify_authentication(settings, credential_json, expected_challenge, cred):
     sign counter. Raises on any mismatch."""
     v = verify_authentication_response(
         credential=credential_json, expected_challenge=expected_challenge,
-        expected_rp_id=settings.rp_id, expected_origin=settings.rp_origin,
+        expected_rp_id=settings.rp_id,
+        expected_origin=settings.rp_origins or settings.rp_origin,
         credential_public_key=base64url_to_bytes(cred["public_key"]),
         credential_current_sign_count=cred["sign_count"],
         require_user_verification=settings.webauthn_require_uv)
