@@ -383,6 +383,12 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                                     .strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "architecture": architecture,
             }
+            # The CI pipeline that produced this build — the id the console's passkey
+            # pre-approval is keyed on. The certify job reads it from this BOM to
+            # consume that pre-approval when it signs. Absent for a local publish.
+            _pipeline_id = os.environ.get("CI_PIPELINE_ID", "").strip()
+            if _pipeline_id:
+                _provenance["source_pipeline_id"] = _pipeline_id
             bom = []                    # [(effective_arch, bom_dict), ...]
             _stem = leaf[:-len(".json")]
             # One temp dir for ALL per-arch BOMs, removed when done (the
