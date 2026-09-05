@@ -94,14 +94,25 @@ class TestSignPreapproved(unittest.TestCase):
         self.assertEqual(r.status_code, 403)
         self.assertIn("no human pre-approval", r.json()["detail"])
 
-    def test_group_not_covered_by_preapproval_403(self):
-        # pre-approval only covers lcg; manifest is a common package -> mismatch
-        self._preapprove("p1", ["lcg"])
+    def test_group_outside_preapprover_authority_403(self):
+        # alice admins lcg only (setUp policy); a manifest with a common package is
+        # outside her authority -> 403, and the approval is NOT consumed.
+        self._preapprove("p1", ["lcg"], user="alice")
         r = self._sign("p1", "common")
         self.assertEqual(r.status_code, 403)
-        self.assertIn("does not cover", r.json()["detail"])
-        # the approval was NOT consumed (still available for the right manifest)
+        self.assertIn("is not an admin for", r.json()["detail"])
         self.assertIsNotNone(main.preapprovals.get("p1"))
+
+    def test_cross_group_within_overall_admin_authority_signs(self):
+        # An OVERALL admin's pre-approval covers manifest groups NOT in the declared
+        # list (a cross-group build the SPA couldn't foresee) — it still signs.
+        main.settings = config.Settings(env={
+            "GITLAB_API_URL": "https://gitlab.example/api/v4",
+            "BITS_ADMINS_POLICY": "* @alice",            # overall admin
+            "BITS_SIGN_PROXY_URL": "http://proxy/sign/bits"})
+        self._preapprove("p1", ["testbed"], user="alice")   # declared: testbed only
+        r = self._sign("p1", "alice")                        # manifest carries group 'alice'
+        self.assertEqual(r.status_code, 200)
 
     def test_human_bearer_rejected(self):
         # a non-JWT bearer is a human token -> this endpoint is CI-only

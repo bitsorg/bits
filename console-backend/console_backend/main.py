@@ -638,12 +638,18 @@ async def sign_preapproved(request: Request):
         audit.record("sign_denied", signer=signer, groups=groups, build_id=build_id,
                      reason="no_preapproval", **principal)
         raise HTTPException(403, "no human pre-approval for build %s" % build_id)
-    ungranted = [g for g in groups if g not in pre["groups"]]
-    if ungranted:
-        audit.record("sign_denied", signer=signer, groups=groups, denied=ungranted,
-                     reason="preapproval_group_mismatch", build_id=build_id, **principal)
-        raise HTTPException(403, "pre-approval for build %s does not cover: %s"
-                            % (build_id, ", ".join(ungranted)))
+    # The manifest's groups must all be within the AUTHORITY of the human who
+    # pre-approved this build (resolved via the service token / static policy) — not
+    # a declared list: a build's manifest can legitimately include packages from
+    # other groups (cross-group builds) the SPA could not foresee at approval time.
+    resolved = _resolved_policy(None)
+    denied2 = [g for g in groups if not authz.is_admin_for(pre["user"], g, resolved)]
+    if denied2:
+        audit.record("sign_denied", signer=signer, groups=groups, denied=denied2,
+                     reason="preapprover_not_admin", build_id=build_id,
+                     preapproved_by=pre["user"], **principal)
+        raise HTTPException(403, "%s (who pre-approved build %s) is not an admin for: %s"
+                            % (pre["user"], build_id, ", ".join(denied2)))
     # Bounded multi-use: one build is signed once per architecture, so the same
     # pre-approval signs several manifests — capped, and only within its TTL. RESERVE
     # the slot before the sign await (this check+increment is synchronous, so it is
