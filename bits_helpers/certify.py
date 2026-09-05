@@ -23,6 +23,8 @@ a signature can never outrun what is actually in the bucket.
 import glob
 import json
 import os
+import ssl
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -319,10 +321,21 @@ class _ServiceSigner:
     the build's human passkey PRE-APPROVAL gates the signature. The returned envelope
     is verified over our bytes against the shipped trust anchor before it is written."""
 
-    def __init__(self, url, build_id, ci_token):
+    def __init__(self, url, build_id, ci_token, cafile=None, insecure=False):
         self._url = url.rstrip("/")
         self._build_id = str(build_id)
         self._token = ci_token
+        # TLS to the service. The returned signature is verified against the shipped
+        # anchor regardless, so TLS only protects the short-lived OIDC token in
+        # transit: cafile trusts a private CA (e.g. the CERN CA); insecure skips
+        # verification (testbed only, on a trusted network).
+        if insecure:
+            self._ctx = ssl._create_unverified_context()
+            print("WARNING: signing-service TLS verification disabled (insecure).", file=sys.stderr)
+        elif cafile:
+            self._ctx = ssl.create_default_context(cafile=cafile)
+        else:
+            self._ctx = None
 
     def _call(self, path, data=None):
         req = urllib.request.Request(
@@ -331,7 +344,7 @@ class _ServiceSigner:
         if data is not None:
             req.add_header("Content-Type", "application/octet-stream")
         try:
-            with urllib.request.urlopen(req, timeout=60) as fh:
+            with urllib.request.urlopen(req, timeout=60, context=self._ctx) as fh:
                 return json.load(fh)
         except urllib.error.HTTPError as e:
             detail = ""
@@ -365,8 +378,8 @@ def _make_signer(key_pem_path, sign_proxy, sign_service=None):
     *sign_service* is a ``(url, build_id, ci_token)`` triple; else a proxy signer
     when *sign_proxy* is a ``(url, token)`` pair; else a local-key signer."""
     if sign_service:
-        if not (isinstance(sign_service, (tuple, list)) and len(sign_service) == 3):
-            raise ValueError("sign_service must be a (url, build_id, ci_token) triple")
+        if not (isinstance(sign_service, (tuple, list)) and 3 <= len(sign_service) <= 5):
+            raise ValueError("sign_service must be (url, build_id, ci_token[, cafile, insecure])")
         return _ServiceSigner(*sign_service)
     if sign_proxy:
         if not (isinstance(sign_proxy, (tuple, list)) and len(sign_proxy) == 2):
@@ -771,7 +784,12 @@ def doCertify(args, parser):
             parser.error("--sign-via-service requires --build-id (the pre-approved build's pipeline id)")
         if getattr(args, "key", None):
             warning("certify: --key is ignored because --sign-via-service is set")
-        sign_service = (url, build_id, token)
+        # TLS to the service: trust a private CA (BITS_SIGN_SERVICE_CAFILE) or skip
+        # verification (BITS_SIGN_SERVICE_INSECURE=1, testbed only). The returned
+        # signature is verified against the shipped anchor regardless.
+        cafile = os.environ.get("BITS_SIGN_SERVICE_CAFILE") or None
+        insecure = os.environ.get("BITS_SIGN_SERVICE_INSECURE", "") == "1"
+        sign_service = (url, build_id, token, cafile, insecure)
     elif getattr(args, "signViaProxy", False):
         url = getattr(args, "signProxyUrl", None) or os.environ.get("BITS_SIGN_PROXY_URL")
         token = os.environ.get("BITS_SIGN_PROXY_TOKEN")
