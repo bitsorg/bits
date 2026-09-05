@@ -29,6 +29,15 @@ class Settings:
         # instead of running its own OAuth/session.
         self.frontend_origin = e.get("BITS_FRONTEND_ORIGIN", "")
 
+        # Catalog read cache (Phase C): a shared read-only GitHub token so the
+        # console's package/recipe reads come from one authenticated upstream
+        # (5000/hr) + a TTL cache, instead of each browser's 60/hr. Owners is the
+        # allowlist of GitHub owners the /gh proxy may fetch (comma-separated);
+        # empty = any owner (dev only).
+        self.github_token = e.get("BITS_GITHUB_TOKEN", "")
+        self.catalog_owners = [o.strip() for o in e.get("BITS_CATALOG_OWNERS", "").split(",") if o.strip()]
+        self.catalog_ttl = int(e.get("BITS_CATALOG_TTL", "300") or "300")
+
         # GitLab CI ID token (OIDC workload identity) verification (B4).
         self.oidc_issuer = e.get("BITS_OIDC_ISSUER", "")            # e.g. https://gitlab.cern.ch
         self.oidc_ci_audience = e.get("BITS_OIDC_CI_AUDIENCE", "")  # required 'aud' claim

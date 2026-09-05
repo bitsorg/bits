@@ -15,8 +15,10 @@ on the same header. The Pages frontend is a different origin, allowed via CORS
 this backend's.
 
 Endpoints: `/healthz`, `/me`, `/sign` (CI single-shot), `/sign/request` +
-`/sign/approve` (human passkey approval), `/sign/cli/*` (cross-device), and
-`/webauthn/*` (enrolment + bits-admin grant).
+`/sign/approve` (human passkey approval), `/sign/cli/*` (cross-device),
+`/webauthn/*` (enrolment + bits-admin grant), and `/gh/{path}` (cached,
+authenticated GitHub read proxy for package browsing — see `BITS_GITHUB_TOKEN`,
+`BITS_CATALOG_OWNERS`, `BITS_CATALOG_TTL`).
 
 ## Run / test (dev)
 

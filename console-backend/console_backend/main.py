@@ -19,7 +19,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import audit, authz, ci_auth, config, credentials, identity, session, webauthn_rp
+from . import audit, authz, catalog, ci_auth, config, credentials, identity, session, webauthn_rp
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
 try:  # bits_helpers is provided by the surrounding bits repo (on PYTHONPATH).
@@ -36,6 +36,9 @@ cli_signs = session.CliSignStore()
 preapprovals = session.PreapprovalStore()
 enroll_grants = session.EnrollmentGrantStore()
 reg_challenges = session.RegChallengeStore()
+catalog_cache = catalog.CatalogCache(token=settings.github_token,
+                                     owners=settings.catalog_owners,
+                                     ttl=settings.catalog_ttl)
 
 app = FastAPI(title="bits-console backend", version="0.1.0")
 
@@ -84,6 +87,21 @@ def approve_page():
     with a passkey — identity comes from the passkey, so there is no login. Fetches
     to /sign/cli/* are same-origin (no CORS, no bearer)."""
     return FileResponse(os.path.join(_STATIC, "approve.html"))
+
+
+@app.get("/gh/{path:path}")
+async def gh_proxy(path: str, request: Request):
+    """Cached, authenticated passthrough for the console's GitHub package/recipe
+    reads (repo trees, tags, branches, blobs). Public data, no bearer: the browser
+    would otherwise hit GitHub unauthenticated at 60/hr per IP and run out. Locked
+    to GET /repos/<allowed-owner>/... so it is never an open proxy."""
+    full = "/" + path
+    if not catalog_cache.allowed(full):
+        raise HTTPException(status_code=403, detail="path not allowed")
+    if request.url.query:
+        full += "?" + request.url.query
+    status, body, ctype = await run_in_threadpool(catalog_cache.fetch, full)
+    return Response(content=body, status_code=status, media_type=ctype)
 
 
 def _current(request: Request):
