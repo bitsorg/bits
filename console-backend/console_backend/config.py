@@ -38,6 +38,17 @@ class Settings:
         self.catalog_owners = [o.strip() for o in e.get("BITS_CATALOG_OWNERS", "").split(",") if o.strip()]
         self.catalog_ttl = int(e.get("BITS_CATALOG_TTL", "300") or "300")
 
+        # Ops proxy (Phase 1): a forge (project) access token the backend uses to
+        # ACTUATE operations (trigger a build; later cancel/retry/delete) on the
+        # shared build project, gated by the caller's identity + authz. In the
+        # backend env for now; custody moves into the security-proxy later.
+        self.forge_ops_token = e.get("BITS_FORGE_OPS_TOKEN", "")
+        self.forge_project = e.get("BITS_FORGE_PROJECT", "")   # numeric id or path
+        # Refs the ops endpoint may build. Pinned (default: main) so a community
+        # admin cannot trigger an arbitrary ref — whose committed CI config would
+        # run with the project's protected credentials — to reach another community.
+        self.forge_refs = {r.strip() for r in e.get("BITS_FORGE_REFS", "main").split(",") if r.strip()} or {"main"}
+
         # GitLab CI ID token (OIDC workload identity) verification (B4).
         self.oidc_issuer = e.get("BITS_OIDC_ISSUER", "")            # e.g. https://gitlab.cern.ch
         self.oidc_ci_audience = e.get("BITS_OIDC_CI_AUDIENCE", "")  # required 'aud' claim

@@ -19,7 +19,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import audit, authz, catalog, ci_auth, config, credentials, identity, session, webauthn_rp
+from . import (audit, authz, catalog, ci_auth, config, credentials, forge_ops,
+               identity, session, webauthn_rp)
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
 try:  # bits_helpers is provided by the surrounding bits repo (on PYTHONPATH).
@@ -102,6 +103,67 @@ async def gh_proxy(path: str, request: Request):
         full += "?" + request.url.query
     status, body, ctype = await run_in_threadpool(catalog_cache.fetch, full)
     return Response(content=body, status_code=status, media_type=ctype)
+
+
+@app.post("/ops/build")
+async def ops_build(request: Request):
+    """Trigger a build pipeline on the shared project on the caller's behalf, using
+    the backend's forge token — gated by the caller's identity AND their admin rights
+    for the TARGET community (deny-by-default). The caller holds no forge write scope;
+    this backend check is the only gate, so it must pass before anything is actuated.
+
+    Body: {community, ref?, name?, variables?[]}. `community` is authorized against the
+    single admin policy; group-admin of that community or an overall (bits-)admin may
+    build. The community is resolved here — never taken from the pipeline variables."""
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    forge = forge_ops.GitLabForge.from_settings(settings)   # per-call: settings may change
+    if forge is None:
+        raise HTTPException(503, "ops backend not configured (BITS_FORGE_OPS_TOKEN/PROJECT)")
+    raw = await _read_capped(request, _MAX_BODY)
+    try:
+        payload = json.loads(raw)
+        community = str(payload["community"]).strip().lower()
+        ref = str(payload.get("ref") or "main").strip()
+        name = payload.get("name")
+        variables = payload.get("variables") or []
+        if not community or len(community) > 64 \
+                or not all(c.isalnum() or c in "-_." for c in community) \
+                or not _valid_ref(ref) or not isinstance(variables, list) \
+                or (name is not None and (not isinstance(name, str) or len(name) > 256)):
+            raise ValueError
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "expected {community, ref?, name?, variables[]}")
+    # Community isolation (all communities share ONE project, and the backend gate
+    # is the only per-user check once we act with the project token):
+    #   * ref is pinned to an allowlist, so an admin cannot trigger an arbitrary
+    #     ref whose committed CI config could publish elsewhere; and
+    #   * the build must carry exactly one COMMUNITY variable equal to the community
+    #     we authorize, so a community-A admin cannot build/publish as B.
+    # NOTE (Phase 1 residual): other build variables are NOT individually reconciled
+    # against `community`; full isolation also relies on the certify/sign step, which
+    # re-authorizes publishing against the manifest's actual groups (M1). A complete
+    # per-variable audit of the shared pipeline is a pre-production follow-up.
+    if ref not in settings.forge_refs:
+        raise HTTPException(400, "ref %r is not allowed for builds" % ref)
+    comm_vars = [v for v in variables if isinstance(v, dict)
+                 and str(v.get("key", "")).upper() == "COMMUNITY"]
+    if len(comm_vars) != 1 or str(comm_vars[0].get("value", "")).strip().lower() != community:
+        raise HTTPException(400, "exactly one COMMUNITY variable equal to the authorized community is required")
+    user = data["user"]
+    resolved = _resolved_policy(data["token"])
+    if not authz.is_admin_for(user, community, resolved):
+        audit.record("ops_denied", op="build", user=user, community=community, principal="human")
+        raise HTTPException(403, "%s is not an admin for community %s" % (user, community))
+    try:
+        result = await run_in_threadpool(forge.trigger_pipeline, ref, variables, name)
+    except forge_ops.ForgeError as e:
+        audit.record("ops_error", op="build", user=user, community=community, status=e.status)
+        raise HTTPException(502, "forge: %s" % e.message)
+    audit.record("ops_build", user=user, community=community,
+                 pipeline=result.get("id"), principal="human")
+    return result
 
 
 def _current(request: Request):
@@ -315,6 +377,12 @@ def _valid_build_id(build_id) -> bool:
     keeps it safe as a store key and in audit lines (no log injection / bloat)."""
     return bool(build_id) and len(build_id) <= 64 \
         and all(c.isalnum() or c in "-_." for c in build_id)
+
+
+def _valid_ref(ref) -> bool:
+    """A git ref (branch/tag) to build. Bounded, no shell/log-hostile characters."""
+    return bool(ref) and len(ref) <= 255 \
+        and all(c.isalnum() or c in "-_./" for c in ref)
 
 
 def _new_challenge(digest):
