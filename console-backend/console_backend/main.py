@@ -216,12 +216,17 @@ async def auth_callback(request: Request, code: str = "", state: str = ""):
     if not code or not st or not cookie_state or cookie_state != state:
         raise HTTPException(400, "invalid or expired login state")
     try:
-        id_token = await run_in_threadpool(auth_oidc.exchange_code, settings, code, st["verifier"])
-        claims = await run_in_threadpool(auth_oidc.verify_id_token, settings, id_token)
+        tokens = await run_in_threadpool(auth_oidc.exchange_code, settings, code, st["verifier"])
+        claims = await run_in_threadpool(auth_oidc.verify_id_token, settings, tokens["id_token"])
     except Exception as e:                              # noqa: BLE001 - report, don't leak
         audit.record("login_failed", reason=str(e)[:120])
         raise HTTPException(401, "login verification failed")
     user, groups = auth_oidc.claims_user_groups(claims)
+    if not user and tokens.get("access_token"):
+        # id_token carried no username claim (scope openid without profile) — resolve
+        # it from GET /user with the read_api access token (used once, not stored).
+        user = await run_in_threadpool(identity.verify_gitlab_token,
+                                       settings.gitlab_api_url, tokens["access_token"])
     if not user:
         raise HTTPException(401, "no user identity in token")
     token = secrets.token_urlsafe(32)

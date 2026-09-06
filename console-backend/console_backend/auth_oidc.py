@@ -54,7 +54,7 @@ def endpoints(settings):
     return a, t, j
 
 
-def authorize_url(settings, state, challenge, scope="openid email profile", max_age=None):
+def authorize_url(settings, state, challenge, scope="openid read_api", max_age=None):
     params = {
         "client_id": settings.oidc_login_client_id,
         "redirect_uri": settings.oidc_login_redirect,
@@ -70,8 +70,8 @@ def authorize_url(settings, state, challenge, scope="openid email profile", max_
 
 
 def exchange_code(settings, code, verifier, timeout=15):
-    """Exchange the auth code for tokens (confidential client). Returns the id_token
-    JWT string, or raises ValueError. The client secret never leaves the backend."""
+    """Exchange the auth code for tokens. Returns the token response dict (id_token +
+    access_token), or raises ValueError. The client secret never leaves the backend."""
     data = {
         "grant_type": "authorization_code",
         "code": code,
@@ -84,10 +84,10 @@ def exchange_code(settings, code, verifier, timeout=15):
     r = requests.post(endpoints(settings)[1], timeout=timeout, data=data)
     if r.status_code // 100 != 2:
         raise ValueError("token endpoint returned %s" % r.status_code)
-    tok = (r.json() or {}).get("id_token")
-    if not tok:
+    body = r.json() or {}
+    if not body.get("id_token"):
         raise ValueError("no id_token in token response")
-    return tok
+    return body
 
 
 def verify_id_token(settings, id_token):
@@ -101,9 +101,10 @@ def verify_id_token(settings, id_token):
 
 
 def claims_user_groups(claims):
-    """Username + e-groups from GitLab OIDC claims (for identity + authz)."""
-    user = (claims.get("preferred_username") or claims.get("nickname")
-            or claims.get("sub") or "")
+    """Username + e-groups from GitLab OIDC claims. Username is preferred_username /
+    nickname only — NOT sub (a numeric id that wouldn't match the admin policy); the
+    caller falls back to GET /user via the access token when neither is present."""
+    user = claims.get("preferred_username") or claims.get("nickname") or ""
     groups = claims.get("groups_direct") or claims.get("groups") or []
     if isinstance(groups, str):
         groups = [groups]

@@ -60,7 +60,7 @@ class TestOidcLogin(unittest.TestCase):
     @patch("console_backend.auth_oidc.verify_id_token")
     @patch("console_backend.auth_oidc.exchange_code")
     def test_callback_issues_session(self, exch, verify):
-        exch.return_value = "id.jwt.tok"
+        exch.return_value = {"id_token": "id.jwt.tok", "access_token": "at"}
         verify.return_value = {"preferred_username": "alice",
                                "groups_direct": ["testbed", "alice"]}
         # seed a valid state as /auth/login would
