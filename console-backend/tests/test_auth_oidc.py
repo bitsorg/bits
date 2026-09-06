@@ -42,6 +42,7 @@ class TestOidcLogin(unittest.TestCase):
         self.assertTrue(loc.startswith("https://gl/oauth/authorize?"))
         self.assertIn("code_challenge_method=S256", loc)
         self.assertIn("state=", loc)
+        self.assertIn("max_age=", loc)   # P2.3: force re-auth once SSO session > TTL
         # browser-binding cookie is set (login-CSRF defense)
         self.assertIn("bits_login_state=", r.headers.get("set-cookie", ""))
 

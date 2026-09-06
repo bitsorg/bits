@@ -194,7 +194,10 @@ def auth_login(return_to: str = ""):
     state = secrets.token_urlsafe(24)
     verifier, challenge = auth_oidc.new_pkce()
     oidc_states.put(state, {"return": rt, "verifier": verifier})
-    resp = RedirectResponse(auth_oidc.authorize_url(settings, state, challenge), status_code=302)
+    resp = RedirectResponse(
+        auth_oidc.authorize_url(settings, state, challenge,
+                                max_age=(settings.login_max_age or None)),
+        status_code=302)
     # Bind the callback to THIS browser (login-CSRF defense). A SameSite=Lax cookie
     # is still sent on the top-level GET return from GitLab; the callback requires it
     # to equal `state`, so an attacker cannot feed a victim a pre-made callback link

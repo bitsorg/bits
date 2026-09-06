@@ -59,7 +59,12 @@ class Settings:
         self.oidc_login_redirect = e.get("BITS_OIDC_LOGIN_REDIRECT", "")   # e.g. https://bits.cern.ch/auth/callback
         self.oidc_token_url = e.get("BITS_OIDC_TOKEN_URL", "")             # e.g. https://gitlab.cern.ch/oauth/token
         self.oidc_authorize_url = e.get("BITS_OIDC_AUTHORIZE_URL", "")     # e.g. https://gitlab.cern.ch/oauth/authorize
-        self.session_ttl = int(e.get("BITS_SESSION_TTL", "43200") or "43200")   # seconds; 12h default
+        self.session_ttl = int(e.get("BITS_SESSION_TTL", "86400") or "86400")   # seconds; 24h default
+        # OIDC max_age on login: force IdP re-authentication only when the SSO session
+        # is OLDER than this. Defaults to the session TTL, so re-login after the
+        # session lapses re-prompts, but nothing is forced within the TTL. Set 0 to
+        # never force (re-auth stays silent while the CERN SSO session is alive).
+        self.login_max_age = int(e.get("BITS_LOGIN_MAX_AGE") or self.session_ttl)
         # Allowed frontend origins we may hand a fresh session back to (redirect
         # target after login). Comma-separated; the post-login redirect must match.
         self.login_return_allow = [o.strip() for o in e.get("BITS_LOGIN_RETURN_ALLOW", "").split(",") if o.strip()]
