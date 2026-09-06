@@ -14,7 +14,8 @@ from console_backend import authz, config
 # Group tree: root 'bits-admins' -> {buncic}; subgroups alice(101), lhcb(102).
 # DIRECT members only (inherited=False), so overall coverage must come from '*'.
 _MEMBERS = {
-    "bits-admins": {"buncic"},
+    # root carries the resolve-token's own bot account — must be filtered out.
+    "bits-admins": {"buncic", "group_355494_bot_deadbeef"},
     101: {"alice1"},
     102: {"lhcb1"},
 }
@@ -53,6 +54,9 @@ class TestTreePolicy(unittest.TestCase):
         self.assertTrue(authz.is_admin_for("alice1", "alice", pol))
         self.assertFalse(authz.is_admin_for("alice1", "lhcb", pol))
         self.assertFalse(authz.is_admin_for("lhcb1", "alice", pol))
+        # the group access-token bot is never an admin
+        self.assertNotIn("group_355494_bot_deadbeef", pol["*"])
+        self.assertFalse(authz.is_admin_for("group_355494_bot_deadbeef", "alice", pol))
 
     @patch("console_backend.authz.forge.gitlab_subgroups", _subgroups)
     @patch("console_backend.authz.forge.gitlab_group_members", _members)

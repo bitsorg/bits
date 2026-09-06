@@ -8,9 +8,19 @@ overall entry (``*``), typically a ``&<bits-admin-group>`` ref, so this is the
 single source of truth — no separate role lookup.
 """
 
+import re
 import time
 
 from bits_helpers import forge
+
+# GitLab group/project access-token bots (e.g. group_355494_bot_<hash>). These are
+# service accounts, never interactive users — so a resolve-token bot that is a
+# member of the admin group must NOT be counted as an admin.
+_BOT_RE = re.compile(r"^(group|project)_\d+_bot_")
+
+
+def _humans(users):
+    return {u for u in (users or set()) if not _BOT_RE.match(u)}
 
 _CACHE = {}          # key -> (resolved_policy, expiry); service-token path only
 _STALE = {}          # key -> (last good resolved_policy, expiry); served if a refresh fails
@@ -49,11 +59,11 @@ def tree_policy(settings) -> dict:
     if not (root and token):
         return {}
     api = settings.gitlab_api_url
-    pol = {"*": forge.gitlab_group_members(api, token, root, inherited=False)}
+    pol = {"*": _humans(forge.gitlab_group_members(api, token, root, inherited=False))}
     for sub in forge.gitlab_subgroups(api, token, root):
         name = str(sub.get("path", "")).strip().lower()
         if name:
-            pol[name] = forge.gitlab_group_members(api, token, sub["id"], inherited=False)
+            pol[name] = _humans(forge.gitlab_group_members(api, token, sub["id"], inherited=False))
     return pol
 
 
