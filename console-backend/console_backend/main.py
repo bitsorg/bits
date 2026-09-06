@@ -169,6 +169,73 @@ async def ops_build(request: Request):
     return result
 
 
+async def _ops_pipeline_ctx(request, pid):
+    """Shared gate for pipeline lifecycle ops: authenticate, resolve the pipeline's
+    OWN community (its COMMUNITY variable), and require the caller be an admin for it
+    (group-admin of that community, or an overall/bits-admin via '*'). A pipeline
+    whose community can't be resolved authorizes only for an overall admin."""
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    forge = forge_ops.GitLabForge.from_settings(settings)
+    if forge is None:
+        raise HTTPException(503, "ops backend not configured")
+    if not _valid_build_id(pid):
+        raise HTTPException(400, "invalid pipeline id")
+    try:
+        community = await run_in_threadpool(forge.pipeline_community, pid)
+    except forge_ops.ForgeError as e:
+        raise HTTPException(502, "forge: %s" % e.message)
+    user = data["user"]
+    resolved = _resolved_policy(data["token"])
+    # A pipeline whose community can't be resolved (no COMMUNITY var — a Pages/push
+    # or legacy pipeline in the shared project) authorizes ONLY an overall admin.
+    # is_admin_for(user, "", ...) must NOT be used: an empty group falls back to the
+    # 'common' group, which would let any common-admin act on every untagged pipeline.
+    if community:
+        allowed = authz.is_admin_for(user, community, resolved)
+    else:
+        allowed, _ = authz.admin_groups(user, resolved)   # overall admin only
+    if not allowed:
+        audit.record("ops_denied", op="pipeline", user=user,
+                     community=community or "?", pipeline=pid, principal="human")
+        raise HTTPException(403, "not authorized for pipeline %s" % pid)
+    return forge, user, community
+
+
+@app.post("/ops/pipeline/{pid}/cancel")
+async def ops_cancel(pid: str, request: Request):
+    forge, user, community = await _ops_pipeline_ctx(request, pid)
+    try:
+        await run_in_threadpool(forge.cancel_pipeline, pid)
+    except forge_ops.ForgeError as e:
+        raise HTTPException(502, "forge: %s" % e.message)
+    audit.record("ops_cancel", user=user, community=community, pipeline=pid, principal="human")
+    return {"status": "canceled"}
+
+
+@app.post("/ops/pipeline/{pid}/retry")
+async def ops_retry(pid: str, request: Request):
+    forge, user, community = await _ops_pipeline_ctx(request, pid)
+    try:
+        await run_in_threadpool(forge.retry_pipeline, pid)
+    except forge_ops.ForgeError as e:
+        raise HTTPException(502, "forge: %s" % e.message)
+    audit.record("ops_retry", user=user, community=community, pipeline=pid, principal="human")
+    return {"status": "retried"}
+
+
+@app.delete("/ops/pipeline/{pid}")
+async def ops_delete(pid: str, request: Request):
+    forge, user, community = await _ops_pipeline_ctx(request, pid)
+    try:
+        await run_in_threadpool(forge.delete_pipeline, pid)
+    except forge_ops.ForgeError as e:
+        raise HTTPException(502, "forge: %s" % e.message)
+    audit.record("ops_delete", user=user, community=community, pipeline=pid, principal="human")
+    return {"status": "deleted"}
+
+
 def _return_allowed(url):
     """The post-login redirect target must be one of the allow-listed frontend
     origins — never an attacker-supplied URL (open-redirect / token exfiltration)."""

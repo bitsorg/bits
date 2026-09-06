@@ -62,6 +62,52 @@ class GitLabForge:
         except Exception:
             return {}
 
+    def _send(self, method, path):
+        """POST/DELETE with no body (pipeline lifecycle actions)."""
+        try:
+            r = requests.request(method, "%s/projects/%s%s" % (self._api, self._project, path),
+                                 headers={"PRIVATE-TOKEN": self._token}, timeout=self._timeout)
+        except requests.RequestException as e:
+            raise ForgeError(0, str(e)[:200])
+        if r.status_code // 100 != 2:
+            msg = ""
+            try:
+                msg = (r.json() or {}).get("message") or r.text[:200]
+            except Exception:
+                msg = (r.text or "")[:200]
+            raise ForgeError(r.status_code, msg)
+        try:
+            return r.json()
+        except Exception:
+            return {}
+
+    def _get(self, path):
+        try:
+            r = requests.get("%s/projects/%s%s" % (self._api, self._project, path),
+                             headers={"PRIVATE-TOKEN": self._token}, timeout=self._timeout)
+        except requests.RequestException as e:
+            raise ForgeError(0, str(e)[:200])
+        if r.status_code // 100 != 2:
+            raise ForgeError(r.status_code, "GET %s -> %s" % (path, r.status_code))
+        return r.json()
+
+    def pipeline_community(self, pid):
+        """The pipeline's COMMUNITY variable (lowercased), or '' if none — used to
+        authorize a lifecycle action against the pipeline's own community."""
+        for v in (self._get("/pipelines/%s/variables" % pid) or []):
+            if isinstance(v, dict) and str(v.get("key", "")).upper() == "COMMUNITY":
+                return str(v.get("value", "")).strip().lower()
+        return ""
+
+    def cancel_pipeline(self, pid):
+        return self._send("POST", "/pipelines/%s/cancel" % pid)
+
+    def retry_pipeline(self, pid):
+        return self._send("POST", "/pipelines/%s/retry" % pid)
+
+    def delete_pipeline(self, pid):
+        return self._send("DELETE", "/pipelines/%s" % pid)
+
     def trigger_pipeline(self, ref, variables=None, name=None):
         """Create a pipeline on `ref`. `variables` is a list of {key,value} (or a
         dict). Returns {id, web_url, status}. Raises ForgeError on failure."""
