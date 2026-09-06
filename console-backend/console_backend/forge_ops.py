@@ -91,6 +91,62 @@ class GitLabForge:
             raise ForgeError(r.status_code, "GET %s -> %s" % (path, r.status_code))
         return r.json()
 
+    def _json(self, method, path, body):
+        """A request carrying a JSON body (repo file create/update/delete)."""
+        try:
+            r = requests.request(method, "%s/projects/%s%s" % (self._api, self._project, path),
+                                 headers={"PRIVATE-TOKEN": self._token,
+                                          "Content-Type": "application/json"},
+                                 json=body, timeout=self._timeout)
+        except requests.RequestException as e:
+            raise ForgeError(0, str(e)[:200])
+        if r.status_code // 100 != 2:
+            msg = ""
+            try:
+                msg = (r.json() or {}).get("message") or r.text[:200]
+            except Exception:
+                msg = (r.text or "")[:200]
+            raise ForgeError(r.status_code, msg)
+        try:
+            return r.json()
+        except Exception:
+            return {}
+
+    def _file_exists(self, path, ref):
+        try:
+            self._get("/repository/files/%s?ref=%s" % (quote(path, safe=""),
+                                                       quote(ref, safe="")))
+            return True
+        except ForgeError as e:
+            if e.status == 404:
+                return False
+            raise
+
+    def put_file(self, path, branch, content_b64, message):
+        """Create or update a repo file (base64 content) on `branch`. Upsert: PUT
+        when it exists, else POST. Raises ForgeError on failure."""
+        p = "/repository/files/%s" % quote(path, safe="")
+        method = "PUT" if self._file_exists(path, branch) else "POST"
+        return self._json(method, p, {"branch": branch, "content": content_b64,
+                                      "encoding": "base64", "commit_message": message})
+
+    def delete_file(self, path, branch, message):
+        p = "/repository/files/%s" % quote(path, safe="")
+        return self._json("DELETE", p, {"branch": branch, "commit_message": message})
+
+    def set_ci_variable(self, key, value):
+        """Upsert a project CI/CD variable: PUT if it exists, else POST. Kept
+        unprotected/unmasked (these are refs/flags, not secrets)."""
+        try:
+            return self._json("PUT", "/variables/%s" % quote(key, safe=""),
+                              {"value": value})
+        except ForgeError as e:
+            if e.status == 404:
+                return self._json("POST", "/variables",
+                                  {"key": key, "value": value,
+                                   "protected": False, "masked": False})
+            raise
+
     def pipeline_community(self, pid):
         """The pipeline's COMMUNITY variable (lowercased), or '' if none — used to
         authorize a lifecycle action against the pipeline's own community."""

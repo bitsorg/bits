@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import time
 
@@ -234,6 +235,144 @@ async def ops_delete(pid: str, request: Request):
         raise HTTPException(502, "forge: %s" % e.message)
     audit.record("ops_delete", user=user, community=community, pipeline=pid, principal="human")
     return {"status": "deleted"}
+
+
+# Schedule files live at communities/<community>/pipelines/<name>.json. The path is
+# the ONLY thing that says which community a write belongs to, so it is pinned hard:
+# the community segment is what we authorize, and no other repo path is writable.
+# Charset-restricted and fullmatch'd so no spaces/newlines/encoded separators slip
+# into the segment (an empty/space community would fall back to the 'common' group;
+# a trailing newline would ride through a '$'-anchored match).
+_OPS_FILE_RE = re.compile(r"communities/([A-Za-z0-9._-]+)/pipelines/[A-Za-z0-9._-]+\.json")
+
+
+async def _ops_file_ctx(request):
+    """Shared gate for schedule-file writes: authenticate, pin the path (so a
+    community-A admin cannot write B's tree or any other repo file), pin the branch
+    to the ref allowlist, and require the caller be an admin for that community."""
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    forge = forge_ops.GitLabForge.from_settings(settings)
+    if forge is None:
+        raise HTTPException(503, "ops backend not configured")
+    raw = await _read_capped(request, _MAX_BODY)
+    try:
+        payload = json.loads(raw)
+        path = str(payload["path"])
+        branch = str(payload.get("branch") or "main").strip()
+    except Exception:
+        raise HTTPException(400, "expected {path, branch?, ...}")
+    m = _OPS_FILE_RE.fullmatch(path)
+    if not m or ".." in path:
+        raise HTTPException(400, "path must be communities/<community>/pipelines/<name>.json")
+    if branch not in settings.forge_refs:
+        raise HTTPException(400, "branch %r is not allowed" % branch)
+    # The community is lowercased for the policy match (policy keys are lowercase);
+    # the path keeps its original case for the write (the on-disk dirs are cased,
+    # e.g. ALICE). Never authorize an empty community — it would hit the 'common'
+    # fallback in approved_for_group. (The charset regex already forbids empty.)
+    community = m.group(1).strip().lower()
+    if not community:
+        raise HTTPException(400, "path has no community segment")
+    user = data["user"]
+    if not authz.is_admin_for(user, community, _resolved_policy(data["token"])):
+        audit.record("ops_denied", op="file", user=user, community=community, principal="human")
+        raise HTTPException(403, "%s is not an admin for community %s" % (user, community))
+    return forge, user, community, path, branch, payload
+
+
+@app.post("/ops/file")
+async def ops_file_put(request: Request):
+    forge, user, community, path, branch, payload = await _ops_file_ctx(request)
+    content = payload.get("content")
+    if not isinstance(content, str) or not content:
+        raise HTTPException(400, "content (base64) is required")
+    message = str(payload.get("message") or ("pipelines: update " + path))
+    try:
+        await run_in_threadpool(forge.put_file, path, branch, content, message)
+    except forge_ops.ForgeError as e:
+        raise HTTPException(502, "forge: %s" % e.message)
+    audit.record("ops_file_put", user=user, community=community, path=path, principal="human")
+    return {"status": "saved"}
+
+
+@app.delete("/ops/file")
+async def ops_file_delete(request: Request):
+    forge, user, community, path, branch, payload = await _ops_file_ctx(request)
+    message = str(payload.get("message") or ("pipelines: delete " + path))
+    try:
+        await run_in_threadpool(forge.delete_file, path, branch, message)
+    except forge_ops.ForgeError as e:
+        raise HTTPException(502, "forge: %s" % e.message)
+    audit.record("ops_file_delete", user=user, community=community, path=path, principal="human")
+    return {"status": "deleted"}
+
+
+async def _require_overall_admin(request):
+    """Gate for infrastructure ops that are not scoped to a community (a global CI
+    variable, an image refresh): authenticate and require an overall (bits-)admin."""
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    forge = forge_ops.GitLabForge.from_settings(settings)
+    if forge is None:
+        raise HTTPException(503, "ops backend not configured")
+    user = data["user"]
+    overall, _ = authz.admin_groups(user, _resolved_policy(data["token"]))
+    if not overall:
+        audit.record("ops_denied", op="admin", user=user, principal="human")
+        raise HTTPException(403, "%s is not an overall admin" % user)
+    return forge, user
+
+
+# CI/CD variables the admin endpoint may set — an allowlist so this never becomes a
+# way to write arbitrary pipeline variables (e.g. tokens) through the backend.
+_OPS_ADMIN_VARS = {"BITS_DESIRED_REF"}
+
+
+@app.post("/ops/admin/ci-var")
+async def ops_admin_ci_var(request: Request):
+    forge, user = await _require_overall_admin(request)
+    raw = await _read_capped(request, _MAX_BODY)
+    try:
+        payload = json.loads(raw)
+        key = str(payload["key"])
+        value = str(payload.get("value", ""))
+    except Exception:
+        raise HTTPException(400, "expected {key, value}")
+    if key not in _OPS_ADMIN_VARS:
+        raise HTTPException(400, "variable %r is not allowed" % key)
+    try:
+        await run_in_threadpool(forge.set_ci_variable, key, value)
+    except forge_ops.ForgeError as e:
+        raise HTTPException(502, "forge: %s" % e.message)
+    audit.record("ops_ci_var", user=user, key=key, principal="human")
+    return {"status": "set"}
+
+
+@app.post("/ops/admin/refresh")
+async def ops_admin_refresh(request: Request):
+    """Trigger the builder-image refresh pipeline (REFRESH_IMAGES_JOB), optionally
+    pinned to one runner tag. No COMMUNITY variable — it is an infra op, so it does
+    not go through /ops/build; overall-admin only."""
+    forge, user = await _require_overall_admin(request)
+    raw = await _read_capped(request, _MAX_BODY)
+    try:
+        payload = json.loads(raw)
+        tag = str(payload.get("tag", "")).strip()
+    except Exception:
+        raise HTTPException(400, "expected {tag?}")
+    variables = [{"key": "REFRESH_IMAGES_JOB", "value": "true"}]
+    if tag:
+        variables.append({"key": "BITS_RUNNER_TAG", "value": tag})
+    try:
+        result = await run_in_threadpool(forge.trigger_pipeline, "main", variables, None)
+    except forge_ops.ForgeError as e:
+        raise HTTPException(502, "forge: %s" % e.message)
+    audit.record("ops_refresh", user=user, tag=tag or "*",
+                 pipeline=result.get("id"), principal="human")
+    return result
 
 
 def _return_allowed(url):
