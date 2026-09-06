@@ -99,12 +99,12 @@ class Settings:
         self.webauthn_required = e.get("BITS_WEBAUTHN_REQUIRED", "0") == "1"
 
     def oidc_login_configured(self) -> bool:
-        # client_secret is OPTIONAL: reusing the existing PUBLIC (PKCE) OAuth app
-        # needs no secret (PKCE protects the code exchange); a dedicated confidential
-        # client may set one. Everything else is required.
+        # Only issuer + client id + redirect are required. The authorize/token/jwks
+        # endpoints are DISCOVERED from the issuer's well-known doc (the explicit
+        # oidc_*_url vars are optional overrides). client_secret is OPTIONAL too:
+        # reusing the existing PUBLIC PKCE app needs none.
         return bool(self.oidc_login_client_id and self.oidc_login_redirect
-                    and self.oidc_token_url and self.oidc_authorize_url
-                    and self.oidc_issuer and self.jwks_url)
+                    and self.oidc_issuer)
 
     def sign_proxy_configured(self) -> bool:
         return bool(self.sign_proxy_url)

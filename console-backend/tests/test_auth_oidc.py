@@ -92,6 +92,21 @@ class TestOidcLogin(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["user"], "alice")
 
+    def test_endpoints_discovered_from_issuer(self):
+        from console_backend import auth_oidc
+        s = config.Settings(env={
+            "BITS_OIDC_LOGIN_CLIENT_ID": "cid",
+            "BITS_OIDC_LOGIN_REDIRECT": "https://bits.cern.ch/auth/callback",
+            "BITS_OIDC_ISSUER": "https://gl"})   # no explicit authorize/token/jwks URLs
+        self.assertTrue(s.oidc_login_configured())
+        with patch.object(auth_oidc, "_discover", return_value={
+                "authorization_endpoint": "https://gl/oauth/authorize",
+                "token_endpoint": "https://gl/oauth/token",
+                "jwks_uri": "https://gl/oauth/discovery/keys"}):
+            self.assertEqual(auth_oidc.endpoints(s),
+                             ("https://gl/oauth/authorize", "https://gl/oauth/token",
+                              "https://gl/oauth/discovery/keys"))
+
     def test_logout_revokes_session(self):
         main.sessions.put("sesstok", "alice", ["testbed"])
         r = self.client.post("/auth/logout", headers={"Authorization": "Bearer sesstok"})

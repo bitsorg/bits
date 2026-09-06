@@ -28,6 +28,32 @@ def new_pkce():
     return verifier, challenge
 
 
+_DISCOVERY = {}   # issuer -> discovery document (cached; endpoints rarely change)
+
+
+def _discover(issuer, timeout=10):
+    d = _DISCOVERY.get(issuer)
+    if d is None:
+        r = requests.get(issuer.rstrip("/") + "/.well-known/openid-configuration", timeout=timeout)
+        r.raise_for_status()
+        d = r.json()
+        _DISCOVERY[issuer] = d
+    return d
+
+
+def endpoints(settings):
+    """(authorize_url, token_url, jwks_url). Explicit config wins (override/test);
+    otherwise they are DISCOVERED from the issuer's well-known document — so a
+    deployment only needs the issuer + client id, not three hand-copied URLs."""
+    a, t, j = settings.oidc_authorize_url, settings.oidc_token_url, settings.jwks_url
+    if not (a and t and j):
+        d = _discover(settings.oidc_issuer)
+        a = a or d.get("authorization_endpoint", "")
+        t = t or d.get("token_endpoint", "")
+        j = j or d.get("jwks_uri", "")
+    return a, t, j
+
+
 def authorize_url(settings, state, challenge, scope="openid email profile", max_age=None):
     params = {
         "client_id": settings.oidc_login_client_id,
@@ -40,7 +66,7 @@ def authorize_url(settings, state, challenge, scope="openid email profile", max_
     }
     if max_age is not None:
         params["max_age"] = str(int(max_age))   # timeout-based re-auth (P2.3)
-    return "%s?%s" % (settings.oidc_authorize_url, urlencode(params))
+    return "%s?%s" % (endpoints(settings)[0], urlencode(params))
 
 
 def exchange_code(settings, code, verifier, timeout=15):
@@ -55,7 +81,7 @@ def exchange_code(settings, code, verifier, timeout=15):
     }
     if settings.oidc_login_client_secret:   # confidential client (optional)
         data["client_secret"] = settings.oidc_login_client_secret
-    r = requests.post(settings.oidc_token_url, timeout=timeout, data=data)
+    r = requests.post(endpoints(settings)[1], timeout=timeout, data=data)
     if r.status_code // 100 != 2:
         raise ValueError("token endpoint returned %s" % r.status_code)
     tok = (r.json() or {}).get("id_token")
@@ -67,7 +93,7 @@ def exchange_code(settings, code, verifier, timeout=15):
 def verify_id_token(settings, id_token):
     """Verify signature (JWKS), issuer, audience (== our client id) and exp; return
     the claims, or raise."""
-    key = ci_auth._jwks_client(settings.jwks_url).get_signing_key_from_jwt(id_token).key
+    key = ci_auth._jwks_client(endpoints(settings)[2]).get_signing_key_from_jwt(id_token).key
     return jwt.decode(id_token, key, algorithms=["RS256"],
                       audience=settings.oidc_login_client_id,
                       issuer=settings.oidc_issuer, leeway=30,   # small clock skew
