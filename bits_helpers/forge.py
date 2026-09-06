@@ -413,17 +413,20 @@ def gitlab_mr_iid_for_commit(api_url, token, project, sha, timeout=15):
     return merged[0].get("iid") if merged else None
 
 
-def gitlab_group_members(api_url, token, group_ref, timeout=15) -> set:
-    """Return the set of usernames in a GitLab group (incl. inherited members).
+def gitlab_group_members(api_url, token, group_ref, timeout=15, inherited=True) -> set:
+    """Return the set of usernames in a GitLab group.
 
     *group_ref* is a group path (``cern/bits-admins``) or numeric id. Paginates
-    ``GET /groups/<ref>/members/all``. Raises on API/auth failure so the caller
-    can decide (resolve_admin_policy downgrades a failure to a warning).
+    ``GET /groups/<ref>/members/all`` (inherited members included) by default, or
+    ``/members`` (DIRECT members only) when ``inherited=False`` — used so a
+    subgroup resolves to only its own members and a root group does not absorb a
+    parent's. Raises on API/auth failure so the caller can decide.
     """
     import requests
     from urllib.parse import quote
-    base = "%s/groups/%s/members/all" % (api_url.rstrip("/"),
-                                         quote(str(group_ref), safe=""))
+    base = "%s/groups/%s/%s" % (api_url.rstrip("/"),
+                                quote(str(group_ref), safe=""),
+                                "members/all" if inherited else "members")
     members, page = set(), 1
     while True:
         resp = requests.get(base, headers={"PRIVATE-TOKEN": token},
@@ -436,6 +439,29 @@ def gitlab_group_members(api_url, token, group_ref, timeout=15) -> set:
                 members.add(u.lower())
         if len(data) < 100:
             return members
+        page += 1
+
+
+def gitlab_subgroups(api_url, token, group_ref, timeout=15) -> list:
+    """Return ``[{"id", "path"}]`` for the DIRECT subgroups of a group. Paginates
+    ``GET /groups/<ref>/subgroups``. Used to derive per-community admin groups by
+    convention: each subgroup's ``path`` is a community name, its members are that
+    community's admins. Raises on API/auth failure (caller decides)."""
+    import requests
+    from urllib.parse import quote
+    base = "%s/groups/%s/subgroups" % (api_url.rstrip("/"),
+                                       quote(str(group_ref), safe=""))
+    out, page = [], 1
+    while True:
+        resp = requests.get(base, headers={"PRIVATE-TOKEN": token},
+                            params={"per_page": 100, "page": page}, timeout=timeout)
+        _gl_ok(resp)
+        data = resp.json() or []
+        for g in data:
+            if isinstance(g, dict) and g.get("id"):
+                out.append({"id": g["id"], "path": g.get("path", "")})
+        if len(data) < 100:
+            return out
         page += 1
 
 

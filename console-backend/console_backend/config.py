@@ -22,6 +22,12 @@ class Settings:
         # so the admin set is deterministic and not observer-dependent. Falls back
         # to the caller's token if unset (dev).
         self.admin_resolve_token = e.get("BITS_ADMIN_RESOLVE_TOKEN", "")
+        # Convention: a GitLab group whose members are OVERALL admins and whose
+        # subgroups are per-community admins (subgroup path = community name). Set
+        # this and the whole policy is derived from the group tree — no per-community
+        # lines. Needs admin_resolve_token to read membership. BITS_ADMINS_POLICY
+        # still merges on top as an override/supplement.
+        self.admins_group = e.get("BITS_ADMINS_GROUP", "")
 
         # The GitLab Pages frontend origin (scheme+host) allowed to call this API
         # cross-origin (CORS). Humans authenticate by sending the GitLab token their
