@@ -167,3 +167,55 @@ class RegChallengeStore(_BoundedStore):
         if not entry:
             return None
         return entry if entry["exp"] >= time.time() else None
+
+
+class OidcStateStore(_BoundedStore):
+    """Short-lived state for the OIDC login round-trip: state -> {return, verifier}.
+    Single-use (popped on callback) so a state cannot be replayed."""
+
+    def __init__(self, ttl_seconds=600, max_entries=10000):
+        super().__init__(ttl_seconds, max_entries)
+
+    def _exps(self):
+        return [(k, e["exp"]) for k, e in self._store.items()]
+
+    def put(self, state, data):
+        self._make_room()
+        data = dict(data)
+        data["exp"] = time.time() + self._ttl
+        self._store[state] = data
+
+    def pop(self, state):
+        entry = self._store.pop(state, None)
+        if not entry:
+            return None
+        return entry if entry["exp"] >= time.time() else None
+
+
+class SessionStore(_BoundedStore):
+    """Issued backend sessions: token -> {user, groups, exp}. The browser holds the
+    opaque token and sends it as a bearer; the backend resolves identity here, so no
+    GitLab token lives in the browser. TTL-bounded; logout/revoke drops the entry."""
+
+    def __init__(self, ttl_seconds=43200, max_entries=100000):
+        super().__init__(ttl_seconds, max_entries)
+
+    def _exps(self):
+        return [(k, e["exp"]) for k, e in self._store.items()]
+
+    def put(self, token, user, groups):
+        self._make_room()
+        self._store[token] = {"user": user, "groups": list(groups or []),
+                              "exp": time.time() + self._ttl}
+
+    def get(self, token):
+        entry = self._store.get(token)
+        if not entry:
+            return None
+        if entry["exp"] < time.time():
+            self._store.pop(token, None)
+            return None
+        return entry
+
+    def revoke(self, token):
+        self._store.pop(token, None)

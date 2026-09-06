@@ -49,6 +49,21 @@ class Settings:
         # run with the project's protected credentials — to reach another community.
         self.forge_refs = {r.strip() for r in e.get("BITS_FORGE_REFS", "main").split(",") if r.strip()} or {"main"}
 
+        # Phase 2: the backend is a GitLab OIDC client. On /auth/login it runs the
+        # OIDC code flow (confidential client, with a secret), verifies the id_token,
+        # and issues its OWN session — so the browser holds no GitLab token. Reuses
+        # oidc_issuer + jwks_url above. login_redirect is THIS backend's callback;
+        # frontend_post_login is where we hand the session back to the SPA.
+        self.oidc_login_client_id = e.get("BITS_OIDC_LOGIN_CLIENT_ID", "")
+        self.oidc_login_client_secret = e.get("BITS_OIDC_LOGIN_CLIENT_SECRET", "")
+        self.oidc_login_redirect = e.get("BITS_OIDC_LOGIN_REDIRECT", "")   # e.g. https://bits.cern.ch/auth/callback
+        self.oidc_token_url = e.get("BITS_OIDC_TOKEN_URL", "")             # e.g. https://gitlab.cern.ch/oauth/token
+        self.oidc_authorize_url = e.get("BITS_OIDC_AUTHORIZE_URL", "")     # e.g. https://gitlab.cern.ch/oauth/authorize
+        self.session_ttl = int(e.get("BITS_SESSION_TTL", "43200") or "43200")   # seconds; 12h default
+        # Allowed frontend origins we may hand a fresh session back to (redirect
+        # target after login). Comma-separated; the post-login redirect must match.
+        self.login_return_allow = [o.strip() for o in e.get("BITS_LOGIN_RETURN_ALLOW", "").split(",") if o.strip()]
+
         # GitLab CI ID token (OIDC workload identity) verification (B4).
         self.oidc_issuer = e.get("BITS_OIDC_ISSUER", "")            # e.g. https://gitlab.cern.ch
         self.oidc_ci_audience = e.get("BITS_OIDC_CI_AUDIENCE", "")  # required 'aud' claim
@@ -82,6 +97,11 @@ class Settings:
         # OFF by default so you can roll out: enable WebAuthn, have admins enrol,
         # then set 1 to enforce — otherwise a never-enrolled admin signs single-shot.
         self.webauthn_required = e.get("BITS_WEBAUTHN_REQUIRED", "0") == "1"
+
+    def oidc_login_configured(self) -> bool:
+        return bool(self.oidc_login_client_id and self.oidc_login_client_secret
+                    and self.oidc_login_redirect and self.oidc_token_url
+                    and self.oidc_authorize_url and self.oidc_issuer and self.jwks_url)
 
     def sign_proxy_configured(self) -> bool:
         return bool(self.sign_proxy_url)

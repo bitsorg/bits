@@ -19,8 +19,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import (audit, authz, catalog, ci_auth, config, credentials, forge_ops,
-               identity, session, webauthn_rp)
+from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials,
+               forge_ops, identity, session, webauthn_rp)
+from fastapi.responses import RedirectResponse
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
 try:  # bits_helpers is provided by the surrounding bits repo (on PYTHONPATH).
@@ -37,6 +38,8 @@ cli_signs = session.CliSignStore()
 preapprovals = session.PreapprovalStore()
 enroll_grants = session.EnrollmentGrantStore()
 reg_challenges = session.RegChallengeStore()
+oidc_states = session.OidcStateStore()
+sessions = session.SessionStore(ttl_seconds=settings.session_ttl)
 catalog_cache = catalog.CatalogCache(token=settings.github_token,
                                      owners=settings.catalog_owners,
                                      ttl=settings.catalog_ttl)
@@ -166,6 +169,79 @@ async def ops_build(request: Request):
     return result
 
 
+def _return_allowed(url):
+    """The post-login redirect target must be one of the allow-listed frontend
+    origins — never an attacker-supplied URL (open-redirect / token exfiltration)."""
+    if not url:
+        return False
+    from urllib.parse import urlparse
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False
+    return ("%s://%s" % (p.scheme, p.netloc)) in settings.login_return_allow
+
+
+@app.get("/auth/login")
+def auth_login(return_to: str = ""):
+    """Phase 2 login, step 1: remember state + PKCE, redirect to GitLab's authorize.
+    `return_to` is the allow-listed frontend URL we hand the session back to."""
+    if not settings.oidc_login_configured():
+        raise HTTPException(503, "OIDC login not configured")
+    rt = return_to or (settings.login_return_allow[0] if settings.login_return_allow else "")
+    if not _return_allowed(rt):
+        raise HTTPException(400, "return_to is not an allowed frontend origin")
+    state = secrets.token_urlsafe(24)
+    verifier, challenge = auth_oidc.new_pkce()
+    oidc_states.put(state, {"return": rt, "verifier": verifier})
+    resp = RedirectResponse(auth_oidc.authorize_url(settings, state, challenge), status_code=302)
+    # Bind the callback to THIS browser (login-CSRF defense). A SameSite=Lax cookie
+    # is still sent on the top-level GET return from GitLab; the callback requires it
+    # to equal `state`, so an attacker cannot feed a victim a pre-made callback link
+    # (which would log the victim in as the attacker's identity).
+    resp.set_cookie("bits_login_state", state, max_age=600, httponly=True,
+                    secure=True, samesite="lax", path="/auth")
+    return resp
+
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request, code: str = "", state: str = ""):
+    """Login step 2: verify state (single-use + browser-bound cookie), exchange the
+    code (confidential client), verify the id_token, issue a backend session, and hand
+    it back to the frontend in the URL fragment so it never hits a server log."""
+    if not settings.oidc_login_configured():
+        raise HTTPException(503, "OIDC login not configured")
+    cookie_state = request.cookies.get("bits_login_state")
+    st = oidc_states.pop(state) if state else None
+    if not code or not st or not cookie_state or cookie_state != state:
+        raise HTTPException(400, "invalid or expired login state")
+    try:
+        id_token = await run_in_threadpool(auth_oidc.exchange_code, settings, code, st["verifier"])
+        claims = await run_in_threadpool(auth_oidc.verify_id_token, settings, id_token)
+    except Exception as e:                              # noqa: BLE001 - report, don't leak
+        audit.record("login_failed", reason=str(e)[:120])
+        raise HTTPException(401, "login verification failed")
+    user, groups = auth_oidc.claims_user_groups(claims)
+    if not user:
+        raise HTTPException(401, "no user identity in token")
+    token = secrets.token_urlsafe(32)
+    sessions.put(token, user, groups)
+    audit.record("login", user=user, groups=groups, principal="human")
+    sep = "&" if "#" in st["return"] else "#"
+    resp = RedirectResponse(st["return"] + sep + "bits_session=" + token, status_code=302)
+    resp.delete_cookie("bits_login_state", path="/auth")
+    return resp
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request):
+    """Revoke the caller's backend session."""
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        sessions.revoke(auth[len("Bearer "):].strip())
+    return {"status": "logged out"}
+
+
 def _current(request: Request):
     """Identify the caller from the GitLab bearer token their browser already holds
     (verified against GitLab, briefly cached). Returns {'user','token'} or None. The
@@ -176,6 +252,13 @@ def _current(request: Request):
     token = auth[len("Bearer "):].strip()
     if not token:
         return None
+    # Phase 2: a backend session bearer takes precedence — identity + e-groups come
+    # from it, and no GitLab token is involved. `token` is None so callers know there
+    # is no GitLab credential to act with (authz uses the session's groups: P2.2).
+    sess = sessions.get(token)
+    if sess:
+        return {"user": sess["user"], "groups": sess["groups"],
+                "token": None, "session": token}
     user = identity.verify_gitlab_token(settings.gitlab_api_url, token)
     if not user:
         return None
