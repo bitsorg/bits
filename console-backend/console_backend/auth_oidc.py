@@ -46,14 +46,16 @@ def authorize_url(settings, state, challenge, scope="openid email profile", max_
 def exchange_code(settings, code, verifier, timeout=15):
     """Exchange the auth code for tokens (confidential client). Returns the id_token
     JWT string, or raises ValueError. The client secret never leaves the backend."""
-    r = requests.post(settings.oidc_token_url, timeout=timeout, data={
+    data = {
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": settings.oidc_login_redirect,
         "client_id": settings.oidc_login_client_id,
-        "client_secret": settings.oidc_login_client_secret,
-        "code_verifier": verifier,
-    })
+        "code_verifier": verifier,       # PKCE protects the exchange for a public client
+    }
+    if settings.oidc_login_client_secret:   # confidential client (optional)
+        data["client_secret"] = settings.oidc_login_client_secret
+    r = requests.post(settings.oidc_token_url, timeout=timeout, data=data)
     if r.status_code // 100 != 2:
         raise ValueError("token endpoint returned %s" % r.status_code)
     tok = (r.json() or {}).get("id_token")
