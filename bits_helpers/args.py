@@ -276,6 +276,638 @@ def add_version_arguments(subparsers, ctx):
                                description="Display %(prog)s and architecture.")
 
 
+def add_clean_arguments(subparsers, ctx):
+  """`bits clean` — clean up the build area."""
+  clean_parser = subparsers.add_parser("clean", help="clean up build area",
+                                       description="Clean up the build area.")
+  # Options for clean subcommand
+  ctx.architecture(clean_parser,
+                   help=("Clean up build results for this architecture. Default is the current system "
+                         "architecture, which is '%(default)s'."))
+  clean_parser.add_argument("--aggressive-cleanup", dest="aggressiveCleanup", action="store_true",
+                            help="Delete as much build data as possible when cleaning up.")
+  clean_dirs = clean_parser.add_argument_group(title="Customise bits directories")
+  ctx.chdir(clean_dirs,
+            help=("Change to the specified directory before cleaning up. "
+                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
+  ctx.work_dir(clean_dirs,
+               help="The toplevel directory used in previous builds. Default '%(default)s'.")
+  return clean_parser
+
+
+def add_prune_arguments(subparsers, ctx):
+  """`bits prune` — evict stale packages from a persistent workDir."""
+  cleanup_parser = subparsers.add_parser(
+      "prune",
+      help="evict stale packages from a persistent workDir (was: cleanup)",
+      description=(
+          "Evict packages from the persistent build workDir whose sentinel files "
+          "have not been touched within the configured age window, and/or free space "
+          "when disk usage exceeds a threshold (least-recently-used first). "
+          "Safe to run concurrently with active build jobs."
+      ),
+  )
+  # Options for the cleanup subcommand
+  ctx.work_dir(cleanup_parser,
+               help="Persistent bits work directory to clean. Default: %(default)s.")
+  ctx.architecture(cleanup_parser,
+                   help="Architecture sub-directory to scan. Default: %(default)s.")
+  cleanup_parser.add_argument("--max-age", dest="maxAgeDays", type=float, default=7.0, metavar="DAYS",
+                              help=("Evict packages whose sentinel has not been touched in more than "
+                                    "DAYS days. Default: %(default)s. Set to 0 to disable age-based "
+                                    "eviction (only disk-pressure mode runs)."))
+  cleanup_parser.add_argument("--min-free", dest="minFreeGb", type=float, default=None, metavar="GIB",
+                              help=("When free space on the workDir filesystem is below GIB gibibytes, "
+                                    "evict least-recently-used packages until the threshold is met. "
+                                    "Disabled by default; set a value to enable disk-pressure eviction."))
+  cleanup_parser.add_argument("--disk-pressure-only", dest="diskPressureOnly", action="store_true",
+                              default=False,
+                              help="Run only disk-pressure eviction; skip age-based eviction.")
+  cleanup_parser.add_argument("--retain", dest="retain", action="store_true", default=False,
+                              help=("Manifest-rooted retention sweep over ALL architectures in the "
+                                    "workDir. Keeps the packages of the newest --keep-builds local build "
+                                    "manifests per architecture (the latest iterations, including failed "
+                                    "ones) and certified packages NOT yet published to CVMFS; evicts "
+                                    "content that is safe upstream — uploaded to the store, in the "
+                                    "verified signed manifest AND recorded as published to CVMFS — plus "
+                                    "superseded old attempts, orphan store tarballs, BUILD dirs and "
+                                    "dangling links. Per-architecture fail-closed: an arch whose signed "
+                                    "manifest cannot be fetched/verified is skipped entirely."))
+  cleanup_parser.add_argument("--keep-builds", dest="keepBuilds", type=int, default=2, metavar="N",
+                              help="With --retain: keep the newest %(metavar)s build manifests per "
+                                   "architecture. Default %(default)s.")
+  ctx.remote_store(cleanup_parser, dest="retainStore", default=None,
+                   help=("With --retain: remote store to reconstruct the signed common "
+                         "manifests from, one per architecture found on disk (plus 'shared') — "
+                         "same derivation as bits build's signed reuse. http(s) and b3:///s3:// "
+                         "forms accepted."))
+  cleanup_parser.add_argument("--trust-manifest", dest="trustManifests", metavar="PATH|URL",
+                              action="append", default=[],
+                              help=("With --retain: explicit signed common manifest(s) in addition to (or "
+                                    "instead of) --store derivation (repeatable; URLs are fetched with "
+                                    "their .sig)."))
+  cleanup_parser.add_argument("--mark-published-from", dest="markPublishedFrom", metavar="PATH|URL",
+                              default=None,
+                              help=("With --retain: backfill CVMFS publish markers (.published/) from a "
+                                    "cvmfs-status.json publish record before sweeping, so released "
+                                    "content becomes evictable."))
+  cleanup_parser.add_argument("--grace-days", dest="graceDays", type=float, default=1.0, metavar="DAYS",
+                              help="With --retain: never evict anything modified more recently than "
+                                   "%(metavar)s days ago. Default %(default)s.")
+  cleanup_parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
+                              help="Print what would be evicted without actually removing anything.")
+  return cleanup_parser
+
+
+def add_deps_arguments(subparsers, ctx):
+  """`bits deps` — generate a dependency graph for a package."""
+  deps_parser = subparsers.add_parser("deps", help="generate a dependency graph for a given package",
+                                      description="Generate a dependency graph for a given package.")
+  # Options for the deps subcommand
+  deps_parser.add_argument("package", metavar="PACKAGE",
+                           help="Calculate dependency tree for %(metavar)s.")
+
+  ctx.architecture(deps_parser,
+                   help=("Resolve dependencies as if on the specified architecture. When used with "
+                         "--docker, use a Docker image for the specified architecture. Default is "
+                         "the current system architecture, which is '%(default)s'."))
+  ctx.defaults(deps_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  deps_parser.add_argument("--disable", dest="disable", default=[], metavar="PACKAGE", action="append",
+                           help=("Assume we're not building %(metavar)s and all its (unique) dependencies. "
+                                 "You can specify this option multiple times or separate multiple arguments "
+                                 "with commas."))
+  deps_parser.add_argument("-e", dest="environment", action="append", default=[],
+                           help="KEY=VALUE binding to add to the environment. May be specified multiple times.")
+
+  deps_graph = deps_parser.add_argument_group(title="Customise graph output")
+  deps_graph.add_argument("--neat", dest="neat", action="store_true",
+                          help="Produce a graph with transitive reduction.")
+  deps_graph.add_argument("--outdot", dest="outdot", metavar="FILE",
+                          help="Keep intermediate Graphviz dot file in %(metavar)s.")
+  deps_graph.add_argument("--outgraph", dest="outgraph", metavar="FILE",
+                          help="Store final output PDF file in %(metavar)s.")
+
+  deps_docker = deps_parser.add_argument_group(title="Use a Docker container", description="""\
+  If you're planning to build inside a Docker container, e.g. using bits
+  build's --docker option, it may be useful to resolve dependencies inside that
+  container as well, as which system packages are picked up may differ.
+  """)
+  deps_docker.add_argument("--docker", dest="docker", action="store_true",
+                           help="Check for available system packages inside a Docker container.")
+  deps_docker.add_argument("--docker-image", dest="dockerImage", metavar="IMAGE", default=None,
+                           help=("The Docker image to use. Implies --docker. By default, an image "
+                                 "is chosen based on the current or selected architecture."))
+  deps_docker.add_argument("--docker-extra-args", default="", metavar="ARGLIST",
+                           help=("Command-line arguments to pass to 'docker run'. "
+                                 "Passed through verbatim -- separate multiple arguments "
+                                 "with spaces, and make sure quoting is correct! Implies --docker."))
+
+  ctx.config_dir(deps_parser.add_argument_group(title="Customise bits directories"),
+                 help="The directory containing build recipes. Default '%(default)s'.")
+  ctx.search_path(deps_parser)
+
+  deps_system = deps_parser.add_mutually_exclusive_group()
+  deps_system.add_argument("--prefer-system", "--always-prefer-system", dest="preferSystem",
+                           nargs=0, const=True, default=False, action=_WarnAliasAction,
+                           help="Always use system packages when compatible.")
+  deps_system.add_argument("--no-system", dest="noSystem", nargs="?", const="*", default=None, metavar="PACKAGES",
+                           help="Never use system packages for PACKAGES, even if compatible.")
+  return deps_parser
+
+
+def add_doctor_arguments(subparsers, ctx):
+  """`bits doctor` — verify the status of your system."""
+  doctor_parser = subparsers.add_parser("doctor", help="verify status of your system",
+                                        description="Verify the status of your system.")
+  # Options for the doctor subcommand
+  doctor_parser.add_argument("packages", metavar="PACKAGE", nargs="*", default=[],
+                             help=("Check whether all system requirements of %(metavar)s are satisfied. "
+                                   "May be specified multiple times. "
+                                   "Optional when --runner is used."))
+  ctx.architecture(doctor_parser,
+                   help=("Resolve requirements as if on the specified architecture. When used with "
+                         "--docker, use a Docker image for the specified architecture. Default is "
+                         "the current system architecture, which is '%(default)s'."))
+  ctx.defaults(doctor_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  doctor_parser.add_argument("--disable", dest="disable", default=[], metavar="PACKAGE", action="append",
+                             help=("Assume we're not building %(metavar)s and all its (unique) dependencies. "
+                                   "You can specify this option multiple times or separate multiple arguments "
+                                   "with commas."))
+  doctor_parser.add_argument("-e", dest="environment", action="append", default=[],
+                            help="KEY=VALUE binding to add to the build environment. May be specified multiple times.")
+
+  doctor_system = doctor_parser.add_mutually_exclusive_group()
+  doctor_system.add_argument("--prefer-system", "--always-prefer-system", dest="preferSystem",
+                             nargs=0, const=True, default=False, action=_WarnAliasAction,
+                             help="Always use system packages when compatible.")
+  doctor_system.add_argument("--no-system", dest="noSystem", nargs="?", const="*", default=None, metavar="PACKAGES",
+                             help="Never use system packages for the provided, command separated, PACKAGES, even if compatible.")
+
+  doctor_docker = doctor_parser.add_argument_group(title="Use a Docker container", description="""\
+  If you're planning to build inside a Docker container, e.g. using bits
+  build's --docker option, it may be useful to resolve dependencies inside that
+  container as well, as which system packages are picked up may differ.
+  """)
+  doctor_docker.add_argument("--docker", dest="docker", action="store_true",
+                             help="Check for available system packages inside a Docker container.")
+  doctor_docker.add_argument("--docker-image", dest="dockerImage", metavar="IMAGE", default=None,
+                             help=("The Docker image to use. Implies --docker. By default, an image "
+                                   "is chosen based on the current or selected architecture."))
+  doctor_docker.add_argument("--docker-extra-args", metavar="ARGLIST", default="",
+                             help=("Command-line arguments to pass to 'docker run'. "
+                                   "Passed through verbatim -- separate multiple arguments "
+                                   "with spaces, and make sure quoting is correct! Implies --docker."))
+
+  doctor_remote = doctor_parser.add_argument_group(title="Re-use prebuilt tarballs", description="""\
+  Reusing prebuilt tarballs saves compilation time, as common packages need not
+  be rebuilt from scratch. rsync://, https://, b3:// and s3:// remote stores
+  are recognised. Some of these require credentials: s3:// remotes require an
+  ~/.s3cfg; b3:// remotes require AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+  environment variables. A useful remote store is
+  'https://s3.cern.ch/swift/v1/alibuild-repo'. It requires no credentials and
+  provides tarballs for the most common supported architectures.
+  """)
+  doctor_remote.add_argument("--no-remote-store", action="store_true",
+                            help="Disable the use of the remote store, even if it is enabled by default.")
+  doctor_remote.add_argument("--remote-store", dest="remoteStore", metavar="STORE", default="", help="""\
+  Where to find prebuilt tarballs to reuse. See above for available remote stores.
+  End with ::rw if you want to upload (in that case, ::rw is stripped and --write-store
+  is set to the same value). May be set to a default store on some
+  architectures; use --no-remote-store to disable it in that case.
+  """)
+  doctor_remote.add_argument("--write-store", dest="writeStore", metavar="STORE", default="",
+                            help=("Where to upload newly built packages. Same syntax as --remote-store, "
+                                  "except ::rw is not recognised."))
+  doctor_remote.add_argument("--insecure", dest="insecure", action="store_true",
+                            help="Don't validate TLS certificates when connecting to an https:// remote store.")
+  _add_s3_connection_opts(doctor_remote)
+
+  doctor_dirs = doctor_parser.add_argument_group(title="Customise bits directories")
+  ctx.chdir(doctor_dirs,
+            help=("Change to the specified directory before doing anything. "
+                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
+  ctx.work_dir(doctor_dirs,
+               help=("The toplevel directory under which builds should be done and build results "
+                     "should be installed. Default '%(default)s'."))
+  ctx.config_dir(doctor_dirs,
+                 help="The directory containing build recipes. Default '%(default)s'.")
+  ctx.search_path(doctor_dirs)
+
+  # Mode flags — apply to --runner, --check-store, and future modes
+  doctor_parser.add_argument(
+      "--json", dest="json_output", action="store_true", default=False,
+      help="Emit a machine-readable JSON report.  "
+           "Applies to --runner and --check-store modes.",
+  )
+  doctor_parser.add_argument(
+      "--check-store", dest="checkStore", action="store_true", default=False,
+      help=(
+          "After resolving the dependency tree, probe the remote store to report "
+          "which packages have a pre-built tarball and which will need compilation.  "
+          "Requires --remote-store (or a default store for the architecture).  "
+          "Makes one HTTP HEAD request per package.  "
+          "For branch builds, re-run with 'bits status --fetch-repos --check-store' "
+          "for exact hashes."
+      ),
+  )
+
+  doctor_runner = doctor_parser.add_argument_group(
+      title="Runner environment validation (--runner mode)",
+      description=(
+          "When --runner is given, bits doctor validates the full build-runner "
+          "environment — compiler, git, Docker daemon, podman/sandbox, QEMU binfmt "
+          "handlers, CVMFS mounts, disk space, and remote-store reachability — "
+          "instead of checking package system requirements.  "
+          "The PACKAGE positional argument is optional in this mode."
+      ),
+  )
+  doctor_runner.add_argument(
+      "--runner", dest="runner", action="store_true", default=False,
+      help="Validate the full build-runner environment.  "
+           "May be combined with --json for machine-readable output.",
+  )
+  doctor_runner.add_argument(
+      "--cvmfs-repos", dest="cvmfsRepos", metavar="PATH", action="append", default=[],
+      help=("CVMFS repository path to check (e.g. /cvmfs/alice.cern.ch).  "
+            "May be specified multiple times.  "
+            "Can also be set as $BITS_CVMFS_REPOS (comma-separated)."),
+  )
+  doctor_runner.add_argument(
+      "--min-disk", dest="minDisk", type=float, default=10.0, metavar="GIB",
+      help="Minimum free disk space in GiB expected in --work-dir.  "
+           "A lower value triggers a WARN, not a FAIL.  Default: %(default)s.",
+  )
+  doctor_runner.add_argument(
+      "--prepub-url", dest="prepubUrl", default=None, metavar="URL",
+      help=("When set, probe GET <URL>/api/v1/health to verify that the "
+            "cvmfs-prepub service is reachable and healthy.  "
+            "Required only for communities that use the cvmfs-prepub "
+            "direct-upload path (--prepub-url on bits publish).  "
+            "Example: https://prepub.example.org:8080"),
+  )
+  return doctor_parser
+
+
+def add_brew_arguments(subparsers, ctx):
+  """`bits brew` — generate a Homebrew Brewfile from recipes (macOS)."""
+  brew_parser = subparsers.add_parser("brew", help="generate a Homebrew Brewfile from recipes (macOS)",
+                                      description="Scan recipes for Homebrew-sourced system packages "
+                                                  "(homebrew_formula:) and write a Brewfile listing the "
+                                                  "formulae the stack expects. Run 'brew bundle' against "
+                                                  "it to install them, or build with --brew to install on "
+                                                  "demand.")
+  # Options for the brew subcommand
+  ctx.architecture(brew_parser,
+                   help=("Generate the Brewfile for the specified architecture. Only recipes whose "
+                         "prefer_system matches this architecture are included. Default '%(default)s'."))
+  ctx.defaults(brew_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  brew_parser.add_argument("-o", "--output", dest="output", metavar="FILE", default=None,
+                           help=("Write the Brewfile to %(metavar)s. Use '-' for stdout. "
+                                 "Default: <CONFIGDIR>/macos/Brewfile (next to the recipes, "
+                                 "which are the source of truth)."))
+  brew_parser.add_argument("--check", dest="check", action="store_true", default=False,
+                           help=("Do not write; exit non-zero if FILE is missing or differs from what "
+                                 "would be generated (for CI / pre-commit)."))
+  ctx.config_dir(brew_parser,
+                 help="The directory containing build recipes. Default '%(default)s'.")
+  ctx.chdir(brew_parser,
+            help=("Change to the specified directory before doing anything. "
+                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
+  return brew_parser
+
+
+def add_init_arguments(subparsers, ctx):
+  """`bits init` — initialise development packages."""
+  init_parser = subparsers.add_parser("init", help="initialise local packages",
+                                      description="Initialise development packages.")
+  # Options for the init subcommand
+  init_parser.add_argument("pkgname", nargs="?", default="", metavar="PACKAGE",
+                           help="Package to clone locally. One of the packages in CONFIGDIR.")
+  ctx.architecture(init_parser,
+                   help=("Parse defaults using the specified architecture. Default is "
+                         "the current system architecture, which is '%(default)s'."))
+
+  ctx.defaults(init_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  init_parser.add_argument("-z", "--devel-prefix", dest="develPrefix", default=".",
+                           help=("Directory under which to clone the repository of build recipes. "
+                                 "See also: -c/--config-dir. Default '%(default)s'."))
+
+  init_parser.add_argument("--dist", metavar="[USER/REPO@]BRANCH", dest="dist", default="",
+                           type=bits_string,
+                           help=("Download the given repository containing build recipes into "
+                                 "CONFIGDIR. Syntax: [user/repo@]branch or [url@]branch. The "
+                                 "default repo is 'alisw/alidist; the default branch is the "
+                                 "repository's main branch."))
+
+  init_dirs = init_parser.add_argument_group(title="Customise bits directories")
+  ctx.chdir(init_dirs,
+            help=("Change to the specified directory before doing anything. "
+                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
+  ctx.work_dir(init_dirs,
+               help=("The toplevel directory under which builds should be done and "
+                     "build results should be installed. Default '%(default)s'."))
+  ctx.config_dir(init_dirs, default="%(prefix)salidist",
+                 help=("The directory where build recipes will be placed. '%%(prefix)s' will "
+                       "be replaced with 'DEVELPREFIX/'. Default '%(default)s'."))
+  init_dirs.add_argument("--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
+                         default="%(workDir)s/MIRROR",
+                         help=("The directory where reference git repositories will be cloned. "
+                               "'%%(workDir)s' will be substituted by WORKDIR. Default '%(default)s'."))
+
+  # Options recorded as a `bits use` profile (config mode: no PACKAGE given)
+  init_cfg = init_parser.add_argument_group(
+      title="Persistent configuration (bits use)",
+      description="With no PACKAGE, 'bits init' records the supplied options as a "
+                  "'bits use' profile (./.bitsuse or a ~/.bits/use record) so you do not "
+                  "repeat them on every build, then exits. --architecture goes to [common], "
+                  "the rest to [build]. organisation/providers have no build flag — set "
+                  "$BITS_ORGANISATION / $BITS_PROVIDERS for those.")
+  init_cfg.add_argument("--providers", dest="providers", default=None, metavar="URL",
+                        help="URL of the bits-providers repository. Has no build-time flag; "
+                             "set the BITS_PROVIDERS environment variable instead.")
+  init_cfg.add_argument("--remote-store", dest="initRemoteStore", default=None, metavar="URL",
+                        help="Binary store to fetch pre-built tarballs from (saved as "
+                             "'--remote-store' in the [build] profile).")
+  init_cfg.add_argument("--write-store", dest="initWriteStore", default=None, metavar="URL",
+                        help="Binary store to upload newly-built tarballs to (saved as "
+                             "'--write-store' in the [build] profile).")
+  init_cfg.add_argument("--organisation", dest="organisation", default=None, metavar="NAME",
+                        help="Organisation selecting the registry/provider 'home' repo. Has no "
+                             "build-time flag; set the BITS_ORGANISATION environment variable "
+                             "instead (the aliBuild wrapper sets it).")
+
+  # version takes no options; the architecture is auto-detected for display.
+  return init_parser
+
+
+def add_status_arguments(subparsers, ctx):
+  """`bits status` — show what bits build would do for each package."""
+  status_parser = subparsers.add_parser(
+      "status",
+      help="show what bits build would do for each package (dry run)",
+      description=(
+          "Resolve the full dependency tree for the requested package(s) and "
+          "report what bits build would do for each package without actually "
+          "building anything.  Each package is classified as: already_installed, "
+          "from_store (local tarball), from_remote_store (remote tarball, requires "
+          "--check-store), local_checkout (development package, will rebuild), "
+          "local_checkout_unchanged (development package, nothing changed), "
+          "build_from_source (will compile), or hash_unknown (git refs not cached; "
+          "re-run with --fetch-repos to resolve)."
+      ),
+  )
+  # Options for the status subcommand
+  status_parser.add_argument(
+      "pkgname", metavar="PACKAGE", nargs="+",
+      help="One or more packages to resolve (including all dependencies).",
+  )
+  ctx.defaults(status_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  ctx.architecture(status_parser,
+                   help=("Target architecture. Default is the current system architecture, "
+                         "which is '%(default)s'."))
+  ctx.work_dir(status_parser,
+               help="The bits work directory to inspect. Default '%(default)s'.")
+  ctx.config_dir(status_parser,
+                 help="The directory containing build recipes. Default '%(default)s'.")
+  ctx.search_path(status_parser)
+  ctx.chdir(status_parser,
+            help=("Change to the specified directory before doing anything. "
+                  "Default '%(default)s'."))
+  status_parser.add_argument(
+      "--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
+      default="%(workDir)s/MIRROR",
+      help=("Directory where reference git repos are cached. "
+            "'%%(workDir)s' will be substituted. Default '%(default)s'."),
+  )
+  status_parser.add_argument(
+      "--no-local", dest="noDevel", metavar="PACKAGE", default=[],
+      action="append",
+      help=("Do not treat the named package as a local checkout even if a "
+            "matching directory exists in the current directory. "
+            "May be repeated or comma-separated."),
+  )
+  status_parser.add_argument(
+      "--force-tracked", dest="forceTracked", default=False, action="store_true",
+      help="Ignore all local checkouts; treat every package as remote.",
+  )
+  status_parser.add_argument(
+      "--disable", dest="disable", metavar="PACKAGE", default=[],
+      action="append",
+      help="Disable the given package(s) from the build. May be repeated.",
+  )
+  status_parser.add_argument(
+      "--force-rebuild", dest="force_rebuild", metavar="PACKAGE", default=[],
+      action="append",
+      help="Force a rebuild status for the given package(s). May be repeated.",
+  )
+  status_parser.add_argument(
+      "-u", "--fetch-repos", dest="fetchRepos", action="store_true", default=False,
+      help=("Fetch / clone reference repositories to populate the ref cache. "
+            "Without this flag, only already-cached refs are used; packages "
+            "whose refs are not cached are reported as hash_unknown."),
+  )
+  status_parser.add_argument(
+      "--remote-store", dest="remoteStore", metavar="STORE", default="",
+      help="Remote binary store URL. Used only when --check-store is given.",
+  )
+  status_parser.add_argument(
+      "--no-remote-store", dest="no_remote_store", action="store_true", default=False,
+      help="Disable any remote store (even if a default is configured).",
+  )
+  status_parser.add_argument(
+      "--check-store", dest="checkStore", action="store_true", default=False,
+      help=("Probe the remote store to detect tarballs not yet mirrored "
+            "locally. Implies a network round-trip per package."),
+  )
+  status_parser.add_argument(
+      "--json", dest="json_output", action="store_true", default=False,
+      help="Emit a machine-readable JSON report instead of the human-readable table.",
+  )
+  return status_parser
+
+
+def add_verify_arguments(subparsers, ctx):
+  """`bits verify` — verify a live deployment against a build manifest."""
+  verify_parser = subparsers.add_parser(
+      "verify",
+      help="verify a live deployment against a build manifest",
+      description=(
+          "Check that a live deployment is consistent with a bits build manifest.  "
+          "For each package in the manifest, the tarball is located under "
+          "--cvmfs-root and/or --work-dir, its SHA-256 is recomputed, and the "
+          "result is compared to the value recorded in the manifest.  "
+          "For each provider, the current HEAD commit of the local checkout is "
+          "compared to the commit recorded in the manifest.  "
+          "Exit 0 = clean, 1 = FAIL (mismatch), 2 = MISS (tarball not found), "
+          "3 = manifest unreadable."
+      ),
+  )
+  # Options for the verify subcommand
+  verify_parser.add_argument(
+      "--from-manifest", dest="fromManifest", required=True, metavar="FILE",
+      help="Path to the bits build manifest JSON file to verify against.",
+  )
+  verify_parser.add_argument(
+      "--cvmfs-root", dest="cvmfsRoot", metavar="PATH", default=None,
+      help=("Root of the CVMFS tarball store to search first "
+            "(e.g. /cvmfs/alice.cern.ch).  "
+            "Searched before --work-dir."),
+  )
+  ctx.work_dir(verify_parser,
+               help=("Local bits work directory containing the TARS/ store.  "
+                     "Default '%(default)s'."))
+  verify_parser.add_argument(
+      "--no-providers", dest="noProviders", action="store_true", default=False,
+      help="Skip verification of provider checkout commits.",
+  )
+  verify_parser.add_argument(
+      "--json", dest="json_output", action="store_true", default=False,
+      help="Emit a machine-readable JSON report instead of the human-readable table.",
+  )
+  return verify_parser
+
+
+def add_stats_arguments(subparsers, ctx):
+  """`bits stats` — human-readable resource report from a monitored build."""
+  stats_parser = subparsers.add_parser(
+      "stats",
+      help="show a human-readable resource report from a monitored build",
+      description=(
+          "Summarise the resource usage recorded when a build ran with "
+          "--resource-monitoring. Reads <work-dir>/LOGS/<arch>/bits_build_stats.json and the "
+          "per-package traces under SPECS/, leads with the heaviest/slowest "
+          "packages, and flags likely memory or parallelism problems."
+      ),
+  )
+  ctx.work_dir(stats_parser,
+               help="Build work area to read stats from (default: %(default)s).")
+  stats_parser.add_argument("--package", dest="package", metavar="NAME", default=None,
+                            help="Show the resource timeline detail for a single package.")
+  stats_parser.add_argument("--top", dest="top", type=int, default=10, metavar="N",
+                            help="Show the top N packages in the table (default: %(default)s).")
+  stats_parser.add_argument("--sort", dest="sort", choices=["time", "rss", "cpu"],
+                            default="time", help="Sort the table by this metric (default: %(default)s).")
+  stats_parser.add_argument("--json", dest="json_output", action="store_true",
+                            help="Emit machine-readable JSON instead of the text report.")
+  return stats_parser
+
+
+def add_import_arguments(subparsers, ctx):
+  """`bits import` — import a foreign CVMFS deployment into a reuse overlay."""
+  import_parser = subparsers.add_parser(
+      "import",
+      help="import a foreign CVMFS deployment (e.g. LCG) into a bits reuse overlay",
+      description=(
+          "Harvest each deployed module's resolved environment (or read a "
+          "manifest), closure-check the set, stamp it with one deterministic "
+          "build_id, and generate a per-build_id overlay (build-sufficient bits "
+          "modulefiles + module-side .meta.json + .cvmfscatalog) that "
+          "'bits build --reuse-from <modules-path>|cvmfs' can reuse without "
+          "recompiling."
+      ),
+  )
+  ctx.work_dir(import_parser,
+               help="Build work area (overlay defaults to <work-dir>/MODULES).")
+  ctx.architecture(import_parser,
+                   help="Architecture the deployment was built for (default: %(default)s).")
+  import_parser.add_argument("--modulepath", dest="importModulepath",
+                             metavar="DIR", default=None,
+                             help="MODULEPATH of the foreign deployment to harvest via modulecmd.")
+  import_parser.add_argument("--manifest", dest="importManifest",
+                             metavar="FILE", default=None,
+                             help="JSON manifest to import instead of harvesting (fallback when "
+                                  "no modulefiles exist).")
+  import_parser.add_argument("--trusted", dest="importTrusted", action="store_true",
+                             help="Trusted mode: harvest a bits-built deployment directly, reading "
+                                  "its own modulefiles (--modulepath) and re-anchoring them to "
+                                  "--install-base, capturing package hashes from the install tree. "
+                                  "Deterministic (no modulecmd); publishable strict reuse.")
+  import_parser.add_argument("--install-base", dest="importInstallBase",
+                             metavar="DIR", default=None,
+                             help="With --trusted, the absolute Packages root the modulefiles' "
+                                  "BASEDIR resolves to (and where each package's .meta.json lives).")
+  import_parser.add_argument("--aliases", dest="importAliases",
+                             metavar="FILE", default=None,
+                             help="JSON name-alias map (foreign -> bits names).")
+  import_parser.add_argument("--label", dest="importLabel",
+                             metavar="NAME", default=None,
+                             help="Human-readable build_id prefix (e.g. LCG_109). Default: import.")
+  import_parser.add_argument("--out", dest="importOut",
+                             metavar="DIR", default=None,
+                             help="Overlay root to write into (default: <work-dir>/MODULES).")
+  import_parser.add_argument("--force-overwrite", "--force", dest="importForce",
+                             nargs=0, const=True, default=False, action=_WarnAliasAction,
+                             help="Stamp and write even if the release is not closed (deps missing).")
+  return import_parser
+
+
+def add_cvmfs_path_arguments(subparsers, ctx):
+  """`bits cvmfs-path` — resolve a package's CVMFS publish path."""
+  # ── cvmfs-path ────────────────────────────────────────────────────────────
+  # Resolve a package's CVMFS publish path from the group's templates
+  # (defaults-release.sh) without building. Used by the publish pipeline's
+  # pre-build namespace reserve so the reserved path matches what the build
+  # will record in .meta.json. Authorization stays in the pipeline (it passes
+  # --admin/--login); this command only expands templates.
+  cvmfs_path_parser = subparsers.add_parser(
+      "cvmfs-path",
+      help="resolve a package's CVMFS publish path from the group's templates",
+      description=(
+          "Resolve the CVMFS publish path for a package from the group's path "
+          "templates (declared in defaults-release.sh under system:), without "
+          "building. Prints the absolute /cvmfs/<repo>/<path>. The publish "
+          "pipeline's pre-build reserve uses this so the reserved namespace and "
+          "the published path derive from the same single source."
+      ),
+  )
+  cvmfs_path_parser.add_argument(
+      "--package", dest="package", metavar="NAME", required=True,
+      help="Package name ({pkg} in the template).")
+  cvmfs_path_parser.add_argument(
+      "--version", dest="version", metavar="VER", default="",
+      help="Version/tag segment ({tag}/{version} in the template).")
+  cvmfs_path_parser.add_argument(
+      "--platform", dest="platform", metavar="PLAT", default="",
+      help="Platform ({platform} in the template).")
+  cvmfs_path_parser.add_argument(
+      "--install-dir", dest="installDir", metavar="DIR", default="",
+      help="CVMFS install-dir ({install_dir} in the template).")
+  cvmfs_path_parser.add_argument(
+      "--kind", dest="kind", choices=["releases", "modules", "shared"],
+      default="releases",
+      help="Which template to resolve (default: %(default)s).")
+  cvmfs_path_parser.add_argument(
+      "--admin", dest="admin", action="store_true", default=False,
+      help="Resolve the admin (group-prefix) path. Without it, a user path "
+           "under <user_prefix>/<login> is resolved (requires --login).")
+  cvmfs_path_parser.add_argument(
+      "--login", dest="login", metavar="USER", default="",
+      help="User login for a non-admin path ({user}; appended to user_prefix).")
+  cvmfs_path_parser.add_argument(
+      "--prefix", dest="prefix", metavar="ROOT", default="",
+      help="Fallback CVMFS root used only when the loaded defaults declare no "
+           "system.prefix (for recipe sets that cannot declare their own).")
+  ctx.defaults(cvmfs_path_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
+  ctx.architecture(cvmfs_path_parser,
+                   help="Target architecture used to load the defaults. Default '%(default)s'.")
+  ctx.config_dir(cvmfs_path_parser,
+                 help="The directory containing build recipes. Default '%(default)s'.")
+  ctx.search_path(cvmfs_path_parser)
+  ctx.chdir(cvmfs_path_parser,
+            help="Change to the specified directory before doing anything. "
+                 "Default '%(default)s'.")
+  cvmfs_path_parser.add_argument(
+      "--disable", dest="disable", metavar="PACKAGE", default=[], action="append",
+      help="Disable the given package(s) when loading defaults. May be repeated.")
+  return cvmfs_path_parser
+
+
 def doParseArgs():
   detectedArch = detectArch()
 
@@ -305,30 +937,12 @@ def doParseArgs():
   add_architecture_arguments(subparsers, ctx)
   build_parser = subparsers.add_parser("build", help="build a package",
                                        description="Build a package.")
-  clean_parser = subparsers.add_parser("clean", help="clean up build area",
-                                       description="Clean up the build area.")
-  cleanup_parser = subparsers.add_parser(
-      "prune",
-      help="evict stale packages from a persistent workDir (was: cleanup)",
-      description=(
-          "Evict packages from the persistent build workDir whose sentinel files "
-          "have not been touched within the configured age window, and/or free space "
-          "when disk usage exceeds a threshold (least-recently-used first). "
-          "Safe to run concurrently with active build jobs."
-      ),
-  )
-  deps_parser = subparsers.add_parser("deps", help="generate a dependency graph for a given package",
-                                      description="Generate a dependency graph for a given package.")
-  doctor_parser = subparsers.add_parser("doctor", help="verify status of your system",
-                                        description="Verify the status of your system.")
-  brew_parser = subparsers.add_parser("brew", help="generate a Homebrew Brewfile from recipes (macOS)",
-                                      description="Scan recipes for Homebrew-sourced system packages "
-                                                  "(homebrew_formula:) and write a Brewfile listing the "
-                                                  "formulae the stack expects. Run 'brew bundle' against "
-                                                  "it to install them, or build with --brew to install on "
-                                                  "demand.")
-  init_parser = subparsers.add_parser("init", help="initialise local packages",
-                                      description="Initialise development packages.")
+  clean_parser = add_clean_arguments(subparsers, ctx)
+  cleanup_parser = add_prune_arguments(subparsers, ctx)
+  deps_parser = add_deps_arguments(subparsers, ctx)
+  doctor_parser = add_doctor_arguments(subparsers, ctx)
+  brew_parser = add_brew_arguments(subparsers, ctx)
+  init_parser = add_init_arguments(subparsers, ctx)
   version_parser = add_version_arguments(subparsers, ctx)
   publish_parser = subparsers.add_parser(
       "publish",
@@ -369,99 +983,11 @@ def doParseArgs():
           "Exit 0 = clean, 1 = issues found, so it can gate CI."
       ),
   )
-  status_parser = subparsers.add_parser(
-      "status",
-      help="show what bits build would do for each package (dry run)",
-      description=(
-          "Resolve the full dependency tree for the requested package(s) and "
-          "report what bits build would do for each package without actually "
-          "building anything.  Each package is classified as: already_installed, "
-          "from_store (local tarball), from_remote_store (remote tarball, requires "
-          "--check-store), local_checkout (development package, will rebuild), "
-          "local_checkout_unchanged (development package, nothing changed), "
-          "build_from_source (will compile), or hash_unknown (git refs not cached; "
-          "re-run with --fetch-repos to resolve)."
-      ),
-  )
-  verify_parser = subparsers.add_parser(
-      "verify",
-      help="verify a live deployment against a build manifest",
-      description=(
-          "Check that a live deployment is consistent with a bits build manifest.  "
-          "For each package in the manifest, the tarball is located under "
-          "--cvmfs-root and/or --work-dir, its SHA-256 is recomputed, and the "
-          "result is compared to the value recorded in the manifest.  "
-          "For each provider, the current HEAD commit of the local checkout is "
-          "compared to the commit recorded in the manifest.  "
-          "Exit 0 = clean, 1 = FAIL (mismatch), 2 = MISS (tarball not found), "
-          "3 = manifest unreadable."
-      ),
-  )
-  stats_parser = subparsers.add_parser(
-      "stats",
-      help="show a human-readable resource report from a monitored build",
-      description=(
-          "Summarise the resource usage recorded when a build ran with "
-          "--resource-monitoring. Reads <work-dir>/LOGS/<arch>/bits_build_stats.json and the "
-          "per-package traces under SPECS/, leads with the heaviest/slowest "
-          "packages, and flags likely memory or parallelism problems."
-      ),
-  )
-  add_work_dir(stats_parser,
-               help="Build work area to read stats from (default: %(default)s).")
-  stats_parser.add_argument("--package", dest="package", metavar="NAME", default=None,
-                            help="Show the resource timeline detail for a single package.")
-  stats_parser.add_argument("--top", dest="top", type=int, default=10, metavar="N",
-                            help="Show the top N packages in the table (default: %(default)s).")
-  stats_parser.add_argument("--sort", dest="sort", choices=["time", "rss", "cpu"],
-                            default="time", help="Sort the table by this metric (default: %(default)s).")
-  stats_parser.add_argument("--json", dest="json_output", action="store_true",
-                            help="Emit machine-readable JSON instead of the text report.")
+  status_parser = add_status_arguments(subparsers, ctx)
+  verify_parser = add_verify_arguments(subparsers, ctx)
+  stats_parser = add_stats_arguments(subparsers, ctx)
 
-  import_parser = subparsers.add_parser(
-      "import",
-      help="import a foreign CVMFS deployment (e.g. LCG) into a bits reuse overlay",
-      description=(
-          "Harvest each deployed module's resolved environment (or read a "
-          "manifest), closure-check the set, stamp it with one deterministic "
-          "build_id, and generate a per-build_id overlay (build-sufficient bits "
-          "modulefiles + module-side .meta.json + .cvmfscatalog) that "
-          "'bits build --reuse-from <modules-path>|cvmfs' can reuse without "
-          "recompiling."
-      ),
-  )
-  add_work_dir(import_parser,
-               help="Build work area (overlay defaults to <work-dir>/MODULES).")
-  add_architecture(import_parser,
-                   help="Architecture the deployment was built for (default: %(default)s).")
-  import_parser.add_argument("--modulepath", dest="importModulepath",
-                             metavar="DIR", default=None,
-                             help="MODULEPATH of the foreign deployment to harvest via modulecmd.")
-  import_parser.add_argument("--manifest", dest="importManifest",
-                             metavar="FILE", default=None,
-                             help="JSON manifest to import instead of harvesting (fallback when "
-                                  "no modulefiles exist).")
-  import_parser.add_argument("--trusted", dest="importTrusted", action="store_true",
-                             help="Trusted mode: harvest a bits-built deployment directly, reading "
-                                  "its own modulefiles (--modulepath) and re-anchoring them to "
-                                  "--install-base, capturing package hashes from the install tree. "
-                                  "Deterministic (no modulecmd); publishable strict reuse.")
-  import_parser.add_argument("--install-base", dest="importInstallBase",
-                             metavar="DIR", default=None,
-                             help="With --trusted, the absolute Packages root the modulefiles' "
-                                  "BASEDIR resolves to (and where each package's .meta.json lives).")
-  import_parser.add_argument("--aliases", dest="importAliases",
-                             metavar="FILE", default=None,
-                             help="JSON name-alias map (foreign -> bits names).")
-  import_parser.add_argument("--label", dest="importLabel",
-                             metavar="NAME", default=None,
-                             help="Human-readable build_id prefix (e.g. LCG_109). Default: import.")
-  import_parser.add_argument("--out", dest="importOut",
-                             metavar="DIR", default=None,
-                             help="Overlay root to write into (default: <work-dir>/MODULES).")
-  import_parser.add_argument("--force-overwrite", "--force", dest="importForce",
-                             nargs=0, const=True, default=False, action=_WarnAliasAction,
-                             help="Stamp and write even if the release is not closed (deps missing).")
+  import_parser = add_import_arguments(subparsers, ctx)
 
 
   # Options for the build command
@@ -943,276 +1469,6 @@ def doParseArgs():
       ),
   )
 
-  # Options for clean subcommand
-  add_architecture(clean_parser,
-                   help=("Clean up build results for this architecture. Default is the current system "
-                         "architecture, which is '%(default)s'."))
-  clean_parser.add_argument("--aggressive-cleanup", dest="aggressiveCleanup", action="store_true",
-                            help="Delete as much build data as possible when cleaning up.")
-  clean_dirs = clean_parser.add_argument_group(title="Customise bits directories")
-  add_chdir(clean_dirs,
-            help=("Change to the specified directory before cleaning up. "
-                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
-  add_work_dir(clean_dirs,
-               help="The toplevel directory used in previous builds. Default '%(default)s'.")
-
-  # Options for the deps subcommand
-  deps_parser.add_argument("package", metavar="PACKAGE",
-                           help="Calculate dependency tree for %(metavar)s.")
-
-  add_architecture(deps_parser,
-                   help=("Resolve dependencies as if on the specified architecture. When used with "
-                         "--docker, use a Docker image for the specified architecture. Default is "
-                         "the current system architecture, which is '%(default)s'."))
-  add_defaults(deps_parser,
-               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
-  deps_parser.add_argument("--disable", dest="disable", default=[], metavar="PACKAGE", action="append",
-                           help=("Assume we're not building %(metavar)s and all its (unique) dependencies. "
-                                 "You can specify this option multiple times or separate multiple arguments "
-                                 "with commas."))
-  deps_parser.add_argument("-e", dest="environment", action="append", default=[],
-                           help="KEY=VALUE binding to add to the environment. May be specified multiple times.")
-
-  deps_graph = deps_parser.add_argument_group(title="Customise graph output")
-  deps_graph.add_argument("--neat", dest="neat", action="store_true",
-                          help="Produce a graph with transitive reduction.")
-  deps_graph.add_argument("--outdot", dest="outdot", metavar="FILE",
-                          help="Keep intermediate Graphviz dot file in %(metavar)s.")
-  deps_graph.add_argument("--outgraph", dest="outgraph", metavar="FILE",
-                          help="Store final output PDF file in %(metavar)s.")
-
-  deps_docker = deps_parser.add_argument_group(title="Use a Docker container", description="""\
-  If you're planning to build inside a Docker container, e.g. using bits
-  build's --docker option, it may be useful to resolve dependencies inside that
-  container as well, as which system packages are picked up may differ.
-  """)
-  deps_docker.add_argument("--docker", dest="docker", action="store_true",
-                           help="Check for available system packages inside a Docker container.")
-  deps_docker.add_argument("--docker-image", dest="dockerImage", metavar="IMAGE", default=None,
-                           help=("The Docker image to use. Implies --docker. By default, an image "
-                                 "is chosen based on the current or selected architecture."))
-  deps_docker.add_argument("--docker-extra-args", default="", metavar="ARGLIST",
-                           help=("Command-line arguments to pass to 'docker run'. "
-                                 "Passed through verbatim -- separate multiple arguments "
-                                 "with spaces, and make sure quoting is correct! Implies --docker."))
-
-  add_config_dir(deps_parser.add_argument_group(title="Customise bits directories"),
-                 help="The directory containing build recipes. Default '%(default)s'.")
-  add_search_path(deps_parser)
-
-  deps_system = deps_parser.add_mutually_exclusive_group()
-  deps_system.add_argument("--prefer-system", "--always-prefer-system", dest="preferSystem",
-                           nargs=0, const=True, default=False, action=_WarnAliasAction,
-                           help="Always use system packages when compatible.")
-  deps_system.add_argument("--no-system", dest="noSystem", nargs="?", const="*", default=None, metavar="PACKAGES",
-                           help="Never use system packages for PACKAGES, even if compatible.")
-
-  # Options for the doctor subcommand
-  doctor_parser.add_argument("packages", metavar="PACKAGE", nargs="*", default=[],
-                             help=("Check whether all system requirements of %(metavar)s are satisfied. "
-                                   "May be specified multiple times. "
-                                   "Optional when --runner is used."))
-  add_architecture(doctor_parser,
-                   help=("Resolve requirements as if on the specified architecture. When used with "
-                         "--docker, use a Docker image for the specified architecture. Default is "
-                         "the current system architecture, which is '%(default)s'."))
-  add_defaults(doctor_parser,
-               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
-  doctor_parser.add_argument("--disable", dest="disable", default=[], metavar="PACKAGE", action="append",
-                             help=("Assume we're not building %(metavar)s and all its (unique) dependencies. "
-                                   "You can specify this option multiple times or separate multiple arguments "
-                                   "with commas."))
-  doctor_parser.add_argument("-e", dest="environment", action="append", default=[],
-                            help="KEY=VALUE binding to add to the build environment. May be specified multiple times.")
-
-  doctor_system = doctor_parser.add_mutually_exclusive_group()
-  doctor_system.add_argument("--prefer-system", "--always-prefer-system", dest="preferSystem",
-                             nargs=0, const=True, default=False, action=_WarnAliasAction,
-                             help="Always use system packages when compatible.")
-  doctor_system.add_argument("--no-system", dest="noSystem", nargs="?", const="*", default=None, metavar="PACKAGES",
-                             help="Never use system packages for the provided, command separated, PACKAGES, even if compatible.")
-
-  doctor_docker = doctor_parser.add_argument_group(title="Use a Docker container", description="""\
-  If you're planning to build inside a Docker container, e.g. using bits
-  build's --docker option, it may be useful to resolve dependencies inside that
-  container as well, as which system packages are picked up may differ.
-  """)
-  doctor_docker.add_argument("--docker", dest="docker", action="store_true",
-                             help="Check for available system packages inside a Docker container.")
-  doctor_docker.add_argument("--docker-image", dest="dockerImage", metavar="IMAGE", default=None,
-                             help=("The Docker image to use. Implies --docker. By default, an image "
-                                   "is chosen based on the current or selected architecture."))
-  doctor_docker.add_argument("--docker-extra-args", metavar="ARGLIST", default="",
-                             help=("Command-line arguments to pass to 'docker run'. "
-                                   "Passed through verbatim -- separate multiple arguments "
-                                   "with spaces, and make sure quoting is correct! Implies --docker."))
-
-  doctor_remote = doctor_parser.add_argument_group(title="Re-use prebuilt tarballs", description="""\
-  Reusing prebuilt tarballs saves compilation time, as common packages need not
-  be rebuilt from scratch. rsync://, https://, b3:// and s3:// remote stores
-  are recognised. Some of these require credentials: s3:// remotes require an
-  ~/.s3cfg; b3:// remotes require AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-  environment variables. A useful remote store is
-  'https://s3.cern.ch/swift/v1/alibuild-repo'. It requires no credentials and
-  provides tarballs for the most common supported architectures.
-  """)
-  doctor_remote.add_argument("--no-remote-store", action="store_true",
-                            help="Disable the use of the remote store, even if it is enabled by default.")
-  doctor_remote.add_argument("--remote-store", dest="remoteStore", metavar="STORE", default="", help="""\
-  Where to find prebuilt tarballs to reuse. See above for available remote stores.
-  End with ::rw if you want to upload (in that case, ::rw is stripped and --write-store
-  is set to the same value). May be set to a default store on some
-  architectures; use --no-remote-store to disable it in that case.
-  """)
-  doctor_remote.add_argument("--write-store", dest="writeStore", metavar="STORE", default="",
-                            help=("Where to upload newly built packages. Same syntax as --remote-store, "
-                                  "except ::rw is not recognised."))
-  doctor_remote.add_argument("--insecure", dest="insecure", action="store_true",
-                            help="Don't validate TLS certificates when connecting to an https:// remote store.")
-  _add_s3_connection_opts(doctor_remote)
-
-  doctor_dirs = doctor_parser.add_argument_group(title="Customise bits directories")
-  add_chdir(doctor_dirs,
-            help=("Change to the specified directory before doing anything. "
-                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
-  add_work_dir(doctor_dirs,
-               help=("The toplevel directory under which builds should be done and build results "
-                     "should be installed. Default '%(default)s'."))
-  add_config_dir(doctor_dirs,
-                 help="The directory containing build recipes. Default '%(default)s'.")
-  add_search_path(doctor_dirs)
-
-  # Mode flags — apply to --runner, --check-store, and future modes
-  doctor_parser.add_argument(
-      "--json", dest="json_output", action="store_true", default=False,
-      help="Emit a machine-readable JSON report.  "
-           "Applies to --runner and --check-store modes.",
-  )
-  doctor_parser.add_argument(
-      "--check-store", dest="checkStore", action="store_true", default=False,
-      help=(
-          "After resolving the dependency tree, probe the remote store to report "
-          "which packages have a pre-built tarball and which will need compilation.  "
-          "Requires --remote-store (or a default store for the architecture).  "
-          "Makes one HTTP HEAD request per package.  "
-          "For branch builds, re-run with 'bits status --fetch-repos --check-store' "
-          "for exact hashes."
-      ),
-  )
-
-  doctor_runner = doctor_parser.add_argument_group(
-      title="Runner environment validation (--runner mode)",
-      description=(
-          "When --runner is given, bits doctor validates the full build-runner "
-          "environment — compiler, git, Docker daemon, podman/sandbox, QEMU binfmt "
-          "handlers, CVMFS mounts, disk space, and remote-store reachability — "
-          "instead of checking package system requirements.  "
-          "The PACKAGE positional argument is optional in this mode."
-      ),
-  )
-  doctor_runner.add_argument(
-      "--runner", dest="runner", action="store_true", default=False,
-      help="Validate the full build-runner environment.  "
-           "May be combined with --json for machine-readable output.",
-  )
-  doctor_runner.add_argument(
-      "--cvmfs-repos", dest="cvmfsRepos", metavar="PATH", action="append", default=[],
-      help=("CVMFS repository path to check (e.g. /cvmfs/alice.cern.ch).  "
-            "May be specified multiple times.  "
-            "Can also be set as $BITS_CVMFS_REPOS (comma-separated)."),
-  )
-  doctor_runner.add_argument(
-      "--min-disk", dest="minDisk", type=float, default=10.0, metavar="GIB",
-      help="Minimum free disk space in GiB expected in --work-dir.  "
-           "A lower value triggers a WARN, not a FAIL.  Default: %(default)s.",
-  )
-  doctor_runner.add_argument(
-      "--prepub-url", dest="prepubUrl", default=None, metavar="URL",
-      help=("When set, probe GET <URL>/api/v1/health to verify that the "
-            "cvmfs-prepub service is reachable and healthy.  "
-            "Required only for communities that use the cvmfs-prepub "
-            "direct-upload path (--prepub-url on bits publish).  "
-            "Example: https://prepub.example.org:8080"),
-  )
-
-  # Options for the brew subcommand
-  add_architecture(brew_parser,
-                   help=("Generate the Brewfile for the specified architecture. Only recipes whose "
-                         "prefer_system matches this architecture are included. Default '%(default)s'."))
-  add_defaults(brew_parser,
-               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
-  brew_parser.add_argument("-o", "--output", dest="output", metavar="FILE", default=None,
-                           help=("Write the Brewfile to %(metavar)s. Use '-' for stdout. "
-                                 "Default: <CONFIGDIR>/macos/Brewfile (next to the recipes, "
-                                 "which are the source of truth)."))
-  brew_parser.add_argument("--check", dest="check", action="store_true", default=False,
-                           help=("Do not write; exit non-zero if FILE is missing or differs from what "
-                                 "would be generated (for CI / pre-commit)."))
-  add_config_dir(brew_parser,
-                 help="The directory containing build recipes. Default '%(default)s'.")
-  add_chdir(brew_parser,
-            help=("Change to the specified directory before doing anything. "
-                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
-
-  # Options for the init subcommand
-  init_parser.add_argument("pkgname", nargs="?", default="", metavar="PACKAGE",
-                           help="Package to clone locally. One of the packages in CONFIGDIR.")
-  add_architecture(init_parser,
-                   help=("Parse defaults using the specified architecture. Default is "
-                         "the current system architecture, which is '%(default)s'."))
-
-  add_defaults(init_parser,
-               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
-  init_parser.add_argument("-z", "--devel-prefix", dest="develPrefix", default=".",
-                           help=("Directory under which to clone the repository of build recipes. "
-                                 "See also: -c/--config-dir. Default '%(default)s'."))
-
-  init_parser.add_argument("--dist", metavar="[USER/REPO@]BRANCH", dest="dist", default="",
-                           type=bits_string,
-                           help=("Download the given repository containing build recipes into "
-                                 "CONFIGDIR. Syntax: [user/repo@]branch or [url@]branch. The "
-                                 "default repo is 'alisw/alidist; the default branch is the "
-                                 "repository's main branch."))
-
-  init_dirs = init_parser.add_argument_group(title="Customise bits directories")
-  add_chdir(init_dirs,
-            help=("Change to the specified directory before doing anything. "
-                  "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
-  add_work_dir(init_dirs,
-               help=("The toplevel directory under which builds should be done and "
-                     "build results should be installed. Default '%(default)s'."))
-  add_config_dir(init_dirs, default="%(prefix)salidist",
-                 help=("The directory where build recipes will be placed. '%%(prefix)s' will "
-                       "be replaced with 'DEVELPREFIX/'. Default '%(default)s'."))
-  init_dirs.add_argument("--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
-                         default="%(workDir)s/MIRROR",
-                         help=("The directory where reference git repositories will be cloned. "
-                               "'%%(workDir)s' will be substituted by WORKDIR. Default '%(default)s'."))
-
-  # Options recorded as a `bits use` profile (config mode: no PACKAGE given)
-  init_cfg = init_parser.add_argument_group(
-      title="Persistent configuration (bits use)",
-      description="With no PACKAGE, 'bits init' records the supplied options as a "
-                  "'bits use' profile (./.bitsuse or a ~/.bits/use record) so you do not "
-                  "repeat them on every build, then exits. --architecture goes to [common], "
-                  "the rest to [build]. organisation/providers have no build flag — set "
-                  "$BITS_ORGANISATION / $BITS_PROVIDERS for those.")
-  init_cfg.add_argument("--providers", dest="providers", default=None, metavar="URL",
-                        help="URL of the bits-providers repository. Has no build-time flag; "
-                             "set the BITS_PROVIDERS environment variable instead.")
-  init_cfg.add_argument("--remote-store", dest="initRemoteStore", default=None, metavar="URL",
-                        help="Binary store to fetch pre-built tarballs from (saved as "
-                             "'--remote-store' in the [build] profile).")
-  init_cfg.add_argument("--write-store", dest="initWriteStore", default=None, metavar="URL",
-                        help="Binary store to upload newly-built tarballs to (saved as "
-                             "'--write-store' in the [build] profile).")
-  init_cfg.add_argument("--organisation", dest="organisation", default=None, metavar="NAME",
-                        help="Organisation selecting the registry/provider 'home' repo. Has no "
-                             "build-time flag; set the BITS_ORGANISATION environment variable "
-                             "instead (the aliBuild wrapper sets it).")
-
-  # version takes no options; the architecture is auto-detected for display.
-
   # Options for the publish command
   publish_parser.add_argument("package", metavar="PACKAGE", nargs="?", default=None,
                               help="Name of the package to publish. With --release-view, optional: names "
@@ -1446,205 +1702,7 @@ def doParseArgs():
   # gc / store-stats options moved to the bitsStore tool (Phase 3.4:
   # `bits store gc` / `bits store stats`).
 
-  # Options for the cleanup subcommand
-  add_work_dir(cleanup_parser,
-               help="Persistent bits work directory to clean. Default: %(default)s.")
-  add_architecture(cleanup_parser,
-                   help="Architecture sub-directory to scan. Default: %(default)s.")
-  cleanup_parser.add_argument("--max-age", dest="maxAgeDays", type=float, default=7.0, metavar="DAYS",
-                              help=("Evict packages whose sentinel has not been touched in more than "
-                                    "DAYS days. Default: %(default)s. Set to 0 to disable age-based "
-                                    "eviction (only disk-pressure mode runs)."))
-  cleanup_parser.add_argument("--min-free", dest="minFreeGb", type=float, default=None, metavar="GIB",
-                              help=("When free space on the workDir filesystem is below GIB gibibytes, "
-                                    "evict least-recently-used packages until the threshold is met. "
-                                    "Disabled by default; set a value to enable disk-pressure eviction."))
-  cleanup_parser.add_argument("--disk-pressure-only", dest="diskPressureOnly", action="store_true",
-                              default=False,
-                              help="Run only disk-pressure eviction; skip age-based eviction.")
-  cleanup_parser.add_argument("--retain", dest="retain", action="store_true", default=False,
-                              help=("Manifest-rooted retention sweep over ALL architectures in the "
-                                    "workDir. Keeps the packages of the newest --keep-builds local build "
-                                    "manifests per architecture (the latest iterations, including failed "
-                                    "ones) and certified packages NOT yet published to CVMFS; evicts "
-                                    "content that is safe upstream — uploaded to the store, in the "
-                                    "verified signed manifest AND recorded as published to CVMFS — plus "
-                                    "superseded old attempts, orphan store tarballs, BUILD dirs and "
-                                    "dangling links. Per-architecture fail-closed: an arch whose signed "
-                                    "manifest cannot be fetched/verified is skipped entirely."))
-  cleanup_parser.add_argument("--keep-builds", dest="keepBuilds", type=int, default=2, metavar="N",
-                              help="With --retain: keep the newest %(metavar)s build manifests per "
-                                   "architecture. Default %(default)s.")
-  add_remote_store(cleanup_parser, dest="retainStore", default=None,
-                   help=("With --retain: remote store to reconstruct the signed common "
-                         "manifests from, one per architecture found on disk (plus 'shared') — "
-                         "same derivation as bits build's signed reuse. http(s) and b3:///s3:// "
-                         "forms accepted."))
-  cleanup_parser.add_argument("--trust-manifest", dest="trustManifests", metavar="PATH|URL",
-                              action="append", default=[],
-                              help=("With --retain: explicit signed common manifest(s) in addition to (or "
-                                    "instead of) --store derivation (repeatable; URLs are fetched with "
-                                    "their .sig)."))
-  cleanup_parser.add_argument("--mark-published-from", dest="markPublishedFrom", metavar="PATH|URL",
-                              default=None,
-                              help=("With --retain: backfill CVMFS publish markers (.published/) from a "
-                                    "cvmfs-status.json publish record before sweeping, so released "
-                                    "content becomes evictable."))
-  cleanup_parser.add_argument("--grace-days", dest="graceDays", type=float, default=1.0, metavar="DAYS",
-                              help="With --retain: never evict anything modified more recently than "
-                                   "%(metavar)s days ago. Default %(default)s.")
-  cleanup_parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true", default=False,
-                              help="Print what would be evicted without actually removing anything.")
-
-  # Options for the verify subcommand
-  verify_parser.add_argument(
-      "--from-manifest", dest="fromManifest", required=True, metavar="FILE",
-      help="Path to the bits build manifest JSON file to verify against.",
-  )
-  verify_parser.add_argument(
-      "--cvmfs-root", dest="cvmfsRoot", metavar="PATH", default=None,
-      help=("Root of the CVMFS tarball store to search first "
-            "(e.g. /cvmfs/alice.cern.ch).  "
-            "Searched before --work-dir."),
-  )
-  add_work_dir(verify_parser,
-               help=("Local bits work directory containing the TARS/ store.  "
-                     "Default '%(default)s'."))
-  verify_parser.add_argument(
-      "--no-providers", dest="noProviders", action="store_true", default=False,
-      help="Skip verification of provider checkout commits.",
-  )
-  verify_parser.add_argument(
-      "--json", dest="json_output", action="store_true", default=False,
-      help="Emit a machine-readable JSON report instead of the human-readable table.",
-  )
-
-  # Options for the status subcommand
-  status_parser.add_argument(
-      "pkgname", metavar="PACKAGE", nargs="+",
-      help="One or more packages to resolve (including all dependencies).",
-  )
-  add_defaults(status_parser,
-               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
-  add_architecture(status_parser,
-                   help=("Target architecture. Default is the current system architecture, "
-                         "which is '%(default)s'."))
-  add_work_dir(status_parser,
-               help="The bits work directory to inspect. Default '%(default)s'.")
-  add_config_dir(status_parser,
-                 help="The directory containing build recipes. Default '%(default)s'.")
-  add_search_path(status_parser)
-  add_chdir(status_parser,
-            help=("Change to the specified directory before doing anything. "
-                  "Default '%(default)s'."))
-  status_parser.add_argument(
-      "--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
-      default="%(workDir)s/MIRROR",
-      help=("Directory where reference git repos are cached. "
-            "'%%(workDir)s' will be substituted. Default '%(default)s'."),
-  )
-  status_parser.add_argument(
-      "--no-local", dest="noDevel", metavar="PACKAGE", default=[],
-      action="append",
-      help=("Do not treat the named package as a local checkout even if a "
-            "matching directory exists in the current directory. "
-            "May be repeated or comma-separated."),
-  )
-  status_parser.add_argument(
-      "--force-tracked", dest="forceTracked", default=False, action="store_true",
-      help="Ignore all local checkouts; treat every package as remote.",
-  )
-  status_parser.add_argument(
-      "--disable", dest="disable", metavar="PACKAGE", default=[],
-      action="append",
-      help="Disable the given package(s) from the build. May be repeated.",
-  )
-  status_parser.add_argument(
-      "--force-rebuild", dest="force_rebuild", metavar="PACKAGE", default=[],
-      action="append",
-      help="Force a rebuild status for the given package(s). May be repeated.",
-  )
-  status_parser.add_argument(
-      "-u", "--fetch-repos", dest="fetchRepos", action="store_true", default=False,
-      help=("Fetch / clone reference repositories to populate the ref cache. "
-            "Without this flag, only already-cached refs are used; packages "
-            "whose refs are not cached are reported as hash_unknown."),
-  )
-  status_parser.add_argument(
-      "--remote-store", dest="remoteStore", metavar="STORE", default="",
-      help="Remote binary store URL. Used only when --check-store is given.",
-  )
-  status_parser.add_argument(
-      "--no-remote-store", dest="no_remote_store", action="store_true", default=False,
-      help="Disable any remote store (even if a default is configured).",
-  )
-  status_parser.add_argument(
-      "--check-store", dest="checkStore", action="store_true", default=False,
-      help=("Probe the remote store to detect tarballs not yet mirrored "
-            "locally. Implies a network round-trip per package."),
-  )
-  status_parser.add_argument(
-      "--json", dest="json_output", action="store_true", default=False,
-      help="Emit a machine-readable JSON report instead of the human-readable table.",
-  )
-
-  # ── cvmfs-path ────────────────────────────────────────────────────────────
-  # Resolve a package's CVMFS publish path from the group's templates
-  # (defaults-release.sh) without building. Used by the publish pipeline's
-  # pre-build namespace reserve so the reserved path matches what the build
-  # will record in .meta.json. Authorization stays in the pipeline (it passes
-  # --admin/--login); this command only expands templates.
-  cvmfs_path_parser = subparsers.add_parser(
-      "cvmfs-path",
-      help="resolve a package's CVMFS publish path from the group's templates",
-      description=(
-          "Resolve the CVMFS publish path for a package from the group's path "
-          "templates (declared in defaults-release.sh under system:), without "
-          "building. Prints the absolute /cvmfs/<repo>/<path>. The publish "
-          "pipeline's pre-build reserve uses this so the reserved namespace and "
-          "the published path derive from the same single source."
-      ),
-  )
-  cvmfs_path_parser.add_argument(
-      "--package", dest="package", metavar="NAME", required=True,
-      help="Package name ({pkg} in the template).")
-  cvmfs_path_parser.add_argument(
-      "--version", dest="version", metavar="VER", default="",
-      help="Version/tag segment ({tag}/{version} in the template).")
-  cvmfs_path_parser.add_argument(
-      "--platform", dest="platform", metavar="PLAT", default="",
-      help="Platform ({platform} in the template).")
-  cvmfs_path_parser.add_argument(
-      "--install-dir", dest="installDir", metavar="DIR", default="",
-      help="CVMFS install-dir ({install_dir} in the template).")
-  cvmfs_path_parser.add_argument(
-      "--kind", dest="kind", choices=["releases", "modules", "shared"],
-      default="releases",
-      help="Which template to resolve (default: %(default)s).")
-  cvmfs_path_parser.add_argument(
-      "--admin", dest="admin", action="store_true", default=False,
-      help="Resolve the admin (group-prefix) path. Without it, a user path "
-           "under <user_prefix>/<login> is resolved (requires --login).")
-  cvmfs_path_parser.add_argument(
-      "--login", dest="login", metavar="USER", default="",
-      help="User login for a non-admin path ({user}; appended to user_prefix).")
-  cvmfs_path_parser.add_argument(
-      "--prefix", dest="prefix", metavar="ROOT", default="",
-      help="Fallback CVMFS root used only when the loaded defaults declare no "
-           "system.prefix (for recipe sets that cannot declare their own).")
-  add_defaults(cvmfs_path_parser,
-               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
-  add_architecture(cvmfs_path_parser,
-                   help="Target architecture used to load the defaults. Default '%(default)s'.")
-  add_config_dir(cvmfs_path_parser,
-                 help="The directory containing build recipes. Default '%(default)s'.")
-  add_search_path(cvmfs_path_parser)
-  add_chdir(cvmfs_path_parser,
-            help="Change to the specified directory before doing anything. "
-                 "Default '%(default)s'.")
-  cvmfs_path_parser.add_argument(
-      "--disable", dest="disable", metavar="PACKAGE", default=[], action="append",
-      help="Disable the given package(s) when loading defaults. May be repeated.")
+  cvmfs_path_parser = add_cvmfs_path_arguments(subparsers, ctx)
 
   # $BITS_ORGANISATION (the aliBuild wrapper exports it) selects the registry/
   # provider "home" so build/etc. — not just init — pick it up. An explicit
