@@ -184,6 +184,29 @@ class OverlayReuseModuleTest(_unittest.TestCase):
             self.assertIsNone(overlay_reuse_module(ov, "Nope", want_hash="hB"))
         self.assertIsNone(overlay_reuse_module(None, "Boost", want_hash="hB"))
 
+    def test_relaxed_version_guard_rejects_other_version(self):
+        # The tbb case: overlay has 1.90.0-1 but the recipe asks for a different
+        # version → must NOT be reused (no silent downgrade); bits builds it.
+        with _tempfile.TemporaryDirectory() as ov:
+            self._overlay(ov)
+            self.assertIsNone(overlay_reuse_module(
+                ov, "Boost", want_hash=None, want_version="2.0.0"))
+
+    def test_relaxed_version_guard_matches_same_version(self):
+        # Same version, revision/hash relaxed → reused.
+        with _tempfile.TemporaryDirectory() as ov:
+            self._overlay(ov)
+            self.assertEqual(overlay_reuse_module(
+                ov, "Boost", want_hash=None, want_version="1.90.0"), "Boost/1.90.0-1")
+
+    def test_strict_not_version_guarded(self):
+        # Strict matches by hash; want_version is NOT applied (the hash already
+        # pins the version), so a hash match reuses regardless of want_version.
+        with _tempfile.TemporaryDirectory() as ov:
+            self._overlay(ov)
+            self.assertEqual(overlay_reuse_module(
+                ov, "Boost", want_hash="hB", want_version="2.0.0"), "Boost/1.90.0-1")
+
 
 class WriteOverlayRenderedTest(_unittest.TestCase):
 

@@ -2744,7 +2744,10 @@ def doBuild(args, parser):
       # In strict mode a missing hash must NOT fall through to match-any.
       if spec["package"] not in _bl and (_relaxed or _want):
         from bits_helpers.cvmfs_import import overlay_reuse_module
-        _mid = overlay_reuse_module(args.reuseOverlay, spec["package"], want_hash=_want)
+        # want_version guards against reusing a DIFFERENT version than the recipe
+        # asks for (relaxed used to graft any deployed version by name alone).
+        _mid = overlay_reuse_module(args.reuseOverlay, spec["package"],
+                                    want_hash=_want, want_version=spec.get("version"))
         if _mid:
           # Adopt a consistent identity for the manifest, then skip the build.
           spec["reuse_module_id"] = _mid

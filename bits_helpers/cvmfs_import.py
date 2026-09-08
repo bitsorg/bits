@@ -375,14 +375,18 @@ def import_trusted_release(module_root, install_base, arch, out_root, label="reu
             "overlay_path": os.path.join(out_root, build_id, arch)}
 
 
-def overlay_reuse_module(overlay_path, package, want_hash=None):
+def overlay_reuse_module(overlay_path, package, want_hash=None, want_version=None):
     """Return ``<package>/<verrev>`` if the overlay satisfies *package*, else None.
 
     The overlay is ``<overlay_path>/<package>/<verrev>`` (modulefile) alongside a
     hidden ``.<verrev>.meta.json``. Strict (``want_hash`` given): match a module
     whose recorded hash equals it — a byte-identical, publishable reuse. Relaxed
     (``want_hash`` None): any module for the package (the overlay is one coherent
-    release). Defensive: a missing overlay/package yields None.
+    release), BUT *want_version* (the recipe's version) restricts it to a
+    ``<verrev>`` of that version (revision relaxed), so relaxed reuse never
+    substitutes a DIFFERENT version than the recipe asks for. Strict is not
+    version-guarded — a hash match already implies the version. Defensive: a
+    missing overlay/package yields None.
     """
     import os
     pkg_dir = os.path.join(overlay_path or "", package)
@@ -390,6 +394,12 @@ def overlay_reuse_module(overlay_path, package, want_hash=None):
         return None
     for name in sorted(os.listdir(pkg_dir)):
         if name.startswith("."):        # skip the hidden .<verrev>.meta.json
+            continue
+        # Relaxed only: never reuse a different version. <verrev> is
+        # "<version>-<revision>", so require the wanted version (revision free).
+        # Strict skips this — its hash match already pins the version.
+        if want_hash is None and want_version and not (
+                name == want_version or name.startswith(want_version + "-")):
             continue
         meta = _read_meta(os.path.join(pkg_dir, ".%s.meta.json" % name)) or {}
         if want_hash is None or meta.get("hash") == want_hash:
