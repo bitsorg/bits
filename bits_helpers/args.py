@@ -1675,18 +1675,9 @@ def add_build_arguments(subparsers, ctx):
 def doParseArgs():
   detectedArch = detectArch()
 
-  # Per-command argument registration lives in the add_*_arguments() functions.
-  # `ctx` carries the shared cross-cutting adders. The local add_* names below
-  # are thin aliases so the not-yet-migrated inline blocks keep working; they go
-  # away once every command is a registrar.
+  # Per-command argument registration lives in the add_*_arguments() functions;
+  # `ctx` carries the shared cross-cutting adders (architecture, work_dir, …).
   ctx = _ArgCtx(detectedArch)
-  add_architecture = ctx.architecture
-  add_work_dir     = ctx.work_dir
-  add_config_dir   = ctx.config_dir
-  add_chdir        = ctx.chdir
-  add_defaults     = ctx.defaults
-  add_search_path  = ctx.search_path
-  add_remote_store = ctx.remote_store
 
   parser = argparse.ArgumentParser(epilog="""\
   For help about each option, specify --help after the option itself. For
@@ -1717,9 +1708,6 @@ def doParseArgs():
   stats_parser = add_stats_arguments(subparsers, ctx)
 
   import_parser = add_import_arguments(subparsers, ctx)
-
-
-
 
   # gc / store-stats options moved to the bitsStore tool (Phase 3.4:
   # `bits store gc` / `bits store stats`).
