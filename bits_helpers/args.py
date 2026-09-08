@@ -1187,59 +1187,15 @@ def add_compliance_arguments(subparsers, ctx):
   return compliance_parser
 
 
-def doParseArgs():
-  detectedArch = detectArch()
-
-  # Per-command argument registration lives in the add_*_arguments() functions.
-  # `ctx` carries the shared cross-cutting adders. The local add_* names below
-  # are thin aliases so the not-yet-migrated inline blocks keep working; they go
-  # away once every command is a registrar.
-  ctx = _ArgCtx(detectedArch)
-  add_architecture = ctx.architecture
-  add_work_dir     = ctx.work_dir
-  add_config_dir   = ctx.config_dir
-  add_chdir        = ctx.chdir
-  add_defaults     = ctx.defaults
-  add_search_path  = ctx.search_path
-  add_remote_store = ctx.remote_store
-
-  parser = argparse.ArgumentParser(epilog="""\
-  For help about each option, specify --help after the option itself. For
-  complete documentation please refer to https://alisw.github.io/alibuild.
-  """)
-
-  parser.add_argument("-d", "--debug", dest="debug", action="store_true", help="Enable debug log output")
-  parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true",
-                      help="Print what would happen, without actually doing it.")
-
-  subparsers = parser.add_subparsers(dest="action")
-  add_architecture_arguments(subparsers, ctx)
+def add_build_arguments(subparsers, ctx):
+  """`bits build` — build a package."""
   build_parser = subparsers.add_parser("build", help="build a package",
                                        description="Build a package.")
-  clean_parser = add_clean_arguments(subparsers, ctx)
-  cleanup_parser = add_prune_arguments(subparsers, ctx)
-  deps_parser = add_deps_arguments(subparsers, ctx)
-  doctor_parser = add_doctor_arguments(subparsers, ctx)
-  brew_parser = add_brew_arguments(subparsers, ctx)
-  init_parser = add_init_arguments(subparsers, ctx)
-  version_parser = add_version_arguments(subparsers, ctx)
-  publish_parser = add_publish_arguments(subparsers, ctx)
-  certify_parser = add_certify_arguments(subparsers, ctx)
-  # `gc` and `store-stats` moved into the `store` group (Phase 3.4): they are now
-  # `bits store gc` / `bits store stats`, handled by the bitsStore tool.
-  compliance_parser = add_compliance_arguments(subparsers, ctx)
-  status_parser = add_status_arguments(subparsers, ctx)
-  verify_parser = add_verify_arguments(subparsers, ctx)
-  stats_parser = add_stats_arguments(subparsers, ctx)
-
-  import_parser = add_import_arguments(subparsers, ctx)
-
-
   # Options for the build command
   build_parser.add_argument("pkgname", metavar="PACKAGE", nargs="+",
                             help="One of the packages in CONFIGDIR. May be specified multiple times.")
 
-  add_defaults(build_parser,
+  ctx.defaults(build_parser,
                help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
 
   build_parser.add_argument("--flavour", "--flavor", dest="flavours", action="append",
@@ -1250,7 +1206,7 @@ def doParseArgs():
                                   "into the build environment; they override a defaults `variables:` "
                                   "entry of the same name."))
 
-  add_architecture(build_parser,
+  ctx.architecture(build_parser,
                    help=("Build as if on the specified architecture. When used with --docker, build "
                          "inside a Docker image for the specified architecture. Default is the current "
                          "system architecture, which is '%(default)s'."))
@@ -1603,15 +1559,15 @@ def doParseArgs():
                             """)
 
   build_dirs = build_parser.add_argument_group(title="Customise bits directories")
-  add_chdir(build_dirs,
+  ctx.chdir(build_dirs,
             help=("Change to the specified directory before building. "
                   "Alternatively, set BITS_CHDIR. Default '%(default)s'."))
-  add_work_dir(build_dirs,
+  ctx.work_dir(build_dirs,
                help=("The toplevel directory under which builds should be done and build results "
                      "should be installed. Default '%(default)s'."))
-  add_config_dir(build_dirs,
+  ctx.config_dir(build_dirs,
                  help="The directory containing build recipes. Default '%(default)s'.")
-  add_search_path(build_dirs)
+  ctx.search_path(build_dirs)
   build_dirs.add_argument("--reference-sources", dest="referenceSources", metavar="MIRRORDIR",
                           default="%(workDir)s/MIRROR",
                           help=("The directory where reference git repositories will be cloned. "
@@ -1713,6 +1669,56 @@ def doParseArgs():
           "Example: bits build --from-manifest bits-manifest-latest.json"
       ),
   )
+  return build_parser
+
+
+def doParseArgs():
+  detectedArch = detectArch()
+
+  # Per-command argument registration lives in the add_*_arguments() functions.
+  # `ctx` carries the shared cross-cutting adders. The local add_* names below
+  # are thin aliases so the not-yet-migrated inline blocks keep working; they go
+  # away once every command is a registrar.
+  ctx = _ArgCtx(detectedArch)
+  add_architecture = ctx.architecture
+  add_work_dir     = ctx.work_dir
+  add_config_dir   = ctx.config_dir
+  add_chdir        = ctx.chdir
+  add_defaults     = ctx.defaults
+  add_search_path  = ctx.search_path
+  add_remote_store = ctx.remote_store
+
+  parser = argparse.ArgumentParser(epilog="""\
+  For help about each option, specify --help after the option itself. For
+  complete documentation please refer to https://alisw.github.io/alibuild.
+  """)
+
+  parser.add_argument("-d", "--debug", dest="debug", action="store_true", help="Enable debug log output")
+  parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true",
+                      help="Print what would happen, without actually doing it.")
+
+  subparsers = parser.add_subparsers(dest="action")
+  add_architecture_arguments(subparsers, ctx)
+  build_parser = add_build_arguments(subparsers, ctx)
+  clean_parser = add_clean_arguments(subparsers, ctx)
+  cleanup_parser = add_prune_arguments(subparsers, ctx)
+  deps_parser = add_deps_arguments(subparsers, ctx)
+  doctor_parser = add_doctor_arguments(subparsers, ctx)
+  brew_parser = add_brew_arguments(subparsers, ctx)
+  init_parser = add_init_arguments(subparsers, ctx)
+  version_parser = add_version_arguments(subparsers, ctx)
+  publish_parser = add_publish_arguments(subparsers, ctx)
+  certify_parser = add_certify_arguments(subparsers, ctx)
+  # `gc` and `store-stats` moved into the `store` group (Phase 3.4): they are now
+  # `bits store gc` / `bits store stats`, handled by the bitsStore tool.
+  compliance_parser = add_compliance_arguments(subparsers, ctx)
+  status_parser = add_status_arguments(subparsers, ctx)
+  verify_parser = add_verify_arguments(subparsers, ctx)
+  stats_parser = add_stats_arguments(subparsers, ctx)
+
+  import_parser = add_import_arguments(subparsers, ctx)
+
+
 
 
   # gc / store-stats options moved to the bitsStore tool (Phase 3.4:
