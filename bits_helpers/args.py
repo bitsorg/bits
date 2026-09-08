@@ -908,6 +908,285 @@ def add_cvmfs_path_arguments(subparsers, ctx):
   return cvmfs_path_parser
 
 
+def add_publish_arguments(subparsers, ctx):
+  """`bits publish` — copy, relocate, and hand a built package to cvmfs-prepub."""
+  publish_parser = subparsers.add_parser(
+      "publish",
+      help="copy, relocate, and hand a built package to cvmfs-prepub",
+      description=(
+          "Copies the immutable installation from WORKDIR, relocates it to the "
+          "final CVMFS target path, and submits the result to the cvmfs-prepub "
+          "service (--prepub-url) for ingestion into CVMFS."
+      ),
+  )
+  # Options for the publish command
+  publish_parser.add_argument("package", metavar="PACKAGE", nargs="?", default=None,
+                              help="Name of the package to publish. With --release-view, optional: names "
+                                   "the release's top package to pick its build_id when the build area "
+                                   "holds more than one.")
+  publish_parser.add_argument("version", metavar="VERSION", nargs="?", default=None,
+                              help="Version (and optional revision) to publish. Defaults to the latest build.")
+  publish_parser.add_argument("--release-view", "--view", dest="publishView", metavar="NAME",
+                              default=None, action=_WarnAliasAction,
+                              help="Instead of a package, publish the merged VIEW for a release to "
+                                   "<cvmfs-target>/Views/NAME-<build_id>/<arch>/. The build_id is read "
+                                   "from the packages' .meta.json, not given here.")
+  publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=False, metavar="PATH",
+                              help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9). With --release-view, the CVMFS root the Views/ tree lives under.")
+  publish_parser.add_argument("--module-target", dest="moduleTarget", metavar="PATH", default=None,
+                              help="CVMFS path of the separate modules tree. When given (prepub path), "
+                                   "the package's etc/modulefiles are tar'd and published as an "
+                                   "independent job here, since modulefiles live in a different tree "
+                                   "(module_dir) from the payload — so they are installed even with "
+                                   "--no-relocate.")
+  ctx.work_dir(publish_parser,
+               help="bits work directory containing the installed packages. Default: %(default)s.")
+  ctx.architecture(publish_parser,
+                   help="Target architecture. Default: %(default)s.")
+  publish_parser.add_argument("--scratch-dir", dest="scratchDir", default=None, metavar="DIR",
+                              help="Directory for the temporary CVMFS working copy. Defaults to a system temp dir.")
+  publish_parser.add_argument("--no-relocate", dest="noRelocate", action="store_true", default=False,
+                              help=("Skip the relocation step. Use this when the package was built "
+                                    "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
+                                    "so all embedded paths are already correct."))
+  # `bits publish PACKAGE` is CVMFS-only (Phase 3.4). The single-package S3-store
+  # write moved to `bits store upload`; the bulk `--from-manifest` S3 upload below
+  # is unchanged. `--to`/`--write-store` were removed with the single-package s3 path.
+  publish_parser.add_argument("--from-manifest", dest="fromManifest", nargs="?",
+                              const="latest", default=None, metavar="MANIFEST",
+                              help=("Bulk-upload every package in a build manifest to the S3 store. "
+                                    "This is the default when no PACKAGE is given, so bare "
+                                    "'bits publish' uploads the latest manifest. Optionally give a "
+                                    "manifest file path; 'latest' (default) uses the newest under "
+                                    "WORKDIR/MANIFESTS. Use --store to pick the target."))
+  ctx.remote_store(publish_parser, dest="publishStore",
+                   help=("S3 store URL/bucket for --from-manifest. Accepts an https URL "
+                         "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>. "
+                         "Default: %(default)s"))
+  publish_parser.add_argument("--certify", dest="certify", action="store_true", default=False,
+                              help=("After a successful upload, open a merge request in the manifests repo "
+                                    "adding this build's manifest under manifests/<group>/. CI validates the "
+                                    "MR author is an admin, signs the common manifest, and publishes it. "
+                                    "Uses the GitLab API + your PAT (works even with SSH push)."))
+  publish_parser.add_argument("--certify-group", dest="certifyGroup", metavar="GROUP", default=None,
+                              help=("Group directory to submit the manifest to (manifests/<group>/). Implies "
+                                    "--certify. Defaults to `system: certify_group:` in the active defaults, "
+                                    "so a configured community can just run `bits publish`."))
+  publish_parser.add_argument("--no-certify", dest="noCertify", action="store_true", default=False,
+                              help="Never open a certification MR, even if defaults configure it.")
+  publish_parser.add_argument("--manifests-remote", dest="manifestsRemote", metavar="GIT_URL", default=None,
+                              help=("Git remote of the bits-manifests project, e.g. "
+                                    "ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git. Only the host + "
+                                    "path are used (to build the HTTPS API URL). Defaults to "
+                                    "`system: manifests_remote:` in the active defaults."))
+  publish_parser.add_argument("--certify-ref", dest="certifyRef", metavar="REF", default=None,
+                              help="Target branch of the certification MR. Default: the repo's default branch.")
+  publish_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
+                              help=("GitLab PAT to trigger certification (default: $BITS_CERTIFIER_TOKEN / "
+                                    "$GITLAB_TOKEN / ~/.bits/gitlab-token)."))
+  publish_parser.add_argument("--certifier", dest="certifier", metavar="USER", default=None,
+                              help=("Record USER as certified_by in the submitted manifest (audit trail in the "
+                                    "manifests-repo history). Use when the MR is opened by a bot on behalf of a "
+                                    "human whose authority was already verified (e.g. bits-console). Defaults to "
+                                    "$GITLAB_USER_LOGIN."))
+
+  # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
+  _prepub = publish_parser.add_argument_group(
+      "cvmfs-prepub direct upload",
+      "Upload the package directly to a running cvmfs-prepub service over HTTPS.  "
+      "Requires cvmfs-prepub ≥ 0.1.0.",
+  )
+  _prepub.add_argument("--prepub-url", dest="prepubUrl", default=None, metavar="URL",
+                       help=("Base URL of the cvmfs-prepub API (no trailing slash), e.g. "
+                             "https://prepub.example.org:8080.  Required for CVMFS publish."))
+  _prepub.add_argument("--prepub-token", dest="prepubToken", default=None, metavar="TOKEN",
+                       help=("Bearer token for the cvmfs-prepub API.  If omitted the value of the "
+                             "PREPUB_API_TOKEN environment variable is used."))
+  _prepub.add_argument("--prepub-repo", dest="prepubRepo", default=None, metavar="REPO",
+                       help=("CVMFS repository name to pass to the API, e.g. software.cern.ch.  "
+                             "Derived automatically from --cvmfs-target when not specified."))
+  _prepub.add_argument("--prepub-path", dest="prepubPath", default=None, metavar="SUBPATH",
+                       help=("Lease sub-path relative to the repository root, e.g. atlas/24.0 "
+                             "(no leading slash).  Derived automatically from --cvmfs-target "
+                             "when not specified."))
+  _prepub.add_argument("--prepub-webhook", dest="prepubWebhook", default=None, metavar="URL",
+                       help="Optional webhook URL that cvmfs-prepub POSTs to on job completion.")
+  _prepub.add_argument("--prepub-poll-interval", dest="prepubPollInterval", type=int,
+                       default=10, metavar="SEC",
+                       help="Seconds between status polls while waiting for the job.  Default: 10.")
+  _prepub.add_argument("--prepub-timeout", dest="prepubTimeout", type=int,
+                       default=1800, metavar="SEC",
+                       help="Total seconds to wait for the job to reach a terminal state.  Default: 1800.")
+  _prepub.add_argument("--prepub-no-verify-tls", dest="prepubNoVerifyTls", action="store_true",
+                       default=False,
+                       help="Disable TLS certificate verification (self-signed certs / dev mode only).")
+  _prepub.add_argument("--prepub-bearer-auth", dest="prepubBearerAuth", action="store_true",
+                       default=False,
+                       help=("Send the token as 'Authorization: Bearer' instead of signing the "
+                             "request. Only for a cvmfs-prepub running auth_mode=bearer; the "
+                             "secret then travels on every request, so anyone who observes one "
+                             "holds publish rights until it is rotated. By default each request "
+                             "carries a per-request HMAC and the secret never leaves this host."))
+  return publish_parser
+
+
+def add_certify_arguments(subparsers, ctx):
+  """`bits certify` — merge build manifests into a signed common manifest."""
+  certify_parser = subparsers.add_parser(
+      "certify",
+      help="merge build manifests into a signed common manifest (trust unit)",
+      description=(
+          "Merge one or more published build manifests into a single common "
+          "manifest, validate every content hash against the S3 store, and sign "
+          "the result with the release Ed25519 key. The signed common manifest "
+          "is what clients trust for binary reuse (see docs/adr/0004)."
+      ),
+  )
+  # Options for the certify subcommand
+  certify_parser.add_argument("manifests", metavar="MANIFEST", nargs="*", default=None,
+                              help=("Build-manifest JSON files or directories to merge. A directory "
+                                    "is scanned recursively for *.json. Default: WORKDIR/MANIFESTS."))
+  certify_parser.add_argument("-o", "--out", dest="out", metavar="FILE", required=True,
+                              help="Path to write the merged common manifest (its .sig is written alongside).")
+  certify_parser.add_argument("--key", dest="key", metavar="PEM", required=False,
+                              help=("Ed25519 private key (PEM) to sign the common manifest with. "
+                                    "Required unless --sign-via-proxy is given."))
+  certify_parser.add_argument("--sign-via-proxy", dest="signViaProxy",
+                              action="store_true", default=False,
+                              help=("Sign via the security-proxy instead of a local --key. "
+                                    "Endpoint from --sign-proxy-url or BITS_SIGN_PROXY_URL; "
+                                    "gate token from BITS_SIGN_PROXY_TOKEN (never on the "
+                                    "command line)."))
+  certify_parser.add_argument("--sign-proxy-url", dest="signProxyUrl", metavar="URL",
+                              default=None,
+                              help=("security-proxy sign route, e.g. "
+                                    "http://host:port/sign/bits. Falls back to "
+                                    "BITS_SIGN_PROXY_URL."))
+  certify_parser.add_argument("--sign-via-service", dest="signViaService",
+                              action="store_true", default=False,
+                              help=("Sign via the console-backend signing service (M1): "
+                                    "no key or gate token in CI — the CI ID token (OIDC) "
+                                    "authenticates and the build's human pre-approval gates "
+                                    "the signature. URL from --sign-service-url or "
+                                    "BITS_SIGN_SERVICE_URL; CI token from BITS_SIGN_SERVICE_TOKEN."))
+  certify_parser.add_argument("--sign-service-url", dest="signServiceUrl", metavar="URL",
+                              default=None,
+                              help=("signing-service base URL, e.g. https://bits.cern.ch. "
+                                    "Falls back to BITS_SIGN_SERVICE_URL."))
+  certify_parser.add_argument("--build-id", dest="buildId", metavar="ID", default=None,
+                              help=("the pre-approved build's pipeline id (the build_id the "
+                                    "manifest is keyed on). Required with --sign-via-service; "
+                                    "falls back to BITS_BUILD_ID."))
+  certify_parser.add_argument("--group", dest="group", metavar="GROUP", default=None,
+                              help=("Tag entries that lack a group with GROUP, so the consumer trust filter "
+                                    "(--trust-groups) can scope reuse. Use 'common' for the shared base layer."))
+  certify_parser.add_argument("--require-approval", dest="requireApproval", action="store_true", default=False,
+                              help=("Refuse to sign unless a listed group admin approved the merge request "
+                                    "(read from the forge — GitLab CI env). Defence-in-depth over CODEOWNERS."))
+  certify_parser.add_argument("--admins", dest="admins", metavar="FILE", default=None,
+                              help=("Admin policy file: overall admins ('@handle' or '* @handle' lines) "
+                                    "plus per-group admins ('<group> @handle'). Overall admins can "
+                                    "approve/override any group."))
+  certify_parser.add_argument("--changed-groups", dest="changedGroups", metavar="G1,G2", default=None,
+                              help=("Restrict the approval re-check to these groups (the ones changed in "
+                                    "this MR; e.g. from a git diff). Default: every group present."))
+  certify_parser.add_argument("--architectures", dest="architectures", metavar="A1,A2", default=None,
+                              help=("Certify only these platforms: merge, store-validate and sign only "
+                                    "BOMs of these effective architectures ('shared' is one too), leaving "
+                                    "other platforms' signed manifests untouched. A listed platform whose "
+                                    "BOMs are all gone gets an EMPTY signed manifest (revocation). "
+                                    "Default: every architecture present in the manifests."))
+  certify_parser.add_argument("--certifier", dest="certifier", metavar="USERNAME", default=None,
+                              help=("GitLab username of the already-authenticated initiator (default: "
+                                    "$GITLAB_USER_LOGIN, which GitLab sets for an API-triggered pipeline). "
+                                    "Must be an authorised admin; recorded as certified_by. No API call."))
+  certify_parser.add_argument("--certifier-token", dest="certifierToken", metavar="PAT", default=None,
+                              help=("A GitLab PAT that identifies the initiating admin (GET /user). When "
+                                    "given (or $BITS_CERTIFIER_TOKEN), that authenticated identity must be "
+                                    "an authorised admin and is recorded as certified_by, instead of "
+                                    "reading MR approvals."))
+  certify_parser.add_argument("--valid-days", dest="validDays", type=int, default=None, metavar="DAYS",
+                              help=("Stamp an 'expires' DAYS from now into the signed manifest; consumers "
+                                    "fail closed once it is past (offline anti-replay). Default: no expiry."))
+  certify_parser.add_argument("--source-commit", dest="sourceCommit", metavar="SHA", default=None,
+                              help="Record the certified manifests-repo commit SHA (default: $CI_COMMIT_SHA).")
+  ctx.remote_store(certify_parser, dest="certifyStore",
+                   help=("S3 store URL/bucket to validate hashes against. Accepts https, "
+                         "b3://<bucket>, or s3://<bucket>. Default: %(default)s"))
+  certify_parser.add_argument("--no-store-check", dest="noStoreCheck", action="store_true", default=False,
+                              help=("Skip validating each hash against the store before signing. "
+                                    "Only for offline dry merges; a real certification must verify the store."))
+  ctx.work_dir(certify_parser,
+               help="bits work directory (source of MANIFESTS when no MANIFEST is given). Default: %(default)s.")
+  ctx.architecture(certify_parser,
+                   help="Architecture for store-path resolution. Default: %(default)s.")
+  return certify_parser
+
+
+def add_compliance_arguments(subparsers, ctx):
+  """`bits compliance` — audit recipe licence metadata and the binary store."""
+  compliance_parser = subparsers.add_parser(
+      "compliance",
+      help="audit recipe licence metadata and the binary store",
+      description=(
+          "Summarise licence-compliance status: scan recipes for "
+          "license:/redistributable: metadata (missing licences, unverified "
+          "LicenseRef-* ids, the redistributable:false CVMFS-exclusion list), "
+          "probe whether the S3 store answers unauthenticated requests, and "
+          "report every stored or certified package whose current recipe "
+          "forbids redistribution. With PACKAGE roots (e.g. 'bits compliance "
+          "externals generators'), the audit follows the same repository-"
+          "discovery path as bits build (config dir, defaults profile, "
+          "repository providers) and covers exactly the resolved dependency "
+          "closure of those roots for the selected group; without roots it "
+          "scans one recipe directory (--recipes, default CWD). Read-only. "
+          "Exit 0 = clean, 1 = issues found, so it can gate CI."
+      ),
+  )
+  # Options for the compliance subcommand
+  compliance_parser.add_argument("packages", metavar="PACKAGE", nargs="*", default=[],
+                                 help=("Audit the dependency closure of %(metavar)s (group mode): recipe "
+                                       "repositories are discovered exactly as bits build does — config dir, "
+                                       "defaults profile, repository providers — and only the resolved closure "
+                                       "is audited. Typically the group's meta-package(s), e.g. 'externals "
+                                       "generators'. Without %(metavar)s, one recipe directory is scanned "
+                                       "(--recipes, default the current directory)."))
+  ctx.config_dir(compliance_parser,
+                 help="The directory containing build recipes (group mode). Default '%(default)s'.")
+  ctx.search_path(compliance_parser)
+  ctx.architecture(compliance_parser,
+                   help=("Resolve the closure as if on %(metavar)s (group mode). Default is the "
+                         "current system architecture, '%(default)s'."))
+  ctx.defaults(compliance_parser,
+               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh (group mode).")
+  compliance_parser.add_argument("--disable", dest="disable", default=[], metavar="PACKAGE", action="append",
+                                 help=("Assume we're not building %(metavar)s and all its (unique) dependencies "
+                                       "(group mode). Repeat or comma-separate."))
+  compliance_parser.add_argument("--recipes", dest="recipesDir", metavar="DIR", default=None,
+                                 help=("Recipe repository to audit (a directory of *.sh recipes, "
+                                       "e.g. an lcg.bits checkout). Default: the current directory."))
+  ctx.remote_store(compliance_parser, dest="complianceStore",
+                   help=("S3 store to audit against the recipe flags. Accepts https, "
+                         "b3://<bucket>, or s3://<bucket>. Default: %(default)s"))
+  compliance_parser.add_argument("--no-store-check", dest="noStoreCheck", action="store_true", default=False,
+                                 help="Audit the recipes only; skip the store walk and the public-access probe.")
+  ctx.work_dir(compliance_parser,
+               help="bits work directory (scratch for the store client). Default: %(default)s.")
+  compliance_parser.add_argument("--enforce", dest="enforce", action="store_true", default=False,
+                                 help=("ADMIN: remove non-compliant packages from the store — delete their "
+                                       "TARS objects, rev-index markers and SOURCES archives, rewrite the "
+                                       "per-build BOMs without them, and (with --key) re-certify the affected "
+                                       "architectures. Requires S3 write credentials. Combine with --dry-run "
+                                       "to preview every action first."))
+  compliance_parser.add_argument("--dry-run", dest="dryRun", action="store_true", default=False,
+                                 help="With --enforce: print every deletion/rewrite without touching anything.")
+  compliance_parser.add_argument("--key", dest="enforceKey", metavar="PEM", default=None,
+                                 help=("With --enforce: Ed25519 release key to re-sign the affected "
+                                       "architectures' common manifests after the purge. Without it the next "
+                                       "CI certification heals them (removed objects are dropped as missing)."))
+  return compliance_parser
+
+
 def doParseArgs():
   detectedArch = detectArch()
 
@@ -944,45 +1223,11 @@ def doParseArgs():
   brew_parser = add_brew_arguments(subparsers, ctx)
   init_parser = add_init_arguments(subparsers, ctx)
   version_parser = add_version_arguments(subparsers, ctx)
-  publish_parser = subparsers.add_parser(
-      "publish",
-      help="copy, relocate, and hand a built package to cvmfs-prepub",
-      description=(
-          "Copies the immutable installation from WORKDIR, relocates it to the "
-          "final CVMFS target path, and submits the result to the cvmfs-prepub "
-          "service (--prepub-url) for ingestion into CVMFS."
-      ),
-  )
-  certify_parser = subparsers.add_parser(
-      "certify",
-      help="merge build manifests into a signed common manifest (trust unit)",
-      description=(
-          "Merge one or more published build manifests into a single common "
-          "manifest, validate every content hash against the S3 store, and sign "
-          "the result with the release Ed25519 key. The signed common manifest "
-          "is what clients trust for binary reuse (see docs/adr/0004)."
-      ),
-  )
+  publish_parser = add_publish_arguments(subparsers, ctx)
+  certify_parser = add_certify_arguments(subparsers, ctx)
   # `gc` and `store-stats` moved into the `store` group (Phase 3.4): they are now
   # `bits store gc` / `bits store stats`, handled by the bitsStore tool.
-  compliance_parser = subparsers.add_parser(
-      "compliance",
-      help="audit recipe licence metadata and the binary store",
-      description=(
-          "Summarise licence-compliance status: scan recipes for "
-          "license:/redistributable: metadata (missing licences, unverified "
-          "LicenseRef-* ids, the redistributable:false CVMFS-exclusion list), "
-          "probe whether the S3 store answers unauthenticated requests, and "
-          "report every stored or certified package whose current recipe "
-          "forbids redistribution. With PACKAGE roots (e.g. 'bits compliance "
-          "externals generators'), the audit follows the same repository-"
-          "discovery path as bits build (config dir, defaults profile, "
-          "repository providers) and covers exactly the resolved dependency "
-          "closure of those roots for the selected group; without roots it "
-          "scans one recipe directory (--recipes, default CWD). Read-only. "
-          "Exit 0 = clean, 1 = issues found, so it can gate CI."
-      ),
-  )
+  compliance_parser = add_compliance_arguments(subparsers, ctx)
   status_parser = add_status_arguments(subparsers, ctx)
   verify_parser = add_verify_arguments(subparsers, ctx)
   stats_parser = add_stats_arguments(subparsers, ctx)
@@ -1469,235 +1714,6 @@ def doParseArgs():
       ),
   )
 
-  # Options for the publish command
-  publish_parser.add_argument("package", metavar="PACKAGE", nargs="?", default=None,
-                              help="Name of the package to publish. With --release-view, optional: names "
-                                   "the release's top package to pick its build_id when the build area "
-                                   "holds more than one.")
-  publish_parser.add_argument("version", metavar="VERSION", nargs="?", default=None,
-                              help="Version (and optional revision) to publish. Defaults to the latest build.")
-  publish_parser.add_argument("--release-view", "--view", dest="publishView", metavar="NAME",
-                              default=None, action=_WarnAliasAction,
-                              help="Instead of a package, publish the merged VIEW for a release to "
-                                   "<cvmfs-target>/Views/NAME-<build_id>/<arch>/. The build_id is read "
-                                   "from the packages' .meta.json, not given here.")
-  publish_parser.add_argument("--cvmfs-target", dest="cvmfsTarget", required=False, metavar="PATH",
-                              help="Absolute path the package will occupy on CVMFS (e.g. /cvmfs/sft.cern.ch/lcg/releases/absl/20230802.1/x86_64-el9). With --release-view, the CVMFS root the Views/ tree lives under.")
-  publish_parser.add_argument("--module-target", dest="moduleTarget", metavar="PATH", default=None,
-                              help="CVMFS path of the separate modules tree. When given (prepub path), "
-                                   "the package's etc/modulefiles are tar'd and published as an "
-                                   "independent job here, since modulefiles live in a different tree "
-                                   "(module_dir) from the payload — so they are installed even with "
-                                   "--no-relocate.")
-  add_work_dir(publish_parser,
-               help="bits work directory containing the installed packages. Default: %(default)s.")
-  add_architecture(publish_parser,
-                   help="Target architecture. Default: %(default)s.")
-  publish_parser.add_argument("--scratch-dir", dest="scratchDir", default=None, metavar="DIR",
-                              help="Directory for the temporary CVMFS working copy. Defaults to a system temp dir.")
-  publish_parser.add_argument("--no-relocate", dest="noRelocate", action="store_true", default=False,
-                              help=("Skip the relocation step. Use this when the package was built "
-                                    "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
-                                    "so all embedded paths are already correct."))
-  # `bits publish PACKAGE` is CVMFS-only (Phase 3.4). The single-package S3-store
-  # write moved to `bits store upload`; the bulk `--from-manifest` S3 upload below
-  # is unchanged. `--to`/`--write-store` were removed with the single-package s3 path.
-  publish_parser.add_argument("--from-manifest", dest="fromManifest", nargs="?",
-                              const="latest", default=None, metavar="MANIFEST",
-                              help=("Bulk-upload every package in a build manifest to the S3 store. "
-                                    "This is the default when no PACKAGE is given, so bare "
-                                    "'bits publish' uploads the latest manifest. Optionally give a "
-                                    "manifest file path; 'latest' (default) uses the newest under "
-                                    "WORKDIR/MANIFESTS. Use --store to pick the target."))
-  add_remote_store(publish_parser, dest="publishStore",
-                   help=("S3 store URL/bucket for --from-manifest. Accepts an https URL "
-                         "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>. "
-                         "Default: %(default)s"))
-  publish_parser.add_argument("--certify", dest="certify", action="store_true", default=False,
-                              help=("After a successful upload, open a merge request in the manifests repo "
-                                    "adding this build's manifest under manifests/<group>/. CI validates the "
-                                    "MR author is an admin, signs the common manifest, and publishes it. "
-                                    "Uses the GitLab API + your PAT (works even with SSH push)."))
-  publish_parser.add_argument("--certify-group", dest="certifyGroup", metavar="GROUP", default=None,
-                              help=("Group directory to submit the manifest to (manifests/<group>/). Implies "
-                                    "--certify. Defaults to `system: certify_group:` in the active defaults, "
-                                    "so a configured community can just run `bits publish`."))
-  publish_parser.add_argument("--no-certify", dest="noCertify", action="store_true", default=False,
-                              help="Never open a certification MR, even if defaults configure it.")
-  publish_parser.add_argument("--manifests-remote", dest="manifestsRemote", metavar="GIT_URL", default=None,
-                              help=("Git remote of the bits-manifests project, e.g. "
-                                    "ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git. Only the host + "
-                                    "path are used (to build the HTTPS API URL). Defaults to "
-                                    "`system: manifests_remote:` in the active defaults."))
-  publish_parser.add_argument("--certify-ref", dest="certifyRef", metavar="REF", default=None,
-                              help="Target branch of the certification MR. Default: the repo's default branch.")
-  publish_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
-                              help=("GitLab PAT to trigger certification (default: $BITS_CERTIFIER_TOKEN / "
-                                    "$GITLAB_TOKEN / ~/.bits/gitlab-token)."))
-  publish_parser.add_argument("--certifier", dest="certifier", metavar="USER", default=None,
-                              help=("Record USER as certified_by in the submitted manifest (audit trail in the "
-                                    "manifests-repo history). Use when the MR is opened by a bot on behalf of a "
-                                    "human whose authority was already verified (e.g. bits-console). Defaults to "
-                                    "$GITLAB_USER_LOGIN."))
-
-  # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
-  _prepub = publish_parser.add_argument_group(
-      "cvmfs-prepub direct upload",
-      "Upload the package directly to a running cvmfs-prepub service over HTTPS.  "
-      "Requires cvmfs-prepub ≥ 0.1.0.",
-  )
-  _prepub.add_argument("--prepub-url", dest="prepubUrl", default=None, metavar="URL",
-                       help=("Base URL of the cvmfs-prepub API (no trailing slash), e.g. "
-                             "https://prepub.example.org:8080.  Required for CVMFS publish."))
-  _prepub.add_argument("--prepub-token", dest="prepubToken", default=None, metavar="TOKEN",
-                       help=("Bearer token for the cvmfs-prepub API.  If omitted the value of the "
-                             "PREPUB_API_TOKEN environment variable is used."))
-  _prepub.add_argument("--prepub-repo", dest="prepubRepo", default=None, metavar="REPO",
-                       help=("CVMFS repository name to pass to the API, e.g. software.cern.ch.  "
-                             "Derived automatically from --cvmfs-target when not specified."))
-  _prepub.add_argument("--prepub-path", dest="prepubPath", default=None, metavar="SUBPATH",
-                       help=("Lease sub-path relative to the repository root, e.g. atlas/24.0 "
-                             "(no leading slash).  Derived automatically from --cvmfs-target "
-                             "when not specified."))
-  _prepub.add_argument("--prepub-webhook", dest="prepubWebhook", default=None, metavar="URL",
-                       help="Optional webhook URL that cvmfs-prepub POSTs to on job completion.")
-  _prepub.add_argument("--prepub-poll-interval", dest="prepubPollInterval", type=int,
-                       default=10, metavar="SEC",
-                       help="Seconds between status polls while waiting for the job.  Default: 10.")
-  _prepub.add_argument("--prepub-timeout", dest="prepubTimeout", type=int,
-                       default=1800, metavar="SEC",
-                       help="Total seconds to wait for the job to reach a terminal state.  Default: 1800.")
-  _prepub.add_argument("--prepub-no-verify-tls", dest="prepubNoVerifyTls", action="store_true",
-                       default=False,
-                       help="Disable TLS certificate verification (self-signed certs / dev mode only).")
-  _prepub.add_argument("--prepub-bearer-auth", dest="prepubBearerAuth", action="store_true",
-                       default=False,
-                       help=("Send the token as 'Authorization: Bearer' instead of signing the "
-                             "request. Only for a cvmfs-prepub running auth_mode=bearer; the "
-                             "secret then travels on every request, so anyone who observes one "
-                             "holds publish rights until it is rotated. By default each request "
-                             "carries a per-request HMAC and the secret never leaves this host."))
-
-  # Options for the certify subcommand
-  certify_parser.add_argument("manifests", metavar="MANIFEST", nargs="*", default=None,
-                              help=("Build-manifest JSON files or directories to merge. A directory "
-                                    "is scanned recursively for *.json. Default: WORKDIR/MANIFESTS."))
-  certify_parser.add_argument("-o", "--out", dest="out", metavar="FILE", required=True,
-                              help="Path to write the merged common manifest (its .sig is written alongside).")
-  certify_parser.add_argument("--key", dest="key", metavar="PEM", required=False,
-                              help=("Ed25519 private key (PEM) to sign the common manifest with. "
-                                    "Required unless --sign-via-proxy is given."))
-  certify_parser.add_argument("--sign-via-proxy", dest="signViaProxy",
-                              action="store_true", default=False,
-                              help=("Sign via the security-proxy instead of a local --key. "
-                                    "Endpoint from --sign-proxy-url or BITS_SIGN_PROXY_URL; "
-                                    "gate token from BITS_SIGN_PROXY_TOKEN (never on the "
-                                    "command line)."))
-  certify_parser.add_argument("--sign-proxy-url", dest="signProxyUrl", metavar="URL",
-                              default=None,
-                              help=("security-proxy sign route, e.g. "
-                                    "http://host:port/sign/bits. Falls back to "
-                                    "BITS_SIGN_PROXY_URL."))
-  certify_parser.add_argument("--sign-via-service", dest="signViaService",
-                              action="store_true", default=False,
-                              help=("Sign via the console-backend signing service (M1): "
-                                    "no key or gate token in CI — the CI ID token (OIDC) "
-                                    "authenticates and the build's human pre-approval gates "
-                                    "the signature. URL from --sign-service-url or "
-                                    "BITS_SIGN_SERVICE_URL; CI token from BITS_SIGN_SERVICE_TOKEN."))
-  certify_parser.add_argument("--sign-service-url", dest="signServiceUrl", metavar="URL",
-                              default=None,
-                              help=("signing-service base URL, e.g. https://bits.cern.ch. "
-                                    "Falls back to BITS_SIGN_SERVICE_URL."))
-  certify_parser.add_argument("--build-id", dest="buildId", metavar="ID", default=None,
-                              help=("the pre-approved build's pipeline id (the build_id the "
-                                    "manifest is keyed on). Required with --sign-via-service; "
-                                    "falls back to BITS_BUILD_ID."))
-  certify_parser.add_argument("--group", dest="group", metavar="GROUP", default=None,
-                              help=("Tag entries that lack a group with GROUP, so the consumer trust filter "
-                                    "(--trust-groups) can scope reuse. Use 'common' for the shared base layer."))
-  certify_parser.add_argument("--require-approval", dest="requireApproval", action="store_true", default=False,
-                              help=("Refuse to sign unless a listed group admin approved the merge request "
-                                    "(read from the forge — GitLab CI env). Defence-in-depth over CODEOWNERS."))
-  certify_parser.add_argument("--admins", dest="admins", metavar="FILE", default=None,
-                              help=("Admin policy file: overall admins ('@handle' or '* @handle' lines) "
-                                    "plus per-group admins ('<group> @handle'). Overall admins can "
-                                    "approve/override any group."))
-  certify_parser.add_argument("--changed-groups", dest="changedGroups", metavar="G1,G2", default=None,
-                              help=("Restrict the approval re-check to these groups (the ones changed in "
-                                    "this MR; e.g. from a git diff). Default: every group present."))
-  certify_parser.add_argument("--architectures", dest="architectures", metavar="A1,A2", default=None,
-                              help=("Certify only these platforms: merge, store-validate and sign only "
-                                    "BOMs of these effective architectures ('shared' is one too), leaving "
-                                    "other platforms' signed manifests untouched. A listed platform whose "
-                                    "BOMs are all gone gets an EMPTY signed manifest (revocation). "
-                                    "Default: every architecture present in the manifests."))
-  certify_parser.add_argument("--certifier", dest="certifier", metavar="USERNAME", default=None,
-                              help=("GitLab username of the already-authenticated initiator (default: "
-                                    "$GITLAB_USER_LOGIN, which GitLab sets for an API-triggered pipeline). "
-                                    "Must be an authorised admin; recorded as certified_by. No API call."))
-  certify_parser.add_argument("--certifier-token", dest="certifierToken", metavar="PAT", default=None,
-                              help=("A GitLab PAT that identifies the initiating admin (GET /user). When "
-                                    "given (or $BITS_CERTIFIER_TOKEN), that authenticated identity must be "
-                                    "an authorised admin and is recorded as certified_by, instead of "
-                                    "reading MR approvals."))
-  certify_parser.add_argument("--valid-days", dest="validDays", type=int, default=None, metavar="DAYS",
-                              help=("Stamp an 'expires' DAYS from now into the signed manifest; consumers "
-                                    "fail closed once it is past (offline anti-replay). Default: no expiry."))
-  certify_parser.add_argument("--source-commit", dest="sourceCommit", metavar="SHA", default=None,
-                              help="Record the certified manifests-repo commit SHA (default: $CI_COMMIT_SHA).")
-  add_remote_store(certify_parser, dest="certifyStore",
-                   help=("S3 store URL/bucket to validate hashes against. Accepts https, "
-                         "b3://<bucket>, or s3://<bucket>. Default: %(default)s"))
-  certify_parser.add_argument("--no-store-check", dest="noStoreCheck", action="store_true", default=False,
-                              help=("Skip validating each hash against the store before signing. "
-                                    "Only for offline dry merges; a real certification must verify the store."))
-  add_work_dir(certify_parser,
-               help="bits work directory (source of MANIFESTS when no MANIFEST is given). Default: %(default)s.")
-  add_architecture(certify_parser,
-                   help="Architecture for store-path resolution. Default: %(default)s.")
-
-  # Options for the compliance subcommand
-  compliance_parser.add_argument("packages", metavar="PACKAGE", nargs="*", default=[],
-                                 help=("Audit the dependency closure of %(metavar)s (group mode): recipe "
-                                       "repositories are discovered exactly as bits build does — config dir, "
-                                       "defaults profile, repository providers — and only the resolved closure "
-                                       "is audited. Typically the group's meta-package(s), e.g. 'externals "
-                                       "generators'. Without %(metavar)s, one recipe directory is scanned "
-                                       "(--recipes, default the current directory)."))
-  add_config_dir(compliance_parser,
-                 help="The directory containing build recipes (group mode). Default '%(default)s'.")
-  add_search_path(compliance_parser)
-  add_architecture(compliance_parser,
-                   help=("Resolve the closure as if on %(metavar)s (group mode). Default is the "
-                         "current system architecture, '%(default)s'."))
-  add_defaults(compliance_parser,
-               help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh (group mode).")
-  compliance_parser.add_argument("--disable", dest="disable", default=[], metavar="PACKAGE", action="append",
-                                 help=("Assume we're not building %(metavar)s and all its (unique) dependencies "
-                                       "(group mode). Repeat or comma-separate."))
-  compliance_parser.add_argument("--recipes", dest="recipesDir", metavar="DIR", default=None,
-                                 help=("Recipe repository to audit (a directory of *.sh recipes, "
-                                       "e.g. an lcg.bits checkout). Default: the current directory."))
-  add_remote_store(compliance_parser, dest="complianceStore",
-                   help=("S3 store to audit against the recipe flags. Accepts https, "
-                         "b3://<bucket>, or s3://<bucket>. Default: %(default)s"))
-  compliance_parser.add_argument("--no-store-check", dest="noStoreCheck", action="store_true", default=False,
-                                 help="Audit the recipes only; skip the store walk and the public-access probe.")
-  add_work_dir(compliance_parser,
-               help="bits work directory (scratch for the store client). Default: %(default)s.")
-  compliance_parser.add_argument("--enforce", dest="enforce", action="store_true", default=False,
-                                 help=("ADMIN: remove non-compliant packages from the store — delete their "
-                                       "TARS objects, rev-index markers and SOURCES archives, rewrite the "
-                                       "per-build BOMs without them, and (with --key) re-certify the affected "
-                                       "architectures. Requires S3 write credentials. Combine with --dry-run "
-                                       "to preview every action first."))
-  compliance_parser.add_argument("--dry-run", dest="dryRun", action="store_true", default=False,
-                                 help="With --enforce: print every deletion/rewrite without touching anything.")
-  compliance_parser.add_argument("--key", dest="enforceKey", metavar="PEM", default=None,
-                                 help=("With --enforce: Ed25519 release key to re-sign the affected "
-                                       "architectures' common manifests after the purge. Without it the next "
-                                       "CI certification heals them (removed objects are dropped as missing)."))
 
   # gc / store-stats options moved to the bitsStore tool (Phase 3.4:
   # `bits store gc` / `bits store stats`).
