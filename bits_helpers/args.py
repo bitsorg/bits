@@ -217,40 +217,80 @@ def _apply_deprecated_aliases(rest):
   return rest
 
 
-def doParseArgs():
-  detectedArch = detectArch()
+class _ArgCtx:
+  """Shared argument adders for the per-command registrars.
 
-  # Shared adders for the cross-cutting options, so every action gets the same
-  # flag string, dest, metavar and default by construction (no per-action drift).
-  # Help stays per-action (passed in). config-dir also takes a per-action default
-  # because `bits init` places recipes under DEVELPREFIX, not BITS_REPO_DIR.
-  def add_architecture(p, help):
+  Bundles the one value (detectedArch) the adders need beyond the module-level
+  constants, so every command gets the same flag string, dest, metavar and
+  default by construction (no per-action drift). Help stays per-action (passed
+  in). config-dir also takes a per-action default because `bits init` places
+  recipes under DEVELPREFIX, not BITS_REPO_DIR.
+  """
+  def __init__(self, detectedArch):
+    self.detectedArch = detectedArch
+
+  def architecture(self, p, help):
     p.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH",
-                   default=detectedArch, help=help)
-  def add_work_dir(p, help):
+                   default=self.detectedArch, help=help)
+
+  def work_dir(self, p, help):
     p.add_argument("-w", "--work-dir", dest="workDir", metavar="WORKDIR",
                    default=DEFAULT_WORK_DIR, help=help)
-  def add_config_dir(p, help, default=None):
+
+  def config_dir(self, p, help, default=None):
     p.add_argument("-c", "--config-dir", "--config", dest="configDir",
                    metavar="CONFIGDIR",
                    default=os.environ.get("BITS_REPO_DIR", ".") if default is None else default,
                    help=help)
-  def add_chdir(p, help):
+
+  def chdir(self, p, help):
     p.add_argument("-C", "--chdir", dest="chdir", metavar="DIR",
                    default=DEFAULT_CHDIR, help=help)
-  def add_defaults(p, help):
+
+  def defaults(self, p, help):
     p.add_argument("--defaults", dest="defaults", metavar="DEFAULT", default="release",
                    help=help)
-  def add_search_path(p, help=("Comma-separated recipe sub-repos to search besides "
-                               "CONFIGDIR (relative NAME -> <config-dir>/NAME.bits, "
-                               "absolute used as-is). Seeds BITS_PATH; an explicit "
-                               "$BITS_PATH wins.")):
+
+  def search_path(self, p, help=("Comma-separated recipe sub-repos to search besides "
+                                 "CONFIGDIR (relative NAME -> <config-dir>/NAME.bits, "
+                                 "absolute used as-is). Seeds BITS_PATH; an explicit "
+                                 "$BITS_PATH wins.")):
     p.add_argument("--search-path", dest="searchPath", metavar="NAMES", default=None,
                    help=help)
-  def add_remote_store(p, dest, help, default=DEFAULT_S3_STORE):
+
+  def remote_store(self, p, dest, help, default=DEFAULT_S3_STORE):
     # Canonical --remote-store with --store kept as a deprecated alias (warns).
     p.add_argument("--remote-store", "--store", dest=dest, metavar="URL",
                    default=default, action=_WarnAliasAction, help=help)
+
+
+def add_architecture_arguments(subparsers, ctx):
+  """`bits architecture` — display the detected architecture (no options)."""
+  return subparsers.add_parser("architecture", help="display detected architecture",
+                               description="Display the detected architecture.")
+
+
+def add_version_arguments(subparsers, ctx):
+  """`bits version` — display the version and architecture (no options)."""
+  return subparsers.add_parser("version", help="display %(prog)s version",
+                               description="Display %(prog)s and architecture.")
+
+
+def doParseArgs():
+  detectedArch = detectArch()
+
+  # Per-command argument registration lives in the add_*_arguments() functions.
+  # `ctx` carries the shared cross-cutting adders. The local add_* names below
+  # are thin aliases so the not-yet-migrated inline blocks keep working; they go
+  # away once every command is a registrar.
+  ctx = _ArgCtx(detectedArch)
+  add_architecture = ctx.architecture
+  add_work_dir     = ctx.work_dir
+  add_config_dir   = ctx.config_dir
+  add_chdir        = ctx.chdir
+  add_defaults     = ctx.defaults
+  add_search_path  = ctx.search_path
+  add_remote_store = ctx.remote_store
 
   parser = argparse.ArgumentParser(epilog="""\
   For help about each option, specify --help after the option itself. For
@@ -262,8 +302,7 @@ def doParseArgs():
                       help="Print what would happen, without actually doing it.")
 
   subparsers = parser.add_subparsers(dest="action")
-  subparsers.add_parser("architecture", help="display detected architecture",
-                        description="Display the detected architecture.")
+  add_architecture_arguments(subparsers, ctx)
   build_parser = subparsers.add_parser("build", help="build a package",
                                        description="Build a package.")
   clean_parser = subparsers.add_parser("clean", help="clean up build area",
@@ -290,8 +329,7 @@ def doParseArgs():
                                                   "demand.")
   init_parser = subparsers.add_parser("init", help="initialise local packages",
                                       description="Initialise development packages.")
-  version_parser = subparsers.add_parser("version", help="display %(prog)s version",
-                                         description="Display %(prog)s and architecture.")
+  version_parser = add_version_arguments(subparsers, ctx)
   publish_parser = subparsers.add_parser(
       "publish",
       help="copy, relocate, and hand a built package to cvmfs-prepub",
