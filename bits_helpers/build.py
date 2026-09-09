@@ -2107,7 +2107,7 @@ def doBuild(args, parser):
   # Homebrew-sourced system package is missing (macOS dev platform). The checks
   # run unsandboxed during resolution and read this from the environment; the
   # sandboxed build phase only symlinks the (now-present) Homebrew prefix.
-  if getattr(args, "brew", False):
+  if cfg.brew:
     extra_env["BITS_BREW"] = "1"
 
   # ── Repository-provider discovery ─────────────────────────────────────────
@@ -2122,7 +2122,7 @@ def doBuild(args, parser):
     fetch_repos       = args.fetchRepos,
     bits_providers    = getattr(args, "bits_providers", None),
     taps              = taps,
-    provider_policy   = getattr(args, "provider_policy", {}),
+    provider_policy   = cfg.provider_policy,
     force_tracked     = getattr(args, "forceTracked", False),
   )
 
@@ -2160,7 +2160,7 @@ def doBuild(args, parser):
     reference_sources = args.referenceSources,
     fetch_repos       = args.fetchRepos,
     taps              = taps,
-    provider_policy   = getattr(args, "provider_policy", {}),
+    provider_policy   = cfg.provider_policy,
     overrides         = overrides,
     defaults          = args.defaults,
     default_vars      = defaultsMeta.get("variables"),
@@ -2230,7 +2230,7 @@ def doBuild(args, parser):
   # --no-auto-patch CLI flag or `auto_patch: false` in the active defaults force
   # it off for every package. When off, bits still stages the patch files in
   # $SOURCEDIR and exports $PATCH0..$PATCH_COUNT, but the recipe applies them.
-  _global_auto_patch = (bool(getattr(args, "autoPatch", True))
+  _global_auto_patch = (bool(cfg.auto_patch)
                         and bool(defaultsMeta.get("auto_patch", True)))
   for x in specs.values():
     x["requires"] = [r for r in x["requires"] if r not in args.disable]
@@ -2580,7 +2580,7 @@ def doBuild(args, parser):
     # default: without it, concurrency is bounded purely by --builders, which is
     # more predictable.  Explicit --resources / --resource-monitoring still take
     # precedence and work regardless of the flag.
-    if getattr(args, "autoResources", False):
+    if cfg.auto_resources:
       if not args.resources:
         from bits_helpers.build_stats import autoload_stats_path
         _auto_stats = autoload_stats_path(workDir, args.architecture)
@@ -2604,9 +2604,9 @@ def doBuild(args, parser):
     # size) and the building packages, pushed to --monitor-url. It never blocks
     # or fails the build and is stopped at process exit. Runtime only — no hash
     # impact.
-    _mon_url = (getattr(args, "monitorUrl", None) or os.environ.get("METRICS_URL")
+    _mon_url = (cfg.monitor_url or os.environ.get("METRICS_URL")
                 or _system_opt("monitor_url", None))
-    _mon_on = getattr(args, "monitor", None)
+    _mon_on = cfg.monitor
     if _mon_on is None:
       _sys_mon = _system_opt("monitor", None)
       # Default ON when a metrics endpoint is configured (e.g. $METRICS_URL under
@@ -2619,9 +2619,9 @@ def doBuild(args, parser):
         from bits_helpers import monitor as _bits_monitor
         _bits_monitor.start_monitor(
             url=_mon_url,
-            instance=getattr(args, "monitorInstance", None) or _system_opt("monitor_instance", None),
-            interval=float(getattr(args, "monitorInterval", None) or _system_opt("monitor_interval", 15) or 15),
-            disk_interval=float(getattr(args, "monitorDiskInterval", None) or _system_opt("monitor_disk_interval", 60) or 60),
+            instance=cfg.monitor_instance or _system_opt("monitor_instance", None),
+            interval=float(cfg.monitor_interval or _system_opt("monitor_interval", 15) or 15),
+            disk_interval=float(cfg.monitor_disk_interval or _system_opt("monitor_disk_interval", 60) or 60),
             sw_dir=abspath(args.workDir))
         import atexit as _atexit
         _atexit.register(_bits_monitor.stop_monitor)
@@ -2741,7 +2741,7 @@ def doBuild(args, parser):
     # and development packages are never grafted.
     if (cfg.reuse_overlay and not spec["is_devel_pkg"]
         and not spec["package"].startswith("defaults-")):
-      _bl_raw = getattr(args, "buildLocal", None) or []
+      _bl_raw = cfg.build_local or []
       if isinstance(_bl_raw, str):
         _bl_raw = _bl_raw.split(",")
       _bl = set(x for x in _bl_raw if x)
@@ -3253,7 +3253,7 @@ def doBuild(args, parser):
     container_workDir = ""
     cachedTarball = spec["cachedTarball"]
     if args.docker:
-      cvmfs_prefix = getattr(args, "cvmfsPrefix", None)
+      cvmfs_prefix = cfg.cvmfs_prefix
       if cvmfs_prefix:
         # When --cvmfs-prefix is set, mount workDir at the CVMFS path inside
         # the container.  The build system then compiles packages with their
@@ -3689,7 +3689,7 @@ def doBuild(args, parser):
   # configured. Fire-and-forget: listing the store or the push never fails build.
   # Resolved here rather than reusing the monitor block's _mon_url: that lives in
   # a conditional branch and may never have been assigned on this path.
-  _store_mon_url = (getattr(args, "monitorUrl", None)
+  _store_mon_url = (cfg.monitor_url
                     or os.environ.get("METRICS_URL") or "").strip().rstrip("/")
   if _store_mon_url and getattr(syncHelper, "writeStore", "") and getattr(syncHelper, "s3", None):
     from bits_helpers import store_stats as _ss

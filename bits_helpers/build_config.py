@@ -21,7 +21,7 @@ from typing import Optional
 
 @dataclass(frozen=True)
 class BuildConfig:
-  """The five resolved build knobs, read once off a resolved ``args``."""
+  """The resolved build knobs, read once off a resolved ``args``."""
 
   oversubscribe: float           # CPU oversubscription factor, >= 1.0
   unleash_final: bool            # let the final package use the full -j
@@ -40,6 +40,21 @@ class BuildConfig:
   reuse_cvmfs_base: Optional[str]  # CVMFS Packages base for the reuse overlay
   reuse_beacon: Optional[str]    # reuse-beacon URL (falls back to env at the site)
   store_integrity: bool          # verify store-integrity ledger on cached reuse
+
+  # Build-host monitor (each raw value; the site still ORs in system opts / env).
+  monitor: Optional[str]         # --monitor mode, None = off
+  monitor_url: Optional[str]     # metrics push URL
+  monitor_instance: Optional[str]
+  monitor_interval: Optional[float]
+  monitor_disk_interval: Optional[float]
+
+  # Misc flags read via the getattr(…, default) idiom.
+  brew: bool                     # install Homebrew deps on demand
+  auto_patch: bool               # auto-apply recipe patches
+  auto_resources: bool           # measurement-driven --builders
+  provider_policy: dict          # provider prepend/append overrides
+  build_local: object            # None | str | comma-list (site normalises)
+  cvmfs_prefix: Optional[str]    # CVMFS prefix override
 
   @classmethod
   def from_args(cls, args):
@@ -63,4 +78,15 @@ class BuildConfig:
         reuse_cvmfs_base=getattr(args, "reuseCvmfsBase", None),
         reuse_beacon=getattr(args, "reuseBeacon", None),
         store_integrity=getattr(args, "storeIntegrity", False),
+        monitor=getattr(args, "monitor", None),
+        monitor_url=getattr(args, "monitorUrl", None),
+        monitor_instance=getattr(args, "monitorInstance", None),
+        monitor_interval=getattr(args, "monitorInterval", None),
+        monitor_disk_interval=getattr(args, "monitorDiskInterval", None),
+        brew=getattr(args, "brew", False),
+        auto_patch=getattr(args, "autoPatch", True),
+        auto_resources=getattr(args, "autoResources", False),
+        provider_policy=getattr(args, "provider_policy", {}),
+        build_local=getattr(args, "buildLocal", None),
+        cvmfs_prefix=getattr(args, "cvmfsPrefix", None),
     )

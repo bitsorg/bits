@@ -26,7 +26,12 @@ class BuildConfigFromArgsTest(unittest.TestCase):
                     memPerJobDefault=2048, parallelDownloads=8,
                     parallelSources=4, prefetchWorkers=3,
                     reuseOverlay="/sw/MODULES/ov", reuseCvmfsBase="/cvmfs/x/Packages",
-                    reuseBeacon="https://beacon", storeIntegrity=True)
+                    reuseBeacon="https://beacon", storeIntegrity=True,
+                    monitor="on", monitorUrl="https://m", monitorInstance="i7",
+                    monitorInterval=30.0, monitorDiskInterval=90.0,
+                    brew=True, autoPatch=False, autoResources=True,
+                    provider_policy={"p": "prepend"}, buildLocal=["a", "b"],
+                    cvmfsPrefix="/cvmfs/alice")
     self.assertEqual(cfg.oversubscribe, 2.5)
     self.assertIs(cfg.unleash_final, False)
     self.assertIs(cfg.critical_path_schedule, False)
@@ -40,6 +45,17 @@ class BuildConfigFromArgsTest(unittest.TestCase):
     self.assertEqual(cfg.reuse_cvmfs_base, "/cvmfs/x/Packages")
     self.assertEqual(cfg.reuse_beacon, "https://beacon")
     self.assertIs(cfg.store_integrity, True)
+    self.assertEqual(cfg.monitor, "on")
+    self.assertEqual(cfg.monitor_url, "https://m")
+    self.assertEqual(cfg.monitor_instance, "i7")
+    self.assertEqual(cfg.monitor_interval, 30.0)
+    self.assertEqual(cfg.monitor_disk_interval, 90.0)
+    self.assertIs(cfg.brew, True)
+    self.assertIs(cfg.auto_patch, False)
+    self.assertIs(cfg.auto_resources, True)
+    self.assertEqual(cfg.provider_policy, {"p": "prepend"})
+    self.assertEqual(cfg.build_local, ["a", "b"])
+    self.assertEqual(cfg.cvmfs_prefix, "/cvmfs/alice")
 
   def test_oversubscribe_zero_guards_to_one(self):
     # Resolution may set 0.0 (system: build_oversubscribe: 0); the read sites
@@ -63,6 +79,17 @@ class BuildConfigFromArgsTest(unittest.TestCase):
     self.assertIsNone(cfg.reuse_cvmfs_base)
     self.assertIsNone(cfg.reuse_beacon)
     self.assertIs(cfg.store_integrity, False)
+    self.assertIsNone(cfg.monitor)
+    self.assertIsNone(cfg.monitor_url)
+    self.assertIsNone(cfg.monitor_instance)
+    self.assertIsNone(cfg.monitor_interval)
+    self.assertIsNone(cfg.monitor_disk_interval)
+    self.assertIs(cfg.brew, False)
+    self.assertIs(cfg.auto_patch, True)
+    self.assertIs(cfg.auto_resources, False)
+    self.assertEqual(cfg.provider_policy, {})
+    self.assertIsNone(cfg.build_local)
+    self.assertIsNone(cfg.cvmfs_prefix)
 
   def test_reuse_policy_falsy_guards_to_strict(self):
     self.assertEqual(self._cfg(reusePolicy="").reuse_policy, "strict")
