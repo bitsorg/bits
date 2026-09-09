@@ -32,6 +32,7 @@ from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url
 from bits_helpers.build_config import BuildConfig
+from dataclasses import dataclass
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 try:
   from bits_helpers.resource_monitor import run_monitor_on_command
@@ -1659,6 +1660,870 @@ def _write_checksums_for_spec(spec, work_dir):
     debug("--write-checksums: nothing to record for %s", pkgname)
 
 
+@dataclass
+class _BuildLoopCtx:
+  """Enclosing state the per-package build loop body reads/mutates."""
+  args: object; cfg: object; specs: dict; workDir: str
+  syncHelper: object; scheduler: object; mainPackage: str
+  raw_architecture: str; develPackageBranch: str; defaultsMeta: dict
+  buildTargets: str; packages: object
+  prefetch_executor: object; cmake_prefix_env: bool
+  specs_for_checksum_phase: object; monitoredDirs: dict
+  build_work_dir: str = ""
+
+
+def build_one_package(p, ctx):
+  """Process one package from the build order: hash, resolve reuse, set up
+  the build command, and register its scheduler download/build tasks. A bare
+  return skips the package (the former loop-level continue)."""
+  args = ctx.args
+  cfg = ctx.cfg
+  specs = ctx.specs
+  workDir = ctx.workDir
+  syncHelper = ctx.syncHelper
+  scheduler = ctx.scheduler
+  mainPackage = ctx.mainPackage
+  raw_architecture = ctx.raw_architecture
+  develPackageBranch = ctx.develPackageBranch
+  defaultsMeta = ctx.defaultsMeta
+  buildTargets = ctx.buildTargets
+  packages = ctx.packages
+  _prefetch_executor = ctx.prefetch_executor
+  _cmake_prefix_env = ctx.cmake_prefix_env
+  specs_for_checksum_phase = ctx.specs_for_checksum_phase
+  monitoredDirs = ctx.monitoredDirs
+
+  spec = specs[p]
+  log_current_package(p, mainPackage, specs, getattr(args, "develPrefix", None))
+
+  # Calculate the hashes. We do this in build order so that we can guarantee
+  # that the hashes of the dependencies are calculated first. Do this inside
+  # the main build loop to make sure that our dependencies have been assigned
+  # a single, definitive hash.
+  debug("Calculating hash.")
+  debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
+  storeHook(p, specs, args.defaults[0])
+  storeHashes(p, specs, considerRelocation=(
+    raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH
+  ))
+  debug("Hashes for recipe %s are %s (remote); %s (local)", p,
+        ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
+
+  # 4b: if the reuse overlay satisfies this package, set it up from modules
+  # instead of building. Its consumers 'module load' it (generate_initdotsh);
+  # it is neither built nor materialized locally, so we skip the whole
+  # build/unpack path here (this is what avoids the legacy tarball synthesis +
+  # relocate-me.sh). Strict = same remote hash (byte-identical, publishable);
+  # relaxed = any version in the one-release overlay. defaults-*, --build-local
+  # and development packages are never grafted.
+  if (cfg.reuse_overlay and not spec["is_devel_pkg"]
+      and not spec["package"].startswith("defaults-")):
+    _bl_raw = cfg.build_local or []
+    if isinstance(_bl_raw, str):
+      _bl_raw = _bl_raw.split(",")
+    _bl = set(x for x in _bl_raw if x)
+    _relaxed = cfg.reuse_policy == "relaxed"
+    _want = None if _relaxed else spec.get("remote_revision_hash")
+    # In strict mode a missing hash must NOT fall through to match-any.
+    if spec["package"] not in _bl and (_relaxed or _want):
+      from bits_helpers.cvmfs_import import overlay_reuse_module
+      # want_version guards against reusing a DIFFERENT version than the recipe
+      # asks for (relaxed used to graft any deployed version by name alone).
+      _mid = overlay_reuse_module(cfg.reuse_overlay, spec["package"],
+                                  want_hash=_want, want_version=spec.get("version"))
+      if _mid:
+        # Adopt a consistent identity for the manifest, then skip the build.
+        spec["reuse_module_id"] = _mid
+        _verrev = _mid.split("/", 1)[1]
+        spec["revision"] = (_verrev[len(spec["version"]) + 1:]
+                            if _verrev.startswith(spec["version"] + "-") else _verrev)
+        spec["hash"] = spec.get("remote_revision_hash") or spec.get("hash", "")
+        spec["cachedTarball"] = ""
+        spec.setdefault("deps_hash", "")
+        info("Reuse: %s from CVMFS overlay as module %s (not built)", p, _mid)
+        if getattr(args, "manifest", None) is not None:
+          args.manifest.add_package(spec, "already_installed",
+                                    effective_architecture=effective_arch(spec, args.architecture))
+        return
+
+  # Warn if a package declares architecture: shared but has arch-specific
+  # deps — the shared label would be misleading in that case because its
+  # hash (and therefore install path) will differ across platforms.
+  if spec.get("architecture") == SHARED_ARCH:
+    arch_specific_deps = [
+      dep for dep in spec.get("requires", [])
+      if dep != "defaults-release" and specs[dep].get("architecture") != SHARED_ARCH
+    ]
+    if arch_specific_deps:
+      warning(
+        "Package %s declares 'architecture: shared' but depends on "
+        "arch-specific package(s): %s. Its hash may differ across platforms.",
+        spec["package"], ", ".join(arch_specific_deps),
+      )
+
+  if spec["is_devel_pkg"] and getattr(syncHelper, "writeStore", None):
+    warning("Disabling remote write store from now since %s is a development package.", spec["package"])
+    syncHelper.writeStore = ""
+
+  # Since we can execute this multiple times for a given package, in order to
+  # ensure consistency, we need to reset things and make them pristine.
+  spec.pop("revision", None)
+
+  debug("Updating from tarballs")
+  # If we arrived here it really means we have a tarball which was created
+  # using the same recipe. We will use it as a cache for the build. This means
+  # that while we will still perform the build process, rather than
+  # executing the build itself we will:
+  #
+  # - Unpack it in a temporary place.
+  # - Invoke the relocation specifying the correct work_dir and the
+  #   correct path which should have been used.
+  # - Move the version directory to its final destination, including the
+  #   correct revision.
+  # - Repack it and put it in the store with the
+  #
+  # this will result in a new package which has the same binary contents of
+  # the old one but where the relocation will work for the new dictory. Here
+  # we simply store the fact that we can reuse the contents of cachedTarball.
+  syncHelper.fetch_symlinks(spec)
+
+  # Decide how it should be called, based on the hash and what is already
+  # available.
+  debug("Checking for packages already built.")
+
+  # ---- force_revision bypass -----------------------------------------------
+  # When force_revision is provided in defaults-*.sh (per-package overrides:
+  # block or top-level global field), skip the symlink-scanning and revision
+  # counter logic entirely.  The content-addressed store still uses the
+  # package hash, so binary integrity is preserved regardless of the label.
+  #
+  # Risk: if force_revision is "" (empty), two incompatible builds of the
+  # same version will share the same install path (<pkg>/<version>/) and the
+  # convenience symlink will be silently overwritten by the later build.
+  # The hash-addressed store path is NOT affected.
+  if "force_revision" in spec:
+    forced = spec["force_revision"]   # "" → revision-less; "X" → literal
+    spec["revision"] = forced
+    if not forced:
+      warning(
+        "Package %s: force_revision is empty — install path will omit "
+        "the revision suffix (%s/%s). If two incompatible builds of "
+        "this version coexist the convenience symlink will be silently "
+        "overwritten.", spec["package"], spec["package"], spec["version"],
+      )
+    # Hash was already computed; align spec["hash"] to the remote store
+    # (forced revisions are never prefixed with "local").
+    spec["hash"] = spec["remote_revision_hash"]
+  else:
+    # Normal revision-counter logic: scan existing symlinks and find the
+    # next free (or already-matching) revision number.
+    #
+    # Make sure this regex broadly matches the regex below that parses the
+    # symlink's target. Overly-broadly matching the version, for example,
+    # can lead to false positives that trigger a warning below.
+    spec_arch = effective_arch(spec, args.architecture)
+    # The revision group is made optional ((?:-(?:local)?[0-9]+)?) so that
+    # symlinks created when force_revision="" (revision-less path) are also
+    # picked up by subsequent normal builds of the same version.
+    links_regex = re.compile(
+      r"{package}-{version}(?:-(?:local)?[0-9]+)?\.{arch}\.tar\.gz".format(
+        package=re.escape(spec["package"]),
+        version=re.escape(spec["version"]),
+        arch=re.escape(spec_arch),
+      ))
+    symlink_dir = join(workDir, "TARS", spec_arch, spec["package"])
+    try:
+      packages = [join(symlink_dir, symlink_path)
+                  for symlink_path in os.listdir(symlink_dir)
+                  if links_regex.fullmatch(symlink_path)]
+    except OSError:
+      # If symlink_dir does not exist or cannot be accessed, return an empty
+      # list of packages.
+      packages = []
+    del links_regex, symlink_dir
+
+  # Calculate the build_family for the package.
+  #
+  # If the package is a devel package, we need to associate it a devel
+  # prefix, either via the -z option or using its checked out branch. This
+  # affects its build hash.
+  #
+  # Moreover we need to define a global "buildFamily" which is used
+  # to tag all the packages incurred in the build, this way we can have
+  # a latest-<buildFamily> link for all of them an we will not incur in the
+  # flip - flopping described in https://github.com/alisw/alibuild/issues/325.
+  develPrefix = ""
+  possibleDevelPrefix = getattr(args, "develPrefix", develPackageBranch)
+  if spec["is_devel_pkg"]:
+    develPrefix = possibleDevelPrefix
+
+  if possibleDevelPrefix:
+    spec["build_family"] = "{}-{}".format(possibleDevelPrefix, "_".join(args.defaults))
+  else:
+    spec["build_family"] = "_".join(args.defaults)
+  if spec["package"] == mainPackage:
+    mainBuildFamily = spec["build_family"]
+
+  if "force_revision" not in spec:
+    # Normal revision-counter path: scan existing symlinks to find a reusable
+    # or the next free revision number.
+    # In case there is no installed software, revision is 1
+    # If there is already an installed package:
+    # - Remove it if we do not know its hash
+    # - Use the latest number in the version, to decide its revision
+    debug("Packages already built using this version\n%s", "\n".join(packages))
+
+    candidate = None
+    busyRevisions = set()
+    # We can tell that the remote store is read-only if it has an empty or
+    # no writeStore property. See below for explanation of why we need this.
+    revisionPrefix = "" if getattr(syncHelper, "writeStore", "") else "local"
+    for symlink_path in packages:
+      # Skip dangling symlinks: a missing target means the tarball was deleted
+      # from the store (e.g. by a partial cleanup) and cannot be reused.
+      # readlink() succeeds even for dangling symlinks, so we must check
+      # existence explicitly.
+      if not os.path.isfile(symlink_path):
+        # Benign and self-healing: a leftover from a failed build or a cleanup
+        # that removed the store tarball. The scan skips it and the build
+        # rebuilds, so this is diagnostic noise, not actionable — keep it debug.
+        debug("Ignoring dangling symlink in tarball directory: %s", symlink_path)
+        continue
+      realPath = readlink(symlink_path)
+      # The revision group is optional ((?:-((?:local)?[0-9]+))?) to handle
+      # symlinks previously created with force_revision="" (revision-less).
+      matcher = (
+        r"../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/"
+        r"{package}-{version}(?:-((?:local)?[0-9]+))?\.{arch}\.tar\.gz$"
+      ).format(arch=spec_arch, **spec)
+      match = re.match(matcher, realPath)
+      if not match:
+        warning("Symlink %s -> %s couldn't be parsed", symlink_path, realPath)
+        continue
+      rev_hash, revision = match.groups()
+      if revision is None:
+        # Symlink points to a revision-less tarball (force_revision="").
+        # Treat it as a busy slot so we do not overwrite it inadvertently.
+        continue
+
+      if not (("local" in revision and rev_hash in spec["local_hashes"]) or
+              ("local" not in revision and rev_hash in spec["remote_hashes"])):
+        # This tarball's hash doesn't match what we need. Remember that its
+        # revision number is taken, in case we assign our own later.
+        if revision.startswith(revisionPrefix) and revision[len(revisionPrefix):].isdigit():
+          # Strip revisionPrefix; the rest is an integer. Convert it to an int
+          # so we can get a sensible max() existing revision below.
+          busyRevisions.add(int(revision[len(revisionPrefix):]))
+        continue
+
+      # Don't re-use local revisions when we have a read-write store, so that
+      # packages we'll upload later don't depend on local revisions.
+      if getattr(syncHelper, "writeStore", False) and "local" in revision:
+        debug("Skipping revision %s because we want to upload later", revision)
+        continue
+
+      # If we have an hash match, we use the old revision for the package
+      # and we do not need to build it. Because we prefer reusing remote
+      # revisions, only store a local revision if there is no other candidate
+      # for reuse yet.
+      candidate = better_tarball(spec, candidate, (revision, rev_hash, symlink_path))
+
+    # ADR-0005 P2c: if the local version-link scan found NO reuse candidate,
+    # fall back to the revision history recorded by the certified common
+    # manifest and the S3 rev-index markers. This is what lets the reuse/assign
+    # decision survive once the version links are dropped (Phase 2d): the fold
+    # can then supply the reuse candidate (fetched by hash later) and reserve
+    # the revision numbers already taken remotely.
+    #
+    # We deliberately fold ONLY when the scan is empty-handed:
+    # - when the scan already found a candidate we reuse it and never consult
+    #   busyRevisions, so folding could not change the outcome — skipping keeps
+    #   the decision (and the per-package S3 read) identical to before whenever
+    #   the local links are present;
+    # - devel packages are always built locally and never appear in the remote
+    #   manifest/markers.
+    if candidate is None and not spec["is_devel_pkg"]:
+      try:
+        candidate, busyRevisions = _fold_revision_records(
+          _revision_index_records(spec, spec_arch, args, workDir, syncHelper),
+          spec, candidate, busyRevisions, revisionPrefix)
+      except Exception as exc:
+        # The rev-index is a best-effort supplement; never let a manifest/marker
+        # read (network, S3, parse) abort or misdirect a build. Fall back to the
+        # local scan's result.
+        debug("rev-index fold failed for %s: %s", spec["package"], exc)
+
+    try:
+      revision, rev_hash, symlink_path = candidate
+    except TypeError:  # raised if candidate is still None
+      # If we can't reuse an existing revision, assign the next free revision
+      # to this package. If we're not uploading it, name it localN to avoid
+      # interference with the remote store -- in case this package is built
+      # somewhere else, the next revision N might be assigned there, and would
+      # conflict with our revision N.
+      # The code finding busyRevisions above already ensures that revision
+      # numbers start with revisionPrefix, and has left us plain ints.
+      spec["revision"] = revisionPrefix + str(
+        min(set(range(1, max(busyRevisions) + 2)) - busyRevisions)
+        if busyRevisions else 1)
+    else:
+      spec["revision"] = revision
+      # Remember what hash we're actually using.
+      spec["local_revision_hash" if revision.startswith("local")
+           else "remote_revision_hash"] = rev_hash
+      if spec["is_devel_pkg"] and "incremental_recipe" in spec:
+        spec["obsolete_tarball"] = symlink_path
+      else:
+        debug("Package %s with hash %s is already found in %s. Not building.",
+              p, rev_hash, symlink_path)
+        # Ignore errors here, because the path we're linking to might not
+        # exist (if this is the first run through the loop). On the second run
+        # through, the path should have been created by the build process.
+        call_ignoring_oserrors(symlink, ver_rev(spec),
+                               join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)),
+                                    "latest-{build_family}".format(**spec)))
+        call_ignoring_oserrors(symlink, ver_rev(spec),
+                               join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)), "latest"))
+
+    # Now we know whether we're using a local or remote package, so we can
+    # set the proper hash and tarball directory.
+    if spec["revision"].startswith("local"):
+      spec["hash"] = spec["local_revision_hash"]
+    else:
+      spec["hash"] = spec["remote_revision_hash"]
+
+  # ADR-0005: rebuild this package's local version link from the graph now that
+  # its revision and hash are final. The version link
+  # (TARS/<eff>/<pkg>/<pkg>-<verrev>.<eff>.tar.gz -> the content-addressed
+  # store) used to come from the S3 version-link object — written by the upload
+  # for freshly-built packages, fetched by fetch_symlinks for reused ones. With
+  # the store keeping only hash-keyed tarballs (Phase 2d) it is reconstructed
+  # locally instead, so the single local artefact the CVMFS publish step reads
+  # is present for BOTH built and reused packages.
+  #
+  # Done for every package: a *reused*
+  # package would otherwise get no local link now that the S3 version link is
+  # gone (upload is hash-only and fetch_symlinks finds nothing). Recreating it
+  # here is idempotent for the built case (same symlink, same target).
+  # Best-effort: never abort the build over a link (a genuine miss surfaces as a
+  # publish skip, exactly as a system-provided package does).
+  try:
+    create_version_link(spec, args.architecture, workDir)
+  except Exception as exc:
+    debug("Could not reconstruct version link for %s: %s", spec["package"], exc)
+
+  # We do not use the override for devel packages, because we
+  # want to avoid having to rebuild things when the /tmp gets cleaned.
+  if spec["is_devel_pkg"]:
+      buildWorkDir = ctx.build_work_dir = args.workDir
+  else:
+      buildWorkDir = ctx.build_work_dir = os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)
+
+  buildRoot = join(buildWorkDir, "BUILD", spec["hash"])
+
+  spec["old_devel_hash"] = readHashFile(join(
+    buildRoot, spec["package"], ".build_succeeded"))
+
+  # Recreate symlinks to this development package builds.
+  if spec["is_devel_pkg"]:
+    debug("Creating symlinks to builds of devel package %s", spec["package"])
+    # Ignore errors here, because the path we're linking to might not exist
+    # (if this is the first run through the loop). On the second run
+    # through, the path should have been created by the build process.
+    call_ignoring_oserrors(symlink, spec["hash"], join(buildWorkDir, "BUILD", spec["package"] + "-latest"))
+    if develPrefix:
+      call_ignoring_oserrors(symlink, spec["hash"], join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + develPrefix))
+    # Last package built gets a "latest" mark.
+    call_ignoring_oserrors(symlink, ver_rev(spec),
+                           join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)), "latest"))
+    # Latest package built for a given devel prefix gets a "latest-<family>" mark.
+    if spec["build_family"]:
+      call_ignoring_oserrors(symlink, ver_rev(spec),
+                             join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)),
+                                  "latest-" + spec["build_family"]))
+
+  # Check if this development package needs to be rebuilt.
+  if spec["is_devel_pkg"]:
+    debug("Checking if devel package %s needs rebuild", spec["package"])
+    # The source is unchanged only if devel_hash+deps_hash still matches the
+    # sentinel.  But the install directory is named after ver_rev(spec), and
+    # the *revision* can change without a source change (e.g. the dependency
+    # hash shifted, so a new localN was assigned in the revision scan above).
+    # When that happens the new revision's directory was never populated, yet
+    # every consumer's init.sh sources this dependency at the new ver_rev --
+    # so skipping the rebuild would leave them pointing at a missing
+    # .../<pkg>/<ver_rev>/etc/profile.d/init.sh.  Only skip when that
+    # directory actually exists.
+    devel_install_dir = _pkg_install_path(
+      workDir, effective_arch(spec, args.architecture), spec)
+    if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"] \
+       and os.path.isdir(devel_install_dir):
+      info("Development package %s does not need rebuild", spec["package"])
+      return
+    if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"]:
+      debug("Devel package %s source unchanged but install dir %s is missing "
+            "(revision changed to %s); rebuilding to populate it.",
+            spec["package"], devel_install_dir, ver_rev(spec))
+
+  # Now that we have all the information about the package we want to build, let's
+  # check if it wasn't built / unpacked already.
+  hashPath = _pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)
+  hashFile = hashPath + "/.build-hash"
+  # If the folder is a symlink that resolves to an existing directory,
+  # we consider it to be on CVMFS and take the hash for good.
+  # We must also check os.path.isdir() (which follows symlinks) so that
+  # dangling symlinks — e.g. created by a previous interrupted run that
+  # wrote fetch_symlinks() entries before the actual tarball existed —
+  # are NOT mistaken for a successfully installed package.
+  if os.path.islink(hashPath) and os.path.isdir(hashPath):
+    fileHash = spec["hash"]
+  else:
+    fileHash = readHashFile(hashFile)
+  # Development packages have their own rebuild-detection logic above.
+  # spec["hash"] is only useful here for regular packages.
+  if fileHash == spec["hash"] and not spec["is_devel_pkg"]:
+    # If we get here, we know we are in sync with whatever remote store.  We
+    # can therefore create a directory which contains all the packages which
+    # were used to compile this one.
+    debug("Package %s was correctly compiled. Moving to next one.", spec["package"])
+    # If using incremental builds, next time we execute the script we need to remove
+    # the placeholders which avoid rebuilds.
+    if spec["is_devel_pkg"] and "incremental_recipe" in spec:
+      unlink(hashFile)
+    if "obsolete_tarball" in spec:
+      unlink(realpath(spec["obsolete_tarball"]))
+      unlink(spec["obsolete_tarball"])
+    # We can now delete the INSTALLROOT and BUILD directories,
+    # assuming the package is not a development one. We also can
+    # delete the SOURCES in case we have aggressive-cleanup enabled.
+    if not spec["is_devel_pkg"] and args.autoCleanup:
+      cleanupDirs = [buildRoot,
+                     join(workDir, "INSTALLROOT", spec["hash"])]
+      if args.aggressiveCleanup:
+        cleanupDirs.append(join(workDir, "SOURCES", spec["package"]))
+      debug("Cleaning up:\n%s", "\n".join(cleanupDirs))
+
+      for d in cleanupDirs:
+        shutil.rmtree(d.encode("utf8"), True)
+      try:
+        unlink(join(buildWorkDir, "BUILD", spec["package"] + "-latest"))
+        if "develPrefix" in args:
+          unlink(join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + args.develPrefix))
+      except Exception:
+        pass
+      try:
+        rmdir(join(buildWorkDir, "BUILD"))
+        rmdir(join(workDir, "INSTALLROOT"))
+      except Exception:
+        pass
+    # Record in the build manifest that this package was already installed.
+    if getattr(args, "manifest", None) is not None:
+      args.manifest.add_package(spec, "already_installed",
+                                effective_architecture=effective_arch(spec, args.architecture))
+    # Touch the sentinel so the cleanup command knows this package was used.
+    try:
+      from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
+      _touch_sentinel(workDir, args.architecture, spec["package"], ver_rev(spec))
+    except Exception:
+      pass
+    return
+
+  if fileHash != "0":
+    debug("Mismatch between local area (%s) and the one which I should build (%s). Redoing.",
+          fileHash, spec["hash"])
+  # shutil.rmtree under Python 2 fails when hashFile is unicode and the
+  # directory contains files with non-ASCII names, e.g. Golang/Boost.
+  shutil.rmtree(dirname(hashFile).encode("utf-8"), True)
+
+  tar_hash_dir = os.path.join(workDir, resolve_store_path(effective_arch(spec, args.architecture), spec["hash"]))
+  debug("Looking for cached tarball in %s", tar_hash_dir)
+  spec["cachedTarball"] = ""
+  if not spec["is_devel_pkg"]:
+    # MUTUAL EXCLUSION with the prefetch pool, not just waiting: merely
+    # waiting on the sentinel left a window — a prefetch worker that had not
+    # yet STARTED this package (no sentinel to wait on) could drop the
+    # REMOTE tarball into the hash dir between our pre-fetch snapshot below
+    # and the gate check, and the gate would then treat it as a trusted
+    # local artifact. Claiming the SAME sentinel the prefetcher claims
+    # closes it: while we hold it, _prefetch_package's _acquire_download
+    # fails and it downloads nothing; if the prefetcher holds it, we wait
+    # for it to finish (its spec["prefetched_tarballs"] write happens before
+    # its sentinel release).
+    _hold_sentinel = False
+    if _prefetch_executor is not None:   # a prefetch pool actually started
+      from bits_helpers.download import (
+          _acquire_download as _acq, _sentinel_is_stale as _stale,
+          _sentinel_path as _spath, _wait_for_sentinel as _wfs)
+      # The sentinel lives NEXT TO the hash dir; make sure its parent exists
+      # before trying to create it (fresh work dirs).
+      os.makedirs(dirname(tar_hash_dir), exist_ok=True)
+      while not _acq(tar_hash_dir):
+        _wfs(tar_hash_dir)
+        _s = _spath(tar_hash_dir)
+        if os.path.exists(_s):
+          if _stale(_s):
+            try:
+              os.unlink(_s)
+            except OSError:
+              pass
+          else:
+            break                     # live owner past timeout: proceed unguarded
+      else:
+        _hold_sentinel = True
+    try:
+      # Tarballs already present before the remote fetch are local build-node
+      # artifacts (ultimately trusted); ones that appear only after fetch came
+      # from the remote store and are subject to --require-signed-reuse.
+      # A prefetch worker may already have pulled the REMOTE tarball into
+      # this directory — subtract whatever it downloaded, or the gate would
+      # exempt it.
+      _preFetchTars = (set(glob(os.path.join(tar_hash_dir, "*gz")))
+                       - set(spec.get("prefetched_tarballs", ())))
+      syncHelper.fetch_tarball(spec)
+      tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
+                  if os.path.isfile(t)]  # skip dangling symlinks
+    finally:
+      if _hold_sentinel:
+        try:
+          os.unlink(os.path.join(tar_hash_dir + ".downloading"))
+        except OSError:
+          pass
+    spec["cachedTarball"] = _select_cached_tarball(
+      tarballs, spec, effective_arch(spec, args.architecture))
+    debug("Found tarball in %s" % spec["cachedTarball"]
+          if spec["cachedTarball"] else "No cache tarballs found")
+    # Verify the recalled tarball against the local integrity ledger.
+    # Only active when --store-integrity is set (or store_integrity = true
+    # in bits.rc); off by default for backward compatibility.
+    if spec["cachedTarball"] and cfg.store_integrity:
+      from bits_helpers.store_integrity import verify_tarball_checksum
+      verify_tarball_checksum(spec, workDir, args.architecture, spec["cachedTarball"])
+    # Trusted-reuse gate (--require-signed-reuse): a tarball recalled from the
+    # remote store is reused only if a verified signed manifest vouches for it
+    # (hash present AND sha256 matches). Otherwise fall through to a rebuild;
+    # a sha256 mismatch is fatal (tampering).
+    if (spec["cachedTarball"] and cfg.require_signed_reuse
+        and spec["cachedTarball"] not in _preFetchTars):
+      _idx = trusted_reuse_index(args, workDir)
+      _sha = _idx.get(spec["hash"])
+      if _sha is None:
+        warning("Trusted reuse: %s@%s not vouched for by the signed manifest; "
+                "discarding remote tarball and rebuilding.",
+                spec["package"], spec["hash"])
+        spec["cachedTarball"] = ""
+      else:
+        _actual = compute_checksum_file(spec["cachedTarball"])
+        dieOnError(_actual != _sha,
+                   "INTEGRITY FAILURE: remote tarball %s does not match the "
+                   "signed manifest.\n  Expected: %s\n  Actual:   %s\n  "
+                   "Do NOT use it." % (os.path.basename(spec["cachedTarball"]),
+                                       _sha, _actual))
+        debug("Trusted reuse: %s@%s verified against signed manifest",
+              spec["package"], spec["hash"])
+
+  # The actual build script.
+  
+  fp = open(dirname(realpath(__file__))+'/build_template.sh')
+  cmd_raw = fp.read()
+  fp.close()
+
+  container_workDir = ""
+  cachedTarball = spec["cachedTarball"]
+  if args.docker:
+    cvmfs_prefix = cfg.cvmfs_prefix
+    if cvmfs_prefix:
+      # When --cvmfs-prefix is set, mount workDir at the CVMFS path inside
+      # the container.  The build system then compiles packages with their
+      # final CVMFS install prefix, eliminating the relocation step on publish.
+      container_workDir = cvmfs_prefix
+      # Adjust any cached tarball path the same way.
+      cachedTarball = re.sub("^" + re.escape(workDir), container_workDir, cachedTarball)
+    elif not args.containerUseWorkDir:
+      container_workDir = "/container/bits/sw"
+      cachedTarball = re.sub("^" + re.escape(workDir), container_workDir, cachedTarball)
+    else:
+      container_workDir = workDir
+
+  # Resolve the effective checksum mode for this package, taking into account
+  # CLI flags, per-recipe enforce_checksums, and the defaults-profile
+  # checksum_mode field (via defaultsMeta).
+  effective_checksum_mode = checksum_enforcement_mode(spec, args, defaultsMeta)
+
+  if not cachedTarball:
+    # During download only apply warn/enforce — these are security gates that
+    # must fire before compilation.  print/write are deferred to the
+    # post-build phase so they work for already-cached packages too.
+    #
+    # In --builders mode (args.builders > 1) we defer the checkout:
+    # it is registered below as a scheduler "download" task (fetch:<pkg>) that
+    # the build task depends on, so source downloads overlap compilation
+    # instead of running serially here before any build starts.  Only the
+    # single-builder path still checks out inline.
+    if args.builders == 1:
+      try:
+        checkout_sources(spec, workDir, args.referenceSources, args.docker,
+                         enforce_mode=_download_time_mode(effective_checksum_mode),
+                         sync_helper=syncHelper,
+                         parallel_sources=cfg.parallel_sources,
+                         architecture=raw_architecture)
+      except OSError as e:
+        dieOnError(True, "Failed to fetch sources for %s@%s: %s" % (
+          spec.get("package", "?"), spec.get("version", "?"), e))
+
+  # Collect every processed spec for the post-build checksum phase.
+  # This includes specs whose tarball was cached (cachedTarball != "").
+  specs_for_checksum_phase.append(spec)
+
+  family = spec.get("pkg_family", "")
+  # ver_rev(spec) is used so that the SPECS directory name matches the actual
+  # install path when force_revision is set (e.g. "" drops the revision suffix).
+  scriptDir = join(workDir, "SPECS", effective_arch(spec, args.architecture),
+                   *([family] if family else []),
+                   spec["package"],
+                   ver_rev(spec))
+
+  init_workDir = container_workDir if args.docker else args.workDir
+  # Reused deps are set up by sourcing their deployed init.sh from the CVMFS
+  # Packages base (an absolute /cvmfs path, identical on host and in the
+  # container once /cvmfs is mounted).
+  _reuse_cvmfs_base = cfg.reuse_cvmfs_base
+  makedirs(scriptDir, exist_ok=True)
+  # Remember where the resource monitor will write this package's trace so we
+  # can aggregate build stats once the run finishes (P3).
+  if args.resourceMonitoring:
+    monitoredDirs[p] = scriptDir
+  writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
+  hook_params_locals = "\n  ".join(
+    'export %s="%s"' % (k, v) for k, v in spec.get("hook_params", {}).items()
+  )
+  writeAll("%s/build.sh" % scriptDir, cmd_raw % {
+    "provenance": create_provenance_info(spec["package"], specs, args),
+    "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False,
+                                         from_modules=getattr(args, "initdotshFromModules", False),
+                                         cmake_prefix_env=_cmake_prefix_env,
+                                         reuse_cvmfs_base=_reuse_cvmfs_base),
+    "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True,
+                                         from_modules=getattr(args, "initdotshFromModules", False),
+                                         cmake_prefix_env=_cmake_prefix_env,
+                                         reuse_cvmfs_base=_reuse_cvmfs_base),
+    "develPrefix": develPrefix,
+    "workDir": workDir,
+    "configDir": abspath(args.configDir),
+    "incremental_recipe": spec.get("incremental_recipe", ":"),
+    "requires": " ".join(spec["requires"]),
+    "build_requires": " ".join(spec["build_requires"]),
+    "runtime_requires": " ".join(spec["runtime_requires"]),
+    "BITS_HOOK_PARAMS": hook_params_locals,
+    "notice_block": _notice_block(spec),
+  })
+
+  # Define the environment so that it can be passed up to the
+  # actual build script
+  bits_dir = dirname(dirname(realpath(__file__)))
+  buildEnvironment = [
+    ("ARCHITECTURE", raw_architecture),
+    ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
+    ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
+    ("CACHED_TARBALL", cachedTarball),
+    ("CAN_DELETE", args.aggressiveCleanup and "1" or ""),
+    # Whether a write store will need this package's tarball for upload. Under
+    # --aggressive-cleanup the build script otherwise skips creating the tarball
+    # (to save space), but doFinalSync still needs it to upload — so keep it when
+    # a write store is configured. The space is reclaimed after upload below.
+    ("BITS_HAS_WRITE_STORE", "1" if getattr(syncHelper, "writeStore", "") else ""),
+    ("COMMIT_HASH", short_commit_hash(spec)),
+    ("DEPS_HASH", spec.get("deps_hash", "")),
+    ("DEVEL_HASH", spec.get("devel_hash", "")),
+    ("DEVEL_PREFIX", develPrefix),
+    ("BUILD_FAMILY", spec["build_family"]),
+    ("GIT_COMMITTER_NAME", "unknown"),
+    ("GIT_COMMITTER_EMAIL", "unknown"),
+    ("INCREMENTAL_BUILD_HASH", spec.get("incremental_hash", "0")),
+    # The final (top-level) package builds alone once its dependencies finish,
+    # so give it the full -j instead of the per-builder share (builders=1).
+    # mainPackage is buildOrder[-1] (in --only-deps it is popped off and never
+    # built, so nothing matches and nothing is unleashed). No-op for
+    # --builders == 1, keeping the common path byte-identical.
+    ("JOBS", str(effective_jobs(
+      args.jobs, spec,
+      builders=(1 if (cfg.unleash_final
+                      and args.builders > 1
+                      and spec["package"] == mainPackage)
+                else args.builders),
+      oversubscribe=cfg.oversubscribe,
+      default_mem_per_job=cfg.mem_per_job_default))),
+    ("PKGFAMILY", spec.get("pkg_family", "")),
+    ("PKGHASH", spec["hash"]),
+    ("PKGNAME", spec["package"]),
+    ("PKGDIR", spec["pkgdir"]),
+    ("PKGREVISION", spec["revision"]),
+    ("PKGVERSION", spec["version"]),
+    ("RELOCATE_PATHS", " ".join(spec.get("relocate_paths", []))),
+    ("REQUIRES", " ".join(spec["requires"])),
+    ("RUNTIME_REQUIRES", " ".join(spec["runtime_requires"])),
+    ("FULL_RUNTIME_REQUIRES", " ".join(spec["full_runtime_requires"])),
+    ("FULL_BUILD_REQUIRES", " ".join(spec["full_build_requires"])),
+    ("FULL_REQUIRES", " ".join(spec["full_requires"])),
+    ("BITS_PREFER_SYSTEM_KEY", spec.get("key", "")),
+    ("BITS_SCRIPT_DIR", "/bits" if args.docker else bits_dir),
+    # In legacy mode (aliBuild/alidist) recipes patch their source in place;
+    # build_template.sh makes a private writable copy so the shared read-only
+    # SOURCES tree is never mutated. Empty (off) for modern out-of-tree builds.
+    ("BITS_PRIVATE_SOURCE", "1" if not getattr(args, "initdotshFromModules", True) else ""),
+  ]
+  if "sources" in spec:
+    for idx, src in enumerate(spec["sources"]):
+      url, _ = parse_checksum_entry(src)   # strip any ,algo:digest suffix
+      buildEnvironment.append(("SOURCE%s" % idx, basename(url)))
+    buildEnvironment.append(("SOURCE_COUNT", str(len(spec["sources"]))))
+  else:
+    buildEnvironment.append(("SOURCE_COUNT", "0"))
+  if "patches" in spec:
+    for idx, src in enumerate(spec["patches"]):
+      patch_name, _ = parse_checksum_entry(src)  # strip any ,algo:digest suffix
+      buildEnvironment.append(("PATCH%s" % idx, basename(patch_name)))
+    buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
+  else:
+    buildEnvironment.append(("PATCH_COUNT", "0"))
+  # Add resolved hooks as environment variables (POST_INSTALL -> POST_INSTALL_HOOKS)
+  for hook_name, hook_value in spec.get("hook", {}).items():
+    buildEnvironment.append((hook_name + "_HOOKS", hook_value))
+
+  # Add the extra environment as passed from the command line.
+  buildEnvironment += [e.partition('=')[::2] for e in args.environment]
+
+  # Add the computed track_env environment
+  buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
+
+
+  # In case the --docker options is passed, we setup a docker container which
+  # will perform the actual build. Otherwise build as usual using bash.
+  if args.docker:
+    _docker_platform = getattr(args, "dockerPlatform", None)
+    # Tripwire: mount the shared SOURCES tree read-only so a recipe that mutates
+    # its source in place (in-tree patching, codegen, in-tree downloads) fails
+    # loudly with EROFS instead of silently poisoning the reused tree for the
+    # next build/arch — or a build of the same package from a DIFFERENT recipe
+    # repo, since SOURCES is keyed by name+version+commit, not by hash. Modern
+    # bits recipes build out-of-tree so they never hit it. Legacy
+    # (aliBuild/alidist) recipes patch in place, so bits hands them a private
+    # writable copy of the source (BITS_PRIVATE_SOURCE below / build_template.sh)
+    # and the shared tree stays read-only for them too. Disable the tripwire
+    # with BITS_READONLY_SOURCES=0. It overlays the read-write workdir mount and
+    # the more-specific :ro mount wins. No chmod of the host tree.
+    _src_dir = os.path.join(abspath(args.workDir), "SOURCES")
+    _ro_enabled = os.environ.get("BITS_READONLY_SOURCES", "1").strip().lower() \
+                  not in ("0", "false", "no", "off", "")
+    _ro_sources = ("-v %s:%s/SOURCES:ro " % (quote(_src_dir), container_workDir)
+                   if _ro_enabled and os.path.isdir(_src_dir)
+                   else "")
+    # --user $(id -u):$(id -g) runs as the host uid, which usually has no
+    # passwd entry inside the image, so $HOME is unset and expands to "" — any
+    # recipe that writes under ~/ then targets the filesystem root and fails
+    # (e.g. gflags' CMake package registry -> //.cmake, IJulia's kernelspec ->
+    # /.local). Point HOME at the container-local /tmp (world-writable, and per
+    # container so concurrent builds never collide). HOME is not a hash input,
+    # so this changes no package hash.
+    # Same passwd-entry problem for SHELL: bash fills it in from the login shell
+    # of whatever account happens to own the host uid inside the image, which on
+    # EL is typically a system account with /sbin/nologin — every recipe running
+    # `$SHELL -c ...` then dies with "This account is currently not available".
+    # Pin it to bash. Not a hash input either.
+    # Stamp the container with the CI job id so a cancel can force-remove only
+    # THIS job's containers (a runner that kills just the shell — e.g. the
+    # gitlab-runner 19.1.x regression — otherwise orphans the container and the
+    # build keeps running). Label only; no hash impact.
+    _job_id = (os.environ.get("BITS_JOB_ID") or os.environ.get("CI_JOB_ID") or "").strip()
+    build_command = (
+      "docker run --rm --entrypoint= --user $(id -u):$(id -g) {jobLabel}"
+      "{platformArg}"
+      "-v {workdir}:{container_workDir} {roSources}-v{configDir}:/pkgdist.bits:ro "
+      "-v {scriptDir}/build.sh:/build.sh:ro "
+      "-v {bits_dir}:/bits "
+      "{cvmfsMount}"
+      "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
+      "-e HOME=/tmp -e SHELL=/bin/bash -e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
+    ).format(
+      jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",
+      # Mount /cvmfs read-only when reusing deployed components, so a reused
+      # dep's init.sh (and its files under /cvmfs) resolve inside the container.
+      cvmfsMount=("-v /cvmfs:/cvmfs:ro " if cfg.reuse_cvmfs_base else ""),
+      platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
+      roSources=_ro_sources,
+      image=quote(args.dockerImage),
+      workdir=quote(abspath(args.workDir)),
+      container_workDir=container_workDir,
+      bits_dir=bits_dir,
+      configDir=quote(abspath(args.configDir)),
+      scriptDir=quote(scriptDir),
+      extraArgs=" ".join(map(quote, args.docker_extra_args)),
+      additionalEnv=" ".join(
+        f"-e {var}={quote(value)}" for var, value in buildEnvironment),
+      # Used e.g. by O2DPG-sim-tests to find the O2DPG repository.
+      develVolumes=" ".join(
+        '-v "$PWD/$(readlink {pkg} || echo {pkg})":/{pkg}:rw'.format(pkg=quote(spec["package"]))
+        for spec in specs.values() if spec["is_devel_pkg"]),
+      additionalVolumes=" ".join(
+        "-v %s" % quote(volume) for volume in args.volumes),
+      mirrorVolume=("-v %s:/mirror" % quote(dirname(spec["reference"]))
+                    if "reference" in spec else ""),
+    )
+  else:
+    buildEnvironment = ([key, (val if isinstance(val, str) else "_".join(val))] for key, val in buildEnvironment)
+    env_vars = " ".join(["{}={}".format(key, quote(val)) for key, val in buildEnvironment])
+    build_command =  "env {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
+
+  # Warn when cross-compiling (QEMU) with sandboxing enabled: nested podman
+  # inside a QEMU-emulated container requires seccomp=unconfined on the outer
+  # docker run and may still fail on kernels without unprivileged userns.
+  # Recommend --sandbox=off for cross-compilation builds.
+  if getattr(args, "dockerPlatform", None) and getattr(args, "sandbox", "off") != "off":
+    from bits_helpers.log import warning as _warn
+    _warn(
+        "Cross-compilation (--docker-platform %s) with --sandbox=%s: "
+        "nested QEMU + podman may fail unless the outer container is run with "
+        "--security-opt seccomp=unconfined.  Pass --sandbox=off if builds fail.",
+        args.dockerPlatform, args.sandbox,
+    )
+
+  # Apply recipe sandbox (podman / sandbox-exec) if configured.
+  # sandbox=auto selects the best available mode; sandbox=off is a no-op.
+  # Per-recipe: sandbox_network: on (default) blocks outgoing network;
+  #             sandbox_network: off allows it.
+  build_command = wrap_build_command(
+      build_command,
+      spec,
+      args,
+      workdir=abspath(args.workDir),
+      docker_active=bool(getattr(args, "docker", False)),
+      container_workdir=container_workDir if getattr(args, "docker", False) else None,
+      docker_image=getattr(args, "dockerImage", None),
+  )
+
+
+  buildTargets.append(p)
+  if args.builders == 1:
+    runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper)
+  else:
+    build_deps = ["build:%s" % d for d in specs[p]["full_requires"] if d in buildTargets]
+    # When the package must be built from source, register its checkout as a
+    # scheduler "download" task (capped by --parallel-downloads) and make the
+    # build wait on it.  The scheduler then compiles ready packages while
+    # other packages' sources are still downloading, removing the up-front
+    # serial download loop.  Packages restored from a cached tarball need no
+    # source download, so they get no fetch task.
+    if not cachedTarball:
+      fetch_id = "fetch:%s" % p
+      scheduler.parallel(fetch_id, [], "download", _doCheckout, spec, workDir,
+                         args.referenceSources, args.docker,
+                         _download_time_mode(effective_checksum_mode), syncHelper,
+                         cfg.parallel_sources, raw_architecture)
+      build_deps = build_deps + [fetch_id]
+    scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
+
+
+
+
 def doBuild(args, parser):
   packages = args.pkgname
   specs = {}
@@ -2714,835 +3579,16 @@ def doBuild(args, parser):
   _mdp = getattr(args, "develPrefix", develPackageBranch)
   mainBuildFamily = ("{}-{}".format(_mdp, "_".join(args.defaults)) if _mdp
                      else "_".join(args.defaults))
+  ctx = _BuildLoopCtx(
+      args=args, cfg=cfg, specs=specs, workDir=workDir, syncHelper=syncHelper,
+      scheduler=scheduler, mainPackage=mainPackage, raw_architecture=raw_architecture,
+      develPackageBranch=develPackageBranch, defaultsMeta=defaultsMeta,
+      buildTargets=buildTargets, packages=packages,
+      prefetch_executor=_prefetch_executor, cmake_prefix_env=_cmake_prefix_env,
+      specs_for_checksum_phase=specs_for_checksum_phase, monitoredDirs=monitoredDirs)
   while buildOrder:
-    p = buildOrder.pop(0)
-    spec = specs[p]
-    log_current_package(p, mainPackage, specs, getattr(args, "develPrefix", None))
-
-    # Calculate the hashes. We do this in build order so that we can guarantee
-    # that the hashes of the dependencies are calculated first. Do this inside
-    # the main build loop to make sure that our dependencies have been assigned
-    # a single, definitive hash.
-    debug("Calculating hash.")
-    debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
-    storeHook(p, specs, args.defaults[0])
-    storeHashes(p, specs, considerRelocation=(
-      raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH
-    ))
-    debug("Hashes for recipe %s are %s (remote); %s (local)", p,
-          ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
-
-    # 4b: if the reuse overlay satisfies this package, set it up from modules
-    # instead of building. Its consumers 'module load' it (generate_initdotsh);
-    # it is neither built nor materialized locally, so we skip the whole
-    # build/unpack path here (this is what avoids the legacy tarball synthesis +
-    # relocate-me.sh). Strict = same remote hash (byte-identical, publishable);
-    # relaxed = any version in the one-release overlay. defaults-*, --build-local
-    # and development packages are never grafted.
-    if (cfg.reuse_overlay and not spec["is_devel_pkg"]
-        and not spec["package"].startswith("defaults-")):
-      _bl_raw = cfg.build_local or []
-      if isinstance(_bl_raw, str):
-        _bl_raw = _bl_raw.split(",")
-      _bl = set(x for x in _bl_raw if x)
-      _relaxed = cfg.reuse_policy == "relaxed"
-      _want = None if _relaxed else spec.get("remote_revision_hash")
-      # In strict mode a missing hash must NOT fall through to match-any.
-      if spec["package"] not in _bl and (_relaxed or _want):
-        from bits_helpers.cvmfs_import import overlay_reuse_module
-        # want_version guards against reusing a DIFFERENT version than the recipe
-        # asks for (relaxed used to graft any deployed version by name alone).
-        _mid = overlay_reuse_module(cfg.reuse_overlay, spec["package"],
-                                    want_hash=_want, want_version=spec.get("version"))
-        if _mid:
-          # Adopt a consistent identity for the manifest, then skip the build.
-          spec["reuse_module_id"] = _mid
-          _verrev = _mid.split("/", 1)[1]
-          spec["revision"] = (_verrev[len(spec["version"]) + 1:]
-                              if _verrev.startswith(spec["version"] + "-") else _verrev)
-          spec["hash"] = spec.get("remote_revision_hash") or spec.get("hash", "")
-          spec["cachedTarball"] = ""
-          spec.setdefault("deps_hash", "")
-          info("Reuse: %s from CVMFS overlay as module %s (not built)", p, _mid)
-          if getattr(args, "manifest", None) is not None:
-            args.manifest.add_package(spec, "already_installed",
-                                      effective_architecture=effective_arch(spec, args.architecture))
-          continue
-
-    # Warn if a package declares architecture: shared but has arch-specific
-    # deps — the shared label would be misleading in that case because its
-    # hash (and therefore install path) will differ across platforms.
-    if spec.get("architecture") == SHARED_ARCH:
-      arch_specific_deps = [
-        dep for dep in spec.get("requires", [])
-        if dep != "defaults-release" and specs[dep].get("architecture") != SHARED_ARCH
-      ]
-      if arch_specific_deps:
-        warning(
-          "Package %s declares 'architecture: shared' but depends on "
-          "arch-specific package(s): %s. Its hash may differ across platforms.",
-          spec["package"], ", ".join(arch_specific_deps),
-        )
-
-    if spec["is_devel_pkg"] and getattr(syncHelper, "writeStore", None):
-      warning("Disabling remote write store from now since %s is a development package.", spec["package"])
-      syncHelper.writeStore = ""
-
-    # Since we can execute this multiple times for a given package, in order to
-    # ensure consistency, we need to reset things and make them pristine.
-    spec.pop("revision", None)
-
-    debug("Updating from tarballs")
-    # If we arrived here it really means we have a tarball which was created
-    # using the same recipe. We will use it as a cache for the build. This means
-    # that while we will still perform the build process, rather than
-    # executing the build itself we will:
-    #
-    # - Unpack it in a temporary place.
-    # - Invoke the relocation specifying the correct work_dir and the
-    #   correct path which should have been used.
-    # - Move the version directory to its final destination, including the
-    #   correct revision.
-    # - Repack it and put it in the store with the
-    #
-    # this will result in a new package which has the same binary contents of
-    # the old one but where the relocation will work for the new dictory. Here
-    # we simply store the fact that we can reuse the contents of cachedTarball.
-    syncHelper.fetch_symlinks(spec)
-
-    # Decide how it should be called, based on the hash and what is already
-    # available.
-    debug("Checking for packages already built.")
-
-    # ---- force_revision bypass -----------------------------------------------
-    # When force_revision is provided in defaults-*.sh (per-package overrides:
-    # block or top-level global field), skip the symlink-scanning and revision
-    # counter logic entirely.  The content-addressed store still uses the
-    # package hash, so binary integrity is preserved regardless of the label.
-    #
-    # Risk: if force_revision is "" (empty), two incompatible builds of the
-    # same version will share the same install path (<pkg>/<version>/) and the
-    # convenience symlink will be silently overwritten by the later build.
-    # The hash-addressed store path is NOT affected.
-    if "force_revision" in spec:
-      forced = spec["force_revision"]   # "" → revision-less; "X" → literal
-      spec["revision"] = forced
-      if not forced:
-        warning(
-          "Package %s: force_revision is empty — install path will omit "
-          "the revision suffix (%s/%s). If two incompatible builds of "
-          "this version coexist the convenience symlink will be silently "
-          "overwritten.", spec["package"], spec["package"], spec["version"],
-        )
-      # Hash was already computed; align spec["hash"] to the remote store
-      # (forced revisions are never prefixed with "local").
-      spec["hash"] = spec["remote_revision_hash"]
-    else:
-      # Normal revision-counter logic: scan existing symlinks and find the
-      # next free (or already-matching) revision number.
-      #
-      # Make sure this regex broadly matches the regex below that parses the
-      # symlink's target. Overly-broadly matching the version, for example,
-      # can lead to false positives that trigger a warning below.
-      spec_arch = effective_arch(spec, args.architecture)
-      # The revision group is made optional ((?:-(?:local)?[0-9]+)?) so that
-      # symlinks created when force_revision="" (revision-less path) are also
-      # picked up by subsequent normal builds of the same version.
-      links_regex = re.compile(
-        r"{package}-{version}(?:-(?:local)?[0-9]+)?\.{arch}\.tar\.gz".format(
-          package=re.escape(spec["package"]),
-          version=re.escape(spec["version"]),
-          arch=re.escape(spec_arch),
-        ))
-      symlink_dir = join(workDir, "TARS", spec_arch, spec["package"])
-      try:
-        packages = [join(symlink_dir, symlink_path)
-                    for symlink_path in os.listdir(symlink_dir)
-                    if links_regex.fullmatch(symlink_path)]
-      except OSError:
-        # If symlink_dir does not exist or cannot be accessed, return an empty
-        # list of packages.
-        packages = []
-      del links_regex, symlink_dir
-
-    # Calculate the build_family for the package.
-    #
-    # If the package is a devel package, we need to associate it a devel
-    # prefix, either via the -z option or using its checked out branch. This
-    # affects its build hash.
-    #
-    # Moreover we need to define a global "buildFamily" which is used
-    # to tag all the packages incurred in the build, this way we can have
-    # a latest-<buildFamily> link for all of them an we will not incur in the
-    # flip - flopping described in https://github.com/alisw/alibuild/issues/325.
-    develPrefix = ""
-    possibleDevelPrefix = getattr(args, "develPrefix", develPackageBranch)
-    if spec["is_devel_pkg"]:
-      develPrefix = possibleDevelPrefix
-
-    if possibleDevelPrefix:
-      spec["build_family"] = "{}-{}".format(possibleDevelPrefix, "_".join(args.defaults))
-    else:
-      spec["build_family"] = "_".join(args.defaults)
-    if spec["package"] == mainPackage:
-      mainBuildFamily = spec["build_family"]
-
-    if "force_revision" not in spec:
-      # Normal revision-counter path: scan existing symlinks to find a reusable
-      # or the next free revision number.
-      # In case there is no installed software, revision is 1
-      # If there is already an installed package:
-      # - Remove it if we do not know its hash
-      # - Use the latest number in the version, to decide its revision
-      debug("Packages already built using this version\n%s", "\n".join(packages))
-
-      candidate = None
-      busyRevisions = set()
-      # We can tell that the remote store is read-only if it has an empty or
-      # no writeStore property. See below for explanation of why we need this.
-      revisionPrefix = "" if getattr(syncHelper, "writeStore", "") else "local"
-      for symlink_path in packages:
-        # Skip dangling symlinks: a missing target means the tarball was deleted
-        # from the store (e.g. by a partial cleanup) and cannot be reused.
-        # readlink() succeeds even for dangling symlinks, so we must check
-        # existence explicitly.
-        if not os.path.isfile(symlink_path):
-          # Benign and self-healing: a leftover from a failed build or a cleanup
-          # that removed the store tarball. The scan skips it and the build
-          # rebuilds, so this is diagnostic noise, not actionable — keep it debug.
-          debug("Ignoring dangling symlink in tarball directory: %s", symlink_path)
-          continue
-        realPath = readlink(symlink_path)
-        # The revision group is optional ((?:-((?:local)?[0-9]+))?) to handle
-        # symlinks previously created with force_revision="" (revision-less).
-        matcher = (
-          r"../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/"
-          r"{package}-{version}(?:-((?:local)?[0-9]+))?\.{arch}\.tar\.gz$"
-        ).format(arch=spec_arch, **spec)
-        match = re.match(matcher, realPath)
-        if not match:
-          warning("Symlink %s -> %s couldn't be parsed", symlink_path, realPath)
-          continue
-        rev_hash, revision = match.groups()
-        if revision is None:
-          # Symlink points to a revision-less tarball (force_revision="").
-          # Treat it as a busy slot so we do not overwrite it inadvertently.
-          continue
-
-        if not (("local" in revision and rev_hash in spec["local_hashes"]) or
-                ("local" not in revision and rev_hash in spec["remote_hashes"])):
-          # This tarball's hash doesn't match what we need. Remember that its
-          # revision number is taken, in case we assign our own later.
-          if revision.startswith(revisionPrefix) and revision[len(revisionPrefix):].isdigit():
-            # Strip revisionPrefix; the rest is an integer. Convert it to an int
-            # so we can get a sensible max() existing revision below.
-            busyRevisions.add(int(revision[len(revisionPrefix):]))
-          continue
-
-        # Don't re-use local revisions when we have a read-write store, so that
-        # packages we'll upload later don't depend on local revisions.
-        if getattr(syncHelper, "writeStore", False) and "local" in revision:
-          debug("Skipping revision %s because we want to upload later", revision)
-          continue
-
-        # If we have an hash match, we use the old revision for the package
-        # and we do not need to build it. Because we prefer reusing remote
-        # revisions, only store a local revision if there is no other candidate
-        # for reuse yet.
-        candidate = better_tarball(spec, candidate, (revision, rev_hash, symlink_path))
-
-      # ADR-0005 P2c: if the local version-link scan found NO reuse candidate,
-      # fall back to the revision history recorded by the certified common
-      # manifest and the S3 rev-index markers. This is what lets the reuse/assign
-      # decision survive once the version links are dropped (Phase 2d): the fold
-      # can then supply the reuse candidate (fetched by hash later) and reserve
-      # the revision numbers already taken remotely.
-      #
-      # We deliberately fold ONLY when the scan is empty-handed:
-      # - when the scan already found a candidate we reuse it and never consult
-      #   busyRevisions, so folding could not change the outcome — skipping keeps
-      #   the decision (and the per-package S3 read) identical to before whenever
-      #   the local links are present;
-      # - devel packages are always built locally and never appear in the remote
-      #   manifest/markers.
-      if candidate is None and not spec["is_devel_pkg"]:
-        try:
-          candidate, busyRevisions = _fold_revision_records(
-            _revision_index_records(spec, spec_arch, args, workDir, syncHelper),
-            spec, candidate, busyRevisions, revisionPrefix)
-        except Exception as exc:
-          # The rev-index is a best-effort supplement; never let a manifest/marker
-          # read (network, S3, parse) abort or misdirect a build. Fall back to the
-          # local scan's result.
-          debug("rev-index fold failed for %s: %s", spec["package"], exc)
-
-      try:
-        revision, rev_hash, symlink_path = candidate
-      except TypeError:  # raised if candidate is still None
-        # If we can't reuse an existing revision, assign the next free revision
-        # to this package. If we're not uploading it, name it localN to avoid
-        # interference with the remote store -- in case this package is built
-        # somewhere else, the next revision N might be assigned there, and would
-        # conflict with our revision N.
-        # The code finding busyRevisions above already ensures that revision
-        # numbers start with revisionPrefix, and has left us plain ints.
-        spec["revision"] = revisionPrefix + str(
-          min(set(range(1, max(busyRevisions) + 2)) - busyRevisions)
-          if busyRevisions else 1)
-      else:
-        spec["revision"] = revision
-        # Remember what hash we're actually using.
-        spec["local_revision_hash" if revision.startswith("local")
-             else "remote_revision_hash"] = rev_hash
-        if spec["is_devel_pkg"] and "incremental_recipe" in spec:
-          spec["obsolete_tarball"] = symlink_path
-        else:
-          debug("Package %s with hash %s is already found in %s. Not building.",
-                p, rev_hash, symlink_path)
-          # Ignore errors here, because the path we're linking to might not
-          # exist (if this is the first run through the loop). On the second run
-          # through, the path should have been created by the build process.
-          call_ignoring_oserrors(symlink, ver_rev(spec),
-                                 join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)),
-                                      "latest-{build_family}".format(**spec)))
-          call_ignoring_oserrors(symlink, ver_rev(spec),
-                                 join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)), "latest"))
-
-      # Now we know whether we're using a local or remote package, so we can
-      # set the proper hash and tarball directory.
-      if spec["revision"].startswith("local"):
-        spec["hash"] = spec["local_revision_hash"]
-      else:
-        spec["hash"] = spec["remote_revision_hash"]
-
-    # ADR-0005: rebuild this package's local version link from the graph now that
-    # its revision and hash are final. The version link
-    # (TARS/<eff>/<pkg>/<pkg>-<verrev>.<eff>.tar.gz -> the content-addressed
-    # store) used to come from the S3 version-link object — written by the upload
-    # for freshly-built packages, fetched by fetch_symlinks for reused ones. With
-    # the store keeping only hash-keyed tarballs (Phase 2d) it is reconstructed
-    # locally instead, so the single local artefact the CVMFS publish step reads
-    # is present for BOTH built and reused packages.
-    #
-    # Done for every package: a *reused*
-    # package would otherwise get no local link now that the S3 version link is
-    # gone (upload is hash-only and fetch_symlinks finds nothing). Recreating it
-    # here is idempotent for the built case (same symlink, same target).
-    # Best-effort: never abort the build over a link (a genuine miss surfaces as a
-    # publish skip, exactly as a system-provided package does).
-    try:
-      create_version_link(spec, args.architecture, workDir)
-    except Exception as exc:
-      debug("Could not reconstruct version link for %s: %s", spec["package"], exc)
-
-    # We do not use the override for devel packages, because we
-    # want to avoid having to rebuild things when the /tmp gets cleaned.
-    if spec["is_devel_pkg"]:
-        buildWorkDir = args.workDir
-    else:
-        buildWorkDir = os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)
-
-    buildRoot = join(buildWorkDir, "BUILD", spec["hash"])
-
-    spec["old_devel_hash"] = readHashFile(join(
-      buildRoot, spec["package"], ".build_succeeded"))
-
-    # Recreate symlinks to this development package builds.
-    if spec["is_devel_pkg"]:
-      debug("Creating symlinks to builds of devel package %s", spec["package"])
-      # Ignore errors here, because the path we're linking to might not exist
-      # (if this is the first run through the loop). On the second run
-      # through, the path should have been created by the build process.
-      call_ignoring_oserrors(symlink, spec["hash"], join(buildWorkDir, "BUILD", spec["package"] + "-latest"))
-      if develPrefix:
-        call_ignoring_oserrors(symlink, spec["hash"], join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + develPrefix))
-      # Last package built gets a "latest" mark.
-      call_ignoring_oserrors(symlink, ver_rev(spec),
-                             join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)), "latest"))
-      # Latest package built for a given devel prefix gets a "latest-<family>" mark.
-      if spec["build_family"]:
-        call_ignoring_oserrors(symlink, ver_rev(spec),
-                               join(dirname(_pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)),
-                                    "latest-" + spec["build_family"]))
-
-    # Check if this development package needs to be rebuilt.
-    if spec["is_devel_pkg"]:
-      debug("Checking if devel package %s needs rebuild", spec["package"])
-      # The source is unchanged only if devel_hash+deps_hash still matches the
-      # sentinel.  But the install directory is named after ver_rev(spec), and
-      # the *revision* can change without a source change (e.g. the dependency
-      # hash shifted, so a new localN was assigned in the revision scan above).
-      # When that happens the new revision's directory was never populated, yet
-      # every consumer's init.sh sources this dependency at the new ver_rev --
-      # so skipping the rebuild would leave them pointing at a missing
-      # .../<pkg>/<ver_rev>/etc/profile.d/init.sh.  Only skip when that
-      # directory actually exists.
-      devel_install_dir = _pkg_install_path(
-        workDir, effective_arch(spec, args.architecture), spec)
-      if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"] \
-         and os.path.isdir(devel_install_dir):
-        info("Development package %s does not need rebuild", spec["package"])
-        continue
-      if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"]:
-        debug("Devel package %s source unchanged but install dir %s is missing "
-              "(revision changed to %s); rebuilding to populate it.",
-              spec["package"], devel_install_dir, ver_rev(spec))
-
-    # Now that we have all the information about the package we want to build, let's
-    # check if it wasn't built / unpacked already.
-    hashPath = _pkg_install_path(workDir, effective_arch(spec, args.architecture), spec)
-    hashFile = hashPath + "/.build-hash"
-    # If the folder is a symlink that resolves to an existing directory,
-    # we consider it to be on CVMFS and take the hash for good.
-    # We must also check os.path.isdir() (which follows symlinks) so that
-    # dangling symlinks — e.g. created by a previous interrupted run that
-    # wrote fetch_symlinks() entries before the actual tarball existed —
-    # are NOT mistaken for a successfully installed package.
-    if os.path.islink(hashPath) and os.path.isdir(hashPath):
-      fileHash = spec["hash"]
-    else:
-      fileHash = readHashFile(hashFile)
-    # Development packages have their own rebuild-detection logic above.
-    # spec["hash"] is only useful here for regular packages.
-    if fileHash == spec["hash"] and not spec["is_devel_pkg"]:
-      # If we get here, we know we are in sync with whatever remote store.  We
-      # can therefore create a directory which contains all the packages which
-      # were used to compile this one.
-      debug("Package %s was correctly compiled. Moving to next one.", spec["package"])
-      # If using incremental builds, next time we execute the script we need to remove
-      # the placeholders which avoid rebuilds.
-      if spec["is_devel_pkg"] and "incremental_recipe" in spec:
-        unlink(hashFile)
-      if "obsolete_tarball" in spec:
-        unlink(realpath(spec["obsolete_tarball"]))
-        unlink(spec["obsolete_tarball"])
-      # We can now delete the INSTALLROOT and BUILD directories,
-      # assuming the package is not a development one. We also can
-      # delete the SOURCES in case we have aggressive-cleanup enabled.
-      if not spec["is_devel_pkg"] and args.autoCleanup:
-        cleanupDirs = [buildRoot,
-                       join(workDir, "INSTALLROOT", spec["hash"])]
-        if args.aggressiveCleanup:
-          cleanupDirs.append(join(workDir, "SOURCES", spec["package"]))
-        debug("Cleaning up:\n%s", "\n".join(cleanupDirs))
-
-        for d in cleanupDirs:
-          shutil.rmtree(d.encode("utf8"), True)
-        try:
-          unlink(join(buildWorkDir, "BUILD", spec["package"] + "-latest"))
-          if "develPrefix" in args:
-            unlink(join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + args.develPrefix))
-        except Exception:
-          pass
-        try:
-          rmdir(join(buildWorkDir, "BUILD"))
-          rmdir(join(workDir, "INSTALLROOT"))
-        except Exception:
-          pass
-      # Record in the build manifest that this package was already installed.
-      if getattr(args, "manifest", None) is not None:
-        args.manifest.add_package(spec, "already_installed",
-                                  effective_architecture=effective_arch(spec, args.architecture))
-      # Touch the sentinel so the cleanup command knows this package was used.
-      try:
-        from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
-        _touch_sentinel(workDir, args.architecture, spec["package"], ver_rev(spec))
-      except Exception:
-        pass
-      continue
-
-    if fileHash != "0":
-      debug("Mismatch between local area (%s) and the one which I should build (%s). Redoing.",
-            fileHash, spec["hash"])
-    # shutil.rmtree under Python 2 fails when hashFile is unicode and the
-    # directory contains files with non-ASCII names, e.g. Golang/Boost.
-    shutil.rmtree(dirname(hashFile).encode("utf-8"), True)
-
-    tar_hash_dir = os.path.join(workDir, resolve_store_path(effective_arch(spec, args.architecture), spec["hash"]))
-    debug("Looking for cached tarball in %s", tar_hash_dir)
-    spec["cachedTarball"] = ""
-    if not spec["is_devel_pkg"]:
-      # MUTUAL EXCLUSION with the prefetch pool, not just waiting: merely
-      # waiting on the sentinel left a window — a prefetch worker that had not
-      # yet STARTED this package (no sentinel to wait on) could drop the
-      # REMOTE tarball into the hash dir between our pre-fetch snapshot below
-      # and the gate check, and the gate would then treat it as a trusted
-      # local artifact. Claiming the SAME sentinel the prefetcher claims
-      # closes it: while we hold it, _prefetch_package's _acquire_download
-      # fails and it downloads nothing; if the prefetcher holds it, we wait
-      # for it to finish (its spec["prefetched_tarballs"] write happens before
-      # its sentinel release).
-      _hold_sentinel = False
-      if _prefetch_executor is not None:   # a prefetch pool actually started
-        from bits_helpers.download import (
-            _acquire_download as _acq, _sentinel_is_stale as _stale,
-            _sentinel_path as _spath, _wait_for_sentinel as _wfs)
-        # The sentinel lives NEXT TO the hash dir; make sure its parent exists
-        # before trying to create it (fresh work dirs).
-        os.makedirs(dirname(tar_hash_dir), exist_ok=True)
-        while not _acq(tar_hash_dir):
-          _wfs(tar_hash_dir)
-          _s = _spath(tar_hash_dir)
-          if os.path.exists(_s):
-            if _stale(_s):
-              try:
-                os.unlink(_s)
-              except OSError:
-                pass
-            else:
-              break                     # live owner past timeout: proceed unguarded
-        else:
-          _hold_sentinel = True
-      try:
-        # Tarballs already present before the remote fetch are local build-node
-        # artifacts (ultimately trusted); ones that appear only after fetch came
-        # from the remote store and are subject to --require-signed-reuse.
-        # A prefetch worker may already have pulled the REMOTE tarball into
-        # this directory — subtract whatever it downloaded, or the gate would
-        # exempt it.
-        _preFetchTars = (set(glob(os.path.join(tar_hash_dir, "*gz")))
-                         - set(spec.get("prefetched_tarballs", ())))
-        syncHelper.fetch_tarball(spec)
-        tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
-                    if os.path.isfile(t)]  # skip dangling symlinks
-      finally:
-        if _hold_sentinel:
-          try:
-            os.unlink(os.path.join(tar_hash_dir + ".downloading"))
-          except OSError:
-            pass
-      spec["cachedTarball"] = _select_cached_tarball(
-        tarballs, spec, effective_arch(spec, args.architecture))
-      debug("Found tarball in %s" % spec["cachedTarball"]
-            if spec["cachedTarball"] else "No cache tarballs found")
-      # Verify the recalled tarball against the local integrity ledger.
-      # Only active when --store-integrity is set (or store_integrity = true
-      # in bits.rc); off by default for backward compatibility.
-      if spec["cachedTarball"] and cfg.store_integrity:
-        from bits_helpers.store_integrity import verify_tarball_checksum
-        verify_tarball_checksum(spec, workDir, args.architecture, spec["cachedTarball"])
-      # Trusted-reuse gate (--require-signed-reuse): a tarball recalled from the
-      # remote store is reused only if a verified signed manifest vouches for it
-      # (hash present AND sha256 matches). Otherwise fall through to a rebuild;
-      # a sha256 mismatch is fatal (tampering).
-      if (spec["cachedTarball"] and cfg.require_signed_reuse
-          and spec["cachedTarball"] not in _preFetchTars):
-        _idx = trusted_reuse_index(args, workDir)
-        _sha = _idx.get(spec["hash"])
-        if _sha is None:
-          warning("Trusted reuse: %s@%s not vouched for by the signed manifest; "
-                  "discarding remote tarball and rebuilding.",
-                  spec["package"], spec["hash"])
-          spec["cachedTarball"] = ""
-        else:
-          _actual = compute_checksum_file(spec["cachedTarball"])
-          dieOnError(_actual != _sha,
-                     "INTEGRITY FAILURE: remote tarball %s does not match the "
-                     "signed manifest.\n  Expected: %s\n  Actual:   %s\n  "
-                     "Do NOT use it." % (os.path.basename(spec["cachedTarball"]),
-                                         _sha, _actual))
-          debug("Trusted reuse: %s@%s verified against signed manifest",
-                spec["package"], spec["hash"])
-
-    # The actual build script.
-    
-    fp = open(dirname(realpath(__file__))+'/build_template.sh')
-    cmd_raw = fp.read()
-    fp.close()
-
-    container_workDir = ""
-    cachedTarball = spec["cachedTarball"]
-    if args.docker:
-      cvmfs_prefix = cfg.cvmfs_prefix
-      if cvmfs_prefix:
-        # When --cvmfs-prefix is set, mount workDir at the CVMFS path inside
-        # the container.  The build system then compiles packages with their
-        # final CVMFS install prefix, eliminating the relocation step on publish.
-        container_workDir = cvmfs_prefix
-        # Adjust any cached tarball path the same way.
-        cachedTarball = re.sub("^" + re.escape(workDir), container_workDir, cachedTarball)
-      elif not args.containerUseWorkDir:
-        container_workDir = "/container/bits/sw"
-        cachedTarball = re.sub("^" + re.escape(workDir), container_workDir, cachedTarball)
-      else:
-        container_workDir = workDir
-
-    # Resolve the effective checksum mode for this package, taking into account
-    # CLI flags, per-recipe enforce_checksums, and the defaults-profile
-    # checksum_mode field (via defaultsMeta).
-    effective_checksum_mode = checksum_enforcement_mode(spec, args, defaultsMeta)
-
-    if not cachedTarball:
-      # During download only apply warn/enforce — these are security gates that
-      # must fire before compilation.  print/write are deferred to the
-      # post-build phase so they work for already-cached packages too.
-      #
-      # In --builders mode (args.builders > 1) we defer the checkout:
-      # it is registered below as a scheduler "download" task (fetch:<pkg>) that
-      # the build task depends on, so source downloads overlap compilation
-      # instead of running serially here before any build starts.  Only the
-      # single-builder path still checks out inline.
-      if args.builders == 1:
-        try:
-          checkout_sources(spec, workDir, args.referenceSources, args.docker,
-                           enforce_mode=_download_time_mode(effective_checksum_mode),
-                           sync_helper=syncHelper,
-                           parallel_sources=cfg.parallel_sources,
-                           architecture=raw_architecture)
-        except OSError as e:
-          dieOnError(True, "Failed to fetch sources for %s@%s: %s" % (
-            spec.get("package", "?"), spec.get("version", "?"), e))
-
-    # Collect every processed spec for the post-build checksum phase.
-    # This includes specs whose tarball was cached (cachedTarball != "").
-    specs_for_checksum_phase.append(spec)
-
-    family = spec.get("pkg_family", "")
-    # ver_rev(spec) is used so that the SPECS directory name matches the actual
-    # install path when force_revision is set (e.g. "" drops the revision suffix).
-    scriptDir = join(workDir, "SPECS", effective_arch(spec, args.architecture),
-                     *([family] if family else []),
-                     spec["package"],
-                     ver_rev(spec))
-
-    init_workDir = container_workDir if args.docker else args.workDir
-    # Reused deps are set up by sourcing their deployed init.sh from the CVMFS
-    # Packages base (an absolute /cvmfs path, identical on host and in the
-    # container once /cvmfs is mounted).
-    _reuse_cvmfs_base = cfg.reuse_cvmfs_base
-    makedirs(scriptDir, exist_ok=True)
-    # Remember where the resource monitor will write this package's trace so we
-    # can aggregate build stats once the run finishes (P3).
-    if args.resourceMonitoring:
-      monitoredDirs[p] = scriptDir
-    writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
-    hook_params_locals = "\n  ".join(
-      'export %s="%s"' % (k, v) for k, v in spec.get("hook_params", {}).items()
-    )
-    writeAll("%s/build.sh" % scriptDir, cmd_raw % {
-      "provenance": create_provenance_info(spec["package"], specs, args),
-      "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False,
-                                           from_modules=getattr(args, "initdotshFromModules", False),
-                                           cmake_prefix_env=_cmake_prefix_env,
-                                           reuse_cvmfs_base=_reuse_cvmfs_base),
-      "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=True,
-                                           from_modules=getattr(args, "initdotshFromModules", False),
-                                           cmake_prefix_env=_cmake_prefix_env,
-                                           reuse_cvmfs_base=_reuse_cvmfs_base),
-      "develPrefix": develPrefix,
-      "workDir": workDir,
-      "configDir": abspath(args.configDir),
-      "incremental_recipe": spec.get("incremental_recipe", ":"),
-      "requires": " ".join(spec["requires"]),
-      "build_requires": " ".join(spec["build_requires"]),
-      "runtime_requires": " ".join(spec["runtime_requires"]),
-      "BITS_HOOK_PARAMS": hook_params_locals,
-      "notice_block": _notice_block(spec),
-    })
-
-    # Define the environment so that it can be passed up to the
-    # actual build script
-    bits_dir = dirname(dirname(realpath(__file__)))
-    buildEnvironment = [
-      ("ARCHITECTURE", raw_architecture),
-      ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
-      ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
-      ("CACHED_TARBALL", cachedTarball),
-      ("CAN_DELETE", args.aggressiveCleanup and "1" or ""),
-      # Whether a write store will need this package's tarball for upload. Under
-      # --aggressive-cleanup the build script otherwise skips creating the tarball
-      # (to save space), but doFinalSync still needs it to upload — so keep it when
-      # a write store is configured. The space is reclaimed after upload below.
-      ("BITS_HAS_WRITE_STORE", "1" if getattr(syncHelper, "writeStore", "") else ""),
-      ("COMMIT_HASH", short_commit_hash(spec)),
-      ("DEPS_HASH", spec.get("deps_hash", "")),
-      ("DEVEL_HASH", spec.get("devel_hash", "")),
-      ("DEVEL_PREFIX", develPrefix),
-      ("BUILD_FAMILY", spec["build_family"]),
-      ("GIT_COMMITTER_NAME", "unknown"),
-      ("GIT_COMMITTER_EMAIL", "unknown"),
-      ("INCREMENTAL_BUILD_HASH", spec.get("incremental_hash", "0")),
-      # The final (top-level) package builds alone once its dependencies finish,
-      # so give it the full -j instead of the per-builder share (builders=1).
-      # mainPackage is buildOrder[-1] (in --only-deps it is popped off and never
-      # built, so nothing matches and nothing is unleashed). No-op for
-      # --builders == 1, keeping the common path byte-identical.
-      ("JOBS", str(effective_jobs(
-        args.jobs, spec,
-        builders=(1 if (cfg.unleash_final
-                        and args.builders > 1
-                        and spec["package"] == mainPackage)
-                  else args.builders),
-        oversubscribe=cfg.oversubscribe,
-        default_mem_per_job=cfg.mem_per_job_default))),
-      ("PKGFAMILY", spec.get("pkg_family", "")),
-      ("PKGHASH", spec["hash"]),
-      ("PKGNAME", spec["package"]),
-      ("PKGDIR", spec["pkgdir"]),
-      ("PKGREVISION", spec["revision"]),
-      ("PKGVERSION", spec["version"]),
-      ("RELOCATE_PATHS", " ".join(spec.get("relocate_paths", []))),
-      ("REQUIRES", " ".join(spec["requires"])),
-      ("RUNTIME_REQUIRES", " ".join(spec["runtime_requires"])),
-      ("FULL_RUNTIME_REQUIRES", " ".join(spec["full_runtime_requires"])),
-      ("FULL_BUILD_REQUIRES", " ".join(spec["full_build_requires"])),
-      ("FULL_REQUIRES", " ".join(spec["full_requires"])),
-      ("BITS_PREFER_SYSTEM_KEY", spec.get("key", "")),
-      ("BITS_SCRIPT_DIR", "/bits" if args.docker else bits_dir),
-      # In legacy mode (aliBuild/alidist) recipes patch their source in place;
-      # build_template.sh makes a private writable copy so the shared read-only
-      # SOURCES tree is never mutated. Empty (off) for modern out-of-tree builds.
-      ("BITS_PRIVATE_SOURCE", "1" if not getattr(args, "initdotshFromModules", True) else ""),
-    ]
-    if "sources" in spec:
-      for idx, src in enumerate(spec["sources"]):
-        url, _ = parse_checksum_entry(src)   # strip any ,algo:digest suffix
-        buildEnvironment.append(("SOURCE%s" % idx, basename(url)))
-      buildEnvironment.append(("SOURCE_COUNT", str(len(spec["sources"]))))
-    else:
-      buildEnvironment.append(("SOURCE_COUNT", "0"))
-    if "patches" in spec:
-      for idx, src in enumerate(spec["patches"]):
-        patch_name, _ = parse_checksum_entry(src)  # strip any ,algo:digest suffix
-        buildEnvironment.append(("PATCH%s" % idx, basename(patch_name)))
-      buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
-    else:
-      buildEnvironment.append(("PATCH_COUNT", "0"))
-    # Add resolved hooks as environment variables (POST_INSTALL -> POST_INSTALL_HOOKS)
-    for hook_name, hook_value in spec.get("hook", {}).items():
-      buildEnvironment.append((hook_name + "_HOOKS", hook_value))
-
-    # Add the extra environment as passed from the command line.
-    buildEnvironment += [e.partition('=')[::2] for e in args.environment]
-
-    # Add the computed track_env environment
-    buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
-
-
-    # In case the --docker options is passed, we setup a docker container which
-    # will perform the actual build. Otherwise build as usual using bash.
-    if args.docker:
-      _docker_platform = getattr(args, "dockerPlatform", None)
-      # Tripwire: mount the shared SOURCES tree read-only so a recipe that mutates
-      # its source in place (in-tree patching, codegen, in-tree downloads) fails
-      # loudly with EROFS instead of silently poisoning the reused tree for the
-      # next build/arch — or a build of the same package from a DIFFERENT recipe
-      # repo, since SOURCES is keyed by name+version+commit, not by hash. Modern
-      # bits recipes build out-of-tree so they never hit it. Legacy
-      # (aliBuild/alidist) recipes patch in place, so bits hands them a private
-      # writable copy of the source (BITS_PRIVATE_SOURCE below / build_template.sh)
-      # and the shared tree stays read-only for them too. Disable the tripwire
-      # with BITS_READONLY_SOURCES=0. It overlays the read-write workdir mount and
-      # the more-specific :ro mount wins. No chmod of the host tree.
-      _src_dir = os.path.join(abspath(args.workDir), "SOURCES")
-      _ro_enabled = os.environ.get("BITS_READONLY_SOURCES", "1").strip().lower() \
-                    not in ("0", "false", "no", "off", "")
-      _ro_sources = ("-v %s:%s/SOURCES:ro " % (quote(_src_dir), container_workDir)
-                     if _ro_enabled and os.path.isdir(_src_dir)
-                     else "")
-      # --user $(id -u):$(id -g) runs as the host uid, which usually has no
-      # passwd entry inside the image, so $HOME is unset and expands to "" — any
-      # recipe that writes under ~/ then targets the filesystem root and fails
-      # (e.g. gflags' CMake package registry -> //.cmake, IJulia's kernelspec ->
-      # /.local). Point HOME at the container-local /tmp (world-writable, and per
-      # container so concurrent builds never collide). HOME is not a hash input,
-      # so this changes no package hash.
-      # Same passwd-entry problem for SHELL: bash fills it in from the login shell
-      # of whatever account happens to own the host uid inside the image, which on
-      # EL is typically a system account with /sbin/nologin — every recipe running
-      # `$SHELL -c ...` then dies with "This account is currently not available".
-      # Pin it to bash. Not a hash input either.
-      # Stamp the container with the CI job id so a cancel can force-remove only
-      # THIS job's containers (a runner that kills just the shell — e.g. the
-      # gitlab-runner 19.1.x regression — otherwise orphans the container and the
-      # build keeps running). Label only; no hash impact.
-      _job_id = (os.environ.get("BITS_JOB_ID") or os.environ.get("CI_JOB_ID") or "").strip()
-      build_command = (
-        "docker run --rm --entrypoint= --user $(id -u):$(id -g) {jobLabel}"
-        "{platformArg}"
-        "-v {workdir}:{container_workDir} {roSources}-v{configDir}:/pkgdist.bits:ro "
-        "-v {scriptDir}/build.sh:/build.sh:ro "
-        "-v {bits_dir}:/bits "
-        "{cvmfsMount}"
-        "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
-        "-e HOME=/tmp -e SHELL=/bin/bash -e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
-      ).format(
-        jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",
-        # Mount /cvmfs read-only when reusing deployed components, so a reused
-        # dep's init.sh (and its files under /cvmfs) resolve inside the container.
-        cvmfsMount=("-v /cvmfs:/cvmfs:ro " if cfg.reuse_cvmfs_base else ""),
-        platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
-        roSources=_ro_sources,
-        image=quote(args.dockerImage),
-        workdir=quote(abspath(args.workDir)),
-        container_workDir=container_workDir,
-        bits_dir=bits_dir,
-        configDir=quote(abspath(args.configDir)),
-        scriptDir=quote(scriptDir),
-        extraArgs=" ".join(map(quote, args.docker_extra_args)),
-        additionalEnv=" ".join(
-          f"-e {var}={quote(value)}" for var, value in buildEnvironment),
-        # Used e.g. by O2DPG-sim-tests to find the O2DPG repository.
-        develVolumes=" ".join(
-          '-v "$PWD/$(readlink {pkg} || echo {pkg})":/{pkg}:rw'.format(pkg=quote(spec["package"]))
-          for spec in specs.values() if spec["is_devel_pkg"]),
-        additionalVolumes=" ".join(
-          "-v %s" % quote(volume) for volume in args.volumes),
-        mirrorVolume=("-v %s:/mirror" % quote(dirname(spec["reference"]))
-                      if "reference" in spec else ""),
-      )
-    else:
-      buildEnvironment = ([key, (val if isinstance(val, str) else "_".join(val))] for key, val in buildEnvironment)
-      env_vars = " ".join(["{}={}".format(key, quote(val)) for key, val in buildEnvironment])
-      build_command =  "env {} {} -e -x {}/build.sh 2>&1".format(env_vars, BASH, quote(scriptDir))
-
-    # Warn when cross-compiling (QEMU) with sandboxing enabled: nested podman
-    # inside a QEMU-emulated container requires seccomp=unconfined on the outer
-    # docker run and may still fail on kernels without unprivileged userns.
-    # Recommend --sandbox=off for cross-compilation builds.
-    if getattr(args, "dockerPlatform", None) and getattr(args, "sandbox", "off") != "off":
-      from bits_helpers.log import warning as _warn
-      _warn(
-          "Cross-compilation (--docker-platform %s) with --sandbox=%s: "
-          "nested QEMU + podman may fail unless the outer container is run with "
-          "--security-opt seccomp=unconfined.  Pass --sandbox=off if builds fail.",
-          args.dockerPlatform, args.sandbox,
-      )
-
-    # Apply recipe sandbox (podman / sandbox-exec) if configured.
-    # sandbox=auto selects the best available mode; sandbox=off is a no-op.
-    # Per-recipe: sandbox_network: on (default) blocks outgoing network;
-    #             sandbox_network: off allows it.
-    build_command = wrap_build_command(
-        build_command,
-        spec,
-        args,
-        workdir=abspath(args.workDir),
-        docker_active=bool(getattr(args, "docker", False)),
-        container_workdir=container_workDir if getattr(args, "docker", False) else None,
-        docker_image=getattr(args, "dockerImage", None),
-    )
-
-
-    buildTargets.append(p)
-    if args.builders == 1:
-      runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper)
-    else:
-      build_deps = ["build:%s" % d for d in specs[p]["full_requires"] if d in buildTargets]
-      # When the package must be built from source, register its checkout as a
-      # scheduler "download" task (capped by --parallel-downloads) and make the
-      # build wait on it.  The scheduler then compiles ready packages while
-      # other packages' sources are still downloading, removing the up-front
-      # serial download loop.  Packages restored from a cached tarball need no
-      # source download, so they get no fetch task.
-      if not cachedTarball:
-        fetch_id = "fetch:%s" % p
-        scheduler.parallel(fetch_id, [], "download", _doCheckout, spec, workDir,
-                           args.referenceSources, args.docker,
-                           _download_time_mode(effective_checksum_mode), syncHelper,
-                           cfg.parallel_sources, raw_architecture)
-        build_deps = build_deps + [fetch_id]
-      scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
+    build_one_package(buildOrder.pop(0), ctx)
+  buildWorkDir = ctx.build_work_dir
 
   if (args.builders > 1) and buildTargets:
     _run_t0 = time.monotonic()
