@@ -31,6 +31,7 @@ from bits_helpers.git import Git, git
 from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url
+from bits_helpers.build_config import BuildConfig
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 try:
   from bits_helpers.resource_monitor import run_monitor_on_command
@@ -2061,6 +2062,11 @@ def doBuild(args, parser):
                "--reuse-policy relaxed produces loose-provenance artifacts that cannot be "
                "published. Drop --write-store, or rebuild with --reuse-policy strict.")
 
+  # Snapshot the resolved build knobs now that the resolution phase above has
+  # settled them, so downstream reads use typed cfg.<knob> instead of repeating
+  # getattr(args, …, default). See build_config.py.
+  cfg = BuildConfig.from_args(args)
+
   # syncHelper is constructed after defaults loading so that it receives the
   # (potentially combined) architecture string.
   syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
@@ -2591,7 +2597,7 @@ def doBuild(args, parser):
 
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
                           parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)),
-                          criticalPath=getattr(args, "criticalPathSchedule", True))
+                          criticalPath=cfg.critical_path_schedule)
 
     # Opt-in build-host monitor (--monitor / system 'monitor'): a best-effort
     # background sampler of this runner (load / memory / build filesystem / sw
@@ -2739,7 +2745,7 @@ def doBuild(args, parser):
       if isinstance(_bl_raw, str):
         _bl_raw = _bl_raw.split(",")
       _bl = set(x for x in _bl_raw if x)
-      _relaxed = getattr(args, "reusePolicy", "strict") == "relaxed"
+      _relaxed = cfg.reuse_policy == "relaxed"
       _want = None if _relaxed else spec.get("remote_revision_hash")
       # In strict mode a missing hash must NOT fall through to match-any.
       if spec["package"] not in _bl and (_relaxed or _want):
@@ -3219,7 +3225,7 @@ def doBuild(args, parser):
       # remote store is reused only if a verified signed manifest vouches for it
       # (hash present AND sha256 matches). Otherwise fall through to a rebuild;
       # a sha256 mismatch is fatal (tampering).
-      if (spec["cachedTarball"] and getattr(args, "requireSignedReuse", False)
+      if (spec["cachedTarball"] and cfg.require_signed_reuse
           and spec["cachedTarball"] not in _preFetchTars):
         _idx = trusted_reuse_index(args, workDir)
         _sha = _idx.get(spec["hash"])
@@ -3363,11 +3369,11 @@ def doBuild(args, parser):
       # --builders == 1, keeping the common path byte-identical.
       ("JOBS", str(effective_jobs(
         args.jobs, spec,
-        builders=(1 if (getattr(args, "unleashFinal", True)
+        builders=(1 if (cfg.unleash_final
                         and args.builders > 1
                         and spec["package"] == mainPackage)
                   else args.builders),
-        oversubscribe=getattr(args, "oversubscribe", 1.0) or 1.0,
+        oversubscribe=cfg.oversubscribe,
         default_mem_per_job=getattr(args, "memPerJobDefault", 0)))),
       ("PKGFAMILY", spec.get("pkg_family", "")),
       ("PKGHASH", spec["hash"]),
@@ -3556,7 +3562,7 @@ def doBuild(args, parser):
       try:
         from bits_helpers.build_stats import aggregate_and_write, tuning_report, default_stats_path
         _tuning = tuning_report(monitoredDirs, _run_wall, args.builders, args.jobs,
-                                getattr(args, "oversubscribe", 1.0) or 1.0)
+                                cfg.oversubscribe)
         aggregate_and_write(workDir, monitoredDirs, tuning=_tuning, arch=args.architecture)
       except Exception as exc:  # pylint: disable=broad-except
         warning("Could not update build resource stats: %s", exc)
