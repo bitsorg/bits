@@ -30,6 +30,14 @@ if [[ "${ARGV[0]:-}" == "preload" ]]; then
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.preload_cmd import main; sys.exit(main())' "${ARGV[@]:1}"
 fi
 
+# `bits lcg-view …` — self-contained post-build scanner (like preload): reads the
+# installed .meta.json tree and writes an lcgcmake-style LCG release view so
+# ATLAS find_package(LCG) resolves against the bits install tree. Needs none of
+# the build/defaults arg machinery, so it is dispatched here before that setup.
+if [[ "${ARGV[0]:-}" == "lcg-view" ]]; then
+  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.lcg_view import main; sys.exit(main())' "${ARGV[@]:1}"
+fi
+
 # Optional phase timing for diagnosing slow load/enter: set BITS_TIMING=1 to
 # print the wall time of each phase to stderr. Uses bash EPOCHREALTIME (>=5),
 # else GNU date; no overhead when unset.
