@@ -2739,7 +2739,7 @@ def doBuild(args, parser):
     # relocate-me.sh). Strict = same remote hash (byte-identical, publishable);
     # relaxed = any version in the one-release overlay. defaults-*, --build-local
     # and development packages are never grafted.
-    if (getattr(args, "reuseOverlay", None) and not spec["is_devel_pkg"]
+    if (cfg.reuse_overlay and not spec["is_devel_pkg"]
         and not spec["package"].startswith("defaults-")):
       _bl_raw = getattr(args, "buildLocal", None) or []
       if isinstance(_bl_raw, str):
@@ -2752,7 +2752,7 @@ def doBuild(args, parser):
         from bits_helpers.cvmfs_import import overlay_reuse_module
         # want_version guards against reusing a DIFFERENT version than the recipe
         # asks for (relaxed used to graft any deployed version by name alone).
-        _mid = overlay_reuse_module(args.reuseOverlay, spec["package"],
+        _mid = overlay_reuse_module(cfg.reuse_overlay, spec["package"],
                                     want_hash=_want, want_version=spec.get("version"))
         if _mid:
           # Adopt a consistent identity for the manifest, then skip the build.
@@ -3218,7 +3218,7 @@ def doBuild(args, parser):
       # Verify the recalled tarball against the local integrity ledger.
       # Only active when --store-integrity is set (or store_integrity = true
       # in bits.rc); off by default for backward compatibility.
-      if spec["cachedTarball"] and getattr(args, "storeIntegrity", False):
+      if spec["cachedTarball"] and cfg.store_integrity:
         from bits_helpers.store_integrity import verify_tarball_checksum
         verify_tarball_checksum(spec, workDir, args.architecture, spec["cachedTarball"])
       # Trusted-reuse gate (--require-signed-reuse): a tarball recalled from the
@@ -3309,7 +3309,7 @@ def doBuild(args, parser):
     # Reused deps are set up by sourcing their deployed init.sh from the CVMFS
     # Packages base (an absolute /cvmfs path, identical on host and in the
     # container once /cvmfs is mounted).
-    _reuse_cvmfs_base = getattr(args, "reuseCvmfsBase", None)
+    _reuse_cvmfs_base = cfg.reuse_cvmfs_base
     makedirs(scriptDir, exist_ok=True)
     # Remember where the resource monitor will write this package's trace so we
     # can aggregate build stats once the run finishes (P3).
@@ -3470,7 +3470,7 @@ def doBuild(args, parser):
         jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",
         # Mount /cvmfs read-only when reusing deployed components, so a reused
         # dep's init.sh (and its files under /cvmfs) resolve inside the container.
-        cvmfsMount=("-v /cvmfs:/cvmfs:ro " if getattr(args, "reuseCvmfsBase", None) else ""),
+        cvmfsMount=("-v /cvmfs:/cvmfs:ro " if cfg.reuse_cvmfs_base else ""),
         platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
         roSources=_ro_sources,
         image=quote(args.dockerImage),
@@ -3674,7 +3674,7 @@ def doBuild(args, parser):
 
   # Best-effort reuse beacon: report which shared hashes this build consumed.
   # Fire-and-forget in a daemon thread — never blocks or fails the build.
-  _beaconUrl = getattr(args, "reuseBeacon", None) or os.environ.get("BITS_REUSE_BEACON")
+  _beaconUrl = cfg.reuse_beacon or os.environ.get("BITS_REUSE_BEACON")
   _reused = getattr(args, "_reusedHashes", None)
   if _beaconUrl and _reused:
     from bits_helpers.beacon import send_reuse_beacon

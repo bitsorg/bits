@@ -24,7 +24,9 @@ class BuildConfigFromArgsTest(unittest.TestCase):
                     criticalPathSchedule=False, requireSignedReuse=True,
                     reusePolicy="relaxed",
                     memPerJobDefault=2048, parallelDownloads=8,
-                    parallelSources=4, prefetchWorkers=3)
+                    parallelSources=4, prefetchWorkers=3,
+                    reuseOverlay="/sw/MODULES/ov", reuseCvmfsBase="/cvmfs/x/Packages",
+                    reuseBeacon="https://beacon", storeIntegrity=True)
     self.assertEqual(cfg.oversubscribe, 2.5)
     self.assertIs(cfg.unleash_final, False)
     self.assertIs(cfg.critical_path_schedule, False)
@@ -34,6 +36,10 @@ class BuildConfigFromArgsTest(unittest.TestCase):
     self.assertEqual(cfg.parallel_downloads, 8)
     self.assertEqual(cfg.parallel_sources, 4)
     self.assertEqual(cfg.prefetch_workers, 3)
+    self.assertEqual(cfg.reuse_overlay, "/sw/MODULES/ov")
+    self.assertEqual(cfg.reuse_cvmfs_base, "/cvmfs/x/Packages")
+    self.assertEqual(cfg.reuse_beacon, "https://beacon")
+    self.assertIs(cfg.store_integrity, True)
 
   def test_oversubscribe_zero_guards_to_one(self):
     # Resolution may set 0.0 (system: build_oversubscribe: 0); the read sites
@@ -53,6 +59,10 @@ class BuildConfigFromArgsTest(unittest.TestCase):
     self.assertEqual(cfg.parallel_downloads, 2)
     self.assertEqual(cfg.parallel_sources, 1)
     self.assertEqual(cfg.prefetch_workers, -1)
+    self.assertIsNone(cfg.reuse_overlay)
+    self.assertIsNone(cfg.reuse_cvmfs_base)
+    self.assertIsNone(cfg.reuse_beacon)
+    self.assertIs(cfg.store_integrity, False)
 
   def test_reuse_policy_falsy_guards_to_strict(self):
     self.assertEqual(self._cfg(reusePolicy="").reuse_policy, "strict")

@@ -16,6 +16,7 @@ hash guardrail, resolved in two stages) are deliberately excluded.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,12 @@ class BuildConfig:
   parallel_downloads: int        # raw --parallel-downloads (site clamps to >= 1)
   parallel_sources: int          # concurrent source fetches
   prefetch_workers: int          # tarball prefetch workers, -1 = auto
+
+  # Reuse / store consumers (resolved during import; read later in the loop).
+  reuse_overlay: Optional[str]   # host path of the imported reuse overlay
+  reuse_cvmfs_base: Optional[str]  # CVMFS Packages base for the reuse overlay
+  reuse_beacon: Optional[str]    # reuse-beacon URL (falls back to env at the site)
+  store_integrity: bool          # verify store-integrity ledger on cached reuse
 
   @classmethod
   def from_args(cls, args):
@@ -52,4 +59,8 @@ class BuildConfig:
         parallel_downloads=getattr(args, "parallelDownloads", 2),
         parallel_sources=getattr(args, "parallelSources", 1),
         prefetch_workers=getattr(args, "prefetchWorkers", -1),
+        reuse_overlay=getattr(args, "reuseOverlay", None),
+        reuse_cvmfs_base=getattr(args, "reuseCvmfsBase", None),
+        reuse_beacon=getattr(args, "reuseBeacon", None),
+        store_integrity=getattr(args, "storeIntegrity", False),
     )
