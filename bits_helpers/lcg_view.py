@@ -8,31 +8,36 @@ install tree instead of an lcgcmake release.
 
 Runs POST-build: it scans the installed packages under ``<work-dir>/<arch>`` and
 reads each package's ``.meta.json`` (authoritative name/version/revision/hash +
-direct runtime deps, written by build.create_provenance_info), then writes under
-``<out>``::
+direct runtime deps + the recorded CVMFS templates), then writes under ``<out>``::
 
     LCG_<num><postfix>/LCG_externals_<platform>.txt
     LCG_<num><postfix>/LCG_generators_<platform>.txt
 
-Each externals line is ``name;hash;version;dir;deps`` where ``dir`` is the
-absolute local install prefix and ``deps`` is a comma-joined ``name-version``
-list. AtlasLCG (LCGConfig.cmake) uses fields 0-3 (name/id/version/dir) and sets
-``<NAME>_LCGROOT`` from ``dir``. ``lcg_setup_release`` iterates the components
-``externals;generators`` and sets ``LCG_FOUND=false`` if either file is MISSING,
-so the generators file is always written (currently empty — every LCGROOT is set
-from the externals file; a proper externals/generators split is a later
-refinement, as is the ``COMPILER:`` line, which AtlasLCG does not consume).
+Each externals line is ``name;hash;version;dir;deps``. AtlasLCG (LCGConfig.cmake)
+uses fields 0-3 (name/id/version/dir) and sets ``<NAME>_LCGROOT`` from ``dir``.
+``lcg_setup_release`` iterates the components ``externals;generators`` and sets
+``LCG_FOUND=false`` if either file is MISSING, so the generators file is always
+written (currently empty — every LCGROOT is set from the externals file; a proper
+externals/generators split and the ``COMPILER:`` line, which AtlasLCG does not
+consume, are later refinements).
 
-The view records absolute LOCAL install paths and is therefore machine/CWD-bound
-— it is the local, pre-publish view. A relocatable/CVMFS view is the (not yet
-implemented) ``--cvmfs`` mode.
+``dir`` sources:
+  * default (local view): the absolute LOCAL install prefix — machine/CWD-bound,
+    for the pre-publish, build-from-cache case.
+  * ``--cvmfs``: the package's CVMFS publish path, expanded from the
+    ``cvmfs_templates`` recorded in its ``.meta.json`` (the same template
+    ``bits cvmfs-path`` resolves), so a *published* find_package(LCG) resolves
+    against CVMFS. Note the CVMFS template's ``{platform}`` segment is the bits
+    arch (``--architecture``), not the LCG platform string in the manifest
+    filename (``--platform``).
 
-Wiring: dispatched early in the ``bits`` entry script (like ``preload``/``cvmfs``)
-because it needs none of the build/defaults argument machinery.
+Wiring: dispatched early in the ``bits`` entry script (like ``preload``/``cvmfs``).
 
 NOTE (verify on a real built tree): ``.meta.json`` is assumed to live at the
-install-prefix root (``<work-dir>/<arch>/<pkg>/<ver>-<rev>/.meta.json``). Confirm
-the path/depth against a real build host tree and adjust the glob if it differs.
+install-prefix root (``<work-dir>/<arch>/<pkg>/<ver>-<rev>/.meta.json``); and the
+``--cvmfs`` expansion assumes each meta records ``cvmfs_templates.path`` (with
+``{release}`` already baked) and ``cvmfs_templates.prefix``. Confirm both against
+a real build-host ``.meta.json`` and adjust if they differ.
 """
 
 import argparse
@@ -55,15 +60,14 @@ def collect(work_dir, arch):
     """Scan ``<work_dir>/<arch>`` for installed packages.
 
     Returns ``(records, warnings, errors)``:
-      * records  — dict name -> (install_dir, meta); on duplicate package names
-        the newest ``.meta.json`` (by mtime) wins.
-      * warnings — non-fatal notes (e.g. duplicate names shadowed).
-      * errors   — unreadable/invalid meta files. These are FATAL: a dropped
-        package is a missing node in the build closure, so the caller must not
-        write a view that silently omits it.
+      * records  — dict name -> (install_dir, meta); newest ``.meta.json`` wins
+        on duplicate package names.
+      * warnings — non-fatal notes (duplicate names shadowed).
+      * errors   — unreadable/invalid meta files. FATAL: a dropped package is a
+        missing node in the closure, so the caller must not write a partial view.
     """
     root = os.path.join(work_dir, arch)
-    chosen = {}          # name -> (install_dir, meta, mtime, meta_path)
+    chosen = {}          # name -> (install_dir, meta, mtime)
     warnings = []
     errors = []
     for meta_path in sorted(glob.glob(os.path.join(root, "*", "*", ".meta.json"))):
@@ -80,31 +84,73 @@ def collect(work_dir, arch):
             continue
         install_dir = os.path.dirname(meta_path)
         prev = chosen.get(name)
-        if prev is None:
-            chosen[name] = (install_dir, meta, mtime, meta_path)
+        if prev is None or mtime > prev[2]:
+            if prev is not None:
+                warnings.append("duplicate package %r: using %s, ignoring %s"
+                                % (name, install_dir, prev[0]))
+            chosen[name] = (install_dir, meta, mtime)
         else:
-            keep, drop = ((install_dir, meta, mtime, meta_path), prev) \
-                if mtime > prev[2] else (prev, (install_dir, meta, mtime, meta_path))
-            chosen[name] = keep
             warnings.append("duplicate package %r: using %s, ignoring %s"
-                            % (name, keep[0], drop[0]))
-    records = {name: (v[0], v[1]) for name, v in chosen.items()}
-    return records, warnings, errors
+                            % (name, prev[0], install_dir))
+    return {n: (v[0], v[1]) for n, v in chosen.items()}, warnings, errors
 
 
-def manifest_line(name, install_dir, meta):
+def _expand_template(template, subst):
+    """Curly-brace token expansion, matching cvmfs_path._expand."""
+    for key, value in subst.items():
+        template = template.replace("{%s}" % key, value)
+    return template
+
+
+def resolve_dir(meta, install_dir, arch, cvmfs, cvmfs_prefix):
+    """The ``dir`` (LCGROOT) field for one package: local abspath, or the CVMFS
+    publish path from the recorded templates when ``cvmfs`` is set."""
+    if not cvmfs:
+        return os.path.abspath(install_dir)
+    pkg = meta["package"]
+    templates = meta.get("cvmfs_templates") or {}
+    template = templates.get("path")
+    if not template:
+        raise ValueError(
+            "package %r: --cvmfs requested but .meta.json records no "
+            "cvmfs_templates.path (this build was not CVMFS-destined)" % pkg["name"])
+    prefix = (cvmfs_prefix or templates.get("prefix") or "").rstrip("/")
+    if not prefix:
+        raise ValueError(
+            "package %r: no CVMFS prefix (.meta.json has no cvmfs_templates.prefix "
+            "and no --cvmfs-prefix given)" % pkg["name"])
+    subst = {
+        "prefix": prefix,
+        "pkg": pkg["name"],
+        "tag": pkg["version"],
+        "version": pkg["version"],
+        "platform": arch,              # CVMFS {platform} segment is the bits arch
+        "family": "",                  # per-package; templates use {family}{pkg}
+        "revision": str(pkg.get("revision", "")),
+        "commit": "",
+        "install_dir": "",
+        "user": "",
+    }
+    resolved = _expand_template(template, subst)
+    if "{" in resolved or "}" in resolved:
+        raise ValueError(
+            "package %r: unresolved placeholder in CVMFS path %r — e.g. {release} "
+            "was not baked into the .meta.json" % (pkg["name"], resolved))
+    return resolved
+
+
+def manifest_line(name, dir_path, meta):
     """Return one ``name;hash;version;dir;deps`` line. Raises ValueError if any
     delimiter-reserved character would corrupt the manifest."""
     pkg = meta["package"]
     version = pkg["version"]
     pkg_hash = pkg.get("hash", "")
-    prefix = os.path.abspath(install_dir)
     for label, value in (("name", name), ("version", version),
-                         ("hash", pkg_hash), ("dir", prefix)):
+                         ("hash", pkg_hash), ("dir", dir_path)):
         if any(ch in str(value) for ch in _FORBIDDEN):
             raise ValueError(
-                "package %r: %s %r contains ';' or a newline — cannot encode "
-                "it into the manifest" % (name, label, value))
+                "package %r: %s %r contains ';' or a newline — cannot encode it "
+                "into the manifest" % (name, label, value))
     runtime = (meta.get("dependencies") or {}).get("direct", {}).get("runtime") or []
     dep_tokens = []
     for dep in runtime:
@@ -113,12 +159,12 @@ def manifest_line(name, install_dir, meta):
             continue
         dep_ver = dep.get("version")
         dep_tokens.append("%s-%s" % (dep_name, dep_ver) if dep_ver else dep_name)
-    return "%s;%s;%s;%s;%s" % (name, pkg_hash, version, prefix, ",".join(dep_tokens))
+    return "%s;%s;%s;%s;%s" % (name, pkg_hash, version, dir_path, ",".join(dep_tokens))
 
 
 def _atomic_write(path, text):
-    """Write via a temp file + os.replace so a reader never sees a truncated or
-    half-written manifest (and an interrupted run leaves the old file intact)."""
+    """Temp file + os.replace so a reader never sees a truncated manifest and an
+    interrupted run leaves the previous file intact."""
     tmp = "%s.tmp.%d" % (path, os.getpid())
     with open(tmp, "w", encoding="utf-8") as handle:
         handle.write(text)
@@ -135,7 +181,7 @@ def main(argv=None):
                         default=os.environ.get("BITS_WORK_DIR", "sw"),
                         help="bits work dir holding the install tree (default: %(default)s).")
     parser.add_argument("--platform", required=True,
-                        help="LCG platform string for the manifest filename "
+                        help="LCG platform string for the manifest FILENAME "
                              "(e.g. x86_64-el9-gcc15-opt).")
     parser.add_argument("--version-number", dest="version_number", required=True,
                         help="LCG version number for the release dir (e.g. 110).")
@@ -145,13 +191,12 @@ def main(argv=None):
                         help="LCG_RELEASE_BASE root to write LCG_<num><postfix>/ under "
                              "(default: current directory).")
     parser.add_argument("--cvmfs", action="store_true",
-                        help="(not implemented) emit relocatable CVMFS paths.")
+                        help="Emit CVMFS publish paths (from each .meta.json's "
+                             "cvmfs_templates) instead of local install dirs.")
+    parser.add_argument("--cvmfs-prefix", dest="cvmfs_prefix", default="",
+                        help="Override the CVMFS prefix ({prefix}) used with --cvmfs "
+                             "(default: the prefix recorded in each .meta.json).")
     args = parser.parse_args(argv)
-
-    if args.cvmfs:
-        sys.stderr.write("lcg-view: --cvmfs is not implemented yet — refusing rather "
-                         "than emit local paths under a CVMFS request.\n")
-        return 2
 
     records, warnings, errors = collect(args.work_dir, args.architecture)
     for warning in warnings:
@@ -167,12 +212,16 @@ def main(argv=None):
                          % (args.work_dir, args.architecture))
         return 1
 
+    lines = []
     try:
-        lines = sorted(manifest_line(name, install_dir, meta)
-                       for name, (install_dir, meta) in records.items())
+        for name, (install_dir, meta) in records.items():
+            dir_path = resolve_dir(meta, install_dir, args.architecture,
+                                   args.cvmfs, args.cvmfs_prefix)
+            lines.append(manifest_line(name, dir_path, meta))
     except ValueError as exc:
         sys.stderr.write("lcg-view: error: %s\n" % exc)
         return 1
+    lines.sort()
 
     release = "LCG_%s%s" % (args.version_number, args.postfix)
     dest = os.path.join(args.out, release)
@@ -181,8 +230,6 @@ def main(argv=None):
     try:
         os.makedirs(dest, exist_ok=True)
         _atomic_write(externals, "\n".join(lines) + "\n")
-        # Both component files must exist or lcg_setup_release sets LCG_FOUND=false;
-        # generators are currently emitted into the externals file.
         _atomic_write(generators,
                       "# Generators are emitted into LCG_externals_%s.txt for now.\n"
                       "# Kept present so find_package(LCG) keeps LCG_FOUND true.\n"
@@ -192,7 +239,8 @@ def main(argv=None):
                          % (dest, exc))
         return 1
 
-    sys.stderr.write("lcg-view: wrote %d packages to %s\n" % (len(lines), externals))
+    sys.stderr.write("lcg-view: wrote %d packages to %s%s\n"
+                     % (len(lines), externals, " (CVMFS paths)" if args.cvmfs else ""))
     print(externals)
     return 0
 
