@@ -2596,7 +2596,7 @@ def doBuild(args, parser):
           debug("psutil unavailable; resource monitoring stays off")
 
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
-                          parallelDownloads=max(1, getattr(args, "parallelDownloads", 2)),
+                          parallelDownloads=max(1, cfg.parallel_downloads),
                           criticalPath=cfg.critical_path_schedule)
 
     # Opt-in build-host monitor (--monitor / system 'monitor'): a best-effort
@@ -2688,7 +2688,7 @@ def doBuild(args, parser):
   # Default (-1) means "auto": scale with the number of builders so that, on the
   # serial preparation loop, downloads overlap instead of blocking — capped at 4
   # to avoid hammering the store.  0 explicitly disables prefetch; N>0 forces N.
-  _prefetch_workers = getattr(args, "prefetchWorkers", -1)
+  _prefetch_workers = cfg.prefetch_workers
   if _prefetch_workers < 0:
     _prefetch_workers = min(max(int(getattr(args, "builders", 1)), 1), 4)
   _prefetch_executor = None
@@ -3287,7 +3287,7 @@ def doBuild(args, parser):
           checkout_sources(spec, workDir, args.referenceSources, args.docker,
                            enforce_mode=_download_time_mode(effective_checksum_mode),
                            sync_helper=syncHelper,
-                           parallel_sources=getattr(args, "parallelSources", 1),
+                           parallel_sources=cfg.parallel_sources,
                            architecture=raw_architecture)
         except OSError as e:
           dieOnError(True, "Failed to fetch sources for %s@%s: %s" % (
@@ -3374,7 +3374,7 @@ def doBuild(args, parser):
                         and spec["package"] == mainPackage)
                   else args.builders),
         oversubscribe=cfg.oversubscribe,
-        default_mem_per_job=getattr(args, "memPerJobDefault", 0)))),
+        default_mem_per_job=cfg.mem_per_job_default))),
       ("PKGFAMILY", spec.get("pkg_family", "")),
       ("PKGHASH", spec["hash"]),
       ("PKGNAME", spec["package"]),
@@ -3540,7 +3540,7 @@ def doBuild(args, parser):
         scheduler.parallel(fetch_id, [], "download", _doCheckout, spec, workDir,
                            args.referenceSources, args.docker,
                            _download_time_mode(effective_checksum_mode), syncHelper,
-                           getattr(args, "parallelSources", 1), raw_architecture)
+                           cfg.parallel_sources, raw_architecture)
         build_deps = build_deps + [fetch_id]
       scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
 

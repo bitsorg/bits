@@ -22,12 +22,18 @@ class BuildConfigFromArgsTest(unittest.TestCase):
   def test_resolved_values_pass_through(self):
     cfg = self._cfg(oversubscribe=2.5, unleashFinal=False,
                     criticalPathSchedule=False, requireSignedReuse=True,
-                    reusePolicy="relaxed")
+                    reusePolicy="relaxed",
+                    memPerJobDefault=2048, parallelDownloads=8,
+                    parallelSources=4, prefetchWorkers=3)
     self.assertEqual(cfg.oversubscribe, 2.5)
     self.assertIs(cfg.unleash_final, False)
     self.assertIs(cfg.critical_path_schedule, False)
     self.assertIs(cfg.require_signed_reuse, True)
     self.assertEqual(cfg.reuse_policy, "relaxed")
+    self.assertEqual(cfg.mem_per_job_default, 2048)
+    self.assertEqual(cfg.parallel_downloads, 8)
+    self.assertEqual(cfg.parallel_sources, 4)
+    self.assertEqual(cfg.prefetch_workers, 3)
 
   def test_oversubscribe_zero_guards_to_one(self):
     # Resolution may set 0.0 (system: build_oversubscribe: 0); the read sites
@@ -43,6 +49,10 @@ class BuildConfigFromArgsTest(unittest.TestCase):
     self.assertIs(cfg.critical_path_schedule, True)
     self.assertIs(cfg.require_signed_reuse, False)
     self.assertEqual(cfg.reuse_policy, "strict")
+    self.assertEqual(cfg.mem_per_job_default, 0)
+    self.assertEqual(cfg.parallel_downloads, 2)
+    self.assertEqual(cfg.parallel_sources, 1)
+    self.assertEqual(cfg.prefetch_workers, -1)
 
   def test_reuse_policy_falsy_guards_to_strict(self):
     self.assertEqual(self._cfg(reusePolicy="").reuse_policy, "strict")
