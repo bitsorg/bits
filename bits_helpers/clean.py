@@ -11,6 +11,7 @@ from os.path import basename, dirname
 
 # Internal
 from bits_helpers import log
+from bits_helpers.arch import SHARED_ARCH
 
 
 def decideClean(workDir, architecture, aggressiveCleanup):
@@ -47,7 +48,8 @@ def decideClean(workDir, architecture, aggressiveCleanup):
   toDelete = ["%s/TMP" % workDir, "%s/INSTALLROOT" % workDir]
   if aggressiveCleanup:
     toDelete += ["{}/TARS/{}/store".format(workDir, architecture),
-                 "{}/TARS/shared/store".format(workDir),
+                 "{}/TARS/{}/store".format(workDir, SHARED_ARCH),
+                 "{}/TARS/shared/store".format(workDir),  # legacy pre-rename
                  "%s/SOURCES" % (workDir)]
   allBuildStuff = glob.glob("%s/BUILD/*" % workDir)
   toDelete += [x for x in allBuildStuff
@@ -55,13 +57,17 @@ def decideClean(workDir, architecture, aggressiveCleanup):
   # Packages may be installed directly under <arch>/<pkg>/ (legacy layout)
   # or under <arch>/<family>/<pkg>/ (grouped layout).  We use a two-level
   # wildcard so that both layouts are discovered by a single glob pair.
-  # Architecture-independent packages live under shared/ with the same two-level
-  # structure (shared/<pkg>/ or shared/<family>/<pkg>/).
+  # Architecture-independent packages live under SHARED_ARCH/ with the same
+  # two-level structure (<pkg>/ or <family>/<pkg>/); the literal "shared/" globs
+  # below also sweep installs made before the shared->share sentinel rename.
   installGlob1 = "{}/{}/*/".format(workDir, architecture)          # arch, legacy
   installGlob2 = "{}/{}/*/*/".format(workDir, architecture)        # arch, grouped
-  installGlob3 = "{}/shared/*/".format(workDir)                    # shared, legacy
-  installGlob4 = "{}/shared/*/*/".format(workDir)                  # shared, grouped
-  allInstallGlobs = (installGlob1, installGlob2, installGlob3, installGlob4)
+  installGlob3 = "{}/{}/*/".format(workDir, SHARED_ARCH)           # noarch, legacy
+  installGlob4 = "{}/{}/*/*/".format(workDir, SHARED_ARCH)         # noarch, grouped
+  installGlob5 = "{}/shared/*/".format(workDir)                    # noarch, pre-rename
+  installGlob6 = "{}/shared/*/*/".format(workDir)                  # noarch, pre-rename grouped
+  allInstallGlobs = (installGlob1, installGlob2, installGlob3, installGlob4,
+                     installGlob5, installGlob6)
   installedPackages = {dirname(x)
                        for pat in allInstallGlobs
                        for x in glob.glob(pat)}

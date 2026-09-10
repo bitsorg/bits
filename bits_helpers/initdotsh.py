@@ -55,11 +55,11 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
 
     Arch-specific packages use the runtime variable ``$BITS_ARCH_PREFIX`` so
     that the same init.sh works when relocated (e.g. off CVMFS).
-    Shared packages (``architecture: shared``) always live under the literal
-    directory ``shared/``, so we embed that string directly.
+    Shared packages (``architecture: share``) always live under the literal
+    directory ``share/``, so we embed that string directly.
     """
     if dep_spec.get("architecture") == SHARED_ARCH:
-      return '"$WORK_DIR/shared"'
+      return f'"$WORK_DIR/{SHARED_ARCH}"'
     return '"$WORK_DIR/$BITS_ARCH_PREFIX"'
 
   def _dep_init_path(dep):

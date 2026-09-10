@@ -748,7 +748,7 @@ def _pkg_install_path(workDir, architecture, spec):
   *architecture* should already be the *effective* architecture for *spec*
   (i.e. the result of ``effective_arch(spec, build_arch)``).  Callers are
   responsible for that substitution so that shared packages (``architecture:
-  shared``) install under ``sw/shared/…`` rather than the build platform.
+  share``) install under ``sw/share/…`` rather than the build platform.
 
   When ``spec["pkg_family"]`` is also set the family directory is inserted
   between the architecture and the package name.  When it is empty the legacy
@@ -1746,7 +1746,7 @@ def build_one_package(p, ctx):
                                     effective_architecture=effective_arch(spec, args.architecture))
         return
 
-  # Warn if a package declares architecture: shared but has arch-specific
+  # Warn if a package declares architecture: share but has arch-specific
   # deps — the shared label would be misleading in that case because its
   # hash (and therefore install path) will differ across platforms.
   if spec.get("architecture") == SHARED_ARCH:
@@ -1756,7 +1756,7 @@ def build_one_package(p, ctx):
     ]
     if arch_specific_deps:
       warning(
-        "Package %s declares 'architecture: shared' but depends on "
+        "Package %s declares 'architecture: share' but depends on "
         "arch-specific package(s): %s. Its hash may differ across platforms.",
         spec["package"], ", ".join(arch_specific_deps),
       )

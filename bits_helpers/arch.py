@@ -11,17 +11,17 @@ import re
 
 from bits_helpers.cmd import getoutput
 
-SHARED_ARCH = "shared"
+SHARED_ARCH = "share"
 """Sentinel value used in all paths for architecture-independent packages.
 
-When a recipe sets ``architecture: shared``, bits substitutes this string for
+When a recipe sets ``architecture: share``, bits substitutes this string for
 the real build architecture in every path component (install dir, tarball name,
 TARS store, SPECS dir, ``$PKGPATH``).  The result is that the package is
-installed under ``sw/shared/<pkg>/<version>-<revision>/`` and its tarball is
-stored under ``TARS/shared/store/…``, making it reusable by any architecture
+installed under ``sw/share/<pkg>/<version>-<revision>/`` and its tarball is
+stored under ``TARS/share/store/…``, making it reusable by any architecture
 without rebuilding.
 
-Recipes that do **not** define ``architecture: shared`` are completely unaffected
+Recipes that do **not** define ``architecture: share`` are completely unaffected
 — ``effective_arch()`` returns the real build architecture for them.
 """
 # Mapping from bits architecture substrings to Docker --platform values.
@@ -60,8 +60,8 @@ def docker_platform_for_arch(bits_arch: str):
 def effective_arch(spec: dict, build_arch: str) -> str:
   """Return the architecture string to use in paths and tarball names.
 
-  If the recipe declares ``architecture: shared`` the function returns
-  :data:`SHARED_ARCH` (``"shared"``), so that the package is installed in a
+  If the recipe declares ``architecture: share`` the function returns
+  :data:`SHARED_ARCH` (``"share"``), so that the package is installed in a
   location that every build platform can read.
 
   For all other recipes (including those that omit the field entirely) the
