@@ -345,7 +345,7 @@ class TestPkgInstallPathWithCombinedArch(unittest.TestCase):
         spec = _spec("SharedPkg", architecture=SHARED_ARCH)
         eff = effective_arch(spec, combined)
         path = _pkg_install_path("/sw", eff, spec)
-        self.assertIn("shared", path)
+        self.assertIn("share", path)
         self.assertNotIn("dev", path)
 
 

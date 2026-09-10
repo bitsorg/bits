@@ -623,8 +623,8 @@ class BuildTestCase(unittest.TestCase):
         self.assertNotIn("ROOT_INCLUDE_DIR", setup_on)
 
     def test_initdotsh_from_modules_shared_dependency(self) -> None:
-        """A shared (architecture: shared) dependency must be sourced from the
-        literal `$WORK_DIR/shared` tree, never `$BITS_ARCH_PREFIX`, including in
+        """A shared (architecture: share) dependency must be sourced from the
+        literal `$WORK_DIR/share` tree, never `$BITS_ARCH_PREFIX`, including in
         --initdotsh-from-modules mode; and a shared package's own _ROOT (and the
         from-modules INCLUDE_DIR keyed off it) must use that same literal tree."""
         base = {"revision": "1", "hash": "h", "commit_hash": "c"}
@@ -632,14 +632,14 @@ class BuildTestCase(unittest.TestCase):
             "App":       dict(base, package="App", version="1.0",
                               requires=["libshared", "libarch"]),
             "libshared": dict(base, package="libshared", version="2.3",
-                              architecture="shared", requires=[]),
+                              architecture="share", requires=[]),
             "libarch":   dict(base, package="libarch", version="4.5", requires=[]),
         }
 
         out = generate_initdotsh("App", specs, "slc7_x86-64",
                                  post_build=True, from_modules=True)
-        # Shared dep: literal `shared/` tree, NOT the relocatable arch variable.
-        self.assertIn('. "$WORK_DIR/shared"/libshared/2.3-1/etc/profile.d/init.sh', out)
+        # Shared dep: literal `share/` tree, NOT the relocatable arch variable.
+        self.assertIn('. "$WORK_DIR/share"/libshared/2.3-1/etc/profile.d/init.sh', out)
         self.assertNotIn('$BITS_ARCH_PREFIX"/libshared', out)
         # Arch-specific dep: still the relocatable arch variable, as before.
         self.assertIn('. "$WORK_DIR/$BITS_ARCH_PREFIX"/libarch/4.5-1/etc/profile.d/init.sh', out)
@@ -648,7 +648,7 @@ class BuildTestCase(unittest.TestCase):
         # it, use the literal tree — never $BITS_ARCH_PREFIX.
         shared = generate_initdotsh("libshared", specs, "slc7_x86-64",
                                     post_build=True, from_modules=True)
-        self.assertIn('export LIBSHARED_ROOT="$WORK_DIR/shared"/libshared/2.3-1', shared)
+        self.assertIn('export LIBSHARED_ROOT="$WORK_DIR/share"/libshared/2.3-1', shared)
         self.assertIn('export LIBSHARED_INCLUDE_DIR="${LIBSHARED_ROOT}/include"', shared)
         self.assertNotIn('$BITS_ARCH_PREFIX"/libshared', shared)
 

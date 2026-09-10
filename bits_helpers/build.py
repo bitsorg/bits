@@ -1073,7 +1073,7 @@ def _pkg_install_path(workDir, architecture, spec):
   *architecture* should already be the *effective* architecture for *spec*
   (i.e. the result of ``effective_arch(spec, build_arch)``).  Callers are
   responsible for that substitution so that shared packages (``architecture:
-  shared``) install under ``sw/shared/…`` rather than the build platform.
+  share``) install under ``sw/share/…`` rather than the build platform.
 
   When ``spec["pkg_family"]`` is also set the family directory is inserted
   between the architecture and the package name.  When it is empty the legacy
@@ -1131,11 +1131,11 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
 
     Arch-specific packages use the runtime variable ``$BITS_ARCH_PREFIX`` so
     that the same init.sh works when relocated (e.g. off CVMFS).
-    Shared packages (``architecture: shared``) always live under the literal
-    directory ``shared/``, so we embed that string directly.
+    Shared packages (``architecture: share``) always live under the literal
+    directory ``share/``, so we embed that string directly.
     """
     if dep_spec.get("architecture") == SHARED_ARCH:
-      return '"$WORK_DIR/shared"'
+      return f'"$WORK_DIR/{SHARED_ARCH}"'
     return '"$WORK_DIR/$BITS_ARCH_PREFIX"'
 
   def _dep_init_path(dep):
@@ -3390,7 +3390,7 @@ def doBuild(args, parser):
                                       effective_architecture=effective_arch(spec, args.architecture))
           continue
 
-    # Warn if a package declares architecture: shared but has arch-specific
+    # Warn if a package declares architecture: share but has arch-specific
     # deps — the shared label would be misleading in that case because its
     # hash (and therefore install path) will differ across platforms.
     if spec.get("architecture") == SHARED_ARCH:
@@ -3400,7 +3400,7 @@ def doBuild(args, parser):
       ]
       if arch_specific_deps:
         warning(
-          "Package %s declares 'architecture: shared' but depends on "
+          "Package %s declares 'architecture: share' but depends on "
           "arch-specific package(s): %s. Its hash may differ across platforms.",
           spec["package"], ", ".join(arch_specific_deps),
         )

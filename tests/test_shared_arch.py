@@ -62,7 +62,7 @@ class TestEffectiveArch(unittest.TestCase):
         self.assertEqual(effective_arch(spec, BUILD_ARCH), BUILD_ARCH)
 
     def test_shared_sentinel_is_string_shared(self):
-        self.assertEqual(SHARED_ARCH, "shared")
+        self.assertEqual(SHARED_ARCH, "share")
 
     def test_empty_build_arch_forwarded(self):
         spec = _spec("mypkg")
@@ -76,7 +76,7 @@ class TestEffectiveArch(unittest.TestCase):
     def test_shared_overrides_any_build_arch(self):
         spec = _spec("mypkg", architecture=SHARED_ARCH)
         for build_arch in ("osx_x86-64", "slc7_x86-64", "ubuntu2004_x86-64"):
-            self.assertEqual(effective_arch(spec, build_arch), "shared")
+            self.assertEqual(effective_arch(spec, build_arch), "share")
 
 
 # ---------------------------------------------------------------------------
@@ -90,14 +90,14 @@ class TestPkgInstallPathShared(unittest.TestCase):
                      architecture=SHARED_ARCH)
         arch = effective_arch(spec, BUILD_ARCH)
         path = _pkg_install_path("sw", arch, spec)
-        self.assertEqual(path, "sw/shared/mydata/1.0-1")
+        self.assertEqual(path, "sw/share/mydata/1.0-1")
 
     def test_shared_with_family(self):
         spec = _spec("mydata", version="2.3", revision="5",
                      architecture=SHARED_ARCH, pkg_family="datasets")
         arch = effective_arch(spec, BUILD_ARCH)
         path = _pkg_install_path("sw", arch, spec)
-        self.assertEqual(path, "sw/shared/datasets/mydata/2.3-5")
+        self.assertEqual(path, "sw/share/datasets/mydata/2.3-5")
 
     def test_normal_spec_uses_build_arch(self):
         spec = _spec("mylib", version="3.1", revision="2")
@@ -116,7 +116,7 @@ class TestPkgInstallPathShared(unittest.TestCase):
                      architecture=SHARED_ARCH)
         arch = effective_arch(spec, BUILD_ARCH)
         path = _pkg_install_path("/home/user/sw", arch, spec)
-        self.assertEqual(path, "/home/user/sw/shared/mydata/1.0-1")
+        self.assertEqual(path, "/home/user/sw/share/mydata/1.0-1")
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +138,8 @@ class TestGenerateInitdotshShared(unittest.TestCase):
         specs = self._make_specs(dep_architecture=SHARED_ARCH)
         initsh = generate_initdotsh("myapp", specs, BUILD_ARCH,
                                     workDir="sw", post_build=False)
-        # The shared dep's init.sh should use the literal "$WORK_DIR/shared"
-        self.assertIn('"$WORK_DIR/shared"', initsh)
+        # The shared dep's init.sh should use the literal "$WORK_DIR/share"
+        self.assertIn('"$WORK_DIR/share"', initsh)
         # And NOT use the runtime variable $BITS_ARCH_PREFIX
         self.assertNotIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/sharedlib', initsh)
 
@@ -148,7 +148,7 @@ class TestGenerateInitdotshShared(unittest.TestCase):
         initsh = generate_initdotsh("myapp", specs, BUILD_ARCH,
                                     workDir="sw", post_build=False)
         self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"', initsh)
-        self.assertNotIn('"$WORK_DIR/shared"', initsh)
+        self.assertNotIn('"$WORK_DIR/share"', initsh)
 
     def test_shared_dep_path_contains_package_name(self):
         specs = self._make_specs(dep_architecture=SHARED_ARCH)
@@ -168,7 +168,7 @@ class TestGenerateInitdotshShared(unittest.TestCase):
         initsh = generate_initdotsh("mydata", specs, BUILD_ARCH,
                                     workDir="sw", post_build=True)
         # MYDATA_ROOT should point to the literal shared prefix (not the arch variable)
-        self.assertIn('export MYDATA_ROOT="$WORK_DIR/shared"/mydata/3.0-1', initsh)
+        self.assertIn('export MYDATA_ROOT="$WORK_DIR/share"/mydata/3.0-1', initsh)
         # Arch-specific deps (like defaults-release) still use the arch-prefix variable
         self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"', initsh)
         # But the self (shared) package's ROOT must NOT embed the arch-prefix variable
@@ -199,7 +199,7 @@ class TestGenerateInitdotshShared(unittest.TestCase):
         initsh = generate_initdotsh("myapp", specs, BUILD_ARCH,
                                     workDir="sw", post_build=False)
         self.assertIn('"$WORK_DIR/$BITS_ARCH_PREFIX"', initsh)
-        self.assertIn('"$WORK_DIR/shared"', initsh)
+        self.assertIn('"$WORK_DIR/share"', initsh)
 
 
 # ---------------------------------------------------------------------------
