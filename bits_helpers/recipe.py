@@ -226,7 +226,10 @@ def parseRecipe(reader, generatePackages=None, visited=None):
   err, spec, recipe = (None, None, None)
   try:
     d = reader()
-    header,recipe = d.split("---", 1)
+    _m = re.search(r'^[ \t]*---[ \t]*$', d, re.M)
+    if _m is None:
+      raise RuntimeError("recipe has no '---' front-matter terminator line")
+    header, recipe = d[:_m.start()], d[_m.end():]
     # Splice any `#!include` directives in the body before anything else sees it,
     # so the included text is variable-expanded and hashed as if written inline.
     recipe = resolveIncludes(recipe, getattr(reader, "url", "") or "")
