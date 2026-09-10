@@ -1,0 +1,1193 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The bits build system — documentation">
+      
+      
+      
+      
+        <link rel="prev" href="../COOKBOOK/">
+      
+      
+        <link rel="next" href="../REFERENCE/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Workflows - bits</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#bits-workflow-guide" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="bits" class="md-header__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            bits
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Workflows
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="bits" class="md-nav__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    bits
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../USERGUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../COOKBOOK/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cookbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-1-local-setup-from-shared-recipes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1 — Local setup from shared recipes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-2-local-development-and-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2 — Local development and validation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 2 — Local development and validation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#preview-what-will-rebuild" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Preview what will rebuild
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build-with-the-local-checkout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build with the local checkout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validate-in-the-ci-image" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validate in the CI image
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#clean-up-the-workdir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Clean up the workDir
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-3-commit-and-share" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 3 — Commit and share
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-4-ci-build-and-cvmfs-publication-via-bits-console" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 4 — CI build and CVMFS publication via bits-console
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 4 — CI build and CVMFS publication via bits-console">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-1-connect-to-bits-console" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1 — Connect to bits-console
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-2-browse-and-trigger-a-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 2 — Browse and trigger a build
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-3-monitor-progress" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 3 — Monitor progress
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pipeline-internals-for-runner-admins" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pipeline internals (for runner admins)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-5-verify-the-deployment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 5 — Verify the deployment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#end-to-end-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        End-to-end summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related-documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related documentation
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design (ADR)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design (ADR)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/0001-cvmfs-relaxed-reuse.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Relaxed CVMFS reuse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/0001-implementation-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-1-local-setup-from-shared-recipes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1 — Local setup from shared recipes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-2-local-development-and-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2 — Local development and validation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 2 — Local development and validation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#preview-what-will-rebuild" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Preview what will rebuild
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build-with-the-local-checkout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build with the local checkout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validate-in-the-ci-image" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validate in the CI image
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#clean-up-the-workdir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Clean up the workDir
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-3-commit-and-share" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 3 — Commit and share
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-4-ci-build-and-cvmfs-publication-via-bits-console" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 4 — CI build and CVMFS publication via bits-console
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 4 — CI build and CVMFS publication via bits-console">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-1-connect-to-bits-console" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1 — Connect to bits-console
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-2-browse-and-trigger-a-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 2 — Browse and trigger a build
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-3-monitor-progress" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 3 — Monitor progress
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pipeline-internals-for-runner-admins" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pipeline internals (for runner admins)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-5-verify-the-deployment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 5 — Verify the deployment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#end-to-end-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        End-to-end summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related-documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related documentation
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="bits-workflow-guide">bits Workflow Guide<a class="headerlink" href="#bits-workflow-guide" title="Permanent link">&para;</a></h1>
+<p>This document describes the complete bits development-to-deployment workflow — from a first local build on a developer's workstation through group-wide CI and final publication to CVMFS.</p>
+<hr />
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code> WORKSTATION                  RECIPE REPO            CI (bits-console)         CVMFS
+ ───────────                  ───────────            ─────────────────         ─────
+
+ [Phase 1 — Setup]
+ git clone alice.bits ──────── shared across ────────────────────────────────────────
+ bits build ROOT ←──────────── all developers ←── binary store (pre-built tarballs)
+ bits enter ROOT/latest
+
+ [Phase 2 — Develop]
+ git clone &lt;pkg-source&gt;
+ bits status &lt;pkg&gt;            (preview what will rebuild)
+ bits build &lt;pkg&gt;             (local checkout detected automatically)
+ bits build --docker &lt;pkg&gt;    (validate in the CI image before pushing)
+ bits clean                   (reclaim workDir disk space)
+
+ [Phase 3 — Share]
+ git push &lt;source branch&gt;
+ update recipe tag: ──────────→ MR → peer review → merge
+ bits build --write-checksums &lt;pkg&gt;
+
+ [Phase 4 — Publish]                        Build → Production ───→ /cvmfs/.../releases/
+                                            Build → Personal   ───→ /cvmfs/.../user/me/
+
+ [Phase 5 — Verify]
+ bits verify --from-manifest &lt;manifest.json&gt; --cvmfs-root /cvmfs/alice.cern.ch
+</code></pre></div>
+<p>The key insight is that <strong>a single, shared toolchain connects every developer's laptop to the experiment's CVMFS software repository</strong>. There is no separate "local build system" and "CI build system". Every phase of a package's lifecycle — from the first <code>./configure</code> on your workstation to the CVMFS transaction that makes the software available to thousands of grid jobs — runs the same <code>bits build</code> command against the same recipes.</p>
+<hr />
+<h2 id="phase-1-local-setup-from-shared-recipes">Phase 1 — Local setup from shared recipes<a class="headerlink" href="#phase-1-local-setup-from-shared-recipes" title="Permanent link">&para;</a></h2>
+<p>Everything starts by cloning the community recipe repository and letting bits build the full software stack for your platform:</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/bitsorg/alice.bits.git
+<span class="nb">cd</span><span class="w"> </span>alice.bits
+bits<span class="w"> </span>build<span class="w"> </span>ROOT<span class="w">        </span><span class="c1"># resolves the dependency graph and builds everything</span>
+bits<span class="w"> </span>enter<span class="w"> </span>ROOT/latest<span class="w"> </span><span class="c1"># opens a sub-shell with the environment loaded</span>
+</code></pre></div>
+<p>Bits resolves the complete dependency graph, downloads sources, and compiles in the right topological order. Because the recipe repository is shared across the whole group, every developer and every CI runner starts from the same definition of "the full stack". There is no per-person or per-machine configuration that can silently diverge.</p>
+<p>Remote binary stores (<a href="../REFERENCE/#21-remote-binary-store-backends">§21 of REFERENCE.md</a>) mean that pre-built artifacts are downloaded when available and a local build is only triggered for packages that are missing or have changed. The first <code>bits build</code> on a fresh workstation typically takes a few minutes for the last few packages and seconds for everything else.</p>
+<p>Multiple recipe repositories can be composed. For example, <code>alice.bits</code> builds the ALICE software stack on top of packages from <code>lcg.bits</code> (the LHC Computing Grid release stack) and <code>community.bits</code> (HEP common libraries). The <a href="../REFERENCE/#13-repository-provider-feature">repository provider feature</a> lets bits load additional recipe repos dynamically at dependency-resolution time, with no manual configuration required.</p>
+<hr />
+<h2 id="phase-2-local-development-and-validation">Phase 2 — Local development and validation<a class="headerlink" href="#phase-2-local-development-and-validation" title="Permanent link">&para;</a></h2>
+<p>Suppose you want to modify <code>mylib</code>. Clone the source repository next to your recipe checkout:</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/example/mylib.git
+</code></pre></div>
+<h3 id="preview-what-will-rebuild">Preview what will rebuild<a class="headerlink" href="#preview-what-will-rebuild" title="Permanent link">&para;</a></h3>
+<p>Before committing to a build, use <code>bits status</code> to see how bits will classify every package in the dependency tree — what comes from the store, what will be rebuilt from source, and what will use your local checkout:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>status<span class="w"> </span>mylib
+</code></pre></div>
+<p>This runs the full resolver without building anything. Packages already installed show as <code>already_installed</code>; those that need compiling show as <code>build_from_source</code>; <code>mylib</code> itself shows as <code>local_checkout</code> because a matching directory was found.</p>
+<h3 id="build-with-the-local-checkout">Build with the local checkout<a class="headerlink" href="#build-with-the-local-checkout" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>mylib
+</code></pre></div>
+<p>When <code>bits build</code> resolves the dependency graph it scans for directories adjacent to (or below) the recipe checkout that share a name with a package. If it finds one, it treats that directory as the source for that package instead of fetching from the upstream remote. All other packages in the graph continue to resolve from the recipe repository, so <code>mylib</code> is compiled against the exact same versions of ROOT, Geant4, and everything else that CI uses. The local override is transparent: there is no flag to pass, no environment variable to set, and no copy of the recipe to edit.</p>
+<div class="highlight"><pre><span></span><code>alice.bits/       ← recipe repo (bits looks here for recipes)
+mylib/            ← local source checkout (bits detects and uses this automatically)
+sw/               ← bits workDir (output of all builds)
+  el9_x86-64/
+    ROOT/6.30.00/
+    Geant4/11.2.0/
+    mylib/local/  ← your build, overrides any upstream version
+</code></pre></div>
+<p>Because the build environment — compiler, flags, dependency versions — is identical to CI, a package that builds and passes tests locally will behave the same in CI. <strong>"Works on my machine" is a meaningful guarantee</strong>, not a lucky coincidence.</p>
+<h3 id="validate-in-the-ci-image">Validate in the CI image<a class="headerlink" href="#validate-in-the-ci-image" title="Permanent link">&para;</a></h3>
+<p>Once the local build passes, verify it inside the same Docker image that CI will use:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>--docker<span class="w"> </span>--architecture<span class="w"> </span>el9_x86-64<span class="w"> </span>mylib
+</code></pre></div>
+<p>This spins up the official builder container, bind-mounts the current directory (including the local <code>mylib/</code> checkout), and runs the build inside it. If this succeeds, CI will succeed for the same reason.</p>
+<p>You can then run integration tests or an interactive analysis workflow against the full locally-built stack:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>enter<span class="w"> </span>ROOT/latest
+root<span class="w"> </span>-b<span class="w"> </span>-q<span class="w"> </span><span class="s1">'myAnalysis.C'</span>
+<span class="nb">exit</span>
+</code></pre></div>
+<h3 id="clean-up-the-workdir">Clean up the workDir<a class="headerlink" href="#clean-up-the-workdir" title="Permanent link">&para;</a></h3>
+<p>After iterating on several packages, the workDir accumulates stale build directories and source mirrors. Reclaim disk space with:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>clean<span class="w">            </span><span class="c1"># remove stale BUILD/ directories and TMP/ staging area</span>
+bits<span class="w"> </span>cleanup<span class="w"> </span>--max-age<span class="w"> </span><span class="m">14</span><span class="w">   </span><span class="c1"># evict packages not used in the last 14 days</span>
+</code></pre></div>
+<hr />
+<h2 id="phase-3-commit-and-share">Phase 3 — Commit and share<a class="headerlink" href="#phase-3-commit-and-share" title="Permanent link">&para;</a></h2>
+<p>When local testing passes, push the source changes and update the recipe to point at the new commit or tag:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># In mylib/ — commit and push the source changes</span>
+<span class="nb">cd</span><span class="w"> </span>mylib
+git<span class="w"> </span>commit<span class="w"> </span>-am<span class="w"> </span><span class="s2">"Fix the covariance matrix initialisation"</span>
+git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>my-fix-branch
+
+<span class="c1"># Back in alice.bits/ — update the recipe tag/commit</span>
+<span class="nb">cd</span><span class="w"> </span>../alice.bits
+<span class="c1"># Edit mylib.sh: update `tag:` or `commit:` field to the new revision</span>
+
+<span class="c1"># Recompute and record checksums for the new source</span>
+bits<span class="w"> </span>build<span class="w"> </span>--write-checksums<span class="w"> </span>mylib
+
+bits<span class="w"> </span>doctor<span class="w"> </span>mylib<span class="w">                  </span><span class="c1"># verify the recipe is consistent</span>
+git<span class="w"> </span>commit<span class="w"> </span>-am<span class="w"> </span><span class="s2">"mylib: bump to my-fix-branch"</span>
+git<span class="w"> </span>push
+</code></pre></div>
+<p>Opening a merge request on the recipe repository initiates the standard peer-review cycle. Other developers can check out your recipe branch and run <code>bits build mylib</code> to reproduce the build themselves before approving.</p>
+<hr />
+<h2 id="phase-4-ci-build-and-cvmfs-publication-via-bits-console">Phase 4 — CI build and CVMFS publication via bits-console<a class="headerlink" href="#phase-4-ci-build-and-cvmfs-publication-via-bits-console" title="Permanent link">&para;</a></h2>
+<p>Once the recipe MR is merged, publication is driven entirely through <strong><a href="https://bits-console.web.cern.ch">bits-console</a></strong> — a browser-based interface that triggers GitLab CI pipelines on registered build runners. There are no CLI commands to run at this stage.</p>
+<p>The distinction between a group-wide production build and a personal-area build is <strong>not a command-line flag</strong>. It is determined by your role in the project, enforced server-side by the pipeline based on your GitLab identity, and surfaced in the UI as two separate buttons.</p>
+<h3 id="step-1-connect-to-bits-console">Step 1 — Connect to bits-console<a class="headerlink" href="#step-1-connect-to-bits-console" title="Permanent link">&para;</a></h3>
+<p>Navigate to <strong><a href="https://bits-console.web.cern.ch">bits-console.web.cern.ch</a></strong>, select your community, and sign in with your GitLab personal access token. See the <a href="https://gitlab.cern.ch/bitsorg/bits-console">bits-console documentation</a> for required token scopes and role setup.</p>
+<h3 id="step-2-browse-and-trigger-a-build">Step 2 — Browse and trigger a build<a class="headerlink" href="#step-2-browse-and-trigger-a-build" title="Permanent link">&para;</a></h3>
+<p>The <strong>Package Browser</strong> lists all packages from the community's configured recipe repos, with current version, build status, and CVMFS publication status. Click any package to open the build modal, then choose a target platform and click one of the two build buttons:</p>
+<table>
+<thead>
+<tr>
+<th>Button</th>
+<th>Who sees it</th>
+<th>Where the result lands</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Build → Production</strong></td>
+<td><code>bits-admin</code> and <code>group-admin</code> only</td>
+<td>Production CVMFS namespace, e.g. <code>/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.30/x86_64-el9</code></td>
+</tr>
+<tr>
+<td><strong>Build → Personal area</strong></td>
+<td>All users with Developer access</td>
+<td>Personal CVMFS namespace, e.g. <code>/cvmfs/sft.cern.ch/lcg/user/jsmith/ROOT/6.30/x86_64-el9</code></td>
+</tr>
+</tbody>
+</table>
+<p>The pipeline enforces this independently of the UI. Even a manually crafted API call is rejected unless <code>GITLAB_USER_LOGIN</code> matches an entry in the <code>GROUP_ADMINS_&lt;NAME&gt;</code> CI variable on the GitLab project.</p>
+<p><strong>Personal-area builds</strong> are the natural path for patch testing and hotfixes that need to be shared with a specific analysis team before a production release. Any user with Developer access can publish here without waiting for a group-admin to approve a full stack rebuild.</p>
+<h3 id="step-3-monitor-progress">Step 3 — Monitor progress<a class="headerlink" href="#step-3-monitor-progress" title="Permanent link">&para;</a></h3>
+<p>The <strong>Builds</strong> tab in bits-console shows a live pipeline list with log streaming. The <strong>CVMFS Status</strong> tab updates once ingestion completes and the stratum-0 transaction is published. Production builds become available experiment-wide — to all developers' <code>bits enter</code> sessions, to batch grid jobs at WLCG sites, and to downstream CI pipelines. Stratum-1 replicas propagate the change automatically.</p>
+<h3 id="pipeline-internals-for-runner-admins">Pipeline internals (for runner admins)<a class="headerlink" href="#pipeline-internals-for-runner-admins" title="Permanent link">&para;</a></h3>
+<p>The following is relevant to teams setting up or maintaining build runners, not to developers triggering builds through the UI.</p>
+<p>Clicking <strong>Build → Production</strong> queues a GitLab CI pipeline that runs <code>bits build --docker</code> on a registered runner, with the workDir bind-mounted at the community's <code>cvmfs_prefix</code> path inside the container so binaries compile with their final deployment paths already embedded. The resulting tarballs are then ingested into CVMFS via one of two paths depending on the community's <code>publish_pipeline</code> setting:</p>
+<ul>
+<li><strong>cvmfs-prepub path</strong> (<code>publish_pipeline: .gitlab/cvmfs-prepub-publish.yml</code>): the build host POSTs a tar directly to the <code>cvmfs-prepub</code> REST API, which handles CAS ingestion and the CVMFS gateway transaction. No dedicated ingest runners are required.</li>
+<li><strong>Legacy spool path</strong> (<code>publish_pipeline: .gitlab/cvmfs-publish.yml</code>): tarballs are spooled to a staging area, a CVMFS transaction is opened on the stratum-0, and <code>cvmfs_server publish</code> is run on a dedicated publisher runner. This path is retained for communities that have not yet migrated to cvmfs-prepub.</li>
+</ul>
+<p>See the <a href="https://gitlab.cern.ch/bitsorg/bits-console">bits-console repository</a> for the full <code>ui-config.yaml</code> reference, runner registration guide, and scheduled build configuration.</p>
+<hr />
+<h2 id="phase-5-verify-the-deployment">Phase 5 — Verify the deployment<a class="headerlink" href="#phase-5-verify-the-deployment" title="Permanent link">&para;</a></h2>
+<p>After a production build completes, confirm that what is deployed on CVMFS matches what was built:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>verify<span class="w"> </span>--from-manifest<span class="w"> </span>alice-o2-20260411.json<span class="w"> </span><span class="se">\</span>
+<span class="w">            </span>--cvmfs-root<span class="w"> </span>/cvmfs/alice.cern.ch
+</code></pre></div>
+<p><code>bits verify</code> reads the SHA-256 digests and provider commit SHAs recorded in the manifest (written automatically to <code>$WORK_DIR/MANIFESTS/</code> during the build) and checks them against the live files on the CVMFS mount. Any mismatch is reported with PASS/FAIL/MISS status and a non-zero exit code. This is particularly useful for:</p>
+<ul>
+<li>physics analyses that must demonstrate reproducibility for a journal submission,</li>
+<li>audit trails required by experiment computing boards,</li>
+<li>catching silent divergence when a CVMFS repository is rolled back or hotpatched.</li>
+</ul>
+<p>See <a href="../REFERENCE/#23-bits-verify--deployment-verification">§23 bits verify</a> for full options including <code>--no-providers</code> and <code>--json</code> output.</p>
+<hr />
+<h2 id="end-to-end-summary">End-to-end summary<a class="headerlink" href="#end-to-end-summary" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>Developer workstation            bits-console (browser)            CVMFS
+──────────────────────────────────────────────────────────────────────────
+git clone &lt;recipe-repo&gt;          Sign in → select community
+bits build ROOT                  Browse packages
+bits enter ROOT/latest
+
+git clone &lt;pkg-source&gt;
+bits status &lt;pkg&gt;
+bits build &lt;pkg&gt;
+
+bits build --docker &lt;pkg&gt;        open build modal
+git push + recipe MR ──────────→ merge triggers ──→ [Build → Production] → /releases/…
+bits build --write-checksums                       [Build → Personal]   → /user/me/…
+                                 Monitor: Builds + CVMFS Status tabs
+
+bits verify --from-manifest …                                            ← confirm ✓
+</code></pre></div>
+<hr />
+<h2 id="related-documentation">Related documentation<a class="headerlink" href="#related-documentation" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Topic</th>
+<th>Location</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Full command reference (<code>bits build</code>, <code>bits status</code>, <code>bits verify</code>, …)</td>
+<td><a href="../REFERENCE/#16-command-line-reference">REFERENCE.md §16</a></td>
+</tr>
+<tr>
+<td>Docker builds and <code>--cvmfs-prefix</code></td>
+<td><a href="../REFERENCE/#22-docker-support">REFERENCE.md §22</a></td>
+</tr>
+<tr>
+<td>Remote binary store backends (S3, HTTP, rsync)</td>
+<td><a href="../REFERENCE/#21-remote-binary-store-backends">REFERENCE.md §21</a></td>
+</tr>
+<tr>
+<td>Repository provider feature</td>
+<td><a href="../REFERENCE/#13-repository-provider-feature">REFERENCE.md §13</a></td>
+</tr>
+<tr>
+<td>CVMFS publishing pipeline</td>
+<td><a href="../REFERENCE/#26-cvmfs-publishing-pipeline">REFERENCE.md §26</a></td>
+</tr>
+<tr>
+<td>Build manifest and <code>--from-manifest</code> replay</td>
+<td><a href="../REFERENCE/#25-build-manifest">REFERENCE.md §25</a></td>
+</tr>
+<tr>
+<td>Deployment verification (<code>bits verify</code>)</td>
+<td><a href="../REFERENCE/#23-bits-verify--deployment-verification">REFERENCE.md §23</a></td>
+</tr>
+<tr>
+<td>Writing recipes</td>
+<td><a href="../REFERENCE/#17-recipe-format-reference">REFERENCE.md §17</a></td>
+</tr>
+<tr>
+<td>bits-console web interface</td>
+<td><a href="https://gitlab.cern.ch/bitsorg/bits-console">bits-console repository</a></td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

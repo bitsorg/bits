@@ -1,0 +1,791 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The bits build system — documentation">
+      
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Moldable-DAG scheduling: literature review and recommended algorithm - bits</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#moldable-dag-scheduling-literature-review-and-recommended-algorithm" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="bits" class="md-header__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            bits
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Moldable-DAG scheduling: literature review and recommended algorithm
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="bits" class="md-nav__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    bits
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../USERGUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../COOKBOOK/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cookbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../WORKFLOWS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design (ADR)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design (ADR)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../0001-cvmfs-relaxed-reuse.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Relaxed CVMFS reuse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../0001-implementation-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-what-this-problem-is-called" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. What this problem is called
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-complexity-what-optimal-can-mean" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Complexity — what "optimal" can mean
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-principle-every-algorithm-uses-two-lower-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The principle every algorithm uses: two lower bounds
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-recommended-algorithm-for-bits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Recommended algorithm for bits
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Recommended algorithm for bits">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cost-model-from-history-calibrated-serially-see-adr-0002" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost model from history (calibrated serially — see ADR-0002)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-1-allotment-cpa-loop-radulescu-van-gemund-2001" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1 — allotment (CPA loop, Radulescu &amp; van Gemund 2001)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-2-dispatch-critical-path-priority-list-scheduling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2 — dispatch (critical-path-priority list scheduling)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-the-sink-gets-all-cores-property-and-the-sequential-reduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. The sink-gets-all-cores property and the sequential reduction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-memory-as-a-second-resource" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Memory as a second resource
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-bottom-line" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Bottom line
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="moldable-dag-scheduling-literature-review-and-recommended-algorithm">Moldable-DAG scheduling: literature review and recommended algorithm<a class="headerlink" href="#moldable-dag-scheduling-literature-review-and-recommended-algorithm" title="Permanent link">&para;</a></h1>
+<p><em>Companion to <a href="../0002-moldable-scheduling/">ADR-0002</a>. Research notes backing the choice of scheduling algorithm for <code>--builders</code>. Status: informational.</em></p>
+<h2 id="1-what-this-problem-is-called">1. What this problem is called<a class="headerlink" href="#1-what-this-problem-is-called" title="Permanent link">&para;</a></h2>
+<p>Scheduling <em>n</em> dependent jobs (a DAG) on <em>m</em> identical threads, where each job <em>i</em> can be given <em>k</em> threads and its runtime <code>t_i(k)</code> is known in advance, choosing <em>k</em> once per job and fixing it for that job's duration, to minimize the makespan — is <strong>moldable task scheduling under precedence constraints</strong>, written <strong>P|moldable,prec|C_max</strong> (older notation <strong>P|fctn,prec|C_max</strong>). The three relevant job classes (Feitelson &amp; Rudolph 1996; Drozdowski 2009):</p>
+<ul>
+<li><strong>Rigid</strong> — thread count fixed by the user a priori (<code>P|size_j|C_max</code>).</li>
+<li><strong>Moldable</strong> — the <em>scheduler</em> picks the thread count at start, fixed for the run. <strong>This is our case</strong> (<code>make -j k</code>, <em>k</em> chosen at launch).</li>
+<li><strong>Malleable</strong> — the count may change <em>during</em> execution (<code>P|var|C_max</code>).</li>
+</ul>
+<h2 id="2-complexity-what-optimal-can-mean">2. Complexity — what "optimal" can mean<a class="headerlink" href="#2-complexity-what-optimal-can-mean" title="Permanent link">&para;</a></h2>
+<p>The problem is <strong>strongly NP-hard</strong>: it generalizes both rigid parallel-task scheduling (strongly NP-complete already at <em>m</em> = 4 — Henning, Jansen, Rau &amp; Schmarje 2020) and ordinary precedence scheduling <code>P|prec|C_max</code> (NP-hard — Ullman 1975). There is <strong>no PTAS for general DAGs</strong>, and a hard <strong>3/2 lower bound</strong> on any polynomial approximation (the unit-time, no-precedence case is exactly bin packing). So "optimal" is unattainable in polynomial time; the literature gives <strong>constant-factor approximations</strong> and <strong>practical heuristics</strong>. Best known offline guarantees for moldable/malleable + precedence:</p>
+<table>
+<thead>
+<tr>
+<th>Result</th>
+<th>Ratio</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Lepère–Trystram–Woeginger 2002</td>
+<td><strong>3+√5 ≈ 5.236</strong> (general DAG); <strong>(3+√5)/2 ≈ 2.618</strong> (series-parallel / bounded width)</td>
+<td>first constant factor with precedence</td>
+</tr>
+<tr>
+<td>Jansen–Zhang 2006</td>
+<td><strong>≈ 4.73</strong>; <strong>≈ 3.29</strong> (concave model)</td>
+<td>LP-rounding allotment</td>
+</tr>
+<tr>
+<td>Chen 2018 (iterative)</td>
+<td><strong>≈ 3.42</strong></td>
+<td>current best general DAG</td>
+</tr>
+<tr>
+<td>Graham list scheduling (baseline)</td>
+<td><strong>2 − 1/m</strong></td>
+<td>survives precedence (<code>P\|prec\|C_max</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>The take-away: a well-built <strong>list scheduler driven by good per-job thread allotments lands within a small constant of optimal</strong>, and in practice far better than the worst case. Chasing the optimum exactly is not worth it.</p>
+<h2 id="3-the-principle-every-algorithm-uses-two-lower-bounds">3. The principle every algorithm uses: two lower bounds<a class="headerlink" href="#3-the-principle-every-algorithm-uses-two-lower-bounds" title="Permanent link">&para;</a></h2>
+<p>For a chosen allotment <code>k = (k_i)</code>, define <strong>work/area</strong> <code>W_i(k_i) = k_i · t_i(k_i)</code> (core-seconds). Any schedule's makespan obeys</p>
+<div class="highlight"><pre><span></span><code>OPT ≥ max(  Σ_i W_i(k_i) / m   ,   longest path of t_i(k_i) through the DAG  )
+              └──── AREA ────┘       └──────── CRITICAL PATH ────────┘
+</code></pre></div>
+<p>These two terms <em>are</em> the whole design tension:</p>
+<ul>
+<li><strong>Wide frontier</strong> (many ready jobs, machine saturated) → <strong>area-bound</strong>; give each job <strong>few</strong> threads so many run at once.</li>
+<li><strong>Narrow frontier</strong> (few ready jobs, cores idle) → <strong>critical-path-bound</strong>; <strong>concentrate</strong> threads on the running job(s).</li>
+<li><strong>Limiting case</strong>: a single ready job should get <strong>all useful threads</strong> — which is exactly your sink-gets-all-cores requirement (§5).</li>
+</ul>
+<p>Every good algorithm is two-phase: <strong>(1) pick the allotment <code>k_i</code></strong> to balance area against critical path, <strong>(2) list-schedule</strong> the DAG (Turek–Wolf–Yu 1992; Ludwig–Tiwari 1994 reduce moldable→rigid this way; Mounié–Rapine–Trystram 2007 give the 3/2 dual-approximation via a two-shelf knapsack). The <strong>monotonic-work assumption</strong> — <code>t_i(k)</code> non-increasing, <code>W_i(k)</code> non-decreasing in <em>k</em> — underlies all the strong results and holds for compilation (more threads never help past a point, and parallel overhead only grows area).</p>
+<h2 id="4-recommended-algorithm-for-bits">4. Recommended algorithm for bits<a class="headerlink" href="#4-recommended-algorithm-for-bits" title="Permanent link">&para;</a></h2>
+<p>The directly applicable, implementable family is <strong>CPA → CPR/IAES</strong> (two-phase, area-vs-critical-path), with a <strong>critical-path-priority list scheduler</strong> as phase 2. This is also exactly what <strong>Ninja's production scheduler</strong> does (longest-weighted-path priority, edge weights = last runtime from <code>.ninja_log</code>) — and bits already has the equivalent telemetry in <code>bits_build_stats.json</code>.</p>
+<h3 id="cost-model-from-history-calibrated-serially-see-adr-0002">Cost model from history (calibrated serially — see ADR-0002)<a class="headerlink" href="#cost-model-from-history-calibrated-serially-see-adr-0002" title="Permanent link">&para;</a></h3>
+<p>Per package, from a serial run: <code>W_i</code> = <code>cpu_seconds</code> (work area, ~thread-invariant), <code>p̄_i</code> = <code>peak_threads</code> (<strong>parallelism ceiling</strong>), <code>m_i</code> = <code>mem_per_thread</code>. Model <code>t_i(k) ≈ W_i / min(k, p̄_i)</code> (optionally <code>+ d_i</code> serial tail). The ceiling matters: "all threads" always means <strong><code>min(m, p̄_i)</code></strong> — beyond <code>p̄_i</code> you only add area, never speed (Perotin &amp; Sun 2023, <code>p_j^max = min(P, p̄_j, √(W_j/c_j))</code>).</p>
+<h3 id="phase-1-allotment-cpa-loop-radulescu-van-gemund-2001">Phase 1 — allotment (CPA loop, Radulescu &amp; van Gemund 2001)<a class="headerlink" href="#phase-1-allotment-cpa-loop-radulescu-van-gemund-2001" title="Permanent link">&para;</a></h3>
+<p><div class="highlight"><pre><span></span><code>for each job i:  k_i = 1
+repeat:
+    T_CP = longest path of t_i(k_i) through the DAG          # critical-path bound
+    T_A  = ( Σ_i k_i · t_i(k_i) ) / m                        # area bound
+    if T_CP &lt;= T_A: break                                    # bounds have met → stop
+    pick the job i* on the critical path, with k_i* &lt; min(m, p̄_i*),
+        whose +1 thread most reduces t_i*                    # steepest speedup
+    k_i* += 1
+list-schedule with the k_i fixed (Phase 2)
+</code></pre></div>
+The stop condition <code>T_CP ≤ T_A</code> is the heart of CPA: keep funnelling threads into the critical path until shortening it no longer helps relative to the average per-thread work. Cap each <code>k_i</code> at <code>p̄_i</code> (useful ceiling) and at the memory budget (§6).</p>
+<p><em>If you can afford it,</em> replace the analytic stop with <strong>CPR</strong> (Radulescu et al. 2001): tentatively add a thread, <strong>re-run the list-schedule simulation</strong>, and keep the increment only if the <em>measured</em> makespan drops. CPR/IAES (Wang et al. 2016) are the best-quality variants in published comparisons (ranking on irregular graphs: CPA &lt; MCPA ≈ MCPA2 &lt; CPR &lt; IAES). With <em>n</em> ≈ 1000s this offline simulation is cheap.</p>
+<h3 id="phase-2-dispatch-critical-path-priority-list-scheduling">Phase 2 — dispatch (critical-path-priority list scheduling)<a class="headerlink" href="#phase-2-dispatch-critical-path-priority-list-scheduling" title="Permanent link">&para;</a></h3>
+<p>Maintain a ready queue ordered by <strong>bottom-level / longest remaining path to the sink</strong> (= Ninja's priority, = HEFT's upward rank). At each event: dispatch the highest-priority ready job whose <code>k_i</code> threads (and memory) currently fit; <strong>if cores sit idle and no waiting job needs them, let a running/ready critical job expand toward <code>min(m, p̄_i)</code></strong> ("unleash" — funnel spare cores to the critical path). This is the dynamic generalization of the current <code>--unleash-final</code>.</p>
+<h2 id="5-the-sink-gets-all-cores-property-and-the-sequential-reduction">5. The sink-gets-all-cores property and the sequential reduction<a class="headerlink" href="#5-the-sink-gets-all-cores-property-and-the-sequential-reduction" title="Permanent link">&para;</a></h2>
+<p>Your hard requirement — the terminal job gets all <em>m</em> threads, and <code>--builders 1</code> ≡ sequential DAG execution — is not an ad-hoc rule; it is what the theory says is <em>optimal</em> when the frontier is narrow, and it falls out of the algorithm above:</p>
+<ul>
+<li><strong>The sink is provably alone.</strong> It (transitively) depends on every other job, so it is scheduled last with nothing else running → the dispatcher gives it <code>min(m, p̄_sink)</code> threads. (This is exactly today's <code>--unleash-final</code>, generalized.)</li>
+<li><strong>Lone-task ⇒ all cores is optimal.</strong> Prasanna &amp; Musicus (1996), via optimal control of the continuous allocation problem, show that when only one task is active the time-minimizing allocation gives it the <strong>entire</strong> processor share. Perotin &amp; Sun (2023, <strong>Lemma 3</strong>) formalize the discrete online version: whenever utilization is below full, a job on the critical path is always running and the schedule's progress equals that path's per-task times.</li>
+<li><strong>Clean reduction to sequential.</strong> With <em>m</em> = all cores and the "lone ready job takes all cores" rule, a serial chain runs each job at full width, so the makespan is <code>Σ_i t_i(m)</code> — plain topological execution at full <code>-j</code>. CPA reproduces this automatically: on a chain the critical path <em>is</em> the whole graph, so the loop pushes every job to <code>min(m, p̄_i)</code> and <code>T_A</code> never binds. <strong>Setting <code>--builders 1</code> (one ready job at a time) is therefore exactly this degenerate case.</strong></li>
+</ul>
+<blockquote>
+<p><strong>Design caveat.</strong> The <em>guaranteed</em> approximations (LTW, Perotin–Sun) cap each job at <code>μ·m ≤ m/2</code> threads so multiple jobs always pack — which would <em>forbid</em> the sink from taking all cores. We deliberately <strong>drop that cap</strong> in favour of the unleash rule. The cost is only the worst-case guarantee in adversarial wide-then-narrow graphs; CPR/IAES already forgo formal guarantees and win in practice, and the unleash rule is provably optimal precisely in the narrow-frontier regime where it fires. This is the right trade for a build system.</p>
+</blockquote>
+<h2 id="6-memory-as-a-second-resource">6. Memory as a second resource<a class="headerlink" href="#6-memory-as-a-second-resource" title="Permanent link">&para;</a></h2>
+<p>Treat memory as a second budgeted resource (Perotin et al. 2024, <em>multi-resource moldable</em>, algorithm MRSA): at every instant <code>Σ_running R_i ≤ RAM_budget</code> and per job <code>k_i · m_i ≤</code> headroom, enforced as <strong>admission control</strong> at dispatch (precisely how Bazel's <code>ResourceManager</code> gates <code>{CPU, RAM}</code> and how bits' <code>mem_per_job</code> cap already works). Theory warns the guarantee degrades ~linearly per added resource (Garey &amp; Graham 1975: <code>(s+2−(2s+1)/m)·OPT</code> for <em>s</em> resources; MRSA: <code>≈1.619d + 2.545√d + 1</code> for <em>d</em> resources, with a matching lower bound of <em>d</em>). Practically: keep the <strong>memory cap authoritative</strong> (an over-commit means OOM/swap, not just slowdown), and let it clamp <code>k_i</code> after the area/critical-path allotment.</p>
+<h2 id="7-bottom-line">7. Bottom line<a class="headerlink" href="#7-bottom-line" title="Permanent link">&para;</a></h2>
+<p>There is no tractable exact optimum (strongly NP-hard, no PTAS). The right answer is a <strong>two-phase moldable list scheduler</strong>: a <strong>CPA/CPR allotment</strong> (balance critical-path against area, capped at each job's <code>p̄_i</code> and the memory budget) followed by <strong>critical-path-priority list scheduling</strong> with spare cores funnelled to the critical path. It is within a small constant of optimal in theory, best-in-class in practice (CPR/IAES), <strong>reduces cleanly to sequential execution at <code>--builders 1</code></strong>, and is the same design Ninja ships — for which bits already records the necessary per-package history. Phase it as in ADR-0002: critical-path ordering first (cheap, safe), dynamic thread allotment second (the real win), measured against a serial-calibration baseline.</p>
+<h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Feitelson, Rudolph (1996). <em>Toward Convergence in Job Schedulers for Parallel Supercomputers.</em> JSSPP, LNCS 1162. doi:10.1007/BFb0022284</li>
+<li>Drozdowski (2009). <em>Scheduling for Parallel Processing</em>, ch. 5 "Parallel Tasks." Springer. doi:10.1007/978-1-84882-310-5</li>
+<li>Dutot, Mounié, Trystram (2004). <em>Scheduling Parallel Tasks: Approximation Algorithms.</em> Handbook of Scheduling, ch. 26. hal-00003126</li>
+<li>Graham (1966). <em>Bounds on Multiprocessing Timing Anomalies.</em> SIAM J. Appl. Math. 17(2). doi:10.1137/0117039</li>
+<li>Garey, Graham (1975). <em>Bounds for Multiprocessor Scheduling with Resource Constraints.</em> SIAM J. Comput. 4(2):187–200. doi:10.1137/0204015</li>
+<li>Du, Leung (1989). <em>Complexity of Scheduling Parallel Task Systems.</em> SIAM J. Discrete Math. 2(4). doi:10.1137/0402042</li>
+<li>Henning, Jansen, Rau, Schmarje (2020). <em>Complexity and Inapproximability Results for Parallel Task Scheduling and Strip Packing.</em> Theory Comput. Syst. 64(1). arXiv:1705.04587</li>
+<li>Turek, Wolf, Yu (1992). <em>Approximate Algorithms for Scheduling Parallelizable Tasks.</em> SPAA. doi:10.1145/140901.141909</li>
+<li>Ludwig, Tiwari (1994). <em>Scheduling Malleable and Nonmalleable Parallel Tasks.</em> SODA. dl.acm.org/doi/10.5555/314464.314491</li>
+<li>Mounié, Rapine, Trystram (2007). <em>A 3/2-Approximation Algorithm for Scheduling Independent Monotonic Malleable Tasks.</em> SIAM J. Comput. 37(2):401–412. doi:10.1137/S0097539701385995</li>
+<li>Lepère, Trystram, Woeginger (2002). <em>Approximation Algorithms for Scheduling Malleable Tasks Under Precedence Constraints.</em> Int. J. Found. Comput. Sci. 13(4):613–627. doi:10.1142/S0129054102001308</li>
+<li>Jansen, Zhang (2006). <em>An Approximation Algorithm for Scheduling Malleable Tasks Under General Precedence Constraints.</em> ACM Trans. Algorithms 2(3):416–434. doi:10.1145/1159892.1159899</li>
+<li>Chen (2018). <em>An Improved Approximation for Scheduling Malleable Tasks with Precedence Constraints via Iterative Method.</em> IEEE TPDS. doi:10.1109/TPDS.2018.2813387</li>
+<li>Radulescu, van Gemund (2001). <em>A Low-Cost Approach towards Mixed Task and Data Parallel Scheduling</em> (CPA). ICPP. doi:10.1109/ICPP.2001.952047</li>
+<li>Radulescu, Nicolescu, van Gemund, Jonker (2001). <em>CPR: Mixed Task and Data Parallel Scheduling for Distributed Systems.</em> IPDPS. doi:10.1109/IPDPS.2001.924998</li>
+<li>Bansal, Kumar, Singh (2006). <em>An improved two-step algorithm…</em> (MCPA). Parallel Computing 32(10):759–774. doi:10.1016/j.parco.2006.08.004</li>
+<li>Hunold (2010). <em>Low-Cost Tuning of Two-Step Algorithms…</em> (MCPA2). CCGrid. doi:10.1109/CCGRID.2010.52</li>
+<li>Wang et al. (2016). <em>An iterative expanding and shrinking process for processor allocation…</em> (IAES). SpringerPlus 5:1138. doi:10.1186/s40064-016-2808-y</li>
+<li>Topcuoglu, Hariri, Wu (2002). <em>Performance-effective and low-complexity task scheduling for heterogeneous computing</em> (HEFT). IEEE TPDS 13(3):260–274. doi:10.1109/71.993206</li>
+<li>Benoit, Perotin, Robert, Sun (2022). <em>Online Scheduling of Moldable Task Graphs under Common Speedup Models.</em> ICPP (best paper). doi:10.1145/3545008.3545049</li>
+<li>Perotin, Sun (2023). <em>Improved Online Scheduling of Moldable Task Graphs under Common Speedup Models.</em> ACM TOPC 10(4). arXiv:2304.14127, doi:10.1145/3630052</li>
+<li>Marchal, Simon, Sinnen, Vivien (2018). <em>Malleable Task-Graph Scheduling with a Practical Speed-Up Model.</em> IEEE TPDS 29(6):1357–1370. doi:10.1109/TPDS.2018.2793886</li>
+<li>Prasanna, Musicus (1996). <em>Generalized Multiprocessor Scheduling and Applications to Matrix Computations.</em> IEEE TPDS 7(6):650–664. doi:10.1109/71.506703</li>
+<li>Perotin, Kandaswamy, Sun, Raghavan (2024). <em>Multi-resource scheduling of moldable workflows.</em> JPDC 184:104792. doi:10.1016/j.jpdc.2023.104792</li>
+<li>Marchal, Nagy, Simon, Vivien (2018). <em>Parallel scheduling of DAGs under memory constraints.</em> IPDPS. hal-01828312</li>
+<li>Ninja critical-path scheduler — github.com/ninja-build/ninja PR #2019, #2177; pools: ninja-build.org/manual.html</li>
+<li>GNU make jobserver — gnu.org/software/make/manual/html_node/POSIX-Jobserver.html</li>
+<li>Bazel local resources — bazel.build/docs/user-manual; jmmv.dev/2019/12/bazel-local-resources.html</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

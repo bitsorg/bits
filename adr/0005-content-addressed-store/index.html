@@ -1,0 +1,913 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The bits build system — documentation">
+      
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>ADR-0005: Content-addressed S3 store (drop the pointer objects) - bits</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#adr-0005-content-addressed-s3-store-drop-the-pointer-objects" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="bits" class="md-header__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            bits
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              ADR-0005: Content-addressed S3 store (drop the pointer objects)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="bits" class="md-nav__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    bits
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../USERGUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../COOKBOOK/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cookbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../WORKFLOWS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design (ADR)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design (ADR)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../0001-cvmfs-relaxed-reuse.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Relaxed CVMFS reuse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../0001-implementation-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Decision">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#upload-contract-syncpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upload contract (sync.py)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fetch-contract-syncpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fetch contract (sync.py)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#revision-assignment-critical-prerequisite-for-phase-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Revision assignment (CRITICAL — prerequisite for Phase 2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#local-reconstruction-build-node" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local reconstruction (build node)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cvmfs-publish-bits-consolegitlabcvmfs-publishyml-unchanged" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CVMFS publish (bits-console/.gitlab/cvmfs-*-publish.yml) — UNCHANGED
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gc-bitsstore-renamed-from-managestore-invoked-as-bits-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GC + bitsStore (renamed from manageStore; invoked as bits store …)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementation-order-phased-each-independently-shippable-tested" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementation order (phased, each independently shippable + tested)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-questions-resolve-before-phase-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Open questions (resolve before Phase 2)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="adr-0005-content-addressed-s3-store-drop-the-pointer-objects">ADR-0005: Content-addressed S3 store (drop the pointer objects)<a class="headerlink" href="#adr-0005-content-addressed-s3-store-drop-the-pointer-objects" title="Permanent link">&para;</a></h1>
+<p>Status: <strong>Proposed</strong> — design for review. Simplifies the store layout by removing
+the version-named links and dist-closure symlinks, keeping only the hash-keyed
+tarballs. Motivated by the recurring store-consistency bugs (see Context).
+Date: 2026-07-09</p>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p>The S3 store today holds three kinds of objects per architecture:</p>
+<ol>
+<li><strong>Content tarballs</strong> — <code>TARS/&lt;arch&gt;/store/&lt;h2&gt;/&lt;hash&gt;/&lt;pkg&gt;-&lt;verrev&gt;.&lt;arch&gt;.tar.gz</code>.
+   Content-addressed by the package hash. The only thing a build actually needs.</li>
+<li><strong>Version links</strong> — <code>TARS/&lt;arch&gt;/&lt;pkg&gt;/&lt;pkg&gt;-&lt;verrev&gt;.&lt;arch&gt;.tar.gz</code>. A small
+   object whose body points at the store path (version → hash).</li>
+<li><strong>Dist closure</strong> — <code>TARS/&lt;arch&gt;/dist{,-direct,-runtime}/&lt;pkg&gt;/&lt;pkg&gt;-&lt;verrev&gt;/…</code>.
+   One small symlink object per dependency, i.e. the package's full closure.</li>
+</ol>
+<p>Build reuse never consults (2) or (3): bits computes a package's <code>hash</code> from its
+recipe + resolved dependency closure + defaults + architecture and fetches
+<code>store/&lt;hash&gt;</code> directly (<code>spec["remote_hashes"]</code> → <code>fetch_tarball</code>). The pointer
+layers exist for the CVMFS publish path and for reconstructing a local store
+layout — both of which can be derived from the <strong>build manifest</strong>, which already
+records <code>package → hash → tarball_sha256</code> for the whole closure.</p>
+<p>Maintaining (2) and (3) as separate mutable objects, kept consistent with (1)
+across concurrent builds and manual cleanups, is the source of essentially every
+store bug we have hit:</p>
+<ul>
+<li>one-sided state: version link exists but the content object was deleted
+  (<code>sync.py</code> self-heal, commit <code>b00477e</code>);</li>
+<li>partial dist sets aborting as "Conflicts detected" (commit <code>8de7ebb</code>);</li>
+<li>half-cleaned stores, <code>bitsStore --broken-links</code>, per-slot locks, orphan GC.</li>
+</ul>
+<p>These are all <em>pointer-consistency</em> problems. Content-addressed objects have none
+of them: an object either exists at its hash or it does not.</p>
+<h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
+<p><strong>Store only the content tarballs, keyed by hash; reconstruct everything else on
+the consuming node from the manifest.</strong></p>
+<h3 id="layout">Layout<a class="headerlink" href="#layout" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>store/&lt;arch&gt;/&lt;h2&gt;/&lt;hash&gt;.tar.gz               # the only per-package object
+SOURCES/cache/&lt;...&gt;                            # unchanged
+MANIFESTS/&lt;...&gt;                                # unchanged (BOMs + signed common)
+</code></pre></div>
+<ul>
+<li>Single top-level <code>store/</code> root (replaces the old <code>TARS/&lt;arch&gt;/…</code> tree), with
+  <strong>architecture as the first level</strong>: the package <code>hash</code> does NOT encode the
+  architecture (that is exactly why same-hash/different-arch objects collided —
+  ADR context / certify per-arch fix <code>484…</code>), so arch must stay a path component
+  to keep the two arch trees separate. <code>store/&lt;arch&gt;/&lt;h2&gt;/&lt;hash&gt;.tar.gz</code>.</li>
+<li>Keep the <code>&lt;h2&gt;</code> two-hex-char shard under the arch: a single flat <code>&lt;arch&gt;/</code>
+  prefix with tens of thousands of objects is slow to list, and GC / <code>bitsStore</code>
+  list often.</li>
+<li>Filename is <code>&lt;hash&gt;.tar.gz</code> (drop the <code>&lt;pkg&gt;-&lt;verrev&gt;.&lt;arch&gt;</code> decoration). bits
+  keys on hash + spec, not the filename — <strong>to verify</strong>: nothing parses pkg/verrev
+  out of the tarball filename (see "Open questions").</li>
+</ul>
+<h3 id="upload-contract-syncpy">Upload contract (<code>sync.py</code>)<a class="headerlink" href="#upload-contract-syncpy" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>HEAD store/&lt;arch&gt;/&lt;h2&gt;/&lt;hash&gt;.tar.gz</code>; if present, <strong>skip</strong> (content-addressed
+  dedup — same hash on the same arch is byte-identical, so re-upload is never
+  needed).</li>
+<li>Else <code>PUT</code> the tarball. <strong>No</strong> version-link or dist-symlink objects are written.</li>
+<li>Removes: <code>upload_symlinks_and_tarball</code>'s link_path put, and the whole
+  <code>dist{,-direct,-runtime}</code> loop — and with them the one-sided-state self-heal and
+  the "Conflicts detected" guard, which no longer have anything to guard.</li>
+</ul>
+<h3 id="fetch-contract-syncpy">Fetch contract (<code>sync.py</code>)<a class="headerlink" href="#fetch-contract-syncpy" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Reuse fetches <code>store/&lt;arch&gt;/&lt;h2&gt;/&lt;hash&gt;.tar.gz</code> by hash (already the primary
+  lookup); the <code>&lt;pkg&gt;/&lt;verrev&gt;</code> fallback is dropped.</li>
+</ul>
+<h3 id="revision-assignment-critical-prerequisite-for-phase-2">Revision assignment (CRITICAL — prerequisite for Phase 2)<a class="headerlink" href="#revision-assignment-critical-prerequisite-for-phase-2" title="Permanent link">&para;</a></h3>
+<p>The version links are <strong>load-bearing for the reuse decision and revision
+numbering</strong>, not just for publish. On reuse, <code>fetch_symlinks</code> downloads a
+package's version links from S3, and the revision counter (<code>build.py</code> ~2704–2842)
+parses each link's <em>target</em> for <code>(hash, revision)</code> to:</p>
+<ul>
+<li><strong>reuse</strong> — if an existing link's hash matches this build's hash, reuse that
+  revision and skip the build (<code>"already found … Not building"</code>); else</li>
+<li><strong>assign</strong> — pick the next free revision, skipping <code>busyRevisions</code>.</li>
+</ul>
+<p>Dropping the version links therefore removes the <code>(version → revision → hash)</code>
+index the counter reads. <code>reconstruct_local_layout</code> (Phase 1) does NOT help — it
+only knows the current build's own revision, not the global history.</p>
+<p><strong>Resolution (decided): manifest-primary + a race-free rev-index.</strong></p>
+<p>The revision counter derives its candidate <code>(version → {revision → hash})</code> set
+from two sources, unioned, instead of scanning <code>TARS/&lt;arch&gt;/&lt;pkg&gt;/</code>:</p>
+<ol>
+<li><strong>Common manifest (primary, certified).</strong> Already fetched for signed reuse
+   (<code>trusted_reuse_index</code>); each entry carries <code>{package, version, revision,
+   effective_architecture, hash}</code> (certify.py <code>_PKG_FIELDS</code>). Filter to
+   <code>(package, version, arch)</code>.</li>
+<li><strong>Rev-index (supplement, for uncertified rebuilds).</strong> A <strong>write-once marker per
+   revision</strong> — NOT a mutable object, NOT a symlink — so it reintroduces neither
+   the pointer-consistency nor the read-modify-write race we are removing:
+   <div class="highlight"><pre><span></span><code>MANIFESTS/rev-index/&lt;arch&gt;/&lt;pkg&gt;/&lt;version&gt;-&lt;revision&gt;   (body = hash)
+</code></pre></div>
+   Producers <code>PUT</code> their own marker on upload (HEAD-skip, idempotent); concurrent
+   builds write different markers, never the same object. The counter LISTs
+   <code>rev-index/&lt;arch&gt;/&lt;pkg&gt;/</code>, parses <code>&lt;version&gt;-&lt;revision&gt;</code>, reads <code>hash</code> from the
+   body. Markers are tiny (~64 B) and one-per-revision (far fewer than the dist
+   symlinks). GC drops markers whose hash is no longer reachable.</li>
+</ol>
+<p>Same reuse/assign logic as today (hash match → reuse revision; else next free
+number), just fed from (1)∪(2) rather than the version links. Ship + test this
+BEFORE the upload stops writing version links.</p>
+<h3 id="local-reconstruction-build-node">Local reconstruction (build node)<a class="headerlink" href="#local-reconstruction-build-node" title="Permanent link">&para;</a></h3>
+<ul>
+<li>After the revision counter finalises a package's revision+hash, bits
+  materialises the local version link from the graph (<code>create_version_link</code>,
+  wired in <code>build.py</code> for every package on the non-makeflow path) and the
+  <code>dist*</code> closure (<code>createDistLinks</code> in <code>doFinalSync</code>) — no S3 read. This makes
+  local reconstruction the single source of the version link that used to come
+  from the S3 version-link object (upload for built packages, <code>fetch_symlinks</code>
+  for reused ones).</li>
+</ul>
+<h3 id="cvmfs-publish-bits-consolegitlabcvmfs-publishyml-unchanged">CVMFS publish (<code>bits-console/.gitlab/cvmfs-*-publish.yml</code>) — UNCHANGED<a class="headerlink" href="#cvmfs-publish-bits-consolegitlabcvmfs-publishyml-unchanged" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Finding (during P2d):</strong> the publish loop does not read S3. It runs in the
+  same job as the build and reads the <strong>local</strong> per-package tarball
+  <code>BITS_WORK_DIR/TARS/&lt;arch&gt;/&lt;pkg&gt;/&lt;pkg&gt;-&lt;verrev&gt;.&lt;arch&gt;.tar.gz</code> (a symlink into
+  the local content store), driven by the build manifest it already parses.</li>
+<li>Because local reconstruction (above) recreates that local version link for
+  BOTH built and reused packages, the publish YAML/shell needs <strong>no change</strong>.
+  A missing local tarball is already handled (<code>[[ -f ]]</code> → SKIP), so a dangling
+  link degrades to a skip, not a crash. This is why the original "rewrite the
+  publish loop to fetch <code>store/&lt;hash&gt;</code> by hash" is unnecessary — keeping local
+  reconstruction is smaller and lower-risk and still removes the S3 pointer
+  objects (the actual bug source).</li>
+<li><strong>Relocation is mandatory and must be preserved.</strong> Store tarballs are built
+  relocatable — their contents embed a placeholder/build prefix and an
+  <code>@@PKGREVISION@@</code> marker — so a fetched tarball CANNOT be posted to CVMFS as-is.
+  The step is unchanged (today's template mode): <code>untar → run relocate-me.sh with
+  INSTALL_BASE = the final CVMFS path → re-tar → POST to prepub</code> (plus the
+  module-file second job). Because publish is left untouched (above), this simply
+  keeps working. Skipping relocation would publish binaries with wrong paths.</li>
+<li><code>INSTALL_BASE</code> and the CVMFS target path (prefix / version-revision /
+  install-dir / family) come from the <strong>manifest</strong>, not from the tarball name or
+  the old dist symlinks, so nothing is lost by dropping the pointer objects.
+  (Confirm the fetched object still contains <code>relocate-me.sh</code>; it is part of the
+  build output captured in the tarball, so hash-only storage keeps it.)</li>
+</ul>
+<h3 id="gc-bitsstore-renamed-from-managestore-invoked-as-bits-store">GC + bitsStore  (renamed from <code>manageStore</code>; invoked as <code>bits store …</code>)<a class="headerlink" href="#gc-bitsstore-renamed-from-managestore-invoked-as-bits-store" title="Permanent link">&para;</a></h3>
+<ul>
+<li>GC (<code>gc.py</code>) already <strong>is</strong> hash-vs-manifest: it only ever deletes keys under
+  <code>TARS/&lt;arch&gt;/store/&lt;h2&gt;/&lt;hash&gt;/…</code> sourced by hash from the <em>verified</em> signed
+  manifest (<code>safe_store_key</code>, <code>_STORE_KEY_RE</code>). Dropping the pointer objects
+  needs no GC change.</li>
+<li><code>bitsStore</code>'s content-object operations (<code>ls</code>/<code>rm</code>/<code>verify</code>/<code>--orphans</code>) are
+  unchanged — they already work against the content objects vs the manifests.</li>
+<li>The <code>--links</code> / <code>--broken-links</code> selectors are <strong>kept</strong>, but now only match the
+  LEGACY pointer objects left by pre-ADR-0005 builds. They are the one-time
+  migration tool: <code>bits store rm --links</code> (and <code>--broken-links</code>) purge the stale
+  version/dist objects from an existing store. New builds never create them.</li>
+</ul>
+<h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Eliminates the pointer-consistency bug class outright (the four commits above
+  become unnecessary; the code they touched is deleted, not maintained).</li>
+<li>Simpler mental model, simpler GC, simpler cleanup, no per-slot upload locks for
+  the store side.</li>
+<li>Cost: wiring the local-reconstruction step (<code>create_version_link</code>) so both
+  built and reused packages have their local version link; the CVMFS publish loop
+  is <strong>not</strong> rewritten (it reads local files — see above). Plus a store
+  <strong>migration / flag day</strong> for existing pointer objects.</li>
+<li>Loses in-bucket browsability by package/version and the in-bucket dependency
+  closure. Both are recoverable from manifests; confirm no external consumer
+  relies on the S3-side closure (see Open questions).</li>
+<li>Scope actually implemented (P2a–P2d): the content object KEEPS its current
+  path/name <code>store/&lt;h2&gt;/&lt;hash&gt;/&lt;pkg&gt;-&lt;verrev&gt;.&lt;arch&gt;.tar.gz</code> — only the pointer
+  objects (version links + dist symlinks) are dropped. The <code>&lt;hash&gt;.tar.gz</code> rename
+  and the single-<code>store/&lt;arch&gt;/</code> root are a separate, optional later change (they
+  touch <code>resolve_store_path</code>, the certify probe, and <code>bitsStore</code>); the
+  bug-source removal does not depend on them.</li>
+</ul>
+<h2 id="implementation-order-phased-each-independently-shippable-tested">Implementation order (phased, each independently shippable + tested)<a class="headerlink" href="#implementation-order-phased-each-independently-shippable-tested" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Local reconstruction</strong> from manifest (no behaviour change yet): make bits
+   able to build the local <code>dist*</code>/version layout from the graph. Add tests.</li>
+<li><strong>Revision index from manifests (PREREQUISITE — found during Phase 1 review).</strong>
+   Make the revision counter derive its <code>(version, revision, hash)</code> candidates from
+   the fetched common manifest(s) when local version links are absent, so the reuse
+   decision + revision numbering survive without the S3 version links. Ship + test
+   this BEFORE the upload change below, and resolve the uncertified-store
+   sub-question (see "Revision assignment"). Only then:</li>
+</ol>
+<p>2b. <strong>Upload</strong>: skip writing link/dist objects; keep HEAD-skip on the hash object.
+   Producers now write hash-only. Consumers fetch by hash and get revisions from
+   the manifest index (step 2).
+3. <strong>Publish loop</strong>: rewrite to manifest + <code>store/&lt;arch&gt;/&lt;h2&gt;/&lt;hash&gt;</code> fetch, while
+   <strong>keeping the relocate-me.sh step</strong> (untar → relocate to the final CVMFS
+   INSTALL_BASE → re-tar → POST). Test against a real manifest; verify the
+   published tree has correct embedded paths (no build-prefix leakage).
+4. <strong>GC + bitsStore</strong> — <em>done (rename + no-op adaptation)</em>: the tool moved into the
+   bits repo as <code>bitsStore</code> and is invoked as <code>bits store …</code>. GC (<code>gc.py</code>) was
+   already hash-vs-manifest, and <code>bitsStore</code>'s content-object operations
+   (<code>ls</code>/<code>rm</code>/<code>verify</code>/<code>--orphans</code>) already operate on <code>store/…/&lt;hash&gt;/…</code> vs the
+   manifests, so no logic change was needed. The <code>--links</code>/<code>--broken-links</code>
+   selectors are retained as the migration tool (see Migration).
+5. <strong>Migration</strong>: new builds write hash-only; the old link/dist objects in an
+   existing store are simply no longer created. Purge the stale ones with
+   <code>bits store rm --links</code> / <code>bits store rm --broken-links</code> (or just rebuild the
+   store). There is no <code>migrate</code> subcommand — the content objects keep their path,
+   so nothing needs moving; only the pointer objects are swept.</p>
+<h2 id="open-questions-resolve-before-phase-2">Open questions (resolve before Phase 2)<a class="headerlink" href="#open-questions-resolve-before-phase-2" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Filename</strong> — <em>resolved</em>: versions come from the <strong>recipe/spec</strong>, never from a
+   tarball filename. <code>ver_rev(spec)</code> returns <code>spec["version"]</code>/<code>spec["revision"]</code>
+   (utilities.py:274); every tarball name is <em>constructed</em> from the spec
+   (<code>store_integrity._tarball_name</code> :70, <code>sync.py</code> upload name :1117, the rsync
+   find-glob :538) and the S3 fetch keys on <code>resolve_store_path(arch, hash)</code>.
+   Nothing parses pkg/verrev out of a filename. Consequence: renaming the stored
+   object to <code>&lt;hash&gt;.tar.gz</code> loses no information — only those constructors (and
+   <code>resolve_store_path</code>) change to emit <code>store/&lt;arch&gt;/&lt;h2&gt;/&lt;hash&gt;.tar.gz</code>.</li>
+<li><strong>External closure consumers</strong> — <em>resolved</em>: <code>bitsStore</code> is the only external
+   tool that reads the store; it is adapted in Phase 4. No other tool (and not the
+   CVMFS-graft path) reads the S3 dist closure directly, so nothing else needs a
+   reconstruct-from-manifest change.</li>
+<li><strong>Certify store-probe</strong> (not the manifest — the <em>check</em>): before signing a
+   common manifest, <code>certify</code> verifies it against the real store — for every
+   package it reads the tarball from S3, hashes the actual bytes, and refuses to
+   sign if the object is missing or its sha256 doesn't match what the manifest
+   claims (fail-closed: you cannot sign a manifest that lies about the store).
+   That read is <code>make_s3_probe</code> (certify.py:331), which builds the object key from
+   <code>resolve_store_path(arch, hash)</code> — the exact path this ADR changes. So when the
+   layout changes, the probe must read <code>store/&lt;arch&gt;/&lt;h2&gt;/&lt;hash&gt;.tar.gz</code>. Because
+   <code>resolve_store_path</code> is the single path builder (upload, fetch, AND probe all
+   call it), changing it once covers the probe. One extra simplification: today
+   the probe expects a per-hash <em>directory</em> containing a <code>&lt;pkg&gt;-&lt;verrev&gt;.&lt;arch&gt;</code>
+   tarball and heads/lists inside it; the new layout is a single <code>&lt;hash&gt;.tar.gz</code>
+   object, so that dir-listing/tarball-name fallback collapses to one head/get.
+   The manifest <em>format</em> (hash → tarball_sha256) is unchanged.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
