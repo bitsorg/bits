@@ -21,6 +21,11 @@ import sys
 
 # Default workdir: fall back on "sw" if env is not set or empty
 DEFAULT_WORK_DIR = os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR") or "sw"
+# Default container registry for --docker image selection (the bits-containers
+# minimal-OS toolchain images). Overridable per invocation via BITS_DOCKER_REGISTRY
+# or per community via a `docker_registry:` field in defaults-release; bypassed
+# entirely by BITS_LEGACY_REGISTRY=1 (legacy alisw builders).
+DEFAULT_DOCKER_REGISTRY = "gitlab-registry.cern.ch/bits/containers"
 
 
 def _add_s3_connection_opts(group):
@@ -1347,14 +1352,21 @@ def add_build_arguments(subparsers, ctx):
   build_docker = build_parser.add_argument_group(title="Build inside a container", description="""\
   Builds can be done inside a Docker container, to make it easier to get a
   common, usable environment. The Docker daemon must be installed and running
-  on your system. By default, images from alisw/<platform>-builder:latest will
-  be used, e.g. alisw/slc8-builder:latest. They will be fetched if unavailable.
+  on your system. With --docker and no --docker-image, the image is derived from
+  the architecture as <registry>/<machine>-<distro>[-cuda]:latest, where the
+  registry is BITS_DOCKER_REGISTRY, else a `docker_registry:` field in
+  defaults-release, else the built-in default (BITS_DOCKER_TAG overrides the
+  tag). Set BITS_LEGACY_REGISTRY=1 for the legacy alisw/<distro>-builder images
+  (the aliBuild wrapper sets this). Images are fetched if unavailable.
   """)
   build_docker.add_argument("--docker", dest="docker", action="store_true",
                             help="Build inside a Docker container.")
   build_docker.add_argument("--docker-image", dest="dockerImage", metavar="IMAGE", default=None,
                             help=("The Docker image to build inside of. Implies --docker. "
-                                  "By default, an image is chosen based on the architecture."))
+                                  "By default an image is derived from the architecture and the "
+                                  "configured registry (BITS_DOCKER_REGISTRY / defaults-release "
+                                  "docker_registry / built-in default); BITS_LEGACY_REGISTRY=1 "
+                                  "selects the legacy alisw builder."))
   build_docker.add_argument("--docker-extra-args", metavar="ARGLIST", default="",
                             help=("Command-line arguments to pass to 'docker run'. "
                                   "Passed through verbatim -- separate multiple arguments "
@@ -1880,6 +1892,23 @@ S3_SUPPORTED_ARCHS = "slc7_x86-64", "slc8_x86-64", "ubuntu2004_x86-64", "ubuntu2
 # equivalent layout (e.g. ubuntu2404_x86_64) still resolves to the same entry.
 _S3_SUPPORTED_ARCH_KEYS = {normalise_arch_key(a) for a in S3_SUPPORTED_ARCHS}
 
+def _defaults_docker_registry(args):
+  """Return the `docker_registry:` value from the merged defaults chain, or None.
+
+  A community pins its container registry in defaults-release either as a bare
+  top-level `docker_registry:` or under `system: docker_registry:`. Read
+  defensively: a malformed/unreadable defaults set must not break arg parsing.
+  """
+  try:
+    meta, _ = readDefaults(args.configDir, args.defaults,
+                           lambda *a, **k: None, args.architecture)
+    sysd = meta.get("system", {}) or {}
+    val = sysd.get("docker_registry", meta.get("docker_registry"))
+    return val.strip() if isinstance(val, str) and val.strip() else None
+  except Exception:
+    return None
+
+
 def _parse_flavours(raw):
   """Parse repeated/comma-separated --flavour values into an ordered dict.
 
@@ -2091,12 +2120,34 @@ def finaliseArgs(args, parser):
     # in docker the docker image is given by the first part of the
     # architecture we want to build for.
     if args.docker and not args.dockerImage:
-      # Derive the builder image from the distro token wherever it sits in the
-      # architecture string (pattern, not positional split), so reordered or
-      # underscore-machine layouts still resolve. Fall back to the legacy
-      # first-underscore field if no known distro token is recognised.
+      # Choose the builder image from the architecture. Resolution order:
+      #   1. BITS_LEGACY_REGISTRY truthy  -> legacy alisw/<distro>-builder
+      #      (ALICE guard, mirrors BITS_LEGACY_INITDOTSH; the aliBuild wrapper
+      #      sets it so ALICE keeps its images regardless of any registry here).
+      #   2. otherwise -> a bits-containers-style image from the configured
+      #      registry: BITS_DOCKER_REGISTRY env, else a `docker_registry:` field
+      #      in defaults-release, else the built-in DEFAULT_DOCKER_REGISTRY.
+      #      Image = <registry>/<machine>-<distro>[-cuda]:<tag> (BITS_DOCKER_TAG,
+      #      default latest). If the arch cannot be decomposed, fall back to the
+      #      legacy alisw builder.
+      # Only the base OS and the -cuda axis pick the image; the compiler axes
+      # (-gccNN/-clang) and build type (-opt/-dbg) are resolved inside the
+      # container by the entrypoint shim, so they do not change it.
       distro_token = arch_distro_token(args.architecture) or args.architecture.split("_")[0]
-      args.dockerImage = "registry.cern.ch/alisw/%s-builder" % distro_token
+      _legacy = os.environ.get("BITS_LEGACY_REGISTRY", "").strip().lower() in ("1", "true", "yes", "on")
+      _registry = None if _legacy else (
+        os.environ.get("BITS_DOCKER_REGISTRY", "").strip()
+        or _defaults_docker_registry(args)
+        or DEFAULT_DOCKER_REGISTRY)
+      _machine = (arch_machine_token(args.architecture) or "").replace("-", "_")
+      if _registry and _machine and distro_token:
+        _name = "%s-%s" % (_machine, distro_token)
+        if re.search(r"(^|-)cuda(-|$)", args.architecture):
+          _name += "-cuda"
+        _tag = os.environ.get("BITS_DOCKER_TAG", "").strip() or "latest"
+        args.dockerImage = "%s/%s:%s" % (_registry.rstrip("/"), _name, _tag)
+      else:
+        args.dockerImage = "registry.cern.ch/alisw/%s-builder" % distro_token
 
     # ── --docker-platform / cross-compilation ─────────────────────────────────
     # Derive the Docker --platform value from --architecture when the user has
