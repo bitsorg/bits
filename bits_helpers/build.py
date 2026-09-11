@@ -2983,7 +2983,12 @@ def doBuild(args, parser):
     _brewfile = _bf_path(workDir, args.architecture)
     if os.path.isfile(_brewfile):
       info("brew: reusing %s (brew bundle) before resolution", _brewfile)
-      _rc = subprocess.call(["brew", "bundle", "--file", _brewfile])
+      try:
+        _rc = subprocess.call(["brew", "bundle", "--file", _brewfile])
+      except OSError as _e:
+        _rc = 0  # brew absent: nothing bundled, per-recipe on-demand is the fallback
+        warning("brew: could not run 'brew bundle' (%s); using per-recipe "
+                "on-demand install.", _e)
       if _rc != 0:
         warning("brew: 'brew bundle --file %s' exited %d; falling back to "
                 "per-recipe on-demand install.", _brewfile, _rc)
@@ -3411,32 +3416,21 @@ def doBuild(args, parser):
     # If something requires or runtime_requires a package, then it's not a
     # pure build_requires only anymore, so we drop it from the list.
     spec["full_build_requires"] -= spec["full_runtime_requires"]
-   # Use the selected plugin to build, instead of the default behaviour, if a
-  # plugin was selected.
-  if args.plugin != "legacy":
-    return importlib.import_module("bits_helpers.%s_plugin" % args.plugin) \
-                    .build_plugin(specs, args, buildOrder)
-
-  debug("We will build packages in the following order: %s", " ".join(buildOrder))
-  # Record the macOS system layer (Homebrew) for this configuration as a local
-  # per-arch artifact at <work-dir>/<arch>/Brewfile, built from the recipes this
-  # build actually resolved. Runs on dry runs too, so `bits build --dry-run`
-  # generates the closure Brewfile without building; `bits build --brew` reuses
-  # it on the next run (see the brew-bundle step above).
+  # Record the macOS Homebrew "system layer" as a local per-arch artifact at
+  # <work-dir>/<arch>/Brewfile. Scan recipes (config dir + provider repos), not
+  # resolved specs — on osx the homebrew_formula lives on the original recipe and
+  # is dropped when prefer_system replaces it. Runs for all plugins and dry runs.
   if str(args.architecture).startswith("osx"):
-    from bits_helpers.brew import (collect_homebrew_from_specs,
-                                   default_brewfile_path, write_brewfile)
-    _formulae, _taps = collect_homebrew_from_specs(specs, args.architecture)
+    from bits_helpers.brew import collect_homebrew, default_brewfile_path, write_brewfile
+    _formulae, _taps = collect_homebrew([args.configDir] + list(provider_dirs), args.architecture)
     _brewfile = default_brewfile_path(workDir, args.architecture)
     _brewfile_existed = os.path.isfile(_brewfile)
     write_brewfile(_brewfile, _formulae, _taps, args.architecture)
     info("brew: recorded %d formulae to %s", len(_formulae), _brewfile)
-    # First macOS run (no Brewfile yet) without --brew: the Homebrew "system
-    # layer" this build needs has not been provisioned. We have just generated
-    # the manifest from the resolved closure; stop here and prompt the user to
-    # install it, rather than failing later when a Homebrew-sourced library is
-    # missing. (--brew installs on demand during resolution, so it never stops;
-    # a subsequent build finds the Brewfile present and proceeds.)
+    # First macOS run (no Brewfile, no --brew): system layer not provisioned.
+    # Stop with a non-zero exit (CI must not read "built nothing" as success)
+    # rather than failing later on a missing Homebrew library. --brew never
+    # stops; a later build finds the Brewfile and proceeds.
     if not _brewfile_existed and not cfg.brew and not args.dryRun and _formulae:
       banner("macOS system dependencies are not installed yet.\n\n"
              "Generated the Homebrew manifest for this build (%d formulae):\n"
@@ -3445,7 +3439,17 @@ def doBuild(args, parser):
              "\tbrew bundle --file %s\n\n"
              "Or re-run with --brew to install them on demand during the build.",
              len(_formulae), _brewfile, _brewfile)
-      return
+      # Exit 2: the one non-zero code bitsBuild does not wrap in a misleading
+      # "malformed defaults" message, so the banner above stands on its own.
+      sys.exit(2)
+
+   # Use the selected plugin to build, instead of the default behaviour, if a
+  # plugin was selected.
+  if args.plugin != "legacy":
+    return importlib.import_module("bits_helpers.%s_plugin" % args.plugin) \
+                    .build_plugin(specs, args, buildOrder)
+
+  debug("We will build packages in the following order: %s", " ".join(buildOrder))
 
   if args.dryRun:
     info("--dry-run / -n specified. Not building.")

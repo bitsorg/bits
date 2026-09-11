@@ -133,27 +133,6 @@ def collect_homebrew(configDirs, architecture):
   return formulae, taps
 
 
-def collect_homebrew_from_specs(specs, architecture):
-  """Return (formulae, taps) for an already-resolved spec graph.
-
-  ``specs`` is the dict of resolved package specs (as ``bits build`` produces
-  after dependency resolution). This is the authoritative, config-accurate set:
-  only the recipes the current configuration actually pulls in contribute, so the
-  emitted Brewfile is exactly what this build needs. On a non-osx architecture
-  nothing is emitted; on osx the build-system base formulae are always included.
-  """
-  formulae, taps = set(), set()
-  if not str(architecture).startswith("osx"):
-    return formulae, taps
-  formulae |= BASE_FORMULAE
-  for spec in specs.values():
-    if not isinstance(spec, dict):
-      continue
-    _formula_from_spec(spec, architecture, formulae, taps,
-                       spec.get("package", "<unknown>"))
-  return formulae, taps
-
-
 def _standalone_scan_dirs(configDir, work_dir):
   """Directories `bits brew` scans standalone: configDir + cloned providers.
 
