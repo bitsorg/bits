@@ -566,13 +566,17 @@ def add_brew_arguments(subparsers, ctx):
                help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
   brew_parser.add_argument("-o", "--output", dest="output", metavar="FILE", default=None,
                            help=("Write the Brewfile to %(metavar)s. Use '-' for stdout. "
-                                 "Default: <CONFIGDIR>/macos/Brewfile (next to the recipes, "
-                                 "which are the source of truth)."))
+                                 "Default: <WORKDIR>/<arch>/Brewfile (a local per-arch build "
+                                 "artifact, not committed next to the recipes)."))
   brew_parser.add_argument("--check", dest="check", action="store_true", default=False,
                            help=("Do not write; exit non-zero if FILE is missing or differs from what "
-                                 "would be generated (for CI / pre-commit)."))
+                                 "would be generated now. Use it to detect a stale local Brewfile "
+                                 "before building."))
   ctx.config_dir(brew_parser,
                  help="The directory containing build recipes. Default '%(default)s'.")
+  ctx.work_dir(brew_parser,
+               help="Build work area; the Brewfile is written to <WORKDIR>/<arch>/Brewfile "
+                    "and providers cloned under <WORKDIR>/REPOS are scanned. Default '%(default)s'.")
   ctx.chdir(brew_parser,
             help=("Change to the specified directory before doing anything. "
                   "Alternatively, set BITS_CHDIR. Default '%(default)s'."))

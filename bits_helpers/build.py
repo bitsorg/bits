@@ -2975,6 +2975,19 @@ def doBuild(args, parser):
   if cfg.brew:
     extra_env["BITS_BREW"] = "1"
 
+  # Reuse a Brewfile recorded by a previous build (or `bits brew`): install it in
+  # one shot up front so the per-recipe on-demand `brew install` checks below are
+  # no-ops. Best-effort — per-recipe on-demand install remains the fallback.
+  if cfg.brew and not args.dryRun and str(args.architecture).startswith("osx"):
+    from bits_helpers.brew import default_brewfile_path as _bf_path
+    _brewfile = _bf_path(workDir, args.architecture)
+    if os.path.isfile(_brewfile):
+      info("brew: reusing %s (brew bundle) before resolution", _brewfile)
+      _rc = subprocess.call(["brew", "bundle", "--file", _brewfile])
+      if _rc != 0:
+        warning("brew: 'brew bundle --file %s' exited %d; falling back to "
+                "per-recipe on-demand install.", _brewfile, _rc)
+
   # ── Repository-provider discovery ─────────────────────────────────────────
   # Phase 1 – Always-on providers: recipes with ``always_load: true`` (and
   # optionally the auto-synthesised ``bits-providers`` package built from
@@ -3405,6 +3418,35 @@ def doBuild(args, parser):
                     .build_plugin(specs, args, buildOrder)
 
   debug("We will build packages in the following order: %s", " ".join(buildOrder))
+  # Record the macOS system layer (Homebrew) for this configuration as a local
+  # per-arch artifact at <work-dir>/<arch>/Brewfile, built from the recipes this
+  # build actually resolved. Runs on dry runs too, so `bits build --dry-run`
+  # generates the closure Brewfile without building; `bits build --brew` reuses
+  # it on the next run (see the brew-bundle step above).
+  if str(args.architecture).startswith("osx"):
+    from bits_helpers.brew import (collect_homebrew_from_specs,
+                                   default_brewfile_path, write_brewfile)
+    _formulae, _taps = collect_homebrew_from_specs(specs, args.architecture)
+    _brewfile = default_brewfile_path(workDir, args.architecture)
+    _brewfile_existed = os.path.isfile(_brewfile)
+    write_brewfile(_brewfile, _formulae, _taps, args.architecture)
+    info("brew: recorded %d formulae to %s", len(_formulae), _brewfile)
+    # First macOS run (no Brewfile yet) without --brew: the Homebrew "system
+    # layer" this build needs has not been provisioned. We have just generated
+    # the manifest from the resolved closure; stop here and prompt the user to
+    # install it, rather than failing later when a Homebrew-sourced library is
+    # missing. (--brew installs on demand during resolution, so it never stops;
+    # a subsequent build finds the Brewfile present and proceeds.)
+    if not _brewfile_existed and not cfg.brew and not args.dryRun and _formulae:
+      banner("macOS system dependencies are not installed yet.\n\n"
+             "Generated the Homebrew manifest for this build (%d formulae):\n"
+             "  %s\n\n"
+             "Install them, then re-run your build:\n\n"
+             "\tbrew bundle --file %s\n\n"
+             "Or re-run with --brew to install them on demand during the build.",
+             len(_formulae), _brewfile, _brewfile)
+      return
+
   if args.dryRun:
     info("--dry-run / -n specified. Not building.")
     return
