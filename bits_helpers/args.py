@@ -1905,7 +1905,9 @@ def _defaults_docker_registry(args):
     sysd = meta.get("system", {}) or {}
     val = sysd.get("docker_registry", meta.get("docker_registry"))
     return val.strip() if isinstance(val, str) and val.strip() else None
-  except Exception:
+  except (Exception, SystemExit):
+    # readDefaults calls sys.exit(1) on a malformed defaults file; don't let this
+    # peek abort arg parsing — doBuild re-reads defaults and reports it properly.
     return None
 
 
