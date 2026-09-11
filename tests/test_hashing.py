@@ -331,3 +331,32 @@ class OwnHashTestCase(unittest.TestCase):
             storeHashes("GCC-Toolchain", specs, considerRelocation=False)
             return specs["GCC-Toolchain"]["remote_revision_hash"]
         self.assertNotEqual(h("x1"), h("x2"))
+
+    def test_container_fingerprint_folds_for_own_hash(self):
+        # Same community, different container fingerprint -> different identity
+        # (the build environment is captured); same fingerprint -> identical.
+        def h(fp):
+            sp = self._mk("v14.2.0", True); sp["container_fingerprint"] = fp
+            specs = {"defaults-release": {"hash": "d"}, "GCC-Toolchain": sp}
+            storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+            return specs["GCC-Toolchain"]["remote_revision_hash"]
+        self.assertNotEqual(h("fp_glibc_2.34"), h("fp_glibc_2.39"))
+        self.assertEqual(h("fp_same"), h("fp_same"))
+
+    def test_converges_across_communities_same_fingerprint(self):
+        # Cross-community S3 reuse still holds when the fingerprint matches.
+        def h(defaults_hash):
+            sp = self._mk("v14.2.0", True); sp["container_fingerprint"] = "fp_x"
+            specs = {"defaults-release": {"hash": defaults_hash}, "GCC-Toolchain": sp}
+            storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+            return specs["GCC-Toolchain"]["remote_revision_hash"]
+        self.assertEqual(h("defaults_A"), h("defaults_B"))
+
+    def test_fingerprint_ignored_for_non_own_hash(self):
+        # container_fingerprint must only affect own_hash packages.
+        def h(fp):
+            sp = self._mk("v14.2.0", False); sp["container_fingerprint"] = fp
+            specs = {"defaults-release": {"hash": "d"}, "GCC-Toolchain": sp}
+            storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+            return specs["GCC-Toolchain"]["remote_revision_hash"]
+        self.assertEqual(h("fp_a"), h("fp_b"))

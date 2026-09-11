@@ -3106,6 +3106,19 @@ def doBuild(args, parser):
                      provider_dirs          = provider_dirs,
                      defaults_meta           = defaultsMeta)
 
+    # Read the container fingerprint (only present in a bits-containers image), so
+    # own_hash packages can fold the build environment — bison/flex/glibc/binutils
+    # + base compiler versions, the inputs that pruned system_requirements hide
+    # (ADR-0012 D4). Empty on non-container builds; best-effort inside the runner.
+    args.container_fingerprint = ""
+    try:
+      _fp_rc, _fp_out = getstatusoutput_docker(
+        "cat /opt/bits/container-fingerprint.hash 2>/dev/null || true")
+      if _fp_rc == 0 and _fp_out.strip():
+        args.container_fingerprint = _fp_out.strip()
+    except Exception:
+      pass
+
   _bad_defaults, _missing_flavor = incompatibleFlavorDefaults(validDefaults, args.defaults, defaultsMeta)
   dieOnError(bool(_bad_defaults) or _missing_flavor,
              "Specified default `%s' is not compatible with the packages you want to build.\n"
@@ -3132,6 +3145,22 @@ def doBuild(args, parser):
     x["build_requires"] = [r for r in x["build_requires"] if r not in args.disable]
     x["runtime_requires"] = [r for r in x["runtime_requires"] if r not in args.disable]
     x["auto_patch"] = _global_auto_patch and bool(x.get("auto_patch", True))
+
+  # own_hash packages fold the container fingerprint into their identity so the
+  # build environment they build the compiler with is captured (ADR-0012 D4).
+  # Fail loud rather than fold "none" if a --docker build cannot read it: an empty
+  # read would hash a container build under the native identity, letting a later
+  # native build wrongly reuse it. Off-container (native) "none" is legitimate.
+  _own_specs = [x for x in specs.values() if x.get("own_hash")]
+  if _own_specs:
+    _fp = getattr(args, "container_fingerprint", "")
+    dieOnError(bool(args.docker) and not _fp,
+               "own_hash package(s) %s need the container fingerprint, but the build "
+               "image has no readable /opt/bits/container-fingerprint.hash. Use a "
+               "bits-containers image, or build without --docker."
+               % ", ".join(sorted(x["package"] for x in _own_specs)))
+    for _s in _own_specs:
+      _s["container_fingerprint"] = _fp
 
   if systemPackages:
     banner("bits can take the following packages from the system and will not build them:\n  %s",

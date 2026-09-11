@@ -256,6 +256,11 @@ def storeHashes(package, specs, considerRelocation):
   # has chosen NOT to fold into this package's identity hash, so that editing one
   # does not invalidate (rebuild) this package or anything above it. (Empty for
   # ordinary recipes, so their hashes are byte-identical to before.)
+  # own_hash packages also fold the container fingerprint (build environment:
+  # bison/flex/glibc/binutils + base compiler) so the inputs that pruned
+  # system_requirements hide are captured (ADR-0012 D4). "none" off-container.
+  if spec.get("own_hash"):
+    h_all("container-fingerprint:" + (spec.get("container_fingerprint") or "none"))
   untracked = set(spec.get("untracked_requires", ()))
   # own_hash: a recipe whose output is invariant to the ambient (community) defaults
   # excludes the merged defaults-release from its IDENTITY hash, so the same tag/
