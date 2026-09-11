@@ -257,6 +257,13 @@ def storeHashes(package, specs, considerRelocation):
   # does not invalidate (rebuild) this package or anything above it. (Empty for
   # ordinary recipes, so their hashes are byte-identical to before.)
   untracked = set(spec.get("untracked_requires", ()))
+  # own_hash: a recipe whose output is invariant to the ambient (community) defaults
+  # excludes the merged defaults-release from its IDENTITY hash, so the same tag/
+  # sources hash identically across communities and the S3 cache is reused. The
+  # axis still differentiates via the tag override on the recipe's own spec, and
+  # defaults-release stays in deps_hash (dev rebuilds still see it). See ADR-0012.
+  if spec.get("own_hash"):
+    untracked = untracked | {"defaults-release"}
   dh = Hasher()
   for dep in spec.get("requires", []):
     # At this point, our dependencies have a single hash, local or remote, in

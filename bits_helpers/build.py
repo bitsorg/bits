@@ -907,7 +907,17 @@ def create_provenance_info(package, specs, args):
           return True
     return False
   _untracked = list(specs[package].get("untracked_requires", ()))
-  _provenance = "loose" if _closure_untracked() else "pure"
+  if specs[package].get("own_hash"):
+    # own_hash deliberately excludes the merged defaults-release from the identity
+    # hash (ADR-0012), so the record must NOT claim to certify the full closure.
+    # Record it honestly and list the excluded dep. Distinct from "loose" (a user
+    # decoupling a linked dep) and NOT contagious: consumers fold the package's
+    # stable hash and certify their own closure. Recorded only; spec not mutated.
+    if "defaults-release" not in _untracked:
+      _untracked = _untracked + ["defaults-release"]
+    _provenance = "own_hash"
+  else:
+    _provenance = "loose" if _closure_untracked() else "pure"
   return json.dumps({
     "comment": args.annotate.get(package),
     "bits_version": __version__,
@@ -3105,6 +3115,8 @@ def doBuild(args, parser):
              "Please run:\n\n\tbitsDoctor --defaults %s %s\n\nto get a full diagnosis." %
              ("\n- ".join(sorted(failed)), "::".join(args.defaults), " ".join(args.pkgname)))
   
+  if args.docker and getattr(args, "dockerImage", None):
+    banner("Building in container:\n%s", args.dockerImage)
   banner("Configured directory:\n%s", os.path.abspath(args.configDir))
   banner("Package Recipe will be searched in the following order \n%s", os.environ.get("BITS_PATH"))
   # Resolve the effective auto-patch flag for every package. Default behaviour is

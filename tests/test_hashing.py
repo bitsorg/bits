@@ -266,3 +266,68 @@ class SourceKeysExcludedFromTextHashTestCase(unittest.TestCase):
         g1 = self._h(source="g", commit_hash="aaa", tag="v1")
         g2 = self._h(source="g", commit_hash="bbb", tag="v1")
         self.assertNotEqual(g1, g2)
+
+
+class OwnHashTestCase(unittest.TestCase):
+    """own_hash excludes the merged defaults-release from a package's IDENTITY
+    hash (ADR-0012): the same recipe/tag hashes identically across communities,
+    while the axis (tag) still differentiates. Without the flag, community
+    defaults change the hash — the negative control."""
+
+    @staticmethod
+    def _mk(tag, own):
+        spec = {
+            "package": "GCC-Toolchain", "recipe": "echo build", "version": tag,
+            "tag": tag, "commit_hash": tag, "scm_refs": {}, "pkg_family": "",
+            "is_devel_pkg": False, "source": "https://example/gcc",
+            "env": OrderedDict(), "requires": ["defaults-release"],
+            "untracked_requires": [],
+        }
+        if own:
+            spec["own_hash"] = True
+        return spec
+
+    def _hash(self, defaults_hash, tag, own):
+        specs = {"defaults-release": {"hash": defaults_hash}}
+        specs["GCC-Toolchain"] = self._mk(tag, own)
+        storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+        return specs["GCC-Toolchain"]["remote_revision_hash"]
+
+    def test_converges_across_communities_with_flag(self):
+        self.assertEqual(self._hash("defaults_A", "v14.2.0", True),
+                         self._hash("defaults_B", "v14.2.0", True))
+
+    def test_diverges_across_communities_without_flag(self):
+        # Negative control: without own_hash the community defaults DO change it.
+        self.assertNotEqual(self._hash("defaults_A", "v14.2.0", False),
+                            self._hash("defaults_B", "v14.2.0", False))
+
+    def test_axis_still_differentiates_with_flag(self):
+        self.assertNotEqual(self._hash("defaults_A", "v14.2.0", True),
+                            self._hash("defaults_A", "v13.2.0", True))
+
+    def _hashes(self, defaults_hash, tag, own):
+        specs = {"defaults-release": {"hash": defaults_hash}}
+        specs["GCC-Toolchain"] = self._mk(tag, own)
+        storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+        sp = specs["GCC-Toolchain"]
+        return sp["remote_revision_hash"], sp["deps_hash"]
+
+    def test_defaults_still_in_deps_hash_with_flag(self):
+        # own_hash keeps defaults-release in deps_hash (dev rebuilds still see it):
+        # identity converges across communities, deps_hash still differs.
+        idA, dA = self._hashes("defaults_A", "v14.2.0", True)
+        idB, dB = self._hashes("defaults_B", "v14.2.0", True)
+        self.assertEqual(idA, idB)
+        self.assertNotEqual(dA, dB)
+
+    def test_other_requires_still_folded_with_flag(self):
+        # own_hash excludes ONLY defaults-release; a real dependency still folds
+        # into the identity (guards against accidental over-exclusion).
+        def h(depx):
+            specs = {"defaults-release": {"hash": "d"}, "X": {"hash": depx}}
+            sp = self._mk("v14.2.0", True); sp["requires"] = ["defaults-release", "X"]
+            specs["GCC-Toolchain"] = sp
+            storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+            return specs["GCC-Toolchain"]["remote_revision_hash"]
+        self.assertNotEqual(h("x1"), h("x2"))
