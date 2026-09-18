@@ -1,0 +1,1631 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The bits build system — documentation">
+      
+      
+      
+      
+        <link rel="prev" href="../USERGUIDE/">
+      
+      
+        <link rel="next" href="../WORKFLOWS/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Cookbook - bits</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#bits-cookbook" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="bits" class="md-header__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            bits
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Cookbook
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="bits" class="md-nav__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    bits
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../USERGUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cookbook
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cookbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#build-a-complete-stack-from-scratch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build a complete stack from scratch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inspect-the-dependency-graph-before-building" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspect the dependency graph before building
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-for-a-different-os-or-architecture-docker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build for a different OS or architecture (Docker)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#develop-and-iterate-on-a-single-package" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Develop and iterate on a single package
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#iterate-on-a-dependency-without-rebuilding-the-stack-above-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Iterate on a dependency without rebuilding the stack above it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#debug-a-failed-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debug a failed build
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#use-the-built-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use the built environment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#override-a-package-version-without-editing-the-recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Override a package version without editing the recipe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pin-a-dependencys-version-from-within-a-recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pin a dependency's version from within a recipe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pin-the-repository-provider-recipe-repo-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pin the repository-provider (recipe-repo) version
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#check-out-a-recipe-repository-and-develop-against-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Check out a recipe repository and develop against it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#use-a-private-recipe-repository-alongside-the-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use a private recipe repository alongside the defaults
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#set-up-a-project-with-a-persistent-binary-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Set up a project with a persistent binary store
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#share-pre-built-artifacts-over-s3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Share pre-built artifacts over S3
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#enforce-reproducible-source-downloads-with-checksums" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enforce reproducible source downloads with checksums
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#speed-up-large-builds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Speed up large builds
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-memory-hungry-packages-without-exhausting-ram" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build memory-hungry packages without exhausting RAM
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#evict-old-packages-to-free-disk-space" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Evict old packages to free disk space
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verify-a-live-deployment-against-a-build-manifest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify a live deployment against a build manifest
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cicd-build-and-publish-only-on-the-main-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI/CD: build and publish only on the main branch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-recipes-with-bits-recipe-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing Recipes with bits-recipe-tools
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Writing Recipes with bits-recipe-tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#plain-run-function-no-external-package-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plain Run() function (no external package needed)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-bits-recipe-tools-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How bits-recipe-tools works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#module_options-controlling-modulefile-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MODULE_OPTIONS — controlling modulefile generation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-cmake-library-cppgsl-header-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example — CMake library (cppgsl, header-only)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-autotools-library" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example — Autotools library
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-custom-post-install-fixup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example — Custom post-install fixup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#error-handling-in-recipes-how-failures-are-detected" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error handling in recipes — how failures are detected
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../WORKFLOWS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design (ADR)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design (ADR)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/0001-cvmfs-relaxed-reuse.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Relaxed CVMFS reuse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/0001-implementation-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#build-a-complete-stack-from-scratch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build a complete stack from scratch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inspect-the-dependency-graph-before-building" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspect the dependency graph before building
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-for-a-different-os-or-architecture-docker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build for a different OS or architecture (Docker)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#develop-and-iterate-on-a-single-package" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Develop and iterate on a single package
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#iterate-on-a-dependency-without-rebuilding-the-stack-above-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Iterate on a dependency without rebuilding the stack above it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#debug-a-failed-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debug a failed build
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#use-the-built-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use the built environment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#override-a-package-version-without-editing-the-recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Override a package version without editing the recipe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pin-a-dependencys-version-from-within-a-recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pin a dependency's version from within a recipe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pin-the-repository-provider-recipe-repo-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pin the repository-provider (recipe-repo) version
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#check-out-a-recipe-repository-and-develop-against-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Check out a recipe repository and develop against it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#use-a-private-recipe-repository-alongside-the-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use a private recipe repository alongside the defaults
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#set-up-a-project-with-a-persistent-binary-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Set up a project with a persistent binary store
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#share-pre-built-artifacts-over-s3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Share pre-built artifacts over S3
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#enforce-reproducible-source-downloads-with-checksums" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enforce reproducible source downloads with checksums
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#speed-up-large-builds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Speed up large builds
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-memory-hungry-packages-without-exhausting-ram" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build memory-hungry packages without exhausting RAM
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#evict-old-packages-to-free-disk-space" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Evict old packages to free disk space
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verify-a-live-deployment-against-a-build-manifest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify a live deployment against a build manifest
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cicd-build-and-publish-only-on-the-main-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI/CD: build and publish only on the main branch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-recipes-with-bits-recipe-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing Recipes with bits-recipe-tools
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Writing Recipes with bits-recipe-tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#plain-run-function-no-external-package-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plain Run() function (no external package needed)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-bits-recipe-tools-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How bits-recipe-tools works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#module_options-controlling-modulefile-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MODULE_OPTIONS — controlling modulefile generation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-cmake-library-cppgsl-header-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example — CMake library (cppgsl, header-only)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-autotools-library" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example — Autotools library
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-custom-post-install-fixup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example — Custom post-install fixup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#error-handling-in-recipes-how-failures-are-detected" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error handling in recipes — how failures are detected
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="bits-cookbook">Bits — Cookbook<a class="headerlink" href="#bits-cookbook" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>See also:</strong> <a href="../USERGUIDE/">User Guide</a> · <a href="../REFERENCE/">Reference Manual</a> · <a href="../WORKFLOWS/">Workflows</a></p>
+</blockquote>
+<p>Practical recipes for common bits tasks. Each entry is self-contained; refer to the <a href="../USERGUIDE/">User Guide</a> for background and to the <a href="../REFERENCE/">Reference Manual</a> for complete flag documentation.</p>
+<hr />
+<h3 id="build-a-complete-stack-from-scratch">Build a complete stack from scratch<a class="headerlink" href="#build-a-complete-stack-from-scratch" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>doctor<span class="w"> </span>ROOT<span class="w">            </span><span class="c1"># verify system requirements first</span>
+bits<span class="w"> </span>build<span class="w"> </span>ROOT<span class="w">             </span><span class="c1"># build everything</span>
+bits<span class="w"> </span>enter<span class="w"> </span>ROOT/latest<span class="w">      </span><span class="c1"># drop into the built environment</span>
+</code></pre></div>
+<h3 id="inspect-the-dependency-graph-before-building">Inspect the dependency graph before building<a class="headerlink" href="#inspect-the-dependency-graph-before-building" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>deps<span class="w"> </span>--outgraph<span class="w"> </span>deps.pdf<span class="w"> </span>ROOT<span class="w">   </span><span class="c1"># requires Graphviz</span>
+</code></pre></div>
+<p>Useful for understanding which packages will be built and in what order before committing to a long build. The PDF shows the full transitive dependency tree rooted at the requested package.</p>
+<h3 id="build-for-a-different-os-or-architecture-docker">Build for a different OS or architecture (Docker)<a class="headerlink" href="#build-for-a-different-os-or-architecture-docker" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Different Linux version</span>
+bits<span class="w"> </span>build<span class="w"> </span>--docker<span class="w"> </span>--architecture<span class="w"> </span>ubuntu2004_x86-64<span class="w"> </span>ROOT
+
+<span class="c1"># Cross-compile for ARM64 on an x86-64 host (requires QEMU binfmt handlers)</span>
+bits<span class="w"> </span>build<span class="w"> </span>--docker<span class="w"> </span>--architecture<span class="w"> </span>slc9_aarch64<span class="w"> </span>MyAnalysis
+</code></pre></div>
+<p>The <code>--architecture</code> string selects both the OS image and the target CPU. When the target architecture differs from the host, bits automatically injects the matching Docker <code>--platform</code> flag so QEMU handles emulation transparently. See <a href="../REFERENCE/#222-cross-compilation-via-qemu">§22.2 Cross-compilation via QEMU</a> for QEMU setup details.</p>
+<h3 id="develop-and-iterate-on-a-single-package">Develop and iterate on a single package<a class="headerlink" href="#develop-and-iterate-on-a-single-package" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>init<span class="w"> </span>libfoo<span class="w">            </span><span class="c1"># create a writable source checkout</span>
+<span class="c1"># … edit source in the libfoo/ directory …</span>
+bits<span class="w"> </span>build<span class="w"> </span>libfoo<span class="w">           </span><span class="c1"># rebuilds only libfoo (devel mode)</span>
+<span class="nb">eval</span><span class="w"> </span><span class="s2">"</span><span class="k">$(</span>bits<span class="w"> </span>load<span class="w"> </span>libfoo/latest<span class="k">)</span><span class="s2">"</span>
+</code></pre></div>
+<h3 id="iterate-on-a-dependency-without-rebuilding-the-stack-above-it">Iterate on a dependency without rebuilding the stack above it<a class="headerlink" href="#iterate-on-a-dependency-without-rebuilding-the-stack-above-it" title="Permanent link">&para;</a></h3>
+<p>Editing a low-level dependency normally re-hashes every package that depends on it, forcing a full rebuild of the stack. To rebuild <strong>only the dependency</strong> and reuse its consumers, list it under <code>untracked_requires:</code> instead of <code>requires:</code> in each consumer that can tolerate it:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">package</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">MyApp</span>
+<span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">"1.0"</span>
+<span class="nt">requires</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ROOT</span>
+<span class="nt">untracked_requires</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">libfoo</span><span class="w">          </span><span class="c1"># linked at runtime, but changes to it don't re-hash MyApp</span>
+</code></pre></div>
+<p>Give the dependency a <strong>stable install label</strong> so reused consumers keep finding it after it changes:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">package</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">libfoo</span>
+<span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">"2.3"</span>
+<span class="nt">force_revision</span><span class="p">:</span><span class="w"> </span><span class="s">"dev"</span><span class="w">   </span><span class="c1"># install path stays …/libfoo/2.3-dev across edits</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>init<span class="w"> </span>libfoo<span class="w">        </span><span class="c1"># writable checkout of the dependency</span>
+<span class="c1"># … edit libfoo source …</span>
+bits<span class="w"> </span>build<span class="w"> </span>MyApp<span class="w">        </span><span class="c1"># rebuilds libfoo only; MyApp is reused and relinks it</span>
+</code></pre></div>
+<p>Only <code>libfoo</code> rebuilds; <code>MyApp</code> (and everything above it) keeps its identity hash and is reused, picking up the new <code>libfoo</code> through its <code>…/libfoo/2.3-dev</code> path.</p>
+<p><strong>Caveats.</strong> The consumer is <em>relinked, not recompiled</em>, so this is valid only while your change keeps <code>libfoo</code> ABI-compatible (same headers / soname). Any build whose closure includes an untracked dependency is recorded <code>provenance: loose</code> in <code>.meta.json</code> — still publishable, but you own the ABI decision. Without <code>force_revision</code> the dependency's path moves on each edit and reused consumers keep linking the previous build (bits warns). See <a href="../REFERENCE/#dependencies"><code>untracked_requires</code></a> in the reference.</p>
+<h3 id="debug-a-failed-build">Debug a failed build<a class="headerlink" href="#debug-a-failed-build" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>--debug<span class="w"> </span>--keep-tmp<span class="w"> </span>my_package
+<span class="c1"># Build directory path is printed in the log</span>
+<span class="nb">cd</span><span class="w"> </span>sw/BUILD/my_package-*/
+cat<span class="w"> </span>log
+<span class="c1"># Re-run the failing command manually to iterate quickly</span>
+</code></pre></div>
+<h3 id="use-the-built-environment">Use the built environment<a class="headerlink" href="#use-the-built-environment" title="Permanent link">&para;</a></h3>
+<p><strong>Interactive sub-shell</strong> — opens a new shell with all modules loaded; the prompt changes so it is clear you are inside a bits environment:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>enter<span class="w"> </span>ROOT/latest
+root<span class="w"> </span>-b
+<span class="nb">exit</span><span class="w">   </span><span class="c1"># return to your normal shell</span>
+</code></pre></div>
+<p><strong>Single command</strong> — loads modules and exec's the command without spawning an interactive shell; exit code passes through unchanged:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>setenv<span class="w"> </span>ROOT/v6-30<span class="w"> </span>-c<span class="w"> </span>root<span class="w"> </span>-b
+</code></pre></div>
+<p><strong>Persistent load/unload in the current shell</strong> — add the shell helper to <code>~/.bashrc</code>, <code>~/.zshrc</code>, or <code>~/.kshrc</code> once:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">BITS_WORK_DIR</span><span class="o">=</span>/path/to/sw
+<span class="nb">eval</span><span class="w"> </span><span class="s2">"</span><span class="k">$(</span>bits<span class="w"> </span>shell-helper<span class="k">)</span><span class="s2">"</span>
+</code></pre></div>
+<p>Then in any shell session:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>load<span class="w"> </span>ROOT/latest,Python/3.11-1<span class="w">   </span><span class="c1"># load one or more modules</span>
+bits<span class="w"> </span>unload<span class="w"> </span>ROOT<span class="w">                       </span><span class="c1"># unload (version can be omitted)</span>
+bits<span class="w"> </span>list<span class="w">                              </span><span class="c1"># show currently loaded modules</span>
+</code></pre></div>
+<p>Without <code>shell-helper</code>, use <code>eval</code> manually: <code>eval "$(bits load ROOT/latest)"</code>.</p>
+<h3 id="override-a-package-version-without-editing-the-recipe">Override a package version without editing the recipe<a class="headerlink" href="#override-a-package-version-without-editing-the-recipe" title="Permanent link">&para;</a></h3>
+<p>Defaults profiles can pin package versions globally without modifying recipe files. The <code>overrides:</code> block is a per-package patch merged into the spec after the recipe is parsed, so it can set <code>version</code>, <code>tag</code>, <code>source</code>, or any other field — and it takes precedence over the recipe's own values:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># In defaults-myproject.sh</span>
+<span class="nt">overrides</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">root</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">"6.32.02"</span>
+<span class="w">    </span><span class="nt">tag</span><span class="p">:</span><span class="w"> </span><span class="s">"v6-32-02"</span><span class="w">        </span><span class="c1"># tarball URL %(version)s and the git tag both follow</span>
+<span class="w">  </span><span class="nt">boost</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">"1.85.0"</span>
+</code></pre></div>
+<p>Then build with:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>--defaults<span class="w"> </span>release::myproject<span class="w"> </span>MyStack
+</code></pre></div>
+<p>Keys are matched case-insensitively as <code>re.fullmatch</code> regexes, so <code>root</code> and <code>ROOT</code> both work and patterns such as <code>clhep|geant4</code> are valid. This is the recommended way to pin versions: useful for shared recipes where different projects need different versions, or for emergency pinning when a new version breaks downstream packages.</p>
+<h3 id="pin-a-dependencys-version-from-within-a-recipe">Pin a dependency's version from within a recipe<a class="headerlink" href="#pin-a-dependencys-version-from-within-a-recipe" title="Permanent link">&para;</a></h3>
+<p>A recipe can pin the version of one of its dependencies directly in the <code>requires</code> / <code>build_requires</code> list using the <code>name = version</code> form. The pin updates both <code>version</code> and <code>tag</code> of the named dependency:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">package</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">myanalysis</span>
+<span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">"1.0"</span>
+<span class="nt">requires</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">root = 6.32.02</span><span class="w">            </span><span class="c1"># pin root for this whole build</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">boost = 1.85.0:slc7.*</span><span class="w">     </span><span class="c1"># pin only on slc7 architectures</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">vdt = v0.4.4:defaults=dev4</span><span class="w">   </span><span class="c1"># pin only under --defaults dev4</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fmt</span><span class="w">                       </span><span class="c1"># plain dependency, no pin</span>
+<span class="nt">build_requires</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cmake</span>
+<span class="nn">---</span>
+</code></pre></div>
+<p>The optional <code>:matcher</code> suffix is the same architecture / <code>defaults=</code> condition used for conditional dependencies, so a pin can be made arch- or profile-specific. Only <strong>one</strong> version pin per dependency is allowed across the whole graph — two recipes pinning the same package to different versions is a fatal error. For most cases prefer the defaults <code>overrides:</code> block above; the in-recipe pin is handy when the constraint logically belongs to the consuming package.</p>
+<h3 id="pin-the-repository-provider-recipe-repo-version">Pin the repository-provider (recipe-repo) version<a class="headerlink" href="#pin-the-repository-provider-recipe-repo-version" title="Permanent link">&para;</a></h3>
+<p>A <a href="../REFERENCE/#13-repository-provider-feature">repository provider</a> such as <code>lcg.bits</code> pulls an entire recipe repository from git. Which snapshot it pulls is controlled by the provider recipe's <code>tag:</code> field — a branch, tag, or commit hash:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># bits-providers/lcg.bits.sh</span>
+<span class="nt">package</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lcg.bits</span>
+<span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
+<span class="nt">tag</span><span class="p">:</span><span class="w"> </span><span class="s">"LCG_106"</span><span class="w">              </span><span class="c1"># branch, tag, or commit; defaults to the repo's main branch</span>
+<span class="nt">provides_repository</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="nt">source</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://github.com/bitsorg/lcg.bits</span>
+<span class="nn">---</span>
+</code></pre></div>
+<p>To choose the snapshot at invocation time without editing the recipe, append <code>@&lt;tag&gt;</code> to the bits-providers URL:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">BITS_PROVIDERS</span><span class="o">=</span><span class="s2">"https://github.com/bitsorg/bits-providers@LCG_106"</span>
+<span class="c1"># or per-invocation:</span>
+bits<span class="w"> </span>build<span class="w"> </span>--providers<span class="w"> </span>https://github.com/bitsorg/bits-providers@LCG_106<span class="w"> </span>LCG
+</code></pre></div>
+<p>The provider's commit hash is folded into every dependent package's build hash, so changing the provider version triggers a rebuild of everything sourced from it. Note that provider repositories are cloned <em>before</em> defaults <code>overrides:</code> are applied, so an <code>overrides:</code> entry does <strong>not</strong> change which provider snapshot is fetched — use the <code>tag:</code> field or the <code>@&lt;tag&gt;</code> URL suffix instead.</p>
+<h3 id="check-out-a-recipe-repository-and-develop-against-it">Check out a recipe repository and develop against it<a class="headerlink" href="#check-out-a-recipe-repository-and-develop-against-it" title="Permanent link">&para;</a></h3>
+<p>Native <code>bits</code> uses the provider path: <code>bits init &lt;group&gt;.bits</code> resolves the named recipe repository in the <a href="../REFERENCE/#13-repository-provider-feature">bits-providers registry</a> and clones it into the current directory, so you can develop its packages — including ones whose recipes live in a <em>required</em> provider repository — beside it:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>init<span class="w"> </span>alice.bits<span class="w">              </span><span class="c1"># clone the alice.bits recipe repo into ./alice.bits</span>
+bits<span class="w"> </span>init<span class="w"> </span>-c<span class="w"> </span>alice.bits<span class="w"> </span>ROOT<span class="w">      </span><span class="c1"># check out ROOT's source for development, beside it</span>
+<span class="c1"># … edit ROOT under ./ROOT …</span>
+bits<span class="w"> </span>build<span class="w"> </span>-c<span class="w"> </span>alice.bits<span class="w"> </span>ROOT<span class="w">     </span><span class="c1"># build with the local alice.bits recipes + your ROOT</span>
+</code></pre></div>
+<p><code>bits init -c alice.bits ROOT</code> loads the provider chain (e.g. <code>alice.bits</code> <code>requires: [alidist.bits]</code>), so a package whose recipe lives in a required provider repo is still found.</p>
+<p>The <strong>aliBuild</strong> front-end is the legacy path instead: <code>aliBuild init</code> checks out <code>alisw/alidist</code>, and <code>aliBuild build ROOT</code> uses it directly with no provider registry and the legacy build-time <code>init.sh</code> (see <a href="../REFERENCE/#13-repository-provider-feature">Repository Provider Feature</a>).</p>
+<h3 id="use-a-private-recipe-repository-alongside-the-defaults">Use a private recipe repository alongside the defaults<a class="headerlink" href="#use-a-private-recipe-repository-alongside-the-defaults" title="Permanent link">&para;</a></h3>
+<p>Set <code>BITS_PATH</code> to prepend a custom repository to the search path:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">BITS_PATH</span><span class="o">=</span>myorg.bits<span class="w"> </span>bits<span class="w"> </span>build<span class="w"> </span>MyPackage
+</code></pre></div>
+<p>Or configure it persistently:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>init<span class="w"> </span>--config-dir<span class="w"> </span>myorg.bits<span class="w"> </span>MyPackage
+</code></pre></div>
+<p>Useful for building private packages that depend on public recipes, or for maintaining a vendor-specific overlay (e.g. a fork of <code>gcc</code> with custom patches) without modifying the main recipe repository.</p>
+<h3 id="set-up-a-project-with-a-persistent-binary-store">Set up a project with a persistent binary store<a class="headerlink" href="#set-up-a-project-with-a-persistent-binary-store" title="Permanent link">&para;</a></h3>
+<p>Instead of passing <code>--remote-store</code> on every <code>bits build</code> invocation, write it once with <code>bits init</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># One-time setup — writes bits.rc in the current directory</span>
+bits<span class="w"> </span>init<span class="w"> </span>--remote-store<span class="w"> </span>https://store.example.com/store<span class="w"> </span><span class="se">\</span>
+<span class="w">          </span>--write-store<span class="w">  </span>b3://mybucket/store<span class="w"> </span><span class="se">\</span>
+<span class="w">          </span>--organisation<span class="w"> </span>MYORG
+
+<span class="c1"># Every subsequent invocation picks up the settings automatically</span>
+bits<span class="w"> </span>build<span class="w"> </span>ROOT
+</code></pre></div>
+<p>To check what will be written before touching the file system, add <code>--dry-run</code>. To update a single key in an existing <code>bits.rc</code> without replacing the whole file, add <code>--append</code>.</p>
+<h3 id="share-pre-built-artifacts-over-s3">Share pre-built artifacts over S3<a class="headerlink" href="#share-pre-built-artifacts-over-s3" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># CI: build and upload (boto3 backend; ::rw sets both --remote-store and --write-store)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">AWS_ACCESS_KEY_ID</span><span class="o">=</span>ci-key
+<span class="nb">export</span><span class="w"> </span><span class="nv">AWS_SECRET_ACCESS_KEY</span><span class="o">=</span>ci-secret
+bits<span class="w"> </span>build<span class="w"> </span>--remote-store<span class="w"> </span>b3://mybucket/bits-cache::rw<span class="w"> </span>ROOT
+
+<span class="c1"># Developer workstation: fetch from the same cache, never upload</span>
+bits<span class="w"> </span>build<span class="w"> </span>--remote-store<span class="w"> </span>b3://mybucket/bits-cache<span class="w"> </span>ROOT
+</code></pre></div>
+<p>See <a href="../REFERENCE/#21-remote-binary-store-backends">§21 Remote binary store backends</a> for the full list of backends (HTTP, S3, boto3, rsync, CVMFS) and detailed CI/CD patterns.</p>
+<h3 id="enforce-reproducible-source-downloads-with-checksums">Enforce reproducible source downloads with checksums<a class="headerlink" href="#enforce-reproducible-source-downloads-with-checksums" title="Permanent link">&para;</a></h3>
+<p>First, compute and write checksums for all sources:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>--write-checksums<span class="w"> </span>MyPackage
+</code></pre></div>
+<p>This creates or updates <code>checksums/MyPackage.checksum</code> in the recipe directory. Then enforce them on all future builds:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>--enforce-checksums<span class="w"> </span>MyPackage
+</code></pre></div>
+<p>Or make it the site default in a defaults profile:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># defaults-production.sh</span>
+<span class="nt">checksum_mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">enforce</span>
+</code></pre></div>
+<p>Any mismatch or missing checksum aborts the build, catching supply-chain tampering or silent mirror corruption.</p>
+<h3 id="speed-up-large-builds">Speed up large builds<a class="headerlink" href="#speed-up-large-builds" title="Permanent link">&para;</a></h3>
+<p><strong>Built-in Python scheduler</strong> — build up to N packages in parallel, each using M cores:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>--builders<span class="w"> </span><span class="m">4</span><span class="w"> </span>--jobs<span class="w"> </span><span class="m">8</span><span class="w"> </span>my_large_stack
+</code></pre></div>
+<p>The scheduler dispatches packages as soon as their dependencies are satisfied. Use <code>--resources</code> to declare per-package CPU and memory budgets and prevent overcommit (see <a href="../REFERENCE/#5-building-packages">§5 Parallel build modes</a>).</p>
+<p><strong>Makeflow</strong> — hand the dependency graph to the external <a href="https://ccl.cse.nd.edu/software/">CCTools Makeflow</a> engine:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>--makeflow<span class="w"> </span>my_large_stack
+
+<span class="c1"># Inspect what Makeflow generated if a build fails</span>
+cat<span class="w"> </span>sw/BUILD/*/makeflow/Makeflow
+cat<span class="w"> </span>sw/BUILD/*/makeflow/log
+</code></pre></div>
+<p><strong>Pipelined upload</strong> — overlap tarball upload with downstream builds and prefetch remote tarballs in the background (Makeflow only):</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>--makeflow<span class="w"> </span>--pipeline<span class="w"> </span><span class="se">\</span>
+<span class="w">           </span>--write-store<span class="w"> </span>b3://mybucket/store<span class="w"> </span><span class="se">\</span>
+<span class="w">           </span>--prefetch-workers<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<span class="w">           </span>my_large_stack
+</code></pre></div>
+<p><code>--pipeline</code> splits each rule into <code>.build</code> / <code>.tar</code> / <code>.upload</code> stages; <code>--prefetch-workers</code> hides network latency by fetching tarballs before the build loop needs them.</p>
+<p><strong>Parallel source downloads</strong> — fetch multiple source archives concurrently within each package:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>--parallel-sources<span class="w"> </span><span class="m">4</span><span class="w"> </span>my_large_stack
+</code></pre></div>
+<p>Useful when a recipe lists several large <code>sources:</code> URLs.</p>
+<h3 id="build-memory-hungry-packages-without-exhausting-ram">Build memory-hungry packages without exhausting RAM<a class="headerlink" href="#build-memory-hungry-packages-without-exhausting-ram" title="Permanent link">&para;</a></h3>
+<p>For packages whose parallel builds risk OOM, limit concurrent builds and/or declare per-package resource budgets:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Option 1: reduce concurrent package builds</span>
+bits<span class="w"> </span>build<span class="w"> </span>--builders<span class="w"> </span><span class="m">1</span><span class="w"> </span>--jobs<span class="w"> </span><span class="m">8</span><span class="w"> </span>my_stack
+
+<span class="c1"># Option 2: use a resource file</span>
+bits<span class="w"> </span>build<span class="w"> </span>--builders<span class="w"> </span><span class="m">4</span><span class="w"> </span>--resources<span class="w"> </span>my_resources.json<span class="w"> </span>my_stack
+</code></pre></div>
+<p>Where <code>my_resources.json</code> declares expected CPU and memory per package:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"gcc"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"cpu"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">"rss_mb"</span><span class="p">:</span><span class="w"> </span><span class="mi">1024</span><span class="p">},</span>
+<span class="w">  </span><span class="nt">"llvm"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"cpu"</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span><span class="w"> </span><span class="nt">"rss_mb"</span><span class="p">:</span><span class="w"> </span><span class="mi">4096</span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>The Python scheduler will not start a new build unless the declared resources are free.</p>
+<h3 id="evict-old-packages-to-free-disk-space">Evict old packages to free disk space<a class="headerlink" href="#evict-old-packages-to-free-disk-space" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Evict packages not used in the last 14 days</span>
+bits<span class="w"> </span>cleanup<span class="w"> </span>--max-age<span class="w"> </span><span class="m">14</span>
+
+<span class="c1"># Free space until at least 50 GiB is available, removing least-recently-used packages first</span>
+bits<span class="w"> </span>cleanup<span class="w"> </span>--min-free<span class="w"> </span><span class="m">50</span>
+
+<span class="c1"># Dry run: show what would be removed without deleting anything</span>
+bits<span class="w"> </span>cleanup<span class="w"> </span>--max-age<span class="w"> </span><span class="m">7</span><span class="w"> </span>--min-free<span class="w"> </span><span class="m">100</span><span class="w"> </span>-n
+</code></pre></div>
+<p>Bits tracks a sentinel file for each installed package; <code>bits cleanup</code> sorts by last-touched time and evicts the oldest entries first. Combine both flags to enforce both a time limit and a disk-space floor in a single pass. See <a href="../USERGUIDE/#7-cleaning-up">§7 bits cleanup</a> for full options.</p>
+<h3 id="verify-a-live-deployment-against-a-build-manifest">Verify a live deployment against a build manifest<a class="headerlink" href="#verify-a-live-deployment-against-a-build-manifest" title="Permanent link">&para;</a></h3>
+<p>After publishing to CVMFS (or any shared store), confirm that what is deployed matches what was built:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>verify<span class="w"> </span>--from-manifest<span class="w"> </span>alice-o2-20260411.json<span class="w"> </span><span class="se">\</span>
+<span class="w">            </span>--cvmfs-root<span class="w"> </span>/cvmfs/alice.cern.ch
+</code></pre></div>
+<p><code>bits verify</code> reads the SHA-256 digests and provider commit SHAs recorded in the manifest and checks them against the live files on disk. Any mismatch is reported as an error. The manifest is written automatically during <code>bits build</code> to <code>$WORK_DIR/MANIFESTS/</code>. See <a href="../REFERENCE/#23-bits-verify--deployment-verification">§23 bits verify</a> for full options.</p>
+<h3 id="cicd-build-and-publish-only-on-the-main-branch">CI/CD: build and publish only on the main branch<a class="headerlink" href="#cicd-build-and-publish-only-on-the-main-branch" title="Permanent link">&para;</a></h3>
+<p>Use conditional logic in CI to upload binaries only for production builds:</p>
+<div class="highlight"><pre><span></span><code><span class="k">if</span><span class="w"> </span><span class="o">[</span><span class="w"> </span><span class="s2">"</span><span class="nv">$CI_COMMIT_BRANCH</span><span class="s2">"</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"main"</span><span class="w"> </span><span class="o">]</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<span class="w">  </span>bits<span class="w"> </span>build<span class="w"> </span>--remote-store<span class="w"> </span>b3://mybucket/store<span class="w"> </span><span class="se">\</span>
+<span class="w">             </span>--write-store<span class="w">  </span>b3://mybucket/store<span class="w"> </span>MyStack
+<span class="k">else</span>
+<span class="w">  </span><span class="c1"># Feature branches: download cached binaries but never upload</span>
+<span class="w">  </span>bits<span class="w"> </span>build<span class="w"> </span>--remote-store<span class="w"> </span>b3://mybucket/store<span class="w"> </span>MyStack
+<span class="k">fi</span>
+</code></pre></div>
+<p>This ensures PR builds benefit from the shared cache without polluting the production store.</p>
+<hr />
+<h2 id="writing-recipes-with-bits-recipe-tools">Writing Recipes with bits-recipe-tools<a class="headerlink" href="#writing-recipes-with-bits-recipe-tools" title="Permanent link">&para;</a></h2>
+<p><a href="https://github.com/bitsorg/bits-recipe-tools"><code>bits-recipe-tools</code></a> is an optional package that provides a higher-level recipe authoring style built around reusable shell function hooks. Instead of writing a flat Bash build script, the recipe author overrides only the steps that differ from the standard template.</p>
+<h3 id="plain-run-function-no-external-package-needed">Plain Run() function (no external package needed)<a class="headerlink" href="#plain-run-function-no-external-package-needed" title="Permanent link">&para;</a></h3>
+<p>Any recipe may define a <code>Run()</code> function directly. This is the simplest way to get clearly separated named phases without any dependencies:</p>
+<div class="highlight"><pre><span></span><code>Run<span class="o">()</span><span class="w"> </span><span class="o">{</span>
+<span class="w">  </span>cmake<span class="w"> </span>-S<span class="w"> </span><span class="s2">"</span><span class="nv">$SOURCEDIR</span><span class="s2">"</span><span class="w"> </span>-B<span class="w"> </span><span class="s2">"</span><span class="nv">$BUILDDIR</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">        </span>-DCMAKE_INSTALL_PREFIX<span class="o">=</span><span class="s2">"</span><span class="nv">$INSTALLROOT</span><span class="s2">"</span>
+<span class="w">  </span>cmake<span class="w"> </span>--build<span class="w"> </span><span class="s2">"</span><span class="nv">$BUILDDIR</span><span class="s2">"</span><span class="w"> </span>--parallel<span class="w"> </span><span class="s2">"</span><span class="nv">$JOBS</span><span class="s2">"</span>
+<span class="w">  </span>cmake<span class="w"> </span>--install<span class="w"> </span><span class="s2">"</span><span class="nv">$BUILDDIR</span><span class="s2">"</span>
+<span class="o">}</span>
+</code></pre></div>
+<p><code>build_template.sh</code> calls <code>Run "$@"</code> if the function is defined after sourcing the compiled recipe script.</p>
+<h3 id="how-bits-recipe-tools-works">How bits-recipe-tools works<a class="headerlink" href="#how-bits-recipe-tools-works" title="Permanent link">&para;</a></h3>
+<p><code>bits-recipe-tools</code> ships include files — <code>CMakeRecipe</code>, <code>AutoToolsRecipe</code>, and others — each of which defines a <code>Run()</code> function that orchestrates the build in terms of five lifecycle hooks:</p>
+<table>
+<thead>
+<tr>
+<th>Hook</th>
+<th>Default behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Prepare()</code></td>
+<td>Sets up the build directory and any pre-configure steps.</td>
+</tr>
+<tr>
+<td><code>Configure()</code></td>
+<td>Runs <code>cmake</code> (or <code>./configure</code>) with standard flags.</td>
+</tr>
+<tr>
+<td><code>Make()</code></td>
+<td>Runs <code>make -j$JOBS</code> (or <code>cmake --build</code>).</td>
+</tr>
+<tr>
+<td><code>MakeInstall()</code></td>
+<td>Runs <code>make install</code> (or <code>cmake --install</code>).</td>
+</tr>
+<tr>
+<td><code>PostInstall()</code></td>
+<td>Runs any post-install fixups (e.g. removing libtool archives).</td>
+</tr>
+</tbody>
+</table>
+<p>A recipe overrides only the hooks it needs to customise; all others run with sensible defaults. <code>bits-recipe-tools</code> must be listed as a <code>build_requires</code> of the recipe.</p>
+<h3 id="module_options-controlling-modulefile-generation">MODULE_OPTIONS — controlling modulefile generation<a class="headerlink" href="#module_options-controlling-modulefile-generation" title="Permanent link">&para;</a></h3>
+<p>Set <code>MODULE_OPTIONS</code> <strong>before</strong> sourcing the include file so the <code>PostInstall()</code> hook picks it up:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">MODULE_OPTIONS</span><span class="o">=</span><span class="s2">"--bin --lib"</span>
+.<span class="w"> </span><span class="k">$(</span>bits-include<span class="w"> </span>CMakeRecipe<span class="k">)</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Effect on the modulefile</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--bin</code></td>
+<td>Prepends <code>$INSTALLROOT/bin</code> to <code>PATH</code>.</td>
+</tr>
+<tr>
+<td><code>--lib</code></td>
+<td>Prepends <code>$INSTALLROOT/lib</code> to <code>LD_LIBRARY_PATH</code>.</td>
+</tr>
+<tr>
+<td><code>--cmake</code></td>
+<td>Adds <code>$INSTALLROOT</code> to <code>CMAKE_PREFIX_PATH</code>.</td>
+</tr>
+<tr>
+<td><code>--root</code></td>
+<td>Defines <code>ROOT_&lt;PACKAGE&gt;</code> (uppercased name) as <code>$INSTALLROOT</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="example-cmake-library-cppgsl-header-only">Example — CMake library (cppgsl, header-only)<a class="headerlink" href="#example-cmake-library-cppgsl-header-only" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nt">package</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cppgsl</span>
+<span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">"4.0.0"</span>
+<span class="nt">source</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://github.com/microsoft/GSL.git</span>
+<span class="nt">tag</span><span class="p">:</span><span class="w"> </span><span class="s">"v4.0.0"</span>
+<span class="nt">build_requires</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cmake</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bits-recipe-tools</span>
+<span class="nn">---</span>
+<span class="c1"># Header-only: CMake discovery + ROOT variable, no runtime paths</span>
+<span class="l l-Scalar l-Scalar-Plain">MODULE_OPTIONS="--cmake --root"</span>
+<span class="l l-Scalar l-Scalar-Plain">. $(bits-include CMakeRecipe)</span>
+
+<span class="l l-Scalar l-Scalar-Plain"># Override only Configure to disable tests; everything else is inherited.</span>
+<span class="l l-Scalar l-Scalar-Plain">Configure() {</span>
+<span class="w">  </span><span class="l l-Scalar l-Scalar-Plain">cmake -S "$SOURCEDIR" -B "$BUILDDIR" \</span>
+<span class="w">        </span><span class="l l-Scalar l-Scalar-Plain">-DCMAKE_INSTALL_PREFIX="$INSTALLROOT" \</span>
+<span class="w">        </span><span class="l l-Scalar l-Scalar-Plain">-DGSL_TEST=OFF \</span>
+<span class="w">        </span><span class="l l-Scalar l-Scalar-Plain">-DCMAKE_BUILD_TYPE=Release</span>
+<span class="l l-Scalar l-Scalar-Plain">}</span>
+</code></pre></div>
+<h3 id="example-autotools-library">Example — Autotools library<a class="headerlink" href="#example-autotools-library" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nt">package</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">libfoo</span>
+<span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">"1.4.2"</span>
+<span class="nt">source</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://example.com/libfoo.git</span>
+<span class="nt">tag</span><span class="p">:</span><span class="w"> </span><span class="s">"v1.4.2"</span>
+<span class="nt">build_requires</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">autotools</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bits-recipe-tools</span>
+<span class="nn">---</span>
+<span class="l l-Scalar l-Scalar-Plain">MODULE_OPTIONS="--bin --lib --root"</span>
+<span class="l l-Scalar l-Scalar-Plain">. $(bits-include AutotoolsRecipe)</span>
+
+<span class="l l-Scalar l-Scalar-Plain"># Default Configure() runs</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">"$SOURCEDIR/configure"</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--prefix="$INSTALLROOT"</span>
+<span class="c1"># Override to add custom options.</span>
+<span class="l l-Scalar l-Scalar-Plain">Configure() {</span>
+<span class="w">  </span><span class="l l-Scalar l-Scalar-Plain">"$SOURCEDIR/configure" \</span>
+<span class="w">    </span><span class="l l-Scalar l-Scalar-Plain">--prefix="$INSTALLROOT" \</span>
+<span class="w">    </span><span class="l l-Scalar l-Scalar-Plain">--enable-shared \</span>
+<span class="w">    </span><span class="l l-Scalar l-Scalar-Plain">--disable-static</span>
+<span class="err">}</span>
+</code></pre></div>
+<h3 id="example-custom-post-install-fixup">Example — Custom post-install fixup<a class="headerlink" href="#example-custom-post-install-fixup" title="Permanent link">&para;</a></h3>
+<p>Override <code>PostInstall()</code> to remove files that should not be installed or to patch up the modulefile:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">package</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mylib</span>
+<span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">"2.0.0"</span>
+<span class="nt">source</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://example.com/mylib.git</span>
+<span class="nt">tag</span><span class="p">:</span><span class="w"> </span><span class="s">"v2.0.0"</span>
+<span class="nt">build_requires</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cmake</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bits-recipe-tools</span>
+<span class="nn">---</span>
+<span class="l l-Scalar l-Scalar-Plain">MODULE_OPTIONS="--bin --lib --cmake"</span>
+<span class="l l-Scalar l-Scalar-Plain">. $(bits-include CMakeRecipe)</span>
+
+<span class="l l-Scalar l-Scalar-Plain">PostInstall() {</span>
+<span class="w">  </span><span class="l l-Scalar l-Scalar-Plain"># Remove static archives and libtool metadata left by make install</span>
+<span class="w">  </span><span class="l l-Scalar l-Scalar-Plain">find "$INSTALLROOT/lib" \( -name '*.a' -o -name '*.la' \) -delete</span>
+<span class="w">  </span><span class="l l-Scalar l-Scalar-Plain"># Call the default PostInstall to generate the modulefile</span>
+<span class="w">  </span><span class="l l-Scalar l-Scalar-Plain">defaults_PostInstall</span>
+<span class="l l-Scalar l-Scalar-Plain">}</span>
+</code></pre></div>
+<p>Call <code>defaults_PostInstall</code> at the end of any <code>PostInstall()</code> override to ensure the modulefile is still generated correctly.</p>
+<h3 id="error-handling-in-recipes-how-failures-are-detected">Error handling in recipes — how failures are detected<a class="headerlink" href="#error-handling-in-recipes-how-failures-are-detected" title="Permanent link">&para;</a></h3>
+<p>bits runs every recipe body under <code>set -e</code> <strong>and</strong> <code>set -o pipefail</code>, captures the recipe's real exit code, and tees all output to the per-package <code>log</code>. When a build fails, the <code>BUILD FAILED</code> message now includes an <strong>Error excerpt</strong> — the matched high-signal error lines plus the tail of the log — so you usually do not need to open the log by hand. Re-run with <code>--debug</code> (and optionally <code>--keep-tmp</code>) to keep the build tree for manual iteration.</p>
+<p>Because failure detection relies on a command exiting non-zero, two authoring pitfalls can let a real error slip through. Both are recipe bugs, not framework bugs.</p>
+<p><strong>Pitfall 1 — a non-final <code>&amp;&amp;</code>/<code>||</code> chain hides its own failure.</strong> <code>set -e</code> does <em>not</em> abort when the failing command is on the left of an <code>&amp;&amp;</code>/<code>||</code> list (only the command after the final operator is checked). So if such a chain is <strong>not</strong> the last statement in a function, a failure in it is silently swallowed and execution continues:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># BAD: if wget/tar/cmake fails, set -e is suppressed (left of &amp;&amp;) and</span>
+<span class="c1">#      `make` still runs — on missing or half-prepared inputs.</span>
+Make<span class="o">()</span><span class="w"> </span><span class="o">{</span>
+<span class="w">  </span>wget<span class="w"> </span><span class="s2">"</span><span class="nv">$url</span><span class="s2">"</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>tar<span class="w"> </span>xf<span class="w"> </span><span class="s2">"</span><span class="nv">$tarball</span><span class="s2">"</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cmake<span class="w"> </span><span class="s2">"</span><span class="nv">$SOURCEDIR</span><span class="s2">"</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cp<span class="w"> </span>-r<span class="w"> </span>extra<span class="w"> </span>.
+<span class="w">  </span>make<span class="w"> </span>-j<span class="s2">"</span><span class="nv">$JOBS</span><span class="s2">"</span>
+<span class="w">  </span>make<span class="w"> </span>install
+<span class="o">}</span>
+
+<span class="c1"># GOOD: separate statements so set -e fires on the first failure.</span>
+Make<span class="o">()</span><span class="w"> </span><span class="o">{</span>
+<span class="w">  </span>wget<span class="w"> </span><span class="s2">"</span><span class="nv">$url</span><span class="s2">"</span>
+<span class="w">  </span>tar<span class="w"> </span>xf<span class="w"> </span><span class="s2">"</span><span class="nv">$tarball</span><span class="s2">"</span>
+<span class="w">  </span>cmake<span class="w"> </span><span class="s2">"</span><span class="nv">$SOURCEDIR</span><span class="s2">"</span>
+<span class="w">  </span>cp<span class="w"> </span>-r<span class="w"> </span>extra<span class="w"> </span>.
+<span class="w">  </span>make<span class="w"> </span>-j<span class="s2">"</span><span class="nv">$JOBS</span><span class="s2">"</span>
+<span class="w">  </span>make<span class="w"> </span>install
+<span class="o">}</span>
+</code></pre></div>
+<p><strong>Pitfall 2 — <code>pipefail</code> turns a legitimately non-zero pipeline element into a build failure.</strong> A common idiom such as <code>grep -rl PATTERN . | xargs sed ...</code> aborts the whole build when <code>grep</code> finds no match (exit 1) — even though "no match" is fine. Guard the element whose non-zero exit is acceptable:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># BAD: aborts if grep matches nothing.</span>
+grep<span class="w"> </span>-rl<span class="w"> </span>g77<span class="w"> </span>.<span class="w"> </span><span class="p">|</span><span class="w"> </span>xargs<span class="w"> </span>--no-run-if-empty<span class="w"> </span>sed<span class="w"> </span>-i<span class="w"> </span><span class="s1">'s/\bg77\b/gfortran/g'</span>
+
+<span class="c1"># GOOD: tolerate the empty-match case.</span>
+<span class="o">{</span><span class="w"> </span>grep<span class="w"> </span>-rl<span class="w"> </span>g77<span class="w"> </span>.<span class="w"> </span><span class="o">||</span><span class="w"> </span>true<span class="p">;</span><span class="w"> </span><span class="o">}</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>xargs<span class="w"> </span>--no-run-if-empty<span class="w"> </span>sed<span class="w"> </span>-i<span class="w"> </span><span class="s1">'s/\bg77\b/gfortran/g'</span>
+</code></pre></div>
+<p><strong>Known limitation — errors that exit 0 are not intercepted.</strong> bits can only detect a failure that produces a non-zero exit code. A third-party <code>configure</code> or <code>make</code> that prints errors but still returns 0 (e.g. a broken shell test inside a vendored <code>configure</code>) will not be caught automatically. Inspect the <strong>Error excerpt</strong> in the failure message or the full <code>log</code>; if a package "succeeds" but is incomplete, search its log for <code>error:</code> / <code>command not found</code> and fix the upstream script or add a <code>MakeInstall()</code>/<code>PostInstall()</code> sanity check that fails loudly.</p>
+<hr />
+<p><em>Back to <a href="../USERGUIDE/">User Guide</a> · <a href="../REFERENCE/">Reference Manual</a></em></p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

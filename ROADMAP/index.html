@@ -1,0 +1,1388 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The bits build system — documentation">
+      
+      
+      
+      
+        <link rel="prev" href="../REFERENCE/">
+      
+      
+        <link rel="next" href="../adr/0001-implementation-plan/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Roadmap - bits</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#bits-roadmap" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="bits" class="md-header__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            bits
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Roadmap
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="bits" class="md-nav__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    bits
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../USERGUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../COOKBOOK/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cookbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../WORKFLOWS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#landscape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Landscape
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#strengths-and-weaknesses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Strengths and weaknesses
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Strengths and weaknesses">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#where-bits-leads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where bits leads
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-gaps-exist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where gaps exist
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#conclusion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conclusion
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#roadmap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roadmap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Roadmap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#near-term-within-6-months" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Near term — within 6 months
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Near term — within 6 months">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#n1-binary-store-coverage-expansion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        N1. Binary store coverage expansion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#n2-developer-workflow-documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        N2. Developer workflow documentation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#medium-term-6-to-18-months" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Medium term — 6 to 18 months
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Medium term — 6 to 18 months">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#m1-lightweight-dependency-pinning-and-version-ranges" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M1. Lightweight dependency pinning and version ranges
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m2-prefer_system-standard-library" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M2. prefer_system standard library
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m3-reproducible-build-attestation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M3. Reproducible build attestation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m4-personal-analysis-overlay-via-s3-tarball-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M4. Personal analysis overlay via S3 tarball cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m5-abi-constraint-exports-abi_exports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M5. ABI constraint exports (abi_exports)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#long-term-18-months-and-beyond" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Long term — 18 months and beyond
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Long term — 18 months and beyond">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#l1-multi-community-bits-console-with-federated-stores" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L1. Multi-community bits-console with federated stores
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#l2-web-based-recipe-editor-and-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L2. Web-based recipe editor and validation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-bits-is-not-trying-to-become" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What bits is not trying to become
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design (ADR)
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design (ADR)
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/0001-cvmfs-relaxed-reuse.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Relaxed CVMFS reuse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/0001-implementation-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#landscape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Landscape
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#strengths-and-weaknesses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Strengths and weaknesses
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Strengths and weaknesses">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#where-bits-leads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where bits leads
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-gaps-exist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where gaps exist
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#conclusion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conclusion
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#roadmap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roadmap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Roadmap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#near-term-within-6-months" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Near term — within 6 months
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Near term — within 6 months">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#n1-binary-store-coverage-expansion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        N1. Binary store coverage expansion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#n2-developer-workflow-documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        N2. Developer workflow documentation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#medium-term-6-to-18-months" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Medium term — 6 to 18 months
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Medium term — 6 to 18 months">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#m1-lightweight-dependency-pinning-and-version-ranges" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M1. Lightweight dependency pinning and version ranges
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m2-prefer_system-standard-library" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M2. prefer_system standard library
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m3-reproducible-build-attestation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M3. Reproducible build attestation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m4-personal-analysis-overlay-via-s3-tarball-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M4. Personal analysis overlay via S3 tarball cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m5-abi-constraint-exports-abi_exports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M5. ABI constraint exports (abi_exports)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#long-term-18-months-and-beyond" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Long term — 18 months and beyond
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Long term — 18 months and beyond">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#l1-multi-community-bits-console-with-federated-stores" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L1. Multi-community bits-console with federated stores
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#l2-web-based-recipe-editor-and-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L2. Web-based recipe editor and validation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-bits-is-not-trying-to-become" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What bits is not trying to become
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="bits-roadmap">bits — Roadmap<a class="headerlink" href="#bits-roadmap" title="Permanent link">&para;</a></h1>
+<p>bits is a purpose-built build and distribution system for large scientific software
+stacks. Understanding where it stands relative to alternatives is essential for
+prioritising future development.</p>
+<h3 id="landscape">Landscape<a class="headerlink" href="#landscape" title="Permanent link">&para;</a></h3>
+<p>The meaningful comparison set is not general-purpose build tools (CMake, Make, Meson)
+but package managers that orchestrate multi-package source builds for scientific
+computing:</p>
+<table>
+<thead>
+<tr>
+<th>System</th>
+<th>Primary audience</th>
+<th>Core model</th>
+<th>Dependency resolution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Spack</strong></td>
+<td>HPC/scientific</td>
+<td>Spec language + variants</td>
+<td><code>clingo</code> SAT solver</td>
+</tr>
+<tr>
+<td><strong>EasyBuild</strong></td>
+<td>HPC/scientific</td>
+<td>Easyconfig files + toolchains</td>
+<td>Manual pinning</td>
+</tr>
+<tr>
+<td><strong>Nix / NixOS</strong></td>
+<td>General, reproducibility-focused</td>
+<td>Purely functional derivations</td>
+<td>Closed-form, per-derivation</td>
+</tr>
+<tr>
+<td><strong>Guix</strong></td>
+<td>General, reproducibility-focused</td>
+<td>Scheme-defined packages</td>
+<td>Same as Nix</td>
+</tr>
+<tr>
+<td><strong>Conda / Mamba</strong></td>
+<td>Data science / scientific</td>
+<td>Binary-first, env-scoped</td>
+<td>SAT solver (libmamba)</td>
+</tr>
+<tr>
+<td><strong>aliBuild</strong></td>
+<td>ALICE / HEP</td>
+<td>Recipe files + tarball store</td>
+<td>Manual pinning</td>
+</tr>
+<tr>
+<td><strong>lcgcmake</strong></td>
+<td>LCG / CERN</td>
+<td>CMake-driven</td>
+<td>Manual pinning</td>
+</tr>
+<tr>
+<td><strong>bits</strong></td>
+<td>HEP experiments / CVMFS</td>
+<td>Recipe files + tarball store + CVMFS pipeline</td>
+<td>Manual pinning (version ranges: roadmap)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="strengths-and-weaknesses">Strengths and weaknesses<a class="headerlink" href="#strengths-and-weaknesses" title="Permanent link">&para;</a></h3>
+<h4 id="where-bits-leads">Where bits leads<a class="headerlink" href="#where-bits-leads" title="Permanent link">&para;</a></h4>
+<p><strong>CVMFS-native publishing pipeline.</strong> No other general-purpose build system has a
+first-class, integrated publishing path to CVMFS. Spack has community-contributed
+CVMFS support, but it is bolted on externally. The bits <code>--cvmfs-prefix</code> flag
+combined with the bits-console build pipeline produces tarballs with final CVMFS
+paths already embedded, which are ingested directly by the CVMFS publisher with no
+relocation step. For the O(10⁴) users of CERN experiment software on CVMFS this is
+the central value proposition.</p>
+<p><strong>Developer workflow: local checkout shadowing.</strong> The ability to have one or more
+locally checked-out packages seamlessly shadow their counterparts in the central
+recipe repository — without configuration files or path surgery — is the single most
+important differentiator for interactive development. A physicist who checks out
+<code>ROOT</code> runs <code>bits build MyAnalysis</code> and immediately gets their local version picked
+up, with all downstream packages rebuilt consistently. This use case was directly
+evaluated in Spack and found unworkable in our environment: Spack's development-mode
+workflow does not compose naturally with stacks of O(100) interdependent packages, and
+the concretiser's full recomputation on every dev-package change makes interactive
+iteration too slow for practical use.</p>
+<p><strong>Recipe simplicity.</strong> YAML header + plain bash. A physicist who can write a Makefile
+can write a bits recipe without learning a domain-specific language. Spack's spec
+language and variant system are powerful but carry a steep learning curve. EasyBuild's
+easyconfig format is verbose and structured. Nix and Guix require fluency in
+functional languages. bits has the lowest barrier to entry of any system in this set
+for scientists writing their own recipes.</p>
+<p><strong>Repository providers.</strong> Pulling a recipe repository dynamically from git — keyed on
+a recipe that sets <code>provides_repository: true</code> — and merging it into the search path
+lets experiment groups maintain independent recipe repositories without forking or
+patching a central registry. The bits-providers registry already contains entries for
+<code>alice.bits</code>, <code>common.bits</code>, <code>lcg.bits</code>, <code>lhcb.bits</code>, and <code>key4hep.bits</code>. Spack has a
+similar "repos" concept but the activation is more manual and is not part of the
+default dependency-graph traversal.</p>
+<p><strong>Standard module file output.</strong> Every bits-installed package produces a
+module-compatible environment description that is consumed by <code>bits q</code>, <code>bits enter</code>,
+and <code>bits print</code> for interactive environment management. Crucially, these module files
+are not bits-specific: once a stack is deployed on CVMFS they can be loaded directly
+by standard Environment Modules or Lmod outside of bits, with no bits installation
+required on the user's machine. A researcher who <code>module load ROOT</code> on an HPC cluster
+that mounts the relevant CVMFS repository gets a correctly configured environment
+built by bits. This is a genuine bridge to the HPC community that is currently
+underappreciated and underdocumented.</p>
+<p><strong>bits-console + GitLab CI pipeline integration.</strong> The browser-based build console
+with role-based access control, community-scoped <code>ui-config.yaml</code> configuration, and
+a triggered build → ingest → publish pipeline is unique in this space. Spack and
+EasyBuild assume HPC cluster job schedulers (SLURM, PBS); bits targets GitLab CI
+runners, which is where CERN experiments and the broader open-science community
+already operate.</p>
+<h4 id="where-gaps-exist">Where gaps exist<a class="headerlink" href="#where-gaps-exist" title="Permanent link">&para;</a></h4>
+<p><strong>No dependency constraint solver.</strong> All dependency versions are pinned in recipes.
+There is no mechanism for expressing "ROOT &gt;= 6.28" or for automatically resolving
+version conflicts across simultaneously active stacks. EasyBuild has the same
+limitation. Spack's <code>clingo</code>-based concretiser and Conda's SAT solver both handle this
+correctly. For large stacks with many independent release lines this is the most
+significant technical gap in bits today.</p>
+<p><strong>Build isolation is opt-in, not the default.</strong> The recipe sandbox (<code>--sandbox=auto</code>)
+uses <code>sandbox-exec</code> on macOS and nested podman under <code>--docker</code>, but on a plain local
+Linux build it resolves to <code>off</code> — podman is only engaged with <code>--docker</code> or an explicit
+<code>--sandbox=podman</code> / <code>--sandbox-image</code>. In contrast, Nix achieves true hermetic
+isolation unconditionally — no implicit host-library leakage, no ambient <code>$PATH</code>
+contamination. A bits recipe can accidentally depend on a host library not declared in
+its recipe and still build successfully, masking a portability bug. CI pipelines now
+use <code>--sandbox=podman</code> by default via bits-console, but local developer builds remain
+unguarded.</p>
+<p><strong>Reproducibility is strong but not hermetic.</strong> bits achieves reproducibility through
+content-addressed tarballs, checksum enforcement, and build manifests. This is
+practically solid but does not reach Nix/Guix-level isolation, where the build
+environment itself (compiler, libc, every tool in <code>$PATH</code>) is hashed and reproducible
+from a single root derivation. For most HEP use cases — reproducible physics analysis
+on a shared CVMFS installation — bits' model is sufficient. For bit-for-bit
+reproducible builds independent of the host OS, Nix/Guix remain stronger.</p>
+<h4 id="conclusion">Conclusion<a class="headerlink" href="#conclusion" title="Permanent link">&para;</a></h4>
+<p>bits is the right tool for anyone deploying large C++/Fortran/CUDA scientific software
+stacks to CVMFS via GitLab CI, especially when interactive development with local
+package checkouts is part of the workflow. </p>
+<h2 id="roadmap">Roadmap<a class="headerlink" href="#roadmap" title="Permanent link">&para;</a></h2>
+<p>The roadmap is organised into three horizons. Items within each horizon are ordered
+by priority (highest first). The primary target audience is CERN experiments and their
+O(10⁴) users, plus any project deploying software via CVMFS.</p>
+<hr />
+<h3 id="near-term-within-6-months">Near term — within 6 months<a class="headerlink" href="#near-term-within-6-months" title="Permanent link">&para;</a></h3>
+<p>These are either already partially implemented or require only focused engineering
+effort with no architectural changes.</p>
+<h4 id="n1-binary-store-coverage-expansion">N1. Binary store coverage expansion<a class="headerlink" href="#n1-binary-store-coverage-expansion" title="Permanent link">&para;</a></h4>
+<p>The shared binary store is the single highest-leverage item for reducing the barrier
+to entry for new users. <code>bits doctor --check-store</code> (implemented) already tells the
+user whether a pre-built tarball is available for their platform before they commit to
+a full compilation. The remaining work is supply-side:</p>
+<ul>
+<li>Register build runners for each target architecture in the CERN experiment portfolio
+  (<code>slc9_x86-64</code>, <code>slc9_aarch64</code>, <code>ubuntu2204_x86-64</code>, <code>ubuntu2404_x86-64</code>,
+  <code>osx_x86-64</code>, <code>osx_arm64</code>).</li>
+<li>Define a <code>release</code> build schedule that rebuilds and uploads the full stack on every
+  merged commit to the main recipe branch.</li>
+<li>Make pre-built store availability more prominent in the quick-start documentation so
+  new users know to expect a fast path before attempting a full build.</li>
+</ul>
+<h4 id="n2-developer-workflow-documentation">N2. Developer workflow documentation<a class="headerlink" href="#n2-developer-workflow-documentation" title="Permanent link">&para;</a></h4>
+<p>The local-checkout shadowing capability is bits' most important differentiator for
+interactive development but is the least documented feature. <code>bits status</code> (implemented)
+already classifies every package in the dependency tree — whether it will come from the
+store, be rebuilt, or be shadowed by a local checkout — without running a build.
+Remaining work:</p>
+<ul>
+<li>Expand the Cookbook with a realistic multi-package scenario (e.g. developing O2Physics
+  with a local O2 also in flight) that shows <code>bits status</code> output at each step.</li>
+<li>Improve <code>bits init</code> to detect common checkout layouts and offer to configure the
+  development environment interactively, reducing the setup steps for a new contributor
+  from five commands to one.</li>
+</ul>
+<hr />
+<h3 id="medium-term-6-to-18-months">Medium term — 6 to 18 months<a class="headerlink" href="#medium-term-6-to-18-months" title="Permanent link">&para;</a></h3>
+<p>These require more significant engineering but do not require architectural changes
+to the core.</p>
+<h4 id="m1-lightweight-dependency-pinning-and-version-ranges">M1. Lightweight dependency pinning and version ranges<a class="headerlink" href="#m1-lightweight-dependency-pinning-and-version-ranges" title="Permanent link">&para;</a></h4>
+<p>The current model pins every dependency to an exact version in the recipe. This is
+correct for reproducibility but makes it hard to maintain a recipe repository that
+serves multiple experiment configurations simultaneously. The planned approach has two
+layers:</p>
+<p><strong>Recipe-level constraints</strong> — a <code>version_range</code> field on <code>requires:</code> entries that
+constrains but does not over-specify the version. The resolver uses the most recent
+satisfying version in the known recipe set without a full SAT solver, covering the
+80 % case (minimum-version constraints, exclusion of known-broken ranges):</p>
+<div class="highlight"><pre><span></span><code><span class="nt">requires</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ROOT:&gt;=6.28</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">boost:&gt;=1.75,&lt;1.84</span>
+</code></pre></div>
+<p><strong>Defaults profile constraints</strong> — extend the defaults profile system to express a
+compatibility matrix that the resolver checks at build time:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># defaults-run3-analysis.sh</span>
+<span class="nt">compatible_with</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">ROOT</span><span class="p">:</span><span class="w"> </span><span class="s">"&gt;=6.30"</span>
+<span class="w">  </span><span class="nt">Geant4</span><span class="p">:</span><span class="w"> </span><span class="s">"&gt;=11.2"</span>
+<span class="nt">incompatible_with</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">clang</span><span class="p">:</span><span class="w"> </span><span class="s">"&lt;16"</span>
+</code></pre></div>
+<p>The build would fail fast with a clear diagnostic if the active recipe repository does
+not satisfy these constraints, rather than silently building an incompatible combination
+and failing at link or runtime. Both layers share the same resolver extension and can
+be implemented together.</p>
+<h4 id="m2-prefer_system-standard-library">M2. <code>prefer_system</code> standard library<a class="headerlink" href="#m2-prefer_system-standard-library" title="Permanent link">&para;</a></h4>
+<p>Replace the current per-recipe artisanal detection scripts with a shared library of
+detection snippets for common system-provided components: MPI implementations
+(OpenMPI, MPICH, Intel MPI), BLAS/LAPACK (OpenBLAS, MKL, ATLAS), CUDA, HDF5, and
+the most common Python packages. A recipe author writes:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">prefer_system_check</span><span class="p">:</span><span class="w"> </span><span class="kt">!include</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">system-checks/openmpi.sh</span>
+</code></pre></div>
+<p>rather than writing MPI detection from scratch. This dramatically lowers the quality
+bar for <code>prefer_system</code> usage on HPC clusters where vendor-optimised libraries are
+essential for performance.</p>
+<h4 id="m3-reproducible-build-attestation">M3. Reproducible build attestation<a class="headerlink" href="#m3-reproducible-build-attestation" title="Permanent link">&para;</a></h4>
+<p>The <code>--from-manifest</code> replay and <code>--store-integrity</code> features provide good
+<em>verification</em> of stored artefacts but do not provide <em>attestation</em> — a signed
+statement that a given tarball was produced from a specific recipe at a specific commit
+on a trusted runner. Introduce optional SLSA-level 2 provenance attestation:</p>
+<ul>
+<li>The bits-console pipeline signs each completed tarball with the runner's identity
+  (a short-lived GitLab CI token or a project-specific signing key).</li>
+<li><code>bits build --verify-provenance</code> checks the signature before using a remote tarball.</li>
+<li>The manifest records the attestation alongside the SHA-256.</li>
+</ul>
+<p>This is particularly important for software deployed to CVMFS and used in physics
+analyses: a supply-chain attack on the build infrastructure must be detectable.</p>
+<h4 id="m4-personal-analysis-overlay-via-s3-tarball-cache">M4. Personal analysis overlay via S3 tarball cache<a class="headerlink" href="#m4-personal-analysis-overlay-via-s3-tarball-cache" title="Permanent link">&para;</a></h4>
+<p>For individual analysts building a small number of packages on top of a shared
+experiment stack, the full CVMFS publication pipeline is too heavyweight: ingestion
+latency is minutes, write access to the experiment's Stratum-0 is restricted, and the
+overhead is disproportionate for personal packages that iterate daily. Yet batch jobs
+on WLCG worker nodes need those packages available before execution with no build
+capability on the node.</p>
+<p>The solution is a two-layer model: the experiment stack served from CVMFS as always,
+and the personal analysis overlay distributed through an S3-compatible object store
+(CERN EOS, MinIO, or any AWS-compatible endpoint) that the analyst already has write
+access to:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># After a local build of personal packages:</span>
+bits<span class="w"> </span>push<span class="w"> </span>--manifest<span class="w"> </span>s3://cern-eos-personal/pbuncic/analysis-v3.json
+
+<span class="c1"># In the WLCG batch job prolog:</span>
+bits<span class="w"> </span>fetch<span class="w"> </span>s3://cern-eos-personal/pbuncic/analysis-v3.json
+bits<span class="w"> </span>enter<span class="w"> </span>MyAnalysis
+</code></pre></div>
+<p><code>bits push</code> uploads only packages built locally (<code>built_from_source</code> in the manifest),
+skipping anything already on CVMFS. <code>bits fetch</code> downloads, verifies SHA-256, and
+unpacks them, then exits with a clear diagnostic if the manifest architecture does not
+match the executing node. The tarball store already uses a content-addressed layout;
+adding an S3 driver is a contained change.</p>
+<h4 id="m5-abi-constraint-exports-abi_exports">M5. ABI constraint exports (<code>abi_exports</code>)<a class="headerlink" href="#m5-abi-constraint-exports-abi_exports" title="Permanent link">&para;</a></h4>
+<p>When a package is built against a library with a non-stable ABI (OpenSSL, Python C
+API, MPI wire protocol, ROOT dictionary), any downstream package built against an
+incompatible version will fail at runtime. Allow a recipe to declare the ABI
+constraints it propagates:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">package</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openssl</span>
+<span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">"3.3.1"</span>
+<span class="nt">abi_exports</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openssl&gt;=3.0,&lt;4</span>
+</code></pre></div>
+<p>When package B lists <code>openssl</code> in its <code>requires:</code>, bits automatically adds
+<code>openssl&gt;=3.0,&lt;4</code> to B's effective constraint set. A binary tarball for B downloaded
+from the store is rejected if the installed OpenSSL does not satisfy the constraint,
+rather than loading silently and crashing at runtime. The initial target set is the
+five or six packages in the HEP stack that are genuine ABI pinch-points: OpenSSL,
+Python (C extension API), ROOT (class dictionary), the active MPI implementation, and
+the C++ standard library baked in by the compiler toolchain.</p>
+<hr />
+<h3 id="long-term-18-months-and-beyond">Long term — 18 months and beyond<a class="headerlink" href="#long-term-18-months-and-beyond" title="Permanent link">&para;</a></h3>
+<p>These are higher-risk or higher-effort items whose value justifies the investment
+given sustained community growth.</p>
+<h4 id="l1-multi-community-bits-console-with-federated-stores">L1. Multi-community bits-console with federated stores<a class="headerlink" href="#l1-multi-community-bits-console-with-federated-stores" title="Permanent link">&para;</a></h4>
+<p>The current bits-console is designed for a single GitLab instance and a small set of
+communities on the same instance. A federated model allows:</p>
+<ul>
+<li>A community to declare that it trusts tarballs from another community's store
+  (e.g. LHCb trusts the LCG store for ROOT, Geant4, and compiler toolchains).</li>
+<li>The local store to serve as a transparent cache in front of upstream stores.</li>
+<li>bits-console to present a unified view of build status across federated communities.</li>
+</ul>
+<p>This requires a trust model (public key infrastructure for store signing) and a
+canonical resolution order for federated package lookups. The repository provider
+feature is a foundation: a community's <code>defaults</code> file can already reference another
+community's recipe repository.</p>
+<h4 id="l2-web-based-recipe-editor-and-validation">L2. Web-based recipe editor and validation<a class="headerlink" href="#l2-web-based-recipe-editor-and-validation" title="Permanent link">&para;</a></h4>
+<p>Lower the barrier to contributing new recipes by providing a browser-based editor
+integrated into bits-console that:</p>
+<ul>
+<li>Validates the YAML header syntax as you type.</li>
+<li>Resolves and displays the dependency graph.</li>
+<li>Checks that all <code>sources:</code> URLs are reachable and optionally computes their checksums.</li>
+<li>Runs a dry-build (dependency resolution and download only, no compilation) in a
+  sandboxed CI job triggered from the browser.</li>
+</ul>
+<p>This brings the recipe authoring experience closer to what Spack's <code>spack create</code>
+and Conda-forge's staged-recipes automation provide, without requiring a local bits
+installation.</p>
+<hr />
+<h2 id="what-bits-is-not-trying-to-become">What bits is not trying to become<a class="headerlink" href="#what-bits-is-not-trying-to-become" title="Permanent link">&para;</a></h2>
+<p>To keep focus, it is worth being explicit about scope boundaries:</p>
+<ul>
+<li><strong>Not a general-purpose Linux package manager.</strong> System libraries, kernel modules,
+  and distribution-level packages are not in scope. <code>prefer_system</code> is the correct
+  answer for those.</li>
+<li><strong>Not a replacement for pip/conda for pure Python environments.</strong> Python packages
+  that do not require compilation against experiment-specific libraries belong in pip
+  or Conda. bits recipes for Python components should remain coarse-grained (a single
+  recipe that installs a coherent set of analysis packages via pip).</li>
+<li><strong>Not a build <em>tool</em>.</strong> bits orchestrates <em>when</em> and <em>in what order</em> CMake, Meson,
+  autotools, or other build systems run. It does not replace them.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
