@@ -51,7 +51,9 @@ docs = [
 homepage = 'https://github.com/bitsorg/bits'
 
 [tool.setuptools]
-script-files = ["bits", "bitsBuild", "bitsDoctor", "bitsDeps", "pb"]
+# aliBuild is the legacy-compatibility wrapper; it must be installed next to
+# bits, since it execs "$(dirname "$0")/bits".
+script-files = ["bits", "bitsBuild", "bitsDoctor", "bitsDeps", "pb", "aliBuild"]
 
 [tool.setuptools_scm]
 write_to = "bits_helpers/_version.py"
