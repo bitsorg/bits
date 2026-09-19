@@ -82,6 +82,41 @@ class DepsTestCase(unittest.TestCase):
           args.outdot = None
           doDeps(args, MagicMock())
 
+    @patch("bits_helpers.deps.execute")
+    @patch("bits_helpers.recipe.open", new=lambda f: StringIO(RECIPES[f]))
+    @patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)
+    @patch("bits_helpers.defaults.exists", new=lambda f: f in RECIPES)
+    def test_deps_makefile(self, mockExecute):
+        """--outmake writes dependency rules in build order and skips Graphviz."""
+        def makefile(runtime_only, package="ROOT"):
+            out = StringIO()
+            out.close = lambda: None
+            args = Namespace(workDir="/work", configDir="/dist", debug=False,
+                             docker=False, dockerImage=None, docker_extra_args=[],
+                             preferSystem=False, noSystem="*", architecture="slc7_x86-64",
+                             disable=[], neat=False, outdot=None, outgraph=None,
+                             outmake="/tmp/Makefile", runtimeOnly=runtime_only,
+                             package=package, defaults=["release"], environment=[])
+            with patch.object(os.path, "exists", lambda n: n in RECIPES), \
+                 patch("bits_helpers.deps.open", return_value=out) as mockOpen:
+              doDeps(args, MagicMock())
+            mockOpen.assert_called_once_with("/tmp/Makefile", "w")
+            return out.getvalue().splitlines()[1:]   # drop the header comment
+
+        # ROOT build_requires GCC-Toolchain.
+        self.assertEqual(makefile(False), ["defaults-release:", "GCC-Toolchain: defaults-release",
+                          "ROOT: defaults-release GCC-Toolchain"])
+        self.assertEqual(makefile(True), ["defaults-release:", "ROOT: defaults-release"])
+        # AliRoot requires ROOT and GCC-Toolchain at runtime; ROOT's own
+        # build-only edge to GCC-Toolchain is dropped with --runtime-only.
+        self.assertEqual(makefile(False, "AliRoot"),
+                         ["defaults-release:", "GCC-Toolchain: defaults-release",
+                          "ROOT: defaults-release GCC-Toolchain",
+                          "AliRoot: defaults-release GCC-Toolchain ROOT"])
+        self.assertEqual(makefile(True, "AliRoot"),
+                         ["defaults-release:", "GCC-Toolchain: defaults-release",
+                          "ROOT: defaults-release", "AliRoot: defaults-release GCC-Toolchain ROOT"])
+        mockExecute.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()

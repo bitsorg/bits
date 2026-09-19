@@ -960,7 +960,8 @@ AlmaLinux hosts.
 
 ### bits deps
 
-Generate a visual dependency graph for a package (requires Graphviz).
+Generate a visual dependency graph for a package (requires Graphviz), and/or a
+Makefile listing its dependency tree.
 
 ```bash
 bits deps [options] PACKAGE
@@ -968,7 +969,9 @@ bits deps [options] PACKAGE
 
 | Option | Description |
 |--------|-------------|
-| `--outgraph FILE` | Output PDF file (required). |
+| `--outgraph FILE` | Output PDF file. |
+| `--outmake FILE` | Output the package's dependency tree as Makefile rules (`pkg: dep1 dep2`), one per package, in build order, with no recipes. Does not require Graphviz. At least one of `--outgraph`/`--outmake` is required. |
+| `--runtime-only` | With `--outmake`, follow only `requires` (runtime) dependencies and skip `build_requires`, so build-only packages are left out. |
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `-a ARCH` | Architecture for dependency resolution. |
 | `--disable PACKAGE` | Exclude PACKAGE from the graph (repeatable). |

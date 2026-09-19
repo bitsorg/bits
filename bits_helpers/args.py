@@ -392,6 +392,13 @@ def add_deps_arguments(subparsers, ctx):
                           help="Keep intermediate Graphviz dot file in %(metavar)s.")
   deps_graph.add_argument("--outgraph", dest="outgraph", metavar="FILE",
                           help="Store final output PDF file in %(metavar)s.")
+  deps_graph.add_argument("--outmake", dest="outmake", metavar="FILE",
+                          help=("Write the package's dependency tree to %(metavar)s as Makefile rules "
+                                "(`pkg: dep1 dep2`, in build order, no recipes). "
+                                "Does not require Graphviz."))
+  deps_graph.add_argument("--runtime-only", dest="runtimeOnly", action="store_true",
+                          help=("With --outmake, follow only requires (runtime dependencies) and skip "
+                                "build_requires, so build-only packages are left out."))
 
   deps_docker = deps_parser.add_argument_group(title="Use a Docker container", description="""\
   If you're planning to build inside a Docker container, e.g. using bits
