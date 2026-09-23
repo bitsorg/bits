@@ -109,6 +109,93 @@ class TestMerge(unittest.TestCase):
         self.assertEqual([p["package"] for p in common["packages"]], ["Good"])
 
 
+class TestMergeStoreResolvesConflicts(unittest.TestCase):
+    """A same-(arch, hash) sha256 conflict is settled by the stored object."""
+
+    A = "slc7_x86-64"
+
+    def _two(self):
+        return [_manifest("old", [_pkg("A", "h1", "sha256:aa")]),
+                _manifest("new", [_pkg("A", "h1", "sha256:bb")])]
+
+    def test_store_matches_second_claim_keeps_it(self):
+        # Store wiped and h1 rebuilt: the older BOM is stale.
+        with self.assertLogs("bits", level="WARNING") as logs:
+            common = certify.merge_common_manifest(
+                self._two(), probe=lambda a, h, t=None: "sha256:bb")
+        self.assertEqual([p["tarball_sha256"] for p in common["packages"]],
+                         ["sha256:bb"])
+        self.assertIn("1 stale BOM entry", "\n".join(logs.output))
+
+    def test_store_matches_first_claim_keeps_it(self):
+        # Upload race: the second node's bytes lost.
+        common = certify.merge_common_manifest(
+            self._two(), probe=lambda a, h, t=None: "aa")
+        self.assertEqual([p["tarball_sha256"] for p in common["packages"]],
+                         ["sha256:aa"])
+
+    def test_store_matches_neither_still_fails_closed(self):
+        with self.assertRaises(certify.CertifyConflict) as cm:
+            certify.merge_common_manifest(
+                self._two(), probe=lambda a, h, t=None: "sha256:cc")
+        self.assertIn("matches none", str(cm.exception))
+
+    def test_object_absent_is_left_to_store_validation(self):
+        # Wiped store, hash not rebuilt: no claim can be confirmed, but none is
+        # signed either — validation drops the absent object.
+        common = certify.merge_common_manifest(
+            self._two(), probe=lambda a, h, t=None: None)
+        self.assertEqual(len(common["packages"]), 1)
+        fatal, missing = certify.validate_against_store(common, lambda a, h, t=None: None)
+        self.assertEqual((fatal, len(missing)), ([], 1))
+
+    def test_probe_asked_with_each_entrys_tarball(self):
+        seen = []
+
+        def probe(a, h, t=None):
+            seen.append((a, h, t))
+            return "sha256:bb"
+        m1 = _manifest("old", [_pkg("A", "h1", "sha256:aa", tarball="A-1-1.tgz")])
+        m2 = _manifest("new", [_pkg("A", "h1", "sha256:bb", tarball="A-1-2.tgz")])
+        common = certify.merge_common_manifest([m1, m2], probe=probe)
+        self.assertEqual(common["packages"][0]["tarball"], "A-1-2.tgz")
+        self.assertEqual(seen, [(self.A, "h1", "A-1-1.tgz"), (self.A, "h1", "A-1-2.tgz")])
+
+    def test_three_boms_converge_on_stored_entry_in_any_order(self):
+        # The matching claim may come last: resolution must not be pairwise.
+        a, b = self._two()
+        c = _manifest("newer", [_pkg("A", "h1", "sha256:cc")])
+        for boms in ([a, b, c], [a, c, b], [c, a, b]):
+            common = certify.merge_common_manifest(
+                boms, probe=lambda a, h, t=None: "sha256:bb")
+            self.assertEqual([p["tarball_sha256"] for p in common["packages"]],
+                             ["sha256:bb"])
+
+    def test_store_confirming_two_claims_is_fatal(self):
+        # Two distinct objects (different tarball names) under one hash: ambiguous.
+        store = {"A-1.tgz": "sha256:aa", "A-2.tgz": "sha256:bb"}
+        m1 = _manifest("b1", [_pkg("A", "h1", "sha256:aa", tarball="A-1.tgz")])
+        m2 = _manifest("b2", [_pkg("A", "h1", "sha256:bb", tarball="A-2.tgz")])
+        with self.assertRaises(certify.CertifyConflict) as cm:
+            certify.merge_common_manifest([m1, m2], probe=lambda a, h, t=None: store[t])
+        self.assertIn("more than one", str(cm.exception))
+
+    def test_agreeing_entries_never_probe(self):
+        def probe(a, h, t=None):
+            raise AssertionError("probe must not run without a conflict")
+        m1 = _manifest("b1", [_pkg("A", "h1", "sha256:aa")])
+        m2 = _manifest("b2", [_pkg("A", "h1", "aa")])
+        common = certify.merge_common_manifest([m1, m2], probe=probe)
+        self.assertEqual(len(common["packages"]), 1)
+
+    def test_cached_probe_memoises(self):
+        calls = []
+        probe = certify._cached_probe(lambda a, h, t=None: calls.append(h) or "x")
+        probe("a", "h1", "t"); probe("a", "h1", "t"); probe("a", "h2", "t")
+        self.assertEqual(calls, ["h1", "h2"])
+        self.assertIsNone(certify._cached_probe(None))
+
+
 class TestValidateAgainstStore(unittest.TestCase):
 
     def _common(self):
@@ -216,6 +303,53 @@ class TestCertifyEndToEnd(unittest.TestCase):
         kid, index = trust.trusted_index(out_path)
         self.assertIsNotNone(kid)
         self.assertEqual(index, {"h1": "sha256:aa"})       # B dropped, A signed
+
+    def test_certify_resolves_stale_bom_and_probes_once(self):
+        # A BOM from before a store wipe plus the rebuild's BOM: certify signs
+        # the stored bytes, and the conflict + validation share one probe call.
+        calls = []
+
+        def probe(a, h, t=None):
+            calls.append(h)
+            return "sha256:bb"
+        boms = [_manifest("old", [_pkg("A", "h1", "sha256:aa")]),
+                _manifest("new", [_pkg("A", "h1", "sha256:bb")])]
+        out = os.path.join(self.tmp, "out", "common.json")
+        out_path, _ = certify.certify(boms, self.key_pem, out, probe=probe)
+        _kid, index = trust.trusted_index(out_path)
+        self.assertEqual(index, {"h1": "sha256:bb"})
+        self.assertEqual(calls, ["h1"])
+
+    def test_local_revision_neither_shadows_nor_conflicts(self):
+        # A laptop BOM's localN entry for the same hash must not hide the CI
+        # entry (it used to win the dedup and then be dropped with it), nor be
+        # probed in a conflict.
+        probed = []
+
+        def probe(a, h, t=None):
+            probed.append(t)
+            return "sha256:aa"
+        local = _manifest("laptop", [_pkg("A", "h1", "sha256:zz", revision="local1",
+                                          tarball="A-local1.tgz")])
+        ci = _manifest("ci", [_pkg("A", "h1", "sha256:aa")])
+        out = os.path.join(self.tmp, "out", "common.json")
+        out_path, _ = certify.certify([local, ci], self.key_pem, out, probe=probe)
+        _kid, index = trust.trusted_index(out_path)
+        self.assertEqual(index, {"h1": "sha256:aa"})
+        self.assertNotIn("A-local1.tgz", probed)
+        self.assertEqual(local["packages"][0]["revision"], "local1")  # input untouched
+
+    def test_certify_drops_conflict_whose_objects_are_gone(self):
+        # Two stale BOMs from before a wipe disagree on h1; the store has neither
+        # object any more. certify signs the rest instead of failing.
+        boms = [_manifest("old1", [_pkg("A", "h1", "sha256:aa"), _pkg("B", "h2", "sha256:bb")]),
+                _manifest("old2", [_pkg("A", "h1", "sha256:cc")])]
+        store = {("slc7_x86-64", "h2"): "sha256:bb"}
+        out = os.path.join(self.tmp, "out", "common.json")
+        out_path, _ = certify.certify(boms, self.key_pem, out,
+                                      probe=lambda a, h, t=None: store.get((a, h)))
+        _kid, index = trust.trusted_index(out_path)
+        self.assertEqual(index, {"h2": "sha256:bb"})
 
     def test_certify_skips_local_revisions(self):
         # localN revisions are only assigned when there is no write store, so the

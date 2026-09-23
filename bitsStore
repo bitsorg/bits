@@ -5,6 +5,8 @@
 #   bits store ls     [selection]        present the selection (default verb)
 #   bits store verify [--arch A] [--deep] [--orphans]
 #   bits store rm     [selection] [-n]   delete the objects in the selection
+#   bits store ls|rm --stale-boms [--manifests-dir DIR]
+#                                        build manifests the store no longer backs
 #
 # Selection (shared by ls and rm):
 #   Manifest-aware (default): reads the store's manifests and lets you narrow by
@@ -18,6 +20,15 @@
 #                          so bits will re-upload instead of aborting the upload
 #     --raw PATTERN...   select raw store keys by prefix or glob (bypass manifests)
 #     --older-than DAYS  keep only objects older than DAYS (raw/orphans/objects)
+#     --stale-boms       per-build BOMs no entry of which matches the store any
+#                          more (e.g. after a store wipe); `rm` removes them and
+#                          `verify --stale-boms` exits 1 while any exist. Narrow
+#                          with --arch/--build only. With --manifests-dir DIR,
+#                          check the BOM files of a local bits-manifests checkout
+#                          instead of MANIFESTS/ — that is the copy certify reads,
+#                          so rm there (then commit + MR) is what fixes certify;
+#                          rm without it only tidies the store's MANIFESTS/ copies.
+#                          --deep hashes objects that carry no recorded sha256.
 #
 # NOTE (ADR-0005, hash-only store): new builds write ONLY the content-addressed
 # tarball under TARS/<arch>/store/<h2>/<hash>/… — no version-link or dist-symlink
@@ -57,6 +68,7 @@ import argparse, datetime, fnmatch, hashlib, json, os, sys, tempfile
 from bits_helpers.publish import _normalize_s3_store
 from bits_helpers.sync import remote_from_url
 from bits_helpers.utilities import resolve_store_path, resolve_links_path
+from bits_helpers import stale_boms
 try:
     from bits_helpers import trust
 except Exception:
@@ -471,6 +483,91 @@ def apply_age(s3, bucket, keys, f):
             keys.pop(k, None)
 
 
+def stale_bom_report(store, s3, bucket, f):
+    """Classify the BOMs (MANIFESTS/ or --manifests-dir) against the store, print
+    the stale ones, and return ``{key_or_path: None}`` for the fully stale ones."""
+    if f.manifests_dir:
+        boms = stale_boms.load_local_boms(f.manifests_dir)
+        where = f.manifests_dir
+    else:
+        store.load()
+        boms = store.boms
+        where = "MANIFESTS/"
+    lookup = stale_boms.store_lookup(s3, bucket, deep=f.deep)
+    full, partial, checked, confirmed = [], [], 0, 0
+    for m in boms:
+        if not manifest_matches(m, f):
+            continue
+        if f.arch and arch_of(m["packages"]) not in f.arch:
+            continue
+        c = stale_boms.classify(m, lookup)
+        if not c["judged"]:
+            continue
+        checked += 1
+        confirmed += c[stale_boms.OK]
+        if c["fully_stale"]:
+            full.append((m, c))
+        elif c[stale_boms.STALE] or c[stale_boms.MISSING]:
+            partial.append((m, c))
+    for title, rows in (("STALE BUILD MANIFESTS (no entry matches the store - prune candidates)", full),
+                        ("KEPT (some entries still match the store, cannot be checked, "
+                         "or are merely absent)", partial)):
+        if not rows:
+            continue
+        print(title)
+        print("  %-40s %-22s %5s %5s %7s %7s  %s" %
+              ("build_id", "arch", "ok", "stale", "missing", "unknown", "manifest"))
+        for m, c in sorted(rows, key=lambda r: r[0]["key"]):
+            print("  %-40s %-22s %5d %5d %7d %7d  %s" %
+                  (m["build_id"][:40], arch_of(m["packages"])[:22], c[stale_boms.OK],
+                   c[stale_boms.STALE], c[stale_boms.MISSING], c[stale_boms.UNKNOWN], m["key"]))
+        print()
+    print(f"# {len(full)} stale and {len(partial)} partly stale of {checked} "
+          f"build manifest(s) checked under {where} against {STORE}")
+    if full and not confirmed and not f.force:
+        # Not one entry anywhere matches: far more likely the wrong store
+        # ($BITS_S3_STORE) than every BOM being stale. After a real wipe and
+        # rebuild, the new BOMs always match.
+        print(f"{PROG}: the store confirms no entry of any BOM checked — wrong store? "
+              "Set $BITS_S3_STORE, or pass --force (rm) to select them anyway.",
+              file=sys.stderr)
+        return {}
+    return {m["key"]: None for m, _c in full}
+
+
+def delete_local_files(paths, f):
+    """Remove stale BOM files from a local bits-manifests checkout (--manifests-dir).
+    Same dry-run / confirmation rules as the S3 delete."""
+    paths = sorted(paths)
+    if not paths:
+        print("Nothing matched; nothing to delete.")
+        return 0
+    if f.dry_run:
+        print(f"[dry-run] would remove {len(paths)} file(s) (nothing removed)")
+        return 0
+    if not f.yes:
+        try:
+            with open("/dev/tty") as tty:
+                sys.stderr.write(f"Remove {len(paths)} file(s) from {f.manifests_dir} "
+                                 f"(checked against {STORE})? [y/N] ")
+                sys.stderr.flush()
+                if tty.readline().strip().lower() not in ("y", "yes"):
+                    print("Aborted."); return 1
+        except OSError:
+            print("Refusing to delete without confirmation (no tty). Use --yes.", file=sys.stderr)
+            return 1
+    failed = 0
+    for path in paths:
+        try:
+            os.remove(path)
+        except OSError as exc:
+            failed += 1
+            print(f"ERROR removing {path}: {exc}", file=sys.stderr)
+    print(f"Done: removed {len(paths) - failed}/{len(paths)} file(s). Commit the removal "
+          "in the manifests repo and open an MR.")
+    return 1 if failed else 0
+
+
 # ── presentation ─────────────────────────────────────────────────────────────
 def present_manifests(store, f):
     store.load()
@@ -607,6 +704,10 @@ def do_verify(store, s3, bucket, f):
         orph = select_orphans(store, s3, bucket, f)
         print(f"\norphans (tarballs referenced by no manifest): {len(orph)}"
               + (f", {human(sum(orph.values()))}" if orph else ""))
+    if f.stale_boms:
+        print()
+        if stale_bom_report(store, s3, bucket, f):
+            rc = 1
     return rc
 
 
@@ -680,6 +781,15 @@ def do_delete(s3, bucket, keys, store, f):
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+def add_stale_boms(p):
+    p.add_argument("--stale-boms", dest="stale_boms", action="store_true",
+                   help="build manifests (BOMs) none of whose entries match the store "
+                        "any more, e.g. after a store wipe; rm removes them")
+    p.add_argument("--manifests-dir", dest="manifests_dir", metavar="DIR",
+                   help="with --stale-boms, check the BOM files of a local bits-manifests "
+                        "checkout instead of the store's MANIFESTS/ (rm deletes the files)")
+
+
 def add_selection(p):
     p.add_argument("--arch", action="append", metavar="ARCH", help="filter by architecture (repeatable/comma)")
     p.add_argument("--group", action="append", metavar="GROUP", help="filter by group")
@@ -702,6 +812,9 @@ def add_selection(p):
     p.add_argument("--orphans", action="store_true", help="store tarballs not referenced by any manifest")
     p.add_argument("--broken-links", dest="broken_links", action="store_true",
                    help="named/dist links whose backing store object is missing")
+    add_stale_boms(p)
+    p.add_argument("--deep", action="store_true",
+                   help="with --stale-boms, hash store objects that carry no recorded sha256 (slow)")
     p.add_argument("--raw", nargs="+", metavar="PATTERN", help="select raw keys by prefix or glob")
     p.add_argument("--older-than", dest="older_than", type=float, metavar="DAYS",
                    help="keep only objects older than DAYS")
@@ -730,6 +843,7 @@ def main():
     vp.add_argument("--arch", action="append", metavar="ARCH", help="limit to architecture(s)")
     vp.add_argument("--deep", action="store_true", help="also re-hash every tarball (slow)")
     vp.add_argument("--orphans", action="store_true", help="also report unreferenced tarballs")
+    add_stale_boms(vp)
     cp = sub.add_parser("cat", help="dump a store object's bytes to stdout")
     cp.add_argument("key", metavar="KEY",
                     help="S3 object key, e.g. MANIFESTS/rev-index/<arch>/<pkg>/<ver-rev> "
@@ -817,7 +931,7 @@ def main():
         setattr(args, name, csv(getattr(args, name, None)))
     for name, dflt in (("certified_by", None), ("build", None), ("expired", False),
                        ("objects", False), ("links", False), ("orphans", False),
-                       ("broken_links", False),
+                       ("broken_links", False), ("stale_boms", False), ("manifests_dir", None),
                        ("raw", None), ("older_than", None), ("before", None),
                        ("bits_version", None), ("bits_dist", None), ("built_before", None),
                        ("only_signed", False),
@@ -828,13 +942,36 @@ def main():
     args.before_dt = None
     args.built_before_dt = None
 
+    if args.manifests_dir and not args.stale_boms:
+        sys.exit(f"{PROG}: --manifests-dir only applies with --stale-boms")
+    if args.deep and args.verb in ("ls", "rm") and not args.stale_boms:
+        sys.exit(f"{PROG}: --deep only applies with --stale-boms (or to verify)")
+    if args.stale_boms and args.verb in ("ls", "rm"):
+        # --stale-boms selects whole BOMs by --arch/--build only. Refuse the other
+        # selectors rather than silently ignore them and widen a delete.
+        other = [opt for opt, val in (
+            ("--group", args.group), ("--package", args.package), ("--version", args.version),
+            ("--bits-version", args.bits_version), ("--bits-dist", args.bits_dist),
+            ("--built-before", args.built_before), ("--certified-by", args.certified_by),
+            ("--expired", args.expired), ("--objects", args.objects), ("--links", args.links),
+            ("--orphans", args.orphans), ("--broken-links", args.broken_links),
+            ("--raw", args.raw), ("--older-than", args.older_than), ("--before", args.before),
+            ("--only-signed", args.only_signed), ("--only-boms", args.only_boms)) if val]
+        if other:
+            sys.exit(f"{PROG}: --stale-boms takes only --arch/--build to narrow it, not "
+                     f"{', '.join(other)} (for one group, point --manifests-dir at "
+                     "manifests/<group>)")
+    if args.manifests_dir and not os.path.isdir(args.manifests_dir):
+        sys.exit(f"{PROG}: --manifests-dir {args.manifests_dir!r} is not a directory")
+
     if not os.environ.get("AWS_ACCESS_KEY_ID"):
         sys.exit(f"{PROG}: no S3 credentials — put them in ~/.bits/s3keys "
                  "(or set $BITS_AWS_KEYS_FILE / AWS_ACCESS_KEY_ID).")
 
     # rm pre-flight guards (before touching S3).
     if args.verb == "rm":
-        narrowed = any([args.raw, args.orphans, args.broken_links, args.arch, args.group,
+        narrowed = any([args.raw, args.orphans, args.broken_links, args.stale_boms,
+                        args.arch, args.group,
                         args.package, args.version, args.certified_by, args.build, args.expired,
                         args.bits_version, args.bits_dist, args.built_before])
         if not narrowed and not args.force:
@@ -887,6 +1024,14 @@ def main():
 
     if args.verb == "verify":
         return do_verify(store, s3, bucket, args)
+
+    if args.stale_boms:
+        keys = stale_bom_report(store, s3, bucket, args)
+        if args.verb != "rm":
+            return 0
+        if args.manifests_dir:
+            return delete_local_files(keys, args)
+        return do_delete(s3, bucket, keys, store, args)
 
     # Resolve the object set for the chosen view.
     if args.raw:

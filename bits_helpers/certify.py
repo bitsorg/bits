@@ -7,8 +7,8 @@ This is the forge-agnostic heart of the group-signed trusted-reuse model
 that ``bits publish`` uploads (MANIFESTS/<build_id>/<host>-<UTC>.json), it:
 
   1. merges them into one *common manifest* — the trust unit — deduped by content
-     hash, refusing to merge if two builds disagree on a hash's tarball_sha256
-     (fail-closed);
+     hash; when two builds disagree on a hash's tarball_sha256 the store object
+     settles it, and if it matches neither the merge is refused (fail-closed);
   2. validates every hash against the actual store (the object exists and its
      bytes hash to the recorded tarball_sha256), via an injected ``probe`` so the
      core stays testable and forge/-store-agnostic;
@@ -155,14 +155,70 @@ def _expiry_iso(valid_days):
     return when.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _cached_probe(probe):
+    """Memoise *probe* per (arch, hash, tarball): the S3 probe streams the whole
+    object, and conflict resolution and store validation ask about the same ones."""
+    if probe is None:
+        return None
+    cache = {}
+
+    def cached(arch, h, tarball=None):
+        key = (arch, h, tarball)
+        if key not in cache:
+            cache[key] = probe(arch, h, tarball)
+        return cache[key]
+    return cached
+
+
+def _settle_conflict(key, cands, probe, stale):
+    """Pick the one entry of *cands* (``[(entry, build_id)]``, distinct sha256s for
+    one (arch, hash)) that the store confirms; record the others in *stale*.
+    Fail-closed: no probe, or the store confirming none or more than one of them,
+    raises :class:`CertifyConflict`."""
+    arch, h = key
+    stored = [probe(arch, h, e.get("tarball")) for e, _b in cands] if probe is not None else []
+    confirmed = [c for c, actual in zip(cands, stored)
+                 if actual is not None and _norm_sha(actual) == _norm_sha(c[0].get("tarball_sha256"))]
+    if len(confirmed) == 1:
+        keep = confirmed[0]
+        stale.extend((c[0].get("package", "?"), h, c[1]) for c in cands if c is not keep)
+        return keep[0]
+    if stored and all(actual is None for actual in stored):
+        # No object the store can vouch for (wiped since, or not unambiguously
+        # there): nothing to choose between. Keep one; store validation drops it
+        # as absent, so none of the claims is signed.
+        return cands[0][0]
+    reason = ("no store check was run to settle it" if probe is None else
+              "the store object matches none of them" if not confirmed else
+              "the store holds more than one of them")
+    raise CertifyConflict(
+        "package %s (hash %s, architecture %r) has conflicting tarball_sha256 "
+        "between builds %s, and %s. Remove the build manifest that is wrong from "
+        "manifests/ (`bits store ls --stale-boms --manifests-dir` lists BOMs the "
+        "store no longer backs) and re-certify."
+        % (cands[0][0].get("package", "?"), h, arch or "shared",
+           ", ".join("%r (%s)" % (b or "?", e.get("tarball_sha256")) for e, b in cands),
+           reason))
+
+
 def merge_common_manifest(manifests, default_group=None, valid_days=None,
-                          source_commit=None) -> dict:
+                          source_commit=None, probe=None) -> dict:
     """Merge build manifests into one common manifest, deduped by content hash.
 
     Only packages carrying both a ``hash`` and a ``tarball_sha256`` can be
     certified for reuse; others are skipped. Two entries sharing a hash must
     agree on ``tarball_sha256`` — a mismatch means one of them is wrong about
     what those bytes are, so we refuse (fail-closed) rather than sign ambiguity.
+
+    With a store *probe* (see :func:`validate_against_store`) a mismatch is
+    settled by the store: every distinct claim is checked, and when exactly one
+    matches the stored object it is kept and the others are dropped as stale.
+    That happens when a BOM outlives the object it describes (the store was
+    wiped and the same hash rebuilt) or when two nodes raced to upload the same
+    missing object. When the store holds none of the objects the conflict is moot
+    (store validation drops the entry as absent); the store holding different
+    bytes, or confirming several claims, stays fatal — independent of the order
+    of the BOMs.
 
     *default_group* stamps a ``group`` on entries that don't already carry one,
     so a per-group certification tags its batch for the consumer trust filter.
@@ -179,8 +235,7 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
     # mapping hash -> bytes must stay 1:1, so a genuine same-arch/same-hash but
     # different-sha collision (including a noarch "shared" package packaged
     # non-reproducibly on two platforms into the one shared tree) is still fatal.
-    by_key = {}
-    src_by_key = {}           # (arch, hash) -> build_id that first supplied it
+    by_key = {}               # (arch, hash) -> {sha256: (entry, build_id)}, first seen wins
     sources = []
     for man in manifests:
         if not isinstance(man, dict):
@@ -200,7 +255,6 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
             if not h or not sha:
                 continue
             arch = e.get("effective_architecture") or ""
-            key = (arch, h)
             entry = {k: e[k] for k in _PKG_FIELDS if k in e}
             if not entry.get("group") and man_group:
                 entry["group"] = man_group
@@ -212,23 +266,24 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
             for _fld in ("bits_version", "bits_dist_hash"):
                 if man.get(_fld) and _fld not in entry:
                     entry[_fld] = man[_fld]
-            prev = by_key.get(key)
-            if prev is None:
-                by_key[key] = entry
-                src_by_key[key] = bid
-            elif _norm_sha(prev.get("tarball_sha256")) != _norm_sha(sha):
-                raise CertifyConflict(
-                    "package %s (hash %s, architecture %r) has conflicting "
-                    "tarball_sha256 between builds %r and %r: %s vs %s. The same "
-                    "package hash was built to different bytes within one "
-                    "architecture tree — a non-reproducible build, or a differing "
-                    "host toolchain/system library on the two build nodes for this "
-                    "architecture. Remove one of the two build manifests from "
-                    "manifests/ and re-certify."
-                    % (e.get("package", "?"), h, arch or "shared",
-                       src_by_key.get(key) or "?", bid or "?",
-                       prev.get("tarball_sha256"), sha))
-    packages = [by_key[k] for k in sorted(by_key)]
+            by_key.setdefault((arch, h), {}).setdefault(_norm_sha(sha), (entry, bid))
+    stale = []                # (package, hash, build_id) claims the store refuted
+    packages = []
+    for key in sorted(by_key):
+        cands = list(by_key[key].values())
+        entry = cands[0][0] if len(cands) == 1 else _settle_conflict(key, cands, probe, stale)
+        packages.append(entry)
+    if stale:
+        # One summary line: after a store wipe this can be every package of a build.
+        warning("certify: %d stale BOM entr%s — the store holds different bytes "
+                "for the same hash; kept the entry matching the stored object. "
+                "First few: %s%s. `bits store ls --stale-boms --manifests-dir "
+                "<bits-manifests checkout>` lists BOMs to prune.",
+                len(stale), "y" if len(stale) == 1 else "ies",
+                ", ".join("%s %s (%s)" % (p, h[:12], b or "?") for p, h, b in stale[:5]),
+                " …" if len(stale) > 5 else "")
+        for p, h, b in stale:
+            debug("certify: stale BOM entry %s %s from build %s", p, h, b or "?")
     common = {
         "schema_version": SCHEMA_VERSION,
         "kind": COMMON_MANIFEST_KIND,
@@ -414,8 +469,12 @@ def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
     return out_abs, sig_path
 
 
-def _drop_local_revisions(common) -> list:
-    """Remove ``local*``-revision packages from *common* (in place); return them.
+def _drop_local_revisions(manifests) -> list:
+    """Return *manifests* without their ``local*``-revision packages.
+
+    Done before the merge, so a local entry can neither shadow a real one in the
+    dedup nor take part in (or be probed for) a conflict. The input dicts are
+    not modified.
 
     bits assigns a ``localN`` revision exactly when there is no write store, and
     ``doFinalSync`` never uploads such a tarball. A local-revision package is
@@ -425,13 +484,18 @@ def _drop_local_revisions(common) -> list:
     certification into hundreds of "absent from store" warnings, and keeps
     unreusable entries out of the signed manifest.
     """
-    pkgs = common.get("packages") or []
-    local = [p for p in pkgs
-             if str(p.get("revision") or "").startswith("local")]
+    def _local(p):
+        return isinstance(p, dict) and str(p.get("revision") or "").startswith("local")
+    out, local = [], []
+    for man in manifests:
+        pkgs = man.get("packages") if isinstance(man, dict) else None
+        if not pkgs or not any(_local(p) for p in pkgs):
+            out.append(man)
+            continue
+        local.extend(p for p in pkgs if _local(p))
+        out.append(dict(man, packages=[p for p in pkgs if not _local(p)]))
     if not local:
-        return []
-    common["packages"] = [p for p in pkgs
-                          if not str(p.get("revision") or "").startswith("local")]
+        return out
     warning("certify: skipping %d local-revision package(s) — a 'localN' revision "
             "is only assigned when there is no write store, so the tarball was "
             "never uploaded and can never be certified. First few: %s%s",
@@ -443,7 +507,7 @@ def _drop_local_revisions(common) -> list:
         debug("certify: skipping local revision: %s@%s-%s (%s)",
               p.get("package", "?"), p.get("version", "?"), p.get("revision"),
               p.get("effective_architecture") or "shared")
-    return local
+    return out
 
 
 def _prepare_common(manifests, signer, probe, default_group, valid_days,
@@ -452,9 +516,11 @@ def _prepare_common(manifests, signer, probe, default_group, valid_days,
     validated common-manifest dict (with certified_by/at stamped), ready to
     write. Raises :class:`CertifyConflict`/:class:`CertifyError` on any problem.
     """
-    common = merge_common_manifest(load_build_manifests(manifests), default_group,
-                                   valid_days=valid_days, source_commit=source_commit)
-    _drop_local_revisions(common)
+    probe = _cached_probe(probe)
+    manifests = _drop_local_revisions(load_build_manifests(manifests))
+    common = merge_common_manifest(manifests, default_group,
+                                   valid_days=valid_days, source_commit=source_commit,
+                                   probe=probe)
     certified_by = None
     if approval_check is not None:
         certified_by = approval_check(common)

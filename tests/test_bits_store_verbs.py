@@ -65,5 +65,35 @@ class TestStoreVerbs(unittest.TestCase):
         self.assertIn("no S3 credentials", r.stderr)
 
 
+    def test_stale_boms_listed_in_help(self):
+        for verb in ("ls", "rm", "verify"):
+            r = _run([verb, "-h"])
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("--stale-boms", r.stdout)
+            self.assertIn("--manifests-dir", r.stdout)
+
+    def test_manifests_dir_requires_stale_boms(self):
+        r = _run(["ls", "--manifests-dir", _ROOT])
+        self.assertIn("only applies with --stale-boms", r.stderr)
+
+    def test_manifests_dir_must_exist(self):
+        r = _run(["rm", "--stale-boms", "--manifests-dir", "/no/such/dir"])
+        self.assertIn("is not a directory", r.stderr)
+
+
+    def test_stale_boms_refuses_unsupported_selectors(self):
+        r = _run(["rm", "--stale-boms", "--group", "testbed", "--older-than", "3"])
+        self.assertIn("--group, --older-than", r.stderr)
+
+    def test_deep_needs_stale_boms_on_ls(self):
+        r = _run(["ls", "--deep"])
+        self.assertIn("--deep only applies", r.stderr)
+
+
+    def test_verify_combines_orphans_and_stale_boms(self):
+        r = _run(["verify", "--orphans", "--stale-boms"])
+        self.assertIn("no S3 credentials", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

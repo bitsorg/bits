@@ -281,6 +281,19 @@ objects are streamed once and stamped), so every manifest converges on the
 one stable object that certification verifies. Store objects are never
 overwritten.
 
+A BOM can still outlive the bytes it describes: the store was wiped and the
+same hashes rebuilt, or two nodes raced to upload one missing object. When two
+BOMs disagree on an `(arch, hash)`, certification asks the store and keeps the
+entry matching the stored object (one summary warning); it fails closed when
+the store confirms none or more than one of the claims. `bits store ls
+--stale-boms` lists BOMs no entry of which matches the store any more and at
+least one of which it contradicts; `rm --stale-boms` removes them and `verify
+--stale-boms` exits 1 while any exist. `--manifests-dir DIR` checks the files of
+a local bits-manifests checkout — the copy certify reads, so removing them there
+(commit + MR) is what clears the conflict — instead of the store's `MANIFESTS/`
+copies. A BOM is never selected when any of its entries still matches the store
+or cannot be checked, or when its objects are merely absent.
+
 #### Store garbage collection — `bits store gc`
 
 `bits store gc --trust-manifest <signed-common-manifest>` sweeps unreferenced objects
@@ -1484,6 +1497,7 @@ bits store gc --trust-manifest <M>    # reachability GC (was `bits gc`)
 bits store stats                      # per-arch/per-build usage report (was `bits store-stats`)
 bits store upload <PKG>               # upload one built package to the store (was `publish --to s3`)
 bits store rm <selection>             # delete objects (narrowed selection required)
+bits store ls|rm --stale-boms [--manifests-dir DIR]  # BOMs the store no longer backs
 ```
 
 **`bits cvmfs <verb>`** — a deployed CVMFS tree and the producer-side publish pipeline:
