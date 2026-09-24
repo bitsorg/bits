@@ -147,10 +147,14 @@ class GitLabForge:
                                    "protected": False, "masked": False})
             raise
 
+    def pipeline_variables(self, pid):
+        """The pipeline's variables as GitLab lists them ([{key, value, ...}])."""
+        return self._get("/pipelines/%s/variables" % pid) or []
+
     def pipeline_community(self, pid):
         """The pipeline's COMMUNITY variable (lowercased), or '' if none — used to
         authorize a lifecycle action against the pipeline's own community."""
-        for v in (self._get("/pipelines/%s/variables" % pid) or []):
+        for v in self.pipeline_variables(pid):
             if isinstance(v, dict) and str(v.get("key", "")).upper() == "COMMUNITY":
                 return str(v.get("value", "")).strip().lower()
         return ""

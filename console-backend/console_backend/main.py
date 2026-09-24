@@ -17,7 +17,7 @@ import secrets
 import time
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials,
@@ -237,6 +237,25 @@ async def ops_retry(pid: str, request: Request):
         raise HTTPException(502, "forge: %s" % e.message)
     audit.record("ops_retry", user=user, community=community, pipeline=pid, principal="human")
     return {"status": "retried"}
+
+
+@app.get("/ops/pipeline/{pid}/variables")
+async def ops_variables(pid: str, request: Request):
+    """The pipeline's variables ({key, value}), which the console's Re-run and
+    Re-publish start from. Read with the ops token under the same gate as the
+    lifecycle ops: GitLab does not show a pipeline's variables to the user's own
+    token for pipelines the ops bot created, so the direct read got 403."""
+    forge, user, community = await _ops_pipeline_ctx(request, pid)
+    try:
+        variables = await run_in_threadpool(forge.pipeline_variables, pid)
+    except forge_ops.ForgeError as e:
+        raise HTTPException(502, "forge: %s" % e.message)
+    # Trigger-time variables only (never project/group CI variables): the console
+    # sets them and passes no credentials that way. Keep it so.
+    return JSONResponse(
+        [{"key": str(v["key"]), "value": str(v.get("value") or "")}
+         for v in variables if isinstance(v, dict) and v.get("key")],
+        headers={"Cache-Control": "no-store"})
 
 
 @app.delete("/ops/pipeline/{pid}")

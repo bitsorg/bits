@@ -71,6 +71,24 @@ class TestOpsPipeline(unittest.TestCase):
         self.assertEqual(self.client.post("/ops/pipeline/15/cancel",
                                           headers=self._hdr("bob")).status_code, 403)
 
+    @patch("console_backend.forge_ops.requests.get")
+    def test_variables_for_community_admin(self, get):
+        get.return_value = FakeResp(200, [{"key": "COMMUNITY", "value": "testbed"},
+                                          {"key": "PACKAGE", "value": "nlox",
+                                           "variable_type": "env_var"}])
+        r = self.client.get("/ops/pipeline/15/variables", headers=self._hdr("alice"))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), [{"key": "COMMUNITY", "value": "testbed"},
+                                    {"key": "PACKAGE", "value": "nlox"}])
+        self.assertEqual(get.call_args.kwargs["headers"].get("PRIVATE-TOKEN"), "optok")
+
+    @patch("console_backend.forge_ops.requests.get")
+    def test_variables_denied_other_community(self, get):
+        get.return_value = _vars("testbed")
+        self.assertEqual(self.client.get("/ops/pipeline/15/variables",
+                                         headers=self._hdr("dave")).status_code, 403)
+        self.assertEqual(self.client.get("/ops/pipeline/15/variables").status_code, 401)
+
     @patch("console_backend.forge_ops.requests.request")
     @patch("console_backend.forge_ops.requests.get")
     def test_retry_authorized(self, get, req):
