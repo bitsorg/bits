@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials,
-               forge_ops, identity, session, webauthn_rp)
+               forge_ops, identity, session, signproxy, webauthn_rp)
 from fastapi.responses import RedirectResponse
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
@@ -518,14 +518,11 @@ def trust_pubkey():
     can do its producer-side key/group check without holding the key. Read from the
     proxy; the private key never leaves it. Cached briefly so an unauthenticated
     flood doesn't translate 1:1 into proxy calls (the key rarely rotates)."""
-    proxy_token = _proxy_token_or_503()
+    _require_sign_proxy()
     now = time.time()
     if _pubkey_cache["kid"] and _pubkey_cache["exp"] > now:
         return {"key_id": _pubkey_cache["kid"]}
-    try:
-        kid, _pub = trust.proxy_pubkey(settings.sign_proxy_url, proxy_token)
-    except RuntimeError as exc:
-        raise HTTPException(502, "signing proxy pubkey failed: %s" % exc)
+    kid, _pub = _proxy_call("signing proxy pubkey failed", trust.proxy_pubkey)
     _pubkey_cache.update(kid=kid, exp=now + 60)
     return {"key_id": kid}
 
@@ -604,13 +601,22 @@ async def _authorize_sign(request: Request, groups):
     return user, {"principal": "human"}, denied
 
 
-def _proxy_token_or_503():
-    if not settings.sign_proxy_configured():
-        raise HTTPException(503, "signing proxy is not configured")
-    token = os.environ.get(settings.sign_proxy_token_env)
-    if not token:
-        raise HTTPException(503, "signing proxy token is not available")
-    return token
+def _require_sign_proxy():
+    """503 early (before any authz/WebAuthn work) when signing is not configured."""
+    try:
+        signproxy.check(settings)
+    except signproxy.Unavailable as exc:
+        raise HTTPException(503, str(exc))
+
+
+def _proxy_call(what, fn, *args):
+    """Call the sign route via signproxy; map failures to HTTP errors."""
+    try:
+        return signproxy.call(settings, fn, *args)
+    except signproxy.Unavailable as exc:
+        raise HTTPException(503, str(exc))
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(502, "%s: %s" % (what, exc))
 
 
 async def _read_capped(request: Request, maxb: int) -> bytes:
@@ -633,14 +639,11 @@ def _parse_manifest(body: bytes) -> list:
     return _groups_of(manifest)
 
 
-async def _do_sign(body, groups, signer, principal, proxy_token):
+async def _do_sign(body, groups, signer, principal):
     """Key-policy check + sign the EXACT bytes via the proxy + audit. Assumes
     authorization (and, on the approval path, the WebAuthn assertion) passed."""
-    try:
-        kid, _pub = await run_in_threadpool(
-            trust.proxy_pubkey, settings.sign_proxy_url, proxy_token)
-    except RuntimeError as exc:
-        raise HTTPException(502, "signing proxy pubkey failed: %s" % exc)
+    kid, _pub = await run_in_threadpool(
+        _proxy_call, "signing proxy pubkey failed", trust.proxy_pubkey)
     policy = trust.load_key_policy()
     if policy is not None:
         badk = [g for g in groups if not trust.key_authorized(kid, g, policy)]
@@ -650,11 +653,8 @@ async def _do_sign(body, groups, signer, principal, proxy_token):
                          **principal)
             raise HTTPException(403, "signing key %s is not authorized for: %s"
                                 % (kid, ", ".join(badk)))
-    try:
-        envelope = await run_in_threadpool(
-            trust.sign_bytes_via_proxy, body, settings.sign_proxy_url, proxy_token)
-    except RuntimeError as exc:
-        raise HTTPException(502, "signing failed: %s" % exc)
+    envelope = await run_in_threadpool(
+        _proxy_call, "signing failed", trust.sign_bytes_via_proxy, body)
     digest = hashlib.sha256(body).hexdigest()
     audit.record("sign", signer=signer, groups=groups, digest=digest,
                  key_id=envelope["key_id"], **principal)
@@ -666,7 +666,7 @@ async def sign(request: Request):
     """Single-shot sign: CI (Bearer ID token), or a human when WebAuthn is not in
     force. If WebAuthn is configured and the human has an enrolled passkey, they
     must use the digest-bound /sign/request + /sign/approve flow instead."""
-    proxy_token = _proxy_token_or_503()
+    _require_sign_proxy()
     body = await _read_capped(request, _MAX_BODY)
     groups = _parse_manifest(body)
     signer, principal, denied = await _authorize_sign(request, groups)
@@ -679,7 +679,7 @@ async def sign(request: Request):
             and (settings.webauthn_required or credstore.get(signer))):
         raise HTTPException(409, "WebAuthn approval required; use /sign/request "
                                  "then /sign/approve")
-    return await _do_sign(body, groups, signer, principal, proxy_token)
+    return await _do_sign(body, groups, signer, principal)
 
 
 def _valid_build_id(build_id) -> bool:
@@ -746,7 +746,7 @@ async def sign_approve(request: Request):
     data = await _current_async(request)
     if not data:
         raise HTTPException(401, "not authenticated")
-    proxy_token = _proxy_token_or_503()
+    _require_sign_proxy()
     raw = await _read_capped(request, 2 * _MAX_BODY)   # base64 manifest + assertion
     try:
         payload = json.loads(raw)
@@ -787,7 +787,7 @@ async def sign_approve(request: Request):
         raise HTTPException(403, "approval verification failed")
     credstore.update_sign_count(req["user"], cred_id, new_count)   # clone detection
     return await _do_sign(body, req["groups"], req["user"],
-                          {"principal": "human", "approval": "webauthn"}, proxy_token)
+                          {"principal": "human", "approval": "webauthn"})
 
 
 @app.post("/sign/cli/request")
@@ -836,7 +836,7 @@ async def cli_approve(req_id: str, request: Request):
     the approver is the enrolled user the assertion's credential maps to — which
     is safe because enrolment is the gated step (admin + grant). Admin authority
     is re-checked from that user against the service-token-resolved policy."""
-    proxy_token = _proxy_token_or_503()
+    _require_sign_proxy()
     raw = await _read_capped(request, _APPROVE_MAX)
     try:
         assertion = json.loads(raw)["assertion"]
@@ -879,7 +879,7 @@ async def cli_approve(req_id: str, request: Request):
         credstore.update_sign_count(user, cred_id, new_count)
         result = await _do_sign(
             req["manifest"], req["groups"], user,
-            {"principal": "human", "approval": "webauthn", "via": "cli"}, proxy_token)
+            {"principal": "human", "approval": "webauthn", "via": "cli"})
     except BaseException:
         req["status"] = "pending"
         raise
@@ -1012,7 +1012,7 @@ async def sign_preapproved(request: Request):
     groups cover the manifest. Signs the exact bytes via the proxy and stamps provenance
     'pre-approved by <user>'. Bounded multi-use: one build is signed once per arch, so
     the same pre-approval signs several manifests up to a cap, within its TTL."""
-    proxy_token = _proxy_token_or_503()
+    _require_sign_proxy()
     build_id = request.query_params.get("build_id", "").strip()
     if not _valid_build_id(build_id):
         raise HTTPException(400, "valid build_id query parameter required")
@@ -1059,7 +1059,7 @@ async def sign_preapproved(request: Request):
     meta = {"principal": "ci", "project": principal.get("project"),
             "approval": "preapproved", "preapproved_by": pre["user"], "build_id": build_id}
     try:
-        result = await _do_sign(body, groups, signer, meta, proxy_token)
+        result = await _do_sign(body, groups, signer, meta)
     except BaseException:
         pre["signs"] = max(0, pre.get("signs", 1) - 1)   # release the reserved slot
         raise

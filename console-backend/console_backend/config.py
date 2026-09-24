@@ -12,6 +12,13 @@ class Settings:
         self.sign_proxy_url = e.get("BITS_SIGN_PROXY_URL", "")
         # The gate token is read from the environment at sign time, never logged.
         self.sign_proxy_token_env = "BITS_SIGN_PROXY_TOKEN"
+        # Preferred: the proxy's agent socket (read-only mount), which hands out the
+        # CURRENT port and gate token — the proxy picks a random port per start and
+        # rotates its token secret, so a static URL/token goes stale (signproxy.py).
+        self.sign_proxy_agent_socket = e.get("BITS_SIGN_PROXY_AGENT_SOCKET", "")
+        self.sign_proxy_host = e.get("BITS_SIGN_PROXY_HOST", "security-proxy")
+        self.sign_proxy_route = e.get("BITS_SIGN_PROXY_ROUTE", "bits-manifest-sign")
+        self.sign_proxy_prefix = e.get("BITS_SIGN_PROXY_PREFIX", "/sign/bits")
 
         # GitLab API for identity / authorization (forge.py).
         self.gitlab_api_url = e.get("GITLAB_API_URL") or e.get("CI_API_V4_URL", "")
@@ -118,7 +125,7 @@ class Settings:
                     and self.oidc_issuer)
 
     def sign_proxy_configured(self) -> bool:
-        return bool(self.sign_proxy_url)
+        return bool(self.sign_proxy_agent_socket or self.sign_proxy_url)
 
     def webauthn_configured(self) -> bool:
         # credentials_path is required: without it enrolments are held in memory
