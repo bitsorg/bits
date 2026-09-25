@@ -9,6 +9,7 @@ The CLI is a thin requester — all authorization and signing happen server-side
 
 import argparse
 import hashlib
+import http.client
 import json
 import ssl
 import sys
@@ -70,12 +71,7 @@ def sign_via_console(backend, manifest_path, sig_path=None, timeout=300,
     URL/QR is built from *backend* + /approve — the backend serves the approve page
     on its own origin, so the approver needs no login. *cafile*/*insecure* control
     TLS verification when the backend's CA is not in this host's default trust store."""
-    global _CTX
-    if insecure:
-        _CTX = ssl._create_unverified_context()
-        print("WARNING: TLS verification disabled (--insecure).", file=sys.stderr)
-    elif cafile:
-        _CTX = ssl.create_default_context(cafile=cafile)
+    _set_tls(cafile, insecure)
     base = backend.rstrip("/")
     with open(manifest_path, "rb") as fh:
         body = fh.read()
@@ -111,6 +107,98 @@ def sign_via_console(backend, manifest_path, sig_path=None, timeout=300,
             raise SystemExit("approval was denied")
         time.sleep(2)
     raise SystemExit("timed out waiting for approval")
+
+
+def _set_tls(cafile, insecure):
+    global _CTX
+    if insecure:
+        _CTX = ssl._create_unverified_context()
+        print("WARNING: TLS verification disabled (--insecure).", file=sys.stderr)
+    elif cafile:
+        _CTX = ssl.create_default_context(cafile=cafile)
+
+
+def _json_call(url, obj=None):
+    """GET, or POST JSON when *obj* is given; return (http_status, dict body).
+    Errors come back as a status for the caller to judge (409 is an expected
+    answer); an unreachable backend is status 0. A non-JSON or non-object body
+    is an empty dict."""
+    data = json.dumps(obj).encode() if obj is not None else None
+    req = urllib.request.Request(url, data=data, method="POST" if data else "GET",
+                                 headers={"Content-Type": "application/json"} if data else {})
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT, context=_CTX) as fh:
+            code, raw = fh.status, fh.read()
+    except urllib.error.HTTPError as e:
+        code, raw = e.code, e.read()
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        return 0, {}
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        body = None
+    return code, body if isinstance(body, dict) else {}
+
+
+def _check_console_url(base, insecure):
+    """The request is unauthenticated, so the channel must be: https (or a local
+    backend), unless explicitly overridden for a testbed."""
+    host = urllib.parse.urlsplit(base).hostname or ""
+    if not (base.startswith("https://") or host in ("localhost", "127.0.0.1", "::1") or insecure):
+        raise SystemExit("refusing a non-https bits-console URL %s (use https, or "
+                         "--console-insecure on a trusted testbed network)" % base)
+
+
+def preapprove_via_console(backend, build_id, groups, boms, timeout=600,
+                           cafile=None, insecure=False):
+    """Ask *backend* to pre-approve *build_id* (its per-arch *boms*, as published)
+    for *groups*; show the approve link as a QR code plus the code to compare, and
+    wait for a human passkey approval on another device. Returns the approver, or
+    "" when the build was already pre-approved. Exits on refusal/timeout."""
+    import getpass
+    import socket
+    base = backend.rstrip("/")
+    _check_console_url(base, insecure)
+    _set_tls(cafile, insecure)
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
+    code, resp = _json_call(base + "/preapprove/cli/request", {
+        "build_id": build_id, "groups": list(groups), "boms": list(boms),
+        "host": socket.gethostname().split(".")[0], "user": user})
+    if code == 409:
+        print("build %s is already pre-approved — continuing (the certification CI "
+              "still checks the packages and the MR author)" % build_id)
+        return ""
+    rid = resp.get("request_id")
+    if code != 200 or not isinstance(rid, str) or not rid:
+        raise SystemExit("pre-approval request to %s failed (HTTP %s): %s"
+                         % (base, code or "unreachable", resp.get("detail", "")))
+    print("Pre-approval for build %s (%s): %s package(s)"
+          % (build_id, ", ".join(groups), resp.get("packages", "?")))
+    print("Code to compare on the approve page:  %s" % resp.get("code", "?"))
+    _print_qr(base + "/approve?preapprove=" + urllib.parse.quote(rid))
+    print("Waiting for approval (Ctrl-C to cancel) ...", flush=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        code, res = _json_call(base + "/preapprove/cli/%s/result" % urllib.parse.quote(rid))
+        status = res.get("status") if code == 200 else None
+        if status == "approved":
+            print("pre-approved by %s" % res.get("approved_by"))
+            return res.get("approved_by") or ""
+        if status == "refused":
+            raise SystemExit("pre-approval was refused (see the approve page)")
+        if code == 404:
+            raise SystemExit("the pre-approval request expired or is unknown")
+        if 400 <= code < 500:
+            raise SystemExit("pre-approval polling failed (HTTP %s): %s" % (code, res.get("detail", "")))
+        # pending / approving / transient errors: keep waiting; an approval already
+        # being verified gets a short grace past the deadline.
+        now = time.monotonic()
+        if now >= deadline + (60 if status == "approving" else 0):
+            raise SystemExit("timed out waiting for pre-approval")
+        time.sleep(2)
 
 
 def main(argv=None):

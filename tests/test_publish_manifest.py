@@ -315,6 +315,43 @@ class TestPublishFromManifest(unittest.TestCase):
                               _Parser())
         sub.assert_called_once()
 
+    def test_approve_preapproves_before_the_mr(self):
+        calls = []
+        bom = [("x86_64-el9", {"build_id": "bid", "packages": []})]
+        with patch.object(publish, "_publish_from_manifest", return_value=("bid", bom, {})), \
+             patch.object(publish, "_submit_certification_mr",
+                          side_effect=lambda *a: calls.append("mr")), \
+             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"), \
+             patch("bits_helpers.sign_console.preapprove_via_console",
+                   side_effect=lambda *a, **k: calls.append(("pre", a))):
+            publish.doPublish(self._dopublish_args(certifyGroup="lcg", manifestsRemote="ssh://h/g/p.git",
+                                                   approve=True, console="https://c"), _Parser())
+        self.assertEqual([c if c == "mr" else c[0] for c in calls], ["pre", "mr"])
+        self.assertEqual(calls[0][1][:4], ("https://c", "bid", ["lcg"], [bom[0][1]]))
+
+    def test_approve_needs_certify_and_console(self):
+        with patch.object(publish, "_publish_from_manifest", return_value=("bid", [], {})), \
+             patch.object(publish, "_submit_certification_mr") as sub, \
+             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"), \
+             patch.dict("os.environ", {"BITS_CONSOLE_URL": ""}):
+            with self.assertRaises(_Parser._Err):          # no certification configured
+                publish.doPublish(self._dopublish_args(approve=True), _Parser())
+            with self.assertRaises(_Parser._Err):          # certify, but no console URL
+                publish.doPublish(self._dopublish_args(certifyGroup="lcg", approve=True,
+                                                       manifestsRemote="ssh://h/g/p.git"), _Parser())
+        sub.assert_not_called()
+
+    def test_approve_checks_mr_prerequisites_first(self):
+        with patch.object(publish, "_publish_from_manifest", return_value=("bid", [], {})), \
+             patch.object(publish, "_submit_certification_mr") as sub, \
+             patch("bits_helpers.forge.resolve_gitlab_token", return_value=None), \
+             patch("bits_helpers.sign_console.preapprove_via_console") as pre:
+            with self.assertRaises(_Parser._Err):          # no GitLab token
+                publish.doPublish(self._dopublish_args(certifyGroup="lcg", approve=True, console="https://c",
+                                                       manifestsRemote="ssh://h/g/p.git"), _Parser())
+        pre.assert_not_called()
+        sub.assert_not_called()
+
     def test_run_leaf_is_unique_per_call(self):
         # Distinct hosts/runs must not collide: the leaf carries host + UTC stamp.
         leaves = {publish._run_leaf() for _ in range(3)}

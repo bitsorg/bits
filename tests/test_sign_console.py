@@ -72,5 +72,71 @@ class TestSignConsole(unittest.TestCase):
                 sign_console.sign_via_console("http://x", self.mp, timeout=10)
 
 
+
+class TestPreapproveViaConsole(unittest.TestCase):
+    BOMS = [{"build_id": "rel-0123456789ab", "effective_architecture": "a", "packages": []}]
+
+    @staticmethod
+    def _call(post, res):
+        # POSTs go to *post*; GETs (polls) take the next (code, body) — a bare dict is a 200.
+        def call(url, obj=None):
+            if obj is not None:
+                return post(url, obj)
+            r = next(res)
+            return r if isinstance(r, tuple) else (200, r)
+        return call
+
+    def _run(self, post, results):
+        shown = {}
+        res = iter(results)
+        with patch.object(sign_console, "_json_call", self._call(post, res)), \
+             patch.object(sign_console, "_print_qr", lambda u: shown.__setitem__("url", u)), \
+             patch.object(sign_console.time, "sleep", lambda s: None):
+            out = sign_console.preapprove_via_console("https://bits.cern.ch/", "rel-0123456789ab",
+                                                      ["lcg"], self.BOMS, timeout=10)
+        return out, shown
+
+    def test_waits_for_approval_and_builds_link(self):
+        sent = {}
+        def post(url, obj):
+            sent.update(url=url, obj=obj)
+            return 200, {"request_id": "r1", "code": "K7Q2MX", "groups": ["lcg"], "packages": 3}
+        out, shown = self._run(post, [{"status": "pending"},
+                                      {"status": "approved", "approved_by": "alice"}])
+        self.assertEqual(out, "alice")
+        self.assertEqual(shown["url"], "https://bits.cern.ch/approve?preapprove=r1")
+        self.assertEqual(sent["url"], "https://bits.cern.ch/preapprove/cli/request")
+        self.assertEqual((sent["obj"]["build_id"], sent["obj"]["groups"], sent["obj"]["boms"]),
+                         ("rel-0123456789ab", ["lcg"], self.BOMS))
+
+    def test_already_preapproved_continues(self):
+        out, shown = self._run(lambda u, o: (409, {"detail": "already"}), [])
+        self.assertEqual((out, shown), ("", {}))
+
+    def test_refused_and_errors_exit(self):
+        ok = lambda u, o: (200, {"request_id": "r1", "code": "C"})
+        with self.assertRaises(SystemExit):
+            self._run(ok, [{"status": "refused"}])
+        with self.assertRaises(SystemExit):
+            self._run(lambda u, o: (400, {"detail": "bad"}), [])
+        with self.assertRaises(SystemExit):                  # timeout
+            with patch.object(sign_console.time, "monotonic", side_effect=[0, 0, 100]):
+                self._run(ok, [{"status": "pending"}] * 5)
+        with self.assertRaises(SystemExit):                  # expired request
+            self._run(ok, [(404, {})])
+
+    def test_transient_errors_keep_polling(self):
+        ok = lambda u, o: (200, {"request_id": "r1", "code": "C"})
+        out, _ = self._run(ok, [(502, {}), (0, {}), {"status": "approving"},
+                                {"status": "approved", "approved_by": "bob"}])
+        self.assertEqual(out, "bob")
+
+    def test_refuses_plain_http_console(self):
+        with self.assertRaises(SystemExit):
+            sign_console.preapprove_via_console("http://bits.example", "b-0123456789ab",
+                                                ["lcg"], self.BOMS)
+        sign_console._check_console_url("http://localhost:8080", False)   # local is fine
+        sign_console._check_console_url("http://tb:8080", True)           # explicit override
+
 if __name__ == "__main__":
     unittest.main()

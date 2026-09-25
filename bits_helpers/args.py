@@ -1010,6 +1010,17 @@ def add_publish_arguments(subparsers, ctx):
   publish_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
                               help=("GitLab PAT to trigger certification (default: $BITS_CERTIFIER_TOKEN / "
                                     "$GITLAB_TOKEN / ~/.bits/gitlab-token)."))
+  publish_parser.add_argument("--approve", dest="approve", action="store_true", default=False,
+                              help=("With --certify: before opening the MR, ask bits-console to pre-approve "
+                                    "this build and wait. Shows a QR code (and a code to compare) to approve "
+                                    "with a passkey on your phone; the certification CI then signs it."))
+  publish_parser.add_argument("--console", dest="console", metavar="URL", default=None,
+                              help=("bits-console backend URL for --approve (default: $BITS_CONSOLE_URL, "
+                                    "then `system: console_url:` in the active defaults)."))
+  publish_parser.add_argument("--console-cafile", dest="consoleCafile", metavar="PEM", default=None,
+                              help="CA bundle for the console backend when not in this host's trust store.")
+  publish_parser.add_argument("--console-insecure", dest="consoleInsecure", action="store_true",
+                              default=False, help="Skip TLS verification to the console (testbed only).")
   publish_parser.add_argument("--certifier", dest="certifier", metavar="USER", default=None,
                               help=("Record USER as certified_by in the submitted manifest (audit trail in the "
                                     "manifests-repo history). Use when the MR is opened by a bot on behalf of a "
