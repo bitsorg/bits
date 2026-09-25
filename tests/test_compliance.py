@@ -198,8 +198,11 @@ class EnforceTestCase(unittest.TestCase):
         # 1 — not propagate a traceback and not undo the (idempotent) deletions.
         from bits_helpers import certify as _certify
         from bits_helpers.utilities import resolve_store_path
+        # make_s3_probe is stubbed too: the real one builds a boto3 client, so
+        # without boto3 installed it exits the test instead of reaching the mock.
         with patch.object(_certify, "certify_by_arch",
-                          side_effect=_certify.CertifyConflict("pre-existing sha256 conflict")):
+                          side_effect=_certify.CertifyConflict("pre-existing sha256 conflict")), \
+             patch.object(_certify, "make_s3_probe", return_value=None):
             rc = compliance.enforce_store("b3://bkt", self.rec, self.d,
                                           key_pem="/tmp/does-not-need-to-exist.pem")
         self.assertEqual(rc, 1)
