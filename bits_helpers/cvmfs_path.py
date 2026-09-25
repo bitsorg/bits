@@ -25,6 +25,7 @@ import re
 from bits_helpers.log import debug, dieOnError
 from bits_helpers.utilities import git
 from bits_helpers.defaults import parseDefaults, readDefaults
+from bits_helpers.matchers import resolve_variables
 from bits_helpers.cvmfs_layout import (
     resolve_cvmfs_templates, resolve_release, path_release, bake_release,
     resolve_day, bake_day)
@@ -57,6 +58,12 @@ def doCvmfsPath(args, parser):
     err, _overrides, _taps, defaults_meta = parseDefaults(
         args.disable, defaults_reader, debug, args.architecture, args.configDir)
     dieOnError(err, err)
+    # Fold --set values into the variables exactly as the build does, so an
+    # explicit --set release=LCG_110 reaches the {release} segment.
+    defaults_meta = dict(defaults_meta or {})
+    defaults_meta["variables"] = resolve_variables(
+        defaults_meta.get("variables"), getattr(args, "flavours", None) or {},
+        args.architecture, args.defaults)
 
     tmpls = resolve_cvmfs_templates(
         defaults_meta, getattr(args, "prefix", None) or None)

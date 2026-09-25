@@ -124,6 +124,17 @@ class CvmfsPathHandlerTest(unittest.TestCase):
         finally:
             CP.git = orig
 
+    def test_set_release_reaches_path(self):
+        # --set release=... (as passed to the build) wins over the default main.
+        CP.parseDefaults = lambda *a, **k: ("", {}, {}, {
+            "variables": {"release": "main"},
+            "system": {"prefix": "/cvmfs/g",
+                       "cvmfs_releases_template": "{prefix}/{release}/{pkg}/{tag}/{platform}"}})
+        self.assertEqual(self._run(admin=True, flavours={"release": "LCG_110"}),
+                         "/cvmfs/g/LCG_110/GENIE/R-3_06_02/x86_64-el9")
+        self.assertEqual(self._run(admin=True),
+                         "/cvmfs/g/GENIE/R-3_06_02/x86_64-el9")
+
     def test_prefix_fallback_when_recipe_has_none(self):
         # Recipe declares no prefix; --prefix supplies it, templates default.
         CP.parseDefaults = lambda *a, **k: ("", {}, {}, {"system": {}})

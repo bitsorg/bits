@@ -918,6 +918,11 @@ def add_cvmfs_path_arguments(subparsers, ctx):
   cvmfs_path_parser.add_argument(
       "--disable", dest="disable", metavar="PACKAGE", default=[], action="append",
       help="Disable the given package(s) when loading defaults. May be repeated.")
+  cvmfs_path_parser.add_argument(
+      "--flavour", "--flavor", "--set", dest="flavours", action="append",
+      default=[], metavar="NAME[=VALUE]",
+      help="Same as `bits build --set`; pass the build's values (e.g. "
+           "release=LCG_110) so {release} resolves as it does in the build.")
   return cvmfs_path_parser
 
 
@@ -1978,6 +1983,7 @@ def finaliseArgs(args, parser):
     if hasattr(args, "defaults"):
       args.defaults = _with_release_base(args.defaults.split("::"))
     args.disable = normalise_multiple_options(args.disable)
+    args.flavours = _parse_flavours(getattr(args, "flavours", None))
     return args
 
   # Minimal finalisation for status: normalise lists and expand referenceSources.

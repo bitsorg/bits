@@ -351,5 +351,13 @@ class ProviderPathFrontendTestCase(unittest.TestCase):
       "https://example.com/p")
 
 
+class CvmfsPathSetTest(unittest.TestCase):
+  def test_set_is_parsed_into_flavours(self):
+    # cvmfs-path takes the build's --set values; finalise turns them into a dict.
+    with patch.object(sys, "argv", ["bits"] + shlex.split(
+        "cvmfs-path --package ROOT -a slc7_x86-64 --set release=LCG_110,foo")):
+      args, _ = doParseArgs()
+    self.assertEqual(args.flavours, {"release": "LCG_110", "foo": "true"})
+
 if __name__ == '__main__':
   unittest.main()
