@@ -3732,6 +3732,41 @@ def doBuild(args, parser):
   # so we can distil per-package CPU/RAM stats at the end of the run (P3).
   monitoredDirs = {}
 
+  # Opt-in build-host monitor (--monitor / system 'monitor'): a best-effort
+  # background sampler of this runner (load / memory / build filesystem / sw
+  # size) and the building packages, pushed to --monitor-url. It never blocks
+  # or fails the build and is stopped at process exit. Runtime only — no hash
+  # impact. Runs for sequential and --builders builds alike.
+  _mon_url = (cfg.monitor_url or os.environ.get("METRICS_URL")
+              or _system_opt("monitor_url", None))
+  _mon_on = cfg.monitor
+  if _mon_on is None:
+    _sys_mon = _system_opt("monitor", None)
+    # Default ON when a metrics endpoint is configured (e.g. $METRICS_URL under
+    # bits-console) so no CLI flag is needed — a plain `bits build` with
+    # METRICS_URL set just works, and an older bits without --monitor is
+    # unaffected. Explicit --monitor/--no-monitor or system 'monitor' still win.
+    _mon_on = _truthy(_sys_mon) if _sys_mon is not None else bool(_mon_url)
+  if _mon_on and _mon_url:
+    try:
+      from bits_helpers import monitor as _bits_monitor
+      _bits_monitor.start_monitor(
+          url=_mon_url,
+          instance=cfg.monitor_instance or _system_opt("monitor_instance", None),
+          interval=float(cfg.monitor_interval or _system_opt("monitor_interval", 15) or 15),
+          disk_interval=float(cfg.monitor_disk_interval or _system_opt("monitor_disk_interval", 60) or 60),
+          sw_dir=abspath(args.workDir))
+      import atexit as _atexit
+      _atexit.register(_bits_monitor.stop_monitor)
+      info("build-host monitor: pushing per-runner metrics to %s", _mon_url)
+    except Exception as _mon_err:  # pylint: disable=broad-except
+      # Still never fails the build, but must be visible: a silently missing
+      # monitor is indistinguishable from an idle host on the dashboard.
+      warning("build-host monitor not started: %s: %s",
+              type(_mon_err).__name__, _mon_err)
+  elif cfg.monitor:   # explicit --monitor only; a system default may expect CI's URL
+    warning("build-host monitor requested but no URL (--monitor-url / $METRICS_URL)")
+
   scheduler = None
   if (args.builders > 1) and buildOrder:
     from bits_helpers.scheduler import Scheduler
@@ -3767,36 +3802,6 @@ def doBuild(args, parser):
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
                           parallelDownloads=max(1, cfg.parallel_downloads),
                           criticalPath=cfg.critical_path_schedule)
-
-    # Opt-in build-host monitor (--monitor / system 'monitor'): a best-effort
-    # background sampler of this runner (load / memory / build filesystem / sw
-    # size) and the building packages, pushed to --monitor-url. It never blocks
-    # or fails the build and is stopped at process exit. Runtime only — no hash
-    # impact.
-    _mon_url = (cfg.monitor_url or os.environ.get("METRICS_URL")
-                or _system_opt("monitor_url", None))
-    _mon_on = cfg.monitor
-    if _mon_on is None:
-      _sys_mon = _system_opt("monitor", None)
-      # Default ON when a metrics endpoint is configured (e.g. $METRICS_URL under
-      # bits-console) so no CLI flag is needed — a plain `bits build` with
-      # METRICS_URL set just works, and an older bits without --monitor is
-      # unaffected. Explicit --monitor/--no-monitor or system 'monitor' still win.
-      _mon_on = _truthy(_sys_mon) if _sys_mon is not None else bool(_mon_url)
-    if _mon_on and _mon_url:
-      try:
-        from bits_helpers import monitor as _bits_monitor
-        _bits_monitor.start_monitor(
-            url=_mon_url,
-            instance=cfg.monitor_instance or _system_opt("monitor_instance", None),
-            interval=float(cfg.monitor_interval or _system_opt("monitor_interval", 15) or 15),
-            disk_interval=float(cfg.monitor_disk_interval or _system_opt("monitor_disk_interval", 60) or 60),
-            sw_dir=abspath(args.workDir))
-        import atexit as _atexit
-        _atexit.register(_bits_monitor.stop_monitor)
-        info("build-host monitor: pushing per-runner metrics to %s", _mon_url)
-      except Exception as _mon_err:  # pylint: disable=broad-except
-        debug("build-host monitor not started: %s", _mon_err)
 
     # Collect concise per-package failures during the run so we can write a
     # readable summary at the end (write_failure_summary), instead of leaving the

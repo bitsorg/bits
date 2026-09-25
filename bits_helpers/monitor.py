@@ -35,6 +35,8 @@ import threading
 import time
 
 _MONITOR = None  # process-wide singleton (a build run has one host monitor)
+FAIL_LOG_INTERVAL = 600.0  # seconds between repeated push-failure lines
+_now = time.monotonic      # clock for the rate limit (patchable in tests)
 
 
 def default_instance():
@@ -76,6 +78,7 @@ class BuildMonitor:
         self._slow_thread = None
         self._sw_bytes = None             # latest du(sw), filled by the slow loop
         self._diag_logged = False         # log the FIRST push outcome once
+        self._fail_logged_at = None       # last "still failing" line (rate-limited)
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self):
@@ -257,7 +260,13 @@ class BuildMonitor:
             if not self._diag_logged:      # make a silent NAT/firewall drop visible
                 print("[monitor] first push FAILED -> %s: %s" % (self.url, e), flush=True)
                 self._diag_logged = True
-            # endpoint down / behind NAT — drop subsequent samples silently
+                self._fail_logged_at = _now()
+            elif (self._fail_logged_at is None
+                  or _now() - self._fail_logged_at >= FAIL_LOG_INTERVAL):
+                # Later failures (endpoint restarted, network change) stay visible,
+                # but at most once per FAIL_LOG_INTERVAL; the samples are dropped.
+                print("[monitor] push still failing -> %s: %s" % (self.url, e), flush=True)
+                self._fail_logged_at = _now()
 
     # ── small helpers ────────────────────────────────────────────────────────
     @staticmethod

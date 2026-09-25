@@ -93,6 +93,37 @@ class PushTests(unittest.TestCase):
         with patch("urllib.request.urlopen", side_effect=OSError("down")):
             m._push(["x 1"])  # must not raise
 
+    def test_repeated_failures_are_logged_rate_limited(self):
+        import io
+        from contextlib import redirect_stdout
+        m = BuildMonitor("http://vm:8428", instance="h")
+        buf = io.StringIO()
+        with patch("urllib.request.urlopen", side_effect=OSError("down")), \
+             patch("bits_helpers.monitor._now", side_effect=[0.0, 1.0, 700.0, 700.0]), \
+             redirect_stdout(buf):
+            m._push(["x 1"])   # first failure: logged
+            m._push(["x 1"])   # 1 s later: suppressed
+            m._push(["x 1"])   # 700 s later: logged again
+        out = buf.getvalue()
+        self.assertEqual(out.count("first push FAILED"), 1)
+        self.assertEqual(out.count("push still failing"), 1)
+
+
+class StartSiteTests(unittest.TestCase):
+    def test_monitor_not_gated_on_builders(self):
+        # The monitor must start for sequential builds too: its start used to sit
+        # inside `if args.builders > 1`, so plain builds never pushed anything.
+        import ast, inspect
+        from bits_helpers import build
+        tree = ast.parse(inspect.getsource(build.doBuild))
+        def calls_start(node):
+            return any(isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "start_monitor"
+                       for n in ast.walk(node))
+        gated = [n for n in ast.walk(tree) if isinstance(n, ast.If)
+                 and "builders" in ast.unparse(n.test) and calls_start(n)]
+        self.assertTrue(calls_start(tree))
+        self.assertEqual(gated, [])
+
 
 class ModuleApiTests(unittest.TestCase):
     def test_start_without_url_is_noop(self):
