@@ -125,6 +125,14 @@ class TestPreapprove(unittest.TestCase):
         self.assertEqual(self.client.post("/preapprove/request", headers=self._alice(),
                          json={"build_id": "b", "groups": ["lcg", 7]}).status_code, 400)
 
+    def test_build_id_format(self):
+        # Pipeline ids and deterministic <label>-<digest> build_ids, up to 128 chars.
+        ok = ["82836485", "release_atlas_gcc14_opt_testbed-0123456789ab", "a" * 128]
+        bad = ["", "a" * 129, "has space", "semi;colon", "slash/x", "new\nline",
+               ".", "..", "-x", "caf\u00e9", "\uff41"]
+        self.assertTrue(all(main._valid_build_id(b) for b in ok))
+        self.assertFalse(any(main._valid_build_id(b) for b in bad))
+
     def test_eviction_keeps_approved(self):
         st = session.PreapprovalStore(ttl_seconds=1000, max_entries=3)
         st.put("a", {"user": "u", "status": "approved"})

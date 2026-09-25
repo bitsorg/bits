@@ -702,10 +702,11 @@ async def sign(request: Request):
 
 
 def _valid_build_id(build_id) -> bool:
-    """A build_id is a CI pipeline id: short, alnum plus - _ . only. Bounding it
-    keeps it safe as a store key and in audit lines (no log injection / bloat)."""
-    return bool(build_id) and len(build_id) <= 64 \
-        and all(c.isalnum() or c in "-_." for c in build_id)
+    """A CI pipeline id or a deterministic bits build_id (<defaults label>-<digest>):
+    ASCII alnum plus - _ . (starting alnum, so never "." / ".."), bounded to stay
+    safe as a store key and in audit lines."""
+    return bool(build_id) and len(build_id) <= 128 and build_id[0].isalnum() \
+        and all(c.isascii() and (c.isalnum() or c in "-_.") for c in build_id)
 
 
 def _valid_ref(ref) -> bool:
