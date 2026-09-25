@@ -85,7 +85,8 @@ def resolve_reuse_from(reuse_from, layout):
     return reuse_from
 
 
-def reuse_module_path_from_templates(defaults_meta, architecture, injected_prefix=None):
+def reuse_module_path_from_templates(defaults_meta, architecture, injected_prefix=None,
+                                     release=""):
     """Derive the modulefiles BASE dir from the group's ``cvmfs_modules_template``.
 
     Lets ``--reuse-from cvmfs`` work off the single publish template a group
@@ -94,15 +95,17 @@ def reuse_module_path_from_templates(defaults_meta, architecture, injected_prefi
     strips the trailing per-package leaf (``…/{pkg}``), yielding the base under
     which per-package modulefiles live. ``architecture`` MUST be the DEPLOYED arch
     (the raw ``-a`` value / ``abi_tag``), not the build-qualified family, so the
-    path matches where the packages actually live. Returns None when no modules
-    template (or no prefix) is configured. Pure.
+    path matches where the packages actually live. ``release`` is the PATH form
+    of the release (``path_release``), baked like the publish path so a
+    ``{release}`` template resolves; "" collapses the segment. Returns None when no
+    modules template (or no prefix) is configured. Pure.
     """
     templates = resolve_cvmfs_templates(defaults_meta, injected_prefix)
     if not templates or not templates.get("modules"):
         return None
     # Drop the trailing "/{token}" run (the per-package leaf, e.g. /{pkg} or
     # /{pkg}/{tag}) to get the fixed base the modulefiles live under.
-    base = re.sub(r"(?:/\{[^}]*\})+$", "", templates["modules"])
+    base = re.sub(r"(?:/\{[^}]*\})+$", "", bake_release(templates["modules"], release))
     return (base.replace("{prefix}", templates["prefix"])
                 .replace("{platform}", architecture))
 

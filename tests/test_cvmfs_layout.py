@@ -323,6 +323,16 @@ class ReuseModulePathFromTemplatesTest(unittest.TestCase):
             reuse_module_path_from_templates(meta, "el9", injected_prefix="/cvmfs/inj"),
             "/cvmfs/inj/el9/Modules/modulefiles")
 
+    def test_release_segment_is_baked(self):
+        # A {release} template (atlas/lhcb/key4hep/ship) must not leak the token.
+        meta = {"system": {"prefix": "/cvmfs/g",
+                           "cvmfs_modules_template":
+                           "{prefix}/{release}/{platform}/Modules/modulefiles/{pkg}"}}
+        self.assertEqual(reuse_module_path_from_templates(meta, "el9", release="LCG_110"),
+                         "/cvmfs/g/LCG_110/el9/Modules/modulefiles")
+        self.assertEqual(reuse_module_path_from_templates(meta, "el9"),
+                         "/cvmfs/g/el9/Modules/modulefiles")
+
     def test_none_when_no_prefix_or_template(self):
         self.assertIsNone(reuse_module_path_from_templates({}, "el9"))
         self.assertIsNone(reuse_module_path_from_templates(None, "el9"))

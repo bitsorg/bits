@@ -2920,7 +2920,8 @@ def doBuild(args, parser):
   # Resolve --reuse-from into an absolute modules-tree path ('cvmfs' -> the
   # defaults system: layout module_path). Nothing consumes it yet (later step).
   from bits_helpers.cvmfs_layout import (resolve_reuse_from, split_reuse_policy,
-                                         reuse_module_path_from_templates)
+                                         reuse_module_path_from_templates,
+                                         resolve_release, path_release)
   # Sugar: a trailing '::relaxed'/'::strict' on --reuse-from sets the reuse
   # policy alongside the source (reconciled with --reuse-policy below).
   _reuse_src, _reuse_from_policy = split_reuse_policy(getattr(args, "reuseFrom", None))
@@ -2931,7 +2932,8 @@ def doBuild(args, parser):
   _reuse_layout = _cvmfs
   if _reuse_src == "cvmfs" and not (_cvmfs and _cvmfs.get("module_path")):
     _mp = reuse_module_path_from_templates(
-        defaultsMeta, raw_architecture, os.environ.get("BITS_CVMFS_PREFIX") or None)
+        defaultsMeta, raw_architecture, os.environ.get("BITS_CVMFS_PREFIX") or None,
+        path_release(resolve_release(defaultsMeta, branch_basename)))
     if _mp:
       _reuse_layout = dict(_cvmfs or {}, module_path=_mp)
   try:
