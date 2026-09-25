@@ -273,5 +273,22 @@ class TestMRPrimitives(unittest.TestCase):
             self.assertEqual(forge.gitlab_mr_iid_for_commit("https://gl/api/v4", "t", "p", "sha"), 5)
 
 
+class TestGitLabSubgroups(unittest.TestCase):
+    def test_lists_all_visible_subgroups_not_only_memberships(self):
+        # Without all_available GitLab returns only groups the token belongs to.
+        seen = {}
+        class _R:
+            status_code, ok = 200, True
+            def json(self): return [{"id": 7, "path": "lcg"}]
+        def _get(url, headers=None, params=None, timeout=None):
+            seen.update(url=url, params=params)
+            return _R()
+        with patch("requests.get", _get):
+            out = forge.gitlab_subgroups("https://gl/api/v4", "t", "bits/admins")
+        self.assertEqual(out, [{"id": 7, "path": "lcg"}])
+        self.assertEqual(seen["params"].get("all_available"), "true")
+        self.assertTrue(seen["url"].endswith("/groups/bits%2Fadmins/subgroups"))
+
+
 if __name__ == "__main__":
     unittest.main()

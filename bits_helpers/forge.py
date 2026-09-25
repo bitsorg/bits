@@ -446,7 +446,9 @@ def gitlab_subgroups(api_url, token, group_ref, timeout=15) -> list:
     """Return ``[{"id", "path"}]`` for the DIRECT subgroups of a group. Paginates
     ``GET /groups/<ref>/subgroups``. Used to derive per-community admin groups by
     convention: each subgroup's ``path`` is a community name, its members are that
-    community's admins. Raises on API/auth failure (caller decides)."""
+    community's admins. ``all_available``: without it GitLab lists only subgroups
+    the token itself belongs to, so a token from another group saw none.
+    Raises on API/auth failure (caller decides)."""
     import requests
     from urllib.parse import quote
     base = "%s/groups/%s/subgroups" % (api_url.rstrip("/"),
@@ -454,7 +456,8 @@ def gitlab_subgroups(api_url, token, group_ref, timeout=15) -> list:
     out, page = [], 1
     while True:
         resp = requests.get(base, headers={"PRIVATE-TOKEN": token},
-                            params={"per_page": 100, "page": page}, timeout=timeout)
+                            params={"per_page": 100, "page": page, "all_available": "true"},
+                            timeout=timeout)
         _gl_ok(resp)
         data = resp.json() or []
         for g in data:
