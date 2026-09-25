@@ -165,3 +165,15 @@ def test_config_script_without_prefix_line_left_untouched():
         os.chmod(cfg, 0o755)
         _run(root)
         assert open(cfg).read() == original   # untouched, still absolute
+
+
+def test_relocate_list_built_after_hooks_and_relativize():
+    # .bits-relocate must be written after the POST_INSTALL hooks and the
+    # relativize pass, or it lists configs already made relative and misses
+    # files the hooks wrote.
+    tmpl = os.path.join(os.path.dirname(bits_helpers.__file__), "build_template.sh")
+    src = open(tmpl).read()
+    writer = src.index('> "$INSTALLROOT/etc/profile.d/.bits-relocate"')
+    assert src.count("etc/profile.d/.bits-relocate\"") == 1
+    assert writer > src.index('run_hooks "POST_INSTALL"')
+    assert writer > src.index("bits_helpers/relativize-configs.sh\" \"$INSTALLROOT\"")

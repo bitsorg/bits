@@ -341,8 +341,6 @@ cat > "$INSTALLROOT/.meta.json" <<\EOF
 EOF
 
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
-# Find which files need relocation.
-{ grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate"
 
 # Relocate script for <arch>/<pkgname>/<pkgver> structure
 
@@ -447,7 +445,7 @@ unset _pack_root
 
 # Make pkg-config and CMake package files relocation-independent: rewrite this
 # package's own absolute install prefix to a location-relative reference. Done
-# HERE - the LAST tree mutation before the rsync + tar below, after POST_INSTALL
+# HERE - the LAST content change before the rsync + tar below, after POST_INSTALL
 # hooks and the symlink pass - so both the runtime install and the store tarball
 # see the fix. Earlier (before POST_INSTALL) a hook that regenerates .pc/.cmake
 # would re-bake the absolute prefix into the packed tree. .pc anchors on
@@ -455,6 +453,12 @@ unset _pack_root
 # already-relative configs untouched.
 if [ -w "$INSTALLROOT" ]; then
   bash "${BITS_SCRIPT_DIR}/bits_helpers/relativize-configs.sh" "$INSTALLROOT"
+  # Find which files need relocation — only now, after every tree mutation, so
+  # configs made relative above drop out and files written by POST_INSTALL hooks
+  # are included.
+  ( cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH" && \
+    { grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } \
+      | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate" )
 fi
 
 # Archive creation
