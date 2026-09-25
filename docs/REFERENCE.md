@@ -978,7 +978,9 @@ AlmaLinux hosts.
 
 ### bits deps
 
-Generate a visual dependency graph for a package (requires Graphviz).
+Generate a visual dependency graph for a package (requires Graphviz), and/or a
+Makefile listing its dependency tree. The virtual `defaults-release` package and
+its edges are excluded from dependency output.
 
 ```bash
 bits deps [options] PACKAGE
@@ -986,7 +988,9 @@ bits deps [options] PACKAGE
 
 | Option | Description |
 |--------|-------------|
-| `--outgraph FILE` | Output PDF file (required). |
+| `--outgraph FILE` | Output PDF file. |
+| `--outmake FILE` | Output the package's dependency tree as Makefile rules (`pkg: dep1 dep2`), one per package, dependencies first (alphabetical among equals), with no recipes; the target package is the last rule, so name it when running `make`. Does not require Graphviz. At least one of `--outgraph`/`--outmake` is required. |
+| `--runtime-only` | With `--outmake`, follow only `requires` (runtime) dependencies plus `untracked_requires`, and skip `build_requires`, so build-only packages are left out. |
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `-a ARCH` | Architecture for dependency resolution. |
 | `--disable PACKAGE` | Exclude PACKAGE from the graph (repeatable). |
@@ -994,6 +998,20 @@ bits deps [options] PACKAGE
 | `--no-system` | Treat all packages as needing to be built. |
 
 Colour coding in the generated graph: **gold** = requested top-level package; **green** = runtime-only dependency; **purple** = build-only dependency; **tomato** = both runtime and build dependency.
+
+**Recorded at build time.** Package `.meta.json` files also contain `dependency_graph`, a mapping from each
+package in the runtime closure (including the package itself) to its direct runtime
+dependencies. This includes `untracked_requires`, but excludes build-only dependencies
+and the virtual `defaults-release` node and its edges. Node names and dependency lists
+are alphabetically sorted, independent of build order and unrelated build targets;
+consumers can derive installation order from the edges. Recursive dependency metadata
+lists are also alphabetically sorted; direct lists keep recipe declaration order.
+Each package and dependency entry also records `pkg_family` and
+`effective_architecture` (`share` for noarch recipes, the build-type-neutral arch for
+own-hash packages such as the toolchain, otherwise the build arch); the top-level
+`architecture` stays the build arch. This metadata does not enter the package hash.
+Adding the fields changes newly built tarball bytes, so existing signed checksums do
+not describe those rebuilt tarballs.
 
 ---
 

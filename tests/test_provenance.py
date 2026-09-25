@@ -12,6 +12,10 @@ the helpers must never raise on minimal input.
 
 import json
 import os
+import subprocess
+import sys
+from copy import deepcopy
+from unittest.mock import patch
 import unittest
 from types import SimpleNamespace
 
@@ -98,6 +102,7 @@ class TestProvenanceRecord(unittest.TestCase):
     def test_old_keys_preserved_new_keys_added(self):
         rec = self._record(SimpleNamespace(annotate={}, architecture="arch",
                                            defaults=["release"], reusePolicy="strict"))
+        self.assertEqual(list(rec)[-1], "dependency_graph")
         for k in self.OLD_KEYS:
             self.assertIn(k, rec, "pre-existing key %r dropped" % k)
         for k in self.NEW_KEYS:
@@ -130,6 +135,131 @@ class TestProvenanceRecord(unittest.TestCase):
             return json.loads(create_provenance_info("a", specs, args))
         finally:
             os.environ.pop("BITS_DIST_HASH", None)
+
+    def test_pkg_family_defaults_to_empty_string(self):
+        specs = {
+            "a": _spec("a", pkg_family="apps", runtime_requires=["dep", "plain"],
+                       full_runtime_requires=["dep", "plain"]),
+            "dep": _spec("dep", pkg_family="libs"),
+            "plain": _spec("plain"),
+        }
+        rec = self._record_specs(specs)
+        self.assertEqual(rec["package"]["pkg_family"], "apps")
+        for kind in ("direct", "recursive"):
+            deps = rec["dependencies"][kind]["runtime"]
+            self.assertEqual(deps[0]["pkg_family"], "libs")
+            self.assertEqual(deps[1]["pkg_family"], "")
+        del specs["a"]["pkg_family"]
+        self.assertEqual(self._record_specs(specs)["package"]["pkg_family"], "")
+
+    def test_release_view_keeps_shared_and_own_hash_packages(self):
+        # `bits publish --release-view` keeps packages whose top-level architecture
+        # is the build arch; noarch and toolchain packages must not drop out.
+        import tempfile
+        from bits_helpers.view import collect_build_id_roots
+        specs = {
+            "a": _spec("a", runtime_requires=["s", "t"], full_runtime_requires=["s", "t"]),
+            "s": _spec("s", architecture="share"),
+            "t": _spec("t", _own_hash_arch="neutral-arch"),
+        }
+        args = SimpleNamespace(annotate={}, architecture="arch", defaults=["release"])
+        os.environ["BITS_DIST_HASH"] = "x"
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                for name in specs:
+                    os.makedirs(os.path.join(root, name))
+                    with open(os.path.join(root, name, ".meta.json"), "w") as fh:
+                        fh.write(create_provenance_info(name, specs, args))
+                bid = json.loads(create_provenance_info("a", specs, args))["build_id"]
+                roots = collect_build_id_roots(root, bid, architecture="arch")
+                self.assertEqual(sorted(os.path.basename(r) for r in roots), ["a", "s", "t"])
+        finally:
+            os.environ.pop("BITS_DIST_HASH", None)
+
+    def test_effective_architecture_recorded_for_packages_and_dependencies(self):
+        for overrides, expected in (({}, "arch"), ({"architecture": "share"}, "share"),
+                                    ({"_own_hash_arch": "neutral-arch"}, "neutral-arch")):
+            with self.subTest(overrides=overrides):
+                specs = {
+                    "a": _spec("a", build_requires=["shared", "native"],
+                               runtime_requires=["shared", "native"],
+                               full_build_requires=["shared", "native"],
+                               full_runtime_requires=["shared", "native"], **overrides),
+                    "shared": _spec("shared", architecture="share"),
+                    "native": _spec("native"),
+                }
+                original = deepcopy(specs)
+                rec = self._record_specs(specs)
+                # Top level stays the build arch: release views filter on it.
+                self.assertEqual(rec["architecture"], "arch")
+                self.assertEqual(rec["effective_architecture"], expected)
+                self.assertEqual(rec["package"]["effective_architecture"], expected)
+                for kind in ("direct", "recursive"):
+                    for scope in ("build", "runtime"):
+                        self.assertEqual(
+                            {dep["name"]: dep["effective_architecture"]
+                             for dep in rec["dependencies"][kind][scope]},
+                            {"shared": "share", "native": "arch"})
+                self.assertEqual(specs, original)
+
+    def test_dependency_graph_runtime_closure_without_defaults(self):
+        specs = {
+            "a": _spec("a", runtime_requires=["beta", "alpha", "alpha", "defaults-release"],
+                       build_requires=["compiler"], untracked_requires=["plugin"]),
+            "alpha": _spec("alpha", runtime_requires=["base"]),
+            "beta": _spec("beta", runtime_requires=["base"]),
+            "base": _spec("base", runtime_requires=["defaults-release"]),
+            "plugin": _spec("plugin", runtime_requires=["base"]),
+            "compiler": _spec("compiler"),
+            "defaults-release": _spec("defaults-release", runtime_requires=["provider"]),
+            "provider": _spec("provider"),
+        }
+        original = deepcopy(specs)
+        expected = {"a": ["alpha", "beta", "plugin"], "alpha": ["base"],
+                    "base": [], "beta": ["base"], "plugin": ["base"]}
+        with patch("bits_helpers.build.topological_sort", side_effect=AssertionError("must not sort")), \
+             patch("bits_helpers.deps._makefile_order", side_effect=AssertionError("must not sort")):
+            graph = self._record_specs(specs)["dependency_graph"]
+        self.assertEqual(json.dumps(graph), json.dumps(expected))
+        self.assertEqual(specs, original)
+        specs["unrelated"] = _spec("unrelated", runtime_requires=["beta"])
+        self.assertEqual(json.dumps(self._record_specs(specs)["dependency_graph"]), json.dumps(expected))
+        self.assertEqual(self._record_specs({"a": _spec("a")})["dependency_graph"], {"a": []})
+
+    def test_dependency_metadata_stable_across_processes(self):
+        code = """
+import json
+from types import SimpleNamespace
+from tests.test_provenance import _spec
+from bits_helpers.build import create_provenance_info
+edges = {"a": ["z", "b"], "z": ["base"], "b": ["base"], "base": []}
+specs = {p: _spec(p, runtime_requires=set(edges[p])) for p in set(edges)}
+specs["a"]["runtime_requires"] = ["z", "b"]
+specs["a"]["full_runtime_requires"] = {"z", "base", "b"}
+specs["a"]["full_build_requires"] = {"tool2", "tool1"}
+specs.update({p: _spec(p) for p in ("tool2", "tool1")})
+args = SimpleNamespace(annotate={}, architecture="arch", defaults=["release"])
+for extra in (False, True):
+    if extra:
+        specs["unrelated"] = _spec("unrelated", runtime_requires=["z"])
+    rec = json.loads(create_provenance_info("a", specs, args))
+    print(json.dumps([rec["dependency_graph"], rec["dependencies"]]))
+"""
+        outputs = []
+        for seed in ("1", "3", "42"):
+            output = subprocess.check_output(
+                [sys.executable, "-c", code], text=True,
+                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                env=dict(os.environ, PYTHONHASHSEED=seed, BITS_DIST_HASH="x"))
+            lines = output.splitlines()
+            self.assertEqual(lines[0], lines[1])
+            outputs.append(lines[0])
+        self.assertEqual(len(set(outputs)), 1)
+        graph, deps = json.loads(outputs[0])
+        self.assertEqual(list(graph), ["a", "b", "base", "z"])
+        self.assertEqual([d["name"] for d in deps["direct"]["runtime"]], ["z", "b"])
+        self.assertEqual([d["name"] for d in deps["recursive"]["runtime"]], ["b", "base", "z"])
+        self.assertEqual([d["name"] for d in deps["recursive"]["build"]], ["tool1", "tool2"])
 
     def test_provenance_pure_when_closure_is_clean(self):
         # No untracked_requires anywhere in the closure -> pure. (The legacy
@@ -195,50 +325,3 @@ class TestBuildIdFromManifest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class TestRecursiveDependencyBuildOrder(unittest.TestCase):
-    """recursive.build / recursive.runtime are emitted in build (topological)
-    order, not arbitrary set-iteration order; direct deps keep declaration order."""
-
-    def _record(self, package, specs, build_order):
-        args = SimpleNamespace(annotate={}, architecture="arch",
-                               defaults=["release"], build_order=build_order)
-        os.environ["BITS_DIST_HASH"] = "deadbeef"
-        try:
-            return json.loads(create_provenance_info(package, specs, args))
-        finally:
-            os.environ.pop("BITS_DIST_HASH", None)
-
-    def test_recursive_runtime_in_build_order(self):
-        specs = {
-            "app": _spec("app",
-                         runtime_requires=["z", "a"],
-                         full_runtime_requires={"z", "a", "m"}),
-            "z": _spec("z"), "a": _spec("a"), "m": _spec("m"),
-        }
-        rec = self._record("app", specs, ["a", "m", "z", "app"])
-        got = [d["name"] for d in rec["dependencies"]["recursive"]["runtime"]]
-        self.assertEqual(got, ["a", "m", "z"])            # build order, not set order
-        direct = [d["name"] for d in rec["dependencies"]["direct"]["runtime"]]
-        self.assertEqual(direct, ["z", "a"])              # declaration order kept
-
-    def test_recursive_build_in_build_order(self):
-        specs = {
-            "app": _spec("app", full_build_requires={"tool2", "tool1"}),
-            "tool1": _spec("tool1"), "tool2": _spec("tool2"),
-        }
-        rec = self._record("app", specs, ["tool1", "tool2", "app"])
-        got = [d["name"] for d in rec["dependencies"]["recursive"]["build"]]
-        self.assertEqual(got, ["tool1", "tool2"])
-
-    def test_no_build_order_falls_back_cleanly(self):
-        args = SimpleNamespace(annotate={}, architecture="arch", defaults=["release"])
-        specs = {"app": _spec("app", full_runtime_requires={"a"}), "a": _spec("a")}
-        os.environ["BITS_DIST_HASH"] = "x"
-        try:
-            rec = json.loads(create_provenance_info("app", specs, args))
-        finally:
-            os.environ.pop("BITS_DIST_HASH", None)
-        self.assertEqual(
-            [d["name"] for d in rec["dependencies"]["recursive"]["runtime"]], ["a"])

@@ -921,6 +921,11 @@ def create_provenance_info(package, specs, args):
   def spec_info(spec):
     return {
       "name": spec["package"],
+      "pkg_family": spec.get("pkg_family", ""),
+      # Where the package really lives: "share" for noarch recipes, the neutral
+      # toolchain arch for own_hash packages, else the build arch (same name as
+      # in the manifests). The top-level "architecture" stays the build arch.
+      "effective_architecture": effective_arch(spec, args.architecture),
       "tag": spec.get("tag"),
       "source": spec.get("source"),
       "version": spec["version"],
@@ -930,16 +935,10 @@ def create_provenance_info(package, specs, args):
 
   def dependency_list(key):
     deps = specs[package].get(key, ())
-    # The recursive closures (full_build_requires / full_runtime_requires) are
-    # sets, so their natural iteration order is arbitrary and not reproducible
-    # across runs. Emit them in build (topological) order when it is available, so
-    # each .meta.json is deterministic and the recursive lists read in the order
-    # the dependencies are built. Direct deps are already lists (declaration
-    # order) and are left untouched.
-    order = getattr(args, "build_order", None)
-    if order is not None and not isinstance(deps, (list, tuple)):
-      rank = {name: i for i, name in enumerate(order)}
-      deps = sorted(deps, key=lambda d: (rank.get(d, len(rank)), d))
+    # Recursive closures are sets. Stabilize serialization without changing
+    # execution order or the declaration order of direct dependencies.
+    if key in ("full_build_requires", "full_runtime_requires"):
+      deps = sorted(deps)
     return [spec_info(specs[dep]) for dep in deps]
 
   # ADR-0001 additive provenance: build_id / abi_tag / reuse_policy + a repro
@@ -976,6 +975,8 @@ def create_provenance_info(package, specs, args):
     _provenance = "own_hash"
   else:
     _provenance = "loose" if _closure_untracked() else "pure"
+  from bits_helpers.deps import deps_graph
+
   return json.dumps({
     "comment": args.annotate.get(package),
     "bits_version": __version__,
@@ -983,6 +984,7 @@ def create_provenance_info(package, specs, args):
       "commit": os.environ["BITS_DIST_HASH"],
     },
     "architecture": args.architecture,
+    "effective_architecture": effective_arch(specs[package], args.architecture),
     "defaults": args.defaults,
     "build_id": compute_build_id(specs, args),
     "abi_tag": compute_abi_tag(args),
@@ -1015,6 +1017,7 @@ def create_provenance_info(package, specs, args):
         "runtime": dependency_list("full_runtime_requires"),
       },
     },
+    "dependency_graph": deps_graph(specs, package, runtime_only=True),
   })
 
 
@@ -3379,10 +3382,6 @@ def doBuild(args, parser):
            ", ".join(ownPackages))
 
   buildOrder = list(topological_sort(specs))
-  # Expose the topological build order so create_provenance_info can emit the
-  # recursive (set-based) dependency closures in build order — deterministic and
-  # meaningful, instead of arbitrary set-iteration order — in each .meta.json.
-  args.build_order = buildOrder
 
   # Check if any of the packages can be picked up from a local checkout
   if args.forceTracked:
@@ -4059,4 +4058,3 @@ def doBuild(args, parser):
                           endpoint=_store_ep)
 
   debug("Everything done")
-
