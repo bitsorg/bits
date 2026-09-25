@@ -2462,6 +2462,25 @@ force_revision: ""
 
 A global value of `~` (YAML null) means "not set" and has no effect.
 
+#### Hash revision policy
+
+Set this top-level field in `defaults-*.sh` to label each package with its own
+full build hash:
+
+```yaml
+revision_policy: "hash"
+```
+
+After computing each package's hash, bits injects
+`force_revision: "<remote_revision_hash>"` when `force_revision` is absent.
+Explicit recipe values, per-package overrides, and the global `force_revision`
+fallback retain precedence, including `force_revision: ""`.
+The hash includes tracked dependencies; this is the package build hash, not its
+source commit hash. Install paths and tarball names use `<version>-<hash>` with
+no `local` prefix, through the existing forced-revision mechanism. Uploads keep
+using the same content-addressed store paths. Omitting `revision_policy` retains
+the existing revision-counter behavior.
+
 #### How the install path changes
 
 | `force_revision` | Example install path |

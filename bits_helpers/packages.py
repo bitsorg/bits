@@ -187,6 +187,10 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
       if raw is not None:
         spec["force_revision"] = "" if raw == "" else str(raw)
 
+    # Resolve hash labels only once storeHashes has computed package identity.
+    if (defaults_meta or {}).get("revision_policy") == "hash":
+      spec["revision_policy"] = "hash"
+
     # If --always-prefer-system is passed or if prefer_system is set to true
     # inside the recipe, use the script specified in the prefer_system_check
     # stanza to see if we can use the system version of the package.
@@ -259,7 +263,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
             # mandatory — without it doBuild raises KeyError: 'pkgdir' when it
             # builds the replacement (e.g. a HomebrewRecipe shim).
             for _carry in ("pkgdir", "recipe_provider", "recipe_provider_hash",
-                           "recipe_source", "force_revision"):
+                           "recipe_source", "force_revision", "revision_policy"):
               if _carry in spec and _carry not in replacement:
                 replacement[_carry] = spec[_carry]
             spec = replacement
