@@ -205,7 +205,7 @@ class TestCertifyCLIViaProxy(TestSignViaProxy):
         try:
             args = self._args(d, signViaProxy=True, signProxyUrl=self.url)
             with patch("bits_helpers.certify.trust.load_key_policy", return_value=None):
-                certify.doCertify(args, _FakeParser())
+                certify.doSign(args, _FakeParser())
             op = os.path.join(d, "common-slc7_x86-64.json")
             with open(op, "rb") as fh:
                 data = fh.read()
@@ -224,7 +224,7 @@ class TestCertifyCLIViaProxy(TestSignViaProxy):
         try:
             args = self._args(d, signViaProxy=True, signProxyUrl=self.url)
             with self.assertRaises(_ParserError):
-                certify.doCertify(args, _FakeParser())
+                certify.doSign(args, _FakeParser())
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -232,7 +232,7 @@ class TestCertifyCLIViaProxy(TestSignViaProxy):
         d = tempfile.mkdtemp()
         try:
             with self.assertRaises(_ParserError):
-                certify.doCertify(self._args(d), _FakeParser())
+                certify.doSign(self._args(d), _FakeParser())
         finally:
             shutil.rmtree(d, ignore_errors=True)
 

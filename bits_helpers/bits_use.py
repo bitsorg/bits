@@ -236,7 +236,7 @@ TOP_FLAGS = {"-d", "--debug", "-n", "--dry-run"}
 # --architecture nor --defaults) take a different option set and are excluded.
 INJECT_ACTIONS = {
     "build", "deps", "doctor", "status", "clean", "cleanup", "gc",
-    "import", "publish", "certify", "compliance",
+    "import", "publish", "certify", "sign", "compliance",
     "q", "query", "enter", "setenv", "printenv", "load", "unload",
 }
 

@@ -448,7 +448,7 @@ class BuildManifest:
             # upload found an object already at the designated path it kept it,
             # and this build's locally-packed bytes may differ. Recording the
             # store's sha256 keeps every manifest consistent with the one stable
-            # object that `bits certify` validates.
+            # object that `bits sign` validates.
             "tarball_sha256":         spec.get("store_tarball_sha256")
                                       or _tarball_sha256(tarball_path),
             "source_checksums":       _source_entries(spec),

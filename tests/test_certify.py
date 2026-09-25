@@ -412,7 +412,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
                 raise RuntimeError(m)
 
         with patch.object(forge, "gitlab_identify", return_value="alice"):
-            certify.doCertify(args, _P())
+            certify.doSign(args, _P())
         per_arch = certify._arch_stem(out, "slc7_x86-64")
         self.assertEqual(json.load(open(per_arch))["certified_by"], ["alice"])
 
@@ -430,7 +430,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
 
         with patch.object(forge, "gitlab_identify", return_value="alice"):
             with self.assertRaises(_P):
-                certify.doCertify(args, _Parser())
+                certify.doSign(args, _Parser())
         self.assertFalse(os.path.exists(out))
 
     def test_certifier_username_recorded_without_api(self):
@@ -451,7 +451,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
             def error(self, m):
                 raise RuntimeError(m)
 
-        certify.doCertify(args, _P())
+        certify.doSign(args, _P())
         per_arch = certify._arch_stem(out, "slc7_x86-64")
         self.assertEqual(json.load(open(per_arch))["certified_by"], ["alice"])
 
@@ -475,7 +475,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
                 raise _Err(m)
 
         with self.assertRaises(_Err):
-            certify.doCertify(args, _P())
+            certify.doSign(args, _P())
         self.assertFalse(os.path.exists(out))
 
     def test_approval_check_failure_aborts_before_signing(self):
@@ -711,7 +711,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         _, ship_idx = trust.trusted_index(out, accept_groups=["ship"])
         self.assertEqual(ship_idx, {})
 
-    def test_doCertify_cli_defaults_to_workdir_manifests(self):
+    def test_doSign_cli_defaults_to_workdir_manifests(self):
         # Lay two per-build BOMs under WORKDIR/MANIFESTS/<build_id>/ and certify
         # the whole directory with the CLI entrypoint (offline merge).
         man_root = os.path.join(self.tmp, "sw", "MANIFESTS")
@@ -731,7 +731,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
                                certifyStore="", noStoreCheck=True,
                                workDir=os.path.join(self.tmp, "sw"),
                                architecture="slc7_x86-64")
-        certify.doCertify(args, _Parser())
+        certify.doSign(args, _Parser())
         # Both BOMs are slc7_x86-64, so they land in one per-arch manifest.
         per_arch = certify._arch_stem(out, "slc7_x86-64")
         kid, index = trust.trusted_index(per_arch)
@@ -763,7 +763,7 @@ class TestIsExpired(unittest.TestCase):
 
 
 class TestCertifyApprovalGate(unittest.TestCase):
-    """doCertify --require-approval refuses to sign without group-admin approval."""
+    """doSign --require-approval refuses to sign without group-admin approval."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -794,14 +794,14 @@ class TestCertifyApprovalGate(unittest.TestCase):
         with patch.object(forge, "forge_from_env",
                           return_value=forge.StaticForge(["eve"], "proj MR !1")):
             with self.assertRaises(self._Parser._Err):
-                certify.doCertify(self._args(), self._Parser())
+                certify.doSign(self._args(), self._Parser())
         self.assertFalse(os.path.exists(self.out))   # never signed
 
     def test_refuses_when_no_forge_context(self):
         from bits_helpers import forge
         with patch.object(forge, "forge_from_env", return_value=None):
             with self.assertRaises(self._Parser._Err):
-                certify.doCertify(self._args(), self._Parser())
+                certify.doSign(self._args(), self._Parser())
 
     def test_proceeds_past_gate_when_admin_approved(self):
         # Approval passes; certify then fails on the (bogus) key — proving the
@@ -810,7 +810,7 @@ class TestCertifyApprovalGate(unittest.TestCase):
         with patch.object(forge, "forge_from_env",
                           return_value=forge.StaticForge(["alice"], "proj MR !1")):
             with self.assertRaises(Exception) as ctx:
-                certify.doCertify(self._args(), self._Parser())
+                certify.doSign(self._args(), self._Parser())
         self.assertNotIsInstance(ctx.exception, self._Parser._Err)  # not the gate
 
     def test_negative_valid_days_rejected_before_signing(self):
@@ -820,7 +820,7 @@ class TestCertifyApprovalGate(unittest.TestCase):
             workDir=self.tmp, architecture="slc7_x86-64", group=None,
             requireApproval=False, admins=None, validDays=-1, sourceCommit=None)
         with self.assertRaises(self._Parser._Err):
-            certify.doCertify(args, self._Parser())
+            certify.doSign(args, self._Parser())
         self.assertFalse(os.path.exists(self.out))
 
 

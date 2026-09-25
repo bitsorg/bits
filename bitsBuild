@@ -111,8 +111,13 @@ def doMain(args, parser):
     sys.exit(0 if _rc is None or _rc else 1)
 
   if args.action == "certify":
-    from bits_helpers.certify import doCertify
+    from bits_helpers.publish import doCertify
     doCertify(args, parser)
+    sys.exit(0)
+
+  if args.action == "sign":
+    from bits_helpers.certify import doSign
+    doSign(args, parser)
     sys.exit(0)
 
   if args.action == "compliance":

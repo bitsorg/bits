@@ -226,7 +226,7 @@ def doStoreStats(args, parser):
 
     Lists the S3 store, loads the build + signed common manifests, and writes the
     v2 store document (and optionally pushes Prometheus gauges). Reuses the same
-    S3 client/manifest helpers as ``bits certify`` so the view is consistent.
+    S3 client/manifest helpers as ``bits sign`` so the view is consistent.
     """
     from bits_helpers.log import banner, warning
     store = getattr(args, "storeStatsStore", None) or getattr(args, "remoteStore", "")

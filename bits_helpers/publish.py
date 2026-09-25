@@ -236,7 +236,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
         therefore picked an arbitrary one, while sync.py uploads the object named
         from ver_rev(spec) — so the BOM could record the checksum of one file while
         the store received the other. That is a manifest/store sha256 mismatch
-        produced by a single, consistent build, and `bits certify` rejects it
+        produced by a single, consistent build, and `bits sign` rejects it
         (fail-closed: it cannot tell that apart from tampering). Two publishes of
         the same build could even disagree with each other, since glob order is not
         guaranteed.
@@ -320,7 +320,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             # the build manifest recorded: the store object is authoritative,
             # and the build's locally-packed bytes may legitimately differ
             # (.tar.gz is not byte-reproducible). The BOM below must describe
-            # the stored bytes or `bits certify` will reject it.
+            # the stored bytes or `bits sign` will reject it.
             if spec.get("store_tarball_sha256"):
                 e = dict(e, tarball_sha256=spec["store_tarball_sha256"])
             ok += 1
@@ -489,7 +489,7 @@ def _system_from_manifest(manifest_doc):
 
 
 def _preapprove_build(args, parser, build_id, bom, system):
-    """Passkey pre-approval of this build via bits-console, before the MR (--approve).
+    """Passkey pre-approval of this build via bits-console, before the MR.
     *bom* is the list of (arch, bom_dict) just published; the approval binds their
     packages. Exits (no MR) if it is refused or times out."""
     from bits_helpers import forge
@@ -498,13 +498,13 @@ def _preapprove_build(args, parser, build_id, bom, system):
     # whose MR then cannot be opened.
     if not (args.certifyGroup and getattr(args, "manifestsRemote", None)
             and forge.resolve_gitlab_token(getattr(args, "gitlabToken", None))):
-        parser.error("--approve: set --certify-group, --manifests-remote and a GitLab "
-                     "token (~/.bits/gitlab-token) before requesting a pre-approval")
+        parser.error("certify: needs a group (--group), the manifests repo (--manifests-remote) "
+                     "and a GitLab token (~/.bits/gitlab-token) before asking for an approval")
     console = (getattr(args, "console", None) or os.environ.get("BITS_CONSOLE_URL")
                or (system or {}).get("console_url"))
     if not console:
-        parser.error("--approve needs the bits-console URL: --console, $BITS_CONSOLE_URL "
-                     "or `system: console_url:` in the defaults")
+        parser.error("certify: the passkey approval needs the bits-console URL — --console, "
+                     "$BITS_CONSOLE_URL or `system: console_url:` (or --approval none)")
     preapprove_via_console(console, build_id, [args.certifyGroup], [d for _a, d in bom],
                            cafile=getattr(args, "consoleCafile", None),
                            insecure=getattr(args, "consoleInsecure", False))
@@ -526,10 +526,11 @@ def _submit_certification_mr(args, parser, build_id, bom):
     from bits_helpers import forge
     group = getattr(args, "certifyGroup", None)
     if not group:
-        parser.error("--certify needs --certify-group <group> (the manifests/<group>/ to submit to)")
+        parser.error("certify: no group — pass --group <group> or set `system: certify_group:`")
     remote = getattr(args, "manifestsRemote", None)
     if not remote:
-        parser.error("--certify needs --manifests-remote <git URL of the bits-manifests project>")
+        parser.error("certify: no manifests repo — pass --manifests-remote <git URL> or set "
+                     "`system: manifests_remote:`")
     api_url, project = forge.parse_git_remote(remote)
     if not api_url:
         parser.error("could not parse --manifests-remote: %s" % remote)
@@ -573,6 +574,44 @@ def _submit_certification_mr(args, parser, build_id, bom):
 
 
 
+def doCertify(args, parser):
+    """`bits certify`: make a build trusted — upload what is missing, get a passkey
+    approval via bits-console (unless --approval none), open the certification MR.
+    The manifests-repo CI then signs it (`bits sign`)."""
+    from bits_helpers import forge
+    from bits_helpers.args import DEFAULT_S3_STORE
+    dry = getattr(args, "dryRun", False)
+    if getattr(args, "approval", "passkey") == "none" and not getattr(args, "certifier", None):
+        # Without an approval the MR merges but can never be signed; that is only
+        # right for a build approved elsewhere, whose MR a bot opens for a human.
+        parser.error("certify: --approval none is for builds already approved elsewhere "
+                     "(bits-console) and needs --certifier <user>")
+    # Fail before uploading when no MR could be opened anyway.
+    if not dry and not forge.resolve_gitlab_token(getattr(args, "gitlabToken", None)):
+        parser.error("certify: no GitLab token for the MR — ~/.bits/gitlab-token, "
+                     "$BITS_CERTIFIER_TOKEN or --gitlab-token")
+    architecture = getattr(args, "architecture", None) or detectArch()
+    res = _publish_from_manifest(architecture, abspath(args.workDir),
+                                 getattr(args, "publishStore", None) or DEFAULT_S3_STORE, parser,
+                                 manifest=getattr(args, "fromManifest", None) or "latest",
+                                 dry_run=dry)
+    if dry:
+        info("[dry-run] would then %sopen the certification MR",
+             "ask bits-console for a passkey approval and " if getattr(args, "approval", "passkey") == "passkey" else "")
+        return
+    if not res:
+        parser.error("certify: no build manifest (BOM) was published, so there is nothing to certify")
+    build_id, bom, system = res
+    system = system or {}
+    # CLI > defaults `system:` for the certification target.
+    args.certifyGroup = getattr(args, "certifyGroup", None) or system.get("certify_group")
+    args.manifestsRemote = getattr(args, "manifestsRemote", None) or system.get("manifests_remote")
+    args.certifyRef = getattr(args, "certifyRef", None) or system.get("certify_ref")
+    if getattr(args, "approval", "passkey") == "passkey":
+        _preapprove_build(args, parser, build_id, bom, system)
+    _submit_certification_mr(args, parser, build_id, bom)
+
+
 # ---------------------------------------------------------------------------
 # Main publish entry point
 # ---------------------------------------------------------------------------
@@ -588,8 +627,6 @@ def doPublish(args, parser):
         Publishes the merged release view rather than a package; delegated to
         :func:`bits_helpers.view_publish_cmd.doPublishView`. Returns its bool.
     """
-    if getattr(args, "approve", False) and getattr(args, "publishView", None):
-        parser.error("--approve applies to a manifest publish with --certify, not --release-view")
     if getattr(args, "publishView", None):
         from bits_helpers.view_publish_cmd import doPublishView
         return doPublishView(args, parser)
@@ -600,48 +637,14 @@ def doPublish(args, parser):
     _fm = getattr(args, "fromManifest", None)
     if _fm is None and not getattr(args, "package", None):
         _fm = "latest"
-    if getattr(args, "approve", False) and _fm is not None and not getattr(args, "dryRun", False):
-        # Fail before uploading when --approve cannot possibly lead to an MR.
-        from bits_helpers import forge
-        if getattr(args, "noCertify", False):
-            parser.error("--approve contradicts --no-certify")
-        if not forge.resolve_gitlab_token(getattr(args, "gitlabToken", None)):
-            parser.error("--approve needs a GitLab token for the certification MR "
-                         "(~/.bits/gitlab-token, $BITS_CERTIFIER_TOKEN or --gitlab-token)")
     if _fm is not None:
         architecture = getattr(args, "architecture", None) or detectArch()
         from bits_helpers.args import DEFAULT_S3_STORE
         store_url = getattr(args, "publishStore", None) or DEFAULT_S3_STORE
-        _res = _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
-                                      manifest=_fm, dry_run=getattr(args, "dryRun", False))
-        if _res:
-            _build_id, _bom, _system = _res
-            # Resolve certify knobs: CLI flag > env > defaults `system:`. Giving
-            # --certify-group (or having both group+remote configured in defaults)
-            # implies --certify; --no-certify always opts out.
-            _group = getattr(args, "certifyGroup", None) or _system.get("certify_group")
-            _remote = (getattr(args, "manifestsRemote", None)
-                       or _system.get("manifests_remote"))
-            _ref = getattr(args, "certifyRef", None) or _system.get("certify_ref")
-            _want = (getattr(args, "certify", False)
-                     or bool(getattr(args, "certifyGroup", None))
-                     or bool(_group and _remote))
-            if getattr(args, "noCertify", False):
-                _want = False
-            if getattr(args, "approve", False) and not _want:
-                parser.error("--approve needs --certify (a certification MR to pre-approve)")
-            if _want:
-                args.certifyGroup, args.manifestsRemote, args.certifyRef = _group, _remote, _ref
-                if getattr(args, "approve", False):
-                    _preapprove_build(args, parser, _build_id, _bom, _system)
-                _submit_certification_mr(args, parser, _build_id, _bom)
-        elif getattr(args, "approve", False) and not getattr(args, "dryRun", False):
-            parser.error("--approve: nothing was published, so there is nothing to pre-approve")
+        _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
+                               manifest=_fm, dry_run=getattr(args, "dryRun", False))
         return
 
-    if getattr(args, "approve", False):
-        parser.error("--approve applies to a manifest publish (bits publish without PACKAGE) "
-                     "with --certify")
     if not getattr(args, "package", None):
         parser.error("publish: PACKAGE is required (or use --release-view NAME to publish a release view).")
 

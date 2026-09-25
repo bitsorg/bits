@@ -3122,7 +3122,7 @@ def doBuild(args, parser):
   # read store. The signed manifest is partitioned by architecture, so a node
   # fetches its own arch file plus the always-shared one:
   #   <store>/<prefix>-<arch>.json , <store>/<prefix>-shared.json
-  # (`bits certify` publishes exactly these). So `require_signed_reuse: true`
+  # (`bits sign` publishes exactly these). So `require_signed_reuse: true`
   # alone is enough.
   if getattr(args, "requireSignedReuse", False) and not getattr(args, "trustManifest", None):
     # Endpoint precedence matches the S3 client: --s3-endpoint > env > CERN S3.

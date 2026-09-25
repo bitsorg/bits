@@ -810,8 +810,8 @@ def _make_approval_check(args, parser):
     return _check
 
 
-def doCertify(args, parser):
-    """CLI entrypoint for ``bits certify`` (forge-agnostic; CI wraps this)."""
+def doSign(args, parser):
+    """CLI entrypoint for ``bits sign`` (forge-agnostic; the manifests CI wraps this)."""
     approval_check = None
     if getattr(args, "requireApproval", False):
         approval_check = _make_approval_check(args, parser)

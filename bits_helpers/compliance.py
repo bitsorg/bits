@@ -484,7 +484,7 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                   "Resolve the conflict above (it is unrelated to the restricted "
                   "packages — remove one of the two conflicting build manifests), "
                   "then re-run this command (deletions are idempotent) or run "
-                  "`bits certify` to re-sign.", ", ".join(sorted(affected_archs)))
+                  "`bits sign` to re-sign.", ", ".join(sorted(affected_archs)))
             return 1
         for op, sp, arch in outputs:
             for src, dst in ((op, "MANIFESTS/common-manifest-%s.json" % arch),

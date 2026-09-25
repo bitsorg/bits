@@ -134,7 +134,7 @@ def source_sync_for(spec, sync_helper):
 # .tar.gz is not byte-reproducible, so key existence alone cannot tell us whether
 # the store holds the same bytes the build manifest records; this lets the upload
 # path compare cheaply (HEAD) and overwrite when they differ, keeping the store
-# consistent with the manifest that `bits certify` signs.
+# consistent with the manifest that `bits sign` signs.
 _SHA256_META = "sha256"
 
 
@@ -951,7 +951,7 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
     # file; overwriting would churn the store and invalidate the checksum every
     # previously-certified manifest recorded for that object. Fresh uploads carry
     # the same "sha256:<hex>" metadata as the boto3 backend, so either backend
-    # (and `bits certify`) can read the stored digest cheaply. NOTE: unlike the
+    # (and `bits sign`) can read the stored digest cheaply. NOTE: unlike the
     # boto3 backend this script cannot feed the stored object's sha256 back into
     # the build manifest; BOM-producing flows (bits publish) use boto3.
     if s3cmd info -s --host s3.cern.ch --host-bucket {bucket}.s3.cern.ch \\
@@ -1128,7 +1128,7 @@ class Boto3RemoteSync(RemoteSync):
     build re-packing the same content hash produces different bytes. The stored
     object may therefore legitimately differ from what this build packed, and
     the build manifest must record the STORE's checksum so that every manifest
-    converges on the stable store and `bits certify` can verify it.
+    converges on the stable store and `bits sign` can verify it.
 
     Prefers the checksum recorded in the object's ``x-amz-meta-sha256`` at
     upload time (one HEAD). A legacy object without it is streamed and hashed
@@ -1370,7 +1370,7 @@ class Boto3RemoteSync(RemoteSync):
     # previously-certified manifest recorded for that object. Instead the STORE
     # is authoritative: record its actual sha256 on the spec, so the manifest
     # this build writes describes the stored bytes and manifests from different
-    # builds converge on the one stable object `bits certify` verifies.
+    # builds converge on the one stable object `bits sign` verifies.
     local_file = os.path.join(self.workdir, tar_path)
     remote_sha = self._s3_remote_tarball_sha256(tar_path)
     if remote_sha is not None:

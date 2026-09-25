@@ -185,40 +185,59 @@ The tier-3 attestation is driven by three build flags:
   tag each entry with a `group`; with `--trust-groups` a consumer trusts only
   those groups plus the always-trusted `common` base (untagged entries count as
   base). Omit it to trust every signed entry. Produce group tags at certification
-  time with `bits certify --group GROUP`.
+  time with `bits sign --group GROUP`.
 - `--reuse-beacon URL` (or `$BITS_REUSE_BEACON`) — report the hashes this build
   reused from the store to `<URL>/api/reuse` (best-effort, fire-and-forget in a
   daemon thread; never blocks or fails the build). Only small references are
   sent, never artifact data. Feeds usage-informed GC.
 
-#### Publish-triggered certification
+#### Publishing and certifying a build — `bits publish`, `bits certify`
 
-`bits publish --certify --certify-group <group> --manifests-remote <git-url>`
-uploads to S3 and then **opens a merge request** in the manifests repo that adds
-this build's manifest under `manifests/<group>/`. The MR is created via the
-GitLab REST API with your PAT (works even when you push over SSH — only the host
-+ project path are taken from the remote URL; PAT from `--gitlab-token`,
-`$BITS_CERTIFIER_TOKEN`/`$GITLAB_TOKEN`, or `~/.bits/gitlab-token`, chmod 600).
-The MR **author is you**; CI validates that author is a group/bits admin, signs
-the merged common manifest, and publishes it to S3 (recording you as
-`certified_by`). No PAT is exposed to the CI job.
+Three commands, one per step:
 
-`--certify-group` and `--manifests-remote` default from the active defaults'
-`system:` block, so a community that configures them can just run `bits publish`:
+| Command | What it does | Credentials |
+|---|---|---|
+| `bits publish` | uploads the latest build (or `--manifest M`) to the S3 store, with its per-architecture BOMs | `~/.bits/s3keys` |
+| `bits certify` | makes that build trusted: uploads whatever is still missing, gets a passkey approval, opens the certification MR | `~/.bits/s3keys`, `~/.bits/gitlab-token`, a passkey |
+| `bits sign` | merges the BOMs, validates them against the store and signs — run by the manifests-repo CI | CI identity |
+
+`bits certify` on its own:
+
+1. uploads anything not yet in the store (idempotent, so it is harmless after
+   `bits publish`);
+2. asks bits-console to pre-approve the build and prints a QR code, the approve
+   link, and a short code. Open the link on your phone, check that the code
+   matches, and approve with your passkey. The approval binds the build's exact
+   package hashes;
+3. opens a merge request in the manifests repo adding the BOMs under
+   `manifests/<group>/`, via the GitLab REST API with your token (works with SSH
+   push; only host + path are taken from the remote URL). The token comes from
+   `--gitlab-token`, `$BITS_CERTIFIER_TOKEN`/`$GITLAB_TOKEN` or
+   `~/.bits/gitlab-token` (chmod 600).
+
+The manifests CI then checks the MR author and the approval, and signs (`bits sign`).
+If the approval is refused or times out, no MR is opened.
+
+`--group`, `--manifests-remote`, `--ref` and `--console` default from the active
+defaults' `system:` block, so a configured community just runs `bits certify`:
 
 ```yaml
 system:
   certify_group:    ship
   manifests_remote: https://gitlab.cern.ch/buncic/bits-manifests.git
+  console_url:      https://bits.cern.ch
 ```
 
-Giving `--certify-group` (or having both configured) implies `--certify`;
-`--no-certify` opts out. These live under `system:` because they are publish
-policy, not part of any package hash.
+These live under `system:` because they are publish policy, not part of any
+package hash. `--approval none` opens the MR without asking for an approval, for
+builds approved elsewhere (a bits-console build is pre-approved in the browser and
+its MR is opened by the console's bot with `--certifier`). `--console-cafile PEM`
+trusts a private CA; `--console-insecure` allows a plain-http console on a trusted
+testbed.
 
-#### Certification — `bits certify`
+#### Signing — `bits sign`
 
-`bits certify <manifests…> --key <ed25519.pem> -o common-manifest.json` merges
+`bits sign <manifests…> --key <ed25519.pem> -o common-manifest.json` merges
 published build manifests into one signed common manifest (the trust unit), after
 validating every hash against the S3 store (`--store`). Group tagging with
 `--group`, offline dry-merge with `--no-store-check`. In the manifests-repo CI,
@@ -263,7 +282,7 @@ architecture** — object identity is `(effective_architecture, hash)` — so
 entries from different platforms can never conflict and certification is
 scoped by platform. `bits publish` emits **one BOM per effective
 architecture** ("shared" — noarch — is just another platform; the arch is in
-the BOM file name), and `bits certify --architectures A1,A2` merges,
+the BOM file name), and `bits sign --architectures A1,A2` merges,
 store-validates and signs only those platforms' BOMs, leaving the other
 platforms' signed manifests untouched. A scoped platform whose BOMs are all
 gone is re-signed **empty** — deleting a platform's BOMs revokes its entries.

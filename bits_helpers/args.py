@@ -978,7 +978,7 @@ def add_publish_arguments(subparsers, ctx):
   # `bits publish PACKAGE` is CVMFS-only (Phase 3.4). The single-package S3-store
   # write moved to `bits store upload`; the bulk `--from-manifest` S3 upload below
   # is unchanged. `--to`/`--write-store` were removed with the single-package s3 path.
-  publish_parser.add_argument("--from-manifest", dest="fromManifest", nargs="?",
+  publish_parser.add_argument("--manifest", "--from-manifest", dest="fromManifest", nargs="?",
                               const="latest", default=None, metavar="MANIFEST",
                               help=("Bulk-upload every package in a build manifest to the S3 store. "
                                     "This is the default when no PACKAGE is given, so bare "
@@ -989,43 +989,6 @@ def add_publish_arguments(subparsers, ctx):
                    help=("S3 store URL/bucket for --from-manifest. Accepts an https URL "
                          "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>. "
                          "Default: %(default)s"))
-  publish_parser.add_argument("--certify", dest="certify", action="store_true", default=False,
-                              help=("After a successful upload, open a merge request in the manifests repo "
-                                    "adding this build's manifest under manifests/<group>/. CI validates the "
-                                    "MR author is an admin, signs the common manifest, and publishes it. "
-                                    "Uses the GitLab API + your PAT (works even with SSH push)."))
-  publish_parser.add_argument("--certify-group", dest="certifyGroup", metavar="GROUP", default=None,
-                              help=("Group directory to submit the manifest to (manifests/<group>/). Implies "
-                                    "--certify. Defaults to `system: certify_group:` in the active defaults, "
-                                    "so a configured community can just run `bits publish`."))
-  publish_parser.add_argument("--no-certify", dest="noCertify", action="store_true", default=False,
-                              help="Never open a certification MR, even if defaults configure it.")
-  publish_parser.add_argument("--manifests-remote", dest="manifestsRemote", metavar="GIT_URL", default=None,
-                              help=("Git remote of the bits-manifests project, e.g. "
-                                    "ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git. Only the host + "
-                                    "path are used (to build the HTTPS API URL). Defaults to "
-                                    "`system: manifests_remote:` in the active defaults."))
-  publish_parser.add_argument("--certify-ref", dest="certifyRef", metavar="REF", default=None,
-                              help="Target branch of the certification MR. Default: the repo's default branch.")
-  publish_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
-                              help=("GitLab PAT to trigger certification (default: $BITS_CERTIFIER_TOKEN / "
-                                    "$GITLAB_TOKEN / ~/.bits/gitlab-token)."))
-  publish_parser.add_argument("--approve", dest="approve", action="store_true", default=False,
-                              help=("With --certify: before opening the MR, ask bits-console to pre-approve "
-                                    "this build and wait. Shows a QR code (and a code to compare) to approve "
-                                    "with a passkey on your phone; the certification CI then signs it."))
-  publish_parser.add_argument("--console", dest="console", metavar="URL", default=None,
-                              help=("bits-console backend URL for --approve (default: $BITS_CONSOLE_URL, "
-                                    "then `system: console_url:` in the active defaults)."))
-  publish_parser.add_argument("--console-cafile", dest="consoleCafile", metavar="PEM", default=None,
-                              help="CA bundle for the console backend when not in this host's trust store.")
-  publish_parser.add_argument("--console-insecure", dest="consoleInsecure", action="store_true",
-                              default=False, help="Skip TLS verification to the console (testbed only).")
-  publish_parser.add_argument("--certifier", dest="certifier", metavar="USER", default=None,
-                              help=("Record USER as certified_by in the submitted manifest (audit trail in the "
-                                    "manifests-repo history). Use when the MR is opened by a bot on behalf of a "
-                                    "human whose authority was already verified (e.g. bits-console). Defaults to "
-                                    "$GITLAB_USER_LOGIN."))
 
   # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
   _prepub = publish_parser.add_argument_group(
@@ -1068,15 +1031,62 @@ def add_publish_arguments(subparsers, ctx):
 
 
 def add_certify_arguments(subparsers, ctx):
-  """`bits certify` — merge build manifests into a signed common manifest."""
-  certify_parser = subparsers.add_parser(
+  """`bits certify` — make the latest (or a given) build trusted."""
+  p = subparsers.add_parser(
       "certify",
-      help="merge build manifests into a signed common manifest (trust unit)",
+      help="make a build trusted: upload, approve with a passkey, open the certification MR",
+      description=(
+          "Make a build trusted for binary reuse. Uploads whatever is still missing "
+          "from the store (~/.bits/s3keys), asks bits-console for a passkey approval "
+          "of this build (QR code + a code to compare, approved on your phone), then "
+          "opens the certification merge request in the manifests repo "
+          "(~/.bits/gitlab-token). Its CI signs the manifest. Group, manifests repo "
+          "and console URL default from the defaults' `system:` block, so a "
+          "configured community just runs `bits certify`."
+      ),
+  )
+  p.add_argument("--manifest", "--from-manifest", dest="fromManifest", nargs="?",
+                 const="latest", default="latest", metavar="MANIFEST",
+                 help="Build manifest to certify: a file path, or 'latest' (default, newest under WORKDIR/MANIFESTS).")
+  p.add_argument("--group", dest="certifyGroup", metavar="GROUP", default=None,
+                 help="Group to certify for (manifests/<group>/). Default: `system: certify_group:`.")
+  p.add_argument("--manifests-remote", dest="manifestsRemote", metavar="GIT_URL", default=None,
+                 help=("Git remote of the bits-manifests project (only host + path are used, for the "
+                       "HTTPS API). Default: `system: manifests_remote:`."))
+  p.add_argument("--ref", dest="certifyRef", metavar="REF", default=None,
+                 help="Target branch of the MR. Default: `system: certify_ref:`, else the repo's default branch.")
+  p.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
+                 help="GitLab token for the MR (default: $BITS_CERTIFIER_TOKEN / $GITLAB_TOKEN / ~/.bits/gitlab-token).")
+  p.add_argument("--approval", dest="approval", choices=("passkey", "none"), default="passkey",
+                 help=("passkey (default): wait for a passkey approval via bits-console before the MR. "
+                       "none: open the MR only — for builds approved elsewhere (a console build; needs --certifier)."))
+  p.add_argument("--console", dest="console", metavar="URL", default=None,
+                 help="bits-console URL for the approval (default: $BITS_CONSOLE_URL, then `system: console_url:`).")
+  p.add_argument("--console-cafile", dest="consoleCafile", metavar="PEM", default=None,
+                 help="CA bundle for the console when it is not in this host's trust store (e.g. the CERN CA).")
+  p.add_argument("--console-insecure", dest="consoleInsecure", action="store_true", default=False,
+                 help="Allow http:// / skip TLS verification to the console (trusted testbed only).")
+  p.add_argument("--certifier", dest="certifier", metavar="USER", default=None,
+                 help=("Record USER as certified_by (when a bot opens the MR for a human already "
+                       "verified upstream, e.g. bits-console). Default: $GITLAB_USER_LOGIN."))
+  ctx.remote_store(p, dest="publishStore",
+                   help="S3 store the build is uploaded to / checked in. Default: %(default)s")
+  ctx.work_dir(p, help="Work directory holding MANIFESTS/ and the build. Default: %(default)s")
+  ctx.architecture(p, help="Architecture of the build. Default: detected")
+  return p
+
+
+def add_sign_arguments(subparsers, ctx):
+  """`bits sign` — merge build manifests into a signed common manifest (manifests CI)."""
+  certify_parser = subparsers.add_parser(
+      "sign",
+      help="merge build manifests into a signed common manifest (run by the manifests CI)",
       description=(
           "Merge one or more published build manifests into a single common "
           "manifest, validate every content hash against the S3 store, and sign "
           "the result with the release Ed25519 key. The signed common manifest "
-          "is what clients trust for binary reuse (see docs/adr/0004)."
+          "is what clients trust for binary reuse (see docs/adr/0004). Normally "
+          "run by the manifests-repo CI after `bits certify` opened the MR."
       ),
   )
   # Options for the certify subcommand
@@ -1749,6 +1759,7 @@ def doParseArgs():
   version_parser = add_version_arguments(subparsers, ctx)
   publish_parser = add_publish_arguments(subparsers, ctx)
   certify_parser = add_certify_arguments(subparsers, ctx)
+  sign_parser = add_sign_arguments(subparsers, ctx)
   # `gc` and `store-stats` moved into the `store` group (Phase 3.4): they are now
   # `bits store gc` / `bits store stats`, handled by the bitsStore tool.
   compliance_parser = add_compliance_arguments(subparsers, ctx)
