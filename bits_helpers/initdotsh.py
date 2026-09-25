@@ -243,12 +243,14 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # shared libraries — on macOS this is what lets e.g. protoc -> Abseil work
     # after the install-time rpath is stripped. The build environment must NOT
     # unset this variable after sourcing init.sh (see build_template.sh).
+    # No generic include path: CPATH acts like -I and shadows the -isystem dirs
+    # CMake picks (protobuf2's headers over protobuf's), C_/CPLUS_INCLUDE_PATH
+    # demote a recipe's own -I. PythonRecipe adds headers for extension builds.
     _lib_path_var = "DYLD_LIBRARY_PATH" if architecture.startswith("osx") else "LD_LIBRARY_PATH"
     for key, value in (("PATH", "bin"),
                        (_lib_path_var, "lib"), (_lib_path_var, "lib64"),
                        ("LIBRARY_PATH", "lib"), ("LIBRARY_PATH", "lib64"),
-                       ("PKG_CONFIG_PATH", "lib/pkgconfig"), ("PKG_CONFIG_PATH", "lib64/pkgconfig"),
-                       ("CPATH", "include")):
+                       ("PKG_CONFIG_PATH", "lib/pkgconfig"), ("PKG_CONFIG_PATH", "lib64/pkgconfig")):
       prepend_path.setdefault(key, []).insert(0, f"${bigpackage}_ROOT/{value}")
     lines.extend('[ ! -d "{value}" ] || export {key}="{value}${{{key}+:${key}}}"'
                  .format(key=key, value=dir)

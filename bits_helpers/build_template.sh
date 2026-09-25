@@ -218,7 +218,13 @@ cat <<\EOF > "$INSTALLROOT/etc/profile.d/init.sh"
 EOF
 
 # Apply dependency initialisation now, but skip setting the variables below until after the build.
+# Dependencies built since 377f619 put their include dir on CPATH, which acts
+# like -I and shadows the -isystem dirs CMake picks: keep only the inherited
+# CPATH. PythonRecipe adds dependency headers for extension builds itself.
+_bits_cpath="${CPATH-}" _bits_cpath_set="${CPATH+x}"
 . "$INSTALLROOT/etc/profile.d/init.sh"
+if [ -n "$_bits_cpath_set" ]; then export CPATH="$_bits_cpath"; else unset CPATH; fi
+unset _bits_cpath _bits_cpath_set
 
 # Add support for direnv https://github.com/direnv/direnv/
 #

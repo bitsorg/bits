@@ -186,7 +186,8 @@ class TestGenerateInitdotshDotPackage(unittest.TestCase):
 
 class TestBuildEnvSearchPaths(unittest.TestCase):
     """Build-time init.sh must put a dependency's libs on LIBRARY_PATH (the
-    compiler's -L link search), symmetric with CPATH (its -I include search).
+    compiler's -L link search). No generic include path is exported: CPATH
+    would shadow CMake's -isystem choices (see test below).
     Without LIBRARY_PATH a bare `-lfoo` link (e.g. Go/cgo, an autoconf project
     not using pkg-config) fails to find the dep even though the header compiles.
     """
@@ -196,8 +197,27 @@ class TestBuildEnvSearchPaths(unittest.TestCase):
                                     workDir="/sw", post_build=True)
         # full guarded line: guard + prepend form, not just presence
         self.assertIn('[ ! -d "$MY_PKG_ROOT/lib" ] || export LIBRARY_PATH="$MY_PKG_ROOT/lib${LIBRARY_PATH+:$LIBRARY_PATH}"', initsh)
-        self.assertIn('export CPATH="$MY_PKG_ROOT/include', initsh)      # compiler -I (377f619)
+        for var in ("CPATH=", "C_INCLUDE_PATH=", "CPLUS_INCLUDE_PATH="):
+            self.assertNotIn(var, initsh)
         self.assertIn('export LD_LIBRARY_PATH="$MY_PKG_ROOT/lib', initsh)  # runtime loader
+
+    def test_build_template_drops_legacy_cpath(self):
+        # Deps built since 377f619 export CPATH from their installed init.sh;
+        # the build must keep only the CPATH it inherited.
+        import os, re, subprocess, tempfile, bits_helpers
+        with open(os.path.join(os.path.dirname(bits_helpers.__file__), "build_template.sh")) as f:
+            src = f.read()
+        m = re.search(r'\n(_bits_cpath=.*?\nunset _bits_cpath _bits_cpath_set\n)', src, re.S)
+        self.assertIsNotNone(m, "CPATH save/restore around the dependency init.sh is missing")
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(d + "/etc/profile.d")
+            with open(d + "/etc/profile.d/init.sh", "w") as f:
+                f.write('export CPATH="/dep/include${CPATH+:$CPATH}"\n')
+            probe = m.group(1) + 'echo "${CPATH-unset}"'
+            run = lambda env: subprocess.run(["bash", "-c", probe], env=dict(env, INSTALLROOT=d),
+                                             capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(run({}), "unset")
+            self.assertEqual(run({"CPATH": "/mine"}), "/mine")
 
 
 if __name__ == "__main__":
