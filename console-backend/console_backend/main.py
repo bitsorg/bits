@@ -37,6 +37,7 @@ credstore = credentials.CredentialStore(settings.credentials_path)
 sign_requests = session.SignRequestStore()
 cli_signs = session.CliSignStore()
 preapprovals = session.PreapprovalStore()
+cli_preapprovals = session.CliSignStore(max_entries=32)   # pending CLI pre-approvals
 enroll_grants = session.EnrollmentGrantStore()
 reg_challenges = session.RegChallengeStore()
 oidc_states = session.OidcStateStore()
@@ -1025,6 +1026,176 @@ async def preapprove_approve(request: Request):
     return {"status": "approved", "build_id": build_id}
 
 
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"   # no 0/O, 1/I/L
+_GROUP_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+_HEX64_RE = re.compile(r"[0-9a-f]{64}")
+# CLI keys are deterministic <defaults label>-<12 hex> build_ids, never a console
+# (numeric) pipeline id, so the two flows can't touch each other's records.
+_CLI_BUILD_ID_RE = re.compile(r"[A-Za-z0-9._-]+-[0-9a-f]{12}")
+_CLI_PREAPPROVE_MAX = 2 * 1024 * 1024
+_CLI_PREAPPROVE_MAX_PKGS = 5000
+
+
+def _parse_cli_preapproval(payload):
+    """Validate a CLI pre-approval request: {build_id, groups[], boms[], host, user}.
+    Each BOM is one per-arch build manifest as `bits publish` writes it; its
+    (arch, hash, tarball_sha256) triples are what the approval binds. Raises
+    ValueError on anything malformed."""
+    build_id = str(payload["build_id"]).strip()
+    groups = payload["groups"]
+    boms = payload["boms"]
+    if not _valid_build_id(build_id) or not _CLI_BUILD_ID_RE.fullmatch(build_id) \
+            or not isinstance(groups, list) or not groups \
+            or not all(isinstance(g, str) and _GROUP_RE.fullmatch(g) for g in groups) \
+            or not isinstance(boms, list) or not boms:
+        raise ValueError
+    packages = set()
+    for bom in boms:
+        arch = bom.get("effective_architecture") if isinstance(bom, dict) else None
+        if not (isinstance(arch, str) and _GROUP_RE.fullmatch(arch)) \
+                or str(bom.get("build_id", "")) != build_id \
+                or not isinstance(bom.get("packages"), list):
+            raise ValueError
+        for e in bom["packages"]:
+            h, sha = (e.get("hash"), e.get("tarball_sha256")) if isinstance(e, dict) else (None, None)
+            sha = sha.lower() if isinstance(sha, str) else None
+            sha = sha[len("sha256:"):] if sha and sha.startswith("sha256:") else sha
+            if not (isinstance(h, str) and h.isascii() and h.isalnum() and len(h) <= 64
+                    and sha and _HEX64_RE.fullmatch(sha)):
+                raise ValueError
+            packages.add((arch, h, sha, _shown(e.get("package")), _shown(e.get("version"))))
+    if not packages or len(packages) > _CLI_PREAPPROVE_MAX_PKGS:
+        raise ValueError
+    return build_id, sorted(set(groups)), sorted(packages), \
+        {k: _shown(payload.get(k)) for k in ("host", "user")}
+
+
+def _shown(value):
+    """A display-only string: printable characters, bounded."""
+    return "".join(c for c in str(value or "")[:64] if c.isprintable())
+
+
+@app.post("/preapprove/cli/request")
+async def cli_preapprove_request(request: Request):
+    """CLI pre-approval, step 1: a terminal asks for a build (by its deterministic
+    build_id) to be pre-approved; a human approves on another device with a passkey.
+    Unauthenticated like /sign/cli/request: the passkey approval is the
+    authorization, and the pending store is bounded and short-lived."""
+    if not settings.webauthn_configured():
+        raise HTTPException(503, "WebAuthn is not configured")
+    raw = await _read_capped(request, _CLI_PREAPPROVE_MAX)
+    try:
+        build_id, groups, packages, shown = _parse_cli_preapproval(json.loads(raw))
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        raise HTTPException(400, "expected {build_id, groups[], boms[]} as written by bits publish")
+    existing = preapprovals.get(build_id)
+    if existing and existing["status"] == "approved":
+        raise HTTPException(409, "build %s is already pre-approved" % build_id)
+    # The passkey signs over a digest of exactly what is approved.
+    digest = hashlib.sha256(json.dumps([build_id, groups, packages]).encode()).digest()
+    req_id = secrets.token_urlsafe(24)
+    code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(6))
+    cli_preapprovals.put(req_id, {"build_id": build_id, "groups": groups,
+                                  "packages": packages, "code": code, "shown": shown,
+                                  "challenge": _new_challenge(digest), "status": "pending",
+                                  "approved_by": None})
+    return {"request_id": req_id, "code": code, "build_id": build_id, "groups": groups,
+            "packages": len(packages)}
+
+
+@app.get("/preapprove/cli/{req_id}")
+def cli_preapprove_pending(req_id: str):
+    """Approver: review a pending CLI pre-approval and get the WebAuthn challenge.
+    The 192-bit req_id is the secret; the approver is identified by the passkey."""
+    if not settings.webauthn_configured():
+        raise HTTPException(503, "WebAuthn is not configured")
+    req = cli_preapprovals.get(req_id)
+    if not req:
+        raise HTTPException(404, "no such request")
+    if req["status"] != "pending":
+        return {"status": req["status"], "build_id": req["build_id"]}
+    archs = {}
+    for arch, _h, _s, name, version in req["packages"]:
+        archs.setdefault(arch, []).append("%s %s" % (name, version))
+    options = json.loads(webauthn_rp.authentication_options(settings, req["challenge"], []))
+    return {"status": "pending", "build_id": req["build_id"], "groups": req["groups"],
+            "code": req["code"], "requested_by": req["shown"], "verified": False,
+            "architectures": archs, "publicKey": options}
+
+
+@app.post("/preapprove/cli/{req_id}/approve")
+async def cli_preapprove_approve(req_id: str, request: Request):
+    """Approver: verify the assertion and record an APPROVED pre-approval for the
+    build_id, binding the approved packages. Passkey-only, as /sign/cli: the
+    approver is the enrolled user owning the credential; admin is checked after
+    the assertion verifies, so an unverified caller learns nothing about users."""
+    if not settings.webauthn_configured():
+        raise HTTPException(503, "WebAuthn is not configured")
+    raw = await _read_capped(request, _APPROVE_MAX)
+    try:
+        assertion = json.loads(raw)["assertion"]
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "expected {assertion}")
+    req = cli_preapprovals.get(req_id)
+    if not req or req["status"] != "pending":
+        raise HTTPException(400, "unknown or already-handled request")
+    cred_id = (assertion.get("rawId") or assertion.get("id")
+               if isinstance(assertion, dict) else None)
+    found = credstore.user_for(cred_id)
+    if not found:
+        raise HTTPException(400, "unknown credential")
+    user, cred = found
+    # Claim before the first await (synchronous above), as cli_approve does.
+    req["status"] = "approving"
+    try:
+        new_count = await run_in_threadpool(
+            webauthn_rp.verify_authentication, settings, json.dumps(assertion),
+            req["challenge"], cred)
+    except Exception:
+        req["status"] = "pending"
+        raise HTTPException(403, "approval verification failed")
+    except BaseException:          # e.g. client disconnect: don't strand the claim
+        req["status"] = "pending"
+        raise
+    try:      # past the claim: never leave it stuck in "approving"
+        credstore.update_sign_count(user, cred_id, new_count)
+        resolved = _resolved_policy(None)
+        denied = [g for g in req["groups"] if not authz.is_admin_for(user, g, resolved)]
+        if denied:
+            audit.record("preapprove_denied", signer=user, groups=req["groups"],
+                         denied=denied, build_id=req["build_id"], principal="human", via="cli")
+            raise HTTPException(403, "%s is not a community admin for: %s"
+                                % (user, ", ".join(denied)))
+        existing = preapprovals.get(req["build_id"])
+        if existing and existing["status"] == "approved":
+            raise HTTPException(409, "build %s is already pre-approved" % req["build_id"])
+        preapprovals.put(req["build_id"], {"groups": req["groups"], "user": user,
+                                           "status": "approved", "via": "cli",
+                                           "packages": req["packages"]})
+    except BaseException:
+        # A verified assertion is spent: end the request rather than re-offer
+        # the same challenge.
+        req["status"] = "refused"
+        raise
+    req["status"] = "approved"
+    req["approved_by"] = user
+    audit.record("preapproved", signer=user, groups=req["groups"], build_id=req["build_id"],
+                 packages=len(req["packages"]), principal="human", via="cli")
+    return {"status": "approved", "build_id": req["build_id"]}
+
+
+@app.get("/preapprove/cli/{req_id}/result")
+def cli_preapprove_result(req_id: str):
+    """CLI: poll a pre-approval request (the 192-bit req_id is the secret)."""
+    req = cli_preapprovals.get(req_id)
+    if not req:
+        raise HTTPException(404, "no such request")
+    out = {"status": req["status"], "build_id": req["build_id"]}
+    if req["status"] == "approved":
+        out["approved_by"] = req["approved_by"]
+    return out
+
+
 @app.post("/sign/preapproved")
 async def sign_preapproved(request: Request):
     """CI signs a manifest for a build a human PRE-APPROVED. Requires BOTH a CI OIDC
@@ -1054,6 +1225,11 @@ async def sign_preapproved(request: Request):
         audit.record("sign_denied", signer=signer, groups=groups, build_id=build_id,
                      reason="no_preapproval", **principal)
         raise HTTPException(403, "no human pre-approval for build %s" % build_id)
+    if pre.get("via") == "cli":
+        # Fail closed until the package/author binding for CLI records is checked here.
+        audit.record("sign_denied", signer=signer, groups=groups, build_id=build_id,
+                     reason="cli_preapproval_unsupported", **principal)
+        raise HTTPException(403, "CLI pre-approvals cannot be consumed yet")
     # The manifest's groups must all be within the AUTHORITY of the human who
     # pre-approved this build (resolved via the service token / static policy) — not
     # a declared list: a build's manifest can legitimately include packages from

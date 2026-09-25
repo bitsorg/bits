@@ -89,6 +89,14 @@ class TestSignPreapproved(unittest.TestCase):
         self.assertIsNotNone(rec)
         self.assertEqual(rec["signs"], 1)
 
+    def test_cli_preapproval_not_consumable_yet(self):
+        # CLI records fail closed here until their package/author binding lands.
+        main.preapprovals.put("rel-0123456789ab", {"groups": ["lcg"], "user": "alice",
+                                                   "status": "approved", "via": "cli"})
+        r = self._sign("rel-0123456789ab", "lcg")
+        self.assertEqual(r.status_code, 403)
+        self.assertNotIn("signs", main.preapprovals.get("rel-0123456789ab"))
+
     def test_no_preapproval_403(self):
         r = self._sign("nope", "lcg")
         self.assertEqual(r.status_code, 403)
