@@ -32,7 +32,8 @@ class TestSignPreapproved(unittest.TestCase):
             "BITS_SIGN_PROXY_URL": "http://proxy/sign/bits"})
         main.preapprovals = session.PreapprovalStore()
         # CI identity: JWT verifies to a project; authorize everything (override per test).
-        main.ci_auth.verify_ci_token = lambda token, settings: {"project_path": "grp/manifests", "ref": "main"}
+        main.ci_auth.verify_ci_token = lambda token, settings: {"project_path": "grp/manifests", "ref": "main",
+                                                                "ref_protected": "true"}
         main.ci_auth.load_ci_signers = lambda settings: {}
         main.ci_auth.is_ci_authorized = lambda project, group, pol: True
         main.identity.verify_gitlab_token = lambda a, t, *x, **k: t or None
@@ -89,13 +90,99 @@ class TestSignPreapproved(unittest.TestCase):
         self.assertIsNotNone(rec)
         self.assertEqual(rec["signs"], 1)
 
-    def test_cli_preapproval_not_consumable_yet(self):
-        # CLI records fail closed here until their package/author binding lands.
-        main.preapprovals.put("rel-0123456789ab", {"groups": ["lcg"], "user": "alice",
-                                                   "status": "approved", "via": "cli"})
-        r = self._sign("rel-0123456789ab", "lcg")
+    # CLI pre-approvals: bound to the build's packages and the MR author.
+    CLI_BID = "rel-0123456789ab"
+    SHA = "ab" * 32
+
+    def _cli_record(self, user="alice"):
+        main.preapprovals.put(self.CLI_BID, {
+            "groups": ["lcg"], "user": user, "status": "approved", "via": "cli",
+            "packages": [["x86_64-el9", "h1", self.SHA, "A", "1"],
+                         ["shared", "h9", self.SHA, "D", "1"]]})
+
+    def _cli_sign(self, certifier="alice", arch="x86_64-el9", pkgs=(("h1", SHA),)):
+        body = json.dumps({"architecture": arch, "packages": [
+            {"package": "A", "hash": h, "tarball_sha256": sha, "group": "lcg"}
+            for h, sha in pkgs] + [{"package": "Other", "hash": "h2",
+                                    "tarball_sha256": self.SHA, "group": "lcg"}]}).encode()
+        q = "?build_id=" + self.CLI_BID + ("&certifier=" + certifier if certifier else "")
+        ps = self._patched()
+        for p in ps:
+            p.start()
+        try:
+            return self.client.post("/sign/preapproved" + q, content=body, headers=self._ci())
+        finally:
+            for p in ps:
+                p.stop()
+
+    def test_cli_preapproval_signs_when_bound(self):
+        self._cli_record()
+        r = self._cli_sign()                       # certifier == approver
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["preapproved_by"], "alice")
+        self.assertEqual(main.preapprovals.get(self.CLI_BID)["signs"], 1)
+
+    def test_cli_preapproval_other_admin_certifier(self):
+        main.settings = config.Settings(env={
+            "GITLAB_API_URL": "https://gitlab.example/api/v4",
+            "BITS_ADMINS_POLICY": "lcg @alice @carol",
+            "BITS_SIGN_PROXY_URL": "http://proxy/sign/bits"})
+        self._cli_record()
+        self.assertEqual(self._cli_sign(certifier="carol").status_code, 200)
+
+    def test_cli_preapproval_refusals_do_not_consume(self):
+        self._cli_record()
+        cases = [
+            dict(certifier=""),                              # no MR author
+            dict(certifier="mallory"),                       # not approver, not admin
+            dict(pkgs=()),                                   # approved package missing
+            dict(pkgs=(("h1", "cd" * 32),)),                 # approved package changed
+            dict(arch="aarch64-el9"),                        # arch not approved
+            dict(pkgs=(("h1", self.SHA), ("h1", "cd" * 32))),  # approved hash, second copy
+            dict(arch="x\n86"),                              # malformed arch
+        ]
+        for kw in cases:
+            r = self._cli_sign(**kw)
+            self.assertEqual(r.status_code, 403, kw)
+        self.assertNotIn("signs", main.preapprovals.get(self.CLI_BID))
+
+    def test_cli_preapproval_needs_protected_ref(self):
+        self._cli_record()
+        main.ci_auth.verify_ci_token = lambda token, settings: {
+            "project_path": "grp/manifests", "ref": "feature", "ref_protected": "false"}
+        self.assertEqual(self._cli_sign().status_code, 403)
+
+    def test_cli_preapproval_malformed_manifest_is_403(self):
+        self._cli_record()
+        ps = self._patched()
+        for p in ps:
+            p.start()
+        try:
+            r = self.client.post("/sign/preapproved?build_id=%s&certifier=alice" % self.CLI_BID,
+                                 content=json.dumps({"architecture": "x86_64-el9", "packages": [
+                                     {"hash": ["x"], "group": "lcg"}]}).encode(), headers=self._ci())
+        finally:
+            for p in ps:
+                p.stop()
         self.assertEqual(r.status_code, 403)
-        self.assertNotIn("signs", main.preapprovals.get("rel-0123456789ab"))
+
+    def test_cli_preapproval_sha256_prefix_matches(self):
+        self._cli_record()
+        self.assertEqual(self._cli_sign(pkgs=(("h1", "sha256:" + self.SHA.upper()),)).status_code, 200)
+
+    def test_console_preapproval_ignores_certifier(self):
+        # Pipeline-id (console) records are unchanged: no binding, certifier unused.
+        self._preapprove("p1", ["lcg"])
+        ps = self._patched()
+        for p in ps:
+            p.start()
+        try:
+            r = self.client.post("/sign/preapproved?build_id=p1&certifier=mallory",
+                                 content=_manifest("lcg"), headers=self._ci())
+        finally:
+            for p in ps:
+                p.stop()
+        self.assertEqual(r.status_code, 200)
 
     def test_no_preapproval_403(self):
         r = self._sign("nope", "lcg")

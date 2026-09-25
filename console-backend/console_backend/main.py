@@ -610,7 +610,8 @@ async def _authorize_sign(request: Request, groups):
             pol = ci_auth.load_ci_signers(settings)
             denied = [g for g in groups if not ci_auth.is_ci_authorized(project, g, pol)]
             return ("ci:%s" % project,
-                    {"principal": "ci", "project": project, "ref": claims.get("ref")},
+                    {"principal": "ci", "project": project, "ref": claims.get("ref"),
+                     "ref_protected": str(claims.get("ref_protected", "")).lower()},
                     denied)
     data = await _current_async(request)   # human: the bearer is the user's GitLab token
     if not data:
@@ -1058,8 +1059,7 @@ def _parse_cli_preapproval(payload):
             raise ValueError
         for e in bom["packages"]:
             h, sha = (e.get("hash"), e.get("tarball_sha256")) if isinstance(e, dict) else (None, None)
-            sha = sha.lower() if isinstance(sha, str) else None
-            sha = sha[len("sha256:"):] if sha and sha.startswith("sha256:") else sha
+            sha = _norm_sha256(sha)
             if not (isinstance(h, str) and h.isascii() and h.isalnum() and len(h) <= 64
                     and sha and _HEX64_RE.fullmatch(sha)):
                 raise ValueError
@@ -1196,6 +1196,51 @@ def cli_preapprove_result(req_id: str):
     return out
 
 
+_USER_RE = re.compile(r"[A-Za-z0-9._-]{1,255}")
+
+
+def _cli_preapproval_gap(pre, manifest, certifier, resolved, principal):
+    """Why a CLI pre-approval does NOT cover this per-arch common manifest, or None.
+    The record binds the build's (arch, hash, tarball_sha256): every approved one
+    for the manifest's architecture must be present, and no approved hash may
+    appear with other bytes. The certifier (the merge-request author, passed by the
+    manifests CI from a protected ref) must be the approver or an admin of the
+    approved groups, so a passkey approval alone never merges anything."""
+    if principal.get("ref_protected") != "true":
+        return "CLI pre-approvals are only consumed from a protected ref"
+    arch = manifest.get("architecture") or "shared"
+    if not (isinstance(arch, str) and _GROUP_RE.fullmatch(arch)):
+        return "manifest architecture is malformed"
+    approved = {h: sha for a, h, sha, *_ in pre.get("packages") or () if a == arch}
+    if not approved:
+        return "pre-approval of build does not cover architecture %s" % arch
+    pkgs = manifest.get("packages")
+    seen = set()
+    for p in pkgs if isinstance(pkgs, list) else ():
+        h = p.get("hash") if isinstance(p, dict) else None
+        if isinstance(h, str) and h in approved:
+            if _norm_sha256(p.get("tarball_sha256")) != approved[h]:
+                return "pre-approved package %s has different bytes in the %s manifest" % (h, arch)
+            seen.add(h)
+    if len(seen) != len(approved):
+        return "%d pre-approved package(s) missing from the %s manifest" \
+            % (len(approved) - len(seen), arch)
+    if not _USER_RE.fullmatch(certifier or ""):
+        return "certifier (merge-request author) is required for a CLI pre-approval"
+    groups = pre.get("groups") or []
+    if certifier != pre["user"] and \
+            not (groups and all(authz.is_admin_for(certifier, g, resolved) for g in groups)):
+        return "certifier %s is neither the approver (%s) nor an admin for %s" \
+            % (certifier, pre["user"], ", ".join(groups))
+    return None
+
+
+def _norm_sha256(value):
+    """'sha256:HEX' / 'HEX' -> lowercase hex ('' for anything else)."""
+    s = value.lower() if isinstance(value, str) else ""
+    return s[len("sha256:"):] if s.startswith("sha256:") else s
+
+
 @app.post("/sign/preapproved")
 async def sign_preapproved(request: Request):
     """CI signs a manifest for a build a human PRE-APPROVED. Requires BOTH a CI OIDC
@@ -1225,11 +1270,6 @@ async def sign_preapproved(request: Request):
         audit.record("sign_denied", signer=signer, groups=groups, build_id=build_id,
                      reason="no_preapproval", **principal)
         raise HTTPException(403, "no human pre-approval for build %s" % build_id)
-    if pre.get("via") == "cli":
-        # Fail closed until the package/author binding for CLI records is checked here.
-        audit.record("sign_denied", signer=signer, groups=groups, build_id=build_id,
-                     reason="cli_preapproval_unsupported", **principal)
-        raise HTTPException(403, "CLI pre-approvals cannot be consumed yet")
     # The manifest's groups must all be within the AUTHORITY of the human who
     # pre-approved this build (resolved via the service token / static policy) — not
     # a declared list: a build's manifest can legitimately include packages from
@@ -1242,6 +1282,15 @@ async def sign_preapproved(request: Request):
                      preapproved_by=pre["user"], **principal)
         raise HTTPException(403, "%s (who pre-approved build %s) is not an admin for: %s"
                             % (pre["user"], build_id, ", ".join(denied2)))
+    if pre.get("via") == "cli":
+        gap = _cli_preapproval_gap(pre, json.loads(body),
+                                   request.query_params.get("certifier", "").strip(),
+                                   resolved, principal)
+        if gap:
+            audit.record("sign_denied", signer=signer, groups=groups, build_id=build_id,
+                         reason="cli_binding", detail=gap, preapproved_by=pre["user"],
+                         **principal)
+            raise HTTPException(403, gap)
     # Bounded multi-use: one build is signed once per architecture, so the same
     # pre-approval signs several manifests — capped, and only within its TTL. RESERVE
     # the slot before the sign await (this check+increment is synchronous, so it is
