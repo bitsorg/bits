@@ -84,9 +84,11 @@ def doCvmfsPath(args, parser):
     # main (which collapses out of the path). We read the branch the same way
     # build.py does (empty when detached / no branch, e.g. in CI) and hand the raw
     # basename to resolve_release, which strips -patches and applies the trunk rule.
-    _, _value = git(("symbolic-ref", "-q", "HEAD"),
-                    directory=args.configDir, check=False)
-    _branch_basename = re.sub("refs/heads/", "", _value)
+    # Non-zero exit (detached / not a git checkout) = no branch; git's error text
+    # must never become the {release} segment.
+    _err, _value = git(("symbolic-ref", "-q", "HEAD"),
+                       directory=args.configDir, check=False)
+    _branch_basename = re.sub("refs/heads/", "", _value) if _err == 0 else ""
     tmpl = bake_release(
         tmpl, path_release(resolve_release(defaults_meta, _branch_basename)))
     # {day} baked identically to the build so the reserved path matches the

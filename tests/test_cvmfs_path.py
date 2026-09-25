@@ -107,6 +107,23 @@ class CvmfsPathHandlerTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._run(admin=True)
 
+    def test_release_segment_from_branch_or_none(self):
+        # {release} comes from the config dir's branch; when git fails (not a
+        # checkout) its error text must not leak into the path.
+        CP.parseDefaults = lambda *a, **k: ("", {}, {}, {"system": {
+            "prefix": "/cvmfs/g",
+            "cvmfs_releases_template": "{prefix}/{release}/{pkg}/{tag}/{platform}"}})
+        orig = CP.git
+        try:
+            CP.git = lambda *a, **k: (128, "fatal: not a git repository")
+            self.assertEqual(self._run(admin=True),
+                             "/cvmfs/g/GENIE/R-3_06_02/x86_64-el9")
+            CP.git = lambda *a, **k: (0, "refs/heads/LCG_110")
+            self.assertEqual(self._run(admin=True),
+                             "/cvmfs/g/LCG_110/GENIE/R-3_06_02/x86_64-el9")
+        finally:
+            CP.git = orig
+
     def test_prefix_fallback_when_recipe_has_none(self):
         # Recipe declares no prefix; --prefix supplies it, templates default.
         CP.parseDefaults = lambda *a, **k: ("", {}, {}, {"system": {}})

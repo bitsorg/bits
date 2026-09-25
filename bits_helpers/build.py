@@ -2705,8 +2705,10 @@ def doBuild(args, parser):
             'Maybe you need to "cd" to the right directory or '
             'you forgot to run "bits init"?' % args.configDir)
 
-  _, value = git(("symbolic-ref", "-q", "HEAD"), directory=args.configDir, check=False)
-  branch_basename = re.sub("refs/heads/", "", value)
+  # A non-zero exit (detached HEAD, or not a git checkout) means no branch: git's
+  # error text must never be taken for a branch name.
+  _branch_err, value = git(("symbolic-ref", "-q", "HEAD"), directory=args.configDir, check=False)
+  branch_basename = re.sub("refs/heads/", "", value) if _branch_err == 0 else ""
   branch_stream = re.sub("-patches$", "", branch_basename)
   # In case the basename and the stream are the same,
   # the stream becomes empty.
