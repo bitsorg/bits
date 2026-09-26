@@ -1196,6 +1196,26 @@ def cli_preapprove_result(req_id: str):
     return out
 
 
+@app.get("/preapproval/{build_id}")
+def preapproval_status(build_id: str, certifier: str = ""):
+    """Read-only, for the manifests CI's merge gate: is this build pre-approved, and
+    would *certifier* (the MR author) be accepted when it is signed? Answers yes/no
+    only — no approver identity — so it needs no credential."""
+    if not _valid_build_id(build_id):
+        raise HTTPException(400, "invalid build_id")
+    pre = preapprovals.get(build_id)
+    if not pre or pre.get("status") != "approved":
+        return {"build_id": build_id, "status": "none"}
+    if pre.get("signs", 0) >= _PREAPPROVAL_SIGN_CAP:
+        return {"build_id": build_id, "status": "exhausted"}
+    groups = pre.get("groups") or []
+    ok = bool(_USER_RE.fullmatch(certifier or "")) and (
+        certifier == pre.get("user") or bool(groups) and all(
+            authz.is_admin_for(certifier, g, _resolved_policy(None)) for g in groups))
+    return {"build_id": build_id, "status": "approved", "via": pre.get("via", "console"),
+            "groups": groups, "certifier_ok": ok}
+
+
 _USER_RE = re.compile(r"[A-Za-z0-9._-]{1,255}")
 
 

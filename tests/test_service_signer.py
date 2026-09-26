@@ -49,6 +49,18 @@ class TestServiceSigner(unittest.TestCase):
         self.assertEqual(json.load(open(self.sig)), env)
         self.assertIn("/sign/preapproved?build_id=42", calls[0])
 
+    def test_sign_passes_certifier(self):
+        calls = []
+        def fake(req, timeout=None, context=None):
+            calls.append(req.full_url)
+            return self._resp({"envelope": {"sig": "s"}})
+        with patch.object(certify.urllib.request, "urlopen", fake), \
+             patch.object(certify.trust, "load_trusted_keys", lambda: {}), \
+             patch.object(certify.trust, "verify_bytes", lambda b, e, t: "k1"):
+            s = certify._make_signer(None, None, ("https://x", "rel-0123456789ab", "t", None, False, "alice"))
+            s.sign_manifest(self.mf, self.sig)
+        self.assertIn("/sign/preapproved?build_id=rel-0123456789ab&certifier=alice", calls[0])
+
     def test_sign_rejects_unverifiable_envelope(self):
         with patch.object(certify.urllib.request, "urlopen",
                           lambda req, timeout=None, context=None: self._resp({"envelope": {"sig": "bad"}})), \

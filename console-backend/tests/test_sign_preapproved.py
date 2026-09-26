@@ -170,6 +170,22 @@ class TestSignPreapproved(unittest.TestCase):
         self._cli_record()
         self.assertEqual(self._cli_sign(pkgs=(("h1", "sha256:" + self.SHA.upper()),)).status_code, 200)
 
+    def test_preapproval_status_lookup(self):
+        self._cli_record()                                       # approved by alice for lcg
+        get = lambda q: self.client.get("/preapproval/" + q).json()
+        self.assertEqual(get(self.CLI_BID + "?certifier=alice"),
+                         {"build_id": self.CLI_BID, "status": "approved", "via": "cli",
+                          "groups": ["lcg"], "certifier_ok": True})
+        self.assertFalse(get(self.CLI_BID + "?certifier=mallory")["certifier_ok"])
+        self.assertFalse(get(self.CLI_BID)["certifier_ok"])     # no certifier given
+        self.assertNotIn("user", get(self.CLI_BID + "?certifier=alice"))
+        self.assertEqual(get("rel-ffffffffffff")["status"], "none")
+        self._preapprove("p1", ["lcg"], status="pending")          # pending is not approved
+        self.assertEqual(get("p1")["status"], "none")
+        self.assertEqual(self.client.get("/preapproval/bad%20id").status_code, 400)
+        main.preapprovals.get(self.CLI_BID)["signs"] = main._PREAPPROVAL_SIGN_CAP
+        self.assertEqual(get(self.CLI_BID + "?certifier=alice")["status"], "exhausted")
+
     def test_console_preapproval_ignores_certifier(self):
         # Pipeline-id (console) records are unchanged: no binding, certifier unused.
         self._preapprove("p1", ["lcg"])

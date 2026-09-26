@@ -376,10 +376,12 @@ class _ServiceSigner:
     the build's human passkey PRE-APPROVAL gates the signature. The returned envelope
     is verified over our bytes against the shipped trust anchor before it is written."""
 
-    def __init__(self, url, build_id, ci_token, cafile=None, insecure=False):
+    def __init__(self, url, build_id, ci_token, cafile=None, insecure=False, certifier=None):
         self._url = url.rstrip("/")
         self._build_id = str(build_id)
         self._token = ci_token
+        # The merge-request author: the service binds a CLI pre-approval to it.
+        self._certifier = certifier or ""
         # TLS to the service. The returned signature is verified against the shipped
         # anchor regardless, so TLS only protects the short-lived OIDC token in
         # transit: cafile trusts a private CA (e.g. the CERN CA); insecure skips
@@ -417,7 +419,9 @@ class _ServiceSigner:
     def sign_manifest(self, manifest_path, sig_path):
         with open(manifest_path, "rb") as fh:
             body = fh.read()
-        resp = self._call("/sign/preapproved?build_id=" + urllib.parse.quote(self._build_id), data=body)
+        query = urllib.parse.urlencode({"build_id": self._build_id, "certifier": self._certifier}
+                                       if self._certifier else {"build_id": self._build_id})
+        resp = self._call("/sign/preapproved?" + query, data=body)
         env = resp["envelope"]
         # Don't trust the service blindly: verify the returned signature over OUR
         # bytes against the shipped anchor before writing it.
@@ -433,8 +437,8 @@ def _make_signer(key_pem_path, sign_proxy, sign_service=None):
     *sign_service* is a ``(url, build_id, ci_token)`` triple; else a proxy signer
     when *sign_proxy* is a ``(url, token)`` pair; else a local-key signer."""
     if sign_service:
-        if not (isinstance(sign_service, (tuple, list)) and 3 <= len(sign_service) <= 5):
-            raise ValueError("sign_service must be (url, build_id, ci_token[, cafile, insecure])")
+        if not (isinstance(sign_service, (tuple, list)) and 3 <= len(sign_service) <= 6):
+            raise ValueError("sign_service must be (url, build_id, ci_token[, cafile, insecure, certifier])")
         return _ServiceSigner(*sign_service)
     if sign_proxy:
         if not (isinstance(sign_proxy, (tuple, list)) and len(sign_proxy) == 2):
@@ -855,7 +859,8 @@ def doSign(args, parser):
         # signature is verified against the shipped anchor regardless.
         cafile = os.environ.get("BITS_SIGN_SERVICE_CAFILE") or None
         insecure = os.environ.get("BITS_SIGN_SERVICE_INSECURE", "") == "1"
-        sign_service = (url, build_id, token, cafile, insecure)
+        sign_service = (url, build_id, token, cafile, insecure,
+                        getattr(args, "certifier", None) or os.environ.get("GITLAB_USER_LOGIN"))
     elif getattr(args, "signViaProxy", False):
         url = getattr(args, "signProxyUrl", None) or os.environ.get("BITS_SIGN_PROXY_URL")
         token = os.environ.get("BITS_SIGN_PROXY_TOKEN")
