@@ -8,7 +8,8 @@ from bits_helpers import __version__
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
 from bits_helpers.repo_provider import (fetch_repo_providers_iteratively, load_always_on_providers,
-                                        announce_providers, MAX_PROVIDER_ITERATIONS)
+                                        announce_providers, MAX_PROVIDER_ITERATIONS,
+                                        no_recipes_hint)
 from bits_helpers.memory import effective_jobs
 from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
                                     enforcement_mode as checksum_enforcement_mode,
@@ -2762,10 +2763,7 @@ def doBuild(args, parser):
       if bootstrapped:
         args.configDir = bootstrapped
 
-  dieOnError(not exists(args.configDir),
-            'Cannot find recipes under directory "%s".\n'
-            'Maybe you need to "cd" to the right directory or '
-            'you forgot to run "bits init"?' % args.configDir)
+  dieOnError(not exists(args.configDir), no_recipes_hint(args.configDir))
 
   # A non-zero exit (detached HEAD, or not a git checkout) means no branch: git's
   # error text must never be taken for a branch name.
@@ -3300,7 +3298,10 @@ def doBuild(args, parser):
   try:
     checkedOutCommitName = scm.checkedOutCommitName(directory=args.configDir)
   except SCMError:
-    dieOnError(True, "Cannot find SCM directory in %s." % args.configDir)
+    # Usually not a recipe repository at all (plain `bits` in an empty dir).
+    dieOnError(True, no_recipes_hint(args.configDir)
+               if not glob(join(args.configDir, "defaults-*.sh"))
+               else "Cannot find SCM directory in %s." % args.configDir)
   os.environ["BITS_DIST_HASH"] = checkedOutCommitName
 
   debug("Building for architecture %s", args.architecture)

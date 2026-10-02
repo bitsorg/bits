@@ -591,6 +591,21 @@ def cwd_is_recipe_dir() -> bool:
   return os.path.exists("defaults-release.sh")
 
 
+def no_recipes_hint(config_dir):
+  """What to do when *config_dir* holds no recipe repository: check out the
+  community's repository first and run bits inside it (aliBuild: alidist)."""
+  where = os.path.abspath(config_dir)
+  if os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild":
+    return ("No recipes in %s. Check them out first:\n"
+            "  aliBuild init        # checks out alidist here\n"
+            "or point -c/--config-dir at a recipe directory." % where)
+  return ("No recipe repository in %s. bits builds from a community recipe\n"
+          "repository: check yours out first and run bits inside it, e.g.\n"
+          "  git clone https://github.com/bitsorg/stacks.bits && cd stacks.bits\n"
+          "  # or: bits init stacks.bits && cd stacks.bits   (alice.bits, lhcb.bits, ...)\n"
+          "or point -c/--config-dir at one." % where)
+
+
 def resolve_config_dir(args):
   """Resolve ``args.configDir`` in place: when it is the default and the current
   directory looks like a checked-out recipe repo, use ``.``; then abort with a
@@ -602,10 +617,7 @@ def resolve_config_dir(args):
     if args.configDir == _default and cwd_is_recipe_dir():
       debug("Recipe files detected in current directory; using '.' as config dir")
       args.configDir = "."
-  dieOnError(not exists(args.configDir),
-             'Cannot find recipes under directory "%s".\n'
-             'Maybe you need to "cd" to the right directory or '
-             'you forgot to run "bits init"?' % args.configDir)
+  dieOnError(not exists(args.configDir), no_recipes_hint(args.configDir))
 
 
 # ── Local provider shadowing ────────────────────────────────────────────────

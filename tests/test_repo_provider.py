@@ -1110,3 +1110,15 @@ class TestApplyProviderOverride(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoRecipesHintTest(unittest.TestCase):
+  def test_points_at_a_community_repository(self):
+    from unittest import mock
+    from bits_helpers.repo_provider import no_recipes_hint
+    with mock.patch.dict(os.environ, {"BITS_BRANDING": ""}):
+      msg = no_recipes_hint("/tmp/x")
+      self.assertIn("No recipe repository in /tmp/x", msg)
+      self.assertIn("bits init stacks.bits", msg)
+    with mock.patch.dict(os.environ, {"BITS_BRANDING": "aliBuild"}):
+      self.assertIn("aliBuild init", no_recipes_hint("alidist"))
