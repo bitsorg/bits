@@ -2899,8 +2899,10 @@ full build hash:
 revision_policy: "hash"
 ```
 
-After computing each package's hash, bits injects
-`force_revision: "<remote_revision_hash>"` when `force_revision` is absent.
+After computing each package's hashes, bits injects the local revision hash
+when the build would normally use a `local` revision prefix (no writable remote
+store, including development packages that disable remote writes), and the
+remote revision hash otherwise, when `force_revision` is absent.
 Explicit recipe values, per-package overrides, and the global `force_revision`
 fallback retain precedence, including `force_revision: ""`.
 An untracked dependency must have an explicit `force_revision`; the hash policy

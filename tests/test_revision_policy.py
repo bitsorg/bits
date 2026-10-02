@@ -15,7 +15,7 @@ from bits_helpers.status import _scan_local_tars
 
 
 class RevisionPolicyTest(unittest.TestCase):
-    def specs(self, defaults=None, force=None, overrides=None):
+    def specs(self, defaults=None, force=None, overrides=None, local_policy=False):
         recipes = {
             "app": "package: app\nversion: '1'\n" + (force or "") + "---\necho build\n",
             "defaults-release": "package: defaults-release\nversion: '1'\n---\n",
@@ -39,6 +39,7 @@ class RevisionPolicyTest(unittest.TestCase):
             )
         for name in ("defaults-release", "app"):
             specs[name].update(commit_hash="0", is_devel_pkg=False)
+            specs[name]["revision_policy_local"] = local_policy
             storeHashes(name, specs, considerRelocation=False)
             specs[name]["hash"] = specs[name]["remote_revision_hash"]
         return specs
@@ -58,6 +59,12 @@ class RevisionPolicyTest(unittest.TestCase):
             self.assertEqual(spec["force_revision"], spec["hash"])
         self.assertNotEqual(hashed["app"]["force_revision"],
                             hashed["defaults-release"]["force_revision"])
+
+    def test_hash_policy_uses_local_hash_when_revision_would_be_local(self):
+        local = self.specs({"revision_policy": "hash"}, local_policy=True)
+        for spec in local.values():
+            self.assertEqual(spec["force_revision"], spec["local_revision_hash"])
+            self.assertNotEqual(spec["force_revision"], spec["remote_revision_hash"])
 
     def test_explicit_revisions_keep_precedence(self):
         for value in ("", "rc1"):

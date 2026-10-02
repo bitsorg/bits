@@ -1852,6 +1852,11 @@ def build_one_package(p, ctx):
   # a single, definitive hash.
   debug("Calculating hash.")
   debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
+  # Hash revisions follow the writer state used by the regular revision
+  # counter. Development packages disable the writer below, so they use local
+  # hashes even when the command started with a writable store.
+  spec["revision_policy_local"] = (
+    not bool(getattr(syncHelper, "writeStore", "")) or spec["is_devel_pkg"])
   storeHook(p, specs, args.defaults[0])
   storeHashes(p, specs, considerRelocation=(
     raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH
@@ -1961,9 +1966,12 @@ def build_one_package(p, ctx):
         "this version coexist the convenience symlink will be silently "
         "overwritten.", spec["package"], spec["package"], spec["version"],
       )
-    # Hash was already computed; align spec["hash"] to the remote store
-    # (forced revisions are never prefixed with "local").
-    spec["hash"] = spec["remote_revision_hash"]
+    # Hash revisions use the hash family selected by the local/remote revision
+    # policy. Other forced revisions retain the historical remote hash choice.
+    if spec.get("_revision_policy_hash_injected"):
+      spec["hash"] = forced
+    else:
+      spec["hash"] = spec["remote_revision_hash"]
   else:
     # Normal revision-counter logic: scan existing symlinks and find the
     # next free (or already-matching) revision number.
