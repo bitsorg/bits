@@ -646,15 +646,16 @@ def _local_provider_hash(directory):
 # ── Backward-compat bootstrap ───────────────────────────────────────────────
 
 def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
-  """Bootstrap a default recipe repository when no config dir exists.
+  """Bootstrap a recipe repository when the config dir does not exist.
 
-  Called when ``bits build <PKG>`` is run without a pre-existing recipe
-  directory.  The lookup order for which community recipe repo to clone is:
+  Called when ``bits build <PKG>`` names a missing recipe directory with ``-c``
+  (the default, ``.``, always exists).  The lookup order for which community
+  recipe repo to clone is:
 
-  1. **``organisation`` from bits.rc / ``--organisation``** — if set to e.g.
-     ``lhcb``, bits looks for ``lhcb.bits.sh`` in the bits-providers checkout.
-  2. **``default.bits.sh``** — fallback for backward-compatibility with the
-     original ALICE workflow when no organisation is configured.
+  1. **``$BITS_ORGANISATION``** — if set to e.g. ``LHCB``, bits looks for
+     ``lhcb.bits.sh`` in the bits-providers checkout.
+  2. **``default.bits.sh``** — legacy fallback; current bits-providers no longer
+     ships one, so with no organisation nothing is bootstrapped.
 
   Procedure:
 
@@ -687,11 +688,10 @@ def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
     return None
 
   # ── 2. Resolve candidate recipe file ──────────────────────────────────
-  # Prefer <organisation>.bits.sh when an organisation is configured so that
-  # "bits init --organisation lhcb && bits build PKG" just works without any
-  # other arguments.  Fall back to default.bits.sh for ALICE backward compat.
-  # Organisation is stored in uppercase in bits.rc (e.g. "ALICE", "LHCB") but
-  # the bits-providers filenames are lowercase (alice.bits.sh, lhcb.bits.sh).
+  # Prefer <organisation>.bits.sh when $BITS_ORGANISATION is set; default.bits.sh
+  # is a legacy fallback (no longer in bits-providers). The organisation is given
+  # uppercase (e.g. "ALICE", "LHCB"), the bits-providers filenames are lowercase
+  # (alice.bits.sh, lhcb.bits.sh).
   organisation = (getattr(args, "organisation", None) or "").lower()
   candidates = []
   if organisation:

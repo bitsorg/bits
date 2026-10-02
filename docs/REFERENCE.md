@@ -615,7 +615,7 @@ An explicit `BITS_PROVIDERS` / `--providers` overrides the default in either mod
 
 ### Bootstrapping a recipe repository from the registry
 
-When native `bits` runs without a recipe directory, it bootstraps one through the registry: it follows the `<organisation>.bits.sh` (or `default.bits.sh`) pointer in `bits-providers` and clones the recipe repo it names. That pointer recipe's own `requires` are then seeded into provider discovery, so a base provider it depends on (e.g. `alice.bits` `requires: [alidist.bits]`) is loaded too — even though it is not a dependency of the package being built.
+When `-c`/`--config-dir` names a recipe directory that does not exist, native `bits build` bootstraps one through the registry (the default config dir is `.`, which always exists, so this applies only to an explicit `-c`): it follows the `<organisation>.bits.sh` pointer (`$BITS_ORGANISATION`) in `bits-providers` and clones the recipe repo it names under the work directory; with no organisation set nothing is bootstrapped. That pointer recipe's own `requires` are then seeded into provider discovery, so a base provider it depends on (e.g. `alice.bits` `requires: [alidist.bits]`) is loaded too — even though it is not a dependency of the package being built.
 
 To check out a recipe repository explicitly for development, name it on `bits init` (the `.bits` convention):
 
@@ -3123,9 +3123,9 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `BITS_BRANDING` | _(empty)_ | Cosmetic program-name branding; set by the `aliBuild` wrapper. |
-| `BITS_ORGANISATION` | _(empty)_ | Organisation selecting the registry/provider "home" repo. Empty by default; the `aliBuild` wrapper sets `ALICE`. (`bits init --organisation` does not persist it; set the variable.) |
+| `BITS_ORGANISATION` | _(empty)_ | Organisation whose registry entry (`<org>.bits.sh`) the bootstrap clones when `-c` names a missing recipe directory. Empty by default; the `aliBuild` wrapper sets `ALICE`. (`bits init --organisation` does not persist it; set the variable.) |
 | `BITS_PKG_PREFIX` | _(empty)_ | Display prefix for `bits q`. Empty prints native `PKG/VERSION`; when set (e.g. `VO_ALICE` via `aliBuild`) output becomes `PREFIX@PKG::VERSION`. |
-| `BITS_REPO_DIR` | `alidist` | Root directory for recipe repositories. |
+| `BITS_REPO_DIR` | `.` (`alidist` under the `aliBuild` wrapper) | Recipe directory (`-c`/`--config-dir` default): normally the community repository you run bits in. |
 | `BITS_WORK_DIR` | `sw` | Output and work directory. |
 | `BITS_PATH` | _(empty)_ | Comma-separated list of additional recipe search directories. Absolute paths are used directly; relative names have `.bits` appended and are resolved under `BITS_REPO_DIR`. |
 | `BITS_CHDIR` | _(unset)_ | Directory to change to before building (same as `-C`). |

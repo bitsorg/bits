@@ -140,40 +140,49 @@ pip install -e .
 
 ## 3. Quick Start
 
-### ALICE (default community — no configuration needed)
+### 1. Check out your community's recipe repository
+
+bits always builds from a community recipe repository: a `*.bits` repository with the
+community's defaults (`defaults-release.sh`), CVMFS layout and recipes. Clone it first and
+run bits inside it — bits uses the current directory as its recipe directory. In a
+directory without recipes a build stops.
 
 ```bash
-# In any empty directory: bits auto-bootstraps the ALICE recipe repo
-bits doctor               # check that this machine is set up to run bits
-bits doctor ROOT          # check ROOT's system requirements
-bits build --dry-run ROOT # optional: see what would be reused and what built
-bits build ROOT           # resolves and builds ROOT and all dependencies
+git clone https://github.com/bitsorg/stacks.bits && cd stacks.bits
+# or resolve it in the bits-providers registry:  bits init stacks.bits && cd stacks.bits
+```
 
-bits enter ROOT/latest    # open a sub-shell with the environment loaded
+Community repositories: `stacks.bits` (LCG-based stacks), `alice.bits`, `atlas.bits`,
+`cms.bits`, `key4hep.bits`, `lhcb.bits`, `ship.bits`. They pull shared recipe pools
+(`lcg.bits`, `common.bits`, `alidist.bits`) on demand; `bits init <name>.bits` clones a
+community repository from the [bits-providers](https://github.com/bitsorg/bits-providers)
+registry.
+
+### 2. Check, then build
+
+```bash
+bits doctor                             # check that this machine is set up to run bits
+bits doctor --defaults gcc15 ROOT       # check ROOT's system requirements
+bits build --dry-run --defaults gcc15 ROOT  # optional: what would be reused and what built
+bits build --defaults gcc15 ROOT        # resolves and builds ROOT and all dependencies
+
+bits enter ROOT/latest                  # open a sub-shell with the environment loaded
 root -b
-exit                      # return to your normal shell
+exit                                    # return to your normal shell
 ```
 
-### Another community (e.g. LHCb) — one-time setup
+For another community the steps are the same, e.g.
+`git clone https://github.com/bitsorg/lhcb.bits && cd lhcb.bits && bits build DaVinci`.
+Record per-directory options (work directory, stores) once with `bits init --work-dir …`
+inside the repository (see [Configuration](#4-configuration)).
+
+### ALICE: the aliBuild workflow
+
+The `aliBuild` wrapper keeps ALICE's classic workflow, working from an `alidist` checkout:
 
 ```bash
-# Select the community once (auto-bootstraps its recipe repo) and
-# record the work directory in a per-directory profile
-export BITS_ORGANISATION=LHCB
-bits init --work-dir /path/to/sw
-
-# Then build as normal — bits auto-bootstraps the LHCb recipe repo
-bits build DaVinci
-bits enter DaVinci/latest
-```
-
-### Inside a cloned recipe repository
-
-```bash
-# bits detects defaults-release.sh and uses "." as the recipe directory
-git clone https://github.com/bitsorg/lhcb.bits
-cd lhcb.bits
-bits build DaVinci
+aliBuild init            # check out alidist
+aliBuild build O2
 ```
 
 ---
@@ -204,14 +213,14 @@ Global settings come from environment variables:
 
 | Variable | Related flag | Description |
 |----------|--------------|-------------|
-| `$BITS_ORGANISATION` | `--organisation` | Community name (uppercase). Used to auto-bootstrap the recipe repo. |
+| `$BITS_ORGANISATION` | `--organisation` | Community name (uppercase), e.g. `LHCB`. Used only when `-c`/`--config-dir` names a directory that does not exist: bits then clones that community's recipe repository from the registry and uses it. The `aliBuild` wrapper sets `ALICE`. |
 | `$BITS_WORK_DIR` | `-w` / `--work-dir` | Output directory for built packages (default: `sw`). |
 | `$BITS_REPO_DIR` | `-c` / `--config-dir` | Root directory for recipe repositories. |
 | `$BITS_PROVIDERS` | `--providers` | Repository provider set URL(s). |
 | `$BITS_PATH` | `--search-path` | Recipe search path. |
 | `$BITS_S3_STORE` | `--remote-store` (store ops) | Default S3 store for `bits store` (`gc`/`stats`/`upload`), `certify`, `publish`, `compliance`. |
 
-`$BITS_ORGANISATION` is set **uppercase** (`ALICE`, `LHCB`, …). Bits lowercases it internally when resolving the community recipe repository from bits-providers (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`).
+`$BITS_ORGANISATION` is set **uppercase** (`ALICE`, `LHCB`, …). Bits lowercases it internally when resolving the community recipe repository from bits-providers (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`). Normally you do not need it: check out the community repository and run bits inside it.
 
 Settings follow the precedence `CLI flag > bits use profile > environment variable > built-in default`. For the full list of environment variables, see [REFERENCE.md §20](REFERENCE.md#20-environment-variables) and [REFERENCE.md — bits init](REFERENCE.md#bits-init).
 
