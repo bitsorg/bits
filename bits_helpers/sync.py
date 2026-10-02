@@ -17,6 +17,7 @@ from bits_helpers.cmd import execute
 from bits_helpers.log import debug, info, error, warning, dieOnError, ProgressPrint
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, ver_rev
 from bits_helpers.arch import effective_arch
+from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
 
 
 # Default S3 endpoint. Kept for backward compatibility with aliBuild: when no
@@ -601,12 +602,12 @@ class HttpRemoteSync(RemoteSync):
       except OSError:  # store path not readable
         continue
       for tarball in have_tarballs:
-        # The revision group is made optional ((?:-[0-9]+)?) so that tarballs
-        # built with force_revision="" (revision-less name) are also matched
-        # and reused without a redundant re-download.
-        if re.match(r"^{package}-{version}(?:-[0-9]+)?\.{arch}\.tar\.gz$".format(
+        # The revision group is optional for force_revision="" and accepts the
+        # shared numeric, local-numeric, and content-hash token forms.
+        if re.match(r"^{package}-{version}(?:-{revision})?\.{arch}\.tar\.gz$".format(
             package=re.escape(spec["package"]),
             version=re.escape(spec["version"]),
+            revision=REVISION_TOKEN_PATTERN,
             arch=re.escape(arch),
         ), os.path.basename(tarball)):
           tarball_full = os.path.join(self.workdir, resolve_store_path(arch, pkg_hash), tarball)

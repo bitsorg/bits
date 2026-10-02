@@ -27,6 +27,10 @@ class TestRevIndex(unittest.TestCase):
         # localN revisions
         self.assertEqual(
             ri.revision_of(ri.marker_key(A, P, V, "local5"), A, P, V), "local5")
+        hash_revision = "0123456789abcdef" * 2 + "01234567"
+        self.assertEqual(
+            ri.revision_of(ri.marker_key(A, P, V, hash_revision), A, P, V),
+            hash_revision)
 
     def test_revision_of_rejects_foreign_or_nested_keys(self):
         A, P, V = "x86_64-el9", "fftw", "3.3.10"
@@ -91,6 +95,10 @@ class TestRevIndex(unittest.TestCase):
         self.assertEqual(
             ri.revision_from_tarball("bzip2-1.0.6-local3.%s.tar.gz" % A, "bzip2", "1.0.6", A),
             "local3")
+        hash_revision = "0123456789abcdef" * 2 + "01234567"
+        self.assertEqual(
+            ri.revision_from_tarball("bzip2-1.0.6-%s.%s.tar.gz" % (hash_revision, A),
+                                     "bzip2", "1.0.6", A), hash_revision)
         # hyphenated version parses against its own version, not a sibling's
         self.assertEqual(
             ri.revision_from_tarball("GCC-Toolchain-v14.2.0-alice2-3.%s.tar.gz" % A,

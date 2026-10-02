@@ -307,6 +307,11 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
       debug("Architecture-specific defaults mentioned in: %s ", archDefaults)
       defaultsMeta = merge_dicts(defaultsMeta, defaultsArchMeta, skip_keys={"package"})
 
+  revision_policy = defaultsMeta.get("revision_policy")
+  if "revision_policy" in defaultsMeta and revision_policy != "hash":
+    return ("Unknown revision_policy %r; supported value is 'hash'." %
+            revision_policy, None, None, {})
+
   # Defaults are actually special packages. They can override metadata
   # of any other package and they can disable other packages. For
   # example they could decide to switch from ROOT 5 to ROOT 6 and they

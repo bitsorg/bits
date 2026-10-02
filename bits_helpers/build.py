@@ -28,6 +28,7 @@ from bits_helpers.defaults import validateDefaults, incompatibleFlavorDefaults
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash, resolve_spec_data
 from bits_helpers.utilities import apply_version_from
+from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
 from bits_helpers.paths import resolveLocalPath, getConfigPaths
 from bits_helpers.git import Git, git
 from bits_helpers.sl import Sapling
@@ -692,6 +693,44 @@ def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
   # Thin wrapper over the pure graph->symlink core (kept for the existing call
   # sites' signature; syncHelper is unused — dist links come from the graph).
   _dist_links(spec, specs, args.architecture, args.workDir, repoType, requiresType)
+
+
+def tarball_link_regex(spec, arch):
+  """Names of a package's version links under TARS/<arch>/<pkg>/. The revision
+  group is optional (force_revision="" links have none) and takes every label
+  form: numeric, localN and hash (REVISION_TOKEN_PATTERN)."""
+  return re.compile(
+    r"{package}-{version}(?:-{revision})?\.{arch}\.tar\.gz".format(
+      package=re.escape(spec["package"]), version=re.escape(spec["version"]),
+      revision=REVISION_TOKEN_PATTERN, arch=re.escape(arch)))
+
+
+def tarball_target_regex(spec, arch):
+  """Pattern for a version link's store target; groups (hash, revision)."""
+  return (
+    r"../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/"
+    r"{package}-{version}(?:-({rev_re}))?\.{arch}\.tar\.gz$"
+  ).format(arch=arch, rev_re=REVISION_TOKEN_PATTERN, **spec)
+
+
+def check_untracked_labels(specs, targets):
+  """An untracked dependency needs a stable install label (force_revision): a
+  reused consumer references it by <pkg>/<version-revision>. Fatal under
+  revision_policy "hash", whose label is the hash and so moves on every
+  change; a warning otherwise."""
+  for t in targets:
+    if specs[t].get("force_revision") is not None:
+      continue
+    dieOnError(specs[t].get("revision_policy") == "hash",
+               "Untracked dependency %s requires an explicit force_revision "
+               "under revision_policy: hash (for example, empty or a fixed "
+               "label)." % t)
+    warning("Untracked dependency %s has no stable install label "
+            "(force_revision): its install path moves when it changes, so "
+            "already-built consumers keep linking the previous build. Set "
+            "`force_revision: \"\"` (or a fixed label) on %s to keep "
+            "<%s>/<version-revision> stable.",
+            t, t, t)
 
 
 def create_version_link(spec, arch, work_dir):
@@ -1932,15 +1971,7 @@ def build_one_package(p, ctx):
     # symlink's target. Overly-broadly matching the version, for example,
     # can lead to false positives that trigger a warning below.
     spec_arch = effective_arch(spec, args.architecture)
-    # The revision group is made optional ((?:-(?:local)?[0-9]+)?) so that
-    # symlinks created when force_revision="" (revision-less path) are also
-    # picked up by subsequent normal builds of the same version.
-    links_regex = re.compile(
-      r"{package}-{version}(?:-(?:local)?[0-9]+)?\.{arch}\.tar\.gz".format(
-        package=re.escape(spec["package"]),
-        version=re.escape(spec["version"]),
-        arch=re.escape(spec_arch),
-      ))
+    links_regex = tarball_link_regex(spec, spec_arch)
     symlink_dir = join(workDir, "TARS", spec_arch, spec["package"])
     try:
       packages = [join(symlink_dir, symlink_path)
@@ -2000,13 +2031,7 @@ def build_one_package(p, ctx):
         debug("Ignoring dangling symlink in tarball directory: %s", symlink_path)
         continue
       realPath = readlink(symlink_path)
-      # The revision group is optional ((?:-((?:local)?[0-9]+))?) to handle
-      # symlinks previously created with force_revision="" (revision-less).
-      matcher = (
-        r"../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/"
-        r"{package}-{version}(?:-((?:local)?[0-9]+))?\.{arch}\.tar\.gz$"
-      ).format(arch=spec_arch, **spec)
-      match = re.match(matcher, realPath)
+      match = re.match(tarball_target_regex(spec, spec_arch), realPath)
       if not match:
         warning("Symlink %s -> %s couldn't be parsed", symlink_path, realPath)
         continue
@@ -3529,11 +3554,7 @@ def doBuild(args, parser):
            ", ".join(develPkgs),
            os.getcwd())
 
-  # Packages pulled in by some recipe via `untracked_requires`: linked at runtime
-  # but excluded from their consumers' identity hash, so editing one does not
-  # rebuild the stack above it. List them like development packages, and warn if a
-  # target has no stable install label — a reused consumer references it by
-  # <pkg>/<version-revision>, so that path must not move when the package changes.
+  # Check before storeHashes can inject a hash as force_revision.
   untrackedTargets = sorted({d for s in specs.values()
                              for d in s.get("untracked_requires", ()) if d in specs})
   if untrackedTargets:
@@ -3543,13 +3564,7 @@ def doBuild(args, parser):
            "above it. Builds whose closure includes one are marked loose-provenance\n"
            "in .meta.json. You are responsible for keeping them ABI-compatible.",
            ", ".join(untrackedTargets))
-    for t in untrackedTargets:
-      if "force_revision" not in specs[t]:
-        warning("Untracked dependency %s has no stable install label "
-                "(force_revision): its install path moves when it changes, so "
-                "already-built consumers keep linking the previous build. Set "
-                "`force_revision:` on %s to keep <%s>/<version-revision> stable.",
-                t, t, t)
+    check_untracked_labels(specs, untrackedTargets)
 
   # A recipe may declare BOTH a git source (source:/tag:) and cached tarball
   # sources (sources:); the group's source_mode (defaults-release.sh) picks which

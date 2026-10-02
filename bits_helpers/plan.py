@@ -53,7 +53,10 @@ def pick_revision(names, spec, arch, local=False, forced=None):
       revs.append(r)
   if not revs:
     return None
-  return min(revs, key=lambda r: (not r.lstrip("local").isdigit(), int(r.lstrip("local") or 0), r))
+  def _key(r):   # numeric revisions first, by number; others (hash labels) after
+    n = r[len("local"):] if r.startswith("local") else r
+    return (not n.isdigit(), int(n) if n.isdigit() else 0, r)
+  return min(revs, key=_key)
 
 
 def _installed(spec, work_dir, eff, rev, h):

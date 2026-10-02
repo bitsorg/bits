@@ -50,6 +50,7 @@ from bits_helpers.arch import (
     compute_combined_arch,
     effective_arch,
 )
+from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
 from bits_helpers.workarea import updateReferenceRepoSpec
 
 # NOTE: bits_helpers.build is imported lazily inside doStatus() to avoid pulling
@@ -188,9 +189,10 @@ def _scan_local_tars(spec: dict, work_dir: str, architecture: str) -> bool:
     """Return True if a matching tarball exists in the local TARS symlink tree."""
     spec_arch = effective_arch(spec, architecture)
     links_regex = re.compile(
-        r"{package}-{version}(?:-(?:local)?[0-9]+)?\.{arch}\.tar\.gz".format(
+        r"{package}-{version}(?:-{revision})?\.{arch}\.tar\.gz".format(
             package=re.escape(spec["package"]),
             version=re.escape(spec["version"]),
+            revision=REVISION_TOKEN_PATTERN,
             arch=re.escape(spec_arch),
         )
     )

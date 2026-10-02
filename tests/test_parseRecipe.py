@@ -137,6 +137,23 @@ class TestRecipes(unittest.TestCase):
     self.assertEqual(overrides, {'defaults-release': {}, 'root': {'requires': 'GCC'}})
     self.assertEqual(taps, {'root': 'dist:ROOT@master'})
 
+  def test_parseDefaults_rejects_unknown_revision_policy(self) -> None:
+    for value in ("hashes", "Hash", None):
+      with self.subTest(value=value):
+        err, overrides, taps, meta = parseDefaults(
+            [], lambda: ({"revision_policy": value}, ""), Recoder())
+        self.assertEqual(
+            err, "Unknown revision_policy %r; supported value is 'hash'." % value)
+        self.assertIsNone(overrides)
+        self.assertIsNone(taps)
+        self.assertEqual(meta, {})
+
+  def test_parseDefaults_accepts_hash_revision_policy(self) -> None:
+    err, overrides, taps, meta = parseDefaults(
+        [], lambda: ({"revision_policy": "hash"}, ""), Recoder())
+    self.assertIsNone(err)
+    self.assertEqual(meta["revision_policy"], "hash")
+
   def test_validateDefault(self) -> None:
     ok, out, validDefaults = validateDefaults({"something": True}, "release")
     self.assertEqual(ok, True)
@@ -185,4 +202,3 @@ class TestRecipes(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

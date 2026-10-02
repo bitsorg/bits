@@ -72,7 +72,7 @@ bits build MyApp        # rebuilds libfoo only; MyApp is reused and relinks it
 
 Only `libfoo` rebuilds; `MyApp` (and everything above it) keeps its identity hash and is reused, picking up the new `libfoo` through its `…/libfoo/2.3-dev` path.
 
-**Caveats.** The consumer is *relinked, not recompiled*, so this is valid only while your change keeps `libfoo` ABI-compatible (same headers / soname). Any build whose closure includes an untracked dependency is recorded `provenance: loose` in `.meta.json` — still publishable, but you own the ABI decision. Without `force_revision` the dependency's path moves on each edit and reused consumers keep linking the previous build (bits warns). See [`untracked_requires`](REFERENCE.md#dependencies) in the reference.
+**Caveats.** The consumer is *relinked, not recompiled*, so this is valid only while your change keeps `libfoo` ABI-compatible (same headers / soname). Any build whose closure includes an untracked dependency is recorded `provenance: loose` in `.meta.json` — still publishable, but you own the ABI decision. Bits requires an explicit `force_revision` on each untracked dependency; `""` or a fixed label keeps the install path stable. The hash revision policy does not override an explicit value. See [`untracked_requires`](REFERENCE.md#dependencies) in the reference.
 
 ### Debug a failed build
 
