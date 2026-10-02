@@ -402,7 +402,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # when the dep is later resolved.
     _req_label = "{} ({})".format(spec["package"], spec.get("recipe_source", "?"))
     for _dep in spec["requires"]:
-      _dk = re.split(r"[:=]", _dep, 1)[0].strip().lower()
+      _dk = re.split(r"[:=]", _dep, maxsplit=1)[0].strip().lower()
       if _dk:
         required_by.setdefault(_dk, set()).add(_req_label)
     # Check that version is a string

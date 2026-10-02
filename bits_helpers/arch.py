@@ -277,6 +277,14 @@ def normalise_arch_key(architecture):
   mac = arch_machine_token(architecture)
   return (arch_distro_token(architecture), mac.replace("_", "-") if mac else None)
 
+
+def _platform_tuple():
+  """(name, version, codename) of the Linux distribution: what the deprecated
+  distro.linux_distribution() returned (only name and version are used)."""
+  import distro
+  return (distro.name(), distro.version(), distro.codename())
+
+
 # Try to guess a good platform. This does not try to cover all the
 # possibly compatible linux distributions, but tries to get right the
 # common one, obvious one. If you use a Unknownbuntu which is compatible
@@ -302,8 +310,7 @@ def detectArch():
   except Exception:
     pass
   try:
-    import distro
-    platformTuple = distro.linux_distribution()
+    platformTuple = _platform_tuple()
     platformSystem = platform.system()
     platformProcessor = platform.processor()
     if not platformProcessor or " " in platformProcessor:
@@ -328,11 +335,10 @@ def detectArchComponents():
     machine = "x86-64" if platform.machine() == "x86_64" else platform.machine()
     return {"os": "osx", "machine": machine.replace("_", "-"), "_machine": machine.replace("-", "_")}
   try:
-    import distro
     platformProcessor = platform.processor()
     if not platformProcessor or " " in platformProcessor:
       platformProcessor = platform.machine()
-    return arch_components(hasOsRelease, osReleaseLines, distro.linux_distribution(),
+    return arch_components(hasOsRelease, osReleaseLines, _platform_tuple(),
                            platform.system(), platformProcessor)
   except Exception:
     return arch_components(hasOsRelease, osReleaseLines, ["unknown", "", ""], "", "")
