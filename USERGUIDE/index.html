@@ -1,0 +1,1845 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The bits build system — documentation">
+      
+      
+      
+      
+      
+        <link rel="next" href="../COOKBOOK/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>User Guide - bits</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#bits-user-guide" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="bits" class="md-header__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            bits
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              User Guide
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="bits" class="md-nav__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    bits
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Introduction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-installation-prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Installation &amp; Prerequisites
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Installation &amp; Prerequisites">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#system-requirements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System requirements
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#installing-the-build-toolchain-and-system-packages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing the build toolchain and system packages
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#installing-bits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing Bits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Quick Start
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Quick Start">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-check-out-your-communitys-recipe-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Check out your community's recipe repository
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-check-then-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Check, then build
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#alice-the-alibuild-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ALICE: the aliBuild workflow
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-building-packages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Building Packages
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Building Packages">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-a-build-proceeds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How a build proceeds
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#common-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common options
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#building-several-packages-at-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building several packages at once
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#previewing-a-build-dry-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Previewing a build: --dry-run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sharing-binaries-through-a-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sharing binaries through a store
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exporting-the-dependency-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exporting the dependency tree
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-managing-environments" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Managing Environments
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Managing Environments">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enter-a-sub-shell-with-modules-loaded" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enter a sub-shell with modules loaded
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load-unload-in-the-current-shell" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Load / unload in the current shell
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#run-a-single-command-in-a-module-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run a single command in a module environment
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-cleaning-up" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Cleaning Up
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Cleaning Up">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#bits-clean-remove-temporary-build-artifacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bits clean — remove temporary build artifacts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bits-prune-evict-packages-from-a-persistent-workdir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bits prune — evict packages from a persistent workDir
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-publishing-trust-and-release-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Publishing, Trust and Release Tasks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Publishing, Trust and Release Tasks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#publish-to-cvmfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publish to CVMFS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#find-where-a-package-will-land-on-cvmfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Find where a package will land on CVMFS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#make-a-build-trusted-bits-certify-vs-bits-sign" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Make a build trusted: bits certify vs bits sign
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#export-an-sbom" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Export an SBOM
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#record-source-checksums-for-a-recipe-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Record source checksums for a recipe repository
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#produce-an-lcg-release-view" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Produce an LCG release view
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next Steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../COOKBOOK/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cookbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../WORKFLOWS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Introduction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-installation-prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Installation &amp; Prerequisites
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Installation &amp; Prerequisites">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#system-requirements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System requirements
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#installing-the-build-toolchain-and-system-packages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing the build toolchain and system packages
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#installing-bits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing Bits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Quick Start
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Quick Start">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-check-out-your-communitys-recipe-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Check out your community's recipe repository
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-check-then-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Check, then build
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#alice-the-alibuild-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ALICE: the aliBuild workflow
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-building-packages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Building Packages
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Building Packages">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-a-build-proceeds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How a build proceeds
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#common-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common options
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#building-several-packages-at-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building several packages at once
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#previewing-a-build-dry-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Previewing a build: --dry-run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sharing-binaries-through-a-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sharing binaries through a store
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exporting-the-dependency-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exporting the dependency tree
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-managing-environments" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Managing Environments
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Managing Environments">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enter-a-sub-shell-with-modules-loaded" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enter a sub-shell with modules loaded
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load-unload-in-the-current-shell" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Load / unload in the current shell
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#run-a-single-command-in-a-module-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run a single command in a module environment
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-cleaning-up" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Cleaning Up
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Cleaning Up">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#bits-clean-remove-temporary-build-artifacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bits clean — remove temporary build artifacts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bits-prune-evict-packages-from-a-persistent-workdir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bits prune — evict packages from a persistent workDir
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-publishing-trust-and-release-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Publishing, Trust and Release Tasks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Publishing, Trust and Release Tasks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#publish-to-cvmfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publish to CVMFS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#find-where-a-package-will-land-on-cvmfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Find where a package will land on CVMFS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#make-a-build-trusted-bits-certify-vs-bits-sign" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Make a build trusted: bits certify vs bits sign
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#export-an-sbom" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Export an SBOM
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#record-source-checksums-for-a-recipe-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Record source checksums for a recipe repository
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#produce-an-lcg-release-view" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Produce an LCG release view
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next Steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="bits-user-guide">Bits — User Guide<a class="headerlink" href="#bits-user-guide" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>See also:</strong> <a href="../COOKBOOK/">Cookbook</a> · <a href="../REFERENCE/">Reference Manual</a> · <a href="../WORKFLOWS/">Workflows</a> · <a href="../ROADMAP/">Roadmap</a></p>
+</blockquote>
+<h2 id="table-of-contents">Table of Contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ol>
+<li><a href="#1-introduction">Introduction</a></li>
+<li><a href="#2-installation--prerequisites">Installation &amp; Prerequisites</a></li>
+<li><a href="#3-quick-start">Quick Start</a></li>
+<li><a href="#4-configuration">Configuration</a></li>
+<li><a href="#5-building-packages">Building Packages</a></li>
+<li><a href="#6-managing-environments">Managing Environments</a></li>
+<li><a href="#7-cleaning-up">Cleaning Up</a></li>
+<li><a href="#8-publishing-trust-and-release-tasks">Publishing, Trust and Release Tasks</a></li>
+</ol>
+<hr />
+<h2 id="1-introduction">1. Introduction<a class="headerlink" href="#1-introduction" title="Permanent link">&para;</a></h2>
+<p><strong>Bits</strong> is a build orchestration and dependency management tool for complex software stacks. It is derived from <a href="https://github.com/alisw/alibuild">aliBuild</a>, the build system developed for the ALICE experiment software at CERN, and is designed for communities that need to build and maintain large collections of interdependent packages with reproducibility, parallelism, and minimal overhead.</p>
+<blockquote>
+<p><strong>Acknowledgement.</strong> Bits is a fork of <a href="https://github.com/alisw/alibuild">aliBuild</a>, originally created by the ALICE collaboration at CERN. The recipe format, dependency-resolution model, content-addressable build hashing, remote binary store, and Docker build support all originate from aliBuild. Bits extends aliBuild with the repository provider mechanism, package families, shared packages, extended parallel builds and other features described in this document.</p>
+</blockquote>
+<p>Bits is <strong>not</strong> a traditional package manager like <code>apt</code> or <code>conda</code>. Instead it automates fetching sources, resolving dependencies, building, and installing software in a controlled, reproducible environment. Each package is described by a <em>recipe</em> — a plain-text file with a YAML metadata header and a Bash build script — stored in a version-controlled recipe repository.</p>
+<p>Key capabilities at a glance:</p>
+<ul>
+<li>Automatic topological dependency resolution and ordering</li>
+<li>Content-addressable incremental builds — only rebuilds what changed</li>
+<li>Parallel package builds and multi-core compilation</li>
+<li>Remote binary stores (HTTP, S3, rsync) to share pre-built artifacts, plus reuse of packages already deployed on CVMFS (<code>--reuse-from</code>)</li>
+<li>Docker-based builds for cross-compilation or reproducible CI environments</li>
+<li>Git and Sapling SCM support</li>
+<li>Dynamic recipe repositories loaded at dependency-resolution time</li>
+<li>Deterministic package tarballs, signed manifests and passkey-approved certification for trusted binary reuse</li>
+<li>SBOM export (CycloneDX / SPDX) and recipe-wide source checksums</li>
+</ul>
+<p>The same <code>bits build</code> command that a developer runs interactively also drives the CI pipeline that publishes packages to CVMFS for the entire community — there is no separate local and CI toolchain. The full development-to-deployment workflow is described in <a href="../WORKFLOWS/">WORKFLOWS.md</a>.</p>
+<hr />
+<h2 id="2-installation-prerequisites">2. Installation &amp; Prerequisites<a class="headerlink" href="#2-installation-prerequisites" title="Permanent link">&para;</a></h2>
+<h3 id="system-requirements">System requirements<a class="headerlink" href="#system-requirements" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Requirement</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linux or macOS</td>
+<td>x86-64 or ARM64</td>
+</tr>
+<tr>
+<td>Python 3.8+</td>
+<td>Required</td>
+</tr>
+<tr>
+<td>Git</td>
+<td>Required; Sapling (<code>sl</code>) is optional</td>
+</tr>
+<tr>
+<td><code>modulecmd</code></td>
+<td>Required for <code>bits enter / load / unload</code></td>
+</tr>
+<tr>
+<td>GNU tar (macOS)</td>
+<td>Recommended on macOS (<code>brew install gnu-tar</code>) — without it bits warns and tarballs may not be byte-reproducible</td>
+</tr>
+</tbody>
+</table>
+<p>Install Environment Modules for your platform:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># macOS</span>
+brew<span class="w"> </span>install<span class="w"> </span>modules
+
+<span class="c1"># Debian / Ubuntu</span>
+apt-get<span class="w"> </span>install<span class="w"> </span>environment-modules
+
+<span class="c1"># RHEL / CentOS / AlmaLinux</span>
+yum<span class="w"> </span>install<span class="w"> </span>environment-modules
+</code></pre></div>
+<h3 id="installing-the-build-toolchain-and-system-packages">Installing the build toolchain and system packages<a class="headerlink" href="#installing-the-build-toolchain-and-system-packages" title="Permanent link">&para;</a></h3>
+<p>bits builds almost everything it needs from source, but it still relies on a host
+toolchain to bootstrap (a working C/C++/Fortran compiler, the autotools/CMake build
+tools, <code>git</code>, <code>patch</code>, <code>make</code>, and the usual archive utilities). Install these once
+before your first build:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Debian / Ubuntu</span>
+sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>build-essential<span class="w"> </span>gfortran<span class="w"> </span>git<span class="w"> </span>patch<span class="w"> </span>make<span class="w"> </span>cmake<span class="w"> </span>autoconf<span class="w"> </span>automake<span class="w"> </span>libtool<span class="w"> </span>m4<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>pkg-config<span class="w"> </span>curl<span class="w"> </span>wget<span class="w"> </span>tar<span class="w"> </span>gzip<span class="w"> </span>bzip2<span class="w"> </span>xz-utils<span class="w"> </span>unzip<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>python3<span class="w"> </span>python3-pip<span class="w"> </span>python3-venv<span class="w"> </span>environment-modules
+
+<span class="c1"># RHEL / AlmaLinux / Rocky (enable CRB/EPEL for some packages)</span>
+sudo<span class="w"> </span>dnf<span class="w"> </span>groupinstall<span class="w"> </span><span class="s2">"Development Tools"</span>
+sudo<span class="w"> </span>dnf<span class="w"> </span>install<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>gcc-gfortran<span class="w"> </span>git<span class="w"> </span>patch<span class="w"> </span>make<span class="w"> </span>cmake<span class="w"> </span>autoconf<span class="w"> </span>automake<span class="w"> </span>libtool<span class="w"> </span>m4<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>pkgconfig<span class="w"> </span>curl<span class="w"> </span>wget<span class="w"> </span>tar<span class="w"> </span>gzip<span class="w"> </span>bzip2<span class="w"> </span>xz<span class="w"> </span>unzip<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>python3<span class="w"> </span>python3-pip<span class="w"> </span>environment-modules
+
+<span class="c1"># macOS (Xcode command-line tools provide the compiler / git / make)</span>
+xcode-select<span class="w"> </span>--install
+brew<span class="w"> </span>install<span class="w"> </span>cmake<span class="w"> </span>autoconf<span class="w"> </span>automake<span class="w"> </span>libtool<span class="w"> </span>pkg-config<span class="w"> </span>gnu-tar<span class="w"> </span>wget<span class="w"> </span>modules
+</code></pre></div>
+<p><strong>Per-recipe system packages.</strong> A few recipes deliberately use a library or tool from
+the system instead of building it (these are declared as <code>system_requirement</code> recipes,
+e.g. <code>readline</code>, <code>elfutils</code>/<code>libdw</code>, <code>perf</code>). When such a package is missing, bits stops
+early and lists the missing requirements rather than failing mid-build;
+<code>bits doctor &lt;package&gt;</code> then prints each recipe's install hint. You don't need to
+install them all up front — build what you need and follow the hint, or check ahead of
+time with:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>doctor<span class="w">               </span><span class="c1"># no package: checks this machine (Python modules, git/compiler,</span>
+<span class="w">                          </span><span class="c1"># docker or rootless podman, disk space, store access)</span>
+bits<span class="w"> </span>doctor<span class="w"> </span>&lt;package&gt;<span class="w">     </span><span class="c1"># reports any missing system requirements for that package</span>
+</code></pre></div>
+<p>Common ones on Debian / Ubuntu (RHEL/AlmaLinux equivalents in parentheses):</p>
+<div class="highlight"><pre><span></span><code>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>libreadline-dev<span class="w">       </span><span class="c1"># readline           (readline-devel)</span>
+sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>libdw-dev<span class="w"> </span>libelf-dev<span class="w">  </span><span class="c1"># elfutils / libdw    (elfutils-devel)  e.g. heaptrack</span>
+sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>linux-perf<span class="w">            </span><span class="c1"># perf                (perf)            e.g. adaptyst</span>
+</code></pre></div>
+<p><strong>macOS: the Homebrew system layer.</strong> On macOS, stable low-level libraries are taken from
+Homebrew instead of being built (recipes declare <code>homebrew_formula:</code>). Every macOS build
+records the formulae declared by the recipes it sees (config dir and providers) in <code>sw/&lt;arch&gt;/Brewfile</code>. On the <strong>first</strong> macOS build
+that file does not exist yet, so bits writes it and stops with instructions; install the
+formulae and re-run:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>ROOT<span class="w">                              </span><span class="c1"># first run: writes sw/&lt;arch&gt;/Brewfile and stops</span>
+brew<span class="w"> </span>bundle<span class="w"> </span>--file<span class="w"> </span>sw/&lt;arch&gt;/Brewfile<span class="w">        </span><span class="c1"># install the listed formulae</span>
+bits<span class="w"> </span>build<span class="w"> </span>ROOT<span class="w">                              </span><span class="c1"># now builds</span>
+
+bits<span class="w"> </span>build<span class="w"> </span>--brew<span class="w"> </span>ROOT<span class="w">                       </span><span class="c1"># alternative: install missing formulae on demand</span>
+bits<span class="w"> </span>brew<span class="w">                                    </span><span class="c1"># write the Brewfile without resolving a build</span>
+bits<span class="w"> </span>build<span class="w"> </span>--dry-run<span class="w"> </span>ROOT<span class="w">                    </span><span class="c1"># also writes the Brewfile, nothing built</span>
+</code></pre></div>
+<p>See <a href="../REFERENCE/#macos-homebrew-system-layer">REFERENCE.md — macOS Homebrew system layer</a>.</p>
+<h3 id="installing-bits">Installing Bits<a class="headerlink" href="#installing-bits" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/bitsorg/bits.git
+<span class="nb">cd</span><span class="w"> </span>bits
+<span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span><span class="nv">$PWD</span>:<span class="nv">$PATH</span>
+python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>.venv<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">source</span><span class="w"> </span>.venv/bin/activate<span class="w">   </span><span class="c1"># activate it in every new shell; recent distributions refuse a system-wide pip install</span>
+pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.
+</code></pre></div>
+<hr />
+<h2 id="3-quick-start">3. Quick Start<a class="headerlink" href="#3-quick-start" title="Permanent link">&para;</a></h2>
+<h3 id="1-check-out-your-communitys-recipe-repository">1. Check out your community's recipe repository<a class="headerlink" href="#1-check-out-your-communitys-recipe-repository" title="Permanent link">&para;</a></h3>
+<p>bits always builds from a community recipe repository: a <code>*.bits</code> repository with the
+community's defaults (<code>defaults-release.sh</code>), CVMFS layout and recipes. Clone it first and
+run bits inside it — bits uses the current directory as its recipe directory. In a
+directory without recipes a build stops.</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/bitsorg/stacks.bits<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>stacks.bits
+<span class="c1"># or resolve it in the bits-providers registry:  bits init stacks.bits &amp;&amp; cd stacks.bits</span>
+</code></pre></div>
+<p>Community repositories: <code>stacks.bits</code> (LCG-based stacks), <code>alice.bits</code>, <code>atlas.bits</code>,
+<code>cms.bits</code>, <code>key4hep.bits</code>, <code>lhcb.bits</code>, <code>ship.bits</code>. They pull shared recipe pools
+(<code>lcg.bits</code>, <code>common.bits</code>, <code>alidist.bits</code>) on demand; <code>bits init &lt;name&gt;.bits</code> clones a
+community repository from the <a href="https://github.com/bitsorg/bits-providers">bits-providers</a>
+registry.</p>
+<h3 id="2-check-then-build">2. Check, then build<a class="headerlink" href="#2-check-then-build" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>doctor<span class="w">                             </span><span class="c1"># check that this machine is set up to run bits</span>
+bits<span class="w"> </span>doctor<span class="w"> </span>--defaults<span class="w"> </span>gcc15<span class="w"> </span>ROOT<span class="w">       </span><span class="c1"># check ROOT's system requirements</span>
+bits<span class="w"> </span>build<span class="w"> </span>--dry-run<span class="w"> </span>--defaults<span class="w"> </span>gcc15<span class="w"> </span>ROOT<span class="w">  </span><span class="c1"># optional: what would be reused and what built</span>
+bits<span class="w"> </span>build<span class="w"> </span>--defaults<span class="w"> </span>gcc15<span class="w"> </span>ROOT<span class="w">        </span><span class="c1"># resolves and builds ROOT and all dependencies</span>
+
+bits<span class="w"> </span>enter<span class="w"> </span>ROOT/latest<span class="w">                  </span><span class="c1"># open a sub-shell with the environment loaded</span>
+root<span class="w"> </span>-b
+<span class="nb">exit</span><span class="w">                                    </span><span class="c1"># return to your normal shell</span>
+</code></pre></div>
+<p>For another community the steps are the same, e.g.
+<code>git clone https://github.com/bitsorg/lhcb.bits &amp;&amp; cd lhcb.bits &amp;&amp; bits build DaVinci</code>.
+Record per-directory options (work directory, stores) once with <code>bits use build …</code>
+inside the repository (see <a href="#4-configuration">Configuration</a>).</p>
+<h3 id="alice-the-alibuild-workflow">ALICE: the aliBuild workflow<a class="headerlink" href="#alice-the-alibuild-workflow" title="Permanent link">&para;</a></h3>
+<p>The <code>aliBuild</code> wrapper keeps ALICE's classic workflow, working from an <code>alidist</code> checkout:</p>
+<div class="highlight"><pre><span></span><code>aliBuild<span class="w"> </span>init<span class="w">            </span><span class="c1"># check out alidist</span>
+aliBuild<span class="w"> </span>build<span class="w"> </span>O2
+</code></pre></div>
+<hr />
+<h2 id="4-configuration">4. Configuration<a class="headerlink" href="#4-configuration" title="Permanent link">&para;</a></h2>
+<p>Record per-directory settings once with <code>bits use</code>, so you do not repeat them on every command. It saves command-line options in a profile and inserts them into later commands. A leading section name says which command they belong to (<code>build</code>, <code>deps</code>, <code>publish</code>, …); without one they go to <code>[common]</code>, which is applied to every architecture-aware command, so keep it to options all of them accept (<code>--architecture</code>).</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>use<span class="w"> </span>--architecture<span class="w"> </span>x86_64-el9-gcc14-opt<span class="w">                 </span><span class="c1"># [common]: every arch-aware command</span>
+bits<span class="w"> </span>use<span class="w"> </span>build<span class="w"> </span>--work-dir<span class="w"> </span>/path/to/sw<span class="w"> </span>--parallel<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<span class="w">               </span>--remote-store<span class="w"> </span>https://s3.cern.ch/swift/v1/mybucket<span class="w">   </span><span class="c1"># [build]: bits build only</span>
+bits<span class="w"> </span>use<span class="w">                                                     </span><span class="c1"># show the active profile and where it lives</span>
+bits<span class="w"> </span>use<span class="w"> </span>--clear<span class="w"> </span>build<span class="w">                                       </span><span class="c1"># clear one section (no SECTION: clear all)</span>
+</code></pre></div>
+<p>Each <code>bits use SECTION …</code> replaces that whole section, so give all of a section's options in one call. Saved arguments are inserted before your own, so an explicit flag on the command line still wins. The flags of any command that reads the profile (<code>build</code>, <code>deps</code>, <code>doctor</code>, <code>status</code>, <code>clean</code>, <code>prune</code>, <code>publish</code>, <code>certify</code>, <code>sign</code>, <code>compliance</code>, <code>import</code>, <code>q</code>, <code>enter</code>, <code>load</code>, …) can be saved this way, e.g. <code>bits use build --docker --store-integrity</code> (SHA-256 verification of every recalled tarball). For a work directory shared by every command, including <code>bits enter</code> and <code>bits q</code>, set <code>$BITS_WORK_DIR</code> instead.</p>
+<p><code>bits init</code> with configuration options and no PACKAGE writes the same profile for the settings it knows: <code>--architecture</code> to <code>[common]</code>; <code>--remote-store</code>, <code>--write-store</code>, <code>--defaults</code>, <code>-c/--config-dir</code>, <code>-w/--work-dir</code> and <code>--reference-sources</code> to <code>[build]</code> (replacing those sections, as <code>bits use</code> does). Add <code>--dry-run</code> to see what it would save:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>init<span class="w"> </span>--work-dir<span class="w"> </span>/path/to/sw<span class="w"> </span>--remote-store<span class="w"> </span>https://s3.cern.ch/swift/v1/mybucket
+</code></pre></div>
+<p>The profile is <code>./.bitsuse</code> in the current directory, or a record under <code>~/.bits/use/</code> when the directory is not writeable or not owned by you. A local <code>.bitsuse</code> is only honoured when it is owned by you; otherwise the <code>~/.bits/use/</code> record is used. <code>bits use --help</code> lists these forms.</p>
+<blockquote>
+<p><strong><code>bits.rc</code> is retired.</strong> Earlier versions read <code>bits.rc</code> / <code>.bitsrc</code> / <code>~/.bitsrc</code>; those files are no longer read. Move per-directory settings into a <code>bits use</code> profile and global ones into the environment variables below.</p>
+</blockquote>
+<p>Global settings come from environment variables:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Related flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>$BITS_ORGANISATION</code></td>
+<td>—</td>
+<td>Community name (uppercase), e.g. <code>LHCB</code>. Used only when <code>-c</code>/<code>--config-dir</code> names a directory that does not exist: bits then clones that community's recipe repository from the registry and uses it. The <code>aliBuild</code> wrapper sets <code>ALICE</code>.</td>
+</tr>
+<tr>
+<td><code>$BITS_WORK_DIR</code></td>
+<td><code>-w</code> / <code>--work-dir</code></td>
+<td>Output directory for built packages (default: <code>sw</code>).</td>
+</tr>
+<tr>
+<td><code>$BITS_REPO_DIR</code></td>
+<td><code>-c</code> / <code>--config-dir</code></td>
+<td>Root directory for recipe repositories.</td>
+</tr>
+<tr>
+<td><code>$BITS_PROVIDERS</code></td>
+<td>—</td>
+<td>URL of the bits-providers registry, optionally <code>@tag</code> (default <code>https://github.com/bitsorg/bits-providers</code>; off under the <code>aliBuild</code> wrapper).</td>
+</tr>
+<tr>
+<td><code>$BITS_PATH</code></td>
+<td><code>--search-path</code></td>
+<td>Recipe search path.</td>
+</tr>
+<tr>
+<td><code>$BITS_S3_STORE</code></td>
+<td><code>--remote-store</code> (store ops)</td>
+<td>Default S3 store for <code>bits store</code> (<code>gc</code>/<code>stats</code>/<code>upload</code>), <code>certify</code>, <code>publish</code>, <code>compliance</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><code>$BITS_ORGANISATION</code> is set <strong>uppercase</strong> (<code>ALICE</code>, <code>LHCB</code>, …). Bits lowercases it internally when resolving the community recipe repository from bits-providers (e.g. <code>LHCB</code> → <code>lhcb.bits.sh</code> → <code>https://github.com/bitsorg/lhcb.bits</code>). Normally you do not need it: check out the community repository and run bits inside it.</p>
+<p>Settings follow the precedence <code>CLI flag &gt; bits use profile &gt; environment variable &gt; built-in default</code>; the exception is <code>$BITS_PATH</code>, which, when set, overrides <code>--search-path</code>. For the full list of environment variables, see <a href="../REFERENCE/#20-environment-variables">REFERENCE.md §20</a> and <a href="../REFERENCE/#bits-init">REFERENCE.md — bits init</a>.</p>
+<hr />
+<h2 id="5-building-packages">5. Building Packages<a class="headerlink" href="#5-building-packages" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span><span class="o">[</span>options<span class="o">]</span><span class="w"> </span>PACKAGE<span class="w"> </span><span class="o">[</span>PACKAGE<span class="w"> </span>...<span class="o">]</span>
+</code></pre></div>
+<p>Bits resolves the full transitive dependency graph of each requested package, computes a content-addressable hash for every node, downloads any pre-built artifacts that already exist in a remote store, and builds the rest in topological order.</p>
+<h3 id="how-a-build-proceeds">How a build proceeds<a class="headerlink" href="#how-a-build-proceeds" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Recipe discovery</strong> — Bits locates <code>&lt;package&gt;.sh</code> in the recipe directory, then in each <code>BITS_PATH</code> entry (<code>--search-path</code>; a relative NAME means <code>&lt;config-dir&gt;/NAME.bits</code>, an absolute path is used as is). Repository-provider packages (see <a href="../REFERENCE/#13-repository-provider-feature">§13</a>) are cloned first to extend the search path before the main resolution pass.</li>
+<li><strong>Dependency resolution</strong> — <code>requires</code>, <code>build_requires</code>, and <code>runtime_requires</code> fields are read recursively, forming a DAG. Cycles are reported as errors.</li>
+<li><strong>Hash computation</strong> — A hash is computed for each package from its recipe text, source commit, dependency hashes, and environment. Packages with a matching hash in a store are downloaded instead of rebuilt.</li>
+<li><strong>Source fetching</strong> — Source repositories are cloned into a local mirror and then checked out into a build area. Up to 8 repositories are fetched in parallel.</li>
+<li><strong>Build execution</strong> — Each package's Bash script runs in an isolated environment with sanitised locale and only its declared dependencies visible.</li>
+<li><strong>Post-build</strong> — A modulefile and a versioned tarball are written; the tarball may be uploaded to a write store.</li>
+</ol>
+<h3 id="common-options">Common options<a class="headerlink" href="#common-options" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--defaults PROFILE</code></td>
+<td>Defaults profile(s) to load, combined with <code>::</code>; <code>release</code> is always the base (<code>--defaults gcc15</code> means <code>release::gcc15</code>). Default: <code>release</code>.</td>
+</tr>
+<tr>
+<td><code>--set NAME[=VALUE]</code></td>
+<td>Set a build-wide flavour variable (alias of <code>--flavour</code>); gates conditional <code>(?NAME)</code> requires/sources/patches and overrides a defaults <code>variables:</code> entry.</td>
+</tr>
+<tr>
+<td><code>-j N</code>, <code>--jobs N</code></td>
+<td>Parallel compilation jobs per package. Default: CPU count.</td>
+</tr>
+<tr>
+<td><code>--parallel [N]</code></td>
+<td>Number of packages to build simultaneously. Bare <code>--parallel</code> uses 4; omit it for serial (the default). With N&gt;1 each build's <code>$JOBS</code> is divided across the builders (<code>-j ÷ N</code>) so the concurrent jobs together stay within one machine's worth of cores. (<code>--builders</code> is a kept alias.)</td>
+</tr>
+<tr>
+<td><code>--build-nice</code></td>
+<td>Stagger concurrent builders across OS priority levels so CPU contention degrades gracefully — one build runs at full speed, the others are backed off, and the freed top slot is taken over as builds finish. Native builds use <code>nice</code>; <code>--docker</code> builds use <code>docker run --cpu-shares</code>. Opt-in; only affects <code>--parallel &gt; 1</code>. Memory is still capped separately.</td>
+</tr>
+<tr>
+<td><code>--build-nice-step N</code></td>
+<td>Priority spread between concurrent build slots for <code>--build-nice</code> (slot <em>k</em> → nice <code>min(k×N, 19)</code>). <code>N=1</code> is a gentle ladder; larger separates slots more. Default: 5.</td>
+</tr>
+<tr>
+<td><code>--prefetch-workers N</code></td>
+<td>Background threads that fetch remote tarballs and sources ahead of the build loop. Default: auto (<code>min(builders, 4)</code>); <code>0</code> disables.</td>
+</tr>
+<tr>
+<td><code>-u</code>, <code>--fetch-repos</code></td>
+<td>Update all source mirrors before building.</td>
+</tr>
+<tr>
+<td><code>-w DIR</code>, <code>--work-dir DIR</code></td>
+<td>Work/output directory. Default: <code>sw</code>.</td>
+</tr>
+<tr>
+<td><code>--remote-store URL</code></td>
+<td>Binary store to pull pre-built tarballs from. Append <code>::rw</code> to also upload to it.</td>
+</tr>
+<tr>
+<td><code>--write-store URL</code></td>
+<td>Binary store to push newly-built tarballs to. Given alone (no <code>--remote-store</code>), it is also the store reused from, except where a default remote store applies (slc7/8/9, ubuntu x86-64, slc9_aarch64); use <code>--remote-store URL::rw</code> there.</td>
+</tr>
+<tr>
+<td><code>--force-rebuild PKG</code></td>
+<td>Rebuild these packages from scratch even if they were built before (repeatable or comma-separated).</td>
+</tr>
+<tr>
+<td><code>--prefer-system</code></td>
+<td>Always use a compatible system package instead of building it (<code>--always-prefer-system</code> is the older spelling). <code>--no-system [PKGS]</code> does the opposite.</td>
+</tr>
+<tr>
+<td><code>--brew</code></td>
+<td>macOS only: <code>brew install</code> missing Homebrew formulae on demand (see <a href="#2-installation--prerequisites">Installation</a>).</td>
+</tr>
+<tr>
+<td><code>--docker</code></td>
+<td>Build inside a Docker container.</td>
+</tr>
+<tr>
+<td><code>-d</code>, <code>--debug</code></td>
+<td>Verbose debug output.</td>
+</tr>
+<tr>
+<td><code>-n</code>, <code>--dry-run</code></td>
+<td>Print a per-package reuse plan without building (see below).</td>
+</tr>
+<tr>
+<td><code>--no-auto-cleanup</code></td>
+<td>Keep build directories after a successful build (useful for debugging).</td>
+</tr>
+</tbody>
+</table>
+<p>For the full option list, parallel build tuning (<code>--parallel</code>, <code>--oversubscribe</code>, <code>--prefetch-workers</code>, <code>--parallel-sources</code>) and Docker/cross-compilation options, see <a href="../REFERENCE/#bits-build">REFERENCE.md — bits build</a> and <a href="../REFERENCE/#22-docker-support">REFERENCE.md §22</a>. The <code>--makeflow</code> / <code>--pipeline</code> build modes have been removed; use <code>--parallel</code>.</p>
+<h3 id="building-several-packages-at-once">Building several packages at once<a class="headerlink" href="#building-several-packages-at-once" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>--parallel<span class="w"> </span>ROOT<span class="w">          </span><span class="c1"># 4 packages at a time</span>
+bits<span class="w"> </span>build<span class="w"> </span>--parallel<span class="w"> </span><span class="m">8</span><span class="w"> </span>-j<span class="w"> </span><span class="m">32</span><span class="w"> </span>ROOT<span class="w">  </span><span class="c1"># 8 builders sharing 32 compile jobs</span>
+</code></pre></div>
+<p>Without <code>--parallel</code> packages are built one after another, each with the full <code>-j</code>. With N builders each package gets a share of <code>-j</code>; the final top-level package, which builds alone, gets the full <code>-j</code> again. <code>--builders N</code> still works as an alias.</p>
+<h3 id="previewing-a-build-dry-run">Previewing a build: <code>--dry-run</code><a class="headerlink" href="#previewing-a-build-dry-run" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>build<span class="w"> </span>--dry-run<span class="w"> </span>ROOT
+</code></pre></div>
+<p>Computes every package's hash exactly as the build would and prints, in build order, where each one would come from — <strong>installed</strong>, <strong>local tarball</strong>, <strong>from remote store</strong>, <strong>from reuse overlay</strong> — or that it would be <strong>built</strong>, followed by a summary. Nothing is downloaded or installed; http(s):// and b3:// stores are only listed, and other stores (s3://, rsync) are not checked. <code>bits status --check-store</code> uses the same store listing. On macOS a dry run also writes <code>sw/&lt;arch&gt;/Brewfile</code>.</p>
+<h3 id="sharing-binaries-through-a-store">Sharing binaries through a store<a class="headerlink" href="#sharing-binaries-through-a-store" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Developer: reuse what CI built, never upload</span>
+bits<span class="w"> </span>build<span class="w"> </span>--remote-store<span class="w"> </span>https://s3.cern.ch/swift/v1/mybucket<span class="w"> </span>ROOT
+
+<span class="c1"># CI: reuse from and upload to the same bucket</span>
+bits<span class="w"> </span>build<span class="w"> </span>--remote-store<span class="w"> </span>b3://mybucket::rw<span class="w"> </span>ROOT
+</code></pre></div>
+<p>Remote reuse is fail-closed: a tarball from a remote store is only reused when a verified signed manifest vouches for it (<code>--no-require-signed-reuse</code> turns this off, e.g. to bootstrap a new store). Local and CVMFS artifacts are unaffected. To upload a single package you already built, use <code>bits store upload PKG</code>. See <a href="../REFERENCE/#21-remote-binary-store-backends">REFERENCE.md §21</a>.</p>
+<h3 id="exporting-the-dependency-tree">Exporting the dependency tree<a class="headerlink" href="#exporting-the-dependency-tree" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>deps<span class="w"> </span>ROOT<span class="w"> </span>--outgraph<span class="w"> </span>root.pdf<span class="w">        </span><span class="c1"># Graphviz graph</span>
+bits<span class="w"> </span>deps<span class="w"> </span>ROOT<span class="w"> </span>--outmake<span class="w"> </span>root.mk<span class="w">          </span><span class="c1"># Makefile rules (pkg: dep1 dep2), no Graphviz needed</span>
+bits<span class="w"> </span>deps<span class="w"> </span>ROOT<span class="w"> </span>--outmake<span class="w"> </span>root.mk<span class="w"> </span>--runtime-only<span class="w">   </span><span class="c1"># skip build-only dependencies</span>
+</code></pre></div>
+<p>See <a href="../REFERENCE/#bits-deps">REFERENCE.md — bits deps</a>.</p>
+<hr />
+<h2 id="6-managing-environments">6. Managing Environments<a class="headerlink" href="#6-managing-environments" title="Permanent link">&para;</a></h2>
+<p>Bits uses the standard <a href="https://modules.sourceforge.net/">Environment Modules</a> system (<code>modulecmd</code>) to manage runtime environments. A <em>module</em> corresponds to one built package version. The <code>bits</code> shell script discovers <code>modulecmd</code> automatically — on <code>$PATH</code>, next to <code>envml</code>, or via Homebrew's <code>modules</code> formula. If it cannot be found, it prints the appropriate install command.</p>
+<h3 id="enter-a-sub-shell-with-modules-loaded">Enter a sub-shell with modules loaded<a class="headerlink" href="#enter-a-sub-shell-with-modules-loaded" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>enter<span class="w"> </span>ROOT/latest
+<span class="c1"># A new sub-shell opens with ROOT and all its dependencies in PATH etc.</span>
+<span class="nb">exit</span><span class="w">   </span><span class="c1"># return to your normal shell</span>
+</code></pre></div>
+<p><code>bits enter</code> prefixes the shell prompt with the loaded modules, e.g. <code>[ROOT/latest]</code> (sh/bash/ksh/zsh, unless <code>--shellrc</code> is given), so it is always clear when inside a bits environment. Nesting <code>bits enter</code> inside another bits environment is blocked.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--shellrc</code></td>
+<td>Source your shell startup file (<code>.bashrc</code>, <code>.zshrc</code>, etc.) in the new shell.</td>
+</tr>
+<tr>
+<td><code>--dev</code></td>
+<td>Source each package's <code>etc/profile.d/init.sh</code> directly instead of using modulecmd.</td>
+</tr>
+<tr>
+<td><code>--view</code></td>
+<td>Collapse <code>PATH</code>, <code>LD_LIBRARY_PATH</code>, <code>PYTHONPATH</code>, … onto one merged view of the loaded closure, keeping the environment short on big stacks (also accepted by <code>bits load</code>). Entering a package whose recipe sets <code>view: true</code> turns it on automatically.</td>
+</tr>
+<tr>
+<td><code>-q</code></td>
+<td>Silence the module-load messages.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="load-unload-in-the-current-shell">Load / unload in the current shell<a class="headerlink" href="#load-unload-in-the-current-shell" title="Permanent link">&para;</a></h3>
+<p>Add the shell helper to your <code>.bashrc</code> or <code>.zshrc</code> once so that <code>bits load</code> and <code>bits unload</code> modify the current shell's environment without requiring an explicit <code>eval</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">BITS_WORK_DIR</span><span class="o">=</span>/path/to/sw
+<span class="nb">eval</span><span class="w"> </span><span class="s2">"</span><span class="k">$(</span>bits<span class="w"> </span>shell-helper<span class="k">)</span><span class="s2">"</span>
+</code></pre></div>
+<p>Then in any shell session:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>load<span class="w"> </span>ROOT/latest<span class="w">        </span><span class="c1"># adds ROOT to the current environment</span>
+bits<span class="w"> </span>unload<span class="w"> </span>ROOT<span class="w">             </span><span class="c1"># removes it (version can be omitted)</span>
+bits<span class="w"> </span>list<span class="w">                    </span><span class="c1"># show currently loaded modules</span>
+bits<span class="w"> </span>q<span class="w"> </span><span class="o">[</span>REGEXP<span class="o">]</span><span class="w">              </span><span class="c1"># list available modules, optionally filtered</span>
+</code></pre></div>
+<p>Without <code>shell-helper</code>, use <code>eval</code> manually:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">eval</span><span class="w"> </span><span class="s2">"</span><span class="k">$(</span>bits<span class="w"> </span>load<span class="w"> </span>ROOT/latest<span class="k">)</span><span class="s2">"</span>
+<span class="nb">eval</span><span class="w"> </span><span class="s2">"</span><span class="k">$(</span>bits<span class="w"> </span>unload<span class="w"> </span>ROOT<span class="k">)</span><span class="s2">"</span>
+</code></pre></div>
+<h3 id="run-a-single-command-in-a-module-environment">Run a single command in a module environment<a class="headerlink" href="#run-a-single-command-in-a-module-environment" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>setenv<span class="w"> </span>ROOT/latest<span class="w"> </span>-c<span class="w"> </span>root<span class="w"> </span>-b
+<span class="c1"># Everything after -c is executed as-is; the exit code is preserved.</span>
+</code></pre></div>
+<p><code>bits setenv</code> loads the modules into the current process environment and then <code>exec</code>s the command — no new shell is spawned.</p>
+<hr />
+<h2 id="7-cleaning-up">7. Cleaning Up<a class="headerlink" href="#7-cleaning-up" title="Permanent link">&para;</a></h2>
+<p>Bits provides two distinct cleaning subcommands for different scenarios.</p>
+<h3 id="bits-clean-remove-temporary-build-artifacts">bits clean — remove temporary build artifacts<a class="headerlink" href="#bits-clean-remove-temporary-build-artifacts" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>clean<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-w DIR</code></td>
+<td>Work directory to clean. Default: <code>$BITS_WORK_DIR</code> (or <code>$ALICE_WORK_DIR</code>), else <code>sw</code>.</td>
+</tr>
+<tr>
+<td><code>-C DIR</code>, <code>--chdir DIR</code></td>
+<td>Change to DIR first (or <code>$BITS_CHDIR</code>).</td>
+</tr>
+<tr>
+<td><code>-a ARCH</code></td>
+<td>Restrict to this architecture.</td>
+</tr>
+<tr>
+<td><code>--aggressive-cleanup</code></td>
+<td>Also remove <code>SOURCES/</code> (source checkouts and download cache) and the tarballs under <code>TARS/&lt;arch&gt;/store</code> and <code>TARS/share/store</code>. Git mirrors (<code>MIRROR/</code>) are kept.</td>
+</tr>
+<tr>
+<td><code>-n</code>, <code>--dry-run</code></td>
+<td>Show what would be removed without deleting.</td>
+</tr>
+</tbody>
+</table>
+<p>The default (non-aggressive) clean removes the <code>TMP/</code> and <code>INSTALLROOT/</code> staging areas, <code>BUILD/</code> directories no <code>*-latest*</code> symlink points to, and installed versions (for the selected architecture and <code>share/</code>) no <code>latest*</code> symlink points to. Aggressive cleanup additionally removes <code>SOURCES/</code> and the tarballs under <code>TARS/&lt;arch&gt;/store</code> and <code>TARS/share/store</code>; tarball symlinks and <code>MIRROR/</code> are kept. Use <code>bits clean</code> after temporary or experimental builds to reclaim disk space without affecting the persistent package cache.</p>
+<h3 id="bits-prune-evict-packages-from-a-persistent-workdir">bits prune — evict packages from a persistent workDir<a class="headerlink" href="#bits-prune-evict-packages-from-a-persistent-workdir" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p><strong>Renamed to <code>bits prune</code>.</strong> <code>bits cleanup</code> still works as a deprecated alias that
+warns and forwards; use <code>bits prune</code> in new scripts.</p>
+</blockquote>
+<p><code>bits prune</code> manages a long-lived, shared workDir by evicting packages that have not been used recently or when disk space falls below a threshold. It is intended for <strong>persistent CI build caches</strong> where packages accumulate over time.</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>prune<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-w DIR</code>, <code>--work-dir DIR</code></td>
+<td><code>$BITS_WORK_DIR</code> (or <code>$ALICE_WORK_DIR</code>), else <code>sw</code></td>
+<td>workDir to manage.</td>
+</tr>
+<tr>
+<td><code>-a ARCH</code>, <code>--architecture ARCH</code></td>
+<td>auto-detected</td>
+<td>Architecture to evict packages for.</td>
+</tr>
+<tr>
+<td><code>--max-age DAYS</code></td>
+<td><code>7.0</code></td>
+<td>Evict packages whose sentinel has not been touched in more than <code>DAYS</code> days. Set to <code>0</code> to disable age-based eviction.</td>
+</tr>
+<tr>
+<td><code>--min-free GIB</code></td>
+<td><em>(none)</em></td>
+<td>Evict the least-recently-used packages until at least <code>GiB</code> GiB of free disk space is available.</td>
+</tr>
+<tr>
+<td><code>--disk-pressure-only</code></td>
+<td>—</td>
+<td>Run only the disk-pressure eviction pass; skip age-based eviction.</td>
+</tr>
+<tr>
+<td><code>--retain</code></td>
+<td>—</td>
+<td>Manifest-rooted sweep over all architectures: keep the packages of the newest <code>--keep-builds N</code> (default 2) build manifests and anything certified but not yet on CVMFS; evict what is safely upstream (stored, in the verified signed manifest and published to CVMFS). Signed manifests come from <code>--remote-store</code> and/or <code>--trust-manifest</code>; an architecture whose manifest cannot be verified is skipped.</td>
+</tr>
+<tr>
+<td><code>--grace-days DAYS</code></td>
+<td><code>1.0</code></td>
+<td>With <code>--retain</code>: never evict anything modified more recently than DAYS days ago.</td>
+</tr>
+<tr>
+<td><code>-n</code>, <code>--dry-run</code></td>
+<td>—</td>
+<td>Show which packages would be evicted without removing anything.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>How it works.</strong> Every time a package is built or confirmed already installed, bits touches a <em>sentinel file</em> at <code>$WORK_DIR/.packages/&lt;arch&gt;/&lt;package&gt;/&lt;version&gt;</code>. The <code>prune</code> command reads these sentinels, sorts packages by last-touched time (oldest first), and evicts those that are too old or that need to be removed to recover disk space.</p>
+<p><strong>Typical usage patterns:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Pre-build: free space if below 50 GiB, evicting LRU packages first</span>
+bits<span class="w"> </span>prune<span class="w"> </span>--min-free<span class="w"> </span><span class="m">50</span><span class="w"> </span>--disk-pressure-only<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
+
+<span class="c1"># Nightly cron: evict packages not used in 7 days</span>
+bits<span class="w"> </span>prune<span class="w"> </span>--max-age<span class="w"> </span><span class="m">7</span>
+
+<span class="c1"># See what would be removed without touching anything</span>
+bits<span class="w"> </span>prune<span class="w"> </span>--max-age<span class="w"> </span><span class="m">3</span><span class="w"> </span>--min-free<span class="w"> </span><span class="m">100</span><span class="w"> </span>--dry-run
+</code></pre></div>
+<p>For the full option list see <a href="../REFERENCE/#bits-prune">REFERENCE.md — bits prune</a>. To clean the shared <strong>S3 store</strong> rather than a local workDir, use <code>bits store gc</code> (formerly <code>bits gc</code>) — see <a href="../REFERENCE/#confusing-command-pairs">Confusing command pairs</a>.</p>
+<hr />
+<h2 id="8-publishing-trust-and-release-tasks">8. Publishing, Trust and Release Tasks<a class="headerlink" href="#8-publishing-trust-and-release-tasks" title="Permanent link">&para;</a></h2>
+<p>Short recipes for the commands that act beyond your local build. Most are run by CI or by a group's release manager; each links to the full reference.</p>
+<h3 id="publish-to-cvmfs">Publish to CVMFS<a class="headerlink" href="#publish-to-cvmfs" title="Permanent link">&para;</a></h3>
+<p><code>bits publish PACKAGE</code> relocates a built package to its final CVMFS path and hands it to the cvmfs-prepub service; it is CVMFS-only:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>publish<span class="w"> </span>ROOT<span class="w"> </span>--cvmfs-target<span class="w"> </span>/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.02/x86_64-el9<span class="w"> </span><span class="se">\</span>
+<span class="w">                  </span>--prepub-url<span class="w"> </span>https://prepub.example.org:8080
+bits<span class="w"> </span>publish<span class="w"> </span>--release-view<span class="w"> </span>LCG_110<span class="w"> </span>--cvmfs-target<span class="w"> </span>/cvmfs/sft.cern.ch/lcg<span class="w">   </span><span class="c1"># merged view under Views/ (--view is deprecated)</span>
+</code></pre></div>
+<ul>
+<li>With no PACKAGE, <code>bits publish</code> uploads every package of the latest build manifest to the S3 store (<code>--manifest FILE</code> picks another), together with the release's NOTICE, GPL source offer and SBOMs. To upload <strong>one</strong> package to the S3 store use <code>bits store upload PKG</code>.</li>
+<li>On the ingest path, when a <code>cvmfs_packages_template</code> is set, the pipeline's <code>bits cvmfs publish</code> sends each package's identity path and hash (a modulefile tar sends only its path), so prepub skips a duplicate that is already queued or published; it is not sent with <code>--replace-on-conflict</code>. The same path refuses up front a tarball larger than prepub's advertised <code>max_tar_size</code>.</li>
+<li>A group that sets <code>cvmfs_packages_template</code> publishes each package once per build architecture; releases are then views over those packages (<code>cvmfs_releases_template</code>, and with <code>cvmfs_views_template</code> an LCG-style merged view with a self-locating <code>setup.sh</code>). Path templates may use <code>{arch}</code> and the nightly <code>{day}</code> token.</li>
+<li>The producer-side commands are now grouped: <code>bits cvmfs stage</code> / <code>bits cvmfs publish</code> (formerly <code>bits cvmfs-stage</code> / <code>bits cvmfs-publish</code>) and <code>bits store stats</code> (formerly <code>bits store-stats</code>); the old names still work and warn.</li>
+</ul>
+<p>See <a href="../REFERENCE/#bits-store--bits-cvmfs-admin--ci-groups">REFERENCE.md — bits store / bits cvmfs</a> and <a href="../REFERENCE/#26-cvmfs-publishing-pipeline">REFERENCE.md §26</a>.</p>
+<h3 id="find-where-a-package-will-land-on-cvmfs">Find where a package will land on CVMFS<a class="headerlink" href="#find-where-a-package-will-land-on-cvmfs" title="Permanent link">&para;</a></h3>
+<p><code>bits cvmfs-path</code> resolves a package's publish path from the group's templates (in <code>defaults-release.sh</code> under <code>system:</code>) without building:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>cvmfs-path<span class="w"> </span>--package<span class="w"> </span>ROOT<span class="w"> </span>--version<span class="w"> </span><span class="m">6</span>.32.02<span class="w"> </span>--admin<span class="w"> </span>--set<span class="w"> </span><span class="nv">release</span><span class="o">=</span>LCG_110
+bits<span class="w"> </span>cvmfs-path<span class="w"> </span>--package<span class="w"> </span>ROOT<span class="w"> </span>--version<span class="w"> </span><span class="m">6</span>.32.02<span class="w"> </span>--login<span class="w"> </span>jdoe<span class="w">        </span><span class="c1"># personal (user-prefix) path</span>
+</code></pre></div>
+<p>Pass the same <code>--set</code> / <code>--day</code> values as the build so <code>{release}</code> and <code>{day}</code> resolve identically; <code>--kind</code> selects the <code>packages</code>, <code>releases</code>, <code>modules</code> or <code>shared</code> template. See <code>bits cvmfs-path --help</code>.</p>
+<h3 id="make-a-build-trusted-bits-certify-vs-bits-sign">Make a build trusted: <code>bits certify</code> vs <code>bits sign</code><a class="headerlink" href="#make-a-build-trusted-bits-certify-vs-bits-sign" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>certify<span class="w">            </span><span class="c1"># latest build: upload what is missing, approve with a passkey, open the MR</span>
+</code></pre></div>
+<p><code>bits certify</code> is what a user runs: it uploads anything still missing from the store, asks bits-console for a passkey approval (scan the QR code, compare the code, approve on your phone) and then opens the certification merge request in the manifests repository. <code>bits sign</code> — the command formerly called <code>certify</code> — is run by the manifests-repo CI to merge the approved build manifests into the signed common manifest. Group, manifests repo and console URL default from the defaults' <code>system:</code> block. See <a href="../REFERENCE/#publishing-and-certifying-a-build--bits-publish-bits-certify">REFERENCE.md — Publishing and certifying a build</a> and <a href="../REFERENCE/#signing--bits-sign">Signing — bits sign</a>.</p>
+<h3 id="export-an-sbom">Export an SBOM<a class="headerlink" href="#export-an-sbom" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>sbom<span class="w"> </span>sw/MANIFESTS/bits-manifest-latest.json<span class="w">                 </span><span class="c1"># sbom.cdx.json + sbom.spdx.json</span>
+bits<span class="w"> </span>sbom<span class="w"> </span>--format<span class="w"> </span>spdx<span class="w"> </span>-o<span class="w"> </span>-<span class="w"> </span>sw/MANIFESTS/bits-manifest-latest.json
+</code></pre></div>
+<p>Writes a deterministic CycloneDX 1.6 and/or SPDX 2.3 document from a build manifest (credentials are stripped from source URLs); manifests older than schema v4 give components only, without dependency edges. A whole-build upload (<code>bits publish</code> with no package, or <code>bits certify</code>) stores both next to the release NOTICE. See <a href="../REFERENCE/#bits-sbom">REFERENCE.md — bits sbom</a>.</p>
+<h3 id="record-source-checksums-for-a-recipe-repository">Record source checksums for a recipe repository<a class="headerlink" href="#record-source-checksums-for-a-recipe-repository" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span>myproject.bits
+bits<span class="w"> </span>checksums<span class="w">                               </span><span class="c1"># report: hash every tarball and patch, resolve git tags</span>
+bits<span class="w"> </span>checksums<span class="w"> </span>--write<span class="w">                       </span><span class="c1"># record new entries in checksums/ (never overwrites)</span>
+bits<span class="w"> </span>checksums<span class="w"> </span>--defaults<span class="w"> </span>all<span class="w"> </span>--recipes<span class="w"> </span>../lcg.bits<span class="w">   </span><span class="c1"># also the sources its defaults-*.sh profiles override</span>
+</code></pre></div>
+<p>Git tags are pinned to their commit; branches are reported as moving and never pinned. The exit status is 1 on any mismatch or failure. See <a href="../REFERENCE/#bits-checksums">REFERENCE.md — bits checksums</a>.</p>
+<h3 id="produce-an-lcg-release-view">Produce an LCG release view<a class="headerlink" href="#produce-an-lcg-release-view" title="Permanent link">&para;</a></h3>
+<p><code>bits overlay lcg</code> writes an lcgcmake-style LCG release over a built closure: <code>LCG_&lt;num&gt;&lt;postfix&gt;/LCG_externals_&lt;platform&gt;.txt</code> (plus an <code>LCG_generators_&lt;platform&gt;.txt</code> placeholder) under <code>--out</code>. With <code>--build-view DIR</code> it also builds a merged symlink-farm view in DIR, with a <code>setup.sh</code> that puts the view on <code>PATH</code>, <code>LD_LIBRARY_PATH</code> and friends:</p>
+<div class="highlight"><pre><span></span><code>bits<span class="w"> </span>overlay<span class="w"> </span>lcg<span class="w"> </span>-a<span class="w"> </span>x86_64-el9-gcc15<span class="w"> </span>--platform<span class="w"> </span>x86_64-el9-gcc15-opt<span class="w"> </span><span class="se">\</span>
+<span class="w">                 </span>--version-number<span class="w"> </span><span class="m">110</span><span class="w"> </span>--out<span class="w"> </span>/path/to/releases<span class="w"> </span>--build-view<span class="w"> </span>/path/to/view
+</code></pre></div>
+<p><code>bits lcg-view</code> is the deprecated former name. See <code>bits overlay lcg --help</code>.</p>
+<hr />
+<h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong><a href="../COOKBOOK/">Cookbook</a></strong> — practical recipes for common tasks</li>
+<li><strong><a href="../REFERENCE/">Reference Manual</a></strong> — command-line flags, recipe format, environment variables, Docker, stores, CVMFS pipeline, developer guide</li>
+<li><strong><a href="../WORKFLOWS/">Workflows</a></strong> — development-to-deployment walkthrough</li>
+<li><strong><a href="../ROADMAP/">Roadmap</a></strong> — planned features and priorities</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
