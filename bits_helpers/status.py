@@ -28,7 +28,6 @@ import os
 import re
 import shutil
 import sys
-from collections import OrderedDict
 from glob import glob
 from os.path import abspath, basename, dirname, join
 from pathlib import Path
@@ -39,11 +38,7 @@ from bits_helpers.sl import Sapling
 from bits_helpers.log import debug, info, warning, banner
 from bits_helpers.packages import getPackageList
 from bits_helpers.utilities import (
-    apply_version_from,
     prunePaths,
-    resolve_spec_data,
-    resolve_tag,
-    resolve_version,
     topological_sort,
     ver_rev,
     is_virtual_package,
@@ -140,82 +135,6 @@ def _try_populate_refs(spec: dict, reference_sources: str, package: str) -> None
         spec["scm_refs"] = scm.parseRefs(output)
     except Exception:
         spec.setdefault("scm_refs", {})
-
-
-def _resolve_commit_hash(spec: dict, default_vars=None) -> None:
-    """Set spec["commit_hash"] from scm_refs, falling back to the tag string."""
-    if "tag" not in spec:
-        spec["tag"] = spec["version"]
-    # Expand date-based tags (%(year)s etc.) and defaults/recipe variables, so
-    # `bits status` resolves the same tag the build does.
-    try:
-        spec["tag"] = resolve_tag(spec, default_vars)
-    except (KeyError, ValueError):
-        pass
-    if "source" not in spec:
-        # Tarball-source recipes use their resolved tag (usually the version)
-        # as commit_hash, matching doBuild. Only truly source-less packages
-        # such as defaults-release use "0". Leaving tarball recipes at the
-        # initialization value "0" changes their hashes and prevents status
-        # from finding the artifacts build published.
-        spec["commit_hash"] = spec["tag"] if "sources" in spec else "0"
-        return
-    scm_refs = spec.get("scm_refs", {})
-    # Prefer branch head; fall back to literal tag / commit hash string.
-    spec["commit_hash"] = (
-        scm_refs.get("refs/heads/" + spec["tag"])
-        or spec["tag"]
-    )
-
-
-def _prepare_spec_for_hash(spec: dict, defaults: list, default_vars: dict,
-                           config_dir: str, branch_basename: str = "",
-                           branch_stream: str = "") -> None:
-    """Resolve hash inputs the same way build.py does before storeHashes()."""
-    from bits_helpers.paths import resolveLocalPath
-
-    apply_version_from(spec, default_vars)
-    if "tag" not in spec:
-        spec["tag"] = spec["version"]
-
-    if "source" in spec:
-        spec["tag"] = resolve_tag(spec, default_vars)
-        spec["commit_hash"] = (
-            spec.get("scm_refs", {}).get("refs/heads/" + spec["tag"])
-            or spec["tag"]
-        )
-    if "sources" in spec:
-        spec["tag"] = resolve_tag(spec, default_vars)
-        spec["sources"] = [resolveLocalPath(config_dir, source)
-                            for source in spec["sources"]]
-        spec["commit_hash"] = spec["tag"]
-    elif "source" not in spec and not spec.get("version_from"):
-        spec["commit_hash"] = "0"
-
-    spec["version"] = resolve_version(
-        spec, defaults, branch_basename, branch_stream)
-    spec.setdefault("variables", OrderedDict(spec.get("variables", {})))
-    for key, value in spec["variables"].items():
-        spec["variables"][key] = resolve_spec_data(
-            spec, value, defaults, branch_basename, branch_stream)
-    if "source" in spec:
-        spec["source"] = resolve_spec_data(
-            spec, spec["source"], defaults, branch_basename, branch_stream)
-    if "sources" in spec:
-        spec["sources"] = [resolve_spec_data(
-            spec, source, defaults, branch_basename, branch_stream)
-            for source in spec["sources"]]
-    if "patches" in spec:
-        spec["patches"] = [resolve_spec_data(
-            spec, patch, defaults, branch_basename, branch_stream)
-            for patch in spec["patches"]]
-
-    default_vars = default_vars or None
-    recipe_opts_in = bool(spec["variables"] or spec.get("expand_recipe", False))
-    if recipe_opts_in or default_vars:
-        spec["recipe"] = resolve_spec_data(
-            spec, spec["recipe"], defaults, branch_basename, branch_stream,
-            default_vars=default_vars, strict=recipe_opts_in)
 
 
 def _fetch_refs_with_clone(spec: dict, reference_sources: str,
@@ -440,7 +359,10 @@ def _emit_json(rows: List[dict], architecture: str) -> None:
 def doStatus(args, parser) -> None:
     """Resolve the dependency tree and report the build state of each package."""
     # Deferred heavy imports (build.py pulls in jinja2, analytics, etc.)
-    from bits_helpers.build import storeHook, hash_local_changes
+    from bits_helpers.build import (
+        add_initdotsh_hash_marker, apply_defaults_legacy_initdotsh,
+        defaults_store_url, hash_local_changes, prepare_hash_inputs,
+        resolve_initdotsh_mode, storeHook)
     from bits_helpers.hashing import storeHashes
     from bits_helpers.log import dieOnError
     from bits_helpers.git import git
@@ -455,24 +377,23 @@ def doStatus(args, parser) -> None:
     resolve_config_dir(args)
 
     # ── Defaults and overrides ─────────────────────────────────────────────────
+    # The init.sh mode is part of the defaults-release hash: decide it as build
+    # does (BITS_LEGACY_INITDOTSH, else a defaults file's legacy_initdotsh, else
+    # from modules), so that status computes the same package identities.
+    initdotsh_explicit = resolve_initdotsh_mode(args)
+
     def defaults_reader():
         meta, body = readDefaults(
             args.configDir, args.defaults, parser.error, args.architecture
         )
-        # Build hashes this marker into defaults-release by default. Keep status
-        # on the same identity; the aliBuild compatibility environment selects
-        # legacy hashes and therefore omits it.
-        legacy_initdotsh = os.environ.get("BITS_LEGACY_INITDOTSH", "").strip().lower()
-        if legacy_initdotsh not in ("1", "true", "yes", "on"):
-            if not isinstance(meta.get("env"), dict):
-                meta["env"] = OrderedDict()
-            meta["env"]["BITS_INITDOTSH_FROM_MODULES"] = "1"
+        add_initdotsh_hash_marker(meta, args.initdotshFromModules)
         return meta, body
 
     err, overrides, taps, defaults_meta = parseDefaults(
         args.disable, defaults_reader, debug, args.architecture, args.configDir
     )
     dieOnError(err, err)
+    apply_defaults_legacy_initdotsh(args, defaults_meta, initdotsh_explicit)
 
     raw_architecture = args.architecture
     args.architecture = compute_combined_arch(defaults_meta, args.defaults, raw_architecture)
@@ -604,6 +525,12 @@ def doStatus(args, parser) -> None:
     remote_store_url = (getattr(args, "remoteStore", "")
                         or os.environ.get("BITS_REMOTE_STORE")
                         or os.environ.get("REMOTE_STORE") or "")
+    # As in build: without a store from the command line or environment, the
+    # one the defaults name (system: remote_store, ::rw for a writable one).
+    if not remote_store_url and not getattr(args, "no_remote_store", False):
+        remote_store_url, defaults_rw = defaults_store_url(defaults_meta)
+        if defaults_rw and not write_store_url:
+            write_store_url = remote_store_url
     if remote_store_url.endswith("::rw"):
         if write_store_url:
             parser.error("cannot specify ::rw and --write-store at the same time")
@@ -662,28 +589,27 @@ def doStatus(args, parser) -> None:
         else:
             spec.setdefault("scm_refs", {})
 
-        # Resolve exactly the hash inputs that doBuild prepares before
-        # storeHashes: tags/versions, templated sources and patches, variables,
-        # and recipe text. Hashing the raw recipe fields makes status look under
-        # a different store key from the build (especially for %(var)s URLs).
-        _prepare_spec_for_hash(
-            spec, args.defaults, defaults_meta.get("variables"), args.configDir,
-            branch_basename, branch_stream)
-
         # Devel package: compute devel_hash from local changes
-        if spec["is_devel_pkg"]:
+        def devel(spec):
             try:
                 out = spec["scm"].checkedOutCommitName(directory=spec["source"])
                 spec["commit_hash"] = out.strip()
                 local_hash, _ = hash_local_changes(spec)
                 spec["devel_hash"] = spec["commit_hash"] + local_hash
                 out = spec["scm"].branchOrRef(directory=spec["source"])
-                dev_branch = out.replace("/", "-")
-                spec["tag"] = (getattr(args, "develPrefix", None) or dev_branch)
+                spec["tag"] = out.replace("/", "-")
                 spec["commit_hash"] = "0"
             except Exception as exc:
-                debug("Could not compute devel_hash for %s: %s", p, exc)
+                debug("Could not compute devel_hash for %s: %s", spec["package"], exc)
                 spec.setdefault("devel_hash", "")
+
+        # Resolve exactly the hash inputs that doBuild prepares before
+        # storeHashes (the same function): tags/versions, templated sources and
+        # patches, variables, and recipe text. Hashing the raw recipe fields
+        # makes status look under a different store key from the build.
+        prepare_hash_inputs(
+            spec, specs, args.defaults, defaults_meta.get("variables"),
+            args.configDir, branch_basename, branch_stream, devel=devel)
 
         # Compute build hashes (same as doBuild main loop)
         consider_relocation = (

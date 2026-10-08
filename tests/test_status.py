@@ -24,13 +24,11 @@ from bits_helpers.status import (
     _emit_json,
     _emit_table,
     _is_already_installed,
-    _prepare_spec_for_hash,
-    _resolve_commit_hash,
     _scan_local_tars,
     _try_populate_refs,
 )
 from bits_helpers.hashing import storeHashes
-from bits_helpers.build import add_initdotsh_hash_marker
+from bits_helpers.build import add_initdotsh_hash_marker, prepare_hash_inputs
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -138,75 +136,49 @@ class TestTryPopulateRefs(unittest.TestCase):
         self.assertEqual(spec.get("scm_refs"), {})
 
 
-# ── _resolve_commit_hash ───────────────────────────────────────────────────────
+# ── prepare_hash_inputs (shared with build) ───────────────────────────────────
 
-class TestResolveCommitHash(unittest.TestCase):
-    def test_defaults_hash_includes_build_initdotsh_mode_marker(self):
-        spec = OrderedDict({
-            "package": "defaults-release",
-            "version": "vCMS",
-            "tag": "vCMS",
-            "recipe": "",
-            "pkg_family": "",
-            "commit_hash": "0",
-            "scm_refs": {},
-            "is_devel_pkg": False,
-            "requires": [],
-            "env": OrderedDict([
-                ("CXXSTD", "20"),
-                ("DCMAKE_BUILD_TYPE", "Release"),
-            ]),
-        })
-        spec["env"]["BITS_INITDOTSH_FROM_MODULES"] = "1"
+class TestPrepareHashInputs(unittest.TestCase):
+    """The hash inputs status resolves, with build's own function."""
 
-        storeHashes("defaults-release", {"defaults-release": spec}, False)
-
-        self.assertEqual(
-            spec["remote_revision_hash"],
-            "0028228fa91a801048bac07afed5974c27e293dc",
-        )
-        self.assertEqual(spec["local_revision_hash"], spec["remote_revision_hash"])
+    def _prepare(self, spec, specs=None, default_vars=None):
+        spec.setdefault("scm_refs", {})
+        prepare_hash_inputs(spec, specs or {spec["package"]: spec}, ["release"],
+                            default_vars or {}, "/recipes")
 
     def test_branch_ref_resolved(self):
         spec = _make_spec(tag="main")
         spec["scm_refs"] = {"refs/heads/main": "deadbeef"}
-        _resolve_commit_hash(spec)
+        self._prepare(spec)
         self.assertEqual(spec["commit_hash"], "deadbeef")
 
     def test_tag_falls_back_to_tag_string(self):
         spec = _make_spec(tag="v1.0")
-        spec["scm_refs"] = {}
-        _resolve_commit_hash(spec)
+        self._prepare(spec)
         self.assertEqual(spec["commit_hash"], "v1.0")
 
     def test_no_source_sets_zero(self):
         spec = _make_spec()
         del spec["source"]
-        spec["scm_refs"] = {}
-        _resolve_commit_hash(spec)
+        self._prepare(spec)
         self.assertEqual(spec["commit_hash"], "0")
 
     def test_tarball_sources_use_tag_as_commit_hash(self):
-        """Tarball-only recipes must hash like build, which uses the tag."""
+        """Tarball-only recipes hash like build, which uses the tag."""
         spec = _make_spec(tag="1.0")
         del spec["source"]
         spec["sources"] = ["https://example.org/source-1.0.tar.gz"]
-        spec["commit_hash"] = "0"
-        spec["scm_refs"] = {}
-        _resolve_commit_hash(spec)
+        self._prepare(spec)
         self.assertEqual(spec["commit_hash"], "1.0")
 
     def test_hash_inputs_expand_recipe_variables_like_build(self):
         spec = _make_spec(tag="%(gmpVersion)s")
         del spec["source"]
-        spec["commit_hash"] = "0"
         spec["variables"] = OrderedDict(gmpVersion="6.3.0")
         spec["sources"] = ["https://example.org/gmp-%(gmpVersion)s.tar.gz"]
         spec["patches"] = ["gmp-%(gmpVersion)s.patch"]
         spec["recipe"] = "build %(gmpVersion)s"
-
-        _prepare_spec_for_hash(spec, ["release"], {}, "/recipes")
-
+        self._prepare(spec)
         self.assertEqual(spec["tag"], "6.3.0")
         self.assertEqual(spec["commit_hash"], "6.3.0")
         self.assertEqual(spec["sources"], ["https://example.org/gmp-6.3.0.tar.gz"])
@@ -215,10 +187,31 @@ class TestResolveCommitHash(unittest.TestCase):
 
     def test_date_tag_expanded(self):
         spec = _make_spec(tag="v%(year)s-1")
-        spec["scm_refs"] = {}
-        _resolve_commit_hash(spec)
-        # The tag should be expanded (year substituted)
+        self._prepare(spec)
         self.assertNotIn("%(year)s", spec["tag"])
+
+    def test_python_version_variables(self):
+        """A package requiring Python gets build's python_* variables."""
+        spec = _make_spec(pkg="pyext")
+        spec["requires"] = ["Python"]
+        spec["recipe"] = "pip install --prefix lib/python%(python_major_minor)s"
+        python = _make_spec(pkg="Python", version="v3.12.4")
+        self._prepare(spec, specs={"pyext": spec, "Python": python})
+        self.assertEqual(spec["variables"]["python_major_minor_str"], "312")
+        self.assertEqual(spec["recipe"], "pip install --prefix lib/python3.12")
+
+    def test_devel_package_tag_before_version(self):
+        """The devel callback runs before the version is resolved."""
+        spec = _make_spec(version="%(tag)s", tag="v1.0", is_devel=True)
+
+        def devel(s):
+            s["tag"] = "my-branch"
+            s["commit_hash"] = "0"
+        spec["scm_refs"] = {}
+        prepare_hash_inputs(spec, {"mylib": spec}, ["release"], {}, "/recipes",
+                            devel=devel)
+        self.assertEqual(spec["version"], "my-branch")
+        self.assertEqual(spec["commit_hash"], "0")
 
 
 # ── _is_already_installed ──────────────────────────────────────────────────────
@@ -620,6 +613,14 @@ class TestDoStatus(unittest.TestCase):
 
     def test_defaults_release_hash_matches_build_hash(self):
         """Status must hash defaults-release like build's defaults reader."""
+        self._check_defaults_release_hash(legacy=False)
+
+    def test_defaults_legacy_initdotsh_matches_build_hash(self):
+        """A defaults file selecting the legacy init.sh (alidist) drops the marker
+        in status too, as build's apply_defaults_legacy_initdotsh does."""
+        self._check_defaults_release_hash(legacy=True)
+
+    def _check_defaults_release_hash(self, legacy):
         from copy import deepcopy
         import argparse
         import bits_helpers.status as status_mod
@@ -629,6 +630,8 @@ class TestDoStatus(unittest.TestCase):
             ("DCMAKE_BUILD_TYPE", "Release"),
         ])
         defaults_meta = {"env": base_env.copy(), "variables": {}}
+        if legacy:
+            defaults_meta["system"] = {"legacy_initdotsh": True}
         status_spec = OrderedDict({
             "package": "defaults-release",
             "version": "vCMS",
@@ -668,7 +671,9 @@ class TestDoStatus(unittest.TestCase):
              patch("bits_helpers.repo_provider.fetch_repo_providers_iteratively",
                    return_value={}), \
              patch("bits_helpers.build.storeHook"), \
+             patch.dict(os.environ), \
              patch("sys.stdout", new_callable=StringIO) as out:
+            os.environ.pop("BITS_LEGACY_INITDOTSH", None)
             parser = argparse.ArgumentParser()
             parser.error = lambda msg: (_ for _ in ()).throw(SystemExit(msg))
             status_mod.doStatus(args, parser)
@@ -678,7 +683,7 @@ class TestDoStatus(unittest.TestCase):
         # defaults-release package spec. Hash that build-side spec independently
         # and require status to report the same identity.
         build_meta = {"env": base_env.copy()}
-        add_initdotsh_hash_marker(build_meta, enabled=True)
+        add_initdotsh_hash_marker(build_meta, enabled=not legacy)
         build_spec = OrderedDict({
             "package": "defaults-release",
             "version": "vCMS",
@@ -741,22 +746,39 @@ class TestDoStatus(unittest.TestCase):
             data = json.loads(mock_out.getvalue())
         self.assertEqual(data["packages"][0]["state"], BUILD_FROM_SOURCE)
 
-    @patch("bits_helpers.status.getPackageList")
-    @patch("bits_helpers.status.parseDefaults")
-    @patch("bits_helpers.status.readDefaults")
-    @patch("bits_helpers.hashing.storeHashes")
-    @patch("bits_helpers.build.storeHook")
-    def test_write_store_keeps_hash_policy_on_remote_hash(self, mock_hook,
-                                                           mock_store_hashes,
-                                                           mock_read_defaults,
-                                                           mock_parse_defaults,
-                                                           mock_get_package_list):
+    def test_write_store_keeps_hash_policy_on_remote_hash(self):
         """A writable store means a missing hash-policy package keeps remote identity."""
-        rh = "aabbcc" + "0" * 34
-        lh = "ddeeff" + "0" * 34
-        mock_parse_defaults.return_value = (None, {}, {}, {})
-        mock_read_defaults.return_value = None
+        self.assertEqual(self._hash_policy_status(write_store="b3://bits-write"), self.RH)
 
+    def test_no_store_hash_policy_uses_local_hash(self):
+        """Without a writable store, a package to build gets its local hash."""
+        self.assertEqual(self._hash_policy_status(), self.LH)
+
+    def test_write_store_from_defaults(self):
+        """A writable store named in the defaults (system: remote_store: …::rw)
+        counts as for build."""
+        meta = {"system": {"remote_store": "b3://bits-write::rw"}}
+        self.assertEqual(self._hash_policy_status(defaults_meta=meta), self.RH)
+
+    def test_cli_store_wins_over_defaults(self):
+        """A read-only store from the command line wins over the defaults' ::rw."""
+        meta = {"system": {"remote_store": "b3://bits-write::rw"}}
+        self.assertEqual(
+            self._hash_policy_status(defaults_meta=meta, remote_store="b3://bits-read"),
+            self.LH)
+
+    def test_no_remote_store_ignores_defaults_store(self):
+        meta = {"system": {"remote_store": "b3://bits-write::rw"}}
+        self.assertEqual(
+            self._hash_policy_status(defaults_meta=meta, no_remote_store=True), self.LH)
+
+    RH = "aabbcc" + "0" * 34
+    LH = "ddeeff" + "0" * 34
+
+    def _hash_policy_status(self, write_store="", remote_store="", defaults_meta=None,
+                            no_remote_store=False):
+        """The hash status reports for a hash-policy package not built anywhere."""
+        rh, lh = self.RH, self.LH
         spec = _make_spec(pkg="mylib", version="1.0",
                           remote_revision_hash=rh, local_revision_hash=lh,
                           remote_hashes=[rh], local_hashes=[lh])
@@ -765,7 +787,6 @@ class TestDoStatus(unittest.TestCase):
         def fake_get_pkg_list(*args, **kwargs):
             kwargs["specs"]["mylib"] = spec
             return ([], ["mylib"], set(), None)
-        mock_get_package_list.side_effect = fake_get_pkg_list
 
         def fake_store_hashes(p, specs, considerRelocation):
             package = specs[p]
@@ -776,24 +797,31 @@ class TestDoStatus(unittest.TestCase):
             package["force_revision"] = rh
             package["_revision_policy_hash_injected"] = True
             package["deps_hash"] = ""
-        mock_store_hashes.side_effect = fake_store_hashes
 
-        args = self._make_args(["mylib"], json_output=True,
-                               write_store="b3://bits-write")
+        args = self._make_args(["mylib"], json_output=True, write_store=write_store)
+        args.remoteStore = remote_store
+        args.no_remote_store = no_remote_store
+        import argparse
         import bits_helpers.status as status_mod
-        with patch("sys.stdout", new_callable=StringIO) as mock_out:
-            with patch("bits_helpers.status.topological_sort", return_value=["mylib"]):
-                with patch("bits_helpers.status.compute_combined_arch", return_value=self.arch):
-                    with patch("bits_helpers.status.prunePaths"):
-                        import argparse
-                        parser = argparse.ArgumentParser()
-                        parser.error = lambda msg: (_ for _ in ()).throw(SystemExit(msg))
-                        status_mod.doStatus(args, parser)
-            data = json.loads(mock_out.getvalue())
-
-        package = data["packages"][0]
-        self.assertEqual(package["hash"], rh)
+        parser = argparse.ArgumentParser()
+        parser.error = lambda msg: (_ for _ in ()).throw(SystemExit(msg))
+        with patch("bits_helpers.status.getPackageList", side_effect=fake_get_pkg_list), \
+             patch("bits_helpers.status.parseDefaults",
+                   return_value=(None, {}, {}, defaults_meta or {})), \
+             patch("bits_helpers.status.readDefaults", return_value=None), \
+             patch("bits_helpers.hashing.storeHashes", side_effect=fake_store_hashes), \
+             patch("bits_helpers.build.storeHook"), \
+             patch("bits_helpers.status.topological_sort", return_value=["mylib"]), \
+             patch("bits_helpers.status.compute_combined_arch", return_value=self.arch), \
+             patch("bits_helpers.status.prunePaths"), \
+             patch.dict(os.environ), \
+             patch("sys.stdout", new_callable=StringIO) as mock_out:
+            for v in ("BITS_REMOTE_STORE", "REMOTE_STORE", "BITS_WRITE_STORE", "WRITE_STORE"):
+                os.environ.pop(v, None)
+            status_mod.doStatus(args, parser)
+            package = json.loads(mock_out.getvalue())["packages"][0]
         self.assertEqual(package["state"], BUILD_FROM_SOURCE)
+        return package["hash"]
 
     @patch("bits_helpers.status.getPackageList")
     @patch("bits_helpers.status.parseDefaults")

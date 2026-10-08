@@ -98,6 +98,16 @@ class ClassifyTest(unittest.TestCase):
     self._installed(LH, LH)
     self.assertEqual(self._classify(**spec), (plan.INSTALLED, LH, LH))
 
+  def test_hash_policy_unsigned_remote_falls_back_to_local_hash(self):
+    """Build discards an unsigned remote tarball and builds under the local hash."""
+    spec = _spec(revision_policy="hash", _revision_policy_hash_injected=True,
+                 force_revision=RH, hash=RH, revision=RH)
+    store = _Store(["zlib-1.3-%s.%s.tar.gz" % (RH, ARCH)])
+    self.assertEqual(self._classify(store, trusted={}, **spec),
+                     (plan.REMOTE_UNSIGNED, LH, LH))
+    self.assertEqual(self._classify(store, trusted={RH: "sha"}, **spec),
+                     (plan.REMOTE, RH, RH))
+
   def test_hash_policy_fallback_does_not_change_virtual_package_hash(self):
     spec = _spec(
         provides_repository=True, _revision_policy_hash_injected=True,

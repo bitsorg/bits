@@ -99,12 +99,17 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
       if rev is not None:
         state = INSTALLED if _installed(spec, work_dir, eff, rev, h) else LOCAL_TARBALL
         return state, h, rev
+  # A remote tarball the signed manifest does not vouch for is discarded by
+  # the build, which then builds as if the store had none (the hash-policy
+  # fallback below included).
+  unsigned = None
   if can_list:
     for h in remote:
       rev = pick_revision(sync_helper.list_store_tarballs(eff, h), spec, eff, forced=forced)
       if rev is not None:
         if trusted is not None and h not in trusted:
-          return REMOTE_UNSIGNED, h, rev
+          unsigned = (h, rev)
+          break
         return REMOTE, h, rev
   if (spec.get("_revision_policy_hash_injected") and not write_store
       and not is_virtual_package(spec)):
@@ -119,7 +124,9 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
       apply_local_hash_fallback(spec, write_store, reusable=False)
       return state, local_hash, local_rev
     apply_local_hash_fallback(spec, write_store, reusable=False)
-    return BUILD, spec["hash"], spec["revision"]
+    return (REMOTE_UNSIGNED if unsigned else BUILD), spec["hash"], spec["revision"]
+  if unsigned:
+    return (REMOTE_UNSIGNED,) + unsigned
   if forced is not None or write_store:
     return BUILD, spec["remote_revision_hash"], forced or ""
   return BUILD, spec["local_revision_hash"], ""

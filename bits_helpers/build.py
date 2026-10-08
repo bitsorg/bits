@@ -107,6 +107,128 @@ def add_initdotsh_hash_marker(defaults_meta, enabled) -> None:
   env["BITS_INITDOTSH_FROM_MODULES"] = "1"
 
 
+def resolve_initdotsh_mode(args) -> bool:
+  """Set ``args.initdotshFromModules``: the --initdotsh-from-modules /
+  --legacy-initdotsh flag, else legacy when BITS_LEGACY_INITDOTSH is set (the
+  aliBuild wrapper sets it), else from modules (the default). Returns whether
+  the choice was explicit (flag or env var): only then does it win over a
+  defaults file's ``legacy_initdotsh`` (apply_defaults_legacy_initdotsh)."""
+  explicit = (getattr(args, "initdotshFromModules", None) is not None
+              or os.environ.get("BITS_LEGACY_INITDOTSH", "").strip() != "")
+  if getattr(args, "initdotshFromModules", None) is None:
+    args.initdotshFromModules = os.environ.get(
+      "BITS_LEGACY_INITDOTSH", "").strip().lower() not in ("1", "true", "yes", "on")
+  return explicit
+
+
+def defaults_store_url(defaults_meta):
+  """The binary store the active defaults name (``system: remote_store``, else a
+  top-level ``remote_store``), as ``(url, writable)``: normalised, with a
+  trailing ``::rw`` taken as writable. ``("", False)`` when there is none."""
+  system = defaults_meta.get("system", {}) or {}
+  url = system.get("remote_store", defaults_meta.get("remote_store"))
+  if not url:
+    return "", False
+  url = str(url).strip()
+  writable = url.endswith("::rw")
+  from bits_helpers.sync import normalise_store_url
+  return normalise_store_url(url[:-4] if writable else url), writable
+
+
+def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
+                        branch_basename="", branch_stream="", devel=None,
+                        devel_version=None) -> None:
+  """Resolve what storeHashes() hashes for *spec*: tag and commit, version,
+  sources, patches, variables and recipe text. `bits build` and `bits status`
+  both use it, so that they compute the same package identity.
+
+  *devel* is called for a development package with a source, once its tag is
+  resolved; it sets commit_hash, devel_hash and tag from the checkout.
+  *devel_version*, if set, then replaces a development package's version
+  (--devel-prefix). *spec* needs its scm_refs when it has a source.
+  """
+  spec["commit_hash"] = "0"
+  # version_from: <var> — take version (and, for a source-less package, tag +
+  # commit_hash) directly from a named defaults variable. Runs before the tag
+  # defaulting / source blocks so a synthetic package can be versioned by e.g.
+  # the LCG release without a source. No-op unless the recipe sets version_from.
+  apply_version_from(spec, default_vars)
+  if "tag" not in spec:
+    spec["tag"] = spec["version"]
+  if "source" in spec:
+    # Tag may contain date params like %(year)s, %(month)s, %(day)s, %(hour),
+    # plus any variable from the defaults profile / the recipe (e.g. an
+    # override of tag: "%(release)s" driven by variables: release:).
+    spec["tag"] = resolve_tag(spec, default_vars)
+    # First, we try to resolve the "tag" as a branch name, and use its tip as
+    # the commit_hash. If it's not a branch, it must be a tag or a raw commit
+    # hash, so we use it directly. A development package then takes its
+    # commit from the checkout (devel).
+    spec["commit_hash"] = spec["scm_refs"].get("refs/heads/" + spec["tag"], spec["tag"])
+    if spec.get("is_devel_pkg") and devel is not None:
+      devel(spec)
+
+  if "sources" in spec:
+    # Expand a templated tag (e.g. "v%(version)s") for tarball sources too.
+    # The git branch above only resolves it when a `source:` is present, so a
+    # tarball-only recipe kept the raw tag, which then leaked into commit_hash
+    # and the SOURCES/<pkg>/<version>/<tag> path. No-op for literal tags.
+    spec["tag"] = resolve_tag(spec, default_vars)
+    spec["sources"] = [resolveLocalPath(config_dir, s) for s in spec["sources"]]
+    spec["commit_hash"] = spec["tag"]
+  # Version may contain date params like tag, plus %(commit_hash)s,
+  # %(short_hash)s and %(tag)s.
+  spec["version"] = resolve_version(spec, defaults, branch_basename, branch_stream)
+
+  spec.setdefault("variables", OrderedDict(spec.get("variables", {})))
+  variables = spec["variables"]
+  if "Python" in spec.get("requires", []):
+    # Find the Python package spec safely
+    python_version_str = ""
+    py_spec = specs.get("Python")
+    if isinstance(py_spec, dict):
+      python_version_str = (py_spec.get("version", "") or "").replace("v", "")
+    python_version = python_version_str.split(".") if python_version_str else []
+
+    # Safely extract major, minor, patch versions
+    major = python_version[0] if len(python_version) > 0 else "0"
+    minor = python_version[1] if len(python_version) > 1 else "0"
+    patch = python_version[2] if len(python_version) > 2 else "0"
+
+    # Populate variables dictionary
+    variables.update({
+        "python_major_version": major,
+        "python_minor_version": minor,
+        "python_patch_version": patch,
+        "python_major_minor": f"{major}.{minor}",
+        "python_major_minor_str": f"{major}{minor}",
+    })
+  for k, v in variables.items():
+    variables[k] = resolve_spec_data(spec, v, defaults, branch_basename, branch_stream)
+  if "source" in spec:
+    spec["source"] = resolve_spec_data(spec, spec["source"], defaults, branch_basename, branch_stream)
+  if "sources" in spec:
+    spec["sources"] = [resolve_spec_data(spec, src, defaults, branch_basename, branch_stream) for src in spec["sources"]]
+  if "patches" in spec:
+    spec["patches"] = [resolve_spec_data(spec, p, defaults, branch_basename, branch_stream) for p in spec["patches"]]
+  # Variables defined in the active --defaults profile's `variables:` block are
+  # available to every recipe body.  When a recipe does not itself opt into
+  # expansion (no `variables:` / `expand_recipe: true`) we expand it in SOFT
+  # mode: only known variables are substituted and any other %(...)s / bare %
+  # is left untouched, so profile-wide variables never clobber or break a
+  # recipe that happens to contain a literal %(...)s or shell `%`.
+  default_vars = default_vars or None
+  recipe_opts_in = bool(variables or spec.get("expand_recipe", False))
+  if recipe_opts_in or default_vars:
+    spec["recipe"] = resolve_spec_data(spec, spec["recipe"], defaults,
+                                       branch_basename, branch_stream,
+                                       default_vars=default_vars,
+                                       strict=recipe_opts_in)
+
+  if spec.get("is_devel_pkg") and devel_version is not None:
+    spec["version"] = devel_version
+
+
 def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None) -> None:
   """Background task: prefetch the prebuilt tarball + all source archives.
 
@@ -2882,12 +3004,7 @@ def doBuild(args, parser):
   # does it win over a defaults-file request below; the CLI flags set
   # initdotshFromModules to True/False (None when absent), env is
   # BITS_LEGACY_INITDOTSH.
-  _initdotsh_explicit = (getattr(args, "initdotshFromModules", None) is not None
-                         or os.environ.get("BITS_LEGACY_INITDOTSH", "").strip() != "")
-  if getattr(args, "initdotshFromModules", None) is None:
-    _legacy_env = os.environ.get("BITS_LEGACY_INITDOTSH", "").strip().lower() in (
-      "1", "true", "yes", "on")
-    args.initdotshFromModules = not _legacy_env
+  _initdotsh_explicit = resolve_initdotsh_mode(args)
   # Preserve the CLI-supplied disables: parseDefaults appends the config-dir
   # disables to this list in place, so the re-parse below must start clean.
   _cli_disable = list(args.disable)
@@ -3199,12 +3316,8 @@ def doBuild(args, parser):
   # built-in arch default. '::rw' shorthand is honoured as on the CLI.
   if (not getattr(args, "remoteStoreExplicit", False)
       and not getattr(args, "no_remote_store", False)):
-    _rs = _system_opt("remote_store", None)
+    _rs, _rw = defaults_store_url(defaultsMeta)
     if _rs:
-      _rs = str(_rs).strip()
-      from bits_helpers.sync import normalise_store_url
-      _rw = _rs.endswith("::rw")
-      _rs = normalise_store_url(_rs[:-4] if _rw else _rs)
       if _rw and not getattr(args, "writeStore", ""):
         args.writeStore = _rs
       args.remoteStore = _rs
@@ -3653,10 +3766,9 @@ def doBuild(args, parser):
 
   buildTargets = []
   
-  # Resolve the tag to the actual commit ref
+  # Resolve the tag to the actual commit ref, and every other hash input.
   for p in buildOrder:
     spec = specs[p]
-    spec["commit_hash"] = "0"
     develPackageBranch = ""
     # This is a development package (i.e. a local directory named like
     # spec["package"]), but there is no "source" key in its bits recipe,
@@ -3670,103 +3782,28 @@ def doBuild(args, parser):
                "source code from this directory, add a 'source:' key to "
                "{recipe}.sh instead."
                .format(package=p, recipe=p.lower()))
+    assert "source" not in spec or "scm_refs" in spec
 
-    # version_from: <var> — take version (and, for a source-less package, tag +
-    # commit_hash) directly from a named defaults variable. Runs before the tag
-    # defaulting / source blocks so a synthetic package can be versioned by e.g.
-    # the LCG release without a source. No-op unless the recipe sets version_from.
-    apply_version_from(spec, defaultsMeta.get("variables"))
-    if "tag" not in spec:
-      spec["tag"] = spec["version"]
-    if "source" in spec:
-      # Tag may contain date params like %(year)s, %(month)s, %(day)s, %(hour),
-      # plus any variable from the defaults profile / the recipe (e.g. an
-      # override of tag: "%(release)s" driven by variables: release:).
-      spec["tag"] = resolve_tag(spec, defaultsMeta.get("variables"))
-      # First, we try to resolve the "tag" as a branch name, and use its tip as
-      # the commit_hash. If it's not a branch, it must be a tag or a raw commit
-      # hash, so we use it directly. Finally if the package is a development
-      # one, we use the name of the branch as commit_hash.
-      assert "scm_refs" in spec
-      try:
-        spec["commit_hash"] = spec["scm_refs"]["refs/heads/" + spec["tag"]]
-      except KeyError:
-        spec["commit_hash"] = spec["tag"]
-      # We are in development mode, we need to rebuild if the commit hash is
-      # different or if there are extra changes on top.
-      if spec["is_devel_pkg"]:
-        # Devel package: we get the commit hash from the checked source, not from remote.
-        out = spec["scm"].checkedOutCommitName(directory=spec["source"])
-        spec["commit_hash"] = out.strip()
-        local_hash, untracked = hash_local_changes(spec)
-        untrackedFilesDirectories.extend(untracked)
-        spec["devel_hash"] = spec["commit_hash"] + local_hash
-        out = spec["scm"].branchOrRef(directory=spec["source"])
-        develPackageBranch = out.replace("/", "-")
-        spec["tag"] = args.develPrefix if "develPrefix" in args else develPackageBranch
-        spec["commit_hash"] = "0"
+    # We are in development mode, we need to rebuild if the commit hash is
+    # different or if there are extra changes on top.
+    def _devel(spec):
+      nonlocal develPackageBranch
+      # Devel package: we get the commit hash from the checked source, not from remote.
+      out = spec["scm"].checkedOutCommitName(directory=spec["source"])
+      spec["commit_hash"] = out.strip()
+      local_hash, untracked = hash_local_changes(spec)
+      untrackedFilesDirectories.extend(untracked)
+      spec["devel_hash"] = spec["commit_hash"] + local_hash
+      out = spec["scm"].branchOrRef(directory=spec["source"])
+      develPackageBranch = out.replace("/", "-")
+      spec["tag"] = args.develPrefix if "develPrefix" in args else develPackageBranch
+      spec["commit_hash"] = "0"
 
-    if "sources" in spec:
-      # Expand a templated tag (e.g. "v%(version)s") for tarball sources too.
-      # The git branch above only resolves it when a `source:` is present, so a
-      # tarball-only recipe kept the raw tag, which then leaked into commit_hash
-      # and the SOURCES/<pkg>/<version>/<tag> path. No-op for literal tags.
-      spec["tag"] = resolve_tag(spec, defaultsMeta.get("variables"))
-      for i, s in enumerate(spec["sources"]):
-        resolved = resolveLocalPath(args.configDir, s)
-        spec["sources"][i] = resolved
-      spec["commit_hash"] = spec["tag"]
-    # Version may contain date params like tag, plus %(commit_hash)s,
-    # %(short_hash)s and %(tag)s.
-    spec["version"] = resolve_version(spec, args.defaults, branch_basename, branch_stream)
-
-    spec.setdefault("variables", OrderedDict(spec.get("variables", {})))
-    variables = spec["variables"]
-    if "Python" in spec.get("requires", []):
-        # Find the Python package spec safely
-        python_version_str = ""
-        py_spec = specs.get("Python")
-        if isinstance(py_spec, dict):
-            python_version_str = (py_spec.get("version", "") or "").replace("v", "")
-        python_version = python_version_str.split(".") if python_version_str else []
-
-        # Safely extract major, minor, patch versions
-        major = python_version[0] if len(python_version) > 0 else "0"
-        minor = python_version[1] if len(python_version) > 1 else "0"
-        patch = python_version[2] if len(python_version) > 2 else "0"
-
-        # Populate variables dictionary
-        variables.update({
-            "python_major_version": major,
-            "python_minor_version": minor,
-            "python_patch_version": patch,
-            "python_major_minor": f"{major}.{minor}",
-            "python_major_minor_str": f"{major}{minor}",
-        })
-    for k, v in variables.items():
-      variables[k] = resolve_spec_data(spec, v, args.defaults, branch_basename, branch_stream)
-    if "source" in spec:
-      spec["source"] = resolve_spec_data(spec, spec["source"], args.defaults, branch_basename, branch_stream)
-    if "sources" in spec:
-      spec["sources"] = [resolve_spec_data(spec, src, args.defaults, branch_basename, branch_stream) for src in spec["sources"]]
-    if "patches" in spec:
-      spec["patches"] = [resolve_spec_data(spec, p, args.defaults, branch_basename, branch_stream) for p in spec["patches"]]
-    # Variables defined in the active --defaults profile's `variables:` block are
-    # available to every recipe body.  When a recipe does not itself opt into
-    # expansion (no `variables:` / `expand_recipe: true`) we expand it in SOFT
-    # mode: only known variables are substituted and any other %(...)s / bare %
-    # is left untouched, so profile-wide variables never clobber or break a
-    # recipe that happens to contain a literal %(...)s or shell `%`.
-    default_vars = defaultsMeta.get("variables") or None
-    recipe_opts_in = bool(variables or spec.get("expand_recipe", False))
-    if recipe_opts_in or default_vars:
-      spec["recipe"] = resolve_spec_data(spec, spec["recipe"], args.defaults,
-                                         branch_basename, branch_stream,
-                                         default_vars=default_vars,
-                                         strict=recipe_opts_in)
-
-    if spec["is_devel_pkg"] and "develPrefix" in args and args.develPrefix != "ali-master":
-      spec["version"] = args.develPrefix
+    prepare_hash_inputs(
+      spec, specs, args.defaults, defaultsMeta.get("variables"), args.configDir,
+      branch_basename, branch_stream, devel=_devel,
+      devel_version=(args.develPrefix if "develPrefix" in args
+                     and args.develPrefix != "ali-master" else None))
 
   # Decide what is the main package we are building and at what commit.
   #
