@@ -616,7 +616,8 @@ def doStatus(args, parser) -> None:
         # makes status look under a different store key from the build.
         prepare_hash_inputs(
             spec, specs, args.defaults, defaults_meta.get("variables"),
-            args.configDir, branch_basename, branch_stream, devel=devel)
+            args.configDir, branch_basename, branch_stream, devel=devel,
+            default_expand_recipe=bool(defaults_meta.get("expand_recipe", False)))
 
         # Compute build hashes (same as doBuild main loop)
         consider_relocation = (

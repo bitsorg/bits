@@ -200,6 +200,35 @@ class TestPrepareHashInputs(unittest.TestCase):
         self.assertEqual(spec["variables"]["python_major_minor_str"], "312")
         self.assertEqual(spec["recipe"], "pip install --prefix lib/python3.12")
 
+    def test_python_gets_its_own_version_variables(self):
+        python = _make_spec(pkg="Python", version="3.12.4")
+        python["recipe"] = "ln -s python%(python_major_minor)s python3"
+        self._prepare(python)
+        self.assertEqual(python["variables"]["python_major_minor"], "3.12")
+        self.assertEqual(python["recipe"], "ln -s python3.12 python3")
+
+    def test_non_string_variables(self):
+        spec = _make_spec()
+        spec["variables"] = OrderedDict(jobs=4, ver=3.10)
+        spec["recipe"] = "make -j%(jobs)s V=%(ver)s"
+        with self.assertLogs(level="WARNING") as logs:
+            self._prepare(spec)
+        self.assertEqual(spec["recipe"], "make -j4 V=3.1")
+        self.assertIn("quote it", "\n".join(logs.output))   # 3.10 read as 3.1
+
+    def test_defaults_expand_recipe_makes_body_strict(self):
+        # Without it, profile variables are applied softly: unknown ones stay.
+        spec = _make_spec()
+        spec["recipe"] = "echo %(known)s %(unknown)s"
+        self._prepare(spec, default_vars={"known": "k"})
+        self.assertEqual(spec["recipe"], "echo k %(unknown)s")
+        spec = _make_spec()
+        spec["recipe"] = "echo %(known)s %(unknown)s"
+        spec.setdefault("scm_refs", {})
+        with self.assertRaises(SystemExit):
+            prepare_hash_inputs(spec, {"mylib": spec}, ["release"], {"known": "k"},
+                                "/recipes", default_expand_recipe=True)
+
     def test_devel_package_tag_before_version(self):
         """The devel callback runs before the version is resolved."""
         spec = _make_spec(version="%(tag)s", tag="v1.0", is_devel=True)
@@ -619,6 +648,46 @@ class TestDoStatus(unittest.TestCase):
         """A defaults file selecting the legacy init.sh (alidist) drops the marker
         in status too, as build's apply_defaults_legacy_initdotsh does."""
         self._check_defaults_release_hash(legacy=True)
+
+    def test_defaults_expand_recipe_passed_as_build_does(self):
+        # Status hashes with the defaults' expand_recipe, as build does.
+        import argparse
+        import bits_helpers.status as status_mod
+        spec = _make_spec(pkg="defaults-release", version="1", tag="1")
+        del spec["source"]
+        spec.update({"recipe": "", "pkg_family": "", "commit_hash": "0", "scm_refs": {},
+                     "env": OrderedDict()})
+        meta = {"env": OrderedDict(), "variables": {}, "expand_recipe": True}
+
+        def get_packages(*args, **kwargs):
+            kwargs["specs"]["defaults-release"] = spec
+            return [], ["defaults-release"], set(), None
+
+        calls = []
+        args = self._make_args(["defaults-release"], json_output=True)
+        with patch("bits_helpers.status.readDefaults", return_value=(meta, "")), \
+             patch("bits_helpers.status.parseDefaults",
+                   return_value=(None, {"defaults-release": {}}, {}, meta)), \
+             patch("bits_helpers.status.getPackageList", side_effect=get_packages), \
+             patch("bits_helpers.status.topological_sort", return_value=["defaults-release"]), \
+             patch("bits_helpers.status.compute_combined_arch", return_value=self.arch), \
+             patch("bits_helpers.status.prunePaths"), \
+             patch("bits_helpers.repo_provider.resolve_config_dir"), \
+             patch("bits_helpers.repo_provider.load_always_on_providers", return_value={}), \
+             patch("bits_helpers.repo_provider.fetch_repo_providers_iteratively", return_value={}), \
+             patch("bits_helpers.build.storeHook"), \
+             patch("bits_helpers.build.prepare_hash_inputs",
+                   side_effect=lambda *a, **k: calls.append(k)), \
+             patch("bits_helpers.hashing.storeHashes"), \
+             patch("sys.stdout", new_callable=StringIO):
+            parser = argparse.ArgumentParser()
+            parser.error = lambda msg: (_ for _ in ()).throw(SystemExit(msg))
+            try:
+                status_mod.doStatus(args, parser)
+            except Exception:
+                pass            # only the hash inputs matter here
+        self.assertTrue(calls)
+        self.assertIs(calls[0].get("default_expand_recipe"), True)
 
     def _check_defaults_release_hash(self, legacy):
         from copy import deepcopy

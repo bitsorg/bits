@@ -137,7 +137,7 @@ def defaults_store_url(defaults_meta):
 
 def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
                         branch_basename="", branch_stream="", devel=None,
-                        devel_version=None) -> None:
+                        devel_version=None, default_expand_recipe=False) -> None:
   """Resolve what storeHashes() hashes for *spec*: tag and commit, version,
   sources, patches, variables and recipe text. `bits build` and `bits status`
   both use it, so that they compute the same package identity.
@@ -145,7 +145,9 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
   *devel* is called for a development package with a source, once its tag is
   resolved; it sets commit_hash, devel_hash and tag from the checkout.
   *devel_version*, if set, then replaces a development package's version
-  (--devel-prefix). *spec* needs its scm_refs when it has a source.
+  (--devel-prefix). *default_expand_recipe* (the defaults' `expand_recipe`)
+  expands every recipe body strictly. *spec* needs its scm_refs when it has a
+  source.
   """
   spec["commit_hash"] = "0"
   # version_from: <var> — take version (and, for a source-less package, tag +
@@ -182,7 +184,8 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
 
   spec.setdefault("variables", OrderedDict(spec.get("variables", {})))
   variables = spec["variables"]
-  if "Python" in spec.get("requires", []):
+  # Python's own recipe gets them too (e.g. for its site-packages path).
+  if "Python" in spec.get("requires", []) or spec["package"] == "Python":
     # Find the Python package spec safely
     python_version_str = ""
     py_spec = specs.get("Python")
@@ -204,6 +207,12 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
         "python_major_minor_str": f"{major}{minor}",
     })
   for k, v in variables.items():
+    if not isinstance(v, str):
+      # YAML reads an unquoted 3.10 as the number 3.1: quote such values.
+      if isinstance(v, float):
+        warning("%s: variable %s is the number %r; quote it if it is a version",
+                spec["package"], k, v)
+      v = str(v)
     variables[k] = resolve_spec_data(spec, v, defaults, branch_basename, branch_stream)
   if "source" in spec:
     spec["source"] = resolve_spec_data(spec, spec["source"], defaults, branch_basename, branch_stream)
@@ -216,9 +225,10 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
   # expansion (no `variables:` / `expand_recipe: true`) we expand it in SOFT
   # mode: only known variables are substituted and any other %(...)s / bare %
   # is left untouched, so profile-wide variables never clobber or break a
-  # recipe that happens to contain a literal %(...)s or shell `%`.
+  # recipe that happens to contain a literal %(...)s or shell `%`. A defaults
+  # profile with `expand_recipe: true` makes every recipe body strict.
   default_vars = default_vars or None
-  recipe_opts_in = bool(variables or spec.get("expand_recipe", False))
+  recipe_opts_in = bool(variables or spec.get("expand_recipe", False) or default_expand_recipe)
   if recipe_opts_in or default_vars:
     spec["recipe"] = resolve_spec_data(spec, spec["recipe"], defaults,
                                        branch_basename, branch_stream,
@@ -3818,7 +3828,8 @@ def doBuild(args, parser):
       spec, specs, args.defaults, defaultsMeta.get("variables"), args.configDir,
       branch_basename, branch_stream, devel=_devel,
       devel_version=(args.develPrefix if "develPrefix" in args
-                     and args.develPrefix != "ali-master" else None))
+                     and args.develPrefix != "ali-master" else None),
+      default_expand_recipe=bool(defaultsMeta.get("expand_recipe", False)))
 
   # Decide what is the main package we are building and at what commit.
   #
