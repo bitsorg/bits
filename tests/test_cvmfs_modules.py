@@ -127,6 +127,18 @@ class CvmfsModulesTest(unittest.TestCase):
     self.assertEqual(r.returncode, 0, r.stderr)
     self.assertEqual(r.stdout.split(), ["B/2-1", "E/5-1"])
 
+  def test_catalog_listing_only_on_request(self):
+    # bitsModules (the catalog listing) runs only with BITS_CATALOG_LISTING=1.
+    mark = os.path.join(self.tmp, "bitsModules-ran")
+    with open(os.path.join(self.inst, "bitsModules"), "w") as f:
+      f.write("#!/bin/sh\ntouch %s\nexit 3\n" % mark)
+    os.chmod(os.path.join(self.inst, "bitsModules"), 0o755)
+    self.assertEqual(self._bits("q").stdout.split(), ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"])
+    self.assertFalse(os.path.exists(mark))
+    self.assertEqual(self._bits("q", BITS_CATALOG_LISTING="1").stdout.split(),
+                     ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"])
+    self.assertTrue(os.path.exists(mark))
+
   def test_q_without_prefix_is_local_only(self):
     r = self._bits("q", BITS_CVMFS_PREFIX="")
     self.assertEqual(r.stdout.split(), ["A/1-1"])

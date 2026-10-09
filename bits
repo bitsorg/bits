@@ -178,14 +178,14 @@ function _listPkgVersions() {
   # Emit the <pkg>/<version> directories under the install tree (the input the
   # module-collection loop consumes).
   #
-  # Fast path: when the tree is served from CVMFS, ask its serving catalog via
-  # the bitsModules helper — one HTTP fetch + a local SQLite query — instead of
-  # a per-file FUSE walk. The helper exits non-zero (fall-back contract) when
-  # its single-dedicated-catalog convention does not hold, in which case we use
-  # the POSIX `find` walk. Off CVMFS we go straight to find (no python spawn).
+  # With BITS_CATALOG_LISTING=1 and the tree on CVMFS, first ask its serving
+  # catalog via the bitsModules helper (one HTTP fetch + a local SQLite query);
+  # it exits non-zero (fall-back contract) when its single-dedicated-catalog
+  # convention does not hold. Off by default: a warm `find` is faster than the
+  # helper's Python start (see catalogListing).
   local dir="$1" real bm
   real=$(readlink -f "$dir" 2> /dev/null || echo "$dir")
-  if [[ "$real" == /cvmfs/* ]]; then
+  if catalogListing && [[ "$real" == /cvmfs/* ]]; then
     if [[ -n "$BITS_PY" ]]; then bm="${BITSDIR}/bitsModules"
     else bm=$(command -v bitsModules 2> /dev/null || echo "${BITSDIR}/bitsModules"); fi
     if [[ -x "$bm" ]] && ${BITS_PY:+"$BITS_PY" -E -s} "$bm" "$dir" --depth2-dirs 2> /dev/null; then
@@ -356,15 +356,24 @@ function cvmfsTrees() {
   return 0
 }
 
+function catalogListing() {
+  # Whether to try the bitsModules catalog listing (BITS_CATALOG_LISTING=1).
+  # Kept for later (e.g. selecting modules in SQL), but off: a directory walk
+  # over a warm CVMFS cache takes milliseconds, the helper a Python start, and
+  # it needs one catalog rooted at the tree with none nested below it.
+  [[ "${BITS_CATALOG_LISTING:-}" == 1 ]]
+}
+
 function listCvmfsModules() {
   # Emit <pkg>/<version> for every modulefile in the CVMFS module trees (no
-  # BASE), via the serving-catalog fast path when it applies, else find.
-  local t bm
+  # BASE), with find, or first the serving catalog (catalogListing).
+  local t bm=
   (( ${#CVMFS_TREES[@]} )) || return 0
-  if [[ -n "$BITS_PY" ]]; then bm="${BITSDIR}/bitsModules"
+  if ! catalogListing; then :
+  elif [[ -n "$BITS_PY" ]]; then bm="${BITSDIR}/bitsModules"
   else bm=$(command -v bitsModules 2> /dev/null || echo "${BITSDIR}/bitsModules"); fi
   for t in "${CVMFS_TREES[@]}"; do
-    { [[ -x "$bm" ]] && ${BITS_PY:+"$BITS_PY" -E -s} "$bm" "$t" 2> /dev/null; } ||
+    { [[ -n "$bm" && -x "$bm" ]] && ${BITS_PY:+"$BITS_PY" -E -s} "$bm" "$t" 2> /dev/null; } ||
       ( cd "$t" && find . -mindepth 2 -maxdepth 2 \( -type f -o -type l \) | sed -e 's|^\./||' )
   done | grep -E '^[^/.][^/]*/[^/.][^/]*$' | grep -v '^BASE/' || true
 }

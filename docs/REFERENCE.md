@@ -476,7 +476,7 @@ but are not enforced by CI.
 | `bitsDeps` | Thin wrapper calling `bitsBuild deps` |
 | `bitsDoctor` | Thin wrapper calling `bitsBuild doctor` |
 | `bitsStore` | `bits store` — S3 store inspection, verification, deletion, `gc`, `stats`, `upload` |
-| `bitsModules` | Module listing on CVMFS through the serving catalog (used by `bits`) |
+| `bitsModules` | Module listing on CVMFS through the serving catalog (used by `bits` with `BITS_CATALOG_LISTING=1`) |
 | `aliBuild` | Backward-compatible wrapper: sets the ALICE defaults and execs `bits` |
 | `pb` | Thin wrapper calling `bitsBuild` |
 | `bitsenv` | Legacy environment manager |
@@ -1703,11 +1703,13 @@ bits avail         # raw modulecmd avail output
 
 `bits q` lists modules in the native `PKG/VERSION` form. When a display prefix is set in the environment (`BITS_PKG_PREFIX`, e.g. via the `aliBuild` wrapper) the output is reformatted to `PREFIX@PKG::VERSION` (so `aliBuild q` prints `VO_ALICE@zstd::1.5.7-local1`). The optional `REGEXP` is a case-insensitive extended regular expression. `bits q` lists the installed packages straight from the install tree, without refreshing the modules directory or running `modulecmd`, so it stays fast even with hundreds of packages. `bits avail` refreshes the modules directory and runs `modulecmd avail`.
 
-**Fast listing on CVMFS.** Walking an install tree file by file is slow on CVMFS.
-When the tree is under `/cvmfs`, the module refresh and `bits q` instead read the
-whole listing from the tree's CVMFS catalog in one HTTP fetch (the `bitsModules`
-helper). This works only when the tree is the root of its own catalog with no
-nested catalogs below it; otherwise bits falls back to the normal directory walk,
+**Listing on CVMFS.** `bits q` and the module refresh list a tree on CVMFS with a
+directory walk: once the CVMFS client has the tree's catalogs in its cache, that
+takes milliseconds. The first time it downloads them, one per nested catalog, so a
+modules directory should be a single catalog. With `BITS_CATALOG_LISTING=1` they
+first try the `bitsModules` helper, which reads the listing from the tree's CVMFS
+catalog in one HTTP fetch; it applies only when the tree is the root of its own
+catalog with no nested catalogs below it, and otherwise bits walks the directory,
 with the same result.
 
 **A community's modules on CVMFS.** With `BITS_CVMFS_PREFIX` set to a community's
@@ -3316,6 +3318,7 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 | `BITS_LEGACY_INITDOTSH` | _(unset)_ | `1` selects the legacy build-time `init.sh` (same as `--legacy-initdotsh`); the `aliBuild` wrapper sets it. |
 | `BITS_PROVIDERS` | `https://github.com/bitsorg/bits-providers` (empty under the `aliBuild` wrapper) | URL of the repository-provider set; an `@<tag>` suffix pins a snapshot. Environment only (no build flag). |
 | `BITS_CVMFS_PREFIX` | _(unset)_ | A community's CVMFS prefix (e.g. `/cvmfs/bits.cern.ch/key4hep`): `bits q`, `enter`, `load`, `printenv`, `unload` and `setenv` also use its modules for the architecture, after the local ones (see [bits query](#bits-query--list--avail)). The bits entry point on CVMFS sets it for a community. Unset, a recipe repository's `cvmfs.yaml` gives the trees; empty turns them off. |
+| `BITS_CATALOG_LISTING` | _(unset)_ | `1`: list module trees on CVMFS from their serving catalog (the `bitsModules` helper) before walking the directory (see [bits query](#bits-query--list--avail)). |
 | `BITS_REUSE_FROM` | _(unset)_ | Default of `--reuse-from` for `bits build` (e.g. `cvmfs`); the bits entry point on CVMFS sets it for a community. Any `--reuse-from`, from the command line or a `bits use` profile, wins, and an empty one turns reuse off. When the recipes declare no CVMFS layout, or the modules tree it names does not exist, the default is skipped with a warning instead of stopping the build; an explicit `--reuse-policy` wins over its `::relaxed`/`::strict` suffix. |
 | `REMOTE_STORE`, `WRITE_STORE` | _(unset)_ | Read and write store URLs when no flag is given; `BITS_REMOTE_STORE`/`BITS_WRITE_STORE` override them (see [§21](#21-remote-binary-store-backends)). |
 | `BITS_S3_STORE` | `https://s3.cern.ch/lcgapp-bits-testing` | Default store for `bits publish`, `certify`, `sign`, `bits store` and `compliance`. |
