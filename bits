@@ -176,7 +176,8 @@ function detectShell() {
 
 function _listPkgVersions() {
   # Emit the <pkg>/<version> directories under the install tree (the input the
-  # module-collection loop consumes).
+  # module-collection loop consumes), and <family>/<pkg>/<version> ones for a
+  # package_family.
   #
   # With BITS_CATALOG_LISTING=1 and the tree on CVMFS, first ask its serving
   # catalog via the bitsModules helper (one HTTP fetch + a local SQLite query);
@@ -192,7 +193,26 @@ function _listPkgVersions() {
       return 0
     fi
   fi
-  find "$dir" -maxdepth 2 -mindepth 2 2> /dev/null
+  local P V
+  find "$dir" -maxdepth 2 -mindepth 2 2> /dev/null | while IFS= read -r P; do
+    echo "$P"
+    # package_family: <arch>/<family>/<pkg>/<version>, one level deeper. The
+    # <pkg> directory of a family holds versions, and no etc/.
+    if [[ -d "$P" && ! -L "$P" && ! -e "$P/etc" ]]; then
+      for V in "$P"/*; do [[ -e "$V" || -L "$V" ]] && echo "$V"; done
+    fi
+  done
+  return 0
+}
+
+function installDir() {
+  # installDir PKG[/VERSION]: its directory in the install tree, under a
+  # package_family directory if it is there.
+  local d="$WORK_DIR/$ARCHITECTURE/$1" f
+  if [[ ! -e "$d" ]]; then
+    for f in "$WORK_DIR/$ARCHITECTURE"/*/"$1"; do [[ -e "$f" ]] && { d=$f; break; }; done
+  fi
+  echo "$d"
 }
 
 function collectModules() {
@@ -206,7 +226,7 @@ function collectModules() {
     { printf "${ER}ERROR: WORK_DIR or ARCHITECTURE is empty; cannot refresh modules${EZ}\n" >&2; return 1; }
   local mroot="${WORK_DIR}/MODULES/${ARCHITECTURE}"
   local iroot="${WORK_DIR}/${ARCHITECTURE}"
-  local stamp="$mroot/.bits_sync_stamp"
+  local stamp="$mroot/.bits_sync_stamp2"   # 2: package_family packages too
   mkdir -p "$mroot/BASE"
   cat > "$mroot/BASE/1.0" <<EOF
 #%Module1.0
@@ -228,35 +248,41 @@ EOF
   # Incremental sync: copy a modulefile into the cache only when it is missing
   # or newer than the cached copy, then drop cache entries whose source has
   # vanished. After a build with no module changes this copies nothing.
-  local PKG PKGVER PKGNAME src dest
+  local PKG PKGVER PKGNAME FAMILY rel src dest seen=$'\n'
   while read -r PKG; do
     [[ -n "$PKG" ]] || continue
     PKGVER=${PKG##*/}
     PKGNAME=${PKG%/*}; PKGNAME=${PKGNAME##*/}
     src="$PKG/etc/modulefiles/$PKGNAME"
     [[ -e "$src" ]] || continue
+    rel=${PKG#"$iroot/"}; FAMILY=
+    [[ "$rel" == */*/* ]] && FAMILY=${rel%%/*}
     dest="$mroot/$PKGNAME/$PKGVER"
+    seen+="$PKGNAME/$PKGVER"$'\n'
     if [[ ! -e "$dest" || "$src" -nt "$dest" ]]; then
       mkdir -p "$mroot/$PKGNAME"
-      cp "$src" "$dest"
+      if [[ -z "$FAMILY" ]]; then
+        cp "$src" "$dest"
+      else
+        # A modulefile finds its package at $BASEDIR/<pkg>/<version>, the
+        # layout on CVMFS; here the family is in the path too.
+        # (The literal form bits-recipe-tools and alibuild-generate-module write.)
+        local q=${PKGNAME//./\\.}
+        sed -e "s|\$::env(BASEDIR)/$q/|\$::env(BASEDIR)/$FAMILY/$PKGNAME/|g" \
+            -e "s|\$env(BASEDIR)/$q/|\$env(BASEDIR)/$FAMILY/$PKGNAME/|g" "$src" > "$dest"
+      fi
     fi
   done < <(_listPkgVersions "$iroot")
   # Prune cache entries whose source modulefile no longer exists (deleted
-  # package/version). Walk the (small) cache tree with plain find — no GNU
-  # -printf, for macOS portability.
-  local DESTFILE rel pkg ver d
-  while read -r DESTFILE; do
-    [[ -n "$DESTFILE" ]] || continue
-    rel=${DESTFILE#"$mroot/"}
-    pkg=${rel%/*}; ver=${rel##*/}
-    [[ "$pkg" == BASE ]] && continue
-    [[ -e "$iroot/$pkg/$ver/etc/modulefiles/$pkg" ]] || rm -f "$DESTFILE"
-  done < <(find "$mroot" -mindepth 2 -maxdepth 2 -type f 2> /dev/null)
-  # Remove now-empty package directories (rmdir only deletes empties; keep BASE).
-  for d in "$mroot"/*/; do
-    [[ "$(basename "$d")" == BASE ]] && continue
-    rmdir "$d" 2> /dev/null || true
-  done
+  # package/version): those this listing did not see. One awk for the set
+  # difference (the seen list goes in as a file: macOS awk takes no newlines
+  # in -v values). Then remove the package directories left empty (BASE keeps
+  # its 1.0).
+  local DESTREL
+  ( cd "$mroot" && find . -mindepth 2 -maxdepth 2 -type f ) 2> /dev/null | sed -e 's|^\./||' |
+    awk 'NR == FNR { s[$0]; next } !($0 in s) && $0 !~ /^BASE\// { print }' <(printf '%s' "$seen") - |
+    while IFS= read -r DESTREL; do rm -f "$mroot/$DESTREL"; done
+  rmdir "$mroot"/*/ 2> /dev/null || true
   # Stamp the sync so the next call can fast-skip when nothing changed.
   : > "$stamp" 2> /dev/null || true
 }
@@ -860,7 +886,7 @@ case "$ACTION" in
           printf "${ER}ERROR: invalid module name '%s' (contains '..')${EZ}\n" "$MODULE" >&2
           exit 1
         fi
-        . "$WORK_DIR/$ARCHITECTURE/$MODULE/etc/profile.d/init.sh"
+        . "$(installDir "$MODULE")/etc/profile.d/init.sh"
       done
     else
       evalGroups add
@@ -911,7 +937,7 @@ case "$ACTION" in
       echo "" >&2
       echo "export WORK_DIR=$WORK_DIR" >&2
       for MODULE in $MODULES; do
-        echo ". $WORK_DIR/$ARCHITECTURE/$MODULE/etc/profile.d/init.sh" >&2
+        echo ". $(installDir "$MODULE")/etc/profile.d/init.sh" >&2
       done
       echo "" >&2
       exit 0

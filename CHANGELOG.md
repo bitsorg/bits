@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** `bits q`, `enter`, `load`, `printenv` and `setenv` find packages installed under a `package_family` (`sw/<arch>/<family>/<pkg>/<version>`): they are listed, their modulefiles point at them, and `--dev` sources their `init.sh`.
 - **[Fix]** `bits <command> --help`, `bits version` and `bits architecture` no longer create an empty `sw/`; the work directory is created when a command runs, in its `-C` directory.
 - **[Improvement]** A recipe repository's `cvmfs.yaml` is read with the first `--defaults` profile taken from that repository, beneath that profile's keys, and never overrides a more specific repository's file (the group's, the repository of the first profile after `release`, then `-c` and `BITS_PATH`): `--defaults atlas::gcc15` publishes with atlas.bits' layout, also from a stacks.bits branch that still has its layout in its defaults. A modules template `bits q` cannot use (e.g. with `{install_dir}`) no longer prints a note.
 - **[Feature]** A defaults profile with `expand_recipe: true` expands every recipe body strictly (an unknown `%(name)s` is an error); `bits build` and `bits status` both honour it (from #125).

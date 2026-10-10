@@ -2830,8 +2830,11 @@ Every place that bits constructs a path based on the install location is family-
 | `latest` symlink parent | `sw/<arch>/ROOT/` | `sw/<arch>/lcg/ROOT/` |
 | Shell build `$PKGPATH` | `<arch>/ROOT/<version>-<revision>` | `<arch>/lcg/ROOT/<version>-<revision>` |
 | `$PKGFAMILY` env var | _(empty)_ | `lcg` |
+| `bits q`, `enter`, `load`, `printenv`, `setenv` | `ROOT/v6-30-06-1` from `sw/<arch>/ROOT/…` | the same module name, from `sw/<arch>/lcg/ROOT/…` |
 
 The content-addressed tarball store (`TARS/<arch>/store/<h2>/<hash>/`) and the TARS convenience symlinks are **not** family-aware — they are indexed by hash, not by install path.
+
+Module names stay `<package>/<version>`. A package's modulefile finds it at `$BASEDIR/<package>/<version>`, the layout on CVMFS (whose packages templates have no family); when bits copies the modulefile of a family package into `sw/MODULES/<arch>/` it adds the family to that path, so the same modulefile works locally. It does so for the literal `$::env(BASEDIR)/<package>/` (or `$env(BASEDIR)/<package>/`) that bits-recipe-tools and `alibuild-generate-module` write; a modulefile that builds the path another way (e.g. `set base $::env(BASEDIR)` first) is not adapted. For the same reason a CVMFS `cvmfs_packages_template` should not contain `{family}` (a releases template may).
 
 #### Dependency paths in `init.sh`
 
