@@ -8,6 +8,7 @@ Needs a real modulecmd (Environment Modules): on PATH, or $BITS_TEST_MODULECMD.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -25,15 +26,16 @@ def _modulecmd():
 def _package(sw, path, pkg, verrev, deps=()):
   """A package as bits-recipe-tools' ModuleRecipe writes its modulefile."""
   root = os.path.join(sw, ARCH, path)
+  var = re.sub(r"\W", "_", pkg).upper() + "_ROOT"   # as pkg_to_shell_id: PY_TEST_ROOT
   os.makedirs(os.path.join(root, "etc", "modulefiles"))
   os.makedirs(os.path.join(root, "etc", "profile.d"))
   with open(os.path.join(root, "etc", "profile.d", "init.sh"), "w") as f:
-    f.write("export %s_ROOT=%s\n" % (pkg.upper(), root))
+    f.write("export %s=%s\n" % (var, root))
   lines = ["#%Module1.0", "set version " + verrev,
            "if ![ is-loaded 'BASE/1.0' ] {\n module load BASE/1.0\n}"]
   lines += ["if ![ is-loaded \"%s\" ] { module load %s }" % (d, d) for d in deps]
   lines += ["set PKG_ROOT $::env(BASEDIR)/%s/$version" % pkg,
-            "setenv %s_ROOT $PKG_ROOT" % pkg.upper()]
+            "setenv %s $PKG_ROOT" % var]
   with open(os.path.join(root, "etc", "modulefiles", pkg), "w") as f:
     f.write("\n".join(lines) + "\n")
   return root

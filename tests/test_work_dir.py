@@ -6,6 +6,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -16,7 +17,9 @@ class WorkDirTest(unittest.TestCase):
   def setUp(self):
     self.tmp = tempfile.mkdtemp()
     self.addCleanup(shutil.rmtree, self.tmp, True)
-    self.env = dict(os.environ, HOME=self.tmp)
+    # bitsBuild runs with the python3 on PATH: make it this one (it has PyYAML).
+    self.env = dict(os.environ, HOME=self.tmp,
+                    PATH=os.path.dirname(sys.executable) + os.pathsep + os.environ.get("PATH", ""))
     for v in ("BITS_WORK_DIR", "ALICE_WORK_DIR", "BITS_CHDIR"):
       self.env.pop(v, None)
 
