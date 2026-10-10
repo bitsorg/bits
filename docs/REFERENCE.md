@@ -1950,14 +1950,25 @@ bits cvmfs publish …                  # producer-side publish of a build manif
 
 #### The CVMFS layout file: cvmfs.yaml
 
-A recipe repository may keep its CVMFS layout in a `cvmfs.yaml` in its top directory
-(the recipe directory, `-c`/`--config-dir`, by default the current directory), the same
-keys as under `system:` in its defaults: `prefix`,
-`cvmfs_user_prefix`, `cvmfs_packages_template`, `cvmfs_releases_template`,
+A recipe repository may keep its CVMFS layout in a `cvmfs.yaml` in its top directory,
+beside its `defaults-*.sh`, with the same keys as under `system:` in its defaults:
+`prefix`, `cvmfs_user_prefix`, `cvmfs_packages_template`, `cvmfs_releases_template`,
 `cvmfs_modules_template`, `cvmfs_shared_path_template`, `cvmfs_views_template` and
-`cvmfs_view_exclude`. A key the defaults set wins, so a profile can still change one
-(e.g. a nightly's releases and views templates). The prefix bits-console injects
-still bounds it: a declared prefix must be that one or below it. The layout never enters a package hash. Without the file, the defaults
+`cvmfs_view_exclude`. It counts as part of the first profile of the `--defaults`
+chain taken from that repository, beneath that profile's own keys. So a later
+profile still changes a key (e.g. a nightly's releases and views templates), and a
+group overlay's file wins over the base repository's layout (`--defaults
+atlas::gcc15` publishes with atlas.bits' layout, not stacks.bits'). Where several of the chain's
+repositories have a layout, a file never overrides a key that a more specific one
+set, in its file or its profiles: first the group's (the repository of the first
+profile after `release`, as in `--defaults <group>::<compiler>`), then the search
+path (`-c`, then `BITS_PATH`). A key the group's file leaves out comes from the
+others (an empty value clears it). A `cvmfs.yaml` in the recipe directory (`-c`) that no profile came
+from lies beneath all of them. Profiles in such a chain should use the current key
+names under `system:` (not `cvmfs_prefix`, `cvmfs_path_template` or top-level keys).
+A file's `cvmfs_view_exclude` replaces the list before it; profiles' lists add up. The
+prefix bits-console injects still bounds it: a declared prefix must be that one or
+below it. The layout never enters a package hash. Without the file, the defaults
 alone give the layout, as before. Besides builds and publishing, `bits q`, `enter`
 and `load` use it for the group's modules (from the current directory, or beside the
 work directory), and `bits cvmfs platforms|show|summary` for their root (from the
@@ -1973,7 +1984,10 @@ cvmfs_releases_template:    "{prefix}/releases/{release}/{family}{pkg}/{version}
 cvmfs_views_template:       "{prefix}/views/{release}/{arch}"
 ```
 
-The shell reads `prefix` and `cvmfs_modules_template` as plain `key: value` lines.
+The shell reads `prefix` and `cvmfs_modules_template` as plain `key: value` lines; a
+modules template that is not `<directory with {arch}>/{pkg}` (e.g. one with
+`{install_dir}`), or a file without `prefix`, gives `bits q`, `enter` and `load` no
+CVMFS modules.
 
 `bits cvmfs publish` places every package of the build with the build's own CVMFS
 templates (recorded in its manifest). A group that sets `cvmfs_packages_template`

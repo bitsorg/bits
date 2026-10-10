@@ -239,8 +239,7 @@ class CvmfsModulesTest(unittest.TestCase):
     self._layout('prefix: %s\ncvmfs_modules_template: "{prefix}/{release}/{arch}/M/{pkg}"\n'
                  % self.cvmfs)
     r = self._bits("q")
-    self.assertEqual(r.stdout.split(), ["A/1-1"])
-    self.assertIn("no CVMFS modules", r.stderr)
+    self.assertEqual((r.stdout.split(), r.stderr), (["A/1-1"], ""))
 
   def test_layout_file_without_a_uses_the_local_arch(self):
     os.makedirs(os.path.join(self.sw, "MODULES", ARCH))   # bits picks ARCH as the local arch

@@ -433,24 +433,100 @@ class LayoutFileTest(unittest.TestCase):
               'cvmfs_releases_template: "{prefix}/releases/{release}/{pkg}/{version}/{arch}"\n'
               'cvmfs_views_template:    "{prefix}/views/{release}/{arch}"\n')
 
-    def test_no_file_changes_nothing(self):
-        from bits_helpers.cvmfs_layout import apply_layout_file
-        meta = {"system": {"prefix": "/cvmfs/x"}}
-        self.assertEqual(apply_layout_file(meta, self.dir), {})
-        self.assertEqual(meta, {"system": {"prefix": "/cvmfs/x"}})
+    def _repo(self, name, files):
+        d = os.path.join(self.dir, name)
+        os.makedirs(d, exist_ok=True)
+        for f, text in files.items():
+            with open(os.path.join(d, f), "w") as fh:
+                fh.write(text)
+        return d
 
-    def test_defaults_win_over_the_file(self):
-        from bits_helpers.cvmfs_layout import apply_layout_file
-        self._write("cvmfs.yaml", self.LAYOUT)
-        meta = {"system": {"cvmfs_views_template": "{prefix}/views/dev3/{day}/{arch}"},
-                "cvmfs_path_template": "{prefix}/legacy/{pkg}"}
-        apply_layout_file(meta, self.dir)
-        t = RT(meta)
-        self.assertEqual(t["prefix"], "/cvmfs/r/g")
-        self.assertEqual(t["packages"], "{prefix}/{arch}/Packages/{pkg}/{tag}")
-        self.assertEqual(t["modules"], "{prefix}/{arch}/Modules/modulefiles/{pkg}")
-        self.assertEqual(t["views"], "{prefix}/views/dev3/{day}/{arch}")   # the profile's
-        self.assertEqual(t["path"], "{prefix}/legacy/{pkg}")   # the defaults' (legacy name)
+    def _read(self, config_dir, chain, path=""):
+        from unittest import mock
+        from bits_helpers.defaults import readDefaults
+        with mock.patch.dict(os.environ, {"BITS_PATH": path}):
+            return RT(readDefaults(config_dir, chain, lambda *_: None, "slc9_x86-64")[0])
+
+    def test_no_file_changes_nothing(self):
+        base = self._repo("base", {"defaults-release.sh": "package: defaults-release\nversion: v1\n"
+                                   "system:\n  prefix: /cvmfs/x\n---\n"})
+        self.assertEqual(self._read(base, ["release"])["prefix"], "/cvmfs/x")
+
+    def test_in_chain_order(self):
+        # base (stacks-like: its own layout in the defaults or cvmfs.yaml, a
+        # nightly profile) and a group overlay (atlas-like) on the search path.
+        nightly = ("package: defaults-dev3\nversion: v1\nsystem:\n"
+                   "  cvmfs_views_template: \"{prefix}/views/dev3/{arch}\"\n---\n")
+        group = self._repo("group", {
+            "defaults-grp.sh": "package: defaults-grp\nversion: v1\n---\n",
+            "cvmfs.yaml": 'prefix: /cvmfs/r/grp\ncvmfs_releases_template: ""\n'})
+        for base_layout in ("defaults", "file"):
+            release = "package: defaults-release\nversion: v1\n"
+            files = {"defaults-dev3.sh": nightly}
+            if base_layout == "defaults":
+                release += ("system:\n  prefix: /cvmfs/r/base\n"
+                            "  cvmfs_releases_template: \"{prefix}/releases/{pkg}\"\n")
+            else:
+                files["cvmfs.yaml"] = self.LAYOUT.replace("/cvmfs/r/g", "/cvmfs/r/base")
+            files["defaults-release.sh"] = release + "---\n"
+            base = self._repo("base-" + base_layout, files)
+            with self.subTest(base_layout=base_layout):
+                # The base alone: its own layout.
+                self.assertEqual(self._read(base, ["release"])["prefix"], "/cvmfs/r/base")
+                # With the group: the group's file wins over the base (defaults or
+                # file), and a later profile (dev3) wins over the group's file.
+                t = self._read(base, ["release", "grp", "dev3"], path=group)
+                self.assertEqual(t["prefix"], "/cvmfs/r/grp")
+                if base_layout == "file":   # views need the packages template
+                    self.assertEqual(t["views"], "{prefix}/views/dev3/{arch}")
+                self.assertNotIn("releases", t["path"])   # cleared by the group's ""
+
+    def test_base_file_never_overrides_the_overlay(self):
+        # The overlay brings its own release profile; a later base profile
+        # (gcc15) must not bring the base's layout back.
+        base = self._repo("base2", {
+            "defaults-gcc15.sh": "package: defaults-gcc15\nversion: v1\n---\n",
+            "cvmfs.yaml": self.LAYOUT.replace("/cvmfs/r/g", "/cvmfs/r/base")})
+        ovl = self._repo("ovl", {
+            "defaults-release.sh": "package: defaults-release\nversion: v1\n---\n",
+            "defaults-ovl.sh": "package: defaults-ovl\nversion: v1\n---\n",
+            "cvmfs.yaml": "prefix: /cvmfs/r/ovl\n"})
+        t = self._read(ovl, ["release", "ovl", "gcc15"], path=base)
+        self.assertEqual(t["prefix"], "/cvmfs/r/ovl")
+        self.assertEqual(t["modules"], "{prefix}/{arch}/Modules/modulefiles/{pkg}")   # the base's
+
+    def test_overlay_layout_in_its_defaults_beats_a_base_file(self):
+        # An overlay still in the old format (layout in its defaults) over a
+        # base that keeps its layout in cvmfs.yaml.
+        base = self._repo("base3", {
+            "defaults-gcc15.sh": "package: defaults-gcc15\nversion: v1\n---\n",
+            "cvmfs.yaml": self.LAYOUT.replace("/cvmfs/r/g", "/cvmfs/r/base")})
+        ovl = self._repo("ovl3", {
+            "defaults-release.sh": "package: defaults-release\nversion: v1\n"
+                                   "system:\n  prefix: /cvmfs/r/ovl\n---\n",
+            "defaults-ovl.sh": "package: defaults-ovl\nversion: v1\n---\n"})
+        t = self._read(ovl, ["release", "ovl", "gcc15"], path=base)
+        self.assertEqual(t["prefix"], "/cvmfs/r/ovl")
+
+    def test_view_exclude_from_the_more_specific_file(self):
+        base = self._repo("base4", {
+            "defaults-release.sh": "package: defaults-release\nversion: v1\n---\n",
+            "defaults-gcc15.sh": "package: defaults-gcc15\nversion: v1\n---\n",
+            "cvmfs.yaml": self.LAYOUT + "cvmfs_view_exclude: [b]\n"})
+        ovl = self._repo("ovl4", {
+            "defaults-ovl.sh": "package: defaults-ovl\nversion: v1\n---\n",
+            "cvmfs.yaml": "cvmfs_view_exclude: [a]\n"})
+        # The group's (ovl, the first profile after release) replaces the base's.
+        self.assertEqual(self._read(ovl, ["release", "ovl", "gcc15"], path=base)["view_exclude"], ["a"])
+
+    def test_recipe_dir_file_beneath_the_profiles(self):
+        # A cvmfs.yaml in the recipe directory no profile came from: beneath them.
+        prof = self._repo("prof", {"defaults-release.sh": "package: defaults-release\nversion: v1\n"
+                                   "system:\n  prefix: /cvmfs/r/prof\n---\n"})
+        here = self._repo("here", {"cvmfs.yaml": self.LAYOUT})
+        t = self._read(here, ["release"], path=prof)
+        self.assertEqual(t["prefix"], "/cvmfs/r/prof")                       # the profile's
+        self.assertEqual(t["modules"], "{prefix}/{arch}/Modules/modulefiles/{pkg}")   # the file's
 
     def test_bad_files_are_errors(self):
         from bits_helpers.cvmfs_layout import read_layout_file
@@ -468,7 +544,9 @@ class LayoutFileTest(unittest.TestCase):
         from bits_helpers.defaults import readDefaults
         self._write("defaults-release.sh", "package: defaults-release\nversion: v1\n---\n")
         self._write("cvmfs.yaml", self.LAYOUT)
-        meta, _ = readDefaults(self.dir, ["release"], lambda *_: None, "slc9_x86-64")
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"BITS_PATH": ""}):
+            meta, _ = readDefaults(self.dir, ["release"], lambda *_: None, "slc9_x86-64")
         self.assertEqual(RT(meta)["modules"], "{prefix}/{arch}/Modules/modulefiles/{pkg}")
         self._write("cvmfs.yaml", "prefx: /cvmfs/x\n")
         with self.assertRaises(SystemExit):

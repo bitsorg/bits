@@ -15,7 +15,7 @@ from os.path import exists
 
 from bits_helpers.log import banner, debug, dieOnError
 from bits_helpers.recipe import getRecipeReader, parseRecipe
-from bits_helpers.paths import resolveDefaultsFilename
+from bits_helpers.paths import getConfigPaths, resolveDefaultsFilename
 from bits_helpers.utilities import asList
 
 # Recipe keys that change what a package fetches (its sources, tag, patches).
@@ -166,6 +166,37 @@ def readDefaults(configDir, defaults, error, architecture):
   missing_defaults = []        # names with no defaults-<name>.sh on the search path
   defaults_dirs = {}           # name -> recipe dir its defaults file came from
   override_dirs = {}           # override key -> dir of the (last) profile setting it
+  layout_dirs = set()          # repositories whose cvmfs.yaml is merged already
+  # A repository's cvmfs.yaml never overrides a key that a more specific
+  # repository's file set, whatever the chain order: first the group's (the
+  # repository of the first profile after `release`, e.g. atlas.bits for
+  # atlas::gcc15), then the search path (-c, then BITS_PATH).
+  search = []
+  group = [x for x in defaults if x != "release"][:1] or defaults[:1]
+  group = [resolveDefaultsFilename(x, configDir, failOnError=False) for x in group]
+  for d in [os.path.dirname(f) for f in group if f and exists(f)] + getConfigPaths(configDir):
+    if os.path.abspath(d) not in search:
+      search.append(os.path.abspath(d))
+  layout_rank = {}             # layout key -> most specific rank that set it
+  from bits_helpers.cvmfs_layout import read_layout_file, LAYOUT_KEYS
+  _rank = lambda d: search.index(d) if d in search else len(search)
+
+  def _layout(directory, meta):
+    """*meta* with *directory*'s cvmfs.yaml merged in, without the keys a more
+    specific repository set; its keys replace (a list does not add up)."""
+    try:
+      layout = read_layout_file(directory)
+    except ValueError as exc:
+      error(str(exc))
+      sys.exit(1)
+    rank = _rank(directory)
+    keep = {k: v for k, v in layout.items() if layout_rank.get(k, rank + 1) > rank}
+    if not keep:
+      return meta
+    for k in keep:
+      layout_rank[k] = rank
+    system = {k: v for k, v in (meta.get("system") or {}).items() if k not in keep}
+    return merge_dicts(dict(meta, system=system), {"system": keep})
 
   for xdefaults in defaults:
     xDefaults = resolveDefaultsFilename(xdefaults, configDir, failOnError=False)
@@ -214,7 +245,18 @@ def readDefaults(configDir, defaults, error, architecture):
         for key, block in xMeta["overrides"].items():
           if SOURCE_KEYS & set(block or {}):
             override_dirs[str(key).split("@", 1)[0].lower()] = defaults_dirs.get(xdefaults)
+      # A repository's cvmfs.yaml (its CVMFS layout) counts as part of the
+      # first profile taken from it, beneath that profile's own keys.
+      d = defaults_dirs.get(xdefaults)
+      if d not in layout_dirs:
+        layout_dirs.add(d)
+        defaultsMeta = _layout(d, defaultsMeta)
       defaultsMeta = merge_dicts(defaultsMeta, xMeta)
+      # A profile's own layout keys always apply, and no less specific
+      # repository's file overrides them later.
+      for k in LAYOUT_KEYS:
+        if k in (xMeta.get("system") or {}):
+          layout_rank[k] = min(layout_rank.get(k, len(search)), _rank(d))
 
   # Store the collected per-default qualifiers so compute_combined_arch can
   # use them instead of appending every default name to the architecture.
@@ -228,13 +270,10 @@ def readDefaults(configDir, defaults, error, architecture):
   if "release" in defaults and "release" not in valid_defaults_exempt:
     valid_defaults_exempt.append("release")
   defaultsMeta["_valid_defaults_exempt"] = valid_defaults_exempt
-  # The CVMFS layout, when the recipe repository keeps it in cvmfs.yaml.
-  from bits_helpers.cvmfs_layout import apply_layout_file
-  try:
-    apply_layout_file(defaultsMeta, configDir)
-  except ValueError as exc:
-    error(str(exc))
-    sys.exit(1)
+  # The recipe directory's cvmfs.yaml, when no profile came from there: beneath
+  # every profile.
+  if os.path.abspath(configDir) not in layout_dirs:
+    defaultsMeta = merge_dicts(_layout(os.path.abspath(configDir), {}), defaultsMeta)
   defaultsMeta["_missing_defaults"] = missing_defaults
   defaultsMeta["_defaults_dirs"] = defaults_dirs
   defaultsMeta["_override_dirs"] = override_dirs

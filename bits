@@ -792,8 +792,7 @@ else
     _d=${_tree%"/{pkg}"}; _r=${_d//"{arch}"/}
     if [[ -z "$_p" || "$_d" == "$_tree" || "$_r" == "$_d" || "$_r" == *"{"* ||
           "${_d#*"{arch}"}" == *"{arch}"* ]]; then
-      _tree=
-      isModuleAction && printf "${EY}NOTE: %s: no prefix, or a cvmfs_modules_template other than <dir with {arch}>/{pkg}: no CVMFS modules${EZ}\n" "$_layout" >&2
+      _tree=   # e.g. alice.bits' {install_dir}: no module trees for q/enter/load
     else
       _tree=$_d
     fi

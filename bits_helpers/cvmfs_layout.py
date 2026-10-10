@@ -321,14 +321,17 @@ def swap_repository(path, repository):
 
 
 # cvmfs.yaml: a recipe repository's CVMFS layout in a file of its own, the same
-# keys as under system: in its defaults. A key the defaults set wins (e.g. a
-# nightly profile's releases and views templates).
+# keys as under system: in its defaults. readDefaults merges it as part of the
+# first profile taken from that repository, beneath that profile's own keys: so
+# a later profile still changes a key (a nightly's releases and views), and a
+# group overlay's file wins over the base repository's (atlas over stacks) and
+# over its defaults; a file never overrides one of a repository earlier on the
+# search path.
 LAYOUT_FILE = "cvmfs.yaml"
 LAYOUT_KEYS = ("prefix", "cvmfs_user_prefix", "cvmfs_packages_template",
                "cvmfs_releases_template", "cvmfs_modules_template",
                "cvmfs_shared_path_template", "cvmfs_views_template",
                "cvmfs_view_exclude")
-_LAYOUT_ALIASES = {"prefix": "cvmfs_prefix", "cvmfs_releases_template": "cvmfs_path_template"}
 
 
 def read_layout_file(directory):
@@ -358,21 +361,6 @@ def read_layout_file(directory):
             raise ValueError("%s: %s must be a %s" % (
                 path, key, "list of strings" if key == "cvmfs_view_exclude" else "string"))
     return data
-
-
-def apply_layout_file(defaults_meta, directory):
-    """Add the layout of <directory>/cvmfs.yaml to the defaults' system: keys,
-    except those the defaults set themselves (system: or top level, or an
-    alias). Returns the layout read ({} without the file)."""
-    layout = read_layout_file(directory)
-    if layout:
-        system = defaults_meta.get("system") or {}
-        for key, value in layout.items():
-            names = (key, _LAYOUT_ALIASES.get(key))
-            if not any(n and (n in system or n in defaults_meta) for n in names):
-                system[key] = value
-        defaults_meta["system"] = system
-    return layout
 
 
 def resolve_cvmfs_templates(defaults_meta, injected_prefix=None):
