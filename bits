@@ -560,7 +560,8 @@ for arg in "$@"
 do
   case $arg in
     architecture|brew|build|certify|checksums|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|verify|version|-debug|-d)
-         mkdir -p "$BITS_WORK_DIR" || echo "Cannot create directory: $BITS_WORK_DIR"
+        # bitsBuild creates the work directory when a command runs (not for
+        # --help, version or architecture).
         ${BITS_PY:+"$BITS_PY" -E -s} "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
