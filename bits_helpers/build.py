@@ -184,7 +184,10 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
 
   spec.setdefault("variables", OrderedDict(spec.get("variables", {})))
   variables = spec["variables"]
-  # Python's own recipe gets them too (e.g. for its site-packages path).
+  declared = bool(variables)   # the recipe's own, before the python_* ones
+  # Python's own recipe gets them too (e.g. for its site-packages path), but
+  # its body stays soft (below) as before: only a recipe that requires Python
+  # has always been expanded strictly through them.
   if "Python" in spec.get("requires", []) or spec["package"] == "Python":
     # Find the Python package spec safely
     python_version_str = ""
@@ -228,8 +231,9 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
   # recipe that happens to contain a literal %(...)s or shell `%`. A defaults
   # profile with `expand_recipe: true` makes every recipe body strict.
   default_vars = default_vars or None
-  recipe_opts_in = bool(variables or spec.get("expand_recipe", False) or default_expand_recipe)
-  if recipe_opts_in or default_vars:
+  recipe_opts_in = bool(declared or "Python" in spec.get("requires", [])
+                        or spec.get("expand_recipe", False) or default_expand_recipe)
+  if recipe_opts_in or default_vars or variables:
     spec["recipe"] = resolve_spec_data(spec, spec["recipe"], defaults,
                                        branch_basename, branch_stream,
                                        default_vars=default_vars,

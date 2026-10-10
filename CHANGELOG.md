@@ -3,6 +3,8 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** A defaults profile with `expand_recipe: true` expands every recipe body strictly (an unknown `%(name)s` is an error); `bits build` and `bits status` both honour it (from #125).
+- **[Fix]** The `Python` recipe itself gets the `python_*` variables (its body still expanded softly); non-string recipe variables no longer crash (a float warns: quote versions such as `"3.10"`); `relocate-me.sh` no longer rewrites an install base that contains the build directory twice (from #125).
 - **[Fix]** `bits cvmfs publish`: the release view adds only the links that are not published yet, instead of resending all of them (a shared root fails on existing ones).
 - **[Feature]** `bits cvmfs publish --replace-on-conflict` replaces only content another build published: a package whose published hash differs, or a merged view whose fingerprint (now in its `.meta.json`) differs, is sent with `replace` and prepub deletes the old subtree first. Needs cvmfs-prepub with `replace_on_conflict`, checked before uploading. Modulefiles, release views and aliases are never replaced, and the package identity is now always sent (no more UNIQUE failures on existing modulefiles).
 - **[Improvement]** The merged view's `setup.sh`/`setup.csh` put the view's man pages on `MANPATH` when it is set (unset, `man` already finds them from `PATH`); `share/man` stays a real directory in the view.

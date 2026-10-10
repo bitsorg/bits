@@ -207,6 +207,13 @@ class TestPrepareHashInputs(unittest.TestCase):
         self.assertEqual(python["variables"]["python_major_minor"], "3.12")
         self.assertEqual(python["recipe"], "ln -s python3.12 python3")
 
+    def test_python_own_recipe_stays_soft(self):
+        # A shell % and an unknown %(x)s are left as they were (same hash).
+        python = _make_spec(pkg="Python", version="3.12.4")
+        python["recipe"] = "echo %(release)s %(other)s; X=${V%.*}; printf '%%s' x"
+        self._prepare(python, default_vars={"release": "r1"})
+        self.assertEqual(python["recipe"], "echo r1 %(other)s; X=${V%.*}; printf '%%s' x")
+
     def test_non_string_variables(self):
         spec = _make_spec()
         spec["variables"] = OrderedDict(jobs=4, ver=3.10)

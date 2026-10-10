@@ -95,7 +95,8 @@ class CvmfsModulesTest(unittest.TestCase):
     self.env = dict(os.environ, HOME=self.tmp,
                     PATH=os.path.dirname(mc) + ":/usr/bin:/bin",
                     BITS_CVMFS_PREFIX=self.cvmfs, MODULES_SHELL="bash")
-    for v in ("BITS_WORK_DIR", "MODULEPATH", "LOADEDMODULES", "_LMFILES_", "BASEDIR"):
+    for v in ("BITS_WORK_DIR", "MODULEPATH", "LOADEDMODULES", "_LMFILES_", "BASEDIR",
+              "BITS_CATALOG_LISTING"):
       self.env.pop(v, None)
 
   def tearDown(self):
@@ -135,7 +136,8 @@ class CvmfsModulesTest(unittest.TestCase):
     os.chmod(os.path.join(self.inst, "bitsModules"), 0o755)
     self.assertEqual(self._bits("q").stdout.split(), ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"])
     self.assertFalse(os.path.exists(mark))
-    self.assertEqual(self._bits("q", BITS_CATALOG_LISTING="1").stdout.split(),
+    self.assertEqual(self._bits("q", BITS_CATALOG_LISTING="1",
+                                PATH=self.inst + ":" + self.env["PATH"]).stdout.split(),
                      ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"])
     self.assertTrue(os.path.exists(mark))
 
