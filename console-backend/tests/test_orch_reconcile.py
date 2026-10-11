@@ -454,6 +454,13 @@ class WorkerStepsTest(_DB):
         self.assertEqual(len(got), 1)
         self.assertIn("GitLab not configured", got[0]["payload"]["error"])
 
+    def test_the_store_is_built_from_the_real_s3_backend(self):
+        from bits_helpers import sync
+        d = kinds.Deps(config.Settings(env={"BITS_ORCH_STORE": "b3://bits-store::rw"}))
+        with patch.object(sync.Boto3RemoteSync, "_s3_init",
+                          lambda self: setattr(self, "s3", "client")):
+            self.assertEqual(d.store(), ("client", "bits-store"))
+
     def test_store_settings(self):
         d = kinds.Deps(config.Settings(env={}))
         self.assertIsNone(d.store())

@@ -58,7 +58,8 @@ class Deps:
         if self._store is None or self._store[0] != url:
             import tempfile
             from bits_helpers.sync import remote_from_url
-            r = remote_from_url(url, None, "", tempfile.gettempdir())
+            # Read only: no write store ("", not None, which the S3 backend cannot take).
+            r = remote_from_url(url, "", "", tempfile.gettempdir())
             self._store = (url, r.s3, r.remoteStore)
         return self._store[1], self._store[2]
 
