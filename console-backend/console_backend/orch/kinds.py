@@ -35,6 +35,33 @@ class Deps:
             raise NotConfigured("forge not configured (BITS_FORGE_OPS_TOKEN/PROJECT)")
         return f
 
+    def reader(self):
+        """GitLab for reading (pipelines, jobs, logs): the read_api token when
+        set, else the ops token."""
+        s = self.settings
+        token = s.forge_read_token or s.forge_ops_token
+        if not (s.gitlab_api_url and token and s.forge_project):
+            raise NotConfigured("GitLab not configured (GITLAB_API_URL, BITS_FORGE_PROJECT,"
+                                " BITS_FORGE_READ_TOKEN)")
+        return forge_ops.GitLabForge(s.gitlab_api_url, token, s.forge_project)
+
+    _store = None
+
+    def store(self):
+        """(s3 client, bucket) of BITS_ORCH_STORE, or None when it is not set.
+        Built once: the client keeps its connection."""
+        url = (self.settings.orch_store or "").split("::", 1)[0]
+        if not url:
+            return None
+        if not url.startswith("b3://"):
+            raise NotConfigured("BITS_ORCH_STORE must be b3://<bucket>")
+        if self._store is None or self._store[0] != url:
+            import tempfile
+            from bits_helpers.sync import remote_from_url
+            r = remote_from_url(url, None, "", tempfile.gettempdir())
+            self._store = (url, r.s3, r.remoteStore)
+        return self._store[1], self._store[2]
+
 
 def _transient(e):
     return e.status == 0 or e.status == 429 or e.status >= 500

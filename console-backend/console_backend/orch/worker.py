@@ -4,9 +4,10 @@
 
 Each pass runs the steps in order. A step reads the database and the outside
 world, then writes what it decided; a step that fails is logged, recorded as an
-event when its error changes, and tried again on the next pass. M0 has one step,
-running due actions; reconcile, builds, signing and schedules are added as steps
-by later milestones.
+event when its error changes, and tried again on the next pass. The steps:
+running due actions, then hints, discover, settle and index (reconcile.py: what
+is true of builds, from GitLab and S3). Signing and schedules are added as
+steps by later milestones.
 
     python -m console_backend.orch.worker      # BITS_ORCH_DB=/orch/orch.db
 """
@@ -18,7 +19,7 @@ import threading
 import time
 
 from .. import config
-from . import actions, authority, db, events, kinds
+from . import actions, authority, db, events, kinds, reconcile
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -31,7 +32,15 @@ class Worker:
         self.heartbeat = heartbeat
         self.deps = kinds.Deps(settings)
         self.authorize = authority.checker(settings)
-        self.steps = [("actions", self._run_actions)]
+        # Actions first, so an approved cancel never waits behind a long catch-up.
+        self.steps = [
+            ("actions", self._run_actions),
+            ("hints", lambda: reconcile.apply_hints(self.conn, self.deps.reader())),
+            ("discover", lambda: reconcile.discover(self.conn, self.deps.reader(),
+                                                    settings.orch_lookback_days)),
+            ("settle", lambda: reconcile.settle(self.conn, self.deps.reader())),
+            ("index", lambda: reconcile.index(self.conn, self.deps.store())),
+        ]
         self._errors = {}                 # step -> last error text
         self._stop = threading.Event()
 
@@ -53,6 +62,8 @@ class Worker:
 
     def run_once(self):
         for name, step in self.steps:
+            if self._stop.is_set():
+                break
             try:
                 step()
             except Exception as exc:
@@ -96,16 +107,19 @@ def main():
         raise SystemExit(problem)
     path = settings.orch_db
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with db.worker_lock(path):
-        conn = db.connect(path)
-        db.migrate(conn)
-        w = Worker(conn, settings, interval=settings.orch_interval,
-                   heartbeat=path + ".heartbeat")
-        signal.signal(signal.SIGTERM, w.stop)
-        signal.signal(signal.SIGINT, w.stop)
-        log.info("orchestrator worker on %s (schema %d, every %ss)",
-                 path, db.SCHEMA_VERSION, settings.orch_interval)
-        w.loop()
+    try:
+        with db.worker_lock(path):
+            conn = db.connect(path)
+            db.migrate(conn)
+            w = Worker(conn, settings, interval=settings.orch_interval,
+                       heartbeat=path + ".heartbeat")
+            signal.signal(signal.SIGTERM, w.stop)
+            signal.signal(signal.SIGINT, w.stop)
+            log.info("orchestrator worker on %s (schema %d, every %ss)",
+                     path, db.SCHEMA_VERSION, settings.orch_interval)
+            w.loop()
+    except db.LockedError as e:
+        raise SystemExit("bits-orchestrator: %s; not starting a second worker" % e)
 
 
 if __name__ == "__main__":

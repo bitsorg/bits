@@ -121,6 +121,19 @@ class Settings:
         # /ops/actions and /ops/events endpoints answer 503.
         self.orch_db = e.get("BITS_ORCH_DB", "")
         self.orch_interval = float(e.get("BITS_ORCH_INTERVAL", "30") or "30")
+        # Read-only (read_api) GitLab token the worker reads pipelines, jobs and
+        # job logs with; falls back to the ops token when unset.
+        self.forge_read_token = e.get("BITS_FORGE_READ_TOKEN", "")
+        # How far back the worker looks for pipelines when it starts with an empty
+        # database (days); older history is the failure backfill's job.
+        self.orch_lookback_days = float(e.get("BITS_ORCH_LOOKBACK_DAYS", "7") or "7")
+        # The store the builds' BOMs and build index are in (b3://<bucket>; a
+        # trailing ::rw is ignored: the worker only reads). Empty = builds are
+        # recorded from GitLab only, without their BOMs.
+        self.orch_store = e.get("BITS_ORCH_STORE", "")
+        # The audience of the CI ID tokens build jobs send with their hints
+        # (/ops/ci/*): its own, so a hint token can never sign anything.
+        self.orch_ci_audience = e.get("BITS_ORCH_CI_AUDIENCE", "bits-orchestrator")
 
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks

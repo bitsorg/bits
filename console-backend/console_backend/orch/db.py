@@ -60,6 +60,58 @@ MIGRATIONS = [
         "CREATE INDEX actions_state ON actions(state, id)",
         "CREATE INDEX actions_subject ON actions(subject, state, id)",
     ],
+    # 2 — what the worker knows of GitLab pipelines and the builds they published
+    # (M1). Both can be rebuilt from GitLab and S3.
+    [
+        """CREATE TABLE kv (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )""",
+        """CREATE TABLE pipelines (
+            id            INTEGER PRIMARY KEY,
+            is_build      INTEGER NOT NULL,
+            community     TEXT NOT NULL DEFAULT '',
+            name          TEXT NOT NULL DEFAULT '',
+            source        TEXT NOT NULL DEFAULT '',
+            ref           TEXT NOT NULL DEFAULT '',
+            sha           TEXT NOT NULL DEFAULT '',
+            web_url       TEXT NOT NULL DEFAULT '',
+            package       TEXT NOT NULL DEFAULT '',
+            version       TEXT NOT NULL DEFAULT '',
+            platform      TEXT NOT NULL DEFAULT '',
+            variables     TEXT NOT NULL DEFAULT '{}',
+            gl_status     TEXT NOT NULL DEFAULT '',
+            outcome       TEXT NOT NULL DEFAULT 'running' CHECK (outcome IN
+                            ('running','success','failed','canceled')),
+            jobs          TEXT NOT NULL DEFAULT '[]',
+            created_at    TEXT NOT NULL DEFAULT '',
+            updated_at    TEXT NOT NULL DEFAULT '',
+            finished_at   TEXT NOT NULL DEFAULT '',
+            first_seen_ms INTEGER NOT NULL,
+            checked_ms    INTEGER NOT NULL DEFAULT 0,
+            indexed_ms    INTEGER NOT NULL DEFAULT 0
+        )""",
+        "CREATE INDEX pipelines_outcome ON pipelines(is_build, outcome, id)",
+        "CREATE INDEX pipelines_community ON pipelines(community, id)",
+        """CREATE TABLE builds (
+            pipeline_id   INTEGER NOT NULL REFERENCES pipelines(id),
+            build_id      TEXT NOT NULL,
+            community     TEXT NOT NULL DEFAULT '',
+            state         TEXT NOT NULL DEFAULT 'published',
+            arches        TEXT NOT NULL DEFAULT '[]',
+            bom_keys      TEXT NOT NULL DEFAULT '[]',
+            top_level     TEXT NOT NULL DEFAULT '[]',
+            packages      INTEGER NOT NULL DEFAULT 0,
+            published_at  TEXT NOT NULL DEFAULT '',
+            recorded_ms   INTEGER NOT NULL,
+            PRIMARY KEY (pipeline_id, build_id)
+        )""",
+        """CREATE TABLE hints (
+            pipeline_id   INTEGER PRIMARY KEY,
+            kind          TEXT NOT NULL,
+            ts_ms         INTEGER NOT NULL
+        )""",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

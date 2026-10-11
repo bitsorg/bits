@@ -9,6 +9,11 @@
     POST /ops/actions/{id}/approve
     POST /ops/actions/{id}/reject      {reason?}
     GET  /ops/events?after=&limit=&wait=   the event log (overall admins), long-polled
+    GET  /ops/builds?community=&outcome=&pipelines=&limit=
+                                       build pipelines and their builds
+    GET  /ops/builds/{pipeline}        one, with its jobs, variables and events
+    POST /ops/ci/published, /ops/ci/failed   {pipeline}: a CI job's hint to look
+                                       at its pipeline now (GitLab CI ID token)
 
 The API writes only requests and decisions; the worker runs actions. Identity
 and the admin policy are the backend's own (`main._current`, `_resolved_policy`).
@@ -22,8 +27,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from .. import audit, authz
-from . import actions, db, events, kinds
+from .. import audit, authz, ci_auth
+from . import actions, db, events, kinds, reconcile
 
 router = APIRouter()
 _MAX_BODY = 64 * 1024
@@ -211,3 +216,114 @@ async def list_events(request: Request, after: int = 0, limit: int = 200, wait: 
         if out or asyncio.get_running_loop().time() >= deadline:
             return JSONResponse({"events": out}, headers={"Cache-Control": "no-store"})
         await asyncio.sleep(1)
+
+
+# --- builds -------------------------------------------------------------------
+
+async def _scope(data):
+    """None for an overall admin (every community), else the communities the
+    caller administers (lowercase)."""
+    overall, groups = await run_in_threadpool(lambda: authz.admin_groups(data["user"], _policy(data)))
+    return None if overall else {g.lower() for g in groups}
+
+
+@router.get("/ops/builds")
+async def list_builds(request: Request, community: str = "", outcome: str = "",
+                      pipelines: str = "", limit: int = 50):
+    """Build pipelines newest first, with the builds they published: those of the
+    communities the caller administers (all, for an overall admin). *pipelines*
+    is a comma-separated list of ids (the console asks for the rows it shows)."""
+    data = await _caller(request)
+    mine = await _scope(data)
+    if community:
+        c = community.strip().lower()
+        if mine is not None and c not in mine:
+            return {"builds": []}
+        mine = {c}
+    if outcome and outcome not in ("running", "success", "failed", "canceled"):
+        raise HTTPException(400, "unknown outcome")
+    ids = None
+    if pipelines:
+        try:
+            ids = [int(x) for x in pipelines.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(400, "pipelines must be comma-separated ids")
+
+    def read():
+        with _open() as conn:
+            return reconcile.list_builds(conn, communities=mine, outcome=outcome or None,
+                                         pipelines=ids, limit=limit)
+    return JSONResponse({"builds": await run_in_threadpool(read)},
+                        headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/builds/{pipeline}")
+async def get_build(pipeline: int, request: Request):
+    data = await _caller(request)
+    mine = await _scope(data)
+
+    def read():
+        with _open() as conn:
+            return reconcile.get_build(conn, pipeline)
+    b = await run_in_threadpool(read)
+    if b is None or (mine is not None and b["community"] not in mine):
+        raise HTTPException(404, "no such build")
+    return JSONResponse(b, headers={"Cache-Control": "no-store"})
+
+
+# --- CI hints -------------------------------------------------------------------
+
+async def _ci_claims(request, settings):
+    """The verified claims of the caller's CI ID token, from the build project on
+    a protected ref; else HTTPException. Verified off the event loop: fetching
+    GitLab's keys is network I/O."""
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(401, "CI ID token required")
+    aud = settings.orch_ci_audience
+    if not aud or aud == settings.oidc_ci_audience:
+        raise HTTPException(503, "BITS_ORCH_CI_AUDIENCE must be set, and differ from the"
+                                 " signing audience")
+    try:
+        claims = await run_in_threadpool(ci_auth.verify_ci_token,
+                                         auth[len("Bearer "):].strip(), settings, None, aud)
+    except ValueError as e:
+        raise HTTPException(503, str(e))
+    except Exception:
+        raise HTTPException(401, "invalid CI ID token")
+    project = str(settings.forge_project)
+    if project not in (str(claims.get("project_id", "")), str(claims.get("project_path", ""))):
+        raise HTTPException(403, "not the build project")
+    if str(claims.get("ref_protected", "")).lower() != "true":
+        raise HTTPException(403, "not a protected ref")
+    return claims
+
+
+async def _hint(request, kind):
+    settings = _m().settings
+    claims = await _ci_claims(request, settings)
+    payload = await _body(request)
+    try:
+        pid = int(str(payload.get("pipeline", "")))
+    except ValueError:
+        raise HTTPException(400, "expected {pipeline}")
+    if str(claims.get("pipeline_id", "")) != str(pid):
+        raise HTTPException(403, "the token is not from pipeline %d" % pid)
+
+    def write():
+        with _open() as conn:
+            reconcile.add_hint(conn, pid, kind)
+    await run_in_threadpool(write)
+    return {"status": "noted"}
+
+
+@router.post("/ops/ci/published")
+async def ci_published(request: Request):
+    """A hint only: the worker looks at the pipeline on its next pass and reads
+    what was published from S3, never from this request."""
+    return await _hint(request, "published")
+
+
+@router.post("/ops/ci/failed")
+async def ci_failed(request: Request):
+    return await _hint(request, "failed")

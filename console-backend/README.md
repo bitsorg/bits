@@ -53,3 +53,17 @@ attempts), and runs one action at a time per subject.
 
 Everything that happens is an **event** (`GET /ops/events?after=&wait=`, overall
 admins): an append-only log whose hash chain is the audit trail.
+
+Each pass first **reconciles** builds (`orch/reconcile.py`), trusting GitLab and
+S3 rather than what jobs report: it lists the build project's pipelines updated
+since the last pass (`BITS_ORCH_LOOKBACK_DAYS`, default 7, on an empty
+database), reads a new pipeline's variables once, decides each build pipeline's
+outcome from its CI jobs (bits' progress status can hold a pipeline "running" or
+fail it late), and reads a finished pipeline's builds from the S3 build index in
+`BITS_ORCH_STORE` (`b3://<bucket>`). GitLab is read with `BITS_FORGE_READ_TOKEN`
+(read_api) when set. `GET /ops/builds` and `GET /ops/builds/{pipeline}` serve
+what it recorded, for the communities the caller administers. A build job may
+send a hint (`POST /ops/ci/published|failed {pipeline}`) with a CI ID token for
+the audience `BITS_ORCH_CI_AUDIENCE` (default `bits-orchestrator`), from the
+build project on a protected ref; the worker then looks at that pipeline on
+its next pass.

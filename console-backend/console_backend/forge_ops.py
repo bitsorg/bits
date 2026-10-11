@@ -147,6 +147,31 @@ class GitLabForge:
                                    "protected": False, "masked": False})
             raise
 
+    def _get_all(self, path, per_page=100, max_pages=50):
+        """Every page of a list endpoint (GitLab pages by `page`/`per_page`)."""
+        sep = "&" if "?" in path else "?"
+        out = []
+        for page in range(1, max_pages + 1):
+            got = self._get("%s%spage=%d&per_page=%d" % (path, sep, page, per_page)) or []
+            out.extend(got)
+            if len(got) < per_page:
+                break
+        return out
+
+    def list_pipelines(self, updated_after, page=1, per_page=100):
+        """One page of the project's pipelines updated after *updated_after*
+        (ISO 8601), oldest update first."""
+        return self._get("/pipelines?updated_after=%s&order_by=updated_at&sort=asc"
+                         "&page=%d&per_page=%d" % (quote(updated_after, safe=""),
+                                                   page, per_page)) or []
+
+    def get_pipeline(self, pid):
+        return self._get("/pipelines/%s" % pid)
+
+    def pipeline_jobs(self, pid):
+        """Every job of the pipeline, retried attempts included."""
+        return self._get_all("/pipelines/%s/jobs?include_retried=true" % pid)
+
     def pipeline_variables(self, pid):
         """The pipeline's variables as GitLab lists them ([{key, value, ...}])."""
         return self._get("/pipelines/%s/variables" % pid) or []
