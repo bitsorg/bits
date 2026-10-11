@@ -84,3 +84,17 @@ once. `GET /ops/issues`, `/ops/issues/{id}`, `/ops/failures` and
 issue seen in several shows a community admin only their own occurrences,
 counts and excerpt). A pipeline whose logs cannot be read is tried again every
 10 minutes for a day.
+
+**Approvals** are kept in the same database when `BITS_ORCH_DB` is set
+(`orch/approvals.py`): an approved pre-approval (console or CLI) is stored with
+the passkey assertion that approved it, survives a restart, expires 24 hours
+after approval, and its signs are counted atomically (one per architecture, at
+most 16); pending ones wait in memory for their passkey, 10 minutes. Without the
+database, they stay in memory as before. A **standing approval**
+(`POST /approvals/standing/request` then `/approve`, with a passkey) lets a
+schedule's builds be certified without a person each time: bound to the
+schedule file's sha256 and its groups, for 1-100 runs or up to 30 days. `GET
+/approvals` lists the approvals of the caller's communities, and `POST
+/approvals/{id}/revoke` (by its approver, an admin of all its groups, or an
+overall admin; no passkey) ends one at once. Every grant, use and revocation is an event. With `BITS_ORCH_BACKUP_DIR`
+the worker copies the database there once a day and keeps a week.

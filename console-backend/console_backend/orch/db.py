@@ -171,6 +171,33 @@ MIGRATIONS = [
         "CREATE INDEX failures_pipeline ON failures(pipeline_id)",
         "CREATE INDEX failures_community ON failures(community, id)",
     ],
+    # 4 — approvals (M3): passkey-approved records that survive a restart. A
+    # pre-approval lets CI sign one build's manifests; a standing approval lets a
+    # schedule's builds be certified for a number of runs or days. They cannot
+    # be rebuilt: they are backed up, and every grant, use and revocation is an
+    # event.
+    [
+        """CREATE TABLE approvals (
+            id            INTEGER PRIMARY KEY,
+            kind          TEXT NOT NULL CHECK (kind IN ('preapproval', 'standing')),
+            subject       TEXT NOT NULL,
+            groups        TEXT NOT NULL,
+            approver      TEXT NOT NULL,
+            via           TEXT NOT NULL DEFAULT 'console',
+            packages      TEXT NOT NULL DEFAULT '[]',
+            binding       TEXT NOT NULL DEFAULT '{}',
+            assertion     TEXT NOT NULL DEFAULT '{}',
+            challenge     TEXT NOT NULL DEFAULT '',
+            created_ms    INTEGER NOT NULL,
+            expires_ms    INTEGER NOT NULL,
+            signs         INTEGER NOT NULL DEFAULT 0,
+            sign_cap      INTEGER NOT NULL DEFAULT 0,
+            runs_left     INTEGER,
+            revoked_ms    INTEGER,
+            revoked_by    TEXT
+        )""",
+        "CREATE INDEX approvals_subject ON approvals(kind, subject, id)",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -188,7 +215,7 @@ def now_ms():
     return int(time.time() * 1000)
 
 
-def connect(path, create=True):
+def connect(path, create=True, busy_ms=10000):
     """A connection with the settings both processes rely on. Autocommit mode:
     writes happen only inside `transaction()`. With create=False a missing file
     is an error instead of a new empty database."""
@@ -201,7 +228,7 @@ def connect(path, create=True):
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA busy_timeout=%d" % int(busy_ms))
     return conn
 
 
@@ -254,10 +281,10 @@ def check(conn):
                           "worker has not migrated it yet" % (have, SCHEMA_VERSION))
 
 
-def open_checked(path):
+def open_checked(path, busy_ms=10000):
     """For the API: an existing database the worker has migrated."""
     try:
-        conn = connect(path, create=False)
+        conn = connect(path, create=False, busy_ms=busy_ms)
     except sqlite3.OperationalError as e:
         raise SchemaError("cannot open %s (%s): has the worker started?" % (path, e))
     try:
@@ -266,6 +293,28 @@ def open_checked(path):
         conn.close()
         raise
     return conn
+
+
+def backup(conn, directory, keep=7, now=None):
+    """Copy the database to *directory*/orch-<YYYYMMDD>.db once a day (SQLite's
+    online backup: consistent while in use), keeping the newest *keep*. Returns
+    the file written, or None when today's copy exists."""
+    day = time.strftime("%Y%m%d", time.gmtime(now or time.time()))
+    target = os.path.join(directory, "orch-%s.db" % day)
+    if os.path.exists(target):
+        return None
+    os.makedirs(directory, exist_ok=True)
+    tmp = target + ".part"
+    dst = sqlite3.connect(tmp)
+    try:
+        conn.backup(dst)
+    finally:
+        dst.close()
+    os.replace(tmp, target)
+    old = sorted(f for f in os.listdir(directory) if f.startswith("orch-") and f.endswith(".db"))
+    for f in old[:-keep] if keep > 0 else []:
+        os.remove(os.path.join(directory, f))
+    return target
 
 
 @contextlib.contextmanager

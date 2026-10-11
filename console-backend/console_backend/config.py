@@ -137,6 +137,10 @@ class Settings:
         # Failure backfill (M2): how many days of older failed pipelines to read
         # from GitLab, a page per pass, once. 0 = off.
         self.orch_backfill_days = float(e.get("BITS_ORCH_BACKFILL_DAYS", "0") or "0")
+        # A daily copy of the orchestrator database (approvals, failures, the
+        # audit chain cannot be rebuilt): a directory, ideally on another disk.
+        # Empty = no copies.
+        self.orch_backup_dir = e.get("BITS_ORCH_BACKUP_DIR", "")
 
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks

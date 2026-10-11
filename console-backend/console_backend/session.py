@@ -113,6 +113,35 @@ class PreapprovalStore(_BoundedStore):
             return None
         return entry
 
+    # The operations the sign path uses (the database-backed store in
+    # orch/approvals.py has the same ones). Synchronous, so atomic against the
+    # event loop in this single process.
+    def approve(self, build_id, data, assertion=None):
+        """Record *data* as the approved pre-approval of *build_id*; False when one
+        is already approved."""
+        existing = self.get(build_id)
+        if existing and existing.get("status") == "approved":
+            return False
+        self.put(build_id, dict(data, status="approved"))
+        return True
+
+    def reserve_sign(self, build_id, cap, expect=None):
+        """Take one of the approval's signs. Returns the record it was taken on
+        (give it to release_sign), or None when none is left or there is no
+        approval."""
+        pre = self.get(build_id)
+        if not pre or pre.get("status") != "approved" or pre.get("signs", 0) >= cap:
+            return None
+        pre["signs"] = pre.get("signs", 0) + 1
+        return pre
+
+    def release_sign(self, build_id, slot=None):
+        """Give back a sign to the record it was taken on, if that is still the
+        approval of the build."""
+        pre = self.get(build_id)
+        if pre is not None and (slot is None or pre is slot):
+            pre["signs"] = max(0, pre.get("signs", 1) - 1)
+
     def _make_room(self):
         # Evict oldest PENDING (or expired) first; an approved-but-not-yet-consumed
         # record is still needed by the CI sign step, so keep it unless the store is

@@ -45,9 +45,16 @@ class Worker:
             ("backfill", lambda: failures.backfill(self.conn, self.deps.reader(),
                                                    settings.orch_backfill_days,
                                                    settings.orch_lookback_days)),
+            ("backup", self._backup),
         ]
         self._errors = {}                 # step -> last error text
         self._stop = threading.Event()
+
+    def _backup(self):
+        if self.settings.orch_backup_dir:
+            path = db.backup(self.conn, self.settings.orch_backup_dir)
+            if path:
+                log.info("database copied to %s", path)
 
     def _run_actions(self):
         actions.run_due(self.conn, self.deps, self.authorize)

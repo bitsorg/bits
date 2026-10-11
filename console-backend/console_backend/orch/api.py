@@ -18,6 +18,11 @@
     GET  /ops/issues/{id}              one, with its occurrences
     GET  /ops/failures?pipeline=&community=&limit=   failed jobs' records, with excerpts
     GET  /ops/signatures               the reviewed patterns that name a cause
+    POST /approvals/standing/request   {schedule, sha256, groups[], runs, days}: a passkey
+                                       challenge bound to them
+    POST /approvals/standing/approve   {request_id, assertion}
+    GET  /approvals?kind=&all=         approvals of the caller's communities
+    POST /approvals/{id}/revoke        by an admin of all its groups
 
 The API writes only requests and decisions; the worker runs actions. Identity
 and the admin policy are the backend's own (`main._current`, `_resolved_policy`).
@@ -25,14 +30,17 @@ and the admin policy are the backend's own (`main._current`, `_resolved_policy`)
 
 import asyncio
 import contextlib
+import hashlib
 import json
+import re
+import secrets
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from .. import audit, authz, ci_auth
-from . import actions, db, events, failures, kinds, reconcile
+from .. import audit, authz, ci_auth, session
+from . import actions, approvals, db, events, failures, kinds, reconcile
 
 router = APIRouter()
 _MAX_BODY = 64 * 1024
@@ -387,3 +395,162 @@ async def list_failures(request: Request, pipeline: int = 0, community: str = ""
 async def list_signatures(request: Request):
     await _caller(request)
     return {"signatures": await run_in_threadpool(_read, failures.list_signatures)}
+
+
+# --- approvals ------------------------------------------------------------------
+
+_standing_pending = session.CliSignStore(ttl_seconds=300, max_entries=64)
+_GROUP_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_SCHEDULE_RE = re.compile(r"communities/[A-Za-z0-9._-]+/pipelines/[A-Za-z0-9._-]+\.json")
+
+
+def _admin_of_all(data, groups):
+    resolved = _policy(data)
+    return all(authz.is_admin_for(data["user"], g, resolved) for g in groups)
+
+
+@router.post("/approvals/standing/request")
+async def standing_request(request: Request):
+    """A community admin approves a schedule's builds for certification without a
+    person each time: bound to the schedule file's content (sha256) and its groups,
+    for *runs* runs or *days* days (at most 30), whichever ends first. Step 1:
+    a passkey challenge over exactly that."""
+    data = await _caller(request)
+    m = _m()
+    if not m.settings.webauthn_configured():
+        raise HTTPException(503, "WebAuthn is not configured")
+    if not m.settings.orch_db:
+        raise HTTPException(503, "orchestrator not configured (BITS_ORCH_DB)")
+    payload = await _body(request)
+    try:
+        schedule = str(payload["schedule"])
+        sha = str(payload["sha256"]).lower()
+        groups = sorted(set(payload["groups"]))
+        runs = payload["runs"]
+        days = payload["days"]
+        if not _SCHEDULE_RE.fullmatch(schedule) or ".." in schedule or not _HEX64.fullmatch(sha) \
+                or not groups or not all(isinstance(g, str) and _GROUP_RE.fullmatch(g) for g in groups) \
+                or not isinstance(runs, int) or isinstance(runs, bool) \
+                or not 1 <= runs <= approvals.STANDING_MAX_RUNS \
+                or not isinstance(days, (int, float)) or isinstance(days, bool) \
+                or not 0 < days <= approvals.STANDING_MAX_DAYS:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "expected {schedule, sha256, groups[], runs (1-%d), days (<= %d)}"
+                            % (approvals.STANDING_MAX_RUNS, approvals.STANDING_MAX_DAYS))
+    if not await run_in_threadpool(_admin_of_all, data, groups):
+        audit.record("standing_denied", user=data["user"], groups=groups, schedule=schedule,
+                     principal="human")
+        raise HTTPException(403, "%s is not an admin for all of: %s"
+                            % (data["user"], ", ".join(groups)))
+    creds = m.credstore.get(data["user"])
+    if not creds:
+        raise HTTPException(400, "no passkey enrolled; enrol first")
+    # The passkey signs exactly this binding (plus a fresh nonce); the record keeps
+    # both, so the approval can be checked again later (approvals.verify_standing).
+    nonce = secrets.token_bytes(16)
+    challenge = approvals.standing_challenge(
+        approvals.standing_binding(schedule, sha, groups, runs, days), nonce)
+    req_id = secrets.token_urlsafe(24)
+    _standing_pending.put(req_id, {"user": data["user"], "schedule": schedule, "sha256": sha,
+                                   "groups": groups, "runs": runs, "days": days,
+                                   "challenge": challenge, "nonce": nonce})
+    options = json.loads(m.webauthn_rp.authentication_options(m.settings, challenge, creds))
+    return {"request_id": req_id, "schedule": schedule, "sha256": sha, "groups": groups,
+            "runs": runs, "days": days, "publicKey": options}
+
+
+@router.post("/approvals/standing/approve")
+async def standing_approve(request: Request):
+    data = await _caller(request)
+    m = _m()
+    payload = await _body(request)
+    req_id, assertion = payload.get("request_id"), payload.get("assertion")
+    if not isinstance(req_id, str) or not isinstance(assertion, dict):
+        raise HTTPException(400, "expected {request_id, assertion}")
+    req = _standing_pending.get(req_id)
+    if not req:
+        raise HTTPException(400, "unknown or expired request")
+    if req["user"] != data["user"]:
+        raise HTTPException(403, "the request belongs to another user")
+    _standing_pending._store.pop(req_id, None)         # single use, before any await
+    if not await run_in_threadpool(_admin_of_all, data, req["groups"]):
+        raise HTTPException(403, "%s is no longer an admin for all of: %s"
+                            % (data["user"], ", ".join(req["groups"])))
+    cred_id = assertion.get("rawId") or assertion.get("id")
+    cred = next((c for c in m.credstore.get(data["user"]) if c["id"] == cred_id), None)
+    if not cred:
+        raise HTTPException(400, "unknown credential")
+    try:
+        count = await run_in_threadpool(m.webauthn_rp.verify_authentication, m.settings,
+                                        json.dumps(assertion), req["challenge"], cred)
+    except Exception:
+        audit.record("standing_denied", user=data["user"], groups=req["groups"],
+                     schedule=req["schedule"], reason="approval_failed", principal="human")
+        raise HTTPException(403, "approval verification failed")
+    m.credstore.update_sign_count(data["user"], cred_id, count)
+
+    def write():
+        with _open() as conn:
+            return approvals.grant_standing(conn, req["schedule"], req["sha256"], req["groups"],
+                                            data["user"], req["runs"], req["days"], assertion,
+                                            req["nonce"])
+    aid = await run_in_threadpool(write)
+    if aid is None:
+        raise HTTPException(409, "this schedule (as it is now) already has a standing approval")
+    audit.record("standing_approved", user=data["user"], groups=req["groups"], approval=aid,
+                 schedule=req["schedule"], sha256=req["sha256"], runs=req["runs"],
+                 days=req["days"], principal="human")
+    return {"status": "approved", "approval": aid}
+
+
+@router.get("/approvals")
+async def list_approvals(request: Request, kind: str = "", include_all: int = Query(0, alias="all"),
+                         limit: int = 200):
+    """Approvals any of whose groups the caller administers, or that they gave
+    (every one, for an overall admin); active ones unless all=1."""
+    data = await _caller(request)
+    if kind and kind not in ("preapproval", "standing"):
+        raise HTTPException(400, "unknown kind")
+    mine = await _scope(data)
+
+    def read():
+        with _open() as conn:
+            rows = approvals.listing(conn, kind=kind or None, active_only=not include_all,
+                                     limit=limit, communities=mine, user=data["user"])
+        return [approvals.public(r) for r in rows]
+    return JSONResponse({"approvals": await run_in_threadpool(read)},
+                        headers={"Cache-Control": "no-store"})
+
+
+@router.post("/approvals/{approval_id}/revoke")
+async def revoke_approval(approval_id: int, request: Request):
+    """Revoke an approval at once. No passkey: it only takes authority away. The
+    caller must administer every one of its groups."""
+    data = await _caller(request)
+
+    def read():
+        with _open() as conn:
+            return approvals.get(conn, approval_id)
+    r = await run_in_threadpool(read)
+    if r is None:
+        raise HTTPException(404, "no such approval")
+    groups = json.loads(r["groups"])
+    # Its approver, an admin of every one of its groups, or an overall admin. A
+    # pre-approval declared with no groups is for its approver and overall admins
+    # only (all([]) would let anyone).
+    overall = (await _scope(data)) is None
+    allowed = overall or r["approver"] == data["user"] or (
+        groups and await run_in_threadpool(_admin_of_all, data, groups))
+    if not allowed:
+        raise HTTPException(403, "not authorized to revoke approval %d" % approval_id)
+
+    def write():
+        with _open() as conn:
+            return approvals.revoke(conn, approval_id, data["user"])
+    if not await run_in_threadpool(write):
+        raise HTTPException(409, "already revoked")
+    audit.record("approval_revoked", user=data["user"], approval=approval_id, kind=r["kind"],
+                 subject=r["subject"], principal="human")
+    return {"status": "revoked", "approval": approval_id}

@@ -25,6 +25,8 @@ from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials,
 from fastapi.responses import RedirectResponse
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
+from .orch import approvals as orch_approvals
+
 try:  # bits_helpers is provided by the surrounding bits repo (on PYTHONPATH).
     from bits_helpers import trust
     _BITS_HELPERS = True
@@ -36,7 +38,9 @@ settings = config.Settings()
 credstore = credentials.CredentialStore(settings.credentials_path)
 sign_requests = session.SignRequestStore()
 cli_signs = session.CliSignStore()
-preapprovals = session.PreapprovalStore()
+# Approved pre-approvals live in the orchestrator database when BITS_ORCH_DB is
+# set (they survive a restart; grants and uses are audit events), else in memory.
+preapprovals = orch_approvals.Preapprovals(lambda: settings)
 cli_preapprovals = session.CliSignStore(max_entries=32)   # pending CLI pre-approvals
 enroll_grants = session.EnrollmentGrantStore()
 reg_challenges = session.RegChallengeStore()
@@ -50,6 +54,28 @@ app = FastAPI(title="bits-console backend", version="0.1.0")
 
 from .orch import api as orch_api   # noqa: E402  (the orchestrator's routes)
 app.include_router(orch_api.router)
+
+
+_unavailable_logged = [0.0]
+
+
+@app.exception_handler(orch_approvals.StoreError)
+async def _approvals_unavailable(request: Request, exc):
+    """The approvals database cannot be read or written: fail closed. Logged at
+    most once a minute (the status lookup is unauthenticated)."""
+    if time.time() - _unavailable_logged[0] > 60:
+        _unavailable_logged[0] = time.time()
+        audit.record("approvals_unavailable", error=str(exc)[:200])
+    return JSONResponse({"detail": "approvals store unavailable"}, status_code=503)
+
+
+async def _pa(fn, *args, **kw):
+    """Call a pre-approval store operation: off the event loop when it is the
+    database (SQLite may wait for the worker's write lock), inline when it is the
+    in-memory store (whose atomicity relies on running on the loop)."""
+    if getattr(preapprovals, "uses_db", lambda: False)():
+        return await run_in_threadpool(fn, *args, **kw)
+    return fn(*args, **kw)
 
 _STATIC = os.path.join(os.path.dirname(__file__), "static")
 
@@ -961,7 +987,7 @@ async def preapprove_request(request: Request):
                             % (user, ", ".join(denied)))
     # Don't let a fresh request silently destroy a live approval CI may still be
     # consuming (a build signs once per architecture over the record's TTL).
-    existing = preapprovals.get(build_id)
+    existing = await _pa(preapprovals.get, build_id)
     if existing and existing["status"] == "approved":
         raise HTTPException(409, "build %s is already pre-approved" % build_id)
     creds = credstore.get(user)
@@ -970,7 +996,7 @@ async def preapprove_request(request: Request):
     # No manifest yet, so the challenge is a fresh nonce; the pre-approval RECORD
     # binds build_id + groups + user, which the sign step (F2) checks.
     challenge = secrets.token_bytes(32)
-    preapprovals.put(build_id, {"groups": groups, "user": user, "challenge": challenge,
+    await _pa(preapprovals.put, build_id, {"groups": groups, "user": user, "challenge": challenge,
                                 "status": "pending"})
     options = json.loads(webauthn_rp.authentication_options(settings, challenge, creds))
     return {"build_id": build_id, "groups": groups, "publicKey": options}
@@ -990,7 +1016,7 @@ async def preapprove_approve(request: Request):
         assertion = payload["assertion"]
     except (ValueError, KeyError, TypeError):
         raise HTTPException(400, "expected {build_id, assertion}")
-    req = preapprovals.get(build_id)
+    req = await _pa(preapprovals.get, build_id)
     if not req or req["status"] != "pending":
         raise HTTPException(400, "unknown or already-handled pre-approval")
     user = data["user"]
@@ -1021,10 +1047,14 @@ async def preapprove_approve(request: Request):
     # Re-fetch the live record: a concurrent request could have replaced it (or a
     # second approve already flipped it) during the verify await. Only flip if it is
     # still the same pending record for this user.
-    live = preapprovals.get(build_id)
+    live = await _pa(preapprovals.get, build_id)
     if not live or live["status"] != "pending" or live.get("user") != user:
         raise HTTPException(409, "pre-approval changed during approval; retry")
-    live["status"] = "approved"
+    # Stored with the assertion that approved it; refused if another approval
+    # of this build landed meanwhile.
+    if not await _pa(preapprovals.approve, build_id,
+                     dict(live, status="approved", via="console"), assertion=assertion):
+        raise HTTPException(409, "build %s is already pre-approved" % build_id)
     audit.record("preapproved", signer=user, groups=live["groups"], build_id=build_id,
                  principal="human")
     return {"status": "approved", "build_id": build_id}
@@ -1091,7 +1121,7 @@ async def cli_preapprove_request(request: Request):
         build_id, groups, packages, shown = _parse_cli_preapproval(json.loads(raw))
     except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
         raise HTTPException(400, "expected {build_id, groups[], boms[]} as written by bits publish")
-    existing = preapprovals.get(build_id)
+    existing = await _pa(preapprovals.get, build_id)
     if existing and existing["status"] == "approved":
         raise HTTPException(409, "build %s is already pre-approved" % build_id)
     # The passkey signs over a digest of exactly what is approved.
@@ -1169,12 +1199,14 @@ async def cli_preapprove_approve(req_id: str, request: Request):
                          denied=denied, build_id=req["build_id"], principal="human", via="cli")
             raise HTTPException(403, "%s is not a community admin for: %s"
                                 % (user, ", ".join(denied)))
-        existing = preapprovals.get(req["build_id"])
+        existing = await _pa(preapprovals.get, req["build_id"])
         if existing and existing["status"] == "approved":
             raise HTTPException(409, "build %s is already pre-approved" % req["build_id"])
-        preapprovals.put(req["build_id"], {"groups": req["groups"], "user": user,
-                                           "status": "approved", "via": "cli",
-                                           "packages": req["packages"]})
+        if not await _pa(preapprovals.approve, req["build_id"], {
+                "groups": req["groups"], "user": user, "status": "approved", "via": "cli",
+                "packages": req["packages"], "challenge": req["challenge"]},
+                assertion=assertion):
+            raise HTTPException(409, "build %s is already pre-approved" % req["build_id"])
     except BaseException:
         # A verified assertion is spent: end the request rather than re-offer
         # the same challenge.
@@ -1288,7 +1320,7 @@ async def sign_preapproved(request: Request):
         raise HTTPException(403, "%s is not authorized to sign: %s"
                             % (signer, ", ".join(denied)))
     # A human must have pre-approved THIS build, covering these groups.
-    pre = preapprovals.get(build_id)
+    pre = await _pa(preapprovals.get, build_id)
     if not pre or pre["status"] != "approved":
         audit.record("sign_denied", signer=signer, groups=groups, build_id=build_id,
                      reason="no_preapproval", **principal)
@@ -1319,17 +1351,18 @@ async def sign_preapproved(request: Request):
     # the slot before the sign await (this check+increment is synchronous, so it is
     # atomic against the event loop — concurrent calls cannot both pass the cap), and
     # release it on failure so a failed sign does not burn the build's budget.
-    if pre.get("signs", 0) >= _PREAPPROVAL_SIGN_CAP:
+    # The slot is taken on THIS approval (its id), and given back to it alone.
+    slot = await _pa(preapprovals.reserve_sign, build_id, _PREAPPROVAL_SIGN_CAP, pre.get("id"))
+    if not slot:
         audit.record("sign_denied", signer=signer, groups=groups, build_id=build_id,
                      reason="preapproval_sign_cap", **principal)
         raise HTTPException(429, "pre-approval for build %s reached its sign limit" % build_id)
-    pre["signs"] = pre.get("signs", 0) + 1
     meta = {"principal": "ci", "project": principal.get("project"),
             "approval": "preapproved", "preapproved_by": pre["user"], "build_id": build_id}
     try:
         result = await _do_sign(body, groups, signer, meta)
     except BaseException:
-        pre["signs"] = max(0, pre.get("signs", 1) - 1)   # release the reserved slot
+        await _pa(preapprovals.release_sign, build_id, slot)   # release the reserved slot
         raise
     # Provenance is ADVISORY and authoritative in the audit log. Do NOT put it inside
     # the envelope: the signature covers the manifest bytes only, so envelope fields
