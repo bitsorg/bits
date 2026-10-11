@@ -36,14 +36,21 @@ class Deps:
         return f
 
     def reader(self):
-        """GitLab for reading (pipelines, jobs, logs): the read_api token when
-        set, else the ops token."""
+        """GitLab for reading: pipelines, jobs and logs with the read_api token
+        when set (else the ops token); a pipeline's variables with the ops token,
+        as the backend's own /ops/pipeline/{id}/variables does, because GitLab
+        shows them only to a Maintainer and the read token must not be one (a
+        Maintainer's read_api token can read the project's CI/CD secrets)."""
         s = self.settings
         token = s.forge_read_token or s.forge_ops_token
         if not (s.gitlab_api_url and token and s.forge_project):
             raise NotConfigured("GitLab not configured (GITLAB_API_URL, BITS_FORGE_PROJECT,"
                                 " BITS_FORGE_READ_TOKEN)")
-        return forge_ops.GitLabForge(s.gitlab_api_url, token, s.forge_project)
+        read = forge_ops.GitLabForge(s.gitlab_api_url, token, s.forge_project)
+        ops = forge_ops.GitLabForge.from_settings(s)
+        if ops is not None:
+            read.pipeline_variables = ops.pipeline_variables
+        return read
 
     _store = None
 

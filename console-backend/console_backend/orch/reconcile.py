@@ -23,6 +23,7 @@ Each change is an event: pipeline.seen, pipeline.success|failed|canceled|running
 import datetime
 import json
 import logging
+import re
 
 from .. import forge_ops
 from . import db, events
@@ -135,6 +136,20 @@ def _vars_dict(variables):
     return out
 
 
+_NAME = re.compile(r"^\s*\[([^\]]+)\]\s*(\S+)\s*(.*?)\s*\(([^)]*)\)")
+
+
+def _from_name(name):
+    """COMMUNITY, PACKAGE, VERSION, PLATFORM from the build pipeline's name, which
+    its workflow sets to '[COMMUNITY] PACKAGE VERSION (PLATFORM)<suffix>': what
+    the console shows when the variables cannot be read."""
+    m = _NAME.match(name or "")
+    if not m:
+        return {}
+    return dict(zip(("COMMUNITY", "PACKAGE", "VERSION", "PLATFORM"),
+                    (g.strip() for g in m.groups())))
+
+
 def _var(variables, name):
     """A variable by name, case-insensitively (as the backend's pipeline
     community check reads COMMUNITY)."""
@@ -166,7 +181,15 @@ def record_pipeline(conn, reader, p):
                          dict(fields, id=pid))
         return conn.execute("SELECT * FROM pipelines WHERE id = ?", (pid,)).fetchone()
     is_build = (p.get("source") in BUILD_SOURCES)
-    variables = _vars_dict(reader.pipeline_variables(pid)) if is_build else {}
+    variables = {}
+    if is_build:
+        # Unreadable variables (no ops token, GitLab refusing) never hold up
+        # discovery: the pipeline's name carries what is needed to record it.
+        try:
+            variables = _vars_dict(reader.pipeline_variables(pid))
+        except Exception as exc:
+            log.warning("variables of pipeline %s: %s; using its name", pid, exc)
+            variables = _from_name(p.get("name"))
     is_build = is_build and bool(_var(variables, "PACKAGE"))
     text = json.dumps(variables, sort_keys=True)
     if len(text) > MAX_VARIABLES:

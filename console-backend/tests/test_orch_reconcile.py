@@ -397,6 +397,32 @@ class ReconcileTest(_DB):
         got = [x["build_id"] for x in reconcile.list_builds(self.conn, pipelines=[1])[0]["builds"]]
         self.assertEqual(got, ["a", "b"])
 
+    def test_unreadable_variables_fall_back_to_the_name(self):
+        self.gl.add(1, community="lcg", package="ROOT")
+        self.gl.pipelines[1]["name"] = "[LCG] ROOT 6.32.08 (x86_64-el9) [nightly]"
+        self.gl.add(2, community="lcg", package="", updated="2026-10-11T10:01:00Z")
+        self.gl.pipelines[2]["name"] = "Pages"                     # no build
+        def refuse(pid):
+            raise forge_ops.ForgeError(403, "GET /pipelines/%s/variables -> 403" % pid)
+        self.gl.pipeline_variables = refuse
+        with self.assertLogs("bits_orchestrator", "WARNING"):
+            self._pass()
+        r = self._row(1)
+        self.assertEqual((r["is_build"], r["community"], r["package"], r["version"], r["platform"]),
+                         (1, "lcg", "ROOT", "6.32.08", "x86_64-el9"))
+        self.assertEqual(self._row(2)["is_build"], 0)
+        self.assertEqual(reconcile._from_name("[ALICE] O2  (el9)")["VERSION"], "")
+
+    def test_variables_are_read_with_the_ops_token(self):
+        s = config.Settings(env={"GITLAB_API_URL": "https://gl/api/v4", "BITS_FORGE_PROJECT": "42",
+                                 "BITS_FORGE_READ_TOKEN": "ro", "BITS_FORGE_OPS_TOKEN": "ops"})
+        r = kinds.Deps(s).reader()
+        self.assertEqual(r._token, "ro")
+        self.assertEqual(r.pipeline_variables.__self__._token, "ops")
+        s.forge_ops_token = ""
+        self.assertFalse(hasattr(kinds.Deps(s).reader().pipeline_variables, "__self__")
+                         and kinds.Deps(s).reader().pipeline_variables.__self__._token == "ops")
+
     def test_variable_names_are_case_insensitive(self):
         self.gl.add(1)
         self.gl.variables[1] = [{"key": "community", "value": "TestBed"},
