@@ -290,9 +290,15 @@ def _set_outcome(conn, r, outcome, jobs_json, extra=None):
         conn.execute("UPDATE pipelines SET outcome = ?, jobs = ?, checked_ms = ?"
                      " WHERE id = ?", (outcome, jobs_json, db.now_ms(), r["id"]))
         if outcome == r["outcome"]:
+            if outcome == "failed" and jobs_json != r["jobs"]:
+                # A job failed after the build did (an on_failure job): collect again;
+                # jobs already recorded are skipped.
+                conn.execute("UPDATE pipelines SET collected_ms = 0 WHERE id = ?", (r["id"],))
             return False
-        # Finished (or running again): its builds are indexed when it ends.
-        conn.execute("UPDATE pipelines SET indexed_ms = 0 WHERE id = ?", (r["id"],))
+        # Finished (or running again): its builds are indexed, and its failures
+        # collected, when it ends.
+        conn.execute("UPDATE pipelines SET indexed_ms = 0, collected_ms = 0 WHERE id = ?",
+                     (r["id"],))
         payload = {"pipeline": r["id"], "community": r["community"],
                    "gl_status": r["gl_status"]}
         payload.update(extra or {})

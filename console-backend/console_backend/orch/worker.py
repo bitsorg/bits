@@ -6,7 +6,8 @@ Each pass runs the steps in order. A step reads the database and the outside
 world, then writes what it decided; a step that fails is logged, recorded as an
 event when its error changes, and tried again on the next pass. The steps:
 running due actions, then hints, discover, settle and index (reconcile.py: what
-is true of builds, from GitLab and S3). Signing and schedules are added as
+is true of builds, from GitLab and S3), then collect and backfill (failures.py:
+every failed job's record, deduplicated into issues). Signing and schedules are added as
 steps by later milestones.
 
     python -m console_backend.orch.worker      # BITS_ORCH_DB=/orch/orch.db
@@ -19,7 +20,7 @@ import threading
 import time
 
 from .. import config
-from . import actions, authority, db, events, kinds, reconcile
+from . import actions, authority, db, events, failures, kinds, reconcile
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -40,6 +41,10 @@ class Worker:
                                                     settings.orch_lookback_days)),
             ("settle", lambda: reconcile.settle(self.conn, self.deps.reader())),
             ("index", lambda: reconcile.index(self.conn, self.deps.store())),
+            ("collect", lambda: failures.collect(self.conn, self.deps.reader())),
+            ("backfill", lambda: failures.backfill(self.conn, self.deps.reader(),
+                                                   settings.orch_backfill_days,
+                                                   settings.orch_lookback_days)),
         ]
         self._errors = {}                 # step -> last error text
         self._stop = threading.Event()
@@ -80,6 +85,7 @@ class Worker:
         with db.transaction(self.conn):
             events.append(self.conn, "worker.started", "worker", events.WORKER,
                           {"schema": db.SCHEMA_VERSION})
+        failures.seed_signatures(self.conn)
         n = actions.recover(self.conn)
         if n:
             log.warning("recovered %d interrupted action(s)", n)

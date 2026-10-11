@@ -14,6 +14,10 @@
     GET  /ops/builds/{pipeline}        one, with its jobs, variables and events
     POST /ops/ci/published, /ops/ci/failed   {pipeline}: a CI job's hint to look
                                        at its pipeline now (GitLab CI ID token)
+    GET  /ops/issues?community=&package=&limit=   deduplicated failures, last seen first
+    GET  /ops/issues/{id}              one, with its occurrences
+    GET  /ops/failures?pipeline=&community=&limit=   failed jobs' records, with excerpts
+    GET  /ops/signatures               the reviewed patterns that name a cause
 
 The API writes only requests and decisions; the worker runs actions. Identity
 and the admin policy are the backend's own (`main._current`, `_resolved_policy`).
@@ -28,7 +32,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth
-from . import actions, db, events, kinds, reconcile
+from . import actions, db, events, failures, kinds, reconcile
 
 router = APIRouter()
 _MAX_BODY = 64 * 1024
@@ -327,3 +331,59 @@ async def ci_published(request: Request):
 @router.post("/ops/ci/failed")
 async def ci_failed(request: Request):
     return await _hint(request, "failed")
+
+
+# --- failures -------------------------------------------------------------------
+
+async def _communities(data, community):
+    """The communities a read covers: the caller's (None = all, for an overall
+    admin), narrowed to *community* when given."""
+    mine = await _scope(data)
+    if community:
+        c = community.strip().lower()
+        if mine is not None and c not in mine:
+            return set()
+        return {c}
+    return mine
+
+
+def _read(fn, *args, **kw):
+    with _open() as conn:
+        return fn(conn, *args, **kw)
+
+
+@router.get("/ops/issues")
+async def list_issues(request: Request, community: str = "", package: str = "", limit: int = 100):
+    """Issues seen in the caller's communities. An issue seen in several shows
+    its full counts; its occurrences (GET /ops/issues/{id}) are only theirs."""
+    data = await _caller(request)
+    mine = await _communities(data, community)
+    out = await run_in_threadpool(_read, failures.list_issues, communities=mine,
+                                  package=package or None, limit=limit)
+    return JSONResponse({"issues": out}, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/issues/{issue_id}")
+async def get_issue(issue_id: int, request: Request):
+    data = await _caller(request)
+    mine = await _scope(data)
+    out = await run_in_threadpool(_read, failures.get_issue, issue_id, communities=mine)
+    if out is None:
+        raise HTTPException(404, "no such issue")
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/failures")
+async def list_failures(request: Request, pipeline: int = 0, community: str = "",
+                        limit: int = 100):
+    data = await _caller(request)
+    mine = await _communities(data, community)
+    out = await run_in_threadpool(_read, failures.list_failures, communities=mine,
+                                  pipeline=pipeline or None, limit=limit)
+    return JSONResponse({"failures": out}, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/signatures")
+async def list_signatures(request: Request):
+    await _caller(request)
+    return {"signatures": await run_in_threadpool(_read, failures.list_signatures)}

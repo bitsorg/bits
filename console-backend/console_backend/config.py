@@ -134,6 +134,9 @@ class Settings:
         # The audience of the CI ID tokens build jobs send with their hints
         # (/ops/ci/*): its own, so a hint token can never sign anything.
         self.orch_ci_audience = e.get("BITS_ORCH_CI_AUDIENCE", "bits-orchestrator")
+        # Failure backfill (M2): how many days of older failed pipelines to read
+        # from GitLab, a page per pass, once. 0 = off.
+        self.orch_backfill_days = float(e.get("BITS_ORCH_BACKFILL_DAYS", "0") or "0")
 
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks

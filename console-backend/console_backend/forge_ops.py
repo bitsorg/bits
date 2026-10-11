@@ -165,6 +165,54 @@ class GitLabForge:
                          "&page=%d&per_page=%d" % (quote(updated_after, safe=""),
                                                    page, per_page)) or []
 
+    def list_pipelines_before(self, updated_before, status="failed", page=1, per_page=100):
+        """One page of the project's pipelines in *status* updated before
+        *updated_before* (ISO 8601), newest update first (the failure backfill)."""
+        return self._get("/pipelines?updated_before=%s&status=%s&order_by=updated_at&sort=desc"
+                         "&page=%d&per_page=%d" % (quote(updated_before, safe=""),
+                                                   quote(status, safe=""), page, per_page)) or []
+
+    def _tail(self, path, max_bytes, max_total=64 << 20, max_seconds=60):
+        """The last *max_bytes* of a (possibly huge) raw response; None on 404.
+        Asks for just the end (Range); a server that sends the whole body is read
+        streamed, at most *max_total* bytes or *max_seconds*, past which the end
+        is out of reach and the answer is None."""
+        import time as _time
+        try:
+            r = requests.get("%s/projects/%s%s" % (self._api, self._project, path),
+                             headers={"PRIVATE-TOKEN": self._token,
+                                      "Range": "bytes=-%d" % max_bytes},
+                             timeout=self._timeout, stream=True)
+        except requests.RequestException as e:
+            raise ForgeError(0, str(e)[:200])
+        with r:
+            if r.status_code in (404, 416):
+                return None
+            if r.status_code // 100 != 2:
+                raise ForgeError(r.status_code, "GET %s -> %s" % (path, r.status_code))
+            buf, total, began = bytearray(), 0, _time.monotonic()
+            try:
+                for chunk in r.iter_content(64 * 1024):
+                    buf += chunk
+                    total += len(chunk)
+                    if len(buf) > 2 * max_bytes:
+                        del buf[:len(buf) - max_bytes]
+                    if total > max_total or _time.monotonic() - began > max_seconds:
+                        return None
+            except requests.RequestException as e:
+                raise ForgeError(0, str(e)[:200])
+            return bytes(buf[-max_bytes:])
+
+    def job_log_tail(self, job_id, max_bytes=1 << 20):
+        """The end of a job's log (GitLab keeps at most its log limit, 4 MB by
+        default, and cuts the rest)."""
+        return self._tail("/jobs/%s/trace" % job_id, max_bytes)
+
+    def job_artifact_tail(self, job_id, name, max_bytes=1 << 20):
+        """The end of one artifact file of a job, or None when it has none (or
+        it expired)."""
+        return self._tail("/jobs/%s/artifacts/%s" % (job_id, quote(name, safe="/")), max_bytes)
+
     def get_pipeline(self, pid):
         return self._get("/pipelines/%s" % pid)
 

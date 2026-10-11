@@ -463,7 +463,8 @@ class ReconcileTest(_DB):
 class WorkerStepsTest(_DB):
     def test_the_worker_runs_reconcile_before_actions(self):
         w = worker.Worker(self.conn, config.Settings(env={}))
-        self.assertEqual([n for n, _ in w.steps], ["actions", "hints", "discover", "settle", "index"])
+        self.assertEqual([n for n, _ in w.steps], ["actions", "hints", "discover", "settle", "index",
+                                                    "collect", "backfill"])
         w.deps.reader = lambda: self.gl
         w.deps.store = lambda: None
         self.gl.add(1)

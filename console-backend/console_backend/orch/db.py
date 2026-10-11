@@ -112,6 +112,65 @@ MIGRATIONS = [
             ts_ms         INTEGER NOT NULL
         )""",
     ],
+    # 3 — failures (M2): every failed job's record, the deduplicated issues they
+    # are occurrences of, and the reviewed signatures that name a cause. These
+    # cannot be rebuilt once GitLab expires the logs: they are backed up.
+    [
+        "ALTER TABLE pipelines ADD COLUMN collected_ms INTEGER NOT NULL DEFAULT 0",
+        """CREATE TABLE signatures (
+            id            INTEGER PRIMARY KEY,
+            pattern       TEXT NOT NULL,
+            cause         TEXT NOT NULL,
+            action        TEXT NOT NULL,
+            safe_to_retry INTEGER NOT NULL DEFAULT 0,
+            state         TEXT NOT NULL DEFAULT 'active' CHECK (state IN
+                            ('proposed','active','retired')),
+            proposed_by   TEXT NOT NULL,
+            accepted_by   TEXT,
+            version       INTEGER NOT NULL DEFAULT 1,
+            created_ms    INTEGER NOT NULL
+        )""",
+        """CREATE TABLE issues (
+            id            INTEGER PRIMARY KEY,
+            fingerprint   TEXT NOT NULL UNIQUE,
+            package       TEXT NOT NULL,
+            title         TEXT NOT NULL,
+            excerpt       TEXT NOT NULL,
+            first_seen    TEXT NOT NULL,
+            last_seen     TEXT NOT NULL,
+            count         INTEGER NOT NULL DEFAULT 0,
+            communities   TEXT NOT NULL DEFAULT '[]',
+            platforms     TEXT NOT NULL DEFAULT '[]',
+            status        TEXT NOT NULL DEFAULT 'open',
+            signature_id  INTEGER REFERENCES signatures(id),
+            created_ms    INTEGER NOT NULL
+        )""",
+        "CREATE INDEX issues_last ON issues(last_seen)",
+        """CREATE TABLE failures (
+            id             INTEGER PRIMARY KEY,
+            job_id         INTEGER NOT NULL,
+            pipeline_id    INTEGER NOT NULL REFERENCES pipelines(id),
+            package        TEXT NOT NULL,
+            version        TEXT NOT NULL DEFAULT '',
+            community      TEXT NOT NULL DEFAULT '',
+            platform       TEXT NOT NULL DEFAULT '',
+            job_name       TEXT NOT NULL DEFAULT '',
+            failure_reason TEXT NOT NULL DEFAULT '',
+            runner         TEXT NOT NULL DEFAULT '',
+            bits_version   TEXT NOT NULL DEFAULT '',
+            excerpt        TEXT NOT NULL,
+            source         TEXT NOT NULL,
+            log_url        TEXT NOT NULL DEFAULT '',
+            failed_at      TEXT NOT NULL DEFAULT '',
+            fingerprint    TEXT NOT NULL,
+            issue_id       INTEGER NOT NULL REFERENCES issues(id),
+            recorded_ms    INTEGER NOT NULL,
+            UNIQUE (job_id, package)
+        )""",
+        "CREATE INDEX failures_issue ON failures(issue_id, id)",
+        "CREATE INDEX failures_pipeline ON failures(pipeline_id)",
+        "CREATE INDEX failures_community ON failures(community, id)",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)
