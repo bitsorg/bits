@@ -48,6 +48,9 @@ catalog_cache = catalog.CatalogCache(token=settings.github_token,
 
 app = FastAPI(title="bits-console backend", version="0.1.0")
 
+from .orch import api as orch_api   # noqa: E402  (the orchestrator's routes)
+app.include_router(orch_api.router)
+
 _STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 

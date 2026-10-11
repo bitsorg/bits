@@ -3,6 +3,8 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** console-backend orchestrator, milestone M0 (`console_backend/orch/`): a worker process (`python -m console_backend.orch.worker`) and a shared SQLite database; a hash-chained event log; typed actions with JSON schemas, approvals (an advisor can only propose), authority re-checked at run time, retries with backoff, one action at a time per subject; `pipeline.retry` and `pipeline.cancel` as the first kinds; `/ops/actions` and `/ops/events`.
+
 - **[Feature]** `bits cvmfs release --pipeline <id>`: makes a release (its links and merged view) from one build, at any time, from the S3 store alone; the BOMs now carry the build's `cvmfs_templates`, requested packages, `view:` rules and `requires`, and each pipeline's builds are indexed under `BUILDS/by-pipeline/`.
 - **[Improvement]** A merged view is one build's packages again, replaced when it differs (no more merging across builds), and is independent of the release links: a group with `cvmfs_views_template` but no `cvmfs_releases_template` gets views. It records its top-level packages; one made from others is replaced only with `--force-view`. `bits cvmfs publish --wait` waits for every job, the packages before the release.
 - **[Feature]** `BUILD_EPOCH` (`bits_helpers/build_epoch.py`): bumping it rebuilds every package once, for changes to how bits builds that the package hashes do not see. At 0 (now) it is not hashed, so no hash changed. A test fails when the build template, `init.sh` generation or relocation scripts change, until their checksum is updated and the epoch considered.

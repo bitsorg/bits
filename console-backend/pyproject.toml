@@ -19,4 +19,4 @@ dependencies = [
 # alongside in the image), not a PyPI dependency.
 
 [tool.setuptools]
-packages = ["console_backend"]
+packages = ["console_backend", "console_backend.orch"]

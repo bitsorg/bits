@@ -116,6 +116,12 @@ class Settings:
         # then set 1 to enforce — otherwise a never-enrolled admin signs single-shot.
         self.webauthn_required = e.get("BITS_WEBAUTHN_REQUIRED", "0") == "1"
 
+        # The orchestrator (orch/): its SQLite database, shared by the worker (which
+        # migrates and owns it) and this API (requests, approvals). Empty = the
+        # /ops/actions and /ops/events endpoints answer 503.
+        self.orch_db = e.get("BITS_ORCH_DB", "")
+        self.orch_interval = float(e.get("BITS_ORCH_INTERVAL", "30") or "30")
+
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks
         # endpoints are DISCOVERED from the issuer's well-known doc (the explicit
