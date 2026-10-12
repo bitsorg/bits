@@ -98,3 +98,25 @@ schedule file's sha256 and its groups, for 1-100 runs or up to 30 days. `GET
 /approvals/{id}/revoke` (by its approver, an admin of all its groups, or an
 overall admin; no passkey) ends one at once. Every grant, use and revocation is an event. With `BITS_ORCH_BACKUP_DIR`
 the worker copies the database there once a day and keeps a week.
+
+**Certification in shadow** (`orch/shadow.py`, M4), when
+`BITS_ORCH_MANIFESTS_PROJECT` names bits-manifests: for every main pipeline whose
+certify job signed, the worker computes the same manifests itself, with bits'
+own merge and store check (`certify.build_by_arch`), from the tree at that commit,
+the architectures the push changed (worked out as the CI job does) and the store
+(`BITS_ORCH_STORE`). It compares them with what the job signed (its artifacts, or
+the store's copy while it still carries that commit), once their signature
+verifies; timestamps and `certified_by` aside, they must be equal. Each
+architecture is a sign run and a `shadow.match` or `shadow.mismatch` event; `GET
+/ops/certifications` and `/ops/certifications/summary?days=` show them to overall
+admins. It signs, commits and writes nothing, runs on a thread of its own, and
+remembers the sha256 of store objects so only new ones are hashed.
+
+**The outside copy** (`orch/outside.py`, M4): with `BITS_ORCH_AUDIT_URL` and
+`BITS_ORCH_AUDIT_TOKEN`, the worker sends the event log to the audit-log service
+(bits-services `audit-log/`; on the same host for now, on another node later),
+which keeps only what links onto its chain. Each pass it checks the service's head against its own event of that
+seq; a difference (a rewritten database, or one restored from an older copy)
+stops the sending, is recorded as `outside.diverged` and shown by `GET
+/ops/outside`. `python -m console_backend.orch.outside verify` compares the two
+copies event by event; `status` and `clear --by <user>` handle the alarm.

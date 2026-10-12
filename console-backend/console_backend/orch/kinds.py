@@ -5,6 +5,8 @@ offers, so the whole path (request, approval, run, events) is exercised before
 certification depends on it; later milestones add certify, release, renew,
 revoke, start-build, schedule changes and signature proposals here."""
 
+import threading
+
 from .. import forge_ops
 from . import actions
 
@@ -52,7 +54,20 @@ class Deps:
             read.pipeline_variables = ops.pipeline_variables
         return read
 
+    def manifests_reader(self):
+        """The bits-manifests project (certification in shadow), read with the
+        read token; None when BITS_ORCH_MANIFESTS_PROJECT is not set."""
+        s = self.settings
+        if not s.orch_manifests_project:
+            return None
+        token = s.forge_read_token or s.forge_ops_token
+        if not (s.gitlab_api_url and token):
+            raise NotConfigured("GitLab not configured (GITLAB_API_URL, BITS_FORGE_READ_TOKEN)")
+        return forge_ops.GitLabForge(s.gitlab_api_url, token, s.orch_manifests_project, timeout=60)
+
     _store = None
+    _store_lock = threading.Lock()     # the shadow thread shares it; boto3 clients
+                                       # must not be created by two threads at once
 
     def store(self):
         """(s3 client, bucket) of BITS_ORCH_STORE, or None when it is not set.
@@ -62,13 +77,14 @@ class Deps:
             return None
         if not url.startswith("b3://"):
             raise NotConfigured("BITS_ORCH_STORE must be b3://<bucket>")
-        if self._store is None or self._store[0] != url:
-            import tempfile
-            from bits_helpers.sync import remote_from_url
-            # Read only: no write store ("", not None, which the S3 backend cannot take).
-            r = remote_from_url(url, "", "", tempfile.gettempdir())
-            self._store = (url, r.s3, r.remoteStore)
-        return self._store[1], self._store[2]
+        with self._store_lock:
+            if self._store is None or self._store[0] != url:
+                import tempfile
+                from bits_helpers.sync import remote_from_url
+                # Read only: no write store ("", not None, which the S3 backend cannot take).
+                r = remote_from_url(url, "", "", tempfile.gettempdir())
+                self._store = (url, r.s3, r.remoteStore)
+            return self._store[1], self._store[2]
 
 
 def _transient(e):

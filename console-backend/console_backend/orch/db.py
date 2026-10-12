@@ -198,6 +198,53 @@ MIGRATIONS = [
         )""",
         "CREATE INDEX approvals_subject ON approvals(kind, subject, id)",
     ],
+    # 5 (M4): certifications in shadow. A certification is one bits-manifests
+    # pipeline whose certify job signed; a sign run is one architecture of it,
+    # here the worker's own computation compared with what was signed (mode
+    # 'shadow'; the worker's own signing is mode 'live' from M5). store_digests
+    # remembers the sha256 of store objects, which never change, so a
+    # certification only hashes the objects that are new.
+    [
+        """CREATE TABLE certifications (
+            pipeline_id  INTEGER PRIMARY KEY,
+            sha          TEXT NOT NULL,
+            before_sha   TEXT NOT NULL DEFAULT '',
+            updated_at   TEXT NOT NULL DEFAULT '',
+            job_id       INTEGER,
+            job_status   TEXT NOT NULL DEFAULT '',
+            state        TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (state IN ('pending', 'compared', 'skipped', 'failed')),
+            reason       TEXT NOT NULL DEFAULT '',
+            archs        TEXT NOT NULL DEFAULT '[]',
+            attempts     INTEGER NOT NULL DEFAULT 0,
+            next_ms      INTEGER NOT NULL DEFAULT 0,
+            created_ms   INTEGER NOT NULL,
+            updated_ms   INTEGER NOT NULL
+        )""",
+        "CREATE INDEX certifications_due ON certifications(state, next_ms, pipeline_id)",
+        """CREATE TABLE sign_runs (
+            id               INTEGER PRIMARY KEY,
+            certification    INTEGER NOT NULL REFERENCES certifications(pipeline_id),
+            mode             TEXT NOT NULL,
+            arch             TEXT NOT NULL,
+            state            TEXT NOT NULL,
+            source           TEXT NOT NULL DEFAULT '',
+            source_commit    TEXT NOT NULL DEFAULT '',
+            packages         INTEGER NOT NULL DEFAULT 0,
+            manifest_sha256  TEXT NOT NULL DEFAULT '',
+            signed_sha256    TEXT NOT NULL DEFAULT '',
+            diff             TEXT NOT NULL DEFAULT '{}',
+            created_ms       INTEGER NOT NULL,
+            UNIQUE (certification, mode, arch)
+        )""",
+        """CREATE TABLE store_digests (
+            key         TEXT PRIMARY KEY,
+            etag        TEXT NOT NULL,
+            size        INTEGER NOT NULL,
+            sha256      TEXT NOT NULL,
+            checked_ms  INTEGER NOT NULL
+        )""",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

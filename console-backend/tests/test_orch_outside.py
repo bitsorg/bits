@@ -1,0 +1,230 @@
+# SPDX-FileCopyrightText: 2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""The orchestrator's M4, second half: the outside copy of the audit chain."""
+
+import json
+import os
+import shutil
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from console_backend import config
+from console_backend.orch import db, events, outside
+
+# The shared test vector of bits-services/audit-log/test_auditlog.py: the
+# receiver's hash function must stay this one.
+VECTOR = [
+    ({"seq": 1, "ts_ms": 1760000000000, "kind": "worker.started", "subject": "worker",
+      "actor_kind": "worker", "actor_id": "orchestrator", "cause": None,
+      "payload": '{"schema":5,"note":"é"}'},
+     "d8e5ed955e51314b180e89473c75025f3b81370fe49e9df3a8ce0d4b826fb264"),
+    ({"seq": 2, "ts_ms": 1760000000001, "kind": "shadow.match", "subject": "certification:7",
+      "actor_kind": "worker", "actor_id": "orchestrator", "cause": "action:3", "payload": "{}"},
+     "1790c4478017c426a5d33654235a2a38f36a4eb22dacf545d9aec3b84c9db2e0"),
+]
+
+
+class FakeOutside:
+    """The audit-log service's rules, in memory."""
+
+    def __init__(self):
+        self.rows = []
+
+    def head(self):
+        if not self.rows:
+            return {"seq": 0, "hash": events.GENESIS, "count": 0}
+        return {"seq": self.rows[-1]["seq"], "hash": self.rows[-1]["hash"]}
+
+    def send(self, rows):
+        for r in rows:
+            seq = len(self.rows)
+            if r["seq"] <= seq:
+                if self.rows[r["seq"] - 1] != r:
+                    return False, {"error": "event %d differs" % r["seq"], "head": self.head()}
+                continue
+            prev = self.rows[-1]["hash"] if self.rows else events.GENESIS
+            if r["seq"] != seq + 1 or r["prev_hash"] != prev or events._digest(prev, r) != r["hash"]:
+                return False, {"error": "does not link", "head": self.head()}
+            self.rows.append(dict(r))
+        return True, {"head": self.head()}
+
+    def events(self, after, limit=1000):
+        return [dict(r) for r in self.rows[after:after + limit]]
+
+
+class _DB(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.conn = db.connect(os.path.join(self.dir, "orch.db"))
+        self.addCleanup(self.conn.close)
+        db.migrate(self.conn)
+        self.out = FakeOutside()
+
+    def add(self, n):
+        for i in range(n):
+            with db.transaction(self.conn):
+                events.append(self.conn, "test.event", "s", events.WORKER, {"i": i})
+
+    def kinds(self):
+        return [e["kind"] for e in events.since(self.conn, limit=1000)]
+
+
+class VectorTest(unittest.TestCase):
+    def test_the_receiver_hashes_as_the_chain_does(self):
+        prev = events.GENESIS
+        for row, want in VECTOR:
+            self.assertEqual(events._digest(prev, row), want)
+            prev = want
+
+
+class ShipTest(_DB):
+    def test_events_are_sent_in_batches_after_the_outside_head(self):
+        self.add(7)
+        self.assertEqual(outside.ship(self.conn, self.out, batch=3), 7)
+        self.assertEqual(self.out.head()["seq"], 7)
+        self.assertEqual(outside.ship(self.conn, self.out), 0)
+        self.add(2)
+        self.assertEqual(outside.ship(self.conn, self.out), 2)
+        self.assertEqual(outside.status(self.conn)["outside"]["seq"], 9)
+        self.assertEqual(outside.verify(self.conn, self.out), (9, None))
+        self.assertEqual(outside.ship(self.conn, None), 0)
+
+    def test_a_rewritten_event_stops_shipping_until_cleared(self):
+        self.add(3)
+        outside.ship(self.conn, self.out)
+        self.conn.execute("UPDATE events SET hash = ? WHERE seq = 3", ("f" * 64,))
+        with self.assertLogs("bits_orchestrator.outside", "ERROR"):
+            self.assertEqual(outside.ship(self.conn, self.out), 0)
+        alarm = outside.status(self.conn)["alarm"]
+        self.assertIn("event 3 changed", alarm["reason"])
+        self.assertEqual(self.kinds().count("outside.diverged"), 1)
+        n = self.out.head()["seq"]
+        self.assertEqual(outside.ship(self.conn, self.out), 0)          # stays stopped
+        self.assertEqual((self.out.head()["seq"], self.kinds().count("outside.diverged")), (n, 1))
+        self.assertIn("differs", outside.verify(self.conn, self.out)[1])
+        self.assertTrue(outside.clear(self.conn, "carol"))
+        self.assertFalse(outside.clear(self.conn, "carol"))
+        self.assertIn("outside.cleared", self.kinds())
+
+    def test_the_outside_head_is_checked_against_this_chain(self):
+        self.add(3)
+        outside.ship(self.conn, self.out)
+        self.out.rows[2]["hash"] = "e" * 64          # (the fake keeps it; the service would not)
+        with self.assertLogs("bits_orchestrator.outside", "ERROR"):
+            outside.ship(self.conn, self.out)
+        self.assertIn("differs from the outside copy", outside.status(self.conn)["alarm"]["reason"])
+
+    def test_an_edit_that_keeps_the_hashes_is_found_by_the_daily_walk(self):
+        self.add(3)
+        outside.ship(self.conn, self.out)
+        self.conn.execute("UPDATE events SET payload = '{\"i\":7}' WHERE seq = 2")
+        self.assertEqual(outside.ship(self.conn, self.out), 0)     # not seen by the quick check
+        self.assertIsNone(outside.status(self.conn)["alarm"])
+        self.conn.execute("UPDATE kv SET value = json_set(value, '$.full_ms', 0)"
+                          " WHERE key = 'outside.verified'")
+        with self.assertLogs("bits_orchestrator.outside", "ERROR"):
+            outside.ship(self.conn, self.out)
+        self.assertIn("breaks at event 2", outside.status(self.conn)["alarm"]["reason"])
+        self.assertIn("differs", outside.verify(self.conn, self.out)[1])
+
+    def test_an_outside_copy_that_lost_events(self):
+        self.add(4)
+        outside.ship(self.conn, self.out)
+        del self.out.rows[2:]
+        with self.assertLogs("bits_orchestrator.outside", "ERROR"):
+            self.assertEqual(outside.ship(self.conn, self.out), 0)
+        self.assertIn("went back from event 4 to 2", outside.status(self.conn)["alarm"]["reason"])
+        outside.clear(self.conn, "carol")                   # it was re-seeded on purpose
+        self.assertGreater(outside.ship(self.conn, self.out), 0)
+        self.assertEqual(outside.verify(self.conn, self.out)[1], None)
+
+    def test_batches_stay_under_the_services_body_limit(self):
+        for i in range(6):
+            with db.transaction(self.conn):
+                events.append(self.conn, "big", "s", events.WORKER, {"x": "y" * 60000})
+        sizes = []
+        send = self.out.send
+        self.out.send = lambda rows: (sizes.append(len(rows)), send(rows))[1]
+        with patch.object(outside, "BATCH_BYTES", 130000):
+            self.assertEqual(outside.ship(self.conn, self.out), 6)
+        self.assertEqual(sizes, [2, 2, 2])
+
+    def test_a_database_older_than_the_outside_copy(self):
+        self.add(4)
+        outside.ship(self.conn, self.out)
+        self.conn.execute("DELETE FROM events WHERE seq > 2")      # restored from an old copy
+        self.conn.execute("DELETE FROM kv WHERE key = 'outside.verified'")
+        with self.assertLogs("bits_orchestrator.outside", "ERROR"):
+            outside.ship(self.conn, self.out)
+        self.assertIn("older copy", outside.status(self.conn)["alarm"]["reason"])
+        # The alarm itself is the local event 3 now: not the outside one.
+        self.assertIn("event 3 differs", outside.verify(self.conn, self.out)[1])
+
+    def test_a_refused_batch_is_an_alarm(self):
+        self.add(2)
+        self.out.send = lambda rows: (False, {"error": "nope", "head": {"seq": 0}})
+        with self.assertLogs("bits_orchestrator.outside", "ERROR"):
+            self.assertEqual(outside.ship(self.conn, self.out), 0)
+        self.assertIn("refused", outside.status(self.conn)["alarm"]["reason"])
+
+    def test_verify_finds_a_broken_outside_chain(self):
+        self.add(3)
+        outside.ship(self.conn, self.out)
+        self.out.rows[1]["payload"] = '{"i":9}'
+        self.assertIn("own chain breaks at 2", outside.verify(self.conn, self.out)[1])
+
+
+class FakeHTTP:
+    def __init__(self, status, body):
+        self.status, self.body, self.calls = status, body, []
+
+    def request(self, method, url, headers, json, timeout, verify):
+        self.calls.append((method, url, headers, json, verify))
+        st, body = self.status, self.body
+
+        class R:
+            status_code = st
+
+            def json(self):
+                return body
+        return R()
+
+
+class ClientTest(unittest.TestCase):
+    def test_settings_token_file_and_responses(self):
+        self.assertIsNone(outside.Client.from_settings(config.Settings(env={})))
+        with self.assertRaises(outside.OutsideError):
+            outside.Client.from_settings(config.Settings(env={"BITS_ORCH_AUDIT_URL": "https://a"}))
+        for url in ("http://cvmfs-bits-01.cern.ch:8443", "http://10.0.0.1:8443"):
+            with self.assertRaises(outside.OutsideError):
+                outside.Client.from_settings(config.Settings(env={"BITS_ORCH_AUDIT_URL": url,
+                                                                  "BITS_ORCH_AUDIT_TOKEN": "t"}))
+        c = outside.Client.from_settings(config.Settings(env={      # the service on this host
+            "BITS_ORCH_AUDIT_URL": "http://audit-log:8443", "BITS_ORCH_AUDIT_TOKEN": "t"}))
+        self.assertEqual(c.url, "http://audit-log:8443")
+        with self.assertRaises(outside.OutsideError):
+            outside.Client.from_settings(config.Settings(env={"BITS_ORCH_AUDIT_URL": "https://a",
+                                                              "BITS_ORCH_AUDIT_TOKEN": "/nope"}))
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        tok = os.path.join(d, "t")
+        with open(tok, "w") as fh:
+            fh.write("sekrit\n")
+        c = outside.Client.from_settings(config.Settings(env={
+            "BITS_ORCH_AUDIT_URL": "https://cvmfs-bits-01:8443/", "BITS_ORCH_AUDIT_TOKEN": tok,
+            "BITS_ORCH_AUDIT_CAFILE": "/ca.pem"}))
+        c.http = FakeHTTP(409, {"error": "x", "head": {"seq": 1}})
+        ok, data = c.send([{"seq": 1}])
+        self.assertEqual((ok, data["head"]["seq"]), (False, 1))
+        method, url, headers, body, verify = c.http.calls[0]
+        self.assertEqual((method, url, headers["Authorization"], verify),
+                         ("POST", "https://cvmfs-bits-01:8443/v1/events", "Bearer sekrit", "/ca.pem"))
+        c.http = FakeHTTP(401, {"error": "a bearer token is required"})
+        with self.assertRaises(outside.OutsideError):
+            c.head()
+
+
+if __name__ == "__main__":
+    unittest.main()

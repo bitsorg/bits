@@ -172,19 +172,43 @@ class GitLabForge:
                          "&page=%d&per_page=%d" % (quote(updated_before, safe=""),
                                                    quote(status, safe=""), page, per_page)) or []
 
+    def finished_pipelines(self, ref, per_page=50):
+        """The newest finished pipelines of branch *ref*, newest first."""
+        return self._get("/pipelines?ref=%s&scope=finished&order_by=id&sort=desc&per_page=%d"
+                         % (quote(ref, safe=""), per_page)) or []
+
+    def commit(self, sha):
+        return self._get("/repository/commits/%s" % quote(sha, safe=""))
+
+    def _stream(self, path, headers=None, hops=3):
+        """GET a raw response, streamed. A redirect (job artifacts are often served
+        from object storage) is followed WITHOUT the token: requests drops only
+        Authorization on a cross-host redirect, never PRIVATE-TOKEN."""
+        url = "%s/projects/%s%s" % (self._api, self._project, path)
+        send = dict(headers or {}, **{"PRIVATE-TOKEN": self._token})
+        for _ in range(hops + 1):
+            try:
+                r = requests.get(url, headers=send, timeout=self._timeout, stream=True,
+                                 allow_redirects=False)
+            except requests.RequestException as e:
+                raise ForgeError(0, str(e)[:200])
+            if r.status_code not in (301, 302, 303, 307, 308) or not r.headers.get("Location"):
+                return r
+            r.close()
+            from urllib.parse import urljoin
+            nxt = urljoin(url, r.headers["Location"])
+            if not nxt.startswith(self._api + "/"):
+                send = dict(headers or {})
+            url = nxt
+        raise ForgeError(0, "GET %s: too many redirects" % path)
+
     def _tail(self, path, max_bytes, max_total=64 << 20, max_seconds=60):
         """The last *max_bytes* of a (possibly huge) raw response; None on 404.
         Asks for just the end (Range); a server that sends the whole body is read
         streamed, at most *max_total* bytes or *max_seconds*, past which the end
         is out of reach and the answer is None."""
         import time as _time
-        try:
-            r = requests.get("%s/projects/%s%s" % (self._api, self._project, path),
-                             headers={"PRIVATE-TOKEN": self._token,
-                                      "Range": "bytes=-%d" % max_bytes},
-                             timeout=self._timeout, stream=True)
-        except requests.RequestException as e:
-            raise ForgeError(0, str(e)[:200])
+        r = self._stream(path, {"Range": "bytes=-%d" % max_bytes})
         with r:
             if r.status_code in (404, 416):
                 return None
@@ -212,6 +236,38 @@ class GitLabForge:
         """The end of one artifact file of a job, or None when it has none (or
         it expired)."""
         return self._tail("/jobs/%s/artifacts/%s" % (job_id, quote(name, safe="/")), max_bytes)
+
+    def _raw(self, path, max_bytes):
+        """A whole raw response of at most *max_bytes*; None on 404. Larger is a
+        ForgeError (413), never a silently cut body."""
+        r = self._stream(path)
+        with r:
+            if r.status_code == 404:
+                return None
+            if r.status_code // 100 != 2:
+                raise ForgeError(r.status_code, "GET %s -> %s" % (path, r.status_code))
+            buf = bytearray()
+            try:
+                for chunk in r.iter_content(256 * 1024):
+                    buf += chunk
+                    if len(buf) > max_bytes:
+                        raise ForgeError(413, "GET %s: over %d bytes" % (path, max_bytes))
+            except requests.RequestException as e:
+                raise ForgeError(0, str(e)[:200])
+            return bytes(buf)
+
+    def repository_archive(self, sha, path=None, max_bytes=256 << 20):
+        """The repository at commit *sha* as a .tar.gz (only *path* when given);
+        None when the commit is unknown."""
+        q = "sha=%s" % quote(sha, safe="")
+        if path:
+            q += "&path=%s" % quote(path, safe="")
+        return self._raw("/repository/archive.tar.gz?%s" % q, max_bytes)
+
+    def job_artifacts(self, job_id, max_bytes=64 << 20):
+        """A job's artifacts archive (zip), or None when it has none (or they
+        expired)."""
+        return self._raw("/jobs/%s/artifacts" % job_id, max_bytes)
 
     def get_pipeline(self, pid):
         return self._get("/pipelines/%s" % pid)

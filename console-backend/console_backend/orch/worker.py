@@ -7,8 +7,11 @@ world, then writes what it decided; a step that fails is logged, recorded as an
 event when its error changes, and tried again on the next pass. The steps:
 running due actions, then hints, discover, settle and index (reconcile.py: what
 is true of builds, from GitLab and S3), then collect and backfill (failures.py:
-every failed job's record, deduplicated into issues). Signing and schedules are added as
-steps by later milestones.
+every failed job's record, deduplicated into issues), then ship (outside.py: the
+events to the outside copy of the audit chain) and the daily backup. Certification
+in shadow (shadow.py) runs on a thread of its own, since a first comparison
+hashes a whole architecture of the store. Signing and schedules are added by
+later milestones.
 
     python -m console_backend.orch.worker      # BITS_ORCH_DB=/orch/orch.db
 """
@@ -20,17 +23,20 @@ import threading
 import time
 
 from .. import config
-from . import actions, authority, db, events, failures, kinds, reconcile
+from . import actions, authority, db, events, failures, kinds, outside, reconcile, shadow
 
 log = logging.getLogger("bits_orchestrator")
 
 
 class Worker:
-    def __init__(self, conn, settings, interval=30.0, heartbeat=None):
+    def __init__(self, conn, settings, interval=30.0, heartbeat=None, path=None):
         self.conn = conn
         self.settings = settings
         self.interval = interval
         self.heartbeat = heartbeat
+        self.path = path
+        self.outside = outside.Client.from_settings(settings)
+        self.shadow = None
         self.deps = kinds.Deps(settings)
         self.authorize = authority.checker(settings)
         # Actions first, so an approved cancel never waits behind a long catch-up.
@@ -45,6 +51,7 @@ class Worker:
             ("backfill", lambda: failures.backfill(self.conn, self.deps.reader(),
                                                    settings.orch_backfill_days,
                                                    settings.orch_lookback_days)),
+            ("ship", lambda: outside.ship(self.conn, self.outside)),
             ("backup", self._backup),
         ]
         self._errors = {}                 # step -> last error text
@@ -59,15 +66,17 @@ class Worker:
     def _run_actions(self):
         actions.run_due(self.conn, self.deps, self.authorize)
 
-    def _note(self, step, error):
+    def _note(self, step, error, conn=None):
         """Record a step's failure or recovery as an event, but only when it
-        changes, so a step failing every pass does not flood the log."""
+        changes, so a step failing every pass does not flood the log. *conn*:
+        the connection of the thread the step runs on."""
         if self._errors.get(step) == error:
             return
         self._errors[step] = error
+        conn = conn or self.conn
         try:
-            with db.transaction(self.conn):
-                events.append(self.conn, "worker.step_failed" if error else "worker.step_recovered",
+            with db.transaction(conn):
+                events.append(conn, "worker.step_failed" if error else "worker.step_recovered",
                               "worker", events.WORKER, {"step": step, "error": error})
         except Exception:
             log.exception("cannot record step state for %s", step)
@@ -96,6 +105,10 @@ class Worker:
         n = actions.recover(self.conn)
         if n:
             log.warning("recovered %d interrupted action(s)", n)
+        if self.path and self.settings.orch_manifests_project:
+            self.shadow = shadow.Runner(self.path, self.settings, self.deps, self.interval,
+                                        self._stop, lambda c, step, err: self._note(step, err, c))
+            self.shadow.start()
 
     def loop(self):
         self.start()
@@ -103,6 +116,8 @@ class Worker:
             began = time.monotonic()
             self.run_once()
             self._stop.wait(max(1.0, self.interval - (time.monotonic() - began)))
+        if self.shadow is not None:
+            self.shadow.join(timeout=5)
         with db.transaction(self.conn):
             events.append(self.conn, "worker.stopped", "worker", events.WORKER, {})
 
@@ -125,7 +140,7 @@ def main():
             conn = db.connect(path)
             db.migrate(conn)
             w = Worker(conn, settings, interval=settings.orch_interval,
-                       heartbeat=path + ".heartbeat")
+                       heartbeat=path + ".heartbeat", path=path)
             signal.signal(signal.SIGTERM, w.stop)
             signal.signal(signal.SIGINT, w.stop)
             log.info("orchestrator worker on %s (schema %d, every %ss)",
@@ -133,6 +148,8 @@ def main():
             w.loop()
     except db.LockedError as e:
         raise SystemExit("bits-orchestrator: %s; not starting a second worker" % e)
+    except outside.OutsideError as e:
+        raise SystemExit("bits-orchestrator: %s" % e)
 
 
 if __name__ == "__main__":

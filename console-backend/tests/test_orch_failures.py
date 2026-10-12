@@ -377,7 +377,7 @@ class TailTest(unittest.TestCase):
         f = forge_ops.GitLabForge("https://gl/api/v4", "t", "42")
         seen = {}
 
-        def get(url, headers, timeout, stream):
+        def get(url, headers, timeout, stream, allow_redirects=True):
             seen["range"] = headers.get("Range")
             return self._resp(206, [b"x" * 10, b"END"])
         with patch.object(forge_ops.requests, "get", get):

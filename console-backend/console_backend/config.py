@@ -141,6 +141,27 @@ class Settings:
         # audit chain cannot be rebuilt): a directory, ideally on another disk.
         # Empty = no copies.
         self.orch_backup_dir = e.get("BITS_ORCH_BACKUP_DIR", "")
+        # Certification in shadow (M4): the bits-manifests project whose main
+        # pipelines certify (path or id; empty = off). The worker recomputes each
+        # certification its certify job signed and compares; it signs nothing.
+        # Read with the read token; the store is BITS_ORCH_STORE.
+        self.orch_manifests_project = e.get("BITS_ORCH_MANIFESTS_PROJECT", "")
+        self.orch_manifests_branch = e.get("BITS_ORCH_MANIFESTS_BRANCH", "main") or "main"
+        self.orch_certify_job = e.get("BITS_ORCH_CERTIFY_JOB", "certify-and-publish")
+        self.orch_manifest_prefix = e.get("BITS_ORCH_MANIFEST_PREFIX",
+                                          "MANIFESTS/common-manifest")
+        # Certifications older than this when the worker first looks are not compared.
+        self.orch_shadow_lookback_days = float(e.get("BITS_ORCH_SHADOW_LOOKBACK_DAYS", "3") or "3")
+        # The architecture bits sign assumes for a package without one (its
+        # --architecture); empty = such packages count as absent from the store.
+        self.orch_default_arch = e.get("BITS_ORCH_DEFAULT_ARCH", "")
+        # The outside copy of the audit chain (M4): the audit-log service (on
+        # this host for now, http://audit-log:8443 on an internal network; later
+        # on another node, over https). Empty URL = not shipped. TOKEN may be a
+        # file path.
+        self.orch_audit_url = e.get("BITS_ORCH_AUDIT_URL", "")
+        self.orch_audit_token = e.get("BITS_ORCH_AUDIT_TOKEN", "")
+        self.orch_audit_cafile = e.get("BITS_ORCH_AUDIT_CAFILE", "")
 
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks

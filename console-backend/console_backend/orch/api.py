@@ -18,6 +18,10 @@
     GET  /ops/issues/{id}              one, with its occurrences
     GET  /ops/failures?pipeline=&community=&limit=   failed jobs' records, with excerpts
     GET  /ops/signatures               the reviewed patterns that name a cause
+    GET  /ops/certifications?state=&limit=   bits-manifests certifications and their
+                                       sign runs: the worker's shadow comparison
+    GET  /ops/certifications/summary?days=   sign runs by state (the M4 gate)
+    GET  /ops/outside                  the outside audit copy: its head, any alarm
     POST /approvals/standing/request   {schedule, sha256, groups[], runs, days}: a passkey
                                        challenge bound to them
     POST /approvals/standing/approve   {request_id, assertion}
@@ -40,7 +44,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
-from . import actions, approvals, db, events, failures, kinds, reconcile
+from . import actions, approvals, db, events, failures, kinds, outside, reconcile, shadow
 
 router = APIRouter()
 _MAX_BODY = 64 * 1024
@@ -228,6 +232,36 @@ async def list_events(request: Request, after: int = 0, limit: int = 200, wait: 
         if out or asyncio.get_running_loop().time() >= deadline:
             return JSONResponse({"events": out}, headers={"Cache-Control": "no-store"})
         await asyncio.sleep(1)
+
+
+async def _overall(request):
+    data = await _caller(request)
+    if not await run_in_threadpool(lambda: authz.admin_groups(data["user"], _policy(data))[0]):
+        raise HTTPException(403, "%s is not an overall admin" % data["user"])
+    return data
+
+
+@router.get("/ops/certifications")
+async def list_certifications(request: Request, state: str = "", limit: int = 50):
+    """Certifications of bits-manifests, newest first, with the worker's shadow
+    comparison of each architecture (overall admins: they cover every group)."""
+    await _overall(request)
+    if state and state not in ("pending", "compared", "skipped", "failed"):
+        raise HTTPException(400, "unknown state %r" % state)
+    return {"certifications": await run_in_threadpool(_read, shadow.runs, limit, state)}
+
+
+@router.get("/ops/certifications/summary")
+async def certifications_summary(request: Request, days: float = 14):
+    await _overall(request)
+    since = db.now_ms() - int(max(0.0, min(float(days), 366.0)) * 86400 * 1000)
+    return {"since_ms": since, "sign_runs": await run_in_threadpool(_read, shadow.summary, since)}
+
+
+@router.get("/ops/outside")
+async def outside_status(request: Request):
+    await _overall(request)
+    return await run_in_threadpool(_read, outside.status)
 
 
 # --- builds -------------------------------------------------------------------
