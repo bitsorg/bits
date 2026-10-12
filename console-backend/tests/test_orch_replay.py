@@ -65,13 +65,13 @@ class ReplayTest(_Base):
                           " expires_ms, revoked_ms) VALUES ('preapproval', ?, '[\"lcg\"]', ?, ?, ?, ?)",
                           (subject, user, created or now - 1000, expires or now + 3600_000, revoked))
 
-    def replay(self, archs=("el9",), started=None, probes=None):
+    def replay(self, archs=("el9",), started=None):
         self.gl.add(5, "aaaa111", "aaaa000", artifacts=self.ci("aaaa111", list(archs)))
         self.gl.jobs[5][0]["started_at"] = started          # None: now
         shadow.discover(self.conn, self.gl, self.settings)
         while shadow.compare_one(self.conn, self.gl, (self.s3, "bucket"), self.settings,
                                  self.cache, trusted=self.trusted,
-                                 probe_factory=lambda c: probes or self.probe,
+                                 probe_factory=lambda c: self.probe,
                                  console=self.console):
             pass
         return self.run_rows(5, "replay")
@@ -139,14 +139,6 @@ class ReplayTest(_Base):
             row = self.replay()["*"]
         self.assertIn("fails closed", json.loads(row["diff"])["error"])
 
-    def test_the_builds_objects_are_hashed_afresh(self):
-        cache = shadow.DigestCache(self.conn)
-        cache.put("k", "e", 1, "sha256:old")
-        fresh = shadow._RememberOnly(cache)
-        self.assertIsNone(fresh.get("k", "e", 1))
-        fresh.put("k", "e", 1, "sha256:new")
-        self.assertEqual(cache.get("k", "e", 1), "sha256:new")
-
     def test_only_the_pipelines_own_store_copy_counts(self):
         # The same build id, built again by another pipeline: its copy is not this one's.
         self.s3.docs["MANIFESTS/b2/zzhost-2026.el9.json"] = dict(self.bom, source_pipeline_id=9)
@@ -175,16 +167,3 @@ class ReplayTest(_Base):
         self.conn.execute("DELETE FROM approvals")
         self.approve("carol")
         self.assertEqual(self.replay()["el9"]["state"], "match")
-
-    def test_the_builds_objects_go_to_the_fresh_probe_once(self):
-        calls = []
-
-        def base(arch, h, tarball=None):
-            calls.append(("cached", h))
-            return self.store.get((arch, h))
-
-        def fresh(arch, h, tarball=None):
-            calls.append(("fresh", h))
-            return self.store.get((arch, h))
-        self.assertEqual(self.replay(probes=(base, fresh))["el9"]["state"], "match")
-        self.assertEqual([c for c in calls if c[1] == "h2"], [("fresh", "h2")])

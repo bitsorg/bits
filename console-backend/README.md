@@ -134,7 +134,7 @@ CI signed (no pre-approval, no certification); the build's own BOMs from the
 store (the keys of its build index), at the merge request's paths; its certify
 group from the community's `ui-config.yaml` at the pipeline's commit; the
 pre-approver an admin of every group in the result; the key policy (none is a
-refusal); the build's objects hashed afresh. A refusal or a build it has nothing
+refusal); the store's objects as the shadow checks them. A refusal or a build it has nothing
 to certify from is a sign run too (`refused`, `missing`). It signs nothing.
 `/ops/certifications/summary` counts them under `replay`.
 

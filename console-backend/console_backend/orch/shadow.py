@@ -333,19 +333,6 @@ class DigestCache:
                 (key, etag, int(size), sha256, db.now_ms()))
 
 
-class _RememberOnly:
-    """A digest cache that is written, never read: the object is hashed."""
-
-    def __init__(self, cache):
-        self.cache = cache
-
-    def get(self, key, etag, size):
-        return None
-
-    def put(self, key, etag, size, sha256):
-        self.cache.put(key, etag, size, sha256)
-
-
 # --- the steps ------------------------------------------------------------------
 
 def _subject(pid):
@@ -507,33 +494,22 @@ def _compare_trees(conn, pid, sha, before, new_root, old_root, job, reader, stor
         key_id = key_id or kid
     if probe_factory is None:
         s3, bucket = store
-        cache = DigestCache(conn)
-        base = certify.s3_probe(s3, bucket, settings.orch_default_arch, cache=cache)
-        # The objects of the build being certified are hashed afresh (and the
-        # digests remembered): a certification must not take them on trust.
-        fresh_base = certify.s3_probe(s3, bucket, settings.orch_default_arch,
-                                      cache=_RememberOnly(cache))
+        base = certify.s3_probe(s3, bucket, settings.orch_default_arch, cache=DigestCache(conn))
     else:
         base = probe_factory(conn)
-        base, fresh_base = base if isinstance(base, tuple) else (base, base)
-    memo, hashed = {}, set()
+    memo = {}
 
-    def probe_for(fresh):
-        def probe(arch, h, tarball=None):
-            # The tree's, the set's and the replay's computations ask about the
-            # same objects: once each, the fresh ones hashed once.
-            k = (arch, h, tarball)
-            if h in fresh and k not in hashed:
-                memo[k] = fresh_base(arch, h, tarball)
-                hashed.add(k)
-            elif k not in memo:
-                memo[k] = base(arch, h, tarball)
-            return memo[k]
-        return probe
+    def probe(arch, h, tarball=None):
+        # The tree's, the set's and the replay's computations ask about the
+        # same objects.
+        k = (arch, h, tarball)
+        if k not in memo:
+            memo[k] = base(arch, h, tarball)
+        return memo[k]
 
-    def compute(root, only=archs, fresh=()):
+    def compute(root, only=archs):
         try:
-            return dict(build_by_arch(root, probe=probe_for(fresh), source_commit=sha,
+            return dict(build_by_arch(root, probe=probe, source_commit=sha,
                                       only_archs=only,
                                       key_id=(lambda: key_id) if key_id else None)), None
         except certify.CertifyError as e:
@@ -542,8 +518,7 @@ def _compare_trees(conn, pid, sha, before, new_root, old_root, job, reader, stor
             return None, ("*", "mismatch", "", 0, "", "",
                           {"error": "the worker refuses what was signed: %s" % str(e)[:1000]})
 
-    # The worker's own certification of the build (M8a), first: it hashes the
-    # build's objects, which the tree's and the set's computations then reuse.
+    # The worker's own certification of the build (M8a).
     from . import replay
     replay_runs = replay.runs(conn, settings, console, store, sha, new_root, old_root, job,
                               parsed, key_id, compute)

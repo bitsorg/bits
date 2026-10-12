@@ -23,8 +23,9 @@ the evidence for the M8a gate):
   * the checks bits-manifests does: one architecture per BOM, the pre-approver
     an admin of every group in the result (the backend's admin policy, not
     ADMINS), the signing key allowed for every group by the key policy (and no
-    key policy is a refusal), the store holding the bytes (the build's new
-    objects hashed afresh, not taken from the digest cache);
+    key policy is a refusal), the store holding the bytes (each object hashed
+    by the worker itself once, its digest kept while its key, ETag and size
+    stay the same: the digest cache the shadow uses);
   * the baseline: the tree the CI certified, the build's files replaced by
     the store's copies, and the architectures the CI certified, so the result
     can equal the CI's exactly.
@@ -203,9 +204,8 @@ def _groups(manifests):
 
 def runs(conn, settings, console, store, sha, new_root, old_root, job, parsed, key_id,
          compute):
-    """The replay's sign runs for this certification. *compute(root, fresh=)*
-    is the shadow's computation (the CI's architectures); *fresh* the hashes
-    to hash afresh."""
+    """The replay's sign runs for this certification. *compute(root)* is the
+    shadow's computation (the CI's architectures)."""
     try:
         return _runs(conn, settings, console, store, new_root, old_root, job, parsed,
                      key_id, compute)
@@ -243,8 +243,6 @@ def _runs(conn, settings, console, store, new_root, old_root, job, parsed, key_i
     archs = sorted({shadow._bom_arch(json.dumps(d)) or "?" for _k, d, _x in boms.values()})
     if "?" in archs:
         raise Refuse("a store BOM whose architecture the CI cannot tell")
-    fresh = {p.get("hash") for _k, d, _x in boms.values() for p in d.get("packages") or []
-             if isinstance(p, dict) and p.get("hash")}
     # The tree the CI certified (its deletions applied), the build's files
     # replaced by the store's copies.
     root = os.path.join(os.path.dirname(os.path.abspath(new_root)) + ".replay", "manifests")
@@ -256,7 +254,7 @@ def _runs(conn, settings, console, store, new_root, old_root, job, parsed, key_i
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "w") as fh:
                 json.dump(dict(doc, certified_by=[user]), fh, indent=1)
-        mine, refused = compute(root, fresh=fresh)
+        mine, refused = compute(root)
     finally:
         shutil.rmtree(os.path.dirname(root), ignore_errors=True)
     if refused:
