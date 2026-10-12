@@ -14,6 +14,10 @@ dependencies = [
     "httpx==0.28.1",
     "pyjwt[crypto]==2.15.1",
     "webauthn==2.5.2",
+    # GitLab (forge_ops) and the store through the credentials proxy (credproxy);
+    # both were installed only by the image until now.
+    "requests>=2.31",
+    "boto3>=1.34",
 ]
 # bits_helpers is provided by the surrounding bits repo (on PYTHONPATH / copied
 # alongside in the image), not a PyPI dependency.
