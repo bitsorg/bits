@@ -3,6 +3,7 @@
 """M6: the backend and the worker reach GitLab and the store through the
 credentials proxy, holding only its gate tokens."""
 
+import importlib.util
 import json
 import os
 import shutil
@@ -111,6 +112,7 @@ class CredProxyTest(_Proxy):
             f.get_pipeline(7)
         self.assertEqual(e.exception.status, 503)
 
+    @unittest.skipUnless(importlib.util.find_spec("boto3"), "needs boto3 (in the image)")
     def test_the_worker_reads_and_its_store_go_through_the_proxy(self):
         checked = []
         p = patch.object(kinds, "_check_bucket", lambda c, b: checked.append(b))
