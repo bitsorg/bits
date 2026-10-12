@@ -162,6 +162,15 @@ class Settings:
         self.orch_audit_url = e.get("BITS_ORCH_AUDIT_URL", "")
         self.orch_audit_token = e.get("BITS_ORCH_AUDIT_TOKEN", "")
         self.orch_audit_cafile = e.get("BITS_ORCH_AUDIT_CAFILE", "")
+        # The credentials proxy (M6): a second security-proxy instance holding the
+        # GitLab tokens and the store's keys, which the backend and the worker
+        # reach with gate tokens from its agent socket. Set, it replaces
+        # BITS_FORGE_OPS_TOKEN, BITS_FORGE_READ_TOKEN, BITS_ADMIN_RESOLVE_TOKEN and
+        # the worker's S3 keys; unset, those are used as before.
+        self.cred_proxy_agent_socket = e.get("BITS_CRED_PROXY_AGENT_SOCKET", "")
+        self.cred_proxy_host = e.get("BITS_CRED_PROXY_HOST", "credentials-proxy") or "credentials-proxy"
+        # The region the worker signs S3 requests for (the proxy re-signs with it).
+        self.orch_s3_region = e.get("BITS_ORCH_S3_REGION", "us-east-1") or "us-east-1"
 
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks

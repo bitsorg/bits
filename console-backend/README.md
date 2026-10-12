@@ -125,6 +125,15 @@ computes every certification from the set as well (sign runs of mode `set`);
 the two must agree. `GET /ops/certified` lists the set, `GET
 /ops/certified/bom/{sha256}` returns one BOM.
 
+**Credentials** (`credproxy.py`, M6): with `BITS_CRED_PROXY_AGENT_SOCKET`, the
+backend and the worker hold no GitLab token or store key. They call GitLab and
+the store through the credentials proxy (bits-services `credentials-proxy`, a
+second security-proxy instance), sending its gate token where the real token
+went (`PRIVATE-TOKEN`, or the S3 access key); the proxy adds the real one on the
+way out. Routes: `gitlab-ops`, `gitlab-read`, `gitlab-groups`, `s3`. Without
+the socket, `BITS_FORGE_OPS_TOKEN`, `BITS_FORGE_READ_TOKEN`,
+`BITS_ADMIN_RESOLVE_TOKEN` and the S3 keys are used as before.
+
 **The outside copy** (`orch/outside.py`, M4): with `BITS_ORCH_AUDIT_URL` and
 `BITS_ORCH_AUDIT_TOKEN`, the worker sends the event log to the audit-log service
 (bits-services `audit-log/`; on the same host for now, on another node later),

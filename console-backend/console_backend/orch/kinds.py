@@ -7,7 +7,7 @@ revoke, start-build, schedule changes and signature proposals here."""
 
 import threading
 
-from .. import forge_ops
+from .. import credproxy, forge_ops
 from . import actions
 
 _PIPELINE = {
@@ -44,11 +44,10 @@ class Deps:
         shows them only to a Maintainer and the read token must not be one (a
         Maintainer's read_api token can read the project's CI/CD secrets)."""
         s = self.settings
-        token = s.forge_read_token or s.forge_ops_token
-        if not (s.gitlab_api_url and token and s.forge_project):
+        read = forge_ops.GitLabForge.from_settings(s, "read")
+        if read is None:
             raise NotConfigured("GitLab not configured (GITLAB_API_URL, BITS_FORGE_PROJECT,"
-                                " BITS_FORGE_READ_TOKEN)")
-        read = forge_ops.GitLabForge(s.gitlab_api_url, token, s.forge_project)
+                                " BITS_FORGE_READ_TOKEN or BITS_CRED_PROXY_AGENT_SOCKET)")
         ops = forge_ops.GitLabForge.from_settings(s)
         if ops is not None:
             read.pipeline_variables = ops.pipeline_variables
@@ -60,10 +59,12 @@ class Deps:
         s = self.settings
         if not s.orch_manifests_project:
             return None
-        token = s.forge_read_token or s.forge_ops_token
-        if not (s.gitlab_api_url and token):
-            raise NotConfigured("GitLab not configured (GITLAB_API_URL, BITS_FORGE_READ_TOKEN)")
-        return forge_ops.GitLabForge(s.gitlab_api_url, token, s.orch_manifests_project, timeout=60)
+        read = forge_ops.GitLabForge.from_settings(s, "read", project=s.orch_manifests_project)
+        if read is None:
+            raise NotConfigured("GitLab not configured (GITLAB_API_URL, BITS_FORGE_READ_TOKEN"
+                                " or BITS_CRED_PROXY_AGENT_SOCKET)")
+        read._timeout = 60
+        return read
 
     _store = None
     _store_lock = threading.Lock()     # the shadow thread shares it; boto3 clients
@@ -77,6 +78,13 @@ class Deps:
             return None
         if not url.startswith("b3://"):
             raise NotConfigured("BITS_ORCH_STORE must be b3://<bucket>")
+        if credproxy.proxied(self.settings):
+            # Through the credentials proxy's s3 route: it holds the keys.
+            bucket = url[len("b3://"):].split("/", 1)[0]
+            client, new = credproxy.s3_client(self.settings)
+            if new:
+                _check_bucket(client, bucket)
+            return client, bucket
         with self._store_lock:
             if self._store is None or self._store[0] != url:
                 import tempfile
@@ -85,6 +93,20 @@ class Deps:
                 r = remote_from_url(url, "", "", tempfile.gettempdir())
                 self._store = (url, r.s3, r.remoteStore)
             return self._store[1], self._store[2]
+
+
+def _check_bucket(client, bucket):
+    """A bucket the proxy has no keypair for answers 404 like a missing object
+    would: find that out once, not as every object looking absent."""
+    try:
+        client.list_objects_v2(Bucket=bucket, MaxKeys=1)
+    except Exception as e:
+        status = (getattr(e, "response", None) or {}).get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if status in (403, 404):
+            raise NotConfigured("the credentials proxy cannot read bucket %s (HTTP %s): is it in"
+                                " the s3 route of its config, with its keypair pushed?"
+                                % (bucket, status))
+        raise
 
 
 def _transient(e):

@@ -26,12 +26,15 @@ def unresolvable(settings):
     an admin policy naming GitLab groups (&group lines, or BITS_ADMINS_GROUP)
     needs BITS_ADMIN_RESOLVE_TOKEN; without it every action would fail at run
     time as "no longer authorized"."""
-    if settings.admin_resolve_token:
+    from .. import credproxy
+    if credproxy.has(settings, "groups"):
         return ""
     if settings.admins_group:
-        return "BITS_ADMINS_GROUP is set but BITS_ADMIN_RESOLVE_TOKEN is not"
+        return ("BITS_ADMINS_GROUP is set but neither BITS_ADMIN_RESOLVE_TOKEN nor"
+                " BITS_CRED_PROXY_AGENT_SOCKET is")
     if _forge is not None and _forge.admin_policy_grouprefs(authz.load_policy(settings)):
-        return "the admin policy names GitLab groups but BITS_ADMIN_RESOLVE_TOKEN is not set"
+        return ("the admin policy names GitLab groups but neither BITS_ADMIN_RESOLVE_TOKEN"
+                " nor BITS_CRED_PROXY_AGENT_SOCKET is set")
     return ""
 
 

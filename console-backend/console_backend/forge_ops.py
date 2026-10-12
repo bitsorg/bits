@@ -29,18 +29,40 @@ class GitLabForge:
     """GitLab implementation. Holds an api-scope project access token and acts on
     one project (the shared build project)."""
 
-    def __init__(self, api_url, token, project, timeout=15):
-        self._api = api_url.rstrip("/")
-        self._token = token
+    def __init__(self, api_url, token, project, timeout=15, resolve=None):
+        # *resolve* () -> (api_url, token), asked at each request: the credentials
+        # proxy's port and gate token change on its restart and rotate daily.
+        self._resolve = resolve or (lambda: (api_url, token))
         self._project = quote(str(project), safe="")   # numeric id or url-encoded path
         self._timeout = timeout
 
+    def _creds(self):
+        try:
+            api, token = self._resolve()
+        except OSError as e:          # the credentials proxy cannot be reached
+            raise ForgeError(503, str(e)[:200])
+        return (api or "").rstrip("/"), token
+
+    @property
+    def _api(self):
+        return self._creds()[0]
+
+    @property
+    def _token(self):
+        return self._creds()[1]
+
     @classmethod
-    def from_settings(cls, settings):
-        """None unless the API url, token AND project are all configured."""
-        if not (settings.gitlab_api_url and settings.forge_ops_token and settings.forge_project):
+    def from_settings(cls, settings, kind="ops", project=None):
+        """None unless GitLab, a credential of *kind* (ops, read, groups) and
+        the project are configured. Through the credentials proxy when it is
+        configured (credproxy), else with the environment's token."""
+        from . import credproxy
+        project = project or settings.forge_project
+        if not (project and credproxy.has(settings, kind)):
             return None
-        return cls(settings.gitlab_api_url, settings.forge_ops_token, settings.forge_project)
+        if not (credproxy.proxied(settings) or settings.gitlab_api_url):
+            return None
+        return cls(None, None, project, resolve=lambda: credproxy.gitlab(settings, kind))
 
     def _post(self, path, body):
         try:
@@ -196,9 +218,12 @@ class GitLabForge:
             if r.status_code not in (301, 302, 303, 307, 308) or not r.headers.get("Location"):
                 return r
             r.close()
-            from urllib.parse import urljoin
+            from urllib.parse import urljoin, urlsplit
             nxt = urljoin(url, r.headers["Location"])
-            if not nxt.startswith(self._api + "/"):
+            # The token only to the API's own scheme and host (the credentials
+            # proxy rewrites its upstream's redirects to itself).
+            here, there = urlsplit(self._api), urlsplit(nxt)
+            if (there.scheme, there.netloc) != (here.scheme, here.netloc):
                 send = dict(headers or {})
             url = nxt
         raise ForgeError(0, "GET %s: too many redirects" % path)
