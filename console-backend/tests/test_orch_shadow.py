@@ -539,9 +539,9 @@ class ApiTest(_Base):
         self.assertEqual(r.status_code, 200)
         c = r.json()["certifications"][0]
         self.assertEqual((c["pipeline_id"], {(x["mode"], x["state"]) for x in c["sign_runs"]}),
-                         (5, {("shadow", "match"), ("set", "match")}))
-        self.assertEqual(self._get("carol", "/ops/certifications/summary").json()["sign_runs"],
-                         {"match": 1})
+                         (5, {("shadow", "match"), ("set", "match"), ("replay", "missing")}))
+        summary = self._get("carol", "/ops/certifications/summary").json()
+        self.assertEqual((summary["sign_runs"], summary["replay"]), ({"match": 1}, {"missing": 1}))
         self.assertEqual(self._get("carol", "/ops/certifications?state=bogus").status_code, 400)
         self.assertEqual(self._get("alice", "/ops/certifications").status_code, 403)
         self.assertEqual(self.client.get("/ops/certifications").status_code, 401)

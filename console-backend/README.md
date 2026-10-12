@@ -125,6 +125,19 @@ computes every certification from the set as well (sign runs of mode `set`);
 the two must agree. `GET /ops/certified` lists the set, `GET
 /ops/certified/bom/{sha256}` returns one BOM.
 
+**The worker's own certification, replayed** (`orch/replay.py`, M8a, first step):
+for each certification the shadow compares, the worker also works out what it
+would have certified for that build on its own terms, and compares it with what
+the CI signed (sign runs of mode `replay`, events `replay.*`): the build the push
+added BOMs for (console builds only); its console pre-approval, in force when the
+CI signed (no pre-approval, no certification); the build's own BOMs from the
+store (the keys of its build index), at the merge request's paths; its certify
+group from the community's `ui-config.yaml` at the pipeline's commit; the
+pre-approver an admin of every group in the result; the key policy (none is a
+refusal); the build's objects hashed afresh. A refusal or a build it has nothing
+to certify from is a sign run too (`refused`, `missing`). It signs nothing.
+`/ops/certifications/summary` counts them under `replay`.
+
 **Credentials** (`credproxy.py`, M6): with `BITS_CRED_PROXY_AGENT_SOCKET`, the
 backend and the worker hold no GitLab token or store key. They call GitLab and
 the store through the credentials proxy (bits-services `credentials-proxy`, a

@@ -202,7 +202,8 @@ MIGRATIONS = [
     # pipeline whose certify job signed; a sign run is one architecture of it,
     # here the worker's own computation compared with what was signed (mode
     # 'shadow', and 'set' for the same computed from the certified set; the
-    # worker's own signing is 'canary' and 'live' from M8). store_digests
+    # worker's own certification of the build, unsigned, 'replay' (M8a); its
+    # signing 'canary' and 'live' from M8). store_digests
     # remembers the sha256 of store objects, which never change, so a
     # certification only hashes the objects that are new.
     [

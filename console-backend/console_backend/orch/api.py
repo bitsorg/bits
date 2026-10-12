@@ -20,8 +20,9 @@
     GET  /ops/signatures               the reviewed patterns that name a cause
     GET  /ops/certifications?state=&limit=   bits-manifests certifications and their
                                        sign runs: the worker's shadow comparison
-    GET  /ops/certifications/summary?days=   sign runs by state, from the git tree and
-                                       from the certified set (the M4 and M5 gates)
+    GET  /ops/certifications/summary?days=   sign runs by state, from the git tree,
+                                       from the certified set and the worker's own
+                                       certification (the M4, M5 and M8a gates)
     GET  /ops/outside                  the outside audit copy: its head, any alarm
     GET  /ops/certified?group=&arch=&removed=&limit=   the certified set (the groups
                                        the caller administers), its version and summary
@@ -262,7 +263,8 @@ async def certifications_summary(request: Request, days: float = 14):
     since = db.now_ms() - int(max(0.0, min(float(days), 366.0)) * 86400 * 1000)
     return {"since_ms": since,
             "sign_runs": await run_in_threadpool(_read, shadow.summary, since),
-            "from_set": await run_in_threadpool(_read, shadow.summary, since, "set")}
+            "from_set": await run_in_threadpool(_read, shadow.summary, since, "set"),
+            "replay": await run_in_threadpool(_read, shadow.summary, since, "replay")}
 
 
 @router.get("/ops/certified")

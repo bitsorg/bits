@@ -291,6 +291,11 @@ class GitLabForge:
                 raise ForgeError(0, str(e)[:200])
             return bytes(buf)
 
+    def file_raw(self, path, ref, max_bytes=1 << 20):
+        """A repository file at *ref* (a commit), or None when it is not there."""
+        return self._raw("/repository/files/%s/raw?ref=%s" % (self._seg(path), quote(ref, safe="")),
+                         max_bytes)
+
     def repository_archive(self, sha, path=None, max_bytes=256 << 20):
         """The repository at commit *sha* as a .tar.gz (only *path* when given);
         None when the commit is unknown."""

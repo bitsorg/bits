@@ -333,6 +333,19 @@ class DigestCache:
                 (key, etag, int(size), sha256, db.now_ms()))
 
 
+class _RememberOnly:
+    """A digest cache that is written, never read: the object is hashed."""
+
+    def __init__(self, cache):
+        self.cache = cache
+
+    def get(self, key, etag, size):
+        return None
+
+    def put(self, key, etag, size, sha256):
+        self.cache.put(key, etag, size, sha256)
+
+
 # --- the steps ------------------------------------------------------------------
 
 def _subject(pid):
@@ -395,7 +408,7 @@ def _set(conn, pid, **fields):
 
 
 def compare_one(conn, reader, store, settings, cache_dir, build_by_arch=None,
-                trusted=None, probe_factory=None, upto=None):
+                trusted=None, probe_factory=None, upto=None, console=None):
     """Compare the oldest due certification (with a pipeline id up to *upto*,
     the newest the certified set has followed, when given). Returns its
     pipeline id, or None when none is due."""
@@ -408,7 +421,7 @@ def compare_one(conn, reader, store, settings, cache_dir, build_by_arch=None,
     pid = row["pipeline_id"]
     try:
         _compare(conn, row, reader, store, settings, cache_dir, build_by_arch, trusted,
-                 probe_factory)
+                 probe_factory, console)
     except Skip as s:
         with db.transaction(conn):
             _set(conn, pid, state="skipped", reason=str(s)[:500])
@@ -441,7 +454,7 @@ def _certify_job(jobs, name):
 
 
 def _compare(conn, row, reader, store, settings, cache_dir, build_by_arch, trusted,
-             probe_factory):
+             probe_factory, console=None):
     pid = row["pipeline_id"]
     pipeline = reader.get_pipeline(pid)
     job = _certify_job(reader.pipeline_jobs(pid), settings.orch_certify_job)
@@ -465,13 +478,13 @@ def _compare(conn, row, reader, store, settings, cache_dir, build_by_arch, trust
         new_root = tree(reader, sha, cache_dir)
         old_root = tree(reader, before, cache_dir) if before else None
         _compare_trees(conn, pid, sha, before, new_root, old_root, job, reader, store,
-                       settings, build_by_arch, trusted, probe_factory)
+                       settings, build_by_arch, trusted, probe_factory, console)
     finally:
         prune(cache_dir, protect=(sha, before))
 
 
 def _compare_trees(conn, pid, sha, before, new_root, old_root, job, reader, store, settings,
-                   build_by_arch, trusted, probe_factory):
+                   build_by_arch, trusted, probe_factory, console=None):
     from bits_helpers import certify, trust
     build_by_arch = build_by_arch or certify.build_by_arch
     changed, archs = changed_archs(new_root, old_root)
@@ -494,21 +507,34 @@ def _compare_trees(conn, pid, sha, before, new_root, old_root, job, reader, stor
         key_id = key_id or kid
     if probe_factory is None:
         s3, bucket = store
-        base = certify.s3_probe(s3, bucket, settings.orch_default_arch, cache=DigestCache(conn))
+        cache = DigestCache(conn)
+        base = certify.s3_probe(s3, bucket, settings.orch_default_arch, cache=cache)
+        # The objects of the build being certified are hashed afresh (and the
+        # digests remembered): a certification must not take them on trust.
+        fresh_base = certify.s3_probe(s3, bucket, settings.orch_default_arch,
+                                      cache=_RememberOnly(cache))
     else:
         base = probe_factory(conn)
-    memo = {}
+        base, fresh_base = base if isinstance(base, tuple) else (base, base)
+    memo, hashed = {}, set()
 
-    def probe(arch, h, tarball=None):
-        # The tree's and the set's computations ask about the same objects.
-        k = (arch, h, tarball)
-        if k not in memo:
-            memo[k] = base(arch, h, tarball)
-        return memo[k]
+    def probe_for(fresh):
+        def probe(arch, h, tarball=None):
+            # The tree's, the set's and the replay's computations ask about the
+            # same objects: once each, the fresh ones hashed once.
+            k = (arch, h, tarball)
+            if h in fresh and k not in hashed:
+                memo[k] = fresh_base(arch, h, tarball)
+                hashed.add(k)
+            elif k not in memo:
+                memo[k] = base(arch, h, tarball)
+            return memo[k]
+        return probe
 
-    def compute(root):
+    def compute(root, only=archs, fresh=()):
         try:
-            return dict(build_by_arch(root, probe=probe, source_commit=sha, only_archs=archs,
+            return dict(build_by_arch(root, probe=probe_for(fresh), source_commit=sha,
+                                      only_archs=only,
                                       key_id=(lambda: key_id) if key_id else None)), None
         except certify.CertifyError as e:
             if _transient_cause(e):
@@ -516,6 +542,11 @@ def _compare_trees(conn, pid, sha, before, new_root, old_root, job, reader, stor
             return None, ("*", "mismatch", "", 0, "", "",
                           {"error": "the worker refuses what was signed: %s" % str(e)[:1000]})
 
+    # The worker's own certification of the build (M8a), first: it hashes the
+    # build's objects, which the tree's and the set's computations then reuse.
+    from . import replay
+    replay_runs = replay.runs(conn, settings, console, store, sha, new_root, old_root, job,
+                              parsed, key_id, compute)
     ours, refused = compute(new_root)
     runs = [refused] if refused else judge(ours, parsed)
     # The same from the certified set as of this certification (M5): the set
@@ -547,7 +578,7 @@ def _compare_trees(conn, pid, sha, before, new_root, old_root, job, reader, stor
             shutil.rmtree(os.path.dirname(set_root), ignore_errors=True)
         set_runs = set_runs_tree + ([refused] if refused else judge(mine, parsed))
     with db.transaction(conn):
-        for mode, rows in (("shadow", runs), ("set", set_runs)):
+        for mode, rows in (("shadow", runs), ("set", set_runs), (replay.MODE, replay_runs)):
             for arch, state, source, n, ours_sha, signed_sha, d in rows:
                 _record(conn, pid, sha, mode, arch, state, source, n, ours_sha, signed_sha, d)
         _set(conn, pid, state="compared", reason="")
@@ -597,12 +628,13 @@ def _record(conn, pid, sha, mode, arch, state, source, n, ours_sha, signed_sha, 
         " signed_sha256 = excluded.signed_sha256, diff = excluded.diff,"
         " created_ms = excluded.created_ms",
         (pid, mode, arch, state, source, sha, n, ours_sha, signed_sha, _canonical(d), db.now_ms()))
-    prefix = "shadow." if mode == "shadow" else "shadow.set_"
+    prefix = {"shadow": "shadow.", "set": "shadow.set_"}.get(mode, mode + ".")
     if state == "unverified" and mode == "shadow":
         events.append(conn, "shadow.unverified", _subject(pid), events.WORKER,
                       {"arch": arch, "source": source, "commit": sha})
     # The tree's result is an event either way; the set's only when it differs.
-    if state == "mismatch" or (state == "match" and mode == "shadow") or state == "unsynced":
+    if (state == "mismatch" or (state == "match" and mode in ("shadow", "replay"))
+            or state in ("unsynced", "refused", "missing", "error")):
         summary = {k: (v.get("count") if isinstance(v, dict) and "count" in v else True)
                    for k, v in d.items()}
         if "error" in d:
@@ -634,7 +666,8 @@ def runs(conn, limit=50, state=""):
 
 def summary(conn, since_ms=0, mode="shadow"):
     """Counts of sign runs by state since *since_ms*: the gate's numbers. *mode*
-    'shadow' (from the git tree, M4) or 'set' (from the certified set, M5)."""
+    'shadow' (from the git tree, M4), 'set' (from the certified set, M5) or
+    'replay' (the worker's own certification of the build, M8a)."""
     return {r["state"]: r["n"] for r in conn.execute(
         "SELECT state, COUNT(*) AS n FROM sign_runs WHERE mode = ? AND created_ms >= ?"
         " GROUP BY state", (mode, int(since_ms)))}
@@ -669,6 +702,14 @@ class Runner(threading.Thread):
             finally:
                 conn.close()
 
+    def _console(self):
+        """The build project, for a build's ui-config.yaml (None: not readable)."""
+        try:
+            return self.deps.reader()
+        except Exception as e:
+            log.warning("replay: the build project cannot be read: %s", e)
+            return None
+
     def once(self, conn):
         try:
             reader = self.deps.manifests_reader()
@@ -682,9 +723,10 @@ class Runner(threading.Thread):
             from . import certified
             certified.sync(conn, reader, self.cache_dir, branch=self.settings.orch_manifests_branch)
             upto = certified.followed(conn) or 0
+            console = self._console()
             while not self.stop_event.is_set():
                 if compare_one(conn, reader, store, self.settings, self.cache_dir,
-                               upto=upto) is None:
+                               upto=upto, console=console) is None:
                     break
             certified.match_store(conn, store)
         except Exception as exc:
