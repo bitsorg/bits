@@ -132,6 +132,31 @@ class CredProxyTest(_Proxy):
         self.assertEqual(d.store()[0].meta.endpoint_url, "http://credentials-proxy:4800")
         self.assertEqual(checked, ["lcgapp-bits-testing"] * 2)                 # once per client
 
+    def test_paths_are_encoded_once_more_for_the_proxy(self):
+        seen = []
+
+        class R:
+            status_code = 200
+
+            def json(self):
+                return {}
+        with patch.object(forge_ops.requests, "get",
+                          lambda url, headers, timeout: seen.append(url) or R()):
+            f = forge_ops.GitLabForge.from_settings(self.settings, "read",
+                                                    project="buncic/bits-manifests")
+            f.finished_pipelines("main")
+            f._file_exists("communities/lcg/pipelines/a.json", "main")
+            direct = forge_ops.GitLabForge("https://gl/api/v4", "t", "buncic/bits-manifests")
+            direct.commit("abc")
+        self.assertEqual(seen, [
+            "http://credentials-proxy:4711/api/v4/projects/buncic%252Fbits-manifests/pipelines"
+            "?ref=main&scope=finished&order_by=id&sort=desc&per_page=50",
+            "http://credentials-proxy:4711/api/v4/projects/buncic%252Fbits-manifests/repository/"
+            "files/communities%252Flcg%252Fpipelines%252Fa.json?ref=main",
+            "https://gl/api/v4/projects/buncic%2Fbits-manifests/repository/commits/abc"])
+        self.assertEqual(credproxy.segment(self.settings, "a/b"), "a%2Fb")
+        self.assertEqual(credproxy.segment(config.Settings(env={}), "a/b"), "a/b")
+
     def test_a_bucket_the_proxy_cannot_read_is_not_configured(self):
         class E(Exception):
             response = {"ResponseMetadata": {"HTTPStatusCode": 404}}
@@ -159,8 +184,9 @@ class CredProxyTest(_Proxy):
         with patch.object(authz.forge, "gitlab_group_members", members), \
                 patch.object(authz.forge, "gitlab_subgroups", lambda api, token, root: []):
             pol = authz.tree_policy(self.settings)
+        # The proxy decodes the path once: the group path goes encoded once more.
         self.assertEqual(calls, [("http://credentials-proxy:4711/api/v4", "gate-gitlab-groups",
-                                  "bits/admins")])
+                                  "bits%2Fadmins")])
         self.assertIn("carol", pol["*"])
 
 

@@ -60,8 +60,9 @@ def tree_policy(settings) -> dict:
     if not (root and credproxy.has(settings, "groups")):
         return {}
     api, token = credproxy.gitlab(settings, "groups")
-    pol = {"*": _humans(forge.gitlab_group_members(api, token, root, inherited=False))}
-    for sub in forge.gitlab_subgroups(api, token, root):
+    pol = {"*": _humans(forge.gitlab_group_members(api, token, credproxy.segment(settings, root),
+                                                   inherited=False))}
+    for sub in forge.gitlab_subgroups(api, token, credproxy.segment(settings, root)):
         name = str(sub.get("path", "")).strip().lower()
         if name:
             pol[name] = _humans(forge.gitlab_group_members(api, token, sub["id"], inherited=False))
@@ -82,6 +83,9 @@ def resolve_policy(policy, settings, user_token) -> dict:
     else:   # the caller's own token, straight to GitLab
         api, token = settings.gitlab_api_url, user_token
     resolver = forge.make_group_resolver(api, token)
+    if credproxy.has(settings, "groups") and credproxy.proxied(settings):
+        plain = resolver
+        resolver = lambda ref: plain(credproxy.segment(settings, ref))  # noqa: E731
     return forge.resolve_admin_policy(policy, resolver)
 
 

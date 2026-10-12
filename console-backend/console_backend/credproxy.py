@@ -98,6 +98,17 @@ def gitlab(settings, kind):
     return (settings.gitlab_api_url, token) if token else ("", "")
 
 
+def segment(settings, value):
+    """A path segment for a client that %-encodes it itself (bits_helpers'
+    forge functions, which quote a group path's / as %2F): through the proxy,
+    encoded once more beforehand, since the proxy decodes the path once before
+    it forwards it. Unchanged without the proxy."""
+    if not proxied(settings):
+        return value
+    from urllib.parse import quote
+    return quote(str(value), safe="")
+
+
 def has(settings, kind):
     """Whether a credential of *kind* is configured. Through the proxy: whether
     its config has the route (a proxy that cannot be reached counts as having

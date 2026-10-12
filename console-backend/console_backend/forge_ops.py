@@ -29,12 +29,20 @@ class GitLabForge:
     """GitLab implementation. Holds an api-scope project access token and acts on
     one project (the shared build project)."""
 
-    def __init__(self, api_url, token, project, timeout=15, resolve=None):
+    def __init__(self, api_url, token, project, timeout=15, resolve=None, proxied=False):
         # *resolve* () -> (api_url, token), asked at each request: the credentials
         # proxy's port and gate token change on its restart and rotate daily.
         self._resolve = resolve or (lambda: (api_url, token))
-        self._project = quote(str(project), safe="")   # numeric id or url-encoded path
+        self._proxied = proxied
+        self._project = self._seg(project)   # numeric id or url-encoded path
         self._timeout = timeout
+
+    def _seg(self, value):
+        """One path segment, %-encoded (a project path's / as %2F). Through the
+        credentials proxy encoded twice: the proxy decodes the path once before
+        it forwards it, and a %2F decoded to / is another URL to GitLab."""
+        v = quote(str(value), safe="")
+        return quote(v, safe="") if self._proxied else v
 
     def _creds(self):
         try:
@@ -62,7 +70,8 @@ class GitLabForge:
             return None
         if not (credproxy.proxied(settings) or settings.gitlab_api_url):
             return None
-        return cls(None, None, project, resolve=lambda: credproxy.gitlab(settings, kind))
+        return cls(None, None, project, resolve=lambda: credproxy.gitlab(settings, kind),
+                   proxied=credproxy.proxied(settings))
 
     def _post(self, path, body):
         try:
@@ -136,7 +145,7 @@ class GitLabForge:
 
     def _file_exists(self, path, ref):
         try:
-            self._get("/repository/files/%s?ref=%s" % (quote(path, safe=""),
+            self._get("/repository/files/%s?ref=%s" % (self._seg(path),
                                                        quote(ref, safe="")))
             return True
         except ForgeError as e:
@@ -147,20 +156,20 @@ class GitLabForge:
     def put_file(self, path, branch, content_b64, message):
         """Create or update a repo file (base64 content) on `branch`. Upsert: PUT
         when it exists, else POST. Raises ForgeError on failure."""
-        p = "/repository/files/%s" % quote(path, safe="")
+        p = "/repository/files/%s" % self._seg(path)
         method = "PUT" if self._file_exists(path, branch) else "POST"
         return self._json(method, p, {"branch": branch, "content": content_b64,
                                       "encoding": "base64", "commit_message": message})
 
     def delete_file(self, path, branch, message):
-        p = "/repository/files/%s" % quote(path, safe="")
+        p = "/repository/files/%s" % self._seg(path)
         return self._json("DELETE", p, {"branch": branch, "commit_message": message})
 
     def set_ci_variable(self, key, value):
         """Upsert a project CI/CD variable: PUT if it exists, else POST. Kept
         unprotected/unmasked (these are refs/flags, not secrets)."""
         try:
-            return self._json("PUT", "/variables/%s" % quote(key, safe=""),
+            return self._json("PUT", "/variables/%s" % self._seg(key),
                               {"value": value})
         except ForgeError as e:
             if e.status == 404:
@@ -201,7 +210,7 @@ class GitLabForge:
                          % (quote(ref, safe=""), quote(scope, safe=""), per_page)) or []
 
     def commit(self, sha):
-        return self._get("/repository/commits/%s" % quote(sha, safe=""))
+        return self._get("/repository/commits/%s" % self._seg(sha))
 
     def _stream(self, path, headers=None, hops=3):
         """GET a raw response, streamed. A redirect (job artifacts are often served
