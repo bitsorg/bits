@@ -132,6 +132,37 @@ class CredProxyTest(_Proxy):
         self.assertEqual(d.store()[0].meta.endpoint_url, "http://credentials-proxy:4800")
         self.assertEqual(checked, ["lcgapp-bits-testing"] * 2)                 # once per client
 
+    @unittest.skipUnless(importlib.util.find_spec("boto3"), "needs boto3 (in the image)")
+    def test_a_public_store_is_read_with_no_credentials(self):
+        checked = []
+        p = patch.object(kinds, "_check_bucket",
+                         lambda c, b, anonymous=False: checked.append((b, anonymous)))
+        p.start()
+        self.addCleanup(p.stop)
+        self.settings.orch_store_anonymous = True          # wins over the proxy
+        d = kinds.Deps(self.settings)
+        s3, bucket = d.store()
+        from botocore import UNSIGNED
+        self.assertEqual((s3.meta.endpoint_url, bucket), ("https://s3.cern.ch", "lcgapp-bits-testing"))
+        self.assertIs(s3.meta.config.signature_version, UNSIGNED)
+        self.assertNotIn("s3", self.agent.asked)
+        self.assertIs(d.store()[0], s3)                                         # kept
+        self.assertEqual(checked, [("lcgapp-bits-testing", True)])
+        self.settings.orch_s3_endpoint = "http://s3.cern.ch"
+        with self.assertRaises(kinds.NotConfigured):
+            kinds.Deps(self.settings).store()
+
+    def test_a_bucket_that_is_not_public_is_not_configured(self):
+        class E(Exception):
+            response = {"ResponseMetadata": {"HTTPStatusCode": 403}}
+
+        class C:
+            def list_objects_v2(self, **kw):
+                raise E()
+        with self.assertRaises(kinds.NotConfigured) as e:
+            kinds._check_bucket(C(), "b", anonymous=True)
+        self.assertIn("anonymously", str(e.exception))
+
     def test_paths_are_encoded_once_more_for_the_proxy(self):
         seen = []
 

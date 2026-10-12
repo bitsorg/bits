@@ -78,9 +78,18 @@ class Deps:
             return None
         if not url.startswith("b3://"):
             raise NotConfigured("BITS_ORCH_STORE must be b3://<bucket>")
+        bucket = url[len("b3://"):].split("/", 1)[0]
+        if self.settings.orch_store_anonymous:
+            # A publicly readable store: unsigned requests, no keys anywhere.
+            with self._store_lock:
+                key = ("anonymous", self.settings.orch_s3_endpoint, url)
+                if self._store is None or self._store[0] != key:
+                    client = _anonymous_client(self.settings)
+                    _check_bucket(client, bucket, anonymous=True)
+                    self._store = (key, client, bucket)
+                return self._store[1], self._store[2]
         if credproxy.proxied(self.settings):
             # Through the credentials proxy's s3 route: it holds the keys.
-            bucket = url[len("b3://"):].split("/", 1)[0]
             client, new = credproxy.s3_client(self.settings)
             if new:
                 _check_bucket(client, bucket)
@@ -95,13 +104,32 @@ class Deps:
             return self._store[1], self._store[2]
 
 
-def _check_bucket(client, bucket):
-    """A bucket the proxy has no keypair for answers 404 like a missing object
+def _anonymous_client(settings):
+    endpoint = settings.orch_s3_endpoint
+    if not endpoint.startswith("https://"):
+        raise NotConfigured("BITS_ORCH_S3_ENDPOINT must be https (%s)" % endpoint)
+    import boto3
+    from botocore import UNSIGNED
+    from botocore.config import Config
+    # Its own session: the default one is not safe to share between threads.
+    return boto3.session.Session().client(
+        "s3", endpoint_url=endpoint, region_name=settings.orch_s3_region,
+        config=Config(signature_version=UNSIGNED, s3={"addressing_style": "path"},
+                      retries={"max_attempts": 3},
+                      request_checksum_calculation="WHEN_REQUIRED",
+                      response_checksum_validation="WHEN_REQUIRED"))
+
+
+def _check_bucket(client, bucket, anonymous=False):
+    """A bucket that cannot be read answers 403 or 404 like a missing object
     would: find that out once, not as every object looking absent."""
     try:
         client.list_objects_v2(Bucket=bucket, MaxKeys=1)
     except Exception as e:
         status = (getattr(e, "response", None) or {}).get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if status in (403, 404) and anonymous:
+            raise NotConfigured("bucket %s cannot be read anonymously (HTTP %s): is it public?"
+                                " Else unset BITS_ORCH_STORE_ANONYMOUS." % (bucket, status))
         if status in (403, 404):
             raise NotConfigured("the credentials proxy cannot read bucket %s (HTTP %s): is it in"
                                 " the s3 route of its config, with its keypair pushed?"

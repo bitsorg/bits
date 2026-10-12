@@ -131,6 +131,13 @@ class Settings:
         # trailing ::rw is ignored: the worker only reads). Empty = builds are
         # recorded from GitLab only, without their BOMs.
         self.orch_store = e.get("BITS_ORCH_STORE", "")
+        # The store is publicly readable: read it with no credentials at all, at
+        # BITS_ORCH_S3_ENDPOINT (else bits' BITS_S3_ENDPOINT_URL; https). Until M8 the worker only reads, so it then
+        # needs neither keys nor the credentials proxy's s3 route.
+        self.orch_store_anonymous = (e.get("BITS_ORCH_STORE_ANONYMOUS", "") or "").strip().lower() \
+            in ("1", "true", "yes")
+        self.orch_s3_endpoint = (e.get("BITS_ORCH_S3_ENDPOINT") or e.get("BITS_S3_ENDPOINT_URL")
+                                 or "https://s3.cern.ch")
         # The audience of the CI ID tokens build jobs send with their hints
         # (/ops/ci/*): its own, so a hint token can never sign anything.
         self.orch_ci_audience = e.get("BITS_ORCH_CI_AUDIENCE", "bits-orchestrator")
