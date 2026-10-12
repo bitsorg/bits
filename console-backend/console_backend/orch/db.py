@@ -201,7 +201,8 @@ MIGRATIONS = [
     # 5 (M4): certifications in shadow. A certification is one bits-manifests
     # pipeline whose certify job signed; a sign run is one architecture of it,
     # here the worker's own computation compared with what was signed (mode
-    # 'shadow'; the worker's own signing is mode 'live' from M5). store_digests
+    # 'shadow', and 'set' for the same computed from the certified set; the
+    # worker's own signing is 'canary' and 'live' from M8). store_digests
     # remembers the sha256 of store objects, which never change, so a
     # certification only hashes the objects that are new.
     [
@@ -244,6 +245,50 @@ MIGRATIONS = [
             sha256      TEXT NOT NULL,
             checked_ms  INTEGER NOT NULL
         )""",
+    ],
+    # 6 (M5): the certified set. boms holds each certified BOM's exact bytes,
+    # named by their sha256 and never changed; certified places them in the set
+    # (added and removed by versions of the set); a version is one step of it,
+    # for now one bits-manifests main pipeline's commit. They cannot be rebuilt
+    # from GitLab once bits-manifests is retired: backed up, and every change is
+    # an event.
+    [
+        """CREATE TABLE boms (
+            sha256    TEXT PRIMARY KEY,
+            body      BLOB NOT NULL,
+            size      INTEGER NOT NULL,
+            first_ms  INTEGER NOT NULL
+        )""",
+        """CREATE TABLE set_versions (
+            version      INTEGER PRIMARY KEY,
+            pipeline_id  INTEGER UNIQUE,
+            commit_sha   TEXT NOT NULL DEFAULT '',
+            source       TEXT NOT NULL,
+            added        INTEGER NOT NULL DEFAULT 0,
+            removed      INTEGER NOT NULL DEFAULT 0,
+            digest       TEXT NOT NULL DEFAULT '',
+            job_status   TEXT NOT NULL DEFAULT '',
+            created_ms   INTEGER NOT NULL
+        )""",
+        """CREATE TABLE certified (
+            id               INTEGER PRIMARY KEY,
+            path             TEXT NOT NULL,
+            grp              TEXT NOT NULL,
+            arch             TEXT NOT NULL DEFAULT '',
+            build_id         TEXT NOT NULL DEFAULT '',
+            bom_sha256       TEXT NOT NULL REFERENCES boms(sha256),
+            problem          TEXT NOT NULL DEFAULT '',
+            store_match      TEXT NOT NULL DEFAULT '',
+            store_key        TEXT,
+            approval_id      INTEGER,
+            added_version    INTEGER NOT NULL,
+            added_event      INTEGER,
+            added_ms         INTEGER NOT NULL,
+            removed_version  INTEGER,
+            removed_event    INTEGER
+        )""",
+        "CREATE INDEX certified_live ON certified(removed_version, grp, arch)",
+        "CREATE UNIQUE INDEX certified_live_path ON certified(path) WHERE removed_version IS NULL",
     ],
 ]
 

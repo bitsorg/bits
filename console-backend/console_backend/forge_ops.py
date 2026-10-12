@@ -172,10 +172,11 @@ class GitLabForge:
                          "&page=%d&per_page=%d" % (quote(updated_before, safe=""),
                                                    quote(status, safe=""), page, per_page)) or []
 
-    def finished_pipelines(self, ref, per_page=50):
-        """The newest finished pipelines of branch *ref*, newest first."""
-        return self._get("/pipelines?ref=%s&scope=finished&order_by=id&sort=desc&per_page=%d"
-                         % (quote(ref, safe=""), per_page)) or []
+    def finished_pipelines(self, ref, per_page=50, scope="finished"):
+        """The newest pipelines of branch *ref* in *scope* (finished, running,
+        pending), newest first."""
+        return self._get("/pipelines?ref=%s&scope=%s&order_by=id&sort=desc&per_page=%d"
+                         % (quote(ref, safe=""), quote(scope, safe=""), per_page)) or []
 
     def commit(self, sha):
         return self._get("/repository/commits/%s" % quote(sha, safe=""))

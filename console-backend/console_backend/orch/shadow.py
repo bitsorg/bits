@@ -37,6 +37,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import tarfile
 import threading
@@ -46,6 +47,7 @@ import zipfile
 from . import db, events
 
 log = logging.getLogger("bits_orchestrator.shadow")
+_SHA = re.compile(r"[0-9a-f]{7,64}")
 
 VOLATILE = ("created_at", "expires", "certified_at", "certified_by")
 MAX_ATTEMPTS = 8
@@ -89,6 +91,8 @@ def tree(reader, sha, cache_dir):
     """The manifests/ directory of the bits-manifests tree at *sha*, extracted
     under *cache_dir* (kept for the next certification, whose before_sha it
     usually is). Only regular .json files under manifests/ are extracted."""
+    if not _SHA.fullmatch(sha or ""):
+        raise Skip("not a commit sha: %r" % (sha,))
     dest = os.path.join(cache_dir, sha)
     done = os.path.join(dest, ".complete")
     if os.path.exists(done):
@@ -308,7 +312,7 @@ def diff(ours, signed):
 class DigestCache:
     """store_digests as the probe's cache (see certify.s3_probe). It trusts an
     object's key, ETag and size to stand for its bytes: fine for a comparison,
-    while CI still hashes every object; signing (M5) must hash for itself."""
+    while CI still hashes every object; signing (M8) must hash for itself."""
 
     def __init__(self, conn):
         self.conn = conn
@@ -391,12 +395,14 @@ def _set(conn, pid, **fields):
 
 
 def compare_one(conn, reader, store, settings, cache_dir, build_by_arch=None,
-                trusted=None, probe_factory=None):
-    """Compare the oldest due certification. Returns its pipeline id, or None
-    when none is due."""
+                trusted=None, probe_factory=None, upto=None):
+    """Compare the oldest due certification (with a pipeline id up to *upto*,
+    the newest the certified set has followed, when given). Returns its
+    pipeline id, or None when none is due."""
     now = db.now_ms()
     row = conn.execute("SELECT * FROM certifications WHERE state = 'pending' AND next_ms <= ?"
-                       " ORDER BY pipeline_id LIMIT 1", (now,)).fetchone()
+                       " AND pipeline_id <= ? ORDER BY pipeline_id LIMIT 1",
+                       (now, upto if upto is not None else 1 << 62)).fetchone()
     if row is None:
         return None
     pid = row["pipeline_id"]
@@ -443,6 +449,9 @@ def _compare(conn, row, reader, store, settings, cache_dir, build_by_arch, trust
     with db.transaction(conn):
         _set(conn, pid, job_id=(job or {}).get("id"), job_status=status,
              updated_at=str(pipeline.get("updated_at") or row["updated_at"]))
+        # Whether that version of the certified set was signed (M8 needs to know).
+        conn.execute("UPDATE set_versions SET job_status = ? WHERE pipeline_id = ?",
+                     (status or "none", pid))
     if job is None:
         raise Skip("no %s job" % settings.orch_certify_job)
     if status != "success":
@@ -485,71 +494,122 @@ def _compare_trees(conn, pid, sha, before, new_root, old_root, job, reader, stor
         key_id = key_id or kid
     if probe_factory is None:
         s3, bucket = store
-        probe = certify.s3_probe(s3, bucket, settings.orch_default_arch, cache=DigestCache(conn))
+        base = certify.s3_probe(s3, bucket, settings.orch_default_arch, cache=DigestCache(conn))
     else:
-        probe = probe_factory(conn)
-    runs = []
-    try:
-        ours = dict(build_by_arch(new_root, probe=probe, source_commit=sha, only_archs=archs,
-                                  key_id=(lambda: key_id) if key_id else None))
-    except certify.CertifyError as e:
-        if _transient_cause(e):
-            raise                         # the store failed to answer, not this certification
-        runs.append(("*", "mismatch", "", 0, "", "",
-                     {"error": "the worker refuses what was signed: %s" % str(e)[:1000]}))
-        ours = None
-    if ours is not None:
-        for arch in sorted(set(ours) | set(parsed)):
-            mine = ours.get(arch)
-            doc, kid, source = parsed.get(arch, (None, None, ""))
-            if source == "superseded":
-                # The store's copy is of a later (or, for an architecture this
-                # run did not sign, an earlier) certification: not this one's.
-                if mine is not None:
-                    runs.append((arch, "superseded", source, len(mine["packages"]),
-                                 digest(mine), "", {}))
-                continue
-            if mine is None:
-                runs.append((arch, "mismatch", source, 0, "", digest(doc) if doc else "",
-                             {"error": "signed, but not in the worker's result"}))
-                continue
-            if arch not in parsed:
-                runs.append((arch, "mismatch", "", len(mine["packages"]), digest(mine), "",
-                             {"error": "in the worker's result, but not signed"}))
-                continue
-            if doc is None or kid is None:
-                runs.append((arch, "unverified", source, len(mine["packages"]), digest(mine),
-                             "", {"error": "the signed manifest does not verify"}))
-                continue
-            d, a, b = diff(mine, doc), digest(mine), digest(doc)
-            if a != b and not d:
-                d = {"order": "the same packages and fields, in another order"}
-            runs.append((arch, "match" if a == b else "mismatch", source,
-                         len(mine["packages"]), a, b, d))
+        base = probe_factory(conn)
+    memo = {}
+
+    def probe(arch, h, tarball=None):
+        # The tree's and the set's computations ask about the same objects.
+        k = (arch, h, tarball)
+        if k not in memo:
+            memo[k] = base(arch, h, tarball)
+        return memo[k]
+
+    def compute(root):
+        try:
+            return dict(build_by_arch(root, probe=probe, source_commit=sha, only_archs=archs,
+                                      key_id=(lambda: key_id) if key_id else None)), None
+        except certify.CertifyError as e:
+            if _transient_cause(e):
+                raise                     # the store failed to answer, not this certification
+            return None, ("*", "mismatch", "", 0, "", "",
+                          {"error": "the worker refuses what was signed: %s" % str(e)[:1000]})
+
+    ours, refused = compute(new_root)
+    runs = [refused] if refused else judge(ours, parsed)
+    # The same from the certified set as of this certification (M5): the set
+    # must give exactly what the tree gives.
+    from . import certified
+    version = certified.version_of(conn, pid)
+    if version is None:
+        set_runs = [("*", "unsynced", "", 0, "", "",
+                     {"error": "the certified set did not follow this pipeline"})]
+    else:
+        # The set as of this pipeline must hold exactly the tree's BOMs.
+        have, want = certified.members(conn, version), {
+            p: hashlib.sha256(_read(f)).hexdigest() for p, f in _files(new_root).items()}
+        if have != want:
+            set_runs_tree = [("(tree)", "mismatch", "", len(have), certified.digest_of(have),
+                              certified.digest_of(want), {
+                                  "only_set": sorted(set(have) - set(want))[:_LIST],
+                                  "only_tree": sorted(set(want) - set(have))[:_LIST],
+                                  "different": sorted(p for p in set(have) & set(want)
+                                                      if have[p] != want[p])[:_LIST]})]
+        else:
+            set_runs_tree = [("(tree)", "match", "", len(have), certified.digest_of(have),
+                              certified.digest_of(want), {})]
+        set_root = certified.materialize(conn, version, os.path.join(
+            os.path.dirname(os.path.abspath(new_root)) + ".set"))
+        try:
+            mine, refused = compute(set_root)
+        finally:
+            shutil.rmtree(os.path.dirname(set_root), ignore_errors=True)
+        set_runs = set_runs_tree + ([refused] if refused else judge(mine, parsed))
     with db.transaction(conn):
-        for arch, state, source, n, ours_sha, signed_sha, d in runs:
-            conn.execute(
-                "INSERT INTO sign_runs (certification, mode, arch, state, source, source_commit,"
-                " packages, manifest_sha256, signed_sha256, diff, created_ms)"
-                " VALUES (?, 'shadow', ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT(certification, mode, arch) DO UPDATE SET state = excluded.state,"
-                " source = excluded.source, packages = excluded.packages,"
-                " manifest_sha256 = excluded.manifest_sha256,"
-                " signed_sha256 = excluded.signed_sha256, diff = excluded.diff,"
-                " created_ms = excluded.created_ms",
-                (pid, arch, state, source, sha, n, ours_sha, signed_sha, _canonical(d), db.now_ms()))
-            if state == "unverified":
-                events.append(conn, "shadow.unverified", _subject(pid), events.WORKER,
-                              {"arch": arch, "source": source, "commit": sha})
-            if state in ("match", "mismatch"):
-                summary = {k: (v.get("count") if isinstance(v, dict) and "count" in v else True)
-                           for k, v in d.items()}
-                if "error" in d:
-                    summary = {"error": d["error"][:500]}
-                events.append(conn, "shadow." + state, _subject(pid), events.WORKER,
-                              {"arch": arch, "packages": n, "source": source, "commit": sha,
-                               **({"differs": summary} if state == "mismatch" else {})})
+        for mode, rows in (("shadow", runs), ("set", set_runs)):
+            for arch, state, source, n, ours_sha, signed_sha, d in rows:
+                _record(conn, pid, sha, mode, arch, state, source, n, ours_sha, signed_sha, d)
         _set(conn, pid, state="compared", reason="")
+
+
+def judge(ours, parsed):
+    """Sign runs for each architecture: our manifests against the signed ones."""
+    runs = []
+    for arch in sorted(set(ours) | set(parsed)):
+        mine = ours.get(arch)
+        doc, kid, source = parsed.get(arch, (None, None, ""))
+        if source == "superseded":
+            # The store's copy is of a later (or, for an architecture this run
+            # did not sign, an earlier) certification: not this one's.
+            if mine is not None:
+                runs.append((arch, "superseded", source, len(mine["packages"]),
+                             digest(mine), "", {}))
+            continue
+        if mine is None:
+            runs.append((arch, "mismatch", source, 0, "", digest(doc) if doc else "",
+                         {"error": "signed, but not in the worker's result"}))
+            continue
+        if arch not in parsed:
+            runs.append((arch, "mismatch", "", len(mine["packages"]), digest(mine), "",
+                         {"error": "in the worker's result, but not signed"}))
+            continue
+        if doc is None or kid is None:
+            runs.append((arch, "unverified", source, len(mine["packages"]), digest(mine),
+                         "", {"error": "the signed manifest does not verify"}))
+            continue
+        d, a, b = diff(mine, doc), digest(mine), digest(doc)
+        if a != b and not d:
+            d = {"order": "the same packages and fields, in another order"}
+        runs.append((arch, "match" if a == b else "mismatch", source,
+                     len(mine["packages"]), a, b, d))
+    return runs
+
+
+def _record(conn, pid, sha, mode, arch, state, source, n, ours_sha, signed_sha, d):
+    conn.execute(
+        "INSERT INTO sign_runs (certification, mode, arch, state, source, source_commit,"
+        " packages, manifest_sha256, signed_sha256, diff, created_ms)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        " ON CONFLICT(certification, mode, arch) DO UPDATE SET state = excluded.state,"
+        " source = excluded.source, packages = excluded.packages,"
+        " manifest_sha256 = excluded.manifest_sha256,"
+        " signed_sha256 = excluded.signed_sha256, diff = excluded.diff,"
+        " created_ms = excluded.created_ms",
+        (pid, mode, arch, state, source, sha, n, ours_sha, signed_sha, _canonical(d), db.now_ms()))
+    prefix = "shadow." if mode == "shadow" else "shadow.set_"
+    if state == "unverified" and mode == "shadow":
+        events.append(conn, "shadow.unverified", _subject(pid), events.WORKER,
+                      {"arch": arch, "source": source, "commit": sha})
+    # The tree's result is an event either way; the set's only when it differs.
+    if state == "mismatch" or (state == "match" and mode == "shadow") or state == "unsynced":
+        summary = {k: (v.get("count") if isinstance(v, dict) and "count" in v else True)
+                   for k, v in d.items()}
+        if "error" in d:
+            summary = {"error": d["error"][:500]}
+        events.append(conn, prefix + state, _subject(pid), events.WORKER,
+                      {"arch": arch, "packages": n, "source": source, "commit": sha,
+                       **({"differs": summary} if state != "match" else {})})
 
 
 def runs(conn, limit=50, state=""):
@@ -572,11 +632,12 @@ def runs(conn, limit=50, state=""):
     return out
 
 
-def summary(conn, since_ms=0):
-    """Counts of sign runs by state since *since_ms*: the M4 gate's numbers."""
+def summary(conn, since_ms=0, mode="shadow"):
+    """Counts of sign runs by state since *since_ms*: the gate's numbers. *mode*
+    'shadow' (from the git tree, M4) or 'set' (from the certified set, M5)."""
     return {r["state"]: r["n"] for r in conn.execute(
-        "SELECT state, COUNT(*) AS n FROM sign_runs WHERE mode = 'shadow' AND created_ms >= ?"
-        " GROUP BY state", (int(since_ms),))}
+        "SELECT state, COUNT(*) AS n FROM sign_runs WHERE mode = ? AND created_ms >= ?"
+        " GROUP BY state", (mode, int(since_ms)))}
 
 
 # --- the thread -----------------------------------------------------------------
@@ -618,9 +679,14 @@ class Runner(threading.Thread):
                 raise RuntimeError("BITS_ORCH_STORE is not set: certifications cannot be"
                                    " checked against the store")
             discover(conn, reader, self.settings)
+            from . import certified
+            certified.sync(conn, reader, self.cache_dir, branch=self.settings.orch_manifests_branch)
+            upto = certified.followed(conn) or 0
             while not self.stop_event.is_set():
-                if compare_one(conn, reader, store, self.settings, self.cache_dir) is None:
+                if compare_one(conn, reader, store, self.settings, self.cache_dir,
+                               upto=upto) is None:
                     break
+            certified.match_store(conn, store)
         except Exception as exc:
             log.exception("shadow certification failed")
             self.note(conn, "shadow", "%s: %s" % (type(exc).__name__, exc))

@@ -112,6 +112,19 @@ architecture is a sign run and a `shadow.match` or `shadow.mismatch` event; `GET
 admins. It signs, commits and writes nothing, runs on a thread of its own, and
 remembers the sha256 of store objects so only new ones are hashed.
 
+**The certified set** (`orch/certified.py`, M5): the worker keeps its own record
+of which BOMs are certified, so that bits-manifests can be retired. Each
+certified BOM's exact bytes are kept in the database, named by their sha256;
+the set is a sequence of versions, for now one per bits-manifests main pipeline
+(the first imports the whole tree), each adding and removing BOMs as that
+commit did. Every addition and removal is an event (`certified.added`,
+`certified.removed`) with the path, group, architecture, build and sha256. Each
+BOM is also matched to its build's copy in the store, ignoring the
+`certified_by` certification adds (`same`, `differs`, `absent`). The shadow
+computes every certification from the set as well (sign runs of mode `set`);
+the two must agree. `GET /ops/certified` lists the set, `GET
+/ops/certified/bom/{sha256}` returns one BOM.
+
 **The outside copy** (`orch/outside.py`, M4): with `BITS_ORCH_AUDIT_URL` and
 `BITS_ORCH_AUDIT_TOKEN`, the worker sends the event log to the audit-log service
 (bits-services `audit-log/`; on the same host for now, on another node later),

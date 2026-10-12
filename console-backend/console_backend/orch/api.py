@@ -20,8 +20,12 @@
     GET  /ops/signatures               the reviewed patterns that name a cause
     GET  /ops/certifications?state=&limit=   bits-manifests certifications and their
                                        sign runs: the worker's shadow comparison
-    GET  /ops/certifications/summary?days=   sign runs by state (the M4 gate)
+    GET  /ops/certifications/summary?days=   sign runs by state, from the git tree and
+                                       from the certified set (the M4 and M5 gates)
     GET  /ops/outside                  the outside audit copy: its head, any alarm
+    GET  /ops/certified?group=&arch=&removed=&limit=   the certified set (the groups
+                                       the caller administers), its version and summary
+    GET  /ops/certified/bom/{sha256}   one certified BOM, its exact bytes
     POST /approvals/standing/request   {schedule, sha256, groups[], runs, days}: a passkey
                                        challenge bound to them
     POST /approvals/standing/approve   {request_id, assertion}
@@ -40,11 +44,12 @@ import re
 import secrets
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
-from . import actions, approvals, db, events, failures, kinds, outside, reconcile, shadow
+from . import (actions, approvals, certified, db, events, failures, kinds, outside,
+               reconcile, shadow)
 
 router = APIRouter()
 _MAX_BODY = 64 * 1024
@@ -255,7 +260,33 @@ async def list_certifications(request: Request, state: str = "", limit: int = 50
 async def certifications_summary(request: Request, days: float = 14):
     await _overall(request)
     since = db.now_ms() - int(max(0.0, min(float(days), 366.0)) * 86400 * 1000)
-    return {"since_ms": since, "sign_runs": await run_in_threadpool(_read, shadow.summary, since)}
+    return {"since_ms": since,
+            "sign_runs": await run_in_threadpool(_read, shadow.summary, since),
+            "from_set": await run_in_threadpool(_read, shadow.summary, since, "set")}
+
+
+@router.get("/ops/certified")
+async def list_certified(request: Request, group: str = "", arch: str = "", removed: int = 0,
+                         limit: int = 1000):
+    """The certified set: an overall admin sees every group, a community admin
+    their own."""
+    data = await _caller(request)
+    groups = await _scope(data)
+    return await run_in_threadpool(_read, certified.listing, groups, group.strip(), arch.strip(),
+                                   bool(removed), limit)
+
+
+@router.get("/ops/certified/bom/{sha256}")
+async def certified_bom(sha256: str, request: Request):
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise HTTPException(400, "expected a sha256")
+    data = await _caller(request)
+    groups = await _scope(data)
+    body = await run_in_threadpool(_read, certified.bom, sha256, groups)
+    if body is None:
+        raise HTTPException(404, "no such certified BOM")
+    return Response(content=body, media_type="application/json",
+                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @router.get("/ops/outside")

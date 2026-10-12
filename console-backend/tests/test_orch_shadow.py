@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from bits_helpers import certify, trust
 from console_backend import config, forge_ops, main
-from console_backend.orch import db, events, shadow, worker
+from console_backend.orch import certified, db, events, shadow, worker
 
 SETTINGS = {"BITS_ORCH_MANIFESTS_PROJECT": "bits/bits-manifests",
             "BITS_ORCH_SHADOW_LOOKBACK_DAYS": "100000"}
@@ -62,7 +62,9 @@ class FakeManifests:
         if artifacts is not None:
             self.artifacts[pid * 10] = artifacts
 
-    def finished_pipelines(self, ref, per_page=50):
+    def finished_pipelines(self, ref, per_page=50, scope="finished"):
+        if scope != "finished":
+            return [{"id": i} for i in getattr(self, "running", ())]
         return [dict(p) for p in sorted(self.pipelines.values(), key=lambda p: -p["id"])]
 
     def get_pipeline(self, pid):
@@ -141,8 +143,10 @@ class _Base(unittest.TestCase):
                 z.writestr(os.path.basename(op) + ".sig", sig)
         return buf.getvalue()
 
-    def run_shadow(self, store=("s3", "bucket")):
+    def run_shadow(self, store=("s3", "bucket"), sync=True):
         shadow.discover(self.conn, self.gl, self.settings)
+        if sync:
+            certified.sync(self.conn, self.gl, self.cache)
         while shadow.compare_one(self.conn, self.gl, store, self.settings, self.cache,
                                  trusted=self.trusted, probe_factory=lambda c: self.probe):
             pass
@@ -151,9 +155,9 @@ class _Base(unittest.TestCase):
         return self.conn.execute("SELECT * FROM certifications WHERE pipeline_id = ?",
                                  (pid,)).fetchone()
 
-    def run_rows(self, pid):
+    def run_rows(self, pid, mode="shadow"):
         return {r["arch"]: r for r in self.conn.execute(
-            "SELECT * FROM sign_runs WHERE certification = ?", (pid,))}
+            "SELECT * FROM sign_runs WHERE certification = ? AND mode = ?", (pid, mode))}
 
     def kinds(self):
         return [e["kind"] for e in events.since(self.conn, limit=1000)]
@@ -200,12 +204,12 @@ class ChangedArchsTest(_Base):
         class R:
             def repository_archive(self, sha, path=None):
                 return evil.getvalue()
-        root = shadow.tree(R(), "abc", self.cache)
+        root = shadow.tree(R(), "abcdef1", self.cache)
         found = sorted(os.path.relpath(os.path.join(d, f), root)
                        for d, _s, fs in os.walk(root) for f in fs)
         self.assertEqual(found, ["lcg/ok.json"])
         self.assertFalse(os.path.exists(os.path.join(self.dir, "evil.json")))
-        self.assertEqual(shadow.tree(None, "abc", self.cache), root)     # cached
+        self.assertEqual(shadow.tree(None, "abcdef1", self.cache), root)     # cached
 
     def test_trees_in_use_are_kept(self):
         import time
@@ -224,14 +228,14 @@ class ChangedArchsTest(_Base):
 class CompareTest(_Base):
     def setUp(self):
         super().setUp()
-        self.gl.trees["s0"] = {"manifests/lcg/a.json": _bom("b1", "el9", ("p", "h1"))}
-        self.gl.trees["s1"] = dict(self.gl.trees["s0"], **{
+        self.gl.trees["aaaa000"] = {"manifests/lcg/a.json": _bom("b1", "el9", ("p", "h1"))}
+        self.gl.trees["aaaa111"] = dict(self.gl.trees["aaaa000"], **{
             "manifests/lcg/b.json": _bom("b2", "el9", ("q", "h2")),
             "manifests/alice/c.json": _bom("b3", "el10", ("r", "h3"))})
         self.store = {("el9", "h1"): "sh1", ("el9", "h2"): "sh2", ("el10", "h3"): "sh3"}
 
     def test_identical_manifests_match(self):
-        self.gl.add(5, "s1", "s0", artifacts=self.ci("s1", ["el10", "el9"]))
+        self.gl.add(5, "aaaa111", "aaaa000", artifacts=self.ci("aaaa111", ["el10", "el9"]))
         self.run_shadow()
         c = self.cert(5)
         self.assertEqual((c["state"], json.loads(c["archs"]), c["job_id"]),
@@ -250,7 +254,7 @@ class CompareTest(_Base):
             if arch == "el9":
                 doc["packages"] = doc["packages"][:1] + [dict(_pkg("x", "h9"), group="lcg")]
                 doc["sources"] = doc["sources"] + ["b-extra"]
-        self.gl.add(5, "s1", "s0", artifacts=self.ci("s1", ["el10", "el9"], tamper=tamper))
+        self.gl.add(5, "aaaa111", "aaaa000", artifacts=self.ci("aaaa111", ["el10", "el9"], tamper=tamper))
         self.run_shadow()
         runs = self.run_rows(5)
         self.assertEqual(runs["el10"]["state"], "match")
@@ -266,10 +270,10 @@ class CompareTest(_Base):
     def test_a_different_scope_shows_in_sources(self):
         # CI certified every architecture (no scope), el8 too, which this push
         # did not touch: its manifests' sources cover the el8 build as well.
-        for sha in ("s0", "s1"):
+        for sha in ("aaaa000", "aaaa111"):
             self.gl.trees[sha]["manifests/lcg/old.json"] = _bom("b0", "el8", ("o", "h0"))
         self.store[("el8", "h0")] = "sh0"
-        self.gl.add(5, "s1", "s0", artifacts=self.ci("s1", None))
+        self.gl.add(5, "aaaa111", "aaaa000", artifacts=self.ci("aaaa111", None))
         self.run_shadow()
         runs = self.run_rows(5)
         self.assertEqual(runs["el9"]["state"], "mismatch")
@@ -277,10 +281,10 @@ class CompareTest(_Base):
         self.assertIn("not in the worker", json.loads(runs["el8"]["diff"])["error"])
 
     def test_an_architecture_signed_but_not_computed_is_a_mismatch(self):
-        buf = io.BytesIO(self.ci("s1", ["el10", "el9"]))
+        buf = io.BytesIO(self.ci("aaaa111", ["el10", "el9"]))
         with zipfile.ZipFile(buf, "a") as z:
             z.writestr("common-manifest-el8.json", json.dumps({"packages": []}))
-        self.gl.add(5, "s1", "s0", artifacts=buf.getvalue())
+        self.gl.add(5, "aaaa111", "aaaa000", artifacts=buf.getvalue())
         self.run_shadow()
         self.assertEqual(self.run_rows(5)["el8"]["state"], "mismatch")
 
@@ -293,13 +297,13 @@ class CompareTest(_Base):
         os.chmod(other, 0o600)
         okid = trust.key_id(priv.public_key())
         trust.load_key_policy = lambda dirs=None: {okid: ["*"]}   # undone by the patch
-        self.gl.add(5, "s1", "s0", artifacts=self.ci("s1", ["el10", "el9"], key=other))
+        self.gl.add(5, "aaaa111", "aaaa000", artifacts=self.ci("aaaa111", ["el10", "el9"], key=other))
         self.run_shadow()
         self.assertEqual({r["state"] for r in self.run_rows(5).values()}, {"unverified"})
         self.assertNotIn("shadow.match", self.kinds())
 
     def test_the_worker_refusing_what_was_signed(self):
-        self.gl.add(5, "s1", "s0", artifacts=self.ci("s1", ["el10", "el9"]))
+        self.gl.add(5, "aaaa111", "aaaa000", artifacts=self.ci("aaaa111", ["el10", "el9"]))
         self.store[("el9", "h2")] = "other-bytes"           # the store now disagrees
         self.run_shadow()
         runs = self.run_rows(5)
@@ -307,30 +311,30 @@ class CompareTest(_Base):
         self.assertIn("refuses", json.loads(runs["*"]["diff"])["error"])
 
     def test_without_artifacts_the_stores_copy_while_it_is_current(self):
-        art = self.ci("s1", ["el10", "el9"])
+        art = self.ci("aaaa111", ["el10", "el9"])
         objects = {}
         with zipfile.ZipFile(io.BytesIO(art)) as z:
             for n in z.namelist():
                 objects["MANIFESTS/" + n] = z.read(n)
         doc = json.loads(objects["MANIFESTS/common-manifest-el10.json"])
-        doc["source_commit"] = "s2"                          # a later certification replaced it
+        doc["source_commit"] = "aaaa222"                          # a later certification replaced it
         objects["MANIFESTS/common-manifest-el10.json"] = json.dumps(doc).encode()
-        self.gl.add(5, "s1", "s0")
+        self.gl.add(5, "aaaa111", "aaaa000")
         self.run_shadow(store=(FakeS3(objects), "bucket"))
         runs = self.run_rows(5)
         self.assertEqual((runs["el9"]["state"], runs["el9"]["source"]), ("match", "store"))
         self.assertEqual(runs["el10"]["state"], "superseded")
 
     def test_a_full_run_from_the_store_skips_architectures_it_did_not_sign(self):
-        self.gl.trees["s1"]["manifests/lcg/bad.json"] = b"{broken"      # scope: every arch
-        art = self.ci("s1", None)
+        self.gl.trees["aaaa111"]["manifests/lcg/bad.json"] = b"{broken"      # scope: every arch
+        art = self.ci("aaaa111", None)
         objects = {"MANIFESTS/common-manifest-el7.json": json.dumps(
                        {"source_commit": "s-old", "packages": []}).encode(),
                    "MANIFESTS/common-manifest-el7.json.sig": b"{}"}
         with zipfile.ZipFile(io.BytesIO(art)) as z:
             for n in z.namelist():
                 objects["MANIFESTS/" + n] = z.read(n)
-        self.gl.add(5, "s1", "s0")
+        self.gl.add(5, "aaaa111", "aaaa000")
         with self.assertLogs("bits", "WARNING"):              # bits skips the unreadable BOM
             self.run_shadow(store=(FakeS3(objects), "bucket"))
         self.assertEqual(json.loads(self.cert(5)["archs"]), [])
@@ -338,36 +342,36 @@ class CompareTest(_Base):
                          {"el9": "match", "el10": "match"})
 
     def test_failed_jobs_are_skipped_until_retried(self):
-        self.gl.add(5, "s1", "s0", status="failed")
+        self.gl.add(5, "aaaa111", "aaaa000", status="failed")
         self.run_shadow()
         self.assertEqual((self.cert(5)["state"], self.cert(5)["reason"]),
                          ("skipped", "certify-and-publish failed"))
-        self.gl.add(5, "s1", "s0", updated="2026-10-11T11:00:00Z",
-                    artifacts=self.ci("s1", ["el10", "el9"]))
+        self.gl.add(5, "aaaa111", "aaaa000", updated="2026-10-11T11:00:00Z",
+                    artifacts=self.ci("aaaa111", ["el10", "el9"]))
         self.run_shadow()
         self.assertEqual(self.cert(5)["state"], "compared")
 
     def test_what_is_not_a_certification(self):
-        self.gl.add(5, "s0", "s0", artifacts=b"")           # nothing changed
-        self.gl.add(6, "s1", "s0", source="merge_request_event")
+        self.gl.add(5, "aaaa000", "aaaa000", artifacts=b"")           # nothing changed
+        self.gl.add(6, "aaaa111", "aaaa000", source="merge_request_event")
         self.gl.jobs[5] = [{"id": 50, "name": "certify-and-publish", "status": "success"}]
         self.run_shadow()
         self.assertEqual(self.cert(5)["reason"], "no manifests changed")
         self.assertIsNone(self.cert(6))
-        self.gl.add(7, "s1", "s0")
+        self.gl.add(7, "aaaa111", "aaaa000")
         self.gl.jobs[7] = [{"id": 70, "name": "validate-and-merge", "status": "success"}]
         self.run_shadow()
         self.assertEqual(self.cert(7)["reason"], "no certify-and-publish job")
 
     def test_a_first_push_diffs_against_the_parent(self):
-        self.gl.parents["s1"] = ["s0"]
-        self.gl.add(5, "s1", "0" * 40, artifacts=self.ci("s1", ["el10", "el9"]))
+        self.gl.parents["aaaa111"] = ["aaaa000"]
+        self.gl.add(5, "aaaa111", "0" * 40, artifacts=self.ci("aaaa111", ["el10", "el9"]))
         self.run_shadow()
-        self.assertEqual(self.cert(5)["before_sha"], "s0")
+        self.assertEqual(self.cert(5)["before_sha"], "aaaa000")
         self.assertEqual({r["state"] for r in self.run_rows(5).values()}, {"match"})
 
     def test_an_outage_fails_the_step_without_counting(self):
-        self.gl.add(5, "s1", "s0", artifacts=self.ci("s1", ["el10", "el9"]))
+        self.gl.add(5, "aaaa111", "aaaa000", artifacts=self.ci("aaaa111", ["el10", "el9"]))
         self.gl.fail = forge_ops.ForgeError(502, "bad gateway")
         with self.assertRaises(forge_ops.ForgeError):
             self.run_shadow()
@@ -390,7 +394,7 @@ class CompareTest(_Base):
         self.assertEqual(self.run_rows(5), {})
 
     def test_errors_back_off_then_fail(self):
-        self.gl.add(5, "s1", "s0")
+        self.gl.add(5, "aaaa111", "aaaa000")
         self.gl.fail = forge_ops.ForgeError(403, "forbidden")
         with self.assertLogs("bits_orchestrator.shadow", "WARNING"):
             self.run_shadow()
@@ -406,7 +410,7 @@ class CompareTest(_Base):
 
     def test_old_pipelines_are_not_compared(self):
         self.settings.orch_shadow_lookback_days = 1
-        self.gl.add(5, "s1", "s0")
+        self.gl.add(5, "aaaa111", "aaaa000")
         self.gl.pipelines[5]["created_at"] = "2026-01-01T00:00:00Z"
         shadow.discover(self.conn, self.gl, self.settings)
         self.assertIsNone(self.cert(5))
@@ -521,10 +525,10 @@ class ApiTest(_Base):
         p.start()
         self.addCleanup(p.stop)
         self.client = TestClient(main.app)
-        self.gl.trees["s0"] = {}
-        self.gl.trees["s1"] = {"manifests/lcg/b.json": _bom("b2", "el9", ("q", "h2"))}
+        self.gl.trees["aaaa000"] = {}
+        self.gl.trees["aaaa111"] = {"manifests/lcg/b.json": _bom("b2", "el9", ("q", "h2"))}
         self.store = {("el9", "h2"): "sh2"}
-        self.gl.add(5, "s1", "s0", artifacts=self.ci("s1", ["el9"]))
+        self.gl.add(5, "aaaa111", "aaaa000", artifacts=self.ci("aaaa111", ["el9"]))
         self.run_shadow()
 
     def _get(self, user, path):
@@ -534,7 +538,8 @@ class ApiTest(_Base):
         r = self._get("carol", "/ops/certifications")
         self.assertEqual(r.status_code, 200)
         c = r.json()["certifications"][0]
-        self.assertEqual((c["pipeline_id"], c["sign_runs"][0]["state"]), (5, "match"))
+        self.assertEqual((c["pipeline_id"], {(x["mode"], x["state"]) for x in c["sign_runs"]}),
+                         (5, {("shadow", "match"), ("set", "match")}))
         self.assertEqual(self._get("carol", "/ops/certifications/summary").json()["sign_runs"],
                          {"match": 1})
         self.assertEqual(self._get("carol", "/ops/certifications?state=bogus").status_code, 400)
@@ -550,8 +555,8 @@ class WorkerTest(_Base):
         w = worker.Worker(self.conn, self.settings, interval=0.05, path=self.path)
         w.deps.manifests_reader = lambda: self.gl
         w.deps.store = lambda: None
-        self.gl.trees["s0"], self.gl.trees["s1"] = {}, {"manifests/l/b.json": _bom("b", "el9")}
-        self.gl.add(5, "s1", "s0")
+        self.gl.trees["aaaa000"], self.gl.trees["aaaa111"] = {}, {"manifests/l/b.json": _bom("b", "el9")}
+        self.gl.add(5, "aaaa111", "aaaa000")
         w.start()
         self.addCleanup(w.stop)
         self.assertEqual(w.shadow.name, "shadow")
