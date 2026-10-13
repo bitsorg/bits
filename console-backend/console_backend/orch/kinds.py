@@ -177,3 +177,7 @@ actions.register(actions.Kind(
     params=_PIPELINE, approval="requester",
     subject=lambda p: "pipeline:%s" % p["pipeline"], scope=_pipeline_scope, run=_cancel,
     safe_to_rerun=True))
+
+
+# Registered by its module (M8a): approved by a build's pre-approval only.
+from . import certifier  # noqa: E402,F401

@@ -10,6 +10,9 @@ the community it acts for, and the approval it needs:
 * "requester": an authorized requester is enough; the action is approved when
   requested.
 * "approver": someone authorized must approve it separately.
+* "preapproval": only a passkey-approved record approves it (a certification:
+  the build's pre-approval, M8a). Nobody approves it in the console; the worker
+  requests it already approved, naming the approval (request_preapproved).
 
 An advisor can only propose: its actions start in "proposed" whatever the kind,
 and only a person can approve them. The worker checks the approver's authority
@@ -27,7 +30,7 @@ from typing import Callable, Optional
 from . import db, events
 
 STATES = ("proposed", "approved", "running", "done", "failed", "rejected")
-APPROVALS = ("requester", "approver")
+APPROVALS = ("requester", "approver", "preapproval")
 MAX_ATTEMPTS = 5
 MAX_PARAMS = 16 * 1024
 
@@ -39,6 +42,15 @@ class ActionError(Exception):
 class Retry(Exception):
     """Raised by a runner for a transient failure: the action is tried again
     later, up to MAX_ATTEMPTS."""
+
+
+class Defer(Exception):
+    """Raised by a runner that must wait (a limit reached): the action is tried
+    again after *delay_ms*, without counting an attempt."""
+
+    def __init__(self, message, delay_ms):
+        super().__init__(message)
+        self.delay_ms = int(delay_ms)
 
 
 @dataclass(frozen=True)
@@ -182,6 +194,8 @@ def request(conn, kind_name, params, actor, community, authorized,
     (kind, requester, idempotency_key) returns that action unchanged; the same
     key with other parameters is an error."""
     k = kind(kind_name)
+    if k.approval == "preapproval":
+        raise ActionError("%s is approved only by a pre-approval" % k.name)
     check_params(k, params)
     if actor.kind not in k.requesters:
         raise ActionError("%s may not request %s" % (actor.kind, k.name))
@@ -217,6 +231,53 @@ def request(conn, kind_name, params, actor, community, authorized,
     return row, True
 
 
+def request_preapproved(conn, kind_name, params, actor, community, approval,
+                        idempotency_key, cause=None, also=None):
+    """Record an action of a "preapproval" kind, approved in the same
+    transaction by *approval* (an approvals row in force: its approver becomes
+    the action's approver, its id the action's approval_id). *also(conn, row)*
+    runs in that transaction too. Returns (row, created); a repeated
+    idempotency key returns the existing action unchanged."""
+    k = kind(kind_name)
+    if k.approval != "preapproval":
+        raise ActionError("%s is not approved by a pre-approval" % k.name)
+    if (approval["kind"] != "preapproval" or approval["revoked_ms"] is not None
+            or approval["expires_ms"] <= db.now_ms()):
+        raise ActionError("approval %s is not a pre-approval in force" % approval["id"])
+    check_params(k, params)
+    if actor.kind not in k.requesters:
+        raise ActionError("%s may not request %s" % (actor.kind, k.name))
+    if not idempotency_key or len(idempotency_key) > 200:
+        raise ActionError("an idempotency key is required")
+    now = db.now_ms()
+    with db.transaction(conn):
+        old = _row(conn.execute(
+            "SELECT * FROM actions WHERE kind = ? AND requested_by_kind = ? AND"
+            " requested_by_id = ? AND idempotency_key = ?",
+            (k.name, actor.kind, actor.id, idempotency_key)).fetchone())
+        if old:
+            if old["params"] != params or old["community"] != community:
+                raise ActionError("idempotency key %r was used for another %s"
+                                  % (idempotency_key, k.name))
+            return old, False
+        cur = conn.execute(
+            "INSERT INTO actions (kind, params, idempotency_key, subject, community, state,"
+            " requested_by_kind, requested_by_id, approved_by_kind, approved_by_id,"
+            " approval_id, cause, created_ms, updated_ms)"
+            " VALUES (?,?,?,?,?,'approved',?,?,'person',?,?,?,?,?)",
+            (k.name, json.dumps(params, sort_keys=True), idempotency_key, k.subject(params),
+             community, actor.kind, actor.id, approval["approver"], approval["id"], cause,
+             now, now))
+        row = _row(conn.execute("SELECT * FROM actions WHERE id = ?",
+                                (cur.lastrowid,)).fetchone())
+        _event(conn, "requested", row, actor, {"params": params}, cause=cause)
+        _event(conn, "approved", row, actor, {"by": "preapproval", "approval": approval["id"],
+                                              "approver": approval["approver"]})
+        if also is not None:
+            also(conn, row)
+    return row, True
+
+
 def _decide(conn, action_id, actor, authorized, to, reason=None):
     if actor.kind != "person":
         raise ActionError("only a person can approve or reject an action")
@@ -230,6 +291,8 @@ def _decide(conn, action_id, actor, authorized, to, reason=None):
             raise ActionError("%s is not authorized for %s"
                               % (actor.id, row["community"] or "overall admin"))
         k = REGISTRY.get(row["kind"])
+        if to == "approved" and k is not None and k.approval == "preapproval":
+            raise ActionError("%s is approved only by a pre-approval" % row["kind"])
         if (to == "approved" and k is not None and k.approval == "approver"
                 and (row["requested_by_kind"], row["requested_by_id"]) == (actor.kind, actor.id)):
             raise ActionError("%s needs an approver other than its requester" % row["kind"])
@@ -253,19 +316,34 @@ def reject(conn, action_id, actor, authorized, reason=""):
     return _decide(conn, action_id, actor, authorized, "rejected", (reason or "")[:500])
 
 
-def claim_next(conn):
+def _kind_filter(kinds, exclude):
+    q, args = "", []
+    if kinds is not None:
+        names = sorted(kinds)
+        q += " AND a.kind IN (%s)" % ",".join("?" * len(names)) if names else " AND 0"
+        args += names
+    if exclude:
+        names = sorted(exclude)
+        q += " AND a.kind NOT IN (%s)" % ",".join("?" * len(names))
+        args += names
+    return q, args
+
+
+def claim_next(conn, kinds=None, exclude=()):
     """Take the oldest approved action that is due, whose subject has nothing
     running and no older approved action waiting (one backing off, say), and mark
     it running: actions on one subject run in the order they were approved for.
-    Returns it, or None."""
+    *kinds* / *exclude* limit it to some kinds (the certifier thread runs only
+    certifications). Returns it, or None."""
     now = db.now_ms()
+    q, args = _kind_filter(kinds, exclude)
     with db.transaction(conn):
         r = conn.execute(
-            "SELECT * FROM actions a WHERE state = 'approved' AND not_before_ms <= ?"
+            "SELECT * FROM actions a WHERE state = 'approved' AND not_before_ms <= ?" + q +
             " AND NOT EXISTS (SELECT 1 FROM actions b WHERE b.subject = a.subject"
             " AND b.state = 'running') AND NOT EXISTS (SELECT 1 FROM actions c"
             " WHERE c.subject = a.subject AND c.state = 'approved' AND c.id < a.id)"
-            " ORDER BY id LIMIT 1", (now,)).fetchone()
+            " ORDER BY id LIMIT 1", [now] + args).fetchone()
         if r is None:
             return None
         conn.execute("UPDATE actions SET state = 'running', attempts = attempts + 1,"
@@ -299,6 +377,16 @@ def finish(conn, row, result=None, error=None, retry=False):
                    {"error": error[:1000], "attempt": row["attempts"]})
 
 
+def defer(conn, row, reason, delay_ms):
+    """Approved again after *delay_ms*, the attempt not counted."""
+    now = db.now_ms()
+    with db.transaction(conn):
+        conn.execute("UPDATE actions SET state = 'approved', attempts = MAX(0, attempts - 1),"
+                     " error = ?, not_before_ms = ?, updated_ms = ? WHERE id = ?",
+                     (reason[:1000], now + delay_ms, now, row["id"]))
+        _event(conn, "deferred", row, events.WORKER, {"reason": reason[:1000], "in_ms": delay_ms})
+
+
 def recover(conn):
     """At worker start: an action left running was interrupted. Run it again if
     its kind allows and it has attempts left, else fail it so a person decides
@@ -319,12 +407,13 @@ def recover(conn):
     return len(rows)
 
 
-def run_due(conn, deps, authorize, budget=20):
-    """Run up to *budget* due actions. *authorize(actor, community)* re-checks the
-    approver's authority now; a lapsed authority fails the action."""
+def run_due(conn, deps, authorize, budget=20, kinds=None, exclude=()):
+    """Run up to *budget* due actions (of *kinds*, not of *exclude*).
+    *authorize(actor, community)* re-checks the approver's authority now; a
+    lapsed authority fails the action."""
     n = 0
     while n < budget:
-        row = claim_next(conn)
+        row = claim_next(conn, kinds, exclude)
         if row is None:
             break
         n += 1
@@ -347,9 +436,18 @@ def run_due(conn, deps, authorize, budget=20):
                    % (approver.id, row["community"] or "overall admin"))
             continue
         try:
-            result = k.run(row["params"], deps)
+            if k.approval == "preapproval":
+                # Its run checks the approval itself: that it is this action's,
+                # still in force, and of the approver recorded here.
+                result = k.run(dict(row["params"], _action=row["id"],
+                                    _approval=row["approval_id"],
+                                    _approver=row["approved_by_id"]), deps)
+            else:
+                result = k.run(row["params"], deps)
         except Retry as exc:
             finish(conn, row, error=str(exc) or "transient failure", retry=True)
+        except Defer as exc:
+            defer(conn, row, str(exc), exc.delay_ms)
         except Exception as exc:
             finish(conn, row, error="%s: %s" % (type(exc).__name__, exc))
         else:

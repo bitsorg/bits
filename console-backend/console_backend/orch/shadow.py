@@ -553,6 +553,9 @@ def _compare_trees(conn, pid, sha, before, new_root, old_root, job, reader, stor
             shutil.rmtree(os.path.dirname(set_root), ignore_errors=True)
         set_runs = set_runs_tree + ([refused] if refused else judge(mine, parsed))
     with db.transaction(conn):
+        # The CI's side of the canary's comparison (M8a).
+        from . import canary
+        canary.record_ci(conn, settings, pid, sha, before, new_root, old_root, parsed)
         for mode, rows in (("shadow", runs), ("set", set_runs), (replay.MODE, replay_runs)):
             for arch, state, source, n, ours_sha, signed_sha, d in rows:
                 _record(conn, pid, sha, mode, arch, state, source, n, ours_sha, signed_sha, d)

@@ -10,7 +10,8 @@ is true of builds, from GitLab and S3), then collect and backfill (failures.py:
 every failed job's record, deduplicated into issues), then ship (outside.py: the
 events to the outside copy of the audit chain) and the daily backup. Certification
 in shadow (shadow.py) runs on a thread of its own, since a first comparison
-hashes a whole architecture of the store. Signing and schedules are added by
+hashes a whole architecture of the store; so do the worker's certifications
+(certifier.py, M8a: the "certify" step only requests them). Schedules are added by
 later milestones.
 
     python -m console_backend.orch.worker      # BITS_ORCH_DB=/orch/orch.db
@@ -23,7 +24,7 @@ import threading
 import time
 
 from .. import config
-from . import actions, authority, db, events, failures, kinds, outside, reconcile, shadow
+from . import actions, authority, certifier, db, events, failures, kinds, outside, reconcile, shadow
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -37,6 +38,7 @@ class Worker:
         self.path = path
         self.outside = outside.Client.from_settings(settings)
         self.shadow = None
+        self.certifier = None
         self.deps = kinds.Deps(settings)
         self.authorize = authority.checker(settings)
         # Actions first, so an approved cancel never waits behind a long catch-up.
@@ -54,6 +56,12 @@ class Worker:
             ("ship", lambda: outside.ship(self.conn, self.outside)),
             ("backup", self._backup),
         ]
+        if settings.orch_certify:
+            # Request the certifications of new builds, after they are
+            # recorded; the certifier thread runs them.
+            at = [n for n, _ in self.steps].index("index") + 1
+            self.steps.insert(at, ("certify", lambda: certifier.trigger(
+                self.conn, settings, self.deps.reader())))
         self._errors = {}                 # step -> last error text
         self._stop = threading.Event()
 
@@ -64,7 +72,9 @@ class Worker:
                 log.info("database copied to %s", path)
 
     def _run_actions(self):
-        actions.run_due(self.conn, self.deps, self.authorize)
+        # Certifications run on the certifier thread: hashing a stack must
+        # never delay a cancel.
+        actions.run_due(self.conn, self.deps, self.authorize, exclude={certifier.KIND})
 
     def _note(self, step, error, conn=None):
         """Record a step's failure or recovery as an event, but only when it
@@ -109,6 +119,11 @@ class Worker:
             self.shadow = shadow.Runner(self.path, self.settings, self.deps, self.interval,
                                         self._stop, lambda c, step, err: self._note(step, err, c))
             self.shadow.start()
+        if self.path and self.settings.orch_certify:
+            self.certifier = certifier.Certifier(
+                self.path, self.settings, lambda: kinds.Deps(self.settings), self.authorize,
+                self.interval, self._stop, lambda c, step, err: self._note(step, err, c))
+            self.certifier.start()
 
     def loop(self):
         self.start()
@@ -116,8 +131,9 @@ class Worker:
             began = time.monotonic()
             self.run_once()
             self._stop.wait(max(1.0, self.interval - (time.monotonic() - began)))
-        if self.shadow is not None:
-            self.shadow.join(timeout=5)
+        for t in (self.shadow, self.certifier):
+            if t is not None:
+                t.join(timeout=5)
         with db.transaction(self.conn):
             events.append(self.conn, "worker.stopped", "worker", events.WORKER, {})
 

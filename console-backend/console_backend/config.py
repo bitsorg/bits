@@ -176,6 +176,30 @@ class Settings:
         # the worker's S3 keys; unset, those are used as before.
         self.cred_proxy_agent_socket = e.get("BITS_CRED_PROXY_AGENT_SOCKET", "")
         self.cred_proxy_host = e.get("BITS_CRED_PROXY_HOST", "credentials-proxy") or "credentials-proxy"
+        # The store writer (M8a): a security-proxy instance only the worker
+        # reaches, whose s3 route holds the keypair the worker writes its
+        # manifests with. Not the credentials proxy, which the backend can reach too.
+        self.store_writer_agent_socket = e.get("BITS_STORE_WRITER_AGENT_SOCKET", "")
+        self.store_writer_host = e.get("BITS_STORE_WRITER_HOST", "store-writer") or "store-writer"
+        # The worker certifies builds (M8a on): it signs through the signer proxy
+        # and writes the result through the store writer. Off unless
+        # BITS_ORCH_CERTIFY is set.
+        self.orch_certify = (e.get("BITS_ORCH_CERTIFY", "") or "").strip().lower() in ("1", "true", "yes")
+        self.orch_certify_valid_days = float(e.get("BITS_ORCH_CERTIFY_VALID_DAYS", "30") or "30")
+        if not (0 < self.orch_certify_valid_days <= 3650):
+            # 0 would mean "never expires" to bits: not until consumers check `sequence`.
+            raise ValueError("BITS_ORCH_CERTIFY_VALID_DAYS must be above 0 and at most 3650")
+        # At most this many signatures a day: past it, certifying pauses.
+        self.orch_certify_daily_signs = int(e.get("BITS_ORCH_CERTIFY_DAILY_SIGNS", "100") or "100")
+        # The canary (M8a, until M8b): where the worker writes its manifests,
+        # which production does not read, and their comparison with the CI's. A
+        # worker certification with no CI certification of its build after this
+        # many days is 'unmatched'; a CI certification with none after this
+        # many, 'missing'.
+        self.orch_canary_prefix = (e.get("BITS_ORCH_CANARY_PREFIX", "CANARY/common-manifest")
+                                   or "CANARY/common-manifest").strip("/")
+        self.orch_canary_unmatched_days = float(e.get("BITS_ORCH_CANARY_UNMATCHED_DAYS", "7") or "7")
+        self.orch_canary_missing_days = float(e.get("BITS_ORCH_CANARY_MISSING_DAYS", "1") or "1")
         # The region the worker signs S3 requests for (the proxy re-signs with it).
         self.orch_s3_region = e.get("BITS_ORCH_S3_REGION", "us-east-1") or "us-east-1"
 

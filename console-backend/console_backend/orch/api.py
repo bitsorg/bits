@@ -23,6 +23,7 @@
     GET  /ops/certifications/summary?days=   sign runs by state, from the git tree,
                                        from the certified set and the worker's own
                                        certification (the M4, M5 and M8a gates)
+    GET  /ops/certify?pipeline=&limit=  the worker's certifications (M8a)
     GET  /ops/outside                  the outside audit copy: its head, any alarm
     GET  /ops/certified?group=&arch=&removed=&limit=   the certified set (the groups
                                        the caller administers), its version and summary
@@ -49,8 +50,8 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
-from . import (actions, approvals, certified, db, events, failures, kinds, outside,
-               reconcile, shadow)
+from . import (actions, approvals, canary, certified, certifier, db, events, failures, kinds,
+               outside, reconcile, shadow)
 
 router = APIRouter()
 _MAX_BODY = 64 * 1024
@@ -128,6 +129,8 @@ async def request_action(request: Request):
         raise HTTPException(400, "expected {kind, params, idempotency_key?}")
     try:
         k = actions.kind(name)
+        if "person" not in k.requesters or k.approval == "preapproval":
+            raise actions.ActionError("%s is not requested by a person" % name)
         actions.check_params(k, params)
         community = await run_in_threadpool(k.scope, params, kinds.Deps(_m().settings))
     except actions.ActionError as e:
@@ -264,7 +267,23 @@ async def certifications_summary(request: Request, days: float = 14):
     return {"since_ms": since,
             "sign_runs": await run_in_threadpool(_read, shadow.summary, since),
             "from_set": await run_in_threadpool(_read, shadow.summary, since, "set"),
-            "replay": await run_in_threadpool(_read, shadow.summary, since, "replay")}
+            "replay": await run_in_threadpool(_read, shadow.summary, since, "replay"),
+            "certify": await run_in_threadpool(_read, certifier.summary, since),
+            "canary": await run_in_threadpool(_read, canary.summary, since)}
+
+
+@router.get("/ops/certify")
+async def list_certify(request: Request, pipeline: str = "", limit: int = 100):
+    """The worker's certifications (M8a), newest first, without their bytes;
+    until M8b with the canary's comparison (overall admins)."""
+    await _overall(request)
+    if pipeline and not pipeline.isdigit():
+        raise HTTPException(400, "pipeline must be an id")
+
+    def read(conn):
+        return canary.annotate(conn, certifier.listing(conn, int(pipeline) if pipeline else None,
+                                                       limit))
+    return {"certify": await run_in_threadpool(_read, read)}
 
 
 @router.get("/ops/certified")

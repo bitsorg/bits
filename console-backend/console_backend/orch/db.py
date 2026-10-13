@@ -202,8 +202,7 @@ MIGRATIONS = [
     # pipeline whose certify job signed; a sign run is one architecture of it,
     # here the worker's own computation compared with what was signed (mode
     # 'shadow', and 'set' for the same computed from the certified set; the
-    # worker's own certification of the build, unsigned, 'replay' (M8a); its
-    # signing 'canary' and 'live' from M8). store_digests
+    # worker's own certification of the build, unsigned, 'replay' (M8a)). store_digests
     # remembers the sha256 of store objects, which never change, so a
     # certification only hashes the objects that are new.
     [
@@ -290,6 +289,61 @@ MIGRATIONS = [
         )""",
         "CREATE INDEX certified_live ON certified(removed_version, grp, arch)",
         "CREATE UNIQUE INDEX certified_live_path ON certified(path) WHERE removed_version IS NULL",
+    ],
+    # 7 (M8a): the worker certifies. certify_runs is one build's certification by
+    # the worker, per architecture ('*' for a decision about the whole build): the
+    # bytes it signs are kept from before signing (a rerun signs the same bytes
+    # again, so one signature per pipeline, build and architecture; until M8b
+    # the canary drops them once compared, from M8b a rule of its own). Until M8b
+    # (the canary): ci_outputs is the CI's side of the comparison, what it signed
+    # for a build as a content digest with the commits it certified on, and
+    # canary_compare the result for a worker certification.
+    [
+        """CREATE TABLE certify_runs (
+            id               INTEGER PRIMARY KEY,
+            pipeline_id      INTEGER NOT NULL,
+            build_id         TEXT NOT NULL,
+            arch             TEXT NOT NULL,
+            state            TEXT NOT NULL CHECK (state IN
+                               ('waiting', 'signing', 'signed', 'refused', 'skipped', 'failed')),
+            reason           TEXT NOT NULL DEFAULT '',
+            approval_id      INTEGER,
+            approver         TEXT NOT NULL DEFAULT '',
+            set_version      INTEGER,
+            set_commit       TEXT NOT NULL DEFAULT '',
+            in_set           INTEGER NOT NULL DEFAULT 0,
+            boms             TEXT NOT NULL DEFAULT '[]',
+            manifest         BLOB,
+            signature        TEXT,
+            sha256           TEXT NOT NULL DEFAULT '',
+            key_id           TEXT NOT NULL DEFAULT '',
+            signed_ms        INTEGER,
+            written_ms       INTEGER,
+            created_ms       INTEGER NOT NULL,
+            updated_ms       INTEGER NOT NULL,
+            UNIQUE (pipeline_id, build_id, arch)
+        )""",
+        "CREATE INDEX certify_runs_state ON certify_runs(state, arch)",
+        "CREATE INDEX certify_runs_signed ON certify_runs(signed_ms)",
+        """CREATE TABLE canary_compare (
+            run_id           INTEGER PRIMARY KEY REFERENCES certify_runs(id),
+            compare          TEXT NOT NULL,
+            ci_certification INTEGER,
+            created_ms       INTEGER NOT NULL
+        )""",
+        """CREATE TABLE ci_outputs (
+            certification  INTEGER NOT NULL REFERENCES certifications(pipeline_id),
+            pipeline_id    INTEGER NOT NULL,
+            build_id       TEXT NOT NULL,
+            arch           TEXT NOT NULL,
+            content        TEXT NOT NULL,
+            sha            TEXT NOT NULL,
+            before_sha     TEXT NOT NULL DEFAULT '',
+            compare        TEXT NOT NULL DEFAULT '',
+            created_ms     INTEGER NOT NULL,
+            PRIMARY KEY (certification, build_id, arch)
+        )""",
+        "CREATE INDEX ci_outputs_build ON ci_outputs(pipeline_id, build_id, arch)",
     ],
 ]
 

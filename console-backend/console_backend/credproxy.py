@@ -54,10 +54,12 @@ def proxied(settings):
     return bool(getattr(settings, "cred_proxy_agent_socket", ""))
 
 
-def endpoint(settings, route, refresh=False):
-    """``(base_url, gate_token)`` of a route of the credentials proxy."""
-    path = settings.cred_proxy_agent_socket
-    key = (path, route, settings.cred_proxy_host)
+def endpoint(settings, route, refresh=False, socket=None, host=None):
+    """``(base_url, gate_token)`` of a route of the credentials proxy (or of
+    another instance: *socket* and *host*, e.g. the store writer)."""
+    path = socket or settings.cred_proxy_agent_socket
+    host = host or settings.cred_proxy_host
+    key = (path, route, host)
     now = time.monotonic()
     with _lock:
         hit = _cache.get(key)
@@ -70,7 +72,7 @@ def endpoint(settings, route, refresh=False):
     except RuntimeError as e:
         msg = str(e).replace("sign proxy", "credentials proxy")
         raise (NoRoute if "unknown service" in msg else Unavailable)(msg)
-    base = "http://%s:%d" % (settings.cred_proxy_host, info["port"])
+    base = "http://%s:%d" % (host, info["port"])
     with _lock:
         _cache[key] = (now + CACHE_SECONDS, base, info["token"])
     return base, info["token"]
@@ -124,6 +126,16 @@ def has(settings, kind):
     return True
 
 
+def s3_writer(settings):
+    """``(client, new)``: a boto3 S3 client through the store writer's s3 route
+    (BITS_STORE_WRITER_AGENT_SOCKET), the worker's only way to write the store."""
+    if not settings.store_writer_agent_socket:
+        raise Unavailable("BITS_STORE_WRITER_AGENT_SOCKET is not set")
+    base, token = endpoint(settings, "s3", socket=settings.store_writer_agent_socket,
+                           host=settings.store_writer_host)
+    return _s3(settings, "writer", base, token)
+
+
 def s3_client(settings):
     """``(client, new)``: a boto3 S3 client through the proxy's s3 route. The
     gate token is its access key, the proxy re-signs each request with the real
@@ -132,9 +144,13 @@ def s3_client(settings):
     gate token changes. The backend can reach this route too: give the store a
     keypair that can only read, until a signing step needs more."""
     base, token = endpoint(settings, "s3")
+    return _s3(settings, "s3", base, token)
+
+
+def _s3(settings, name, base, token):
     key = (base, token)
     with _lock:
-        hit = _clients.get("s3")
+        hit = _clients.get(name)
         if hit is not None and hit[0] == key:
             return hit[1], False
         import boto3
@@ -149,7 +165,7 @@ def s3_client(settings):
                           # the store does not ask for.
                           request_checksum_calculation="WHEN_REQUIRED",
                           response_checksum_validation="WHEN_REQUIRED"))
-        _clients["s3"] = (key, client)
+        _clients[name] = (key, client)
         return client, True
 
 

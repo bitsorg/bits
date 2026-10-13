@@ -138,6 +138,29 @@ refusal); the store's objects as the shadow checks them. A refusal or a build it
 to certify from is a sign run too (`refused`, `missing`). It signs nothing.
 `/ops/certifications/summary` counts them under `replay`.
 
+**Worker certification** (`orch/certifier.py`, M8a on; on with `BITS_ORCH_CERTIFY=1`):
+the worker certifies each new build that asked for it (`CERTIFY=true`) itself,
+minutes after it. Only the build's console pre-approval approves it: the
+worker requests a `certify` action already approved by it, and nobody can
+approve one in the console. It runs on a thread of its own: the build's BOMs
+from the store, the certified set at its latest version as the baseline, bits'
+merge and store check, and per architecture the sign path's checks (the
+approver an admin of every group, the key policy, none being a refusal). The
+bytes are kept before they are signed, so a rerun signs the same bytes again;
+signatures are verified, and written through the store writer
+(`BITS_STORE_WRITER_AGENT_SOCKET`, a security-proxy instance only the worker
+reaches), at most `BITS_ORCH_CERTIFY_DAILY_SIGNS` a day. Manifests are valid
+`BITS_ORCH_CERTIFY_VALID_DAYS` (30). `GET /ops/certify`, and `certify` in
+`/ops/certifications/summary`.
+
+**The canary** (`orch/canary.py`, M8a until M8b): the worker writes its
+manifests under `CANARY/` (`BITS_ORCH_CANARY_PREFIX`; production reads
+`MANIFESTS/`), and each is compared with the CI's certification of the same
+build (`match`, `mismatch`, or `rebased` when the set was at another commit;
+`unmatched` and `missing` for one side alone): `canary` in
+`/ops/certifications/summary` and on the rows of `GET /ops/certify`. M8b
+deletes it.
+
 **Credentials** (`credproxy.py`, M6): with `BITS_CRED_PROXY_AGENT_SOCKET`, the
 backend and the worker hold no GitLab token or store key. They call GitLab and
 the store through the credentials proxy (bits-services `credentials-proxy`, a

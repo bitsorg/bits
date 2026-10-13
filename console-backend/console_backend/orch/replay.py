@@ -102,10 +102,9 @@ def preapproval_at(conn, build_id, at_ms):
         " ORDER BY id DESC LIMIT 1", (str(build_id), at_ms, at_ms, at_ms)).fetchone()
 
 
-def certify_group(console, pipeline):
-    """The group the build's certify job uses: its community's certify_group in
-    ui-config.yaml at the pipeline's commit, else the community lowercased (as
-    bits-certify.sh does)."""
+def community_config(console, pipeline):
+    """(community, its ui-config.yaml at the pipeline's commit as a dict) of a
+    build pipeline; {} when the file is not there."""
     try:
         variables = json.loads(pipeline["variables"] or "{}")
     except ValueError:
@@ -115,8 +114,10 @@ def certify_group(console, pipeline):
         raise Refuse("the build pipeline has no COMMUNITY")
     if "/" in community or community.startswith("."):
         raise Refuse("COMMUNITY %r is not a directory name" % community)
-    group = ""
-    if console is not None and pipeline["sha"]:
+    if console is None:
+        raise Missing("no reader for the build project (its ui-config.yaml)")
+    cfg = {}
+    if pipeline["sha"]:
         import yaml
         raw = console.file_raw("communities/%s/ui-config.yaml" % community, pipeline["sha"],
                                max_bytes=_UI_MAX)
@@ -126,10 +127,15 @@ def certify_group(console, pipeline):
             except yaml.YAMLError as e:
                 raise Refuse("communities/%s/ui-config.yaml does not parse: %s"
                              % (community, str(e)[:200]))
-            group = str((cfg.get("certify_group") if isinstance(cfg, dict) else "") or "").strip()
-    elif console is None:
-        raise Missing("no reader for the build project (its ui-config.yaml)")
-    return (group or community).lower()
+    return community, (cfg if isinstance(cfg, dict) else {})
+
+
+def certify_group(console, pipeline):
+    """The group the build's certify job uses: its community's certify_group in
+    ui-config.yaml at the pipeline's commit, else the community lowercased (as
+    bits-certify.sh does)."""
+    community, cfg = community_config(console, pipeline)
+    return (str(cfg.get("certify_group") or "").strip() or community).lower()
 
 
 def store_boms(conn, store, mr_docs, pid):
