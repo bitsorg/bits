@@ -6,29 +6,61 @@ same builds. M8b, where the worker writes MANIFESTS/ itself, deletes this
 module with its tables (ci_outputs, canary_compare).
 
 The CI's side is recorded by the shadow (`record_ci`) as a content digest per
-build and architecture. A worker certification computed on the commit the
-CI's merge was based on is 'match' or 'mismatch'; one computed on another
-version of the set is 'rebased' (not evidence either way). One the CI never
-certified is 'unmatched' after a while, a CI certification without one
-'missing'.
+build and architecture (timestamps, certifiers, source_commit and the packages'
+provenance left out). A worker certification made from the same inputs as the
+CI's, for its architecture (the CI's merge base, or a set version that differs
+from it only in other architectures' BOMs), is 'match' or 'mismatch'; one made
+from other inputs is 'rebased' and one whose CI base never reached the set
+'unbased' (neither is evidence either way), and one compared with a digest
+recorded before this rule 'stale'. One the CI never certified is
+'unmatched' after a while, a CI certification without one 'missing'.
 """
 
 import hashlib
 import json
 import logging
 
-from . import db, events, replay, shadow
+from . import certified, db, events, replay, shadow
 
 log = logging.getLogger("bits_orchestrator.canary")
 DAY_MS = 24 * 3600 * 1000
 
 
+# Per package: which build's BOM recorded the hash, and when. The same hash in
+# two BOMs (a build published again) is the same object; the CI's merge keeps
+# the first copy in path order, the worker this pipeline's own.
+PROVENANCE = ("built_by", "completed_at", "bits_version", "bits_dist_hash")
+DIGEST = "v2:"
+
+
 def content_digest(manifest):
     """What the comparison compares: a manifest without its timestamps, its
-    certifiers and its source_commit."""
+    certifiers, its source_commit and its packages' provenance."""
     c = shadow.content(manifest)
     c.pop("source_commit", None)
-    return hashlib.sha256(shadow._canonical(c).encode()).hexdigest()
+    c["packages"] = [{k: v for k, v in e.items() if k not in PROVENANCE}
+                     if isinstance(e, dict) else e for e in c.get("packages") or []]
+    return DIGEST + hashlib.sha256(shadow._canonical(c).encode()).hexdigest()
+
+
+def _same_inputs(conn, p):
+    """Whether the worker and the CI certified this architecture from the same
+    set: the worker's set version is the CI's merge base, or no BOM of this
+    architecture but the build's own differs between the two. None while the
+    CI's merge base may still be taken into the set; "unbased" once it cannot
+    be (the set has moved past that pipeline without a version for it)."""
+    if p["set_commit"] == p["before_sha"]:
+        return True
+    base = conn.execute("SELECT version FROM set_versions WHERE commit_sha = ? ORDER BY"
+                        " version DESC LIMIT 1", (p["before_sha"],)).fetchone()
+    if base is None or p["set_version"] is None:
+        past = certified.followed(conn)
+        return "unbased" if past is not None and past >= p["certification"] else None
+    lo, hi = sorted((p["set_version"], base["version"]))
+    return conn.execute(
+        "SELECT 1 FROM certified WHERE arch = ? AND build_id != ? AND ((added_version > ?"
+        " AND added_version <= ?) OR (removed_version > ? AND removed_version <= ?)) LIMIT 1",
+        (p["arch"], p["build_id"], lo, hi, lo, hi)).fetchone() is None
 
 
 def record_ci(conn, settings, cert_pid, sha, before, new_root, old_root, parsed):
@@ -77,10 +109,11 @@ def record_ci(conn, settings, cert_pid, sha, before, new_root, old_root, parsed)
 
 def _compared(conn, run_id, state, certification, now):
     """One worker certification's result. Its manifest bytes are kept only
-    where they explain something."""
+    where they explain something: a difference, or a digest of the CI's that
+    could not be compared."""
     conn.execute("INSERT INTO canary_compare (run_id, compare, ci_certification, created_ms)"
                  " VALUES (?, ?, ?, ?)", (run_id, state, certification, now))
-    if state != "mismatch":
+    if state not in ("mismatch", "stale"):
         conn.execute("UPDATE certify_runs SET manifest = NULL WHERE id = ?", (run_id,))
 
 
@@ -90,7 +123,7 @@ def match(conn, settings, now=None):
     now = now or db.now_ms()
     n = 0
     pairs = conn.execute(
-        "SELECT c.id, c.pipeline_id, c.build_id, c.arch, c.manifest, c.set_commit, c.in_set,"
+        "SELECT c.id, c.pipeline_id, c.build_id, c.arch, c.manifest, c.set_commit, c.set_version,"
         " o.certification, o.content AS theirs, o.sha, o.before_sha FROM certify_runs c"
         " JOIN ci_outputs o ON o.pipeline_id = c.pipeline_id AND o.build_id = c.build_id"
         " AND o.arch = c.arch WHERE c.state = 'signed' AND c.manifest IS NOT NULL AND"
@@ -103,10 +136,13 @@ def match(conn, settings, now=None):
             continue                       # ('again', below, for the CI's other one)
         done_c.add(p["id"])
         done_o.add(o)
-        same_base = p["set_commit"] == (p["sha"] if p["in_set"] else p["before_sha"])
+        same = _same_inputs(conn, p)
+        if same is None:
+            continue                       # the set has not taken in the CI's base yet
         mine = content_digest(json.loads(bytes(p["manifest"])))
-        state = ("rebased" if not same_base else "match" if mine == p["theirs"]
-                 else "mismatch")
+        state = ("unbased" if same == "unbased" else "rebased" if not same
+                 else "stale" if not str(p["theirs"]).startswith(DIGEST)   # recorded before v2
+                 else "match" if mine == p["theirs"] else "mismatch")
         with db.transaction(conn):
             _compared(conn, p["id"], state, p["certification"], now)
             conn.execute("UPDATE ci_outputs SET compare = ? WHERE certification = ? AND"
