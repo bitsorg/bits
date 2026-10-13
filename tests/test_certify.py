@@ -535,6 +535,27 @@ class TestCertifyEndToEnd(unittest.TestCase):
         _, lcg_idx = trust.trusted_index(out, accept_groups=["lcg"])
         self.assertEqual(set(lcg_idx), {"hbase", "hlcg"})
 
+    def test_the_bytes_verified_are_the_bytes_trusted(self):
+        # Another build replacing the local copy between the signature check and
+        # the parse must not get its (unverified) bytes trusted.
+        pkgs = [_pkg("Base", "hbase", "sha256:00")]
+        store = {("slc7_x86-64", "hbase"): "sha256:00"}
+        out = os.path.join(self.tmp, "out", "common.json")
+        certify.certify([_manifest("b1", pkgs)], self.key_pem, out,
+                        probe=lambda a, h, t=None: store.get((a, h)))
+        tampered = json.load(open(out))
+        tampered["packages"][0]["hash"] = "hevil"
+        real = trust.verify_bytes
+
+        def verify_then_swap(*a, **k):
+            kid = real(*a, **k)
+            with open(out, "w") as fh:
+                json.dump(tampered, fh)
+            return kid
+        with patch.object(trust, "verify_bytes", side_effect=verify_then_swap):
+            _, idx = trust.trusted_index(out)
+        self.assertEqual(set(idx), {"hbase"})
+
     def test_build_trusted_reuse_index_honours_trust_groups(self):
         # End-to-end through the consumer gate: --trust-groups lcg parsed and
         # applied to the verified signed manifest.

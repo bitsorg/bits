@@ -425,11 +425,9 @@ def mark_published_from(work_dir, src):
     import json
     path = src
     if "://" in str(src):
-        from bits_helpers.download import downloadUrllib2
-        dest = join(work_dir, "MANIFESTS", "retention")
-        os.makedirs(dest, exist_ok=True)
-        downloadUrllib2(src, dest, work_dir, dest_filename="cvmfs-status.json")
-        path = join(dest, "cvmfs-status.json")
+        from bits_helpers.download import fetch_fresh
+        path = fetch_fresh(src, join(work_dir, "MANIFESTS", "retention"),
+                           "cvmfs-status.json", work_dir)
     with open(path) as fh:
         data = json.load(fh)
     n = 0

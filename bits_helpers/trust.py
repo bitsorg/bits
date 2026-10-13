@@ -366,12 +366,21 @@ def _verified_entries(manifest_path, sig_path, dirs, accept_groups, now):
   entry has passed the group-acceptance and per-key group-binding policy.
   Returns ``(None, [])`` on any verification failure (fail-closed).
   """
-  kid = verify_manifest(manifest_path, sig_path, dirs)
+  # The bytes are read once: the ones verified are the ones parsed, even if
+  # another build replaces the local copy meanwhile.
+  sig_path = sig_path or (manifest_path + ".sig")
+  try:
+    with open(sig_path) as fh:
+      envelope = json.load(fh)
+    with open(manifest_path, "rb") as fh:
+      raw = fh.read()
+  except Exception:
+    return None, []
+  kid = verify_bytes(raw, envelope, load_trusted_keys(dirs))
   if not kid:
     return None, []
   try:
-    with open(manifest_path) as fh:
-      data = json.load(fh)
+    data = json.loads(raw)
   except Exception:
     return None, []
   if is_expired(data, now):

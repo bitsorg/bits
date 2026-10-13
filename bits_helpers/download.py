@@ -6,6 +6,7 @@ try:
 except ImportError:
     from hashlib import md5 as md5adder
 from os.path import abspath, join, exists, dirname, basename
+from glob import glob
 from os import rename, unlink
 import os
 import re
@@ -14,6 +15,7 @@ from subprocess import getstatusoutput
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 import base64
+import hashlib
 from time import time, sleep
 from types import SimpleNamespace
 from bits_helpers.log import error, warning, debug, info
@@ -179,6 +181,58 @@ def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
         debug("Error while downloading {}: {}".format(source, e))
         return False
     return True
+
+def fetch_fresh(url, dest_dir, name, work_dir=None):
+    """Download *url* to <dest_dir>/<name>, replacing any copy already there
+    (downloadUrllib2 alone keeps an existing file). Raises OSError when the
+    download fails; an older copy is then left alone, never returned."""
+    os.makedirs(dest_dir, exist_ok=True)
+    part = "%s.%d.%s.part" % (name, os.getpid(), os.urandom(4).hex())
+    path = join(dest_dir, part)
+    try:
+        downloadUrllib2(url, dest_dir, work_dir, dest_filename=part)
+        if not os.path.isfile(path):
+            raise OSError("could not download %s" % url)
+        os.replace(path, join(dest_dir, name))
+    finally:
+        for left in [path] + glob(path + ".*.tmp"):      # (downloadUrllib2's own)
+            if os.path.exists(left):
+                unlink(left)
+    return join(dest_dir, name)
+
+
+_SIGNED = {}                   # (url, dest dir) -> local path, or the error
+
+
+def fetch_signed_manifest(src, dest_dir, work_dir=None):
+    """A local path for a signed manifest *src* with its detached .sig beside it.
+
+    A local path is returned as it is. A URL is fetched afresh, manifest and
+    signature both, once per process (every caller in one run verifies the same
+    copy). A failed fetch raises OSError, also for later callers in the run: an
+    older copy is never used instead, since it may still vouch for a hash that
+    has been revoked since, or miss the ones certified since.
+    """
+    if "://" not in str(src):
+        return src
+    key = (src, os.path.abspath(dest_dir))
+    got = _SIGNED.get(key)
+    if got is None:
+        # The URL's own name, so two stores' manifests of one name never share
+        # a local copy.
+        name = "%s.%s" % (hashlib.sha256(src.encode()).hexdigest()[:12],
+                          basename(src.split("?")[0]) or "trust-manifest.json")
+        try:
+            # (Re-signed in between, the pair does not match: it fails closed.)
+            got = fetch_fresh(src, dest_dir, name, work_dir)
+            fetch_fresh(src + ".sig", dest_dir, name + ".sig", work_dir)
+        except OSError as exc:
+            got = exc
+        _SIGNED[key] = got
+    if isinstance(got, Exception):
+        raise got
+    return got
+
 
 # Download a files from a git url.  We do not clone the remote reposiotory, but
 # we simply pull the branch we are interested in and then we drop all the git

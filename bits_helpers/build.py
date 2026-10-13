@@ -343,21 +343,13 @@ def readHashFile(fn):
 def _localize_manifest(src, work_dir):
   """Return a local filesystem path for a manifest *src*.
 
-  A local path is returned unchanged; a URL is fetched (with its detached
-  ``.sig``) into ``MANIFESTS/trust`` and the local path returned. Note
-  ``downloadUrllib2`` keeps a pre-existing file of the same name, so repeated
-  calls within one build (e.g. from both trust-index and trust-records loaders)
-  resolve to the same local manifest.
+  A local path is returned unchanged; a URL is fetched afresh (with its detached
+  ``.sig``) into ``MANIFESTS/trust``, once per build, so the trust-index and
+  trust-records loaders verify the same copy. A failed fetch raises: the
+  callers then reuse nothing from that manifest (never an older cached copy).
   """
-  if "://" not in src:
-    return src
-  from bits_helpers.download import downloadUrllib2
-  dest = os.path.join(work_dir, "MANIFESTS", "trust")
-  os.makedirs(dest, exist_ok=True)
-  name = os.path.basename(src.split("?")[0]) or "trust-manifest.json"
-  downloadUrllib2(src, dest, work_dir, dest_filename=name)
-  downloadUrllib2(src + ".sig", dest, work_dir, dest_filename=name + ".sig")
-  return os.path.join(dest, name)
+  from bits_helpers.download import fetch_signed_manifest
+  return fetch_signed_manifest(src, os.path.join(work_dir, "MANIFESTS", "trust"), work_dir)
 
 
 _TRUST_IMPORT_WARNED = False

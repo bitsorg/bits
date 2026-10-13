@@ -57,12 +57,14 @@ class KeyPolicyDropDiagnosticTest(unittest.TestCase):
         with open(path, "w") as fh:
             json.dump({"packages": [
                 {"group": group, "hash": "h1", "tarball_sha256": "sha256:aa"}]}, fh)
+        with open(path + ".sig", "w") as fh:          # verify_bytes is patched
+            json.dump({}, fh)
         return path
 
     def test_policy_denied_drops_and_warns(self):
         path = self._manifest("lcg")
         denying = {"deadbeefdeadbeef": {"lcg"}, "default": set()}  # signer kid not listed
-        with mock.patch.object(trust, "verify_manifest", return_value="ffffffffffffffff"), \
+        with mock.patch.object(trust, "verify_bytes", return_value="ffffffffffffffff"), \
              mock.patch.object(trust, "load_key_policy", return_value=denying), \
              mock.patch("bits_helpers.log.warning") as w:
             kid, entries = trust._verified_entries(path, None, None, None, None)
@@ -72,7 +74,7 @@ class KeyPolicyDropDiagnosticTest(unittest.TestCase):
     def test_authorized_key_no_warning(self):
         path = self._manifest("lcg")
         allowing = {"ffffffffffffffff": {"*"}, "default": set()}
-        with mock.patch.object(trust, "verify_manifest", return_value="ffffffffffffffff"), \
+        with mock.patch.object(trust, "verify_bytes", return_value="ffffffffffffffff"), \
              mock.patch.object(trust, "load_key_policy", return_value=allowing), \
              mock.patch("bits_helpers.log.warning") as w:
             kid, entries = trust._verified_entries(path, None, None, None, None)
