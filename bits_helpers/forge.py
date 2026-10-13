@@ -384,13 +384,63 @@ def gitlab_create_merge_request(api_url, token, project, source_branch, target_b
     return {"iid": data.get("iid"), "web_url": data.get("web_url")}
 
 
-def gitlab_merge_mr(api_url, token, project, iid, timeout=30) -> dict:
-    """Merge an MR (PUT …/merge). Raises on failure (e.g. not mergeable)."""
+# Merge statuses that pass by themselves: GitLab is still working out whether
+# the MR can merge (it rechecks every open MR when the target branch moves, e.g.
+# after another certification merged). detailed_merge_status, and the older
+# merge_status values.
+_MERGE_PENDING = frozenset({"unchecked", "checking", "preparing", "approvals_syncing",
+                            "mergeable", "can_be_merged", "cannot_be_merged_recheck"})
+
+
+def gitlab_merge_mr(api_url, token, project, iid, timeout=30, sha=None, wait=300,
+                    sleep=None, clock=None) -> dict:
+    """Merge an MR (PUT …/merge). Raises on failure (e.g. not mergeable).
+
+    A refusal while GitLab is still checking the MR's mergeability (or still
+    merging it: state locked) is retried for up to *wait* seconds; any other
+    refusal (conflict, draft, closed, pipeline required…) raises at once, naming
+    the status. With *sha*, only that head commit is merged (GitLab refuses with
+    409 if the MR moved on since it was validated), and an MR found merged
+    already counts only if *sha* is what was merged.
+    """
+    import time
     import requests
-    resp = requests.put("%s/merge_requests/%s/merge" % (_gl_project_url(api_url, project), iid),
-                        headers={"PRIVATE-TOKEN": token}, timeout=timeout)
-    _gl_ok(resp)
-    return resp.json() or {}
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    url = "%s/merge_requests/%s" % (_gl_project_url(api_url, project), iid)
+    headers = {"PRIVATE-TOKEN": token}
+    deadline = clock() + wait
+    pause = 3
+    while True:
+        try:
+            resp = requests.put(url + "/merge", headers=headers,
+                                json={"sha": sha} if sha else None, timeout=timeout)
+        except requests.exceptions.Timeout:
+            resp = None                       # it may have merged: look at the MR
+        if resp is not None and resp.status_code not in (405, 406, 422):
+            _gl_ok(resp)
+            return resp.json() or {}
+        info = requests.get(url, headers=headers, timeout=timeout)
+        _gl_ok(info)
+        mr = info.json() or {}
+        status = mr.get("detailed_merge_status") or mr.get("merge_status") or "?"
+        code = resp.status_code if resp is not None else "timeout"
+        if mr.get("state") == "merged":
+            if sha and mr.get("sha") == sha:
+                return mr
+            raise RuntimeError("MR !%s is merged already, %s" % (
+                iid, "at %s, not the validated %s" % (mr.get("sha"), sha) if sha
+                else "and which commit was validated is not known"))
+        if not (mr.get("state") == "locked"
+                or (mr.get("state") == "opened" and status in _MERGE_PENDING)):
+            raise RuntimeError("GitLab refused to merge MR !%s: %s (state %s, %s)"
+                               % (iid, status, mr.get("state"), code))
+        if clock() + pause > deadline:
+            raise RuntimeError("GitLab refused to merge MR !%s for %ds: still %s"
+                               % (iid, wait, status))
+        warning("MR !%s not mergeable yet (%s); trying again in %ds", iid, status, pause)
+        sleep(pause)
+        pause = min(pause * 2, 30)
 
 
 def gitlab_mr_author(api_url, token, project, iid, timeout=15):

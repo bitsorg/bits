@@ -273,6 +273,87 @@ class TestMRPrimitives(unittest.TestCase):
             self.assertEqual(forge.gitlab_mr_iid_for_commit("https://gl/api/v4", "t", "p", "sha"), 5)
 
 
+class TestGitLabMerge(unittest.TestCase):
+    """gitlab_merge_mr waits out GitLab's mergeability recheck, nothing else."""
+
+    class _R:
+        def __init__(self, code, payload=None):
+            self.status_code, self.ok, self._p = code, code < 400, payload or {}
+            self.reason, self.text = "", str(payload)
+
+        def json(self):
+            return self._p
+
+    def _merge(self, puts, gets, **kw):
+        calls = {"put": [], "sleep": []}
+        now = [0.0]
+
+        def put(url, headers=None, json=None, timeout=None):
+            calls["put"].append(json)
+            r = puts.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        def get(url, headers=None, timeout=None):
+            return gets.pop(0)
+
+        def sleep(s):
+            calls["sleep"].append(s)
+            now[0] += s
+        with patch("requests.put", side_effect=put), patch("requests.get", side_effect=get):
+            out = forge.gitlab_merge_mr("https://gl/api/v4", "t", "p", 294, sleep=sleep,
+                                        clock=lambda: now[0], **kw)
+        return out, calls
+
+    def test_a_recheck_is_waited_out(self):
+        R = self._R
+        out, calls = self._merge(
+            [R(405), R(405), R(200, {"state": "merged", "iid": 294})],
+            [R(200, {"state": "opened", "detailed_merge_status": "checking"}),
+             R(200, {"state": "opened", "detailed_merge_status": "unchecked"})],
+            sha="41a42723")
+        self.assertEqual(out["state"], "merged")
+        self.assertEqual(calls["sleep"], [3, 6])
+        self.assertEqual(calls["put"], [{"sha": "41a42723"}] * 3)     # the validated head only
+
+    def test_other_refusals_raise_at_once(self):
+        R = self._R
+        for status in ("conflict", "draft_status", "ci_still_running", "need_rebase"):
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(RuntimeError, status):
+                    self._merge([R(405)], [R(200, {"state": "opened",
+                                                   "detailed_merge_status": status})])
+        with self.assertRaisesRegex(RuntimeError, "409"):
+            self._merge([R(409, {"message": "SHA does not match HEAD"})], [])
+
+    def test_already_merged_counts_only_for_the_validated_commit(self):
+        R = self._R
+        merged = {"state": "merged", "iid": 294, "sha": "41a42723"}
+        out, _calls = self._merge([R(405)], [R(200, merged)], sha="41a42723")
+        self.assertEqual(out["state"], "merged")
+        with self.assertRaisesRegex(RuntimeError, "not the validated"):
+            self._merge([R(405)], [R(200, merged)], sha="99999999")
+        with self.assertRaisesRegex(RuntimeError, "merged already"):
+            self._merge([R(405)], [R(200, merged)])
+
+    def test_locked_old_statuses_422_and_a_timed_out_put_are_looked_at(self):
+        import requests
+        R = self._R
+        out, calls = self._merge(
+            [R(422), R(405), requests.exceptions.Timeout()],
+            [R(200, {"state": "locked", "merge_status": "checking"}),
+             R(200, {"state": "opened", "merge_status": "cannot_be_merged_recheck"}),
+             R(200, {"state": "merged", "sha": "s1"})], sha="s1")
+        self.assertEqual((out["state"], calls["sleep"]), ("merged", [3, 6]))
+
+    def test_gives_up_after_the_wait(self):
+        R = self._R
+        pending = R(200, {"state": "opened", "detailed_merge_status": "checking"})
+        with self.assertRaisesRegex(RuntimeError, "still checking"):
+            self._merge([R(405)] * 20, [pending] * 20, wait=60)
+
+
 class TestGitLabSubgroups(unittest.TestCase):
     def test_lists_all_visible_subgroups_not_only_memberships(self):
         # Without all_available GitLab returns only groups the token belongs to.
