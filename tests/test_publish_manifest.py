@@ -435,6 +435,165 @@ class TestPublishFromManifest(unittest.TestCase):
             self.assertRegex(leaf, r"^[A-Za-z0-9._-]+-\d{8}T\d{6}Z-[0-9a-f]+\.json$")
 
 
+class _StoreS3:
+    """An S3 stand-in that keeps what is written and serves it back."""
+
+    def __init__(self):
+        self.objects = {}
+
+    def upload_file(self, local, bucket, key):
+        with open(local, "rb") as fh:
+            self.objects[key] = fh.read()
+
+    def put_object(self, Bucket, Key, Body):
+        self.objects[Key] = Body if isinstance(Body, bytes) else Body.encode()
+
+    def get_object(self, Bucket, Key):
+        import io
+        if Key not in self.objects:
+            raise KeyError(Key)
+        return {"Body": io.BytesIO(self.objects[Key])}
+
+
+class _StoreWriter:
+    def __init__(self, s3, delay=None):
+        import threading
+        self.s3, self.writeStore, self.tarballs = s3, "mybucket", []
+        self.delay, self.lock = delay or {}, threading.Lock()
+        self.active = self.peak = 0
+
+    def upload_symlinks_and_tarball(self, spec):
+        import time
+        with self.lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        time.sleep(self.delay.get(spec["hash"], 0.01))
+        with self.lock:
+            self.active -= 1
+            self.tarballs.append(spec["hash"])
+        spec["store_tarball_sha256"] = "sha256:" + spec["hash"]
+
+
+class TestPublishOnceAndConcurrently(unittest.TestCase):
+    """The per-package store checks run a few at a time, and `bits certify` in
+    the publish job uses the BOM the job's BOM step already published."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.work = os.path.join(self.tmp, "sw")
+        os.makedirs(os.path.join(self.work, "MANIFESTS"))
+        self.hashes = ["%02x%s" % (i, "ab" * 3) for i in range(12)]
+        self.manifest = {"defaults": ["release"], "architecture": ARCH, "packages": [
+            {"package": "P%d" % i, "version": "1", "revision": "1", "hash": h,
+             "effective_architecture": ARCH, "view": {"include": ["bin"]}}
+            for i, h in enumerate(self.hashes)]}
+        self.man_path = os.path.join(self.work, "MANIFESTS", "bits-manifest-P-20260101T000000Z.json")
+        with open(self.man_path, "w") as fh:
+            json.dump(self.manifest, fh)
+        for i, h in enumerate(self.hashes):
+            _write_store_tarball(self.work, ARCH, h, "P%d-1-1.%s.tar.gz" % (i, ARCH))
+        self.s3 = _StoreS3()
+        env = patch.dict(os.environ, {"CI_PIPELINE_ID": "4242"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _publish(self, writer, **kw):
+        with patch.object(sync, "remote_from_url", return_value=writer), \
+             patch("bits_helpers.notice.upload_release_compliance"):
+            return publish._publish_from_manifest(ARCH, self.work, "https://s3.example/mybucket",
+                                                  _Parser(), manifest=self.man_path, **kw)
+
+    def _boms(self):
+        return [json.loads(v) for k, v in sorted(self.s3.objects.items())
+                if k.startswith("MANIFESTS/") and k.endswith(".json")]
+
+    def test_concurrent_checks_keep_the_bom_in_manifest_order(self):
+        # The first packages finish last: the BOM still follows the manifest.
+        w = _StoreWriter(self.s3, {h: 0.05 * (12 - i) for i, h in enumerate(self.hashes)})
+        with patch.dict(os.environ, {"BITS_PUBLISH_JOBS": "4"}):
+            build_id, bom, _system = self._publish(w)
+        self.assertEqual(w.peak, 4)
+        self.assertEqual(sorted(w.tarballs), sorted(self.hashes))
+        self.assertNotEqual(w.tarballs, self.hashes)                  # finished out of order
+        self.assertEqual([p["hash"] for p in bom[0][1]["packages"]], self.hashes)
+        self.assertEqual(bom[0][1]["packages"][0]["tarball_sha256"], "sha256:" + self.hashes[0])
+
+    def test_certify_uses_the_bom_the_publish_step_wrote(self):
+        first = self._publish(_StoreWriter(self.s3))
+        boms = len(self._boms())
+        again = _StoreWriter(self.s3)
+        build_id, bom, _system = self._publish(again, reuse_pipeline_bom=True)
+        self.assertEqual(again.tarballs, [])                          # nothing checked again
+        self.assertEqual(len(self._boms()), boms)                     # no second BOM
+        self.assertEqual((build_id, bom), (first[0], first[1]))
+
+    def test_a_bom_that_is_not_this_publish_is_not_reused(self):
+        def tamper(doc):
+            doc["packages"][0]["view"] = {"include": ["everything"]}
+        def drop(doc):
+            doc["packages"].pop()
+        def twice(doc):
+            doc["packages"][-1] = dict(doc["packages"][0])
+        def other_pipeline(doc):
+            doc["source_pipeline_id"] = "1"
+        def extra_group(doc):
+            doc["packages"][0]["group"] = "common"
+        def other_layout(doc):
+            doc["cvmfs_templates"] = {"package": "/elsewhere"}
+        def other_tarball(doc):
+            doc["packages"][0]["tarball"] = "P0-1-2.%s.tar.gz" % ARCH
+        def other_label(doc):
+            doc["effective_architecture"] = "x86_64-el9"
+        for change in (tamper, drop, twice, other_pipeline, extra_group, other_layout,
+                       other_tarball, other_label):
+            with self.subTest(change=change.__name__):
+                self.s3.objects.clear()
+                self._publish(_StoreWriter(self.s3))
+                key = [k for k in self.s3.objects if k.startswith("MANIFESTS/")
+                       and k.endswith(ARCH + ".json")][0]
+                doc = json.loads(self.s3.objects[key])
+                change(doc)
+                self.s3.objects[key] = json.dumps(doc).encode()
+                again = _StoreWriter(self.s3)
+                self._publish(again, reuse_pipeline_bom=True)
+                self.assertEqual(sorted(again.tarballs), sorted(self.hashes))   # published afresh
+
+    def test_a_stored_sha256_is_what_the_reused_bom_carries(self):
+        # The one thing taken from the store: its sha256 of each tarball.
+        self._publish(_StoreWriter(self.s3))
+        build_id, bom, _system = self._publish(_StoreWriter(self.s3), reuse_pipeline_bom=True)
+        self.assertEqual([p["tarball_sha256"] for p in bom[0][1]["packages"]],
+                         ["sha256:" + h for h in self.hashes])
+
+    def test_an_interrupt_stops_the_queue(self):
+        class Interrupting(_StoreWriter):
+            def upload_symlinks_and_tarball(self, spec):
+                if spec["hash"] == self_hashes[0]:
+                    raise KeyboardInterrupt
+                super().upload_symlinks_and_tarball(spec)
+        self_hashes = self.hashes
+        w = Interrupting(self.s3, {h: 0.2 for h in self.hashes})
+        with patch.dict(os.environ, {"BITS_PUBLISH_JOBS": "2"}):
+            with self.assertRaises(KeyboardInterrupt):
+                self._publish(w)
+        self.assertLess(len(w.tarballs), 4)                           # not all twelve
+        self.assertEqual([k for k in self.s3.objects if k.startswith("MANIFESTS/")], [])
+
+    def test_no_reuse_outside_a_pipeline_or_for_bits_publish(self):
+        self._publish(_StoreWriter(self.s3))
+        plain = _StoreWriter(self.s3)
+        self._publish(plain)                                          # bits publish: always
+        self.assertEqual(len(plain.tarballs), 12)
+        with patch.dict(os.environ, {"CI_PIPELINE_ID": ""}):
+            cli = _StoreWriter(self.s3)
+            self._publish(cli, reuse_pipeline_bom=True)
+        self.assertEqual(len(cli.tarballs), 12)
+
+
 class TestStoreUploadRedistributable(unittest.TestCase):
     """H1 mitigation: `bits store upload` (_publish_s3) must refuse a package whose
     recipe forbids binary redistribution — mirroring the build-time and bulk gates

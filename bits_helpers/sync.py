@@ -1084,12 +1084,16 @@ class Boto3RemoteSync(RemoteSync):
         config = Config(
           request_checksum_calculation='WHEN_REQUIRED',
           response_checksum_validation='WHEN_REQUIRED',
+          # Room for bits publish's concurrent package checks (BITS_PUBLISH_JOBS,
+          # 8) and the up to 10 transfer threads of each upload, without
+          # pool-full warnings.
+          max_pool_connections=100,
           **config_kwargs,
         )
       except TypeError:
         # Older boto3 versions don't support the checksum parameters (<1.36.0);
         # still honour the addressing style if one was requested.
-        config = Config(**config_kwargs) if config_kwargs else None
+        config = Config(max_pool_connections=100, **config_kwargs)
       client_kwargs = {
         "endpoint_url": endpoint,
         "aws_access_key_id": os.environ["AWS_ACCESS_KEY_ID"],
