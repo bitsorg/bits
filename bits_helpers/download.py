@@ -201,15 +201,85 @@ def fetch_fresh(url, dest_dir, name, work_dir=None):
     return join(dest_dir, name)
 
 
+def _http_get(url, headers, timeout=60):
+    """``(status, body, etag)`` for a GET of *url*; 304 gives no body. Raises
+    OSError on any other failure."""
+    from http.client import HTTPException
+    from urllib.error import HTTPError
+    try:
+        resp = urlopen(Request(url, headers=headers), timeout=timeout)
+        with resp:
+            return resp.status, resp.read(), resp.headers.get("ETag")
+    except HTTPError as e:
+        if e.code == 304:
+            return 304, None, headers.get("If-None-Match")
+        raise OSError("HTTP %s for %s" % (e.code, url))
+    except (URLError, ValueError, HTTPException) as e:   # (a truncated body too)
+        raise OSError("could not fetch %s: %s" % (url, e))
+
+
+def fetch_current(url, dest_dir, name, work_dir=None):
+    """<dest_dir>/<name> as current as *url*, downloading only what changed.
+
+    The ETag of the last download is kept beside the file with the file's
+    sha256, and sent as If-None-Match: the server answers 304 when its copy is
+    the same. A local copy that no longer matches the sha256 it was kept with,
+    or a URL that is not plain http(s) (credentials in it, another scheme), is
+    fetched in full (fetch_fresh). Raises OSError when the fetch fails; an older
+    copy is then never returned.
+    """
+    if not url.startswith(("http://", "https://")) or urlAuthRe.match(url):
+        return fetch_fresh(url, dest_dir, name, work_dir)
+    os.makedirs(dest_dir, exist_ok=True)
+    path, kept = join(dest_dir, name), join(dest_dir, name + ".etag")
+    etag = None
+    try:
+        with open(kept) as fh:
+            tag, digest = fh.read().split("\n")[:2]
+        with open(path, "rb") as fh:
+            if hashlib.sha256(fh.read()).hexdigest() == digest:
+                etag = tag or None
+    except (OSError, ValueError):
+        etag = None
+    headers = {"Cache-Control": "no-cache"}
+    if etag:
+        headers["If-None-Match"] = etag
+    status, body, new_tag = _http_get(url, headers)
+    if status == 304:
+        debug("%s unchanged (ETag %s)", url, etag)
+        return path
+    if status != 200 or body is None:
+        raise OSError("HTTP %s for %s" % (status, url))
+    part = "%s.%d.%s.part" % (path, os.getpid(), os.urandom(4).hex())
+    try:
+        with open(part, "wb") as fh:
+            fh.write(body)
+        os.replace(part, path)
+    finally:
+        if os.path.exists(part):
+            unlink(part)
+    try:
+        # A weak tag (W/"…") may be matched by a copy whose bytes differ.
+        if new_tag and not new_tag.startswith("W/"):
+            with open(kept + ".part", "w") as fh:
+                fh.write("%s\n%s\n" % (new_tag, hashlib.sha256(body).hexdigest()))
+            os.replace(kept + ".part", kept)
+        elif os.path.exists(kept):
+            unlink(kept)
+    except OSError:
+        pass                                # only the next fetch gets slower
+    return path
+
+
 _SIGNED = {}                   # (url, dest dir) -> local path, or the error
 
 
 def fetch_signed_manifest(src, dest_dir, work_dir=None):
     """A local path for a signed manifest *src* with its detached .sig beside it.
 
-    A local path is returned as it is. A URL is fetched afresh, manifest and
-    signature both, once per process (every caller in one run verifies the same
-    copy). A failed fetch raises OSError, also for later callers in the run: an
+    A local path is returned as it is. A URL is brought up to date, manifest and
+    signature both (fetch_current: a 304 when unchanged), once per process
+    (every caller in one run verifies the same copy). A failed fetch raises OSError, also for later callers in the run: an
     older copy is never used instead, since it may still vouch for a hash that
     has been revoked since, or miss the ones certified since.
     """
@@ -224,8 +294,8 @@ def fetch_signed_manifest(src, dest_dir, work_dir=None):
                           basename(src.split("?")[0]) or "trust-manifest.json")
         try:
             # (Re-signed in between, the pair does not match: it fails closed.)
-            got = fetch_fresh(src, dest_dir, name, work_dir)
-            fetch_fresh(src + ".sig", dest_dir, name + ".sig", work_dir)
+            got = fetch_current(src, dest_dir, name, work_dir)
+            fetch_current(src + ".sig", dest_dir, name + ".sig", work_dir)
         except OSError as exc:
             got = exc
         _SIGNED[key] = got

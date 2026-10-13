@@ -168,17 +168,19 @@ class TestLocalizeManifest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _serve(self, files, got=None):
-        """A downloadUrllib2 stand-in: *files* maps a URL to its body (None: the
-        download fails and writes nothing)."""
-        def fake(source, destDir, work_dir, dest_filename=None):
+        """A download._http_get stand-in: *files* maps a URL to its body (None:
+        the fetch fails). Each body has the ETag "<body>"; a matching
+        If-None-Match gets a 304."""
+        def fake(url, headers, timeout=60):
             if got is not None:
-                got.append(source)
-            body = files.get(source)
+                got.append(url)
+            body = files.get(url)
             if body is None:
-                return False
-            with open(os.path.join(destDir, dest_filename), "w") as fh:
-                fh.write(body)
-            return True
+                raise OSError("unreachable %s" % url)
+            tag = '"%s"' % body
+            if headers.get("If-None-Match") == tag:
+                return 304, None, tag
+            return 200, body.encode(), tag
         return fake
 
     def _cached(self, name, body):
@@ -196,7 +198,7 @@ class TestLocalizeManifest(unittest.TestCase):
         old = self._cached("%s.common-manifest-x86_64-el9.json"
                            % hashlib.sha256(url.encode()).hexdigest()[:12], "old")
         serve = self._serve({url: "new", url + ".sig": "new-sig"})
-        with patch("bits_helpers.download.downloadUrllib2", side_effect=serve):
+        with patch("bits_helpers.download._http_get", side_effect=serve):
             local = gc._localize_manifest(url, self.tmp)
         self.assertEqual(local, old)
         self.assertEqual((open(local).read(), open(local + ".sig").read()), ("new", "new-sig"))
@@ -212,7 +214,7 @@ class TestLocalizeManifest(unittest.TestCase):
                 import hashlib
                 old = self._cached("%s.common-manifest-x86_64-el9.json"
                                    % hashlib.sha256(url.encode()).hexdigest()[:12], "old")
-                with patch("bits_helpers.download.downloadUrllib2",
+                with patch("bits_helpers.download._http_get",
                            side_effect=self._serve(files)):
                     with self.assertRaises(OSError):
                         gc._localize_manifest(url, self.tmp)
@@ -223,7 +225,7 @@ class TestLocalizeManifest(unittest.TestCase):
         a = "https://s3.example/one/MANIFESTS/common-manifest-shared.json"
         b = "https://s3.example/two/MANIFESTS/common-manifest-shared.json"
         serve = self._serve({a: "A", a + ".sig": "a", b: "B", b + ".sig": "b"})
-        with patch("bits_helpers.download.downloadUrllib2", side_effect=serve):
+        with patch("bits_helpers.download._http_get", side_effect=serve):
             pa, pb = gc._localize_manifest(a, self.tmp), gc._localize_manifest(b, self.tmp)
         self.assertEqual((open(pa).read(), open(pb).read()), ("A", "B"))
 
@@ -231,13 +233,13 @@ class TestLocalizeManifest(unittest.TestCase):
         from unittest.mock import patch
         url = "https://s3.example/MANIFESTS/common-manifest-x86_64-el9.json"
         got = []
-        with patch("bits_helpers.download.downloadUrllib2",
+        with patch("bits_helpers.download._http_get",
                    side_effect=self._serve({url: "new", url + ".sig": "s"}, got)):
             a = gc._localize_manifest(url, self.tmp)
             b = gc._localize_manifest(url, self.tmp)
         self.assertEqual((a, got), (b, [url, url + ".sig"]))
         got.clear()
-        with patch("bits_helpers.download.downloadUrllib2", side_effect=self._serve({}, got)):
+        with patch("bits_helpers.download._http_get", side_effect=self._serve({}, got)):
             with self.assertRaises(OSError):
                 gc._localize_manifest(url + "x", self.tmp)
             with self.assertRaises(OSError):                 # the failure, not a retry
@@ -254,7 +256,7 @@ class TestLocalizeManifest(unittest.TestCase):
         os.makedirs(d)
         for n in ("common-manifest-x86_64-el9.json", "common-manifest-x86_64-el9.json.sig"):
             open(os.path.join(d, n), "w").write("{}")
-        with patch("bits_helpers.download.downloadUrllib2", side_effect=self._serve({})), \
+        with patch("bits_helpers.download._http_get", side_effect=self._serve({})), \
              patch("bits_helpers.trust.trusted_index",
                    side_effect=AssertionError("the cached copy was verified")):
             self.assertEqual(build._load_trusted_index(url, self.tmp, None), (None, {}))
@@ -268,13 +270,8 @@ class TestLocalizeManifest(unittest.TestCase):
         from unittest.mock import patch
         url = "https://s3.example/MANIFESTS/common-manifest-osx_arm64.json"
         got = []
-
-        def fake_download(source, destDir, work_dir, dest_filename=None):
-            got.append(source)
-            with open(os.path.join(destDir, dest_filename), "w") as fh:
-                fh.write("{}")
-
-        with patch("bits_helpers.download.downloadUrllib2", side_effect=fake_download):
+        with patch("bits_helpers.download._http_get",
+                   side_effect=self._serve({url: "{}", url + ".sig": "{}"}, got)):
             local = gc._localize_manifest(url, self.tmp)
         # Both the manifest and its detached signature are fetched...
         self.assertEqual(got, [url, url + ".sig"])
@@ -283,6 +280,68 @@ class TestLocalizeManifest(unittest.TestCase):
         self.assertTrue(os.path.isfile(local + ".sig"))
         self.assertTrue(local.endswith("common-manifest-osx_arm64.json"))
 
+    def test_a_weak_etag_is_never_sent_back(self):
+        from unittest.mock import patch
+        import bits_helpers.download as dl
+        url = "https://s3.example/MANIFESTS/common-manifest-x86_64-el9.json"
+        sent = []
+
+        def weak(u, headers, timeout=60):
+            sent.append(headers.get("If-None-Match"))
+            return 200, b"v", 'W/"v"'
+        for _ in range(2):
+            dl._SIGNED.clear()
+            with patch("bits_helpers.download._http_get", side_effect=weak):
+                gc._localize_manifest(url, self.tmp)
+        self.assertEqual(sent, [None] * 4)
+
+    def test_a_truncated_body_is_a_failed_fetch(self):
+        from http.client import IncompleteRead
+        from unittest.mock import MagicMock, patch
+        import bits_helpers.download as dl
+        resp = MagicMock()
+        resp.__enter__.return_value = resp
+        resp.read.side_effect = IncompleteRead(b"par", 10)
+        with patch("bits_helpers.download.urlopen", return_value=resp):
+            with self.assertRaises(OSError):
+                dl._http_get("https://s3.example/x.json", {})
+
+    def test_an_unchanged_manifest_is_not_downloaded_again(self):
+        """The next run sends the ETag it kept: 304, and the local copy stays.
+        A copy changed on disk, or a store copy that changed, is fetched in full."""
+        from unittest.mock import patch
+        import bits_helpers.download as dl
+        url = "https://s3.example/MANIFESTS/common-manifest-x86_64-el9.json"
+        files = {url: "v1", url + ".sig": "s1"}
+        sent = []
+
+        def run():
+            dl._SIGNED.clear()
+            serve = self._serve(files)
+
+            def spy(u, headers, timeout=60):
+                r = serve(u, headers, timeout)
+                sent.append((u, headers.get("If-None-Match"), r[0]))
+                return r
+            with patch("bits_helpers.download._http_get", side_effect=spy):
+                return gc._localize_manifest(url, self.tmp)
+        local = run()
+        sent.clear()
+        self.assertEqual(run(), local)
+        self.assertEqual([s[2] for s in sent], [304, 304])
+        self.assertEqual(open(local).read(), "v1")
+        files[url] = "v2"                                        # re-signed in the store
+        files[url + ".sig"] = "s2"
+        sent.clear()
+        run()
+        self.assertEqual([s[2] for s in sent], [200, 200])
+        self.assertEqual((open(local).read(), open(local + ".sig").read()), ("v2", "s2"))
+        with open(local, "w") as fh:                             # tampered with on disk
+            fh.write("evil")
+        sent.clear()
+        run()
+        self.assertEqual(sent[0][1:], (None, 200))               # no ETag sent: fetched in full
+        self.assertEqual(open(local).read(), "v2")
 
 if __name__ == "__main__":
     unittest.main()
