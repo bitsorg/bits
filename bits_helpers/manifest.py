@@ -84,6 +84,8 @@ fields as additive and key off ``schema_version``.
       "hash":                   str,              # content-addressable build hash
       "commit_hash":            str,              # source commit hash (or "0")
       "outcome":                "already_installed" | "from_store" | "built_from_source",
+      "rebuilt_because":        str,              # built_from_source only, when known:
+                                                  # why no tarball was reused
       "tarball":                str | null,       # tarball filename
       "tarball_sha256":         str | null,       # sha256:<hex> of the tarball, if present
       "source_checksums":       [SourceEntry],    # per-source archive integrity anchors
@@ -523,6 +525,9 @@ class BuildManifest:
             # build's manifest, so leave it null rather than claim it.
             "built_by":               _builder_id() if outcome == "built_from_source" else None,
             "completed_at":           _now_iso(),
+            # Why a package was built here rather than reused (additive).
+            **({"rebuilt_because": spec["reuse_note"]}
+               if outcome == "built_from_source" and spec.get("reuse_note") else {}),
         }
         with self._lock:
             self._data["packages"].append(entry)
@@ -532,6 +537,11 @@ class BuildManifest:
         debug("manifest: %s recorded as %s", spec.get("package", "?"), outcome)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def packages(self) -> list:
+        """The package entries recorded so far (copies)."""
+        with self._lock:
+            return [dict(e) for e in self._data["packages"]]
 
     def complete(self) -> None:
         """Mark the manifest as successfully completed and write a final save."""

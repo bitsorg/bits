@@ -1678,6 +1678,42 @@ def _doCheckout(spec, workDir, referenceSources, docker, enforce_mode,
   return ""
 
 
+def _report_reuse(args, main_package, metrics_url, instance):
+  """The end-of-build summary of what was reused and built (and why), and the
+  same counts as metrics. Best-effort: never fails a finished build."""
+  try:
+    from bits_helpers import reuse_report
+    packages = args.manifest.packages()
+    text = reuse_report.format_summary(packages)
+    if text:
+      banner("%s", text)
+    if metrics_url:
+      from bits_helpers.metrics import push_prometheus
+      from bits_helpers.monitor import default_instance
+      push_prometheus(metrics_url, "\n".join(reuse_report.metric_lines(
+          packages, instance() or default_instance(), args.architecture, main_package)) + "\n",
+          timeout=5)
+  except Exception as exc:  # pylint: disable=broad-except
+    debug("reuse summary: %s", exc)
+
+
+def _rebuild_reason(spec, sync_helper):
+  """Why a package with no tarball to reuse is built here, in a few words."""
+  from bits_helpers.sync import NoRemoteSync, binary_redistributable
+  if spec.get("is_devel_pkg"):
+    return "development package"
+  if spec.get("force_rebuild"):
+    return "forced rebuild"
+  if is_virtual_package(spec):
+    return "never stored"
+  if not binary_redistributable(spec):
+    return "licence: never stored"
+  if sync_helper is None or isinstance(sync_helper, NoRemoteSync):
+    return "no remote store"
+  # (Absent, or the fetch failed: either way nothing came from the store.)
+  return "not found in the store"
+
+
 def doFinalSync(spec, specs, args, syncHelper):
   # We need to create 2 sets of links, once with the full requires,
   # once with only direct dependencies, since that's required to
@@ -2561,6 +2597,7 @@ def build_one_package(p, ctx):
                 "discarding remote tarball and rebuilding.",
                 spec["package"], spec["hash"])
         spec["cachedTarball"] = ""
+        spec["reuse_note"] = "store tarball not certified"
       else:
         _actual = compute_checksum_file(spec["cachedTarball"])
         if _actual != _sha:
@@ -2571,6 +2608,7 @@ def build_one_package(p, ctx):
                   "manifest (expected %s, got %s); discarding and rebuilding.",
                   os.path.basename(spec["cachedTarball"]), _sha, _actual)
           spec["cachedTarball"] = ""
+          spec["reuse_note"] = "store tarball differs from the certified one"
         else:
           debug("Trusted reuse: %s@%s verified against signed manifest",
                 spec["package"], spec["hash"])
@@ -2602,6 +2640,10 @@ def build_one_package(p, ctx):
       if _handle_already_installed(local_hash_path):
         return
       shutil.rmtree(local_hash_path.encode("utf-8"), True)
+
+  # Why this package is built here (the end-of-build reuse summary says).
+  if not spec["cachedTarball"] and not spec.get("reuse_note"):
+    spec["reuse_note"] = _rebuild_reason(spec, syncHelper)
 
   # The actual build script.
   
@@ -4228,6 +4270,8 @@ def doBuild(args, parser):
   if getattr(args, "manifest", None) is not None:
     args.manifest.complete()
     banner("Build manifest written to:\n  %s", args.manifest.path)
+    _report_reuse(args, mainPackage, _mon_url if _mon_on else None,
+                  lambda: cfg.monitor_instance or _system_opt("monitor_instance", None))
     if getattr(args, "signManifest", None):
       from bits_helpers import trust
       sig = trust.sign_manifest(args.manifest.path, args.signManifest)
