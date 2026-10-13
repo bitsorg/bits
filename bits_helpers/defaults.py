@@ -13,7 +13,7 @@ import sys
 from collections import OrderedDict
 from os.path import exists
 
-from bits_helpers.log import banner, debug, dieOnError
+from bits_helpers.log import banner, debug, dieOnError, info
 from bits_helpers.recipe import getRecipeReader, parseRecipe
 from bits_helpers.paths import getConfigPaths, resolveDefaultsFilename
 from bits_helpers.utilities import asList
@@ -157,7 +157,43 @@ def resolve_pkg_family(defaults_meta: dict, package_name: str) -> str:
   return default_family
 
 
+# The build type a chain gets when it qualifies the architecture (a compiler
+# profile's append_arch) but names none: every build of the same binaries then
+# lands under one qualified architecture (…-gcc15-opt), never also …-gcc15.
+DEFAULT_BUILD_TYPE = "opt"
+_BUILD_TYPES = ("opt", "dbg")
+
+
 def readDefaults(configDir, defaults, error, architecture):
+  """The merged defaults of the chain *defaults*, and their bodies.
+
+  A chain that qualifies the architecture but names no build type (no profile
+  marked ``own_hash_neutral``, such as defaults-opt / defaults-dbg) gets
+  DEFAULT_BUILD_TYPE, when that profile can be found: it is inserted into
+  *defaults* (in place, so every later step sees the chain actually built)
+  before any trailing structural overlay, and exempt from recipes'
+  valid_defaults (it was implied, not asked for).
+  """
+  meta, body = _read_defaults_chain(configDir, defaults, error, architecture)
+  if (meta.get("_append_arch_qualifiers") and not meta.get("_own_hash_drop_qualifiers")
+      and not any(d in _BUILD_TYPES for d in defaults)
+      and isinstance(defaults, list)
+      and resolveDefaultsFilename(DEFAULT_BUILD_TYPE, configDir, failOnError=False)):
+    exempt = set(meta.get("_valid_defaults_exempt") or ()) - {"release"}
+    at = len(defaults)
+    while at > 0 and defaults[at - 1] in exempt:
+      at -= 1                                 # overlays stay last
+    before = "::".join(defaults)
+    defaults.insert(at, DEFAULT_BUILD_TYPE)
+    info("--defaults %s names no build type: building %s", before, "::".join(defaults))
+    meta, body = _read_defaults_chain(configDir, defaults, error, architecture)
+    # Implied, not asked for: a recipe's valid_defaults gate is not held against it.
+    meta["_valid_defaults_exempt"] = list(meta.get("_valid_defaults_exempt") or []) + [
+        DEFAULT_BUILD_TYPE]
+  return meta, body
+
+
+def _read_defaults_chain(configDir, defaults, error, architecture):
   defaultsMeta = {}
   defaultsBody = ""
   append_arch_qualifiers = []  # per-default append_arch values, in chain order
