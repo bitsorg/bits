@@ -162,6 +162,36 @@ class CanaryTest(CertifierBase):
             "SELECT compare FROM ci_outputs ORDER BY certification")], ["match", "again"])
         self.assertEqual(self.compared()["el9"]["ci_certification"], 5)
 
+    def test_the_builds_listing_carries_the_workers_certification(self):
+        from console_backend.orch import api, reconcile
+        self.approve()
+        self.certify()
+        self.ci_output(self.mine(), "aaaa000")
+        canary.match(self.conn, self.settings)
+        rows = [{"pipeline": 7, "builds": [{"build_id": "b2"}, {"build_id": "b3"}]}]
+        got = api._with_certify(self.conn, rows, reasons=True)[0]["builds"]
+        self.assertEqual(got[0]["certify"]["state"], "signed")
+        self.assertEqual(got[0]["certify"]["approver"], "alice")
+        self.assertEqual([(a["arch"], a["state"], a["compare"], a["ci_certification"], a["written"])
+                          for a in got[0]["certify"]["archs"]],
+                         [("el9", "signed", "match", 5, True)])
+        self.assertNotIn("certify", got[1])                            # never considered
+        self.assertEqual(api._with_certify(self.conn, []), [])
+
+    def test_only_overall_admins_see_the_workers_reasons(self):
+        from unittest import mock
+        from console_backend.orch import api
+        self.approve()
+        self.certify()
+        rows = lambda: [{"pipeline": 7, "builds": [{"build_id": "b2"}]}]
+        c = api._with_certify(self.conn, rows())[0]["builds"][0]["certify"]
+        self.assertNotIn("reason", c)
+        self.assertTrue(all("reason" not in a for a in c["archs"]))
+        c = api._with_certify(self.conn, rows(), reasons=True)[0]["builds"][0]["certify"]
+        self.assertIn("reason", c)
+        with mock.patch.object(api.certifier, "for_builds", side_effect=RuntimeError("x")):
+            self.assertEqual(api._with_certify(self.conn, rows()), rows())   # rows still listed
+
     def test_the_cis_side_is_kept_only_while_the_worker_certifies(self):
         off = config.Settings(env=dict(SETTINGS))
         self.assertEqual(canary.record_ci(self.conn, off, 5, "s", "b", self.dir, None, {}), 0)

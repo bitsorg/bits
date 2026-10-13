@@ -42,6 +42,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import re
 import secrets
 
@@ -53,6 +54,7 @@ from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, canary, certified, certifier, db, events, failures, kinds,
                outside, reconcile, shadow)
 
+log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
 _MAX_BODY = 64 * 1024
 
@@ -325,6 +327,33 @@ async def _scope(data):
     return None if overall else {g.lower() for g in groups}
 
 
+def _with_certify(conn, rows, reasons=False):
+    """Each build of *rows* (reconcile's pipelines) with the worker's
+    certification of it, when it considered the build: its decision and, per
+    architecture, what it signed and (until M8b) how that compared with the CI.
+    The reasons (raw error text, at times) only with *reasons* (overall admins).
+    A failure here leaves the rows without it."""
+    try:
+        cert = certifier.for_builds(conn, {(r["pipeline"], b["build_id"])
+                                           for r in rows for b in r.get("builds") or ()})
+        canary.annotate(conn, [a for d in cert.values() for a in d["archs"]])
+    except Exception:
+        log.exception("the worker's certification of builds")
+        return rows
+    for r in rows:
+        for b in r.get("builds") or ():
+            c = cert.get((r["pipeline"], b["build_id"]))
+            if c:
+                for a in c["archs"]:
+                    a.pop("id", None)
+                    if not reasons:
+                        a.pop("reason", None)
+                if not reasons:
+                    c.pop("reason", None)
+                b["certify"] = c
+    return rows
+
+
 @router.get("/ops/builds")
 async def list_builds(request: Request, community: str = "", outcome: str = "",
                       pipelines: str = "", limit: int = 50):
@@ -333,6 +362,7 @@ async def list_builds(request: Request, community: str = "", outcome: str = "",
     is a comma-separated list of ids (the console asks for the rows it shows)."""
     data = await _caller(request)
     mine = await _scope(data)
+    overall = mine is None
     if community:
         c = community.strip().lower()
         if mine is not None and c not in mine:
@@ -349,8 +379,9 @@ async def list_builds(request: Request, community: str = "", outcome: str = "",
 
     def read():
         with _open() as conn:
-            return reconcile.list_builds(conn, communities=mine, outcome=outcome or None,
-                                         pipelines=ids, limit=limit)
+            return _with_certify(conn, reconcile.list_builds(
+                conn, communities=mine, outcome=outcome or None, pipelines=ids, limit=limit),
+                reasons=overall)
     return JSONResponse({"builds": await run_in_threadpool(read)},
                         headers={"Cache-Control": "no-store"})
 
@@ -362,9 +393,12 @@ async def get_build(pipeline: int, request: Request):
 
     def read():
         with _open() as conn:
-            return reconcile.get_build(conn, pipeline)
+            b = reconcile.get_build(conn, pipeline)
+            if b is None or (mine is not None and b["community"] not in mine):
+                return None
+            return _with_certify(conn, [b], reasons=mine is None)[0]
     b = await run_in_threadpool(read)
-    if b is None or (mine is not None and b["community"] not in mine):
+    if b is None:
         raise HTTPException(404, "no such build")
     return JSONResponse(b, headers={"Cache-Control": "no-store"})
 

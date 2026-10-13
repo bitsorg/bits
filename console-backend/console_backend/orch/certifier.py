@@ -515,6 +515,31 @@ def summary(conn, since_ms=0):
         " GROUP BY state", (since_ms,))}
 
 
+def for_builds(conn, keys):
+    """The worker's certification of each of *keys* ((pipeline, build_id) pairs)
+    it considered: ``{key: {state, reason, approver, archs: [{id, arch, state,
+    reason, written}]}}``, without bytes."""
+    keys = {(int(p), str(b)) for p, b in keys}
+    out = {}
+    pids = sorted({p for p, _b in keys})
+    for i in range(0, len(pids), 500):
+        part = pids[i:i + 500]
+        for r in conn.execute(
+                "SELECT id, pipeline_id, build_id, arch, state, reason, approver, written_ms"
+                " FROM certify_runs WHERE pipeline_id IN (%s) ORDER BY arch"
+                % ",".join("?" * len(part)), part):
+            key = (r["pipeline_id"], r["build_id"])
+            if key not in keys:
+                continue
+            d = out.setdefault(key, {"state": "", "reason": "", "approver": "", "archs": []})
+            if r["arch"] == "*":
+                d.update(state=r["state"], reason=r["reason"], approver=r["approver"])
+            else:
+                d["archs"].append({"id": r["id"], "arch": r["arch"], "state": r["state"],
+                                   "reason": r["reason"], "written": r["written_ms"] is not None})
+    return out
+
+
 def listing(conn, pipeline=None, limit=100):
     q, args = ("SELECT id, pipeline_id, build_id, arch, state, reason, approval_id, approver,"
                " set_version, set_commit, in_set, boms, sha256, key_id, signed_ms, written_ms,"
