@@ -101,5 +101,42 @@ class TestListStoreManifestSrcs(unittest.TestCase):
             dl.downloadUrllib2 = orig
 
 
+
+class TestPreferredPrefixes(unittest.TestCase):
+    """trust_manifest_prefix may name several prefixes: per architecture, the
+    first that has a manifest wins; later ones fill in the rest."""
+
+    def _run(self, listings, arch="x86_64-el9-gcc15-opt"):
+        from unittest.mock import patch
+        from bits_helpers import build
+        root = "https://s3.cern.ch/swift/v1/b"
+        with patch.object(build, "_list_store_manifest_srcs",
+                          lambda store, prefix, ep, wd: ["%s/%s" % (root, n)
+                                                         for n in listings.get(prefix, [])]):
+            return build.trust_manifest_srcs("b3://b", "CANARY/common-manifest, MANIFESTS/common-manifest",
+                                             None, "/tmp", arch)
+
+    def test_the_canary_where_it_has_the_arch_production_elsewhere(self):
+        srcs, guessed = self._run({
+            "CANARY/common-manifest": ["CANARY/common-manifest-x86_64-el9-gcc15-opt.json"],
+            "MANIFESTS/common-manifest": ["MANIFESTS/common-manifest-x86_64-el9-gcc15-opt.json",
+                                          "MANIFESTS/common-manifest-x86_64-el10-gcc14-opt.json"]})
+        self.assertEqual(sorted(s.split("/b/")[1] for s in srcs),
+                         ["CANARY/common-manifest-x86_64-el9-gcc15-opt.json",
+                          "MANIFESTS/common-manifest-x86_64-el10-gcc14-opt.json"])
+        self.assertEqual(guessed, set())
+
+    def test_an_empty_canary_leaves_production_alone(self):
+        srcs, guessed = self._run({"MANIFESTS/common-manifest":
+                                   ["MANIFESTS/common-manifest-x86_64-el9-gcc15-opt.json"]})
+        self.assertEqual([s.split("/b/")[1] for s in srcs],
+                         ["MANIFESTS/common-manifest-x86_64-el9-gcc15-opt.json"])
+        self.assertEqual(guessed, set())
+
+    def test_an_unlistable_store_guesses_every_prefix(self):
+        srcs, guessed = self._run({})
+        self.assertEqual(set(srcs), guessed)
+        self.assertEqual(len(srcs), 4)            # own arch + shared, for each prefix
+
 if __name__ == "__main__":
     unittest.main()

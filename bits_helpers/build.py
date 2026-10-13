@@ -670,6 +670,36 @@ def _store_container_root(store, endpoint=None):
   return None
 
 
+def trust_manifest_srcs(store, prefixes, endpoint, work_dir, arch):
+  """``(sources, guessed)``: the signed manifests a build trusts.
+
+  *prefixes* is one prefix or several, comma-separated, in order of preference
+  (e.g. ``STAGING/common-manifest,MANIFESTS/common-manifest``): for each
+  architecture's manifest, the first prefix that has one is used, so a later
+  prefix only fills in the architectures the earlier ones lack. The one used is
+  not checked here: an expired or unverifiable one is not replaced by a later
+  prefix's. Prefer the manifests actually in the store (arch-independent
+  hashes) over names guessed from our own arch; *guessed* is the set of guessed
+  names (they may not exist). With guesses only (no listing found any), every
+  prefix's guesses are kept, so their indexes are merged, not preferred.
+  """
+  order = [p.strip().lstrip("/") for p in str(prefixes or "").split(",") if p.strip()] \
+      or ["MANIFESTS/common-manifest"]
+  listed = [(p, _list_store_manifest_srcs(store, p, endpoint, work_dir)) for p in order]
+  if not any(found for _p, found in listed):
+    # The store cannot be listed (or holds none): every prefix's guessed names,
+    # all kept, since a guess that does not exist is skipped later.
+    guessed = [s for p in order for s in derive_trust_manifest_srcs(store, p, arch, endpoint)]
+    return guessed, set(guessed)
+  chosen = {}
+  for prefix, found in listed:
+    leaf = os.path.basename(prefix)
+    for src in found:
+      name = os.path.basename(src)                 # <leaf>-<arch>.json
+      chosen.setdefault(name[len(leaf):] if name.startswith(leaf) else name, src)
+  return sorted(chosen.values()), set()
+
+
 def derive_trust_manifest_srcs(store, prefix, arch, endpoint=None):
   """Construct the signed common-manifest URLs for *arch* + the shared one.
 
@@ -3440,14 +3470,11 @@ def doBuild(args, parser):
            or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
     _prefix = _system_opt("trust_manifest_prefix", "MANIFESTS/common-manifest")
     _store = getattr(args, "remoteStore", "")
-    # Prefer the manifests actually in the store (arch-independent hashes) over
-    # two names guessed from our own arch; fall back to name construction.
-    _srcs = _list_store_manifest_srcs(_store, _prefix, _ep,
-                                      getattr(args, "workDir", None))
-    if not _srcs:
-      _srcs = derive_trust_manifest_srcs(
-          _store, _prefix, str(getattr(args, "architecture", "") or ""), _ep)
-      args._guessedTrustManifests = set(_srcs)   # names guessed, may not exist
+    _srcs, _guessed = trust_manifest_srcs(
+        _store, _prefix, _ep, getattr(args, "workDir", None),
+        str(getattr(args, "architecture", "") or ""))
+    if _guessed:
+      args._guessedTrustManifests = _guessed     # names guessed, may not exist
     if _srcs:
       args.trustManifest = ",".join(_srcs)
       banner("Signed reuse: %d trust manifest(s) from\n  %s/",
