@@ -63,6 +63,9 @@ class Worker:
             at = [n for n, _ in self.steps].index("index") + 1
             self.steps.insert(at, ("certify", lambda: certifier.trigger(
                 self.conn, settings, self.deps.reader())))
+            # Its own step: a paused or failing certify step never holds back a
+            # revocation.
+            self.steps.insert(at, ("withdraw", lambda: certifier.withdrawals(self.conn, settings)))
         self._errors = {}                 # step -> last error text
         self._stop = threading.Event()
 
@@ -75,7 +78,7 @@ class Worker:
     def _run_actions(self):
         # Certifications run on the certifier thread: hashing a stack must
         # never delay a cancel.
-        actions.run_due(self.conn, self.deps, self.authorize, exclude={certifier.KIND})
+        actions.run_due(self.conn, self.deps, self.authorize, exclude={certifier.KIND, certifier.WITHDRAW})
 
     def _note(self, step, error, conn=None):
         """Record a step's failure or recovery as an event, but only when it

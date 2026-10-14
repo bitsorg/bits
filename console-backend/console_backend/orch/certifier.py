@@ -49,6 +49,9 @@ from . import actions, certified, db, events, outside, replay, shadow
 
 log = logging.getLogger("bits_orchestrator.certifier")
 KIND = "certify"
+# Re-signing an architecture's manifest without the BOMs the certified set has
+# removed: it only takes trust away, so it needs no pre-approval.
+WITHDRAW = "withdraw"
 DEFAULT_REMOTE = "https://gitlab.cern.ch/buncic/bits-manifests"
 WAIT_MS = 24 * 3600 * 1000            # how long a build waits for its pre-approval
 PER_PASS = 20
@@ -396,10 +399,16 @@ def _sign_and_write(conn, settings, store, row, sign=None, writer=None):
         if policy is None:
             raise Refused("no key policy (key-policy.json): the worker fails closed")
         groups = replay._groups({arch: json.loads(body)})
-        resolved = authz.resolved_admin_policy(settings, None)
-        denied = [g for g in groups if not authz.is_admin_for(row["approver"], g, resolved)]
-        if denied:
-            raise Refused("%s is no longer an admin for %s" % (row["approver"], ", ".join(denied)))
+        if row["pipeline_id"] == WITHDRAWN and str(row["build_id"]).startswith("set-"):
+            why = removal_only(settings, store, arch, body)
+            if why:
+                raise Refused("not signed without a pre-approval: %s" % why)
+        else:
+            resolved = authz.resolved_admin_policy(settings, None)
+            denied = [g for g in groups if not authz.is_admin_for(row["approver"], g, resolved)]
+            if denied:
+                raise Refused("%s is no longer an admin for %s"
+                              % (row["approver"], ", ".join(denied)))
         bad = [g for g in groups if not trust.key_authorized(row["key_id"], g, policy)]
         if bad:
             raise Refused("signing key %s is not allowed for %s" % (row["key_id"], ", ".join(bad)))
@@ -502,6 +511,172 @@ def run(params, deps):
     return {"archs": archs}
 
 
+# --- withdrawals ----------------------------------------------------------------------
+#
+# A BOM removed from the certified set stays trusted while the architecture's
+# signed manifest still lists it. The worker re-signs that manifest from the set
+# without it. Its certify_runs row has pipeline WITHDRAWN and build "set-<version>".
+
+WITHDRAWN = 0
+
+
+# What may differ between two copies of one entry: which build recorded it.
+_PROVENANCE = ("built_by", "completed_at", "bits_version", "bits_dist_hash")
+
+
+def _ident(e):
+    """An entry as a withdrawal must keep it: every field but its provenance
+    (a re-signed entry may not change its group, licence, redistributable, ...)."""
+    return json.dumps({k: v for k, v in e.items() if k not in _PROVENANCE}, sort_keys=True)
+
+
+def removal_only(settings, store, arch, body):
+    """Why *body* may not be signed without a pre-approval, or None: every entry
+    must already be in the architecture's manifest in the store (verified), with
+    the same group, and its sequence must follow that one's."""
+    from bits_helpers import trust
+    s3, bucket = store
+    key = "%s-%s.json" % (write_prefix(settings), arch)
+    try:
+        raw = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        env = json.loads(s3.get_object(Bucket=bucket, Key=key + ".sig")["Body"].read())
+    except ValueError:
+        return "the store's %s signature is not JSON" % arch
+    except Exception as e:
+        if shadow._missing(e):
+            return "the store has no %s manifest to withdraw from" % arch
+        raise
+    if trust.verify_bytes(raw, env, trust.load_trusted_keys()) is None:
+        return "the store's %s manifest does not verify" % arch
+    old, new = json.loads(raw), json.loads(body)
+    have = {_ident(e) for e in old.get("packages") or [] if isinstance(e, dict)}
+    extra = [str(e.get("package") or e.get("hash")) for e in new.get("packages") or []
+             if not isinstance(e, dict) or _ident(e) not in have]
+    if extra:
+        return "it would add %d entr(y/ies) (%s)" % (len(extra), ", ".join(extra[:5]))
+    before = old.get("sequence") if isinstance(old.get("sequence"), int) else 0
+    if not isinstance(new.get("sequence"), int) or new["sequence"] <= before:
+        return "its sequence does not follow the store's %d" % before
+    return None
+
+
+def withdrawals(conn, settings, now=None):
+    """Request a withdrawal for each architecture whose last written manifest
+    was made from a set version that BOMs of it have since left. Returns how
+    many were requested."""
+    version, _pid, _commit = certified.current(conn)
+    if not version:
+        return 0
+    now = now or db.now_ms()
+    n = 0
+    for r in conn.execute("SELECT arch, MAX(set_version) AS sv FROM certify_runs WHERE"
+                          " written_ms IS NOT NULL AND arch != '*' GROUP BY arch").fetchall():
+        arch, sv = r["arch"], r["sv"]
+        if sv is None or sv >= version or conn.execute(
+                "SELECT 1 FROM certified WHERE arch = ? AND removed_version > ? AND"
+                " removed_version <= ? LIMIT 1", (arch, sv, version)).fetchone() is None:
+            continue
+        # Re-signing from the set would drop a build being certified now, or one
+        # certified a moment ago that is not in the set yet: wait for those (a
+        # build not in the set a day later was not taken in, and is dropped).
+        if conn.execute(
+                "SELECT 1 FROM certify_runs c WHERE c.arch = ? AND c.pipeline_id != ? AND"
+                " (c.state = 'signing' OR (c.written_ms > ? AND NOT EXISTS (SELECT 1 FROM"
+                " certified s WHERE s.build_id = c.build_id AND s.arch = c.arch))) LIMIT 1",
+                (arch, WITHDRAWN, now - WAIT_MS)).fetchone():
+            continue
+        _row, created = actions.request(
+            conn, WITHDRAW, {"arch": arch, "set_version": str(version)}, events.WORKER, "",
+            True, idempotency_key="withdraw:%s:%d" % (arch, version), cause="set:%d" % version)
+        n += int(created)
+    return n
+
+
+def compute_withdrawal(conn, settings, store, arch, version, probe=None, key_id=None):
+    """The manifest of *arch* made from the set at *version* alone, and its
+    certify_runs fields."""
+    from bits_helpers import certify, trust
+    r = conn.execute("SELECT commit_sha FROM set_versions WHERE version = ?",
+                     (version,)).fetchone()
+    if r is None:
+        raise Refused("set version %d is not recorded" % version)
+    tmp = tempfile.mkdtemp(prefix="withdraw-")
+    try:
+        root = certified.materialize(conn, version, os.path.join(tmp, "set"))
+        if probe is None:
+            s3, bucket = store
+            probe = certify.s3_probe(s3, bucket, settings.orch_default_arch,
+                                     cache=shadow.DigestCache(conn))
+        try:
+            results = dict(certify.build_by_arch(
+                root, probe=probe, only_archs=[arch],
+                valid_days=settings.orch_certify_valid_days or None))
+        except certify.CertifyError as e:
+            if shadow._transient_cause(e):
+                raise
+            raise Refused(str(e)[:1000])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if key_id is None:
+        from .. import signproxy
+        key_id = signproxy.call(settings, trust.proxy_pubkey)[0]
+    seq = next_sequence(conn, settings, store, arch)
+    m = dict(results[arch], certified_by=[], certified_at=certify._now_iso(), sequence=seq,
+             issuer=issuer(store), withdrawn={"set_version": version})
+    body = json.dumps(m, indent=1, sort_keys=True).encode()
+    return body, {"set_version": version, "set_commit": r["commit_sha"] or "", "in_set": 1,
+                  "boms": "[]", "sha256": hashlib.sha256(body).hexdigest(), "key_id": key_id,
+                  "sequence": seq}
+
+
+def run_withdraw(params, deps):
+    """The withdraw action, on the certifier thread."""
+    conn, settings = deps.conn, deps.settings
+    sign, writer = getattr(deps, "sign", None), getattr(deps, "writer", None)
+    arch, version = _name(params["arch"], "architecture"), int(params["set_version"])
+    bid = "set-%d" % version
+    try:
+        try:
+            row = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND"
+                               " build_id = ? AND arch = ?", (WITHDRAWN, bid, arch)).fetchone()
+            if row is None:
+                body, fields = compute_withdrawal(conn, settings, deps.store(), arch, version,
+                                                  probe=getattr(deps, "probe", None),
+                                                  key_id=getattr(deps, "key_id", None))
+                with db.transaction(conn):
+                    _upsert(conn, WITHDRAWN, bid, arch, "signing", "", manifest=body, **fields)
+                row = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND"
+                                   " build_id = ? AND arch = ?", (WITHDRAWN, bid, arch)).fetchone()
+            if row["state"] == "signing" and conn.execute(
+                    "SELECT 1 FROM certify_runs WHERE arch = ? AND written_ms IS NOT NULL AND"
+                    " created_ms > ?", (arch, row["created_ms"])).fetchone():
+                # A manifest made after this one is in place: it has no more trust.
+                with db.transaction(conn):
+                    conn.execute("UPDATE certify_runs SET state = 'skipped', manifest = NULL,"
+                                 " reason = 'superseded by a newer manifest', updated_ms = ?"
+                                 " WHERE id = ?", (db.now_ms(), row["id"]))
+                return {"arch": arch, "set_version": version, "superseded": True}
+            if row["state"] == "signing":
+                _sign_and_write(conn, settings, deps.store(), row, sign, writer)
+        except Exception as e:
+            if isinstance(e, (Refused, actions.Defer)):
+                raise
+            from .. import signproxy
+            if (shadow.transient(e) or shadow._transient_cause(e)
+                    or isinstance(e, (OSError, RuntimeError, signproxy.Unavailable))):
+                raise actions.Retry("%s: %s" % (type(e).__name__, str(e)[:300]))
+            raise
+    except Refused as e:
+        with db.transaction(conn):
+            conn.execute("UPDATE certify_runs SET state = 'refused', reason = ?, updated_ms = ?"
+                         " WHERE pipeline_id = ? AND build_id = ? AND arch = ? AND state ="
+                         " 'signing'", (str(e)[:1000], db.now_ms(), WITHDRAWN, bid, arch))
+            events.append(conn, "withdraw.refused", "arch:%s" % arch, events.WORKER,
+                          {"arch": arch, "set_version": version, "reason": str(e)[:500]})
+        raise
+    return {"arch": arch, "set_version": version}
+
+
 def _scope(params, deps):
     conn = getattr(deps, "conn", None)
     if conn is None:
@@ -526,13 +701,38 @@ actions.register(actions.Kind(
     safe_to_rerun=True,
     requesters=frozenset({"worker"})))
 
+actions.register(actions.Kind(
+    name=WITHDRAW,
+    summary="Withdraw from an architecture's signed manifest the BOMs the certified set"
+            " removed (re-signed with fewer entries only, so no pre-approval)",
+    params={"type": "object",
+            "properties": {"arch": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,200}$"},
+                           "set_version": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"}},
+            "required": ["arch", "set_version"], "additionalProperties": False},
+    approval="requester",
+    subject=lambda p: "withdraw:%s:%s" % (p["arch"], p["set_version"]),
+    scope=lambda p, deps: "",
+    run=run_withdraw,
+    safe_to_rerun=True,
+    requesters=frozenset({"worker"})))
+
 
 
 
 def failed_actions(conn):
     """A certification whose action failed for good (its retries spent, or
-    interrupted): the build's decision says so."""
+    interrupted): the build's decision says so; a withdrawal's run too."""
     n = 0
+    for r in conn.execute(
+            "SELECT c.id, a.error FROM certify_runs c JOIN actions a ON a.kind = ? AND"
+            " a.subject = 'withdraw:' || c.arch || ':' || substr(c.build_id, 5)"
+            " WHERE c.pipeline_id = ? AND c.state = 'signing' AND a.state = 'failed'",
+            (WITHDRAW, WITHDRAWN)).fetchall():
+        with db.transaction(conn):
+            conn.execute("UPDATE certify_runs SET state = 'failed', reason = ?, updated_ms = ?"
+                         " WHERE id = ?", ((r["error"] or "the action failed")[:1000],
+                                           db.now_ms(), r["id"]))
+        n += 1
     for r in conn.execute(
             "SELECT c.pipeline_id, c.build_id, a.error FROM certify_runs c JOIN actions a"
             " ON a.kind = ? AND a.subject = 'certify:' || c.pipeline_id || ':' || c.build_id"
@@ -612,7 +812,7 @@ class Certifier(threading.Thread):
                 while not self.stop_event.is_set():
                     began = time.monotonic()
                     try:
-                        actions.run_due(conn, deps, self.authorize, kinds={KIND})
+                        actions.run_due(conn, deps, self.authorize, kinds={KIND, WITHDRAW})
                         failed_actions(conn)
                         # Until M8b: compared with the CI's certifications.
                         from . import canary

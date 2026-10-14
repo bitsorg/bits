@@ -167,7 +167,7 @@ def match(conn, settings, now=None):
     old = now - int(settings.orch_canary_unmatched_days * DAY_MS)
     for r in conn.execute(
             "SELECT id, pipeline_id, build_id, arch FROM certify_runs c WHERE state = 'signed'"
-            " AND arch != '*' AND created_ms < ? AND NOT EXISTS (SELECT 1 FROM canary_compare k"
+            " AND arch != '*' AND pipeline_id != 0 AND created_ms < ? AND NOT EXISTS (SELECT 1 FROM canary_compare k"
             " WHERE k.run_id = c.id)", (old,)).fetchall():
         with db.transaction(conn):
             _compared(conn, r["id"], "unmatched", None, now)

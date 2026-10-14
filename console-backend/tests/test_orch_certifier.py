@@ -351,3 +351,113 @@ class CertifierTest(CertifierBase):
                                             "params": {"pipeline": "7", "build_id": "b2"}})
         self.assertEqual(r.status_code, 400)
         self.assertIn("not requested by a person", r.json()["detail"])
+
+
+class RawS3(FakeS3):
+    """The store, keeping what the worker writes as the exact bytes."""
+
+    def get_object(self, Bucket, Key):
+        import io
+        if isinstance(self.docs.get(Key), bytes):
+            return {"Body": io.BytesIO(self.docs[Key])}
+        return super().get_object(Bucket, Key)
+
+
+class StoreWriter(FakeWriter):
+    def __init__(self, s3):
+        super().__init__()
+        self.s3 = s3
+
+    def put_object(self, Bucket, Key, Body, ContentType=None):
+        super().put_object(Bucket, Key, Body, ContentType)
+        self.s3.docs[Key] = Body
+
+
+class WithdrawTest(CertifierBase):
+    def setUp(self):
+        super().setUp()
+        docs = self.s3.docs
+        self.s3 = RawS3()
+        self.s3.docs.update(docs)
+        self.writer = self.deps.writer = StoreWriter(self.s3)
+
+    def set_at(self, commit, pid, files):
+        root = os.path.join(tempfile.mkdtemp(dir=self.dir), "manifests")
+        os.makedirs(root, exist_ok=True)
+        for path, doc in files.items():
+            os.makedirs(os.path.dirname(os.path.join(root, path)), exist_ok=True)
+            with open(os.path.join(root, path), "w") as fh:
+                json.dump(doc, fh)
+        certified.apply_tree(self.conn, root, pid, commit)
+
+    def withdraw(self):
+        n = certifier.withdrawals(self.conn, self.settings)
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.WITHDRAW})
+        return n
+
+    def written(self):
+        return json.loads(self.s3.docs["CANARY/common-manifest-el9.json"])
+
+    def test_a_bom_removed_from_the_set_is_withdrawn_without_a_preapproval(self):
+        self.approve()
+        self.certify()
+        self.assertEqual([p["hash"] for p in self.written()["packages"]], ["h2"])
+        self.set_at("bbbb000", 8, {"lcg/b2.el9.host-1.json": dict(self.bom, certified_by=["alice"])})
+        self.assertEqual(certifier.withdrawals(self.conn, self.settings), 0)  # nothing removed
+        self.set_at("cccc000", 9, {})                                          # b2 removed
+        self.assertEqual(self.withdraw(), 1)
+        m = self.written()
+        self.assertEqual((m["packages"], m["sequence"], m["withdrawn"]), ([], 2, {"set_version": 3}))
+        sig = json.loads(self.s3.docs["CANARY/common-manifest-el9.json.sig"])
+        self.assertEqual(trust.verify_bytes(self.s3.docs["CANARY/common-manifest-el9.json"], sig,
+                                            self.trusted), self.kid)
+        row = self.conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = 0").fetchone()
+        self.assertEqual((row["build_id"], row["state"], row["approver"]), ("set-3", "signed", ""))
+        self.assertEqual(self.withdraw(), 0)                                   # done once
+
+    def test_a_withdrawal_that_would_add_an_entry_is_refused(self):
+        self.approve()
+        self.certify()
+        other = dict(_bom("b9", "el9", ("z", "h9")), source_pipeline_id=9, certified_by=["alice"])
+        self.store[("el9", "h9")] = "sh9"
+        self.set_at("bbbb000", 8, {"lcg/b2.el9.host-1.json": dict(self.bom, certified_by=["alice"]),
+                                   "lcg/b9.el9.host-1.json": other})
+        self.set_at("cccc000", 9, {"lcg/b9.el9.host-1.json": other})       # b2 out, b9 stays
+        before = self.s3.docs["CANARY/common-manifest-el9.json"]
+        self.withdraw()
+        row = self.conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = 0").fetchone()
+        self.assertEqual(row["state"], "refused")
+        self.assertIn("would add 1 entr", row["reason"])
+        self.assertEqual(self.s3.docs["CANARY/common-manifest-el9.json"], before)
+        self.assertIn("withdraw.refused", self.kinds())
+
+    def test_a_build_not_yet_in_the_set_is_waited_for(self):
+        self.approve()
+        self.certify()                                     # b2 written, not in the set yet
+        other = dict(_bom("b9", "el9", ("z", "h9")), source_pipeline_id=9, certified_by=["alice"])
+        self.set_at("bbbb000", 8, {"lcg/b9.el9.host-1.json": other})
+        self.set_at("cccc000", 9, {})                      # b9 removed
+        self.assertEqual(certifier.withdrawals(self.conn, self.settings), 0)
+        self.assertEqual(certifier.withdrawals(self.conn, self.settings,
+                                               now=db.now_ms() + certifier.WAIT_MS + 1), 1)
+
+    def test_a_withdrawal_may_not_change_an_entry(self):
+        self.approve()
+        self.certify()
+        copy = dict(_bom("b8", "el9", ("q", "h2")), source_pipeline_id=8, certified_by=["alice"])
+        copy["packages"][0]["redistributable"] = "none"           # the same hash, other terms
+        self.set_at("bbbb000", 8, {"lcg/b2.el9.host-1.json": dict(self.bom, certified_by=["alice"]),
+                                   "lcg/b8.el9.host-1.json": copy})
+        self.set_at("cccc000", 9, {"lcg/b8.el9.host-1.json": copy})
+        self.withdraw()
+        row = self.conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = 0").fetchone()
+        self.assertEqual(row["state"], "refused")
+
+    def test_a_certification_in_progress_is_waited_for(self):
+        self.approve()
+        self.certify()
+        self.set_at("bbbb000", 8, {"lcg/b2.el9.host-1.json": dict(self.bom, certified_by=["alice"])})
+        self.set_at("cccc000", 9, {})
+        self.conn.execute("INSERT INTO certify_runs (pipeline_id, build_id, arch, state,"
+                          " created_ms, updated_ms) VALUES (11, 'b11', 'el9', 'signing', 0, 0)")
+        self.assertEqual(certifier.withdrawals(self.conn, self.settings), 0)
