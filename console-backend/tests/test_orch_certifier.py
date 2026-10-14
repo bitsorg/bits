@@ -581,6 +581,21 @@ class OwnedSetTest(_StoreBase):
         self.assertEqual(len(self.conn.execute("SELECT * FROM certified WHERE removed_version"
                                                " IS NULL").fetchall()), 1)
 
+    def test_decertify_takes_out_only_its_groups_boms(self):
+        self.approve()
+        self.certify()
+        row = self.conn.execute("SELECT * FROM certified WHERE removed_version IS NULL").fetchone()
+        with db.transaction(self.conn):
+            certified.change(self.conn, add={"ship/b2.el9.host-1.json": self.conn.execute(
+                "SELECT body FROM boms WHERE sha256 = ?", (row["bom_sha256"],)).fetchone()[0]})
+        self.assertEqual(len(certified.listing(self.conn, build_id="b2")["entries"]), 2)
+        self.assertEqual(certified.listing(self.conn, build_id="b9")["entries"], [])
+        res = certifier.run_decertify({"group": "LCG", "build_id": "b2"}, self.deps)
+        self.assertEqual(res.get("still_certified_by"), ["ship"])
+        live = [r["path"] for r in self.conn.execute(
+            "SELECT path FROM certified WHERE removed_version IS NULL")]
+        self.assertEqual(live, ["ship/b2.el9.host-1.json"])
+
     def test_the_mirror_commits_each_version_to_bits_manifests(self):
         from console_backend.orch import mirror
 

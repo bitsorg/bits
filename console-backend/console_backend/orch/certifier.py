@@ -902,8 +902,9 @@ actions.register(actions.Kind(
     requesters=frozenset({"worker"})))
 
 def run_decertify(params, deps):
-    """The decertify action: a new version of the set without the build's BOMs
-    (of one architecture, or all), which must be in the requested group."""
+    """The decertify action: a new version of the set without the requested
+    group's BOMs of the build (of one architecture, or all). Another group that
+    certified the build too keeps vouching for it until it decertifies it."""
     conn, settings = deps.conn, deps.settings
     if not settings.orch_owns_set:
         raise Refused("the certified set is bits-manifests' until the switch: remove the BOMs"
@@ -913,14 +914,12 @@ def run_decertify(params, deps):
     if params.get("arch"):
         q += " AND arch = ?"
         args.append(params["arch"])
-    rows = conn.execute(q, args).fetchall()
+    found = conn.execute(q, args).fetchall()
+    rows = [r for r in found if r["grp"].lower() == params["group"].lower()]
     if not rows:
-        raise Refused("build %s%s is not in the certified set"
-                      % (params["build_id"], " (%s)" % params["arch"] if params.get("arch") else ""))
-    other = sorted({r["grp"] for r in rows} - {params["group"].lower()})
-    if other:
-        raise Refused("build %s is certified in %s too, not only %s: decertify it there as well"
-                      % (params["build_id"], ", ".join(other), params["group"]))
+        raise Refused("build %s%s is not in %s's certified set"
+                      % (params["build_id"], " (%s)" % params["arch"] if params.get("arch") else "",
+                         params["group"]))
     with db.transaction(conn):
         version, _added, removed = certified.change(
             conn, remove={r["path"] for r in rows},
@@ -929,7 +928,9 @@ def run_decertify(params, deps):
                       {"build_id": params["build_id"], "arch": params.get("arch") or "",
                        "group": params["group"], "reason": params.get("reason", ""),
                        "version": version, "removed": removed})
-    return {"version": version, "removed": removed}
+    others = sorted({r["grp"] for r in found} - {r["grp"] for r in rows})
+    return dict({"version": version, "removed": removed},
+                **({"still_certified_by": others} if others else {}))
 
 
 actions.register(actions.Kind(

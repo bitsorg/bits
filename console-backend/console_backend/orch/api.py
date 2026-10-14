@@ -25,7 +25,7 @@
                                        certification (the M4, M5 and M8a gates)
     GET  /ops/certify?pipeline=&limit=  the worker's certifications (M8a)
     GET  /ops/outside                  the outside audit copy: its head, any alarm
-    GET  /ops/certified?group=&arch=&removed=&limit=   the certified set (the groups
+    GET  /ops/certified?group=&arch=&build=&removed=&limit=   the certified set (the groups
                                        the caller administers), its version and summary
     GET  /ops/certified/bom/{sha256}   one certified BOM, its exact bytes
     POST /approvals/standing/request   {schedule, sha256, groups[], runs, days}: a passkey
@@ -290,13 +290,13 @@ async def list_certify(request: Request, pipeline: str = "", limit: int = 100):
 
 @router.get("/ops/certified")
 async def list_certified(request: Request, group: str = "", arch: str = "", removed: int = 0,
-                         limit: int = 1000):
+                         limit: int = 1000, build: str = ""):
     """The certified set: an overall admin sees every group, a community admin
     their own."""
     data = await _caller(request)
     groups = await _scope(data)
     return await run_in_threadpool(_read, certified.listing, groups, group.strip(), arch.strip(),
-                                   bool(removed), limit)
+                                   bool(removed), limit, build_id=build.strip())
 
 
 @router.get("/ops/certified/bom/{sha256}")

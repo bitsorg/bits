@@ -353,10 +353,14 @@ def match_store(conn, store, limit=MATCH_PER_PASS):
     return n
 
 
-def listing(conn, groups=None, group="", arch="", include_removed=False, limit=1000):
+def listing(conn, groups=None, group="", arch="", include_removed=False, limit=1000,
+            build_id=""):
     """The set (live entries, unless *include_removed*), and a summary. *groups*:
     the groups the caller may see (lowercase; None = all). One read snapshot."""
     where, args = ["1 = 1"], []
+    if build_id:
+        where.append("c.build_id = ?")
+        args.append(build_id)
     if not include_removed:
         where.append("c.removed_version IS NULL")
     if group:
