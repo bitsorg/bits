@@ -28,6 +28,12 @@
 #                          instead of MANIFESTS/ — that is the copy certify reads,
 #                          so rm there (then commit + MR) is what fixes certify;
 #                          rm without it only tidies the store's MANIFESTS/ copies.
+#                          In a store bits-orchestrator certifies (MANIFESTS/
+#                          orchestrator.json), rm --manifests-dir requests a
+#                          decertify action for each stale BOM instead (--console,
+#                          a GitLab token), and rm never deletes the orchestrator's
+#                          signed manifests (nor its marker, unless named exactly
+#                          with --raw and --force).
 #                          --deep hashes objects that carry no recorded sha256.
 #
 # NOTE (hash-only store): new builds write ONLY the content-addressed
@@ -74,7 +80,7 @@ if sys.flags.ignore_environment:   # bits' own runtime: PYTHONPATH is not read
 from bits_helpers.publish import _normalize_s3_store
 from bits_helpers.sync import remote_from_url
 from bits_helpers.utilities import resolve_store_path, resolve_links_path
-from bits_helpers import stale_boms
+from bits_helpers import orchestrated, stale_boms
 try:
     from bits_helpers import trust
 except Exception:
@@ -538,7 +544,7 @@ def stale_bom_report(store, s3, bucket, f):
               "Set $BITS_S3_STORE, or pass --force (rm) to select them anyway.",
               file=sys.stderr)
         return {}
-    return {m["key"]: None for m, _c in full}
+    return {m["key"]: (m if f.manifests_dir else None) for m, _c in full}
 
 
 def delete_local_files(paths, f):
@@ -571,6 +577,59 @@ def delete_local_files(paths, f):
             print(f"ERROR removing {path}: {exc}", file=sys.stderr)
     print(f"Done: removed {len(paths) - failed}/{len(paths)} file(s). Commit the removal "
           "in the manifests repo and open an MR.")
+    return 1 if failed else 0
+
+
+def decertify_local(boms, f, marker):
+    """In a store bits-orchestrator certifies, the BOM files of its bits-manifests
+    mirror (--manifests-dir) are not removed: each stale one is asked out of the
+    certified set by a decertify action, whose group is the file's directory
+    (manifests/<group>/). Same dry-run / confirmation rules as a delete."""
+    from bits_helpers import forge
+    wanted, bad = stale_boms.decertify_targets(boms)
+    for path in bad:
+        print(f"{PROG}: {path} is not a BOM under manifests/<group>/; skipped", file=sys.stderr)
+    if not wanted:
+        print("Nothing matched; nothing to decertify.")
+        return 1 if bad else 0
+    print(f"{orchestrated.describe(marker)} owns the certified set: the stale BOMs are "
+          "decertified, not removed")
+    for (group, bid, arch), paths in sorted(wanted.items()):
+        print(f"    {group:<12} {bid[:40]:<40} {arch:<22} {len(paths)} BOM(s)")
+    if f.dry_run:
+        print(f"[dry-run] would request {len(wanted)} decertify action(s) (nothing requested)")
+        return 0
+    url = orchestrated.console_url(f.console)
+    token = forge.resolve_gitlab_token(None)
+    if not (url and token):
+        sys.exit(f"{PROG}: decertifying needs the bits-console URL (--console, "
+                 "$BITS_CONSOLE_URL) and a GitLab token (~/.bits/gitlab-token)")
+    if not f.yes:
+        try:
+            with open("/dev/tty") as tty:
+                sys.stderr.write(f"Ask {url} to decertify {len(wanted)} build(s)? [y/N] ")
+                sys.stderr.flush()
+                if tty.readline().strip().lower() not in ("y", "yes"):
+                    print("Aborted."); return 1
+        except OSError:
+            print("Refusing to decertify without confirmation (no tty). Use --yes.",
+                  file=sys.stderr)
+            return 1
+    console = orchestrated.Console(url, token, cafile=f.console_cafile,
+                                   insecure=f.console_insecure)
+    failed = len(bad)
+    for (group, bid, arch) in sorted(wanted):
+        try:
+            action = console.settle(console.decertify(
+                group, bid, arch, "stale BOM: the store no longer backs it"), timeout=30)
+        except orchestrated.RequestError as exc:
+            print(f"ERROR decertify {bid} ({arch}) in {group}: {exc}", file=sys.stderr)
+            failed += 1
+            continue
+        ok, words = console.outcome(action)
+        print(f"decertify {bid} ({arch}) in {group}: action {action.get('id')} {words}",
+              file=sys.stdout if ok else sys.stderr)
+        failed += 0 if ok else 1
     return 1 if failed else 0
 
 
@@ -742,6 +801,20 @@ def do_delete(s3, bucket, keys, store, f):
         return 0
     protected = set() if f.force else store.referenced_keys(verified_only=True)
     hits = sorted(keys)
+    marker = getattr(f, "marker", None)
+    if marker:
+        # The orchestrator's own manifests, always; its marker unless named exactly
+        # with --force, as going back to the manifests CI does:
+        # `rm --raw MANIFESTS/orchestrator.json --force`.
+        named = f.force and orchestrated.MARKER in (f.raw or [])
+        owned = [k for k in hits if k.startswith(marker["manifests"])
+                 or (k == orchestrated.MARKER and not named)]
+        if owned:
+            print(f"{PROG}: {len(owned)} object(s) are {orchestrated.describe(marker)}'s "
+                  "signed manifests or its marker — not deleted:", file=sys.stderr)
+            for k in owned[:10]:
+                print("   ", k, file=sys.stderr)
+            hits = [k for k in hits if k not in owned]
     blocked = [k for k in hits if k in protected]
     deletable = [k for k in hits if k not in protected]
     if blocked:
@@ -841,6 +914,14 @@ def main():
         sp = sub.add_parser(verb, help="list" if verb == "ls" else "delete")
         add_selection(sp)
         if verb == "rm":
+            sp.add_argument("--console", metavar="URL", default=None,
+                            help="with --stale-boms --manifests-dir in a store bits-orchestrator "
+                                 "certifies: the bits-console to request the decertify actions "
+                                 "from (default: $BITS_CONSOLE_URL)")
+            sp.add_argument("--console-cafile", dest="console_cafile", metavar="PEM", default=None,
+                            help="CA bundle for the console when it is not in this host's trust store")
+            sp.add_argument("--console-insecure", dest="console_insecure", action="store_true",
+                            help="allow http:// / skip TLS verification to the console (testbed only)")
             sp.add_argument("-n", "--dry-run", action="store_true", help="show what would be deleted")
             sp.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
             sp.add_argument("--force", action="store_true",
@@ -942,7 +1023,8 @@ def main():
                        ("bits_version", None), ("bits_dist", None), ("built_before", None),
                        ("only_signed", False),
                        ("only_boms", False), ("long", False), ("dry_run", False),
-                       ("yes", False), ("force", False), ("deep", False)):
+                       ("yes", False), ("force", False), ("deep", False),
+                       ("console", None), ("console_cafile", None), ("console_insecure", False)):
         if not hasattr(args, name):
             setattr(args, name, dflt)
     args.before_dt = None
@@ -999,6 +1081,15 @@ def main():
     if args.verb == "cat":
         return do_cat(s3, bucket, args.key)
 
+    args.marker = None
+    if args.verb == "rm":
+        # Whether bits-orchestrator owns the certified set: rm then leaves its
+        # manifests alone and decertifies stale BOMs rather than removing them.
+        try:
+            args.marker = orchestrated.read(s3, bucket)
+        except orchestrated.Unknown as exc:
+            sys.exit(f"{PROG}: {exc}")
+
     # Resolve the absolute --before cutoff now that S3 is reachable (it may name a
     # manifest whose upload time we look up). Fail CLOSED: an unresolved cutoff
     # must never fall through to "no age filter" and widen a delete.
@@ -1035,8 +1126,14 @@ def main():
         keys = stale_bom_report(store, s3, bucket, args)
         if args.verb != "rm":
             return 0
+        if args.manifests_dir and args.marker:
+            return decertify_local(keys, args, args.marker)
         if args.manifests_dir:
             return delete_local_files(keys, args)
+        if args.marker and keys:
+            print(f"# the certified set ({orchestrated.describe(args.marker)}) still holds what "
+                  "these copies certified: `--manifests-dir <a bits-manifests checkout>` asks "
+                  "for it to be decertified", file=sys.stderr)
         return do_delete(s3, bucket, keys, store, args)
 
     # Resolve the object set for the chosen view.

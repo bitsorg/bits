@@ -73,6 +73,9 @@ def _write_store_tarball(work_dir, arch, h, name):
 class TestPublishFromManifest(unittest.TestCase):
 
     def setUp(self):
+        marker = patch.object(publish, "_orchestrator_marker", return_value=None)
+        marker.start()                         # the stores here have no orchestrator
+        self.addCleanup(marker.stop)
         self.tmp = tempfile.mkdtemp()
         self.work = os.path.join(self.tmp, "sw")
         man_dir = os.path.join(self.work, "MANIFESTS")

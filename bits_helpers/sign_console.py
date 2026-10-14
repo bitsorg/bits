@@ -118,16 +118,34 @@ def _set_tls(cafile, insecure):
         _CTX = ssl.create_default_context(cafile=cafile)
 
 
-def _json_call(url, obj=None):
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect comes back as its 3xx status, not followed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _json_call(url, obj=None, bearer=None):
     """GET, or POST JSON when *obj* is given; return (http_status, dict body).
     Errors come back as a status for the caller to judge (409 is an expected
     answer); an unreachable backend is status 0. A non-JSON or non-object body
-    is an empty dict."""
+    is an empty dict. *bearer*: a token to authenticate with."""
     data = json.dumps(obj).encode() if obj is not None else None
+    headers = {"Content-Type": "application/json"} if data else {}
+    if bearer:
+        headers["Authorization"] = "Bearer " + bearer
     req = urllib.request.Request(url, data=data, method="POST" if data else "GET",
-                                 headers={"Content-Type": "application/json"} if data else {})
+                                 headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT, context=_CTX) as fh:
+        if bearer:
+            # urllib would carry the Authorization header to wherever a redirect
+            # points (another host, plain http): a token is sent to *url* only.
+            opener = urllib.request.build_opener(_NoRedirect,
+                                                 urllib.request.HTTPSHandler(context=_CTX))
+            fh = opener.open(req, timeout=_TIMEOUT)
+        else:
+            fh = urllib.request.urlopen(req, timeout=_TIMEOUT, context=_CTX)
+        with fh:
             code, raw = fh.status, fh.read()
     except urllib.error.HTTPError as e:
         code, raw = e.code, e.read()

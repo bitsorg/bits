@@ -252,6 +252,19 @@ Three commands, one per step:
 The manifests CI then checks the MR author and the approval, and signs (`bits sign`).
 If the approval is refused or times out, no MR is opened.
 
+Once bits-orchestrator owns the store's certified set, it puts
+`MANIFESTS/orchestrator.json` in the store and bits changes accordingly:
+`bits certify` stops after step 2 (the orchestrator certifies the build from its
+pre-approval, so no token, manifests repo or MR is needed); `bits sign` refuses
+the store; `bits store rm --stale-boms --manifests-dir` and `bits compliance
+--enforce` request a `decertify` action from bits-console (`--console`, your
+GitLab token) instead of removing BOM files or re-signing with `--key`; and
+`bits store rm` never deletes the orchestrator's signed manifests, nor its marker
+unless named exactly with `--raw` and `--force`. `--enforce` decertifies each affected build as a whole (its other
+packages lose that build's certification too). Going back to the manifests CI
+removes the marker, once the worker no longer owns the set (it would write it
+again): `bits store rm --raw MANIFESTS/orchestrator.json --force`.
+
 `--group`, `--manifests-remote`, `--ref` and `--console` default from the active
 defaults' `system:` block, so a configured community just runs `bits certify`:
 

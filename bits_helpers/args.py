@@ -1276,14 +1276,28 @@ def add_compliance_arguments(subparsers, ctx):
                                  help=("ADMIN: remove non-compliant packages from the store — delete their "
                                        "TARS objects, rev-index markers and SOURCES archives, rewrite the "
                                        "per-build BOMs without them, and (with --key) re-certify the affected "
-                                       "architectures. Requires S3 write credentials. Combine with --dry-run "
+                                       "architectures; in a store whose certified set bits-orchestrator owns, "
+                                       "ask it to decertify the affected builds instead (--console, a GitLab "
+                                       "token). Requires S3 write credentials. Combine with --dry-run "
                                        "to preview every action first."))
   compliance_parser.add_argument("--dry-run", dest="dryRun", action="store_true", default=False,
                                  help="With --enforce: print every deletion/rewrite without touching anything.")
   compliance_parser.add_argument("--key", dest="enforceKey", metavar="PEM", default=None,
                                  help=("With --enforce: Ed25519 release key to re-sign the affected "
                                        "architectures' common manifests after the purge. Without it the next "
-                                       "CI certification heals them (removed objects are dropped as missing)."))
+                                       "CI certification heals them (removed objects are dropped as missing). "
+                                       "Refused for a store whose manifests bits-orchestrator signs."))
+  compliance_parser.add_argument("--console", dest="console", metavar="URL", default=None,
+                                 help=("With --enforce, in a store bits-orchestrator certifies: the bits-console "
+                                       "to request the decertify actions from (default: $BITS_CONSOLE_URL)."))
+  compliance_parser.add_argument("--console-cafile", dest="consoleCafile", metavar="PEM", default=None,
+                                 help="CA bundle for the console when it is not in this host's trust store.")
+  compliance_parser.add_argument("--console-insecure", dest="consoleInsecure", action="store_true",
+                                 default=False,
+                                 help="Allow http:// / skip TLS verification to the console (trusted testbed only).")
+  compliance_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
+                                 help=("GitLab token the decertify requests are made with (default: "
+                                       "$BITS_CERTIFIER_TOKEN / $GITLAB_TOKEN / ~/.bits/gitlab-token)."))
   return compliance_parser
 
 

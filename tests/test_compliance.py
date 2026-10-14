@@ -109,6 +109,14 @@ class ScanRecipesTestCase(unittest.TestCase):
         self.assertEqual(st["certified"], ["Secret 1-1 el9"])
 
 
+class _NoSuchKey(Exception):
+    """What boto3 raises for an absent object, as far as the code looks."""
+
+    def __init__(self, key):
+        super().__init__(key)
+        self.response = {"Error": {"Code": "NoSuchKey"}}
+
+
 class EnforceTestCase(unittest.TestCase):
     """--enforce: purge offending objects, rewrite BOMs, delete emptied ones."""
 
@@ -153,7 +161,9 @@ class EnforceTestCase(unittest.TestCase):
 
             def get_object(self, Bucket, Key):
                 import io
-                body = outer.put.get(Key, objects[Key])
+                if Key not in outer.put and Key not in objects:
+                    raise _NoSuchKey(Key)
+                body = outer.put.get(Key, objects.get(Key))
                 return {"Body": io.BytesIO(body.encode())}
 
             def delete_object(self, Bucket, Key):

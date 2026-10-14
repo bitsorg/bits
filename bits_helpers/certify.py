@@ -865,6 +865,22 @@ def _make_approval_check(args, parser):
     return _check
 
 
+def _refuse_orchestrated(store_url, work_dir, arch, parser):
+    """`bits sign` signs what is then put in the store: refuse a store whose
+    manifests bits-orchestrator signs (see orchestrated.py). A store that cannot
+    say is only warned about; nothing here writes to it."""
+    from bits_helpers import orchestrated
+    try:
+        marker = orchestrated.for_store(store_url, work_dir, arch)
+    except orchestrated.Unknown as exc:
+        warning("sign: %s", exc)
+        return
+    if marker:
+        parser.error("sign: %s signs the manifests of %s (since %s): its certified set "
+                     "changes only through it (bits certify, the decertify action)"
+                     % (marker["issuer"], store_url, marker["since"]))
+
+
 def doSign(args, parser):
     """CLI entrypoint for ``bits sign`` (forge-agnostic; the manifests CI wraps this)."""
     approval_check = None
@@ -875,6 +891,7 @@ def doSign(args, parser):
         sources = [os.path.join(args.workDir, "MANIFESTS")]
     probe = None
     if not getattr(args, "noStoreCheck", False):
+        _refuse_orchestrated(args.certifyStore, args.workDir, args.architecture, parser)
         probe = make_s3_probe(args.certifyStore, args.workDir, args.architecture)
     valid_days = getattr(args, "validDays", None)
     if valid_days is not None and valid_days < 0:

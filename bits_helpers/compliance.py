@@ -355,8 +355,42 @@ def _recipe_source_prefixes(recipes_dir, rec, restricted):
     return prefixes, unresolved
 
 
+def _decertify(console, builds, dry_run):
+    """Ask bits-orchestrator to take *builds* ({(build_id, arch): packages}) out
+    of the certified set, in each group (of those the caller administers) that
+    has them. Returns the number of requests that did not succeed."""
+    from bits_helpers import orchestrated
+    act = "[dry-run] would ask" if dry_run else "asking"
+    if dry_run:
+        for (bid, arch), pkgs in sorted(builds.items()):
+            info("  %s the orchestrator to decertify %s (%s): %s", act, bid, arch,
+                 ", ".join(sorted(pkgs)))
+        return 0
+    failed = 0
+    for (bid, arch), pkgs in sorted(builds.items()):
+        try:
+            groups = sorted({e["group"] for e in console.certified(bid, arch)})
+            if not groups:
+                info("  %s (%s) is not in the certified set of the groups you administer",
+                     bid, arch)
+                continue
+            warning("  %s (%s) is decertified as a whole: its other packages are no longer "
+                    "certified by it either", bid, arch)
+            for group in groups:
+                action = console.settle(console.decertify(
+                    group, bid, arch, "compliance: %s not redistributable" % ", ".join(sorted(pkgs))))
+                ok, words = console.outcome(action)
+                (info if ok else error)("  decertify %s (%s) in %s: action %s %s",
+                                        bid, arch, group, action.get("id"), words)
+                failed += 0 if ok else 1
+        except orchestrated.RequestError as exc:
+            error("  decertify %s (%s): %s", bid, arch, exc)
+            failed += 1
+    return failed
+
+
 def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
-                  work_dir="sw"):
+                  work_dir="sw", console=None):
     """Remove non-compliant packages from the store and its manifests.
 
     The admin action behind ``bits compliance --enforce``:
@@ -373,9 +407,15 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
          CI certification self-heals (missing objects are dropped), but the
          signed manifests are stale until then.
 
+    In a store whose certified set bits-orchestrator owns (orchestrated.py), 4 is
+    a decertify request for each affected build and architecture instead, made
+    through *console* (an ``orchestrated.Console``; not needed for a dry run),
+    and *key_pem* is refused: the orchestrator alone signs those manifests.
+
     With *dry_run* every action is printed and nothing is touched. Returns the
     number of issues remaining (0 = store clean after enforcement).
     """
+    from bits_helpers import orchestrated
     restricted = {p.lower() for p in rec["restricted"]}
     restricted_src = {p.lower() for p in rec["restricted_sources"]}
     s3, bucket, _endpoint = _s3_client(store_url)
@@ -383,6 +423,27 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                             and os.environ.get("AWS_SECRET_ACCESS_KEY")):
         error("--enforce needs S3 write credentials (a dry run does not)")
         return 1
+    # Before touching anything: who signs this store's manifests.
+    try:
+        marker = orchestrated.read(s3, bucket)
+    except orchestrated.Unknown as exc:
+        error("--enforce: %s (it says whether bits-orchestrator signs the manifests)", exc)
+        return 1
+    if marker and key_pem:
+        error("--enforce: %s signs this store's manifests; drop --key, and the affected "
+              "builds are decertified instead", orchestrated.describe(marker))
+        return 1
+    if marker and console is None and not dry_run:
+        error("--enforce: %s certifies this store: decertifying the affected builds needs "
+              "the bits-console URL (--console, $BITS_CONSOLE_URL) and a GitLab token",
+              orchestrated.describe(marker))
+        return 1
+    if marker and not dry_run:
+        try:
+            console.check()
+        except orchestrated.RequestError as exc:
+            error("--enforce: %s", exc)
+            return 1
     act = "[dry-run] would" if dry_run else "will"
 
     def _delete_prefix(prefix, why):
@@ -406,6 +467,7 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                                                     Prefix="MANIFESTS/")
             for o in page.get("Contents", []) or []]
     affected_archs, remaining_boms, removed, repo_prune = set(), [], 0, []
+    affected_builds = {}                           # (build_id, arch) -> packages
     for key in keys:
         leaf = key.split("/")[-1]
         if (not leaf.endswith(".json") or "/rev-index/" in key
@@ -425,6 +487,9 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
         for e in offending:
             arch = e.get("effective_architecture") or ""
             affected_archs.add(arch)
+            bid = str(doc.get("build_id") or key.split("/")[1])
+            affected_builds.setdefault((bid, arch or "shared"),     # as the set files it
+                                       set()).add(str(e.get("package")))
             removed += _delete_prefix(
                 resolve_store_path(arch, e.get("hash", "")) + "/",
                 "%s — redistributable: false" % e.get("package"))
@@ -457,13 +522,19 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
     info("Enforcement: %d object(s) %s removed, %d build manifest(s) affected, "
          "architectures: %s", removed, "would be" if dry_run else "",
          len(repo_prune), ", ".join(sorted(affected_archs)) or "none")
-    if repo_prune:
+    if repo_prune and not marker:
         warning("Certification re-derives from the bits-manifests git repo — "
                 "prune the matching BOM file(s) there too: %s",
                 ", ".join(sorted(repo_prune)))
 
-    # 4 — re-certify the affected platforms from the rewritten BOMs.
-    if affected_archs and key_pem and not dry_run:
+    # 4 — take the affected builds out of the orchestrator's set, or re-certify
+    # the affected platforms from the rewritten BOMs.
+    if marker:
+        if affected_builds and _decertify(console, affected_builds, dry_run):
+            error("Restricted objects were removed, but not every affected build was "
+                  "decertified; re-run this command (deletions are idempotent)")
+            return 1
+    elif affected_archs and key_pem and not dry_run:
         import tempfile
         from bits_helpers import certify as _certify
         out = os.path.join(tempfile.mkdtemp(prefix="bits-enforce-"),
@@ -500,6 +571,19 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                 "them as missing). Re-run with --key to re-sign now.",
                 ", ".join(sorted(affected_archs)))
     return 0
+
+
+def _console(args):
+    """The bits-console the decertify requests of --enforce go to, or None
+    without a URL or a GitLab token (needed only where the orchestrator owns
+    the set; enforce_store says so then)."""
+    from bits_helpers import forge, orchestrated
+    url = orchestrated.console_url(getattr(args, "console", None))
+    token = forge.resolve_gitlab_token(getattr(args, "gitlabToken", None))
+    if not (url and token):
+        return None
+    return orchestrated.Console(url, token, cafile=getattr(args, "consoleCafile", None),
+                                insecure=getattr(args, "consoleInsecure", False))
 
 
 def doCompliance(args, parser):
@@ -554,7 +638,8 @@ def doCompliance(args, parser):
         return enforce_store(args.complianceStore, rec, recipes_dir,
                              key_pem=getattr(args, "enforceKey", None),
                              dry_run=getattr(args, "dryRun", False),
-                             work_dir=os.path.abspath(args.workDir)) or (
+                             work_dir=os.path.abspath(args.workDir),
+                             console=_console(args)) or (
                                  1 if issues else 0)
 
     if not getattr(args, "noStoreCheck", False):
