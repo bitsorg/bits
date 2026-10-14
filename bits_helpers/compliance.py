@@ -355,37 +355,36 @@ def _recipe_source_prefixes(recipes_dir, rec, restricted):
     return prefixes, unresolved
 
 
-def _decertify(console, builds, dry_run):
-    """Ask bits-orchestrator to take *builds* ({(build_id, arch): packages}) out
-    of the certified set, in each group (of those the caller administers) that
-    has them. Returns the number of requests that did not succeed."""
+def _decertify_packages(console, packages, dry_run):
+    """Ask bits-orchestrator to take *packages* (names) out of the certified BOMs
+    of every group the caller administers: each BOM is replaced by itself without
+    them (removal only), and the manifests are re-signed. Returns the number of
+    requests that did not succeed."""
     from bits_helpers import orchestrated
-    act = "[dry-run] would ask" if dry_run else "asking"
     if dry_run:
-        for (bid, arch), pkgs in sorted(builds.items()):
-            info("  %s the orchestrator to decertify %s (%s): %s", act, bid, arch,
-                 ", ".join(sorted(pkgs)))
+        for name in sorted(packages):
+            info("  [dry-run] would ask the orchestrator to decertify %s in the groups you "
+                 "administer", name)
         return 0
+    try:
+        groups = console.groups()
+    except orchestrated.RequestError as exc:
+        error("  the certified set: %s", exc)
+        return 1
     failed = 0
-    for (bid, arch), pkgs in sorted(builds.items()):
-        try:
-            groups = sorted({e["group"] for e in console.certified(bid, arch)})
-            if not groups:
-                info("  %s (%s) is not in the certified set of the groups you administer",
-                     bid, arch)
+    for name in sorted(packages):
+        for group in groups:
+            try:
+                action = console.settle(console.decertify_package(
+                    group, name, "compliance: not redistributable"))
+            except orchestrated.RequestError as exc:
+                error("  decertify %s in %s: %s", name, group, exc)
+                failed += 1
                 continue
-            warning("  %s (%s) is decertified as a whole: its other packages are no longer "
-                    "certified by it either", bid, arch)
-            for group in groups:
-                action = console.settle(console.decertify(
-                    group, bid, arch, "compliance: %s not redistributable" % ", ".join(sorted(pkgs))))
-                ok, words = console.outcome(action)
-                (info if ok else error)("  decertify %s (%s) in %s: action %s %s",
-                                        bid, arch, group, action.get("id"), words)
-                failed += 0 if ok else 1
-        except orchestrated.RequestError as exc:
-            error("  decertify %s (%s): %s", bid, arch, exc)
-            failed += 1
+            ok, words = console.outcome(action)
+            (info if ok else error)("  decertify %s in %s: action %s %s",
+                                    name, group, action.get("id"), words)
+            failed += 0 if ok else 1
     return failed
 
 
@@ -408,9 +407,11 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
          signed manifests are stale until then.
 
     In a store whose certified set bits-orchestrator owns (orchestrated.py), 4 is
-    a decertify request for each affected build and architecture instead, made
-    through *console* (an ``orchestrated.Console``; not needed for a dry run),
-    and *key_pem* is refused: the orchestrator alone signs those manifests.
+    a decertify-package request instead, for each restricted package found in a
+    BOM or a signed manifest, in each group the caller administers: the set's
+    BOMs lose those entries only. It is made through *console* (an
+    ``orchestrated.Console``; not needed for a dry run), and *key_pem* is
+    refused: the orchestrator alone signs those manifests.
 
     With *dry_run* every action is printed and nothing is touched. Returns the
     number of issues remaining (0 = store clean after enforcement).
@@ -430,11 +431,11 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
         error("--enforce: %s (it says whether bits-orchestrator signs the manifests)", exc)
         return 1
     if marker and key_pem:
-        error("--enforce: %s signs this store's manifests; drop --key, and the affected "
-              "builds are decertified instead", orchestrated.describe(marker))
+        error("--enforce: %s signs this store's manifests; drop --key, and the restricted "
+              "packages are decertified instead", orchestrated.describe(marker))
         return 1
     if marker and console is None and not dry_run:
-        error("--enforce: %s certifies this store: decertifying the affected builds needs "
+        error("--enforce: %s certifies this store: decertifying the restricted packages needs "
               "the bits-console URL (--console, $BITS_CONSOLE_URL) and a GitLab token",
               orchestrated.describe(marker))
         return 1
@@ -467,9 +468,19 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                                                     Prefix="MANIFESTS/")
             for o in page.get("Contents", []) or []]
     affected_archs, remaining_boms, removed, repo_prune = set(), [], 0, []
-    affected_builds = {}                           # (build_id, arch) -> packages
+    found = set()                                  # restricted packages present
     for key in keys:
         leaf = key.split("/")[-1]
+        if marker and leaf.startswith("common-manifest") and leaf.endswith(".json"):
+            # What the set still certifies, even where the BOM copies are gone.
+            try:
+                signed = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+                found |= {str(e.get("package")) for e in signed.get("packages") or []
+                          if isinstance(e, dict)
+                          and str(e.get("package", "")).lower() in restricted}
+            except Exception as exc:      # pylint: disable=broad-except
+                warning("enforce: unreadable signed manifest %s (%s)", key, exc)
+            continue
         if (not leaf.endswith(".json") or "/rev-index/" in key
                 or leaf.startswith("common-manifest")):
             continue
@@ -487,9 +498,7 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
         for e in offending:
             arch = e.get("effective_architecture") or ""
             affected_archs.add(arch)
-            bid = str(doc.get("build_id") or key.split("/")[1])
-            affected_builds.setdefault((bid, arch or "shared"),     # as the set files it
-                                       set()).add(str(e.get("package")))
+            found.add(str(e.get("package")))
             removed += _delete_prefix(
                 resolve_store_path(arch, e.get("hash", "")) + "/",
                 "%s — redistributable: false" % e.get("package"))
@@ -527,11 +536,13 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                 "prune the matching BOM file(s) there too: %s",
                 ", ".join(sorted(repo_prune)))
 
-    # 4 — take the affected builds out of the orchestrator's set, or re-certify
-    # the affected platforms from the rewritten BOMs.
+    # 4 — take the packages out of the orchestrator's set, or re-certify the
+    # affected platforms from the rewritten BOMs.
     if marker:
-        if affected_builds and _decertify(console, affected_builds, dry_run):
-            error("Restricted objects were removed, but not every affected build was "
+        # One spelling per package: the set matches names case-insensitively.
+        names = {n.lower(): n for n in sorted(found, reverse=True)}
+        if names and _decertify_packages(console, set(names.values()), dry_run):
+            error("Restricted objects were removed, but not every package was "
                   "decertified; re-run this command (deletions are idempotent)")
             return 1
     elif affected_archs and key_pem and not dry_run:

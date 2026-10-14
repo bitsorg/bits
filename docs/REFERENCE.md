@@ -257,11 +257,12 @@ Once bits-orchestrator owns the store's certified set, it puts
 `bits certify` stops after step 2 (the orchestrator certifies the build from its
 pre-approval, so no token, manifests repo or MR is needed); `bits sign` refuses
 the store; `bits store rm --stale-boms --manifests-dir` and `bits compliance
---enforce` request a `decertify` action from bits-console (`--console`, your
+--enforce` request decertify actions from bits-console (`--console`, your
 GitLab token) instead of removing BOM files or re-signing with `--key`; and
 `bits store rm` never deletes the orchestrator's signed manifests, nor its marker
-unless named exactly with `--raw` and `--force`. `--enforce` decertifies each affected build as a whole (its other
-packages lose that build's certification too). Going back to the manifests CI
+unless named exactly with `--raw` and `--force`. `--enforce` asks for each restricted package to be taken out of the
+BOMs of every group you administer (`decertify-package`: each BOM is replaced by
+itself without it, so the builds' other packages stay certified). Going back to the manifests CI
 removes the marker, once the worker no longer owns the set (it would write it
 again): `bits store rm --raw MANIFESTS/orchestrator.json --force`.
 

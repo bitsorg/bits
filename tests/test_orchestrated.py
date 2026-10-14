@@ -105,15 +105,22 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual(a["state"], "done")
         self.assertEqual(self.calls[-1][0], "https://console.example/ops/actions/7")
 
-    def test_certified_entries_of_a_build(self):
-        self.answers = [(200, {"entries": [{"build_id": "b1", "group": "lcg"},
-                                           {"build_id": "b10", "group": "lcg"}]})]
-        self.assertEqual(len(self.console.certified("b1", "x86_64-el9")), 1)
-        self.assertTrue(self.calls[0][0].endswith(
-            "/ops/certified?build=b1&limit=5000&arch=x86_64-el9"))
+    def test_decertify_package_is_requested_as_the_token_holder(self):
+        self.answers = [(201, {"id": 8, "state": "approved"})]
+        self.console.decertify_package("lcg", "Secret", "compliance")
+        url, body, bearer = self.calls[0]
+        self.assertEqual((url, bearer), ("https://console.example/ops/actions", "tok"))
+        self.assertEqual(body, {"kind": "decertify-package", "params": {
+            "group": "lcg", "package": "Secret", "reason": "compliance"}})
+
+    def test_the_groups_of_the_set(self):
+        self.answers = [(200, {"groups": {"ship": {}, "lcg": {}}, "entries": []})]
+        self.assertEqual(self.console.groups(), ["lcg", "ship"])
 
     def test_the_outcome_of_a_decertify(self):
         out = orchestrated.Console.outcome
+        self.assertIn("2 BOM(s) without it", out({"state": "done", "result": {
+            "boms_replaced": 2, "boms_removed": 1}})[1])
         self.assertEqual(out({"state": "done", "result": None}), (True, "done"))
         self.assertTrue(out({"state": "approved"})[0])
         ok, words = out({"state": "done", "result": json.dumps({"still_certified_by": ["ship"]})})
@@ -255,30 +262,41 @@ class EnforceTest(unittest.TestCase):
 
     class Console:
         def __init__(self, groups=("lcg",), state="done"):
-            self.groups, self.state, self.asked = groups, state, []
+            self._groups, self.state, self.asked = list(groups), state, []
 
-        def certified(self, bid, arch):
-            return [{"build_id": bid, "arch": arch, "group": g} for g in self.groups]
+        def groups(self):
+            return self._groups
 
         def check(self):
             pass
 
         outcome = staticmethod(orchestrated.Console.outcome)
 
-        def decertify(self, group, bid, arch, reason):
-            self.asked.append((group, bid, arch))
+        def decertify_package(self, group, package, reason):
+            self.asked.append((group, package))
             return {"id": len(self.asked), "state": "approved"}
 
         def settle(self, action, timeout=60):
-            return dict(action, state=self.state)
+            return dict(action, state=self.state,
+                        result={"boms_replaced": 1, "boms_removed": 0})
 
-    def test_the_affected_builds_are_decertified_in_each_of_their_groups(self):
+    def test_the_package_is_decertified_in_each_group(self):
         console = self.Console(groups=("lcg", "ship"))
         self.assertEqual(compliance.enforce_store("b3://bkt", self.rec, self.d,
                                                   console=console), 0)
-        self.assertEqual(console.asked, [("lcg", "b1", "el9"), ("ship", "b1", "el9")])
+        self.assertEqual(console.asked, [("lcg", "Secret"), ("ship", "Secret")])
         kept = json.loads(self.objects["MANIFESTS/b1/h-1.el9.json"])      # purged as before
         self.assertEqual([p["package"] for p in kept["packages"]], ["Good"])
+
+    def test_a_package_only_the_signed_manifests_still_list_is_decertified(self):
+        del self.objects["MANIFESTS/b1/h-1.el9.json"]
+        self.objects["MANIFESTS/common-manifest-el9.json"] = json.dumps({"packages": [
+            {"package": "secret", "hash": "beef01", "group": "lcg"},
+            {"package": "Good", "hash": "aa11", "group": "lcg"}]})
+        console = self.Console()
+        self.assertEqual(compliance.enforce_store("b3://bkt", self.rec, self.d,
+                                                  console=console), 0)
+        self.assertEqual(console.asked, [("lcg", "secret")])
 
     def test_a_decertify_still_waiting_for_the_worker_is_requested(self):
         self.assertEqual(compliance.enforce_store("b3://bkt", self.rec, self.d,

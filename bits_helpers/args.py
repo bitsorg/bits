@@ -1277,8 +1277,8 @@ def add_compliance_arguments(subparsers, ctx):
                                        "TARS objects, rev-index markers and SOURCES archives, rewrite the "
                                        "per-build BOMs without them, and (with --key) re-certify the affected "
                                        "architectures; in a store whose certified set bits-orchestrator owns, "
-                                       "ask it to decertify the affected builds instead (--console, a GitLab "
-                                       "token). Requires S3 write credentials. Combine with --dry-run "
+                                       "ask it to take the packages out of the set's BOMs instead (--console, "
+                                       "a GitLab token). Requires S3 write credentials. Combine with --dry-run "
                                        "to preview every action first."))
   compliance_parser.add_argument("--dry-run", dest="dryRun", action="store_true", default=False,
                                  help="With --enforce: print every deletion/rewrite without touching anything.")

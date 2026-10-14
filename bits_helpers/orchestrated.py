@@ -133,15 +133,21 @@ class Console:
                                                   ": %s" % body["detail"] if body.get("detail") else ""))
         return body
 
-    def certified(self, build_id, arch=None):
-        """The live entries of *build_id* in the certified set the caller may see
-        (the groups they administer): [{path, arch, build_id, group, ...}]."""
-        from urllib.parse import urlencode
-        q = {"build": build_id, "limit": 5000}
+    def groups(self):
+        """The groups of the certified set the caller administers."""
+        return sorted((self._json("/ops/certified?limit=1").get("groups") or {}).keys())
+
+    def decertify_package(self, group, package, reason="", arch=None):
+        """Request the decertify-package action: *group*'s BOMs (of *arch*, or every
+        architecture) are replaced by themselves without *package*'s entries; its
+        manifests are then re-signed without them. Returns the action."""
+        params = {"group": group, "package": package}
         if arch:
-            q["arch"] = arch
-        return [e for e in self._json("/ops/certified?" + urlencode(q)).get("entries") or []
-                if e.get("build_id") == build_id]
+            params["arch"] = arch
+        reason = " ".join(str(reason or "").split())[:500]
+        if reason:
+            params["reason"] = reason
+        return self._json("/ops/actions", {"kind": "decertify-package", "params": params})
 
     def decertify(self, group, build_id, arch=None, reason=""):
         """Request the decertify action: *group*'s BOMs of *build_id* (of *arch*,
@@ -168,8 +174,12 @@ class Console:
                 result = json.loads(result)
             except ValueError:
                 result = None
-        others = (result or {}).get("still_certified_by") if isinstance(result, dict) else None
+        result = result if isinstance(result, dict) else {}
+        others = result.get("still_certified_by")
         words = state if state == "done" else "%s (the worker runs it next)" % state
+        if state == "done" and "boms_replaced" in result:
+            words += " (%d BOM(s) without it, %d taken out)" % (
+                result["boms_replaced"], result.get("boms_removed", 0))
         if others:
             words += "; still certified by %s, until they decertify it too" % ", ".join(others)
         return True, words
