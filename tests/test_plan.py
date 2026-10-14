@@ -70,7 +70,10 @@ class ClassifyTest(unittest.TestCase):
   def test_remote_unsigned(self):
     store = _Store(["zlib-1.3-4.%s.tar.gz" % ARCH])
     self.assertEqual(self._classify(store, trusted={})[0], plan.REMOTE_UNSIGNED)
-    self.assertEqual(self._classify(store, trusted={RH: "sha"})[0], plan.REMOTE)
+    self.assertEqual(self._classify(store, trusted={(ARCH, RH): "sha"})[0], plan.REMOTE)
+    # Certified for another architecture only: not this tarball.
+    self.assertEqual(self._classify(store, trusted={("other-arch", RH): "sha"})[0],
+                     plan.REMOTE_UNSIGNED)
 
   def test_local_preferred_over_remote(self):
     self._tarball(RH, "2")
@@ -105,7 +108,7 @@ class ClassifyTest(unittest.TestCase):
     store = _Store(["zlib-1.3-%s.%s.tar.gz" % (RH, ARCH)])
     self.assertEqual(self._classify(store, trusted={}, **spec),
                      (plan.REMOTE_UNSIGNED, LH, LH))
-    self.assertEqual(self._classify(store, trusted={RH: "sha"}, **spec),
+    self.assertEqual(self._classify(store, trusted={(ARCH, RH): "sha"}, **spec),
                      (plan.REMOTE, RH, RH))
 
   def test_hash_policy_fallback_does_not_change_virtual_package_hash(self):

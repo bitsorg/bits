@@ -379,7 +379,7 @@ def _try_import_trust():
 
 
 def _load_trusted_index(src, work_dir, accept_groups):
-  """Verify one signed manifest (local path or URL) -> (key_id, {hash: sha256}).
+  """Verify one signed manifest (local path or URL) -> (key_id, {(arch, hash): sha256}).
 
   Returns ``(None, {})`` on any failure (missing/unreachable/untrusted, or the
   signing library not installed), so a caller can degrade to a rebuild rather
@@ -389,8 +389,8 @@ def _load_trusted_index(src, work_dir, accept_groups):
   if trust is None:
     return None, {}
   try:
-    return trust.trusted_index(_localize_manifest(src, work_dir),
-                               accept_groups=accept_groups)
+    return trust.trusted_object_index(_localize_manifest(src, work_dir),
+                                      accept_groups=accept_groups)
   except Exception as exc:
     warning("--require-signed-reuse: could not fetch/verify %s (%s); those "
             "entries will not be reused.", src, exc)
@@ -398,14 +398,15 @@ def _load_trusted_index(src, work_dir, accept_groups):
 
 
 def trusted_reuse_index(args, work_dir):
-  """Return the verified {hash: tarball_sha256} index for --require-signed-reuse.
+  """Return the verified {(effective_architecture, hash): tarball_sha256} index
+  for --require-signed-reuse.
 
-  --trust-manifest may name several signed manifests (comma-separated): a build
-  node fetches its own ``common-manifest-<arch>.json`` plus the always-relevant
-  ``common-manifest-shared.json`` and this merges their indexes. Each is
-  signature-verified independently; content hashes are globally unique so the
-  merge is collision-free. Loaded once, memoised on *args*. An empty map means
-  nothing is attested, so every remote reuse fails closed.
+  --trust-manifest may name several signed manifests (comma-separated), one per
+  architecture plus ``common-manifest-shared.json``; this merges their indexes.
+  Each is signature-verified independently. A hash alone is not unique (it does
+  not include the architecture), the stored object (architecture, hash) is.
+  Loaded once, memoised on *args*. An empty map means nothing is attested, so
+  every remote reuse fails closed.
   """
   cached = getattr(args, "_trustedReuseIndex", None)
   if cached is not None:
@@ -2621,7 +2622,7 @@ def build_one_package(p, ctx):
     if (spec["cachedTarball"] and cfg.require_signed_reuse
         and spec["cachedTarball"] not in _preFetchTars):
       _idx = trusted_reuse_index(args, workDir)
-      _sha = _idx.get(spec["hash"])
+      _sha = _idx.get((effective_arch(spec, args.architecture), spec["hash"]))
       if _sha is None:
         warning("Trusted reuse: %s@%s not vouched for by the signed manifest; "
                 "discarding remote tarball and rebuilding.",

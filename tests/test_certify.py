@@ -572,7 +572,25 @@ class TestCertifyEndToEnd(unittest.TestCase):
         args = SimpleNamespace(trustManifest=out, trustGroups="lcg",
                                requireSignedReuse=True)
         idx = build.trusted_reuse_index(args, self.tmp)
-        self.assertEqual(set(idx), {"hbase", "hlcg"})   # ship filtered out
+        self.assertEqual(set(idx), {("slc7_x86-64", "hbase"),
+                                    ("slc7_x86-64", "hlcg")})   # ship filtered out
+
+    def test_the_same_hash_under_two_architectures_keeps_both(self):
+        # A hash does not include the architecture: the same one certified for
+        # two architectures is two tarballs, each with its own sha256, and
+        # reuse checks each against its own (not whichever manifest came last).
+        from bits_helpers import build
+        store = {("el9-opt", "h"): "sha256:11", ("el9", "h"): "sha256:22"}
+        srcs = []
+        for arch in ("el9-opt", "el9"):           # the bare one read last
+            out = os.path.join(self.tmp, "out", "common-%s.json" % arch)
+            certify.certify([_manifest("b-" + arch, [_pkg("A", "h", store[(arch, "h")],
+                                                          arch=arch)])],
+                            self.key_pem, out, probe=lambda a, h, t=None: store.get((a, h)))
+            srcs.append(out)
+        args = SimpleNamespace(trustManifest=",".join(srcs), trustGroups=None,
+                               requireSignedReuse=True)
+        self.assertEqual(build.trusted_reuse_index(args, self.tmp), store)
 
     def test_build_trusted_reuse_index_missing_manifest_degrades(self):
         # Default-on safety: an unreachable/absent signed manifest (e.g. an
@@ -592,14 +610,14 @@ class TestCertifyEndToEnd(unittest.TestCase):
         from bits_helpers import build
         url = "https://s3.cern.ch/swift/v1/b/MANIFESTS/common-manifest-shared.json"
         arch_url = url.replace("-shared", "-x86_64-el9")
-        found = lambda src: (("kid", {"h": "sha"}) if src == arch_url else (None, {}))
+        found = lambda src: (("kid", {("a", "h"): "sha"}) if src == arch_url else (None, {}))
         with mock.patch("bits_helpers.build._load_trusted_index",
                         side_effect=lambda src, *a: found(src)), \
              mock.patch("bits_helpers.build._url_not_found", return_value=True), \
              mock.patch("bits_helpers.build.warning") as warn:
             args = SimpleNamespace(trustManifest=arch_url + "," + url, trustGroups=None,
                                    _guessedTrustManifests={arch_url, url})
-            self.assertEqual(build.trusted_reuse_index(args, self.tmp), {"h": "sha"})
+            self.assertEqual(build.trusted_reuse_index(args, self.tmp), {("a", "h"): "sha"})
             warn.assert_not_called()
             # All guessed manifests absent: one clear warning.
             args = SimpleNamespace(trustManifest=url, trustGroups=None,
@@ -726,7 +744,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
             trustGroups=None, requireSignedReuse=True)
         idx = build.trusted_reuse_index(args, self.tmp)
         # own arch + shared, but NOT the other arch (osx h2).
-        self.assertEqual(idx, {"h1": "sha256:aa", "h3": "sha256:cc"})
+        self.assertEqual(idx, {("slc7_x86-64", "h1"): "sha256:aa", ("shared", "h3"): "sha256:cc"})
 
     def test_freshness_fields_and_expiry_enforced(self):
         import datetime

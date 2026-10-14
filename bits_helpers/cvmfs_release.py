@@ -142,11 +142,14 @@ def merge_boms(boms, arch=None):
 
 
 def check_signed(packages, index):
-    """Refuse a package the signed manifests do not attest with this sha256."""
+    """Refuse a package the signed manifests do not attest with this sha256
+    (*index*: {(effective_architecture, hash): sha256})."""
     from bits_helpers.certify import _norm_sha
+    def certified(p):
+        return index.get((p.get("effective_architecture"), p.get("hash")))
     bad = [p["package"] for p in packages
-           if _norm_sha(index.get(p.get("hash"), "")) != _norm_sha(p.get("tarball_sha256", ""))
-           or not index.get(p.get("hash"))]
+           if not certified(p)
+           or _norm_sha(certified(p)) != _norm_sha(p.get("tarball_sha256", ""))]
     if bad:
         raise ReleaseError("not in the signed manifests (or another sha256): %s"
                            % ", ".join(bad))

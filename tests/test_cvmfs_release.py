@@ -120,12 +120,16 @@ class FindAndMergeTest(unittest.TestCase):
 
     def test_signed_check(self):
         pkgs = [_pkg("ROOT", "r1"), _pkg("GCC", "g1")]
-        rel.check_signed(pkgs, {"r1": "sha256:x", "g1": "x"})
+        rel.check_signed(pkgs, {(ARCH, "r1"): "sha256:x", (ARCH, "g1"): "x"})
         with self.assertRaises(rel.ReleaseError) as cm:
-            rel.check_signed(pkgs, {"r1": "sha256:x", "g1": "sha256:other"})
+            rel.check_signed(pkgs, {(ARCH, "r1"): "sha256:x", (ARCH, "g1"): "sha256:other"})
         self.assertIn("GCC", str(cm.exception))
         with self.assertRaises(rel.ReleaseError):
-            rel.check_signed(pkgs, {"r1": "sha256:x"})
+            rel.check_signed(pkgs, {(ARCH, "r1"): "sha256:x"})
+        # The same hash certified for another architecture only does not count.
+        with self.assertRaises(rel.ReleaseError) as cm:
+            rel.check_signed(pkgs, {(ARCH, "r1"): "sha256:x", ("other-arch", "g1"): "sha256:x"})
+        self.assertIn("GCC", str(cm.exception))
 
 
 class FetchTest(unittest.TestCase):

@@ -75,7 +75,7 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
              overlay=None):
   """Return (state, hash, revision) for *spec*, mirroring build_one_package.
 
-  *trusted* is None (signed reuse off) or the verified hash map; *overlay* is a
+  *trusted* is None (signed reuse off) or the verified {(arch, hash): sha256} map; *overlay* is a
   predicate for packages the reuse overlay satisfies. Not modelled: revision
   candidates known only from the signed manifest / rev-index markers, and the
   sha256 check of a downloaded tarball (so a REMOTE line can still rebuild)."""
@@ -107,7 +107,7 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
     for h in remote:
       rev = pick_revision(sync_helper.list_store_tarballs(eff, h), spec, eff, forced=forced)
       if rev is not None:
-        if trusted is not None and h not in trusted:
+        if trusted is not None and (eff, h) not in trusted:
           unsigned = (h, rev)
           break
         return REMOTE, h, rev

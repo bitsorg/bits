@@ -358,6 +358,28 @@ def trusted_index(manifest_path: str, sig_path=None, dirs=None, accept_groups=No
   return kid, index
 
 
+def trusted_object_index(manifest_path, sig_path=None, dirs=None, accept_groups=None,
+                         now=None):
+  """Like :func:`trusted_index`, keyed by the stored object's identity:
+  ``(key_id, {(effective_architecture, hash): tarball_sha256})``.
+
+  A package hash does not include the architecture, so the same hash is
+  certified under several architectures (one tarball each, stored under
+  TARS/<arch>/store/<hash>/), each with its own sha256. Reuse checks a tarball
+  against the entry of its own architecture; an entry without one matches none.
+  """
+  kid, entries = _verified_entries(manifest_path, sig_path, dirs,
+                                   accept_groups, now)
+  if not kid:
+    return None, {}
+  index = {}
+  for e in entries:
+    arch, h, sha = e.get("effective_architecture"), e.get("hash"), e.get("tarball_sha256")
+    if arch and h and sha:
+      index[(arch, h)] = sha
+  return kid, index
+
+
 def _verified_entries(manifest_path, sig_path, dirs, accept_groups, now):
   """Verify a signed manifest and return ``(key_id, [accepted package entries])``.
 
