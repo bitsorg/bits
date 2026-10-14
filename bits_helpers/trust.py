@@ -331,6 +331,80 @@ def is_expired(manifest_data, now=None) -> bool:
   return now > exp
 
 
+def _sequence_state_path():
+  return (os.environ.get("BITS_TRUST_SEQUENCE_STATE")
+          or os.path.join(os.path.expanduser("~"), ".bits", "trust-sequence.json"))
+
+
+def check_sequence(data, raw, kid, state_path=None):
+  """Anti-rollback: None if the manifest may be trusted, else why not.
+
+  A numbered manifest (``sequence``) belongs to its issuer's numbering for its
+  architecture (``issuer``, else the signing key). This node remembers the
+  highest number it verified in each (``~/.bits/trust-sequence.json``, or
+  BITS_TRUST_SEQUENCE_STATE, on the build user's persistent home): a lower one
+  is an older manifest put back, the same one with other bytes a second
+  manifest under one number. Once a key has signed numbered manifests for an
+  architecture, an unnumbered one from that key is older than them and refused.
+  Other unnumbered manifests are bounded by ``expires`` alone. A node that
+  remembers nothing (new, or its file lost) accepts the first it verifies.
+  """
+  if not isinstance(data, dict):
+    return None
+  arch = data.get("architecture") or ""
+  numbered = "sequence" in data
+  seq = data.get("sequence")
+  if numbered and (not isinstance(seq, int) or isinstance(seq, bool) or seq < 1):
+    return "its sequence %r is not a positive integer" % (seq,)
+  issuer = data.get("issuer")
+  key = "%s %s" % (issuer if isinstance(issuer, str) and issuer else kid, arch)
+  marker = "numbered-by %s %s" % (kid, arch)
+  digest = hashlib.sha256(raw).hexdigest()
+  path = state_path or _sequence_state_path()
+  if not numbered and not os.path.exists(path):
+    return None
+  try:
+    import fcntl
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path + ".lock", "a") as lock:
+      fcntl.flock(lock, fcntl.LOCK_EX)
+      try:
+        with open(path) as fh:
+          state = json.load(fh)
+        if not isinstance(state, dict):
+          raise ValueError("not an object")
+      except FileNotFoundError:
+        state = {}
+      except ValueError as exc:
+        from bits_helpers.log import warning
+        warning("trust: %s is unreadable (%s); starting it again", path, exc)
+        state = {}
+      if not numbered:
+        return ("this key has signed numbered %s manifests, so an unnumbered one is older"
+                % (arch or "unnamed") if state.get(marker) else None)
+      seen = state.get(key) if isinstance(state.get(key), dict) else None
+      if seen and not isinstance(seen.get("sequence"), int):
+        seen = None                                   # a damaged entry: start it again
+      if seen:
+        if seq < seen["sequence"]:
+          return ("its sequence %d is older than the %d this node has seen: an older"
+                  " manifest put back" % (seq, seen["sequence"]))
+        if seq == seen.get("sequence"):
+          return (None if digest == seen.get("sha256") else
+                  "another manifest with the same sequence %d was seen before" % seq)
+      state[key] = {"sequence": seq, "sha256": digest}
+      state[marker] = True
+      tmp = "%s.%d.tmp" % (path, os.getpid())
+      with open(tmp, "w") as fh:
+        json.dump(state, fh, indent=1, sort_keys=True)
+      os.replace(tmp, path)
+  except OSError as exc:
+    from bits_helpers.log import warning
+    warning("trust: cannot record the manifest sequence in %s (%s); a rollback is not"
+            " detected", path, exc)
+  return None
+
+
 def trusted_index(manifest_path: str, sig_path=None, dirs=None, accept_groups=None,
                   now=None):
   """Verify a signed manifest and return its trusted reuse index.
@@ -406,6 +480,11 @@ def _verified_entries(manifest_path, sig_path, dirs, accept_groups, now):
   except Exception:
     return None, []
   if is_expired(data, now):
+    return None, []
+  rolled_back = check_sequence(data, raw, kid)
+  if rolled_back:
+    from bits_helpers.log import warning
+    warning("trust: %s refused: %s", os.path.basename(manifest_path), rolled_back)
     return None, []
   # Per-key group binding: a signing key vouches only for the groups it is
   # authorised for (policy file opt-in; absent = no restriction).
