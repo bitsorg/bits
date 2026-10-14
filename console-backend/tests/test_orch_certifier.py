@@ -412,7 +412,7 @@ class WithdrawTest(CertifierBase):
         self.assertEqual(trust.verify_bytes(self.s3.docs["CANARY/common-manifest-el9.json"], sig,
                                             self.trusted), self.kid)
         row = self.conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = 0").fetchone()
-        self.assertEqual((row["build_id"], row["state"], row["approver"]), ("set-3", "signed", ""))
+        self.assertEqual((row["build_id"], row["state"], row["approver"]), ("set@3", "signed", ""))
         self.assertEqual(self.withdraw(), 0)                                   # done once
 
     def test_a_withdrawal_that_would_add_an_entry_is_refused(self):
@@ -461,3 +461,71 @@ class WithdrawTest(CertifierBase):
         self.conn.execute("INSERT INTO certify_runs (pipeline_id, build_id, arch, state,"
                           " created_ms, updated_ms) VALUES (11, 'b11', 'el9', 'signing', 0, 0)")
         self.assertEqual(certifier.withdrawals(self.conn, self.settings), 0)
+
+
+class CliBuildTest(CertifierBase):
+    """A build made with the CLI, of no pipeline: certified by its CLI pre-approval."""
+    BID = "key4hep-0123456789ab"
+
+    def setUp(self):
+        super().setUp()
+        self.s3.docs["MANIFESTS/%s/host-1.el9.json" % self.BID] = dict(
+            _bom(self.BID, "el9", ("r", "h3")), source_pipeline_id=None)
+        self.store[("el9", "h3")] = "sh3"
+
+    def cli_approve(self, packages=None, groups=("lcg",), user="alice"):
+        now = db.now_ms()
+        pk = packages if packages is not None else [["el9", "h3", "sh3", "r", "1"]]
+        self.conn.execute(
+            "INSERT INTO approvals (kind, subject, groups, approver, via, packages, created_ms,"
+            " expires_ms) VALUES ('preapproval', ?, ?, ?, 'cli', ?, ?, ?)",
+            (self.BID, json.dumps(sorted(groups)), user, json.dumps(pk), now, now + 3600_000))
+
+    def cli_rows(self):
+        return {r["arch"]: r for r in self.conn.execute(
+            "SELECT * FROM certify_runs WHERE pipeline_id = 0 AND build_id = ?", (self.BID,))}
+
+    def test_a_cli_build_is_certified_by_its_cli_preapproval(self):
+        self.cli_approve()
+        self.assertEqual(self.certify(), 1)
+        rows = self.cli_rows()
+        self.assertEqual({a: r["state"] for a, r in rows.items()}, {"*": "signed", "el9": "signed"})
+        m = json.loads(self.writer.puts[0][1])
+        self.assertEqual(([p["hash"] for p in m["packages"]], m["certified_by"]), (["h3"], ["alice"]))
+        a = self.conn.execute("SELECT * FROM actions WHERE kind = 'certify'").fetchone()
+        self.assertEqual((a["subject"], a["community"]), ("certify:cli:%s" % self.BID, "lcg"))
+
+    def test_store_boms_other_than_what_was_approved_wait_then_are_refused(self):
+        self.cli_approve(packages=[["el9", "h3", "other", "r", "1"]])
+        self.certify()
+        self.assertEqual(self.cli_rows()["*"]["state"], "signing")      # deferred: maybe not up yet
+        self.assertIn("action.deferred", self.kinds())
+        self.assertEqual(self.writer.puts, [])
+        self.conn.execute("UPDATE approvals SET expires_ms = 1")
+        self.conn.execute("UPDATE actions SET not_before_ms = 0")
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
+        self.assertEqual(self.cli_rows()["*"]["state"], "refused")
+
+    def test_the_approved_run_is_found_among_other_files(self):
+        d = self.s3.docs
+        d["MANIFESTS/%s/sbom.cdx.json" % self.BID] = {"bomFormat": "CycloneDX"}
+        d["MANIFESTS/%s/host-0.el9.json" % self.BID] = dict(                 # an earlier run
+            _bom(self.BID, "el9", ("r", "h4")), source_pipeline_id=None)
+        self.store[("el9", "h4")] = "sh4"
+        self.cli_approve()
+        self.certify()
+        self.assertEqual(self.cli_rows()["el9"]["state"], "signed")
+        m = json.loads(self.writer.puts[0][1])
+        self.assertEqual([p["hash"] for p in m["packages"]], ["h3"])
+
+    def test_a_package_put_in_another_group_is_refused(self):
+        doc = self.s3.docs["MANIFESTS/%s/host-1.el9.json" % self.BID]
+        doc["packages"][0]["group"] = "ship"
+        self.cli_approve()
+        self.certify()
+        self.assertIn("not the approved lcg", self.cli_rows()["*"]["reason"])
+
+    def test_one_group_only(self):
+        self.cli_approve(groups=("lcg", "ship"))
+        self.certify()
+        self.assertEqual(self.cli_rows()["*"]["state"], "refused")

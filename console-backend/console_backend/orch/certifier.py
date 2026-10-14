@@ -49,6 +49,15 @@ from . import actions, certified, db, events, outside, replay, shadow
 
 log = logging.getLogger("bits_orchestrator.certifier")
 KIND = "certify"
+# A build of no pipeline (made with the CLI, certified by its CLI pre-approval)
+# and a withdrawal have pipeline 0 in certify_runs; a withdrawal's build is
+# "set@<version>", which no bits build id can be.
+NO_PIPELINE = 0
+WITHDRAWAL_PREFIX = "set@"
+
+
+def _is_withdrawal(row):
+    return row["pipeline_id"] == NO_PIPELINE and str(row["build_id"]).startswith(WITHDRAWAL_PREFIX)
 # Re-signing an architecture's manifest without the BOMs the certified set has
 # removed: it only takes trust away, so it needs no pre-approval.
 WITHDRAW = "withdraw"
@@ -153,6 +162,23 @@ def trigger(conn, settings, console):
         (since, now - WAIT_MS, now, now, now, PER_PASS)).fetchall()
     from .. import forge_ops
     n = 0
+    for a in conn.execute(
+            "SELECT * FROM approvals a WHERE a.kind = 'preapproval' AND a.via = 'cli' AND"
+            " a.revoked_ms IS NULL AND a.expires_ms > ? AND a.created_ms >= ? AND NOT EXISTS"
+            " (SELECT 1 FROM certify_runs c WHERE c.pipeline_id = ? AND c.build_id = a.subject"
+            " AND c.arch = '*' AND (c.approval_id >= a.id OR c.state NOT IN ('refused',"
+            " 'failed'))) ORDER BY a.id LIMIT ?",
+            (now, since, NO_PIPELINE, PER_PASS)).fetchall():
+        try:
+            n += _consider_cli(conn, settings, a)
+        except RuntimeError:
+            raise                          # the daily limit: the step fails, visibly
+        except Exception as e:
+            if shadow.transient(e):
+                raise
+            log.warning("certify: CLI build %s: %s", a["subject"], e)
+            _decide(conn, NO_PIPELINE, a["subject"], "refused", "%s: %s"
+                    % (type(e).__name__, str(e)[:500]), approval_id=a["id"])
     for r in rows:
         try:
             n += _consider(conn, settings, console, r)
@@ -224,19 +250,43 @@ def _consider(conn, settings, console, r):
     return 1
 
 
+def _consider_cli(conn, settings, a):
+    """A build of no pipeline whose CLI pre-approval is in force: certify it,
+    into its one approved group."""
+    bid = a["subject"]
+    groups = json.loads(a["groups"] or "[]")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+-[0-9a-f]{12}", bid or "") or len(groups) != 1:
+        _decide(conn, NO_PIPELINE, bid, "refused", "a CLI pre-approval names one build and one"
+                " group (%s, %s)" % (bid, ", ".join(groups)), approval_id=a["id"])
+        return 0
+    if signed_today(conn) >= settings.orch_certify_daily_signs:
+        raise RuntimeError("the worker reached its limit of %d signatures a day; paused"
+                           % settings.orch_certify_daily_signs)
+
+    def signing(conn, _row):
+        _upsert(conn, NO_PIPELINE, bid, "*", "signing", "", approval_id=a["id"],
+                approver=a["approver"])
+    actions.request_preapproved(
+        conn, KIND, {"build_id": bid}, events.WORKER, groups[0], a,
+        "certify:cli:%s:%d" % (bid, a["id"]), cause="build:%s" % bid, also=signing)
+    return 1
+
+
 # --- the run (the certifier thread) -----------------------------------------------
 
 def _approval(conn, params):
     a = conn.execute("SELECT * FROM approvals WHERE id = ?",
                      (params.get("_approval") or 0,)).fetchone()
     now = db.now_ms()
-    if (a is None or a["kind"] != "preapproval" or a["via"] != "console"
-            or a["subject"] != str(params["pipeline"])
+    via, subject = (("console", str(params["pipeline"])) if params.get("pipeline")
+                    else ("cli", params["build_id"]))
+    what = "pipeline %s" % subject if via == "console" else "build %s" % subject
+    if (a is None or a["kind"] != "preapproval" or a["via"] != via or a["subject"] != subject
             or a["approver"] != params.get("_approver")):
-        raise Refused("the action's approval is not a console pre-approval of pipeline %s by %s"
-                      % (params["pipeline"], params.get("_approver")))
+        raise Refused("the action's approval is not a %s pre-approval of %s by %s"
+                      % (via, what, params.get("_approver")))
     if a["revoked_ms"] is not None or a["expires_ms"] <= now:
-        raise Refused("the pre-approval of pipeline %s is no longer in force" % params["pipeline"])
+        raise Refused("the pre-approval of %s is no longer in force" % what)
     return a
 
 
@@ -270,6 +320,70 @@ def build_boms(conn, store, pid, bid):
     if not out:
         raise Refused("build %s of pipeline %s has no BOM in the store" % (bid, pid))
     return out
+
+
+def _cli_arch(doc):
+    """A CLI BOM's architecture, read as the CLI pre-approval reads it."""
+    from bits_helpers import certify
+    arch = doc.get("effective_architecture")
+    return arch if isinstance(arch, str) and arch else (certify.bom_architecture(doc) or "shared")
+
+
+def cli_boms(store, bid, approval):
+    """{arch: (store key, BOM)} of a build of no pipeline: the BOMs of one
+    publish run under MANIFESTS/<build_id>/ (<run leaf>.<arch>.json; the
+    compliance files beside them are not BOMs) that are exactly what its CLI
+    pre-approval bound ((architecture, hash, tarball sha256) of every package).
+    Defers while there is no such run (not uploaded yet); Refused otherwise."""
+    from bits_helpers import certify
+    s3, bucket = store
+    group = (json.loads(approval["groups"] or "[]") or [""])[0]
+    keys, token = [], None
+    while True:
+        kw = {"Bucket": bucket, "Prefix": "MANIFESTS/%s/" % bid}
+        if token:
+            kw["ContinuationToken"] = token
+        page = s3.list_objects_v2(**kw)
+        keys += [o["Key"] for o in page.get("Contents", []) if o["Key"].endswith(".json")]
+        token = page.get("NextContinuationToken")
+        if not page.get("IsTruncated") or not token:
+            break
+    runs = {}                                        # run leaf -> {arch: (key, BOM)}
+    for key in sorted(keys):
+        try:
+            doc = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+        except ValueError:
+            continue
+        if (not isinstance(doc, dict) or str(doc.get("build_id") or "") != bid
+                or not isinstance(doc.get("packages"), list)):
+            continue                                 # an SBOM, a notice: not a BOM
+        try:
+            arch = _name(_cli_arch(doc), "architecture")
+        except (certify.CertifyError, Refused):
+            continue
+        leaf = key.rsplit("/", 1)[-1]
+        if not leaf.endswith("." + arch + ".json"):
+            continue
+        run = runs.setdefault(leaf[:-len("." + arch + ".json")], {})
+        if arch in run:
+            raise Refused("two store BOMs of build %s for %s in one run" % (bid, arch))
+        run[arch] = (key, doc)
+    bound = {(a, h, sha) for a, h, sha, *_rest in json.loads(approval["packages"] or "[]")}
+    for leaf in sorted(runs):
+        got = {(arch, str(e.get("hash")), certify._norm_sha(e.get("tarball_sha256")))
+               for arch, (_k, doc) in runs[leaf].items() for e in doc["packages"]
+               if isinstance(e, dict)}
+        if got != bound:
+            continue
+        for arch, (key, doc) in runs[leaf].items():
+            other = sorted({e.get("group") for e in doc["packages"] if isinstance(e, dict)
+                            and e.get("group") and e.get("group") != group})
+            if other:
+                raise Refused("store BOM %s puts packages in %s, not the approved %s"
+                              % (key, ", ".join(other), group))
+        return runs[leaf]
+    raise actions.Defer("no publish run of build %s in the store is what was pre-approved"
+                        " (yet)" % bid, 5 * 60 * 1000)
 
 
 def _path(group, bid, arch, key):
@@ -311,16 +425,22 @@ def next_sequence(conn, settings, store, arch):
     return max(mine, published) + 1
 
 
-def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_id=None):
+def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_id=None,
+            approval=None):
     """The rows to sign: [(arch, body bytes, fields)], computed from the set at
-    its latest version and the build's store BOMs. Raises Refused."""
+    its latest version and the build's store BOMs (a build of no pipeline: those
+    its CLI *approval* bound, into its group). Raises Refused."""
     from bits_helpers import certify, trust
     from .. import authz
-    pipeline = conn.execute("SELECT * FROM pipelines WHERE id = ?", (pid,)).fetchone()
-    if pipeline is None:
-        raise Refused("pipeline %s is not recorded" % pid)
-    group = _name(replay.certify_group(console, pipeline), "group")
-    boms = build_boms(conn, store, pid, bid)
+    if pid == NO_PIPELINE:
+        group = _name((json.loads(approval["groups"] or "[]") or [""])[0], "group")
+        boms = cli_boms(store, bid, approval)
+    else:
+        pipeline = conn.execute("SELECT * FROM pipelines WHERE id = ?", (pid,)).fetchone()
+        if pipeline is None:
+            raise Refused("pipeline %s is not recorded" % pid)
+        group = _name(replay.certify_group(console, pipeline), "group")
+        boms = build_boms(conn, store, pid, bid)
     version, _vpid, commit = certified.current(conn)
     if not version:
         raise Refused("the certified set has not been imported yet")
@@ -368,8 +488,9 @@ def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_
         groups = replay._groups({arch: m})
         denied = [g for g in groups if not authz.is_admin_for(approver, g, resolved)]
         if denied:
-            raise Refused("%s (who pre-approved pipeline %s) is not an admin for %s"
-                          % (approver, pid, ", ".join(denied)))
+            raise Refused("%s (who pre-approved %s) is not an admin for %s"
+                          % (approver, ("pipeline %s" % pid) if pid else "build %s" % bid,
+                             ", ".join(denied)))
         bad = [g for g in groups if not trust.key_authorized(key_id, g, policy)]
         if bad:
             raise Refused("signing key %s is not allowed for %s" % (key_id, ", ".join(bad)))
@@ -399,7 +520,7 @@ def _sign_and_write(conn, settings, store, row, sign=None, writer=None):
         if policy is None:
             raise Refused("no key policy (key-policy.json): the worker fails closed")
         groups = replay._groups({arch: json.loads(body)})
-        if row["pipeline_id"] == WITHDRAWN and str(row["build_id"]).startswith("set-"):
+        if _is_withdrawal(row):
             why = removal_only(settings, store, arch, body)
             if why:
                 raise Refused("not signed without a pre-approval: %s" % why)
@@ -465,24 +586,25 @@ def run(params, deps):
     conn, settings = deps.conn, deps.settings
     sign, writer = getattr(deps, "sign", None), getattr(deps, "writer", None)
     probe, key_id = getattr(deps, "probe", None), getattr(deps, "key_id", None)
-    pid, bid = int(params["pipeline"]), params["build_id"]
+    pid, bid = int(params.get("pipeline") or NO_PIPELINE), params["build_id"]
     try:
         try:
             a = _approval(conn, params)
             rows = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND build_id = ?"
-                                " AND arch != '*'", (pid, bid)).fetchall()
+                                " AND arch != '*' AND approval_id = ?", (pid, bid, a["id"])).fetchall()
             if not rows:
                 if signed_today(conn) >= settings.orch_certify_daily_signs:
                     raise actions.Defer("the worker reached its limit of %d signatures a day"
                                         % settings.orch_certify_daily_signs, 3600 * 1000)
                 todo = compute(conn, settings, deps.reader(), deps.store(), pid, bid,
-                               a["approver"], probe=probe, key_id=key_id)
+                               a["approver"], probe=probe, key_id=key_id, approval=a)
                 with db.transaction(conn):
                     for arch, body, fields in todo:
                         _upsert(conn, pid, bid, arch, "signing", "", manifest=body,
                                 approval_id=a["id"], approver=a["approver"], **fields)
                 rows = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND"
-                                    " build_id = ? AND arch != '*'", (pid, bid)).fetchall()
+                                    " build_id = ? AND arch != '*' AND approval_id = ?",
+                                    (pid, bid, a["id"])).fetchall()
             for row in rows:
                 if row["state"] == "signing":
                     _sign_and_write(conn, settings, deps.store(), row, sign, writer)
@@ -515,9 +637,7 @@ def run(params, deps):
 #
 # A BOM removed from the certified set stays trusted while the architecture's
 # signed manifest still lists it. The worker re-signs that manifest from the set
-# without it. Its certify_runs row has pipeline WITHDRAWN and build "set-<version>".
-
-WITHDRAWN = 0
+# without it. Its certify_runs row has no pipeline and the build "set@<version>".
 
 
 # What may differ between two copies of one entry: which build recorded it.
@@ -580,10 +700,10 @@ def withdrawals(conn, settings, now=None):
         # certified a moment ago that is not in the set yet: wait for those (a
         # build not in the set a day later was not taken in, and is dropped).
         if conn.execute(
-                "SELECT 1 FROM certify_runs c WHERE c.arch = ? AND c.pipeline_id != ? AND"
-                " (c.state = 'signing' OR (c.written_ms > ? AND NOT EXISTS (SELECT 1 FROM"
+                "SELECT 1 FROM certify_runs c WHERE c.arch = ? AND NOT (c.pipeline_id = ? AND"
+                " c.build_id LIKE 'set@%') AND (c.state = 'signing' OR (c.written_ms > ? AND NOT EXISTS (SELECT 1 FROM"
                 " certified s WHERE s.build_id = c.build_id AND s.arch = c.arch))) LIMIT 1",
-                (arch, WITHDRAWN, now - WAIT_MS)).fetchone():
+                (arch, NO_PIPELINE, now - WAIT_MS)).fetchone():
             continue
         _row, created = actions.request(
             conn, WITHDRAW, {"arch": arch, "set_version": str(version)}, events.WORKER, "",
@@ -634,19 +754,19 @@ def run_withdraw(params, deps):
     conn, settings = deps.conn, deps.settings
     sign, writer = getattr(deps, "sign", None), getattr(deps, "writer", None)
     arch, version = _name(params["arch"], "architecture"), int(params["set_version"])
-    bid = "set-%d" % version
+    bid = WITHDRAWAL_PREFIX + str(version)
     try:
         try:
             row = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND"
-                               " build_id = ? AND arch = ?", (WITHDRAWN, bid, arch)).fetchone()
+                               " build_id = ? AND arch = ?", (NO_PIPELINE, bid, arch)).fetchone()
             if row is None:
                 body, fields = compute_withdrawal(conn, settings, deps.store(), arch, version,
                                                   probe=getattr(deps, "probe", None),
                                                   key_id=getattr(deps, "key_id", None))
                 with db.transaction(conn):
-                    _upsert(conn, WITHDRAWN, bid, arch, "signing", "", manifest=body, **fields)
+                    _upsert(conn, NO_PIPELINE, bid, arch, "signing", "", manifest=body, **fields)
                 row = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND"
-                                   " build_id = ? AND arch = ?", (WITHDRAWN, bid, arch)).fetchone()
+                                   " build_id = ? AND arch = ?", (NO_PIPELINE, bid, arch)).fetchone()
             if row["state"] == "signing" and conn.execute(
                     "SELECT 1 FROM certify_runs WHERE arch = ? AND written_ms IS NOT NULL AND"
                     " created_ms > ?", (arch, row["created_ms"])).fetchone():
@@ -670,7 +790,7 @@ def run_withdraw(params, deps):
         with db.transaction(conn):
             conn.execute("UPDATE certify_runs SET state = 'refused', reason = ?, updated_ms = ?"
                          " WHERE pipeline_id = ? AND build_id = ? AND arch = ? AND state ="
-                         " 'signing'", (str(e)[:1000], db.now_ms(), WITHDRAWN, bid, arch))
+                         " 'signing'", (str(e)[:1000], db.now_ms(), NO_PIPELINE, bid, arch))
             events.append(conn, "withdraw.refused", "arch:%s" % arch, events.WORKER,
                           {"arch": arch, "set_version": version, "reason": str(e)[:500]})
         raise
@@ -681,6 +801,13 @@ def _scope(params, deps):
     conn = getattr(deps, "conn", None)
     if conn is None:
         return ""
+    if not params.get("pipeline"):
+        # A build of no pipeline acts for the group its CLI pre-approval names.
+        r = conn.execute("SELECT groups FROM approvals WHERE kind = 'preapproval' AND"
+                         " via = 'cli' AND subject = ? ORDER BY id DESC LIMIT 1",
+                         (params["build_id"],)).fetchone()
+        groups = json.loads(r["groups"]) if r else []
+        return groups[0] if len(groups) == 1 else ""
     r = conn.execute("SELECT community FROM pipelines WHERE id = ?",
                      (int(params["pipeline"]),)).fetchone()
     return (r["community"] if r else "") or ""
@@ -693,9 +820,9 @@ actions.register(actions.Kind(
     params={"type": "object",
             "properties": {"pipeline": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"},
                            "build_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,200}$"}},
-            "required": ["pipeline", "build_id"], "additionalProperties": False},
+            "required": ["build_id"], "additionalProperties": False},
     approval="preapproval",
-    subject=lambda p: "certify:%s:%s" % (p["pipeline"], p["build_id"]),
+    subject=lambda p: "certify:%s:%s" % (p.get("pipeline") or "cli", p["build_id"]),
     scope=_scope,
     run=run,
     safe_to_rerun=True,
@@ -726,8 +853,9 @@ def failed_actions(conn):
     for r in conn.execute(
             "SELECT c.id, a.error FROM certify_runs c JOIN actions a ON a.kind = ? AND"
             " a.subject = 'withdraw:' || c.arch || ':' || substr(c.build_id, 5)"
-            " WHERE c.pipeline_id = ? AND c.state = 'signing' AND a.state = 'failed'",
-            (WITHDRAW, WITHDRAWN)).fetchall():
+            " WHERE c.pipeline_id = ? AND c.build_id LIKE 'set@%' AND c.state = 'signing'"
+            " AND a.state = 'failed'",
+            (WITHDRAW, NO_PIPELINE)).fetchall():
         with db.transaction(conn):
             conn.execute("UPDATE certify_runs SET state = 'failed', reason = ?, updated_ms = ?"
                          " WHERE id = ?", ((r["error"] or "the action failed")[:1000],
@@ -735,7 +863,8 @@ def failed_actions(conn):
         n += 1
     for r in conn.execute(
             "SELECT c.pipeline_id, c.build_id, a.error FROM certify_runs c JOIN actions a"
-            " ON a.kind = ? AND a.subject = 'certify:' || c.pipeline_id || ':' || c.build_id"
+            " ON a.kind = ? AND a.subject = 'certify:' || CASE c.pipeline_id WHEN 0 THEN 'cli'"
+            " ELSE c.pipeline_id END || ':' || c.build_id"
             " WHERE c.arch = '*' AND c.state = 'signing' AND a.state = 'failed'",
             (KIND,)).fetchall():
         _decide(conn, r["pipeline_id"], r["build_id"], "failed", r["error"] or "the action failed")
