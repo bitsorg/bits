@@ -592,6 +592,20 @@ class TestCertifyEndToEnd(unittest.TestCase):
                                requireSignedReuse=True)
         self.assertEqual(build.trusted_reuse_index(args, self.tmp), store)
 
+    def test_one_object_certified_with_two_sha256_is_not_trusted(self):
+        from unittest import mock
+        from bits_helpers import build
+        parts = {"m1": ("k", {("a", "h"): "sha256:11", ("a", "g"): "sha256:33"}),
+                 "m2": ("k", {("a", "h"): "sha256:22"}),
+                 "m3": ("k", {("a", "h"): "sha256:11"})}
+        with mock.patch("bits_helpers.build._load_trusted_index",
+                        side_effect=lambda src, *a: parts[src]), \
+             mock.patch("bits_helpers.build.warning") as warn:
+            args = SimpleNamespace(trustManifest="m1,m2,m3", trustGroups=None)
+            self.assertEqual(build.trusted_reuse_index(args, self.tmp),
+                             {("a", "g"): "sha256:33"})
+            self.assertIn("two sha256", warn.call_args[0][0])
+
     def test_build_trusted_reuse_index_missing_manifest_degrades(self):
         # Default-on safety: an unreachable/absent signed manifest (e.g. an
         # uncertified store) must degrade to an empty index (rebuild), NOT crash.

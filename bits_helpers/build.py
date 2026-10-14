@@ -422,6 +422,7 @@ def trusted_reuse_index(args, work_dir):
             "no remote tarball will be reused.")
   guessed = getattr(args, "_guessedTrustManifests", None) or set()
   absent = []
+  conflicts = set()
   for src in sources:
     kid, part = _load_trusted_index(src, work_dir, accept_groups)
     if not kid and src in guessed and _url_not_found(src):
@@ -433,7 +434,18 @@ def trusted_reuse_index(args, work_dir):
       warning("--require-signed-reuse: could not verify signed manifest %s; "
               "its tarballs will not be reused.", src)
       continue
-    index.update(part)
+    for key, sha in part.items():
+      if key in conflicts:
+        continue
+      if key in index and index[key] != sha:
+        # Two verified manifests disagree about one stored object: the store is
+        # inconsistent somewhere, so neither is trusted for it.
+        warning("--require-signed-reuse: %s@%s is certified with two sha256 (%s, %s); "
+                "it will not be reused.", key[1], key[0], index[key], sha)
+        conflicts.add(key)
+        del index[key]
+        continue
+      index[key] = sha
     debug("Trusted reuse index from %s (signed by %s): %d entries%s",
           src, kid, len(part),
           "" if accept_groups is None else " (groups: %s + common)" % ",".join(accept_groups))
@@ -721,12 +733,12 @@ def derive_trust_manifest_srcs(store, prefix, arch, endpoint=None):
 def _list_store_manifest_srcs(store, prefix, endpoint, work_dir):
   """Every signed common-manifest present in the store (swift JSON listing).
 
-  Content hashes are architecture-independent, so trusting all signed manifests
-  lets a build reuse a hash certified under a different arch than its own (e.g. a
-  bare x86_64-el9 build reusing a gcc15-qualified toolchain). This widens the
-  trust set from arch-scoped to every manifest under the prefix in the bucket;
-  each is still signature + group verified per manifest downstream. [] on any
-  failure -> the caller falls back to derive_trust_manifest_srcs.
+  A build's packages are stored under more than its own architecture name (an
+  own-hash toolchain under the arch without the build type, ``share`` packages
+  under ``share``), so every manifest under the prefix is loaded; each entry
+  still vouches only for its own (architecture, hash), and each manifest is
+  signature + group verified downstream. [] on any failure -> the caller falls
+  back to derive_trust_manifest_srcs.
   """
   prefix = str(prefix or "MANIFESTS/common-manifest").lstrip("/")
   root = _store_container_root(store, endpoint)

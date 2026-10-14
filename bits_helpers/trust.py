@@ -446,11 +446,17 @@ def trusted_object_index(manifest_path, sig_path=None, dirs=None, accept_groups=
                                    accept_groups, now)
   if not kid:
     return None, {}
-  index = {}
+  index, unplaced = {}, 0
   for e in entries:
     arch, h, sha = e.get("effective_architecture"), e.get("hash"), e.get("tarball_sha256")
     if arch and h and sha:
       index[(arch, h)] = sha
+    elif h and sha:
+      unplaced += 1
+  if unplaced:
+    from bits_helpers.log import warning
+    warning("trust: %d entr(y/ies) of %s name no architecture and vouch for "
+            "nothing.", unplaced, os.path.basename(manifest_path))
   return kid, index
 
 
