@@ -345,6 +345,12 @@ MIGRATIONS = [
         )""",
         "CREATE INDEX ci_outputs_build ON ci_outputs(pipeline_id, build_id, arch)",
     ],
+    # 8 (M8b prerequisite): each architecture's signed manifests are numbered,
+    # so a consumer that has seen one never goes back to an older one.
+    [
+        "ALTER TABLE certify_runs ADD COLUMN sequence INTEGER",
+        "CREATE INDEX certify_runs_sequence ON certify_runs(arch, sequence)",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

@@ -257,6 +257,19 @@ class CertifierTest(CertifierBase):
         actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
         self.assertEqual((len(signed), self.rows()["el9"]["state"]), (1, "signed"))
 
+    def test_each_architectures_manifests_are_numbered(self):
+        self.approve()
+        self.certify()
+        m = json.loads(self.writer.puts[0][1])
+        self.assertEqual((m["sequence"], m["issuer"]), (1, "bits-orchestrator/bucket"))
+        self.assertEqual(self.rows()["el9"]["sequence"], 1)
+        store = self.deps.store()
+        self.assertEqual(certifier.next_sequence(self.conn, self.settings, store, "el9"), 2)
+        self.assertEqual(certifier.next_sequence(self.conn, self.settings, store, "el10"), 1)
+        # A restored database continues after the one in the store.
+        self.s3.docs["CANARY/common-manifest-el9.json"] = {"sequence": 41}
+        self.assertEqual(certifier.next_sequence(self.conn, self.settings, store, "el9"), 42)
+
     def test_the_limit_counts_signatures_not_updates(self):
         self.approve()
         self.certify()

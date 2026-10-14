@@ -278,6 +278,36 @@ def _path(group, bid, arch, key):
     return "%s/%s.%s.%s.json" % (group, bid, arch, stem)
 
 
+def issuer(store):
+    """Whose numbering a manifest belongs to: this orchestrator's, for the store
+    it writes (a testbed and a production store number on their own)."""
+    return "bits-orchestrator/%s" % store[1]
+
+
+def next_sequence(conn, settings, store, arch):
+    """The number of the architecture's next manifest: one past the higher of
+    the last this database gave (including runs never written) and the one in
+    the store, so a restored database never gives a number again."""
+    mine = conn.execute("SELECT MAX(sequence) FROM certify_runs WHERE arch = ?",
+                        (arch,)).fetchone()[0] or 0
+    s3, bucket = store
+    try:
+        doc = json.loads(s3.get_object(Bucket=bucket, Key="%s-%s.json" % (
+            write_prefix(settings), arch))["Body"].read())
+    except ValueError:
+        # Retried (and seen as a failing step), not a refusal of the build.
+        raise RuntimeError("the store's %s manifest is not JSON: no number until it is"
+                           " replaced" % arch)
+    except Exception as e:
+        if not shadow._missing(e):
+            raise                     # cannot tell: no number rather than a reused one
+        doc = {}
+    published = doc.get("sequence") if isinstance(doc, dict) else None
+    if not isinstance(published, int) or isinstance(published, bool):
+        published = 0
+    return max(mine, published) + 1
+
+
 def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_id=None):
     """The rows to sign: [(arch, body bytes, fields)], computed from the set at
     its latest version and the build's store BOMs. Raises Refused."""
@@ -340,13 +370,15 @@ def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_
         bad = [g for g in groups if not trust.key_authorized(key_id, g, policy)]
         if bad:
             raise Refused("signing key %s is not allowed for %s" % (key_id, ", ".join(bad)))
-        m = dict(m, certified_by=[approver], certified_at=certify._now_iso())
+        seq = next_sequence(conn, settings, store, arch)
+        m = dict(m, certified_by=[approver], certified_at=certify._now_iso(), sequence=seq,
+                 issuer=issuer(store))
         body = json.dumps(m, indent=1, sort_keys=True).encode()
         out.append((arch, body, {
             "set_version": version, "set_commit": commit or "", "in_set": int(in_set.get(arch, False)),
             "boms": json.dumps([[boms[arch][0], hashlib.sha256(json.dumps(
                 boms[arch][1], sort_keys=True).encode()).hexdigest()]] if arch in boms else []),
-            "sha256": hashlib.sha256(body).hexdigest(), "key_id": key_id}))
+            "sha256": hashlib.sha256(body).hexdigest(), "key_id": key_id, "sequence": seq}))
     return out
 
 
