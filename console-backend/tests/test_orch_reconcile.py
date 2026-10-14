@@ -8,12 +8,17 @@ import os
 import shutil
 import tempfile
 import unittest
+import time
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from console_backend import ci_auth, config, forge_ops, main
 from console_backend.orch import db, events, kinds, reconcile, worker
+
+# The pipelines' day: yesterday, so they stay inside the lookback window and
+# short of being stale whenever the tests run.
+DAY = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
 
 
 def _job(i, name, status, stage="build", **kw):
@@ -28,12 +33,12 @@ class FakeReader:
         self.pipelines, self.variables, self.jobs = {}, {}, {}
         self.calls = []
 
-    def add(self, pid, status="running", updated="2026-10-11T10:00:00Z", source="api",
+    def add(self, pid, status="running", updated=DAY + "T10:00:00Z", source="api",
             community="testbed", package="ROOT", jobs=None):
         self.pipelines[pid] = {"id": pid, "status": status, "source": source,
                                "name": "[%s] %s 6.32 (el9)" % (community, package),
                                "ref": "main", "sha": "abc", "web_url": "https://gl/p/%d" % pid,
-                               "created_at": "2026-10-11T09:00:00Z", "updated_at": updated}
+                               "created_at": DAY + "T09:00:00Z", "updated_at": updated}
         self.variables[pid] = ([{"key": "COMMUNITY", "value": community.upper()},
                                 {"key": "PACKAGE", "value": package},
                                 {"key": "VERSION", "value": "6.32"},
@@ -93,7 +98,7 @@ class FakeS3:
 
 
 def _bom(arch, n=2, build_id="b-1"):
-    return {"build_id": build_id, "effective_architecture": arch, "published_at": "2026-10-11T11:00:00Z",
+    return {"build_id": build_id, "effective_architecture": arch, "published_at": DAY + "T11:00:00Z",
             "requested_packages": ["ROOT"],
             "packages": [{"package": "p%d" % i, "hash": "h%d" % i} for i in range(n)]}
 
@@ -157,7 +162,7 @@ class ReconcileTest(_DB):
                          (1, "testbed", "ROOT", "running"))
         self.assertEqual(self._kinds(), ["pipeline.seen"])
         # It finishes; the build index is in S3.
-        self.gl.add(1, status="success", updated="2026-10-11T12:00:00Z",
+        self.gl.add(1, status="success", updated=DAY + "T12:00:00Z",
                     jobs=[_job(10, "build", "success", runner={"description": "bits-build-01"})])
         s3 = FakeS3({"BUILDS/by-pipeline/1/b-1.json": {"build_id": "b-1",
                                                        "keys": ["MANIFESTS/b-1/x.el9.json",
@@ -171,7 +176,7 @@ class ReconcileTest(_DB):
         got = reconcile.list_builds(self.conn)[0]["builds"]
         self.assertEqual(got, [{"build_id": "b-1", "state": "published", "arches": ["el9", "share"],
                                 "packages": 4, "top_level": ["ROOT"],
-                                "published_at": "2026-10-11T11:00:00Z"}])
+                                "published_at": DAY + "T11:00:00Z"}])
         self.assertEqual(self._kinds(), ["pipeline.seen", "pipeline.success", "build.published"])
         # Nothing new: nothing is written again.
         self._pass((s3, "bkt"))
@@ -188,20 +193,20 @@ class ReconcileTest(_DB):
         self.assertEqual([b["pipeline"] for b in reconcile.list_builds(self.conn)], [1])
 
     def test_the_cursor_moves_and_overlaps(self):
-        self.gl.add(1, updated="2026-10-11T10:00:00Z")
+        self.gl.add(1, updated=DAY + "T10:00:00Z")
         reconcile.discover(self.conn, self.gl)
         self.assertEqual(reconcile._kv_get(self.conn, "gitlab.updated_after"),
-                         "2026-10-11T10:00:00Z")
+                         DAY + "T10:00:00Z")
         self.gl.calls.clear()
         reconcile.discover(self.conn, self.gl)
-        self.assertEqual(self.gl.calls[0][1], "2026-10-11T09:55:00Z")   # 5 minutes back
+        self.assertEqual(self.gl.calls[0][1], DAY + "T09:55:00Z")   # 5 minutes back
 
     def _count(self):
         return self.conn.execute("SELECT count(*) FROM pipelines").fetchone()[0]
 
     def test_many_pages_continue_on_the_next_pass(self):
         for i in range(1, 251):
-            self.gl.add(i, updated="2026-10-11T10:%02d:%02dZ" % (i // 60, i % 60))
+            self.gl.add(i, updated=DAY + "T10:%02d:%02dZ" % (i // 60, i % 60))
         reconcile.discover(self.conn, self.gl, max_rounds=1)
         self.assertEqual(self._count(), 100)
         reconcile.discover(self.conn, self.gl, max_rounds=1)
@@ -210,7 +215,7 @@ class ReconcileTest(_DB):
 
     def test_more_than_a_page_in_one_second(self):
         for i in range(1, 251):
-            self.gl.add(i, updated="2026-10-11T10:00:00Z")
+            self.gl.add(i, updated=DAY + "T10:00:00Z")
         for _ in range(4):
             reconcile.discover(self.conn, self.gl, max_rounds=1)
         self.assertEqual(self._count(), 250)
@@ -219,14 +224,14 @@ class ReconcileTest(_DB):
 
     def test_a_pipeline_updating_while_pages_are_read_is_not_skipped(self):
         for i in range(1, 151):
-            self.gl.add(i, status="success", updated="2026-10-11T10:%02d:%02dZ" % (i // 60, i % 60),
+            self.gl.add(i, status="success", updated=DAY + "T10:%02d:%02dZ" % (i // 60, i % 60),
                         jobs=[_job(i * 10, "build", "success")])
         real = self.gl.list_pipelines
 
         def shifting(updated_after, page=1, per_page=100):
             got = real(updated_after, page, per_page)
-            if 1 in self.gl.pipelines and self.gl.pipelines[1]["updated_at"] < "2026-10-11T11":
-                self.gl.pipelines[1]["updated_at"] = "2026-10-11T11:00:00Z"   # moves to the end
+            if 1 in self.gl.pipelines and self.gl.pipelines[1]["updated_at"] < DAY + "T11":
+                self.gl.pipelines[1]["updated_at"] = DAY + "T11:00:00Z"   # moves to the end
             return got
         self.gl.list_pipelines = shifting
         reconcile.discover(self.conn, self.gl)
@@ -259,7 +264,7 @@ class ReconcileTest(_DB):
         e = events.since(self.conn)[-1]
         self.assertEqual((e["kind"], e["payload"]["failed_jobs"]), ("pipeline.failed", ["build"]))
         # Later updates to the wedged job do not flap the outcome.
-        self.gl.add(1, status="running", updated="2026-10-11T13:00:00Z",
+        self.gl.add(1, status="running", updated=DAY + "T13:00:00Z",
                     jobs=self.gl.jobs[1])
         self._pass()
         self.assertEqual(self._kinds(), ["pipeline.seen", "pipeline.failed"])
@@ -267,11 +272,11 @@ class ReconcileTest(_DB):
     def test_a_retry_runs_again_and_publishes(self):
         self.gl.add(1, status="failed", jobs=[_job(10, "build", "failed")])
         self._pass()
-        self.gl.add(1, status="running", updated="2026-10-11T13:00:00Z",
+        self.gl.add(1, status="running", updated=DAY + "T13:00:00Z",
                     jobs=[_job(10, "build", "failed"), _job(12, "build", "running")])
         self._pass()
         self.assertEqual(self._row(1)["outcome"], "running")
-        self.gl.add(1, status="success", updated="2026-10-11T14:00:00Z",
+        self.gl.add(1, status="success", updated=DAY + "T14:00:00Z",
                     jobs=[_job(10, "build", "failed"), _job(12, "build", "success")])
         s3 = FakeS3({"BUILDS/by-pipeline/1/b.json": {"build_id": "b", "keys": ["M/b.json"]},
                      "M/b.json": _bom("el9", build_id="b")})
@@ -342,7 +347,7 @@ class ReconcileTest(_DB):
 
     def test_one_pipeline_gitlab_cannot_answer_for_does_not_hold_up_the_others(self):
         self.gl.add(1)
-        self.gl.add(2, updated="2026-10-11T10:01:00Z")
+        self.gl.add(2, updated=DAY + "T10:01:00Z")
         self._pass()
         del self.gl.pipelines[1]                          # deleted on GitLab
         self.gl.jobs[2] = [_job(20, "build", "success")]
@@ -351,7 +356,7 @@ class ReconcileTest(_DB):
         self.assertEqual((self._row(1)["outcome"], self._row(2)["outcome"]), ("canceled", "success"))
         gone = [e for e in events.since(self.conn) if e["subject"] == "pipeline:1"][-1]
         self.assertTrue(gone["payload"]["gone"])
-        self.gl.add(3, updated="2026-10-11T10:02:00Z")
+        self.gl.add(3, updated=DAY + "T10:02:00Z")
         self.gl.jobs[3] = forge_ops.ForgeError(502, "bad gateway")
         with self.assertLogs("bits_orchestrator", "WARNING"):
             self._pass()
@@ -374,7 +379,7 @@ class ReconcileTest(_DB):
 
     def test_a_failing_index_records_nothing_and_does_not_block_others(self):
         self.gl.add(1, status="success", jobs=[_job(10, "build", "success")])
-        self.gl.add(2, status="success", updated="2026-10-11T10:01:00Z",
+        self.gl.add(2, status="success", updated=DAY + "T10:01:00Z",
                     jobs=[_job(20, "build", "success")])
         s3 = FakeS3({"BUILDS/by-pipeline/1/a.json": {"build_id": "a", "keys": ["M/a.json"]},
                      "BUILDS/by-pipeline/1/b.json": {"build_id": "b", "keys": ["M/b.json"]},
@@ -400,7 +405,7 @@ class ReconcileTest(_DB):
     def test_unreadable_variables_fall_back_to_the_name(self):
         self.gl.add(1, community="lcg", package="ROOT")
         self.gl.pipelines[1]["name"] = "[LCG] ROOT 6.32.08 (x86_64-el9) [nightly]"
-        self.gl.add(2, community="lcg", package="", updated="2026-10-11T10:01:00Z")
+        self.gl.add(2, community="lcg", package="", updated=DAY + "T10:01:00Z")
         self.gl.pipelines[2]["name"] = "Pages"                     # no build
         def refuse(pid):
             raise forge_ops.ForgeError(403, "GET /pipelines/%s/variables -> 403" % pid)
@@ -433,19 +438,19 @@ class ReconcileTest(_DB):
     def test_the_listing_without_finished_at_does_not_count_as_a_change(self):
         self.gl.add(1, status="success", jobs=[_job(10, "build", "success")])
         self._pass()
-        self.gl.pipelines[1]["finished_at"] = "2026-10-11T10:30:00Z"
+        self.gl.pipelines[1]["finished_at"] = DAY + "T10:30:00Z"
         reconcile.record_pipeline(self.conn, self.gl, self.gl.get_pipeline(1))
-        self.assertEqual(self._row(1)["finished_at"], "2026-10-11T10:30:00Z")
+        self.assertEqual(self._row(1)["finished_at"], DAY + "T10:30:00Z")
         listed = {k: v for k, v in self.gl.pipelines[1].items() if k != "finished_at"}
         before = self._row(1)["checked_ms"]
         reconcile.record_pipeline(self.conn, self.gl, listed)
         self.assertEqual((self._row(1)["checked_ms"], self._row(1)["finished_at"]),
-                         (before, "2026-10-11T10:30:00Z"))
+                         (before, DAY + "T10:30:00Z"))
 
     def test_list_filters(self):
         self.gl.add(1, community="testbed")
-        self.gl.add(2, community="other", updated="2026-10-11T10:01:00Z")
-        self.gl.add(3, community="testbed", status="failed", updated="2026-10-11T10:02:00Z",
+        self.gl.add(2, community="other", updated=DAY + "T10:01:00Z")
+        self.gl.add(3, community="testbed", status="failed", updated=DAY + "T10:02:00Z",
                     jobs=[_job(30, "build", "failed")])
         self._pass()
         ids = lambda **kw: [b["pipeline"] for b in reconcile.list_builds(self.conn, **kw)]
@@ -510,7 +515,7 @@ class ApiTest(_DB):
         self.addCleanup(p.stop)
         self.client = TestClient(main.app)
         self.gl.add(1, community="testbed")
-        self.gl.add(2, community="other", updated="2026-10-11T10:01:00Z")
+        self.gl.add(2, community="other", updated=DAY + "T10:01:00Z")
         self._pass()
 
     def _get(self, user, path):
