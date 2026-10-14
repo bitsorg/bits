@@ -50,6 +50,22 @@ class RelocateMeTest(unittest.TestCase):
                      ["/w/sw/stage/pkg/1.0/lib", "/w/sw/stage/pkg/1.0/other/lib",
                       "/w/sw/stage/pkg/1.0/%s/bin" % PP])
 
+  def test_a_staging_dir_under_the_work_dir_is_not_doubled(self):
+    # A cached tarball is relocated first into INSTALLROOT/<hash>, under PKG_DIR.
+    stage = "/w/sw/INSTALLROOT/%s" % PH
+    self.assertEqual(self._relocate("/w/sw", stage, False),
+                     ["%s/%s/lib" % (stage, PP), "%s/other/lib" % stage,
+                      "%s/%s/bin" % (stage, PP)])
+
+  def test_a_cached_tarball_is_relocated_with_this_bits_script(self):
+    # The tarball's relocate-me.sh is from the bits that packed it (older ones
+    # double INSTALLROOT/<hash> for a staging dir under the work dir).
+    with open(os.path.join(os.path.dirname(SCRIPT), "build_template.sh")) as f:
+      t = f.read()
+    cached = t[t.index('tar -xzf "$CACHED_TARBALL"'):]
+    install = cached.index('install "${BITS_SCRIPT_DIR}/bits_helpers/relocate-me.sh"')
+    self.assertLess(install, cached.index('/bin/bash -ex "$INSTALLROOT/relocate-me.sh"'))
+
 
 if __name__ == "__main__":
   unittest.main()

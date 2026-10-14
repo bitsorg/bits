@@ -316,6 +316,15 @@ else
   mv "$WORK_DIR/TMP/$PKGHASH/$PKGPATH" "$INSTALLROOT"
   pushd "$WORK_DIR/INSTALLROOT/$PKGHASH"
   if [ -w "$INSTALLROOT" ]; then
+      # Relocate with this bits' relocate-me.sh, not the one in the tarball: that
+      # is from the bits that packed it, and an older one doubles INSTALLROOT/<hash>
+      # in the paths when, as here, the target lies under the work dir. The
+      # package's own lines (modulefile, macOS) are written again below and run
+      # when the installed copy is relocated. (A tarball too old to have
+      # .bits-pkginfo keeps its own script: this one needs that file.)
+      if [ -f "$INSTALLROOT/etc/profile.d/.bits-pkginfo" ]; then
+        install "${BITS_SCRIPT_DIR}/bits_helpers/relocate-me.sh" "$INSTALLROOT/"
+      fi
       WORK_DIR=$WORK_DIR /bin/bash -ex "$INSTALLROOT/relocate-me.sh"
   fi
   popd
