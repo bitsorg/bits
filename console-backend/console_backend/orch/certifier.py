@@ -64,6 +64,7 @@ WITHDRAW = "withdraw"
 # Taking a build's BOMs out of the set the worker owns (M8b); the withdrawals
 # then re-sign the manifests without them.
 DECERTIFY = "decertify"
+DECERTIFY_PACKAGE = "decertify-package"
 DEFAULT_REMOTE = "https://gitlab.cern.ch/buncic/bits-manifests"
 WAIT_MS = 24 * 3600 * 1000            # how long a build waits for its pre-approval
 PER_PASS = 20
@@ -447,6 +448,17 @@ def next_sequence(conn, settings, store, arch):
     return max(mine, published) + 1
 
 
+def _decertified(path):
+    """The packages (lowercase) a decertify-package took out of the set's BOM at *path*."""
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return set()
+    names = doc.get("decertified_packages") if isinstance(doc, dict) else None
+    return {str(n).lower() for n in names} if isinstance(names, list) else set()
+
+
 def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_id=None,
             approval=None):
     """The rows to sign: [(arch, body bytes, fields)], computed from the set at
@@ -486,6 +498,12 @@ def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_
             if not os.path.realpath(dest).startswith(os.path.realpath(root) + os.sep):
                 raise Refused("unsafe BOM path %r" % path)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
+            gone = _decertified(dest) if in_set[arch] else set()
+            if gone:
+                # Packages decertified from the set's copy stay out of it.
+                doc = dict(doc, packages=[e for e in doc.get("packages") or []
+                                          if not (isinstance(e, dict) and str(
+                                              e.get("package") or "").lower() in gone)])
             text = json.dumps(dict(doc, certified_by=[approver]), indent=1)
             with open(dest, "w") as fh:
                 fh.write(text)
@@ -548,7 +566,7 @@ def _sign_and_write(conn, settings, store, row, sign=None, writer=None):
             raise Refused("no key policy (key-policy.json): the worker fails closed")
         groups = replay._groups({arch: json.loads(body)})
         if _is_withdrawal(row):
-            why = removal_only(settings, store, arch, body)
+            why = removal_only(settings, store, arch, body, conn)
             if why:
                 raise Refused("not signed without a pre-approval: %s" % why)
         else:
@@ -684,10 +702,36 @@ def _ident(e):
     return json.dumps({k: v for k, v in e.items() if k not in _PROVENANCE}, sort_keys=True)
 
 
-def removal_only(settings, store, arch, body):
+def _but_group(e):
+    return json.dumps({k: v for k, v in e.items() if k not in _PROVENANCE and k != "group"},
+                      sort_keys=True)
+
+
+def _certified_by_group(conn, arch, e):
+    """Whether a BOM live in the set lists *e*'s object for *e*'s group (the
+    entry's own group, else its BOM's, as the merge reads it)."""
+    group = str(e.get("group") or "").lower()
+    for r in conn.execute("SELECT c.grp, b.body FROM certified c JOIN boms b ON"
+                          " b.sha256 = c.bom_sha256 WHERE c.removed_version IS NULL AND"
+                          " c.arch = ?", (arch,)):
+        try:
+            entries = json.loads(r["body"]).get("packages") or []
+        except (ValueError, AttributeError):
+            continue
+        if any(isinstance(x, dict) and x.get("hash") == e.get("hash")
+               and x.get("tarball_sha256") == e.get("tarball_sha256")
+               and str(x.get("group") or r["grp"]).lower() == group for x in entries):
+            return True
+    return False
+
+
+def removal_only(settings, store, arch, body, conn=None):
     """Why *body* may not be signed without a pre-approval, or None: every entry
     must already be in the architecture's manifest in the store (verified), with
-    the same group, and its sequence must follow that one's."""
+    the same group, and its sequence must follow that one's. With *conn*, an
+    entry that only changed group is also kept when that group's own BOM in the
+    set certifies it (one group stopped vouching for an object another one
+    certified too: the merge then names the other)."""
     from bits_helpers import trust
     s3, bucket = store
     key = "%s-%s.json" % (write_prefix(settings), arch)
@@ -703,11 +747,15 @@ def removal_only(settings, store, arch, body):
     if trust.verify_bytes(raw, env, trust.load_trusted_keys()) is None:
         return "the store's %s manifest does not verify" % arch
     old, new = json.loads(raw), json.loads(body)
-    have = {_ident(e) for e in old.get("packages") or [] if isinstance(e, dict)}
+    olds = [e for e in old.get("packages") or [] if isinstance(e, dict)]
+    have, regroup = {_ident(e) for e in olds}, {_but_group(e) for e in olds}
     extra = [str(e.get("package") or e.get("hash")) for e in new.get("packages") or []
-             if not isinstance(e, dict) or _ident(e) not in have]
+             if not isinstance(e, dict) or (_ident(e) not in have and not (
+                 conn is not None and _but_group(e) in regroup
+                 and _certified_by_group(conn, arch, e)))]
     if extra:
-        return "it would add %d entr(y/ies) (%s)" % (len(extra), ", ".join(extra[:5]))
+        return ("it would add %d entr(y/ies) (%s), or change more than the group of one"
+                % (len(extra), ", ".join(extra[:5])))
     before = old.get("sequence") if isinstance(old.get("sequence"), int) else 0
     if not isinstance(new.get("sequence"), int) or new["sequence"] <= before:
         return "its sequence does not follow the store's %d" % before
@@ -950,6 +998,77 @@ actions.register(actions.Kind(
     safe_to_rerun=True,
     requesters=frozenset({"person"})))
 
+def run_decertify_package(params, deps):
+    """The decertify-package action: a new version of the set in which each BOM
+    of the requested group (of one architecture, or all) lists no entry of the
+    package any more. Removal only: such a BOM is replaced by itself without
+    those entries, and taken out when none is left; its manifests are then
+    re-signed with fewer entries (a withdrawal). Nothing to remove is no error."""
+    conn, settings = deps.conn, deps.settings
+    if not settings.orch_owns_set:
+        raise Refused("the certified set is bits-manifests' until the switch: remove the"
+                      " package's entries with a merge request there")
+    name, group = params["package"].lower(), params["group"].lower()
+    q, args = "SELECT * FROM certified WHERE removed_version IS NULL AND lower(grp) = ?", [group]
+    if params.get("arch"):
+        q += " AND arch = ?"
+        args.append(params["arch"])
+    add, remove, builds = {}, set(), set()
+    for r in conn.execute(q, args).fetchall():
+        body = conn.execute("SELECT body FROM boms WHERE sha256 = ?",
+                            (r["bom_sha256"],)).fetchone()["body"]
+        try:
+            doc = json.loads(body)
+            entries = doc["packages"]
+        except (ValueError, KeyError, TypeError):
+            continue                               # not a BOM: it certifies nothing
+        if not isinstance(entries, list):
+            continue
+        kept = [e for e in entries
+                if not (isinstance(e, dict) and str(e.get("package") or "").lower() == name)]
+        if len(kept) == len(entries):
+            continue
+        builds.add(r["build_id"])
+        if any(isinstance(e, dict) and e.get("hash") and e.get("tarball_sha256") for e in kept):
+            doc["packages"] = kept
+            doc["decertified_packages"] = sorted(
+                set(doc.get("decertified_packages") or []) | {params["package"]})
+            add[r["path"]] = json.dumps(doc, indent=1).encode()
+        else:
+            remove.add(r["path"])
+    version = None
+    if add or remove:
+        with db.transaction(conn):
+            version, _added, _removed = certified.change(
+                conn, add=add, remove=remove,
+                cause="decertify-package:%s:%s:%s" % (group, name, params.get("arch") or "*"))
+            events.append(conn, "decertify.package", "package:%s" % name, events.WORKER,
+                          {"package": params["package"], "group": params["group"],
+                           "arch": params.get("arch") or "", "reason": params.get("reason", ""),
+                           "version": version, "replaced": sorted(add),
+                           "removed": sorted(remove)})
+    return {"version": version, "boms_replaced": len(add), "boms_removed": len(remove),
+            "builds": sorted(builds)}
+
+
+actions.register(actions.Kind(
+    name=DECERTIFY_PACKAGE,
+    summary="Take a package out of a group's certified BOMs (all architectures, or one):"
+            " each BOM is replaced by itself without the package's entries",
+    params={"type": "object",
+            "properties": {"group": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$"},
+                           "package": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$"},
+                           "arch": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,200}$"},
+                           "reason": {"type": "string", "pattern": "^[^\\n]{0,500}$"}},
+            "required": ["group", "package"], "additionalProperties": False},
+    approval="requester",
+    subject=lambda p: "decertify-package:%s:%s:%s" % (p["group"].lower(), p["package"].lower(),
+                                                      p.get("arch") or "*"),
+    scope=lambda p, deps: p["group"].lower(),
+    run=run_decertify_package,
+    safe_to_rerun=True,
+    requesters=frozenset({"person"})))
+
 actions.register(actions.Kind(
     name=WITHDRAW,
     summary="Withdraw from an architecture's signed manifest the BOMs the certified set"
@@ -1066,7 +1185,8 @@ class Certifier(threading.Thread):
                     began = time.monotonic()
                     try:
                         actions.run_due(conn, deps, self.authorize,
-                                        kinds={KIND, WITHDRAW, DECERTIFY})
+                                        kinds={KIND, WITHDRAW, DECERTIFY,
+                                               DECERTIFY_PACKAGE})
                         failed_actions(conn)
                         # Until M8b: compared with the CI's certifications.
                         if not self.settings.orch_owns_set:

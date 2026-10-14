@@ -12,7 +12,7 @@ from console_backend import config
 from console_backend.orch import actions, certified, certifier, db, events
 
 from test_orch_replay import FakeConsole, FakeS3
-from test_orch_shadow import SETTINGS, _Base, _bom
+from test_orch_shadow import SETTINGS, _Base, _bom, _pkg
 
 
 class FakeWriter:
@@ -595,6 +595,84 @@ class OwnedSetTest(_StoreBase):
         live = [r["path"] for r in self.conn.execute(
             "SELECT path FROM certified WHERE removed_version IS NULL")]
         self.assertEqual(live, ["ship/b2.el9.host-1.json"])
+
+    def test_decertify_package_replaces_each_bom_without_it_and_withdraws(self):
+        self.s3.docs["MANIFESTS/b2/host-1.el9.json"] = _bom("b2", "el9", ("q", "h2"),
+                                                            ("Secret", "h5"))
+        self.store[("el9", "h5")] = "sh5"
+        self.approve()
+        self.certify()
+        self.assertEqual(sorted(p["package"] for p in self.written()["packages"]), ["Secret", "q"])
+        row, _ = actions.request(self.conn, certifier.DECERTIFY_PACKAGE,
+                                 {"group": "lcg", "package": "secret", "reason": "compliance"},
+                                 events.Actor("person", "alice"), "lcg", True)
+        actions.run_due(self.conn, self.deps, lambda a, c: True,
+                        kinds={certifier.DECERTIFY_PACKAGE})
+        done = actions.get(self.conn, row["id"])
+        self.assertEqual(done["state"], "done")
+        live = self.conn.execute("SELECT c.path, b.body FROM certified c JOIN boms b ON"
+                                 " b.sha256 = c.bom_sha256 WHERE removed_version IS NULL").fetchall()
+        self.assertEqual([r["path"] for r in live], ["lcg/b2.el9.host-1.json"])
+        bom = json.loads(live[0]["body"])
+        self.assertEqual(([p["package"] for p in bom["packages"]], bom["decertified_packages"]),
+                         (["q"], ["secret"]))
+        self.assertGreaterEqual(self.withdraw(), 1)          # removal only: re-signed
+        m = self.written()
+        self.assertEqual([p["package"] for p in m["packages"]], ["q"])
+        self.assertIn("withdrawn", m)
+        self.assertNotIn("withdraw.refused", self.kinds())
+        again = certifier.run_decertify_package({"group": "lcg", "package": "Secret"}, self.deps)
+        self.assertEqual((again["version"], again["boms_replaced"]), (None, 0))
+        # The same build certified again (a new pre-approval) leaves it out still.
+        (arch, body, _f), = certifier.compute(self.conn, self.settings, self.console,
+                                              self.deps.store(), 7, "b2", "alice",
+                                              probe=self.probe, key_id=self.kid)
+        self.assertEqual([p["package"] for p in json.loads(body)["packages"]], ["q"])
+
+    def test_decertify_package_where_another_group_certifies_the_object_too(self):
+        self.s3.docs["MANIFESTS/b2/host-1.el9.json"] = _bom("b2", "el9", ("q", "h2"),
+                                                            ("Secret", "h5"))
+        self.store[("el9", "h5")] = "sh5"
+        self.approve()
+        self.certify()
+        ship = dict(_bom("b7", "el9", ("Secret", "h5")), certified_by=["carol"])
+        with db.transaction(self.conn):                    # ship certified the object too
+            certified.change(self.conn, add={"ship/b7.el9.host-1.json": json.dumps(ship).encode()})
+        before = {p["package"]: p["group"] for p in self.written()["packages"]}
+        self.assertEqual(before, {"q": "lcg", "Secret": "lcg"})            # first seen wins
+        certifier.run_decertify_package({"group": "lcg", "package": "Secret"}, self.deps)
+        self.withdraw()
+        self.assertNotIn("withdraw.refused", self.kinds())
+        after = {p["package"]: p["group"] for p in self.written()["packages"]}
+        self.assertEqual(after, {"q": "lcg", "Secret": "ship"})            # ship still vouches
+
+    def test_a_regroup_no_bom_of_that_group_certifies_is_refused(self):
+        key = "%s-el9.json" % certifier.write_prefix(self.settings)
+        old = json.dumps({"packages": [dict(_pkg("Secret", "h5"), group="lcg")],
+                          "sequence": 1}).encode()
+        self.s3.docs[key] = old
+        self.s3.docs[key + ".sig"] = json.dumps(
+            trust.sign_bytes(old, trust.load_private_key(self.key))).encode()
+        new = json.dumps({"packages": [dict(_pkg("Secret", "h5"), group="ship")],
+                          "sequence": 2}).encode()
+        why = certifier.removal_only(self.settings, self.deps.store(), "el9", new, self.conn)
+        self.assertIn("would add 1 entr", why)
+
+    def test_decertify_package_takes_out_a_bom_left_with_nothing(self):
+        self.approve()
+        self.certify()
+        res = certifier.run_decertify_package({"group": "lcg", "package": "Q", "arch": "el9"},
+                                              self.deps)
+        self.assertEqual((res["boms_removed"], res["builds"]), (1, ["b2"]))
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM certified WHERE removed_version"
+                                            " IS NULL").fetchone())
+        other = certifier.run_decertify_package({"group": "ship", "package": "q"}, self.deps)
+        self.assertEqual(other["version"], None)            # another group's BOMs: untouched
+
+    def test_decertify_package_waits_for_the_switch(self):
+        self.settings.orch_owns_set = False
+        with self.assertRaises(certifier.Refused):
+            certifier.run_decertify_package({"group": "lcg", "package": "q"}, self.deps)
 
     def test_the_mirror_commits_each_version_to_bits_manifests(self):
         from console_backend.orch import mirror

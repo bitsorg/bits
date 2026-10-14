@@ -103,7 +103,8 @@ class Worker:
         # Certifications run on the certifier thread: hashing a stack must
         # never delay a cancel.
         actions.run_due(self.conn, self.deps, self.authorize, exclude={certifier.KIND, certifier.WITHDRAW,
-                                                                   certifier.DECERTIFY})
+                                                                   certifier.DECERTIFY,
+                                                                   certifier.DECERTIFY_PACKAGE})
 
     def _note(self, step, error, conn=None):
         """Record a step's failure or recovery as an event, but only when it
