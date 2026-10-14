@@ -35,7 +35,8 @@ from . import signproxy
 # Short: asking the agent socket is a local round trip, and a restarted proxy
 # (new port, new gate tokens) is then followed within seconds.
 CACHE_SECONDS = 5
-ROUTES = {"ops": "gitlab-ops", "read": "gitlab-read", "groups": "gitlab-groups"}
+ROUTES = {"ops": "gitlab-ops", "read": "gitlab-read", "groups": "gitlab-groups",
+          "mirror": "gitlab-mirror"}
 
 _cache = {}
 _lock = threading.Lock()
@@ -85,6 +86,8 @@ def _env_token(settings, kind):
         return settings.forge_read_token or settings.forge_ops_token
     if kind == "groups":
         return settings.admin_resolve_token
+    if kind == "mirror":
+        return settings.forge_mirror_token
     raise ValueError("unknown GitLab credential %r" % kind)
 
 

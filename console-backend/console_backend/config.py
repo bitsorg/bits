@@ -124,6 +124,10 @@ class Settings:
         # Read-only (read_api) GitLab token the worker reads pipelines, jobs and
         # job logs with; falls back to the ops token when unset.
         self.forge_read_token = e.get("BITS_FORGE_READ_TOKEN", "")
+        # M8b: the token that commits the orchestrator's set to bits-manifests
+        # (the mirror); through the credentials proxy's gitlab-mirror route
+        # when BITS_CRED_PROXY_AGENT_SOCKET is set.
+        self.forge_mirror_token = e.get("BITS_FORGE_MIRROR_TOKEN", "")
         # How far back the worker looks for pipelines when it starts with an empty
         # database (days); older history is the failure backfill's job.
         self.orch_lookback_days = float(e.get("BITS_ORCH_LOOKBACK_DAYS", "7") or "7")
@@ -157,6 +161,12 @@ class Settings:
         self.orch_certify_job = e.get("BITS_ORCH_CERTIFY_JOB", "certify-and-publish")
         self.orch_manifest_prefix = e.get("BITS_ORCH_MANIFEST_PREFIX",
                                           "MANIFESTS/common-manifest")
+        # M8b, the switch: the worker owns the certified set (no longer read from
+        # bits-manifests, which it mirrors), writes the production manifests
+        # (BITS_ORCH_MANIFEST_PREFIX, without expiry) and is the only signer;
+        # the backend's /sign routes are gone. Unset again = back to M8a.
+        self.orch_owns_set = (e.get("BITS_ORCH_OWNS_SET", "") or "").strip().lower() in (
+            "1", "true", "yes")
         # Certifications older than this when the worker first looks are not compared.
         self.orch_shadow_lookback_days = float(e.get("BITS_ORCH_SHADOW_LOOKBACK_DAYS", "3") or "3")
         # The architecture bits sign assumes for a package without one (its

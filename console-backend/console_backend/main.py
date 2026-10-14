@@ -80,6 +80,20 @@ async def _pa(fn, *args, **kw):
 _STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 
+def _signing_retired(path):
+    """M8b: the orchestrator is the only signer; the backend's sign routes are gone."""
+    return settings.orch_owns_set and (path == "/sign" or path.startswith("/sign/"))
+
+
+@app.middleware("http")
+async def _retired(request: Request, call_next):
+    if _signing_retired(request.url.path):
+        return JSONResponse({"detail": "signing moved to the orchestrator: certify with a"
+                                       " pre-approval, decertify with the decertify action"},
+                            status_code=410)
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def _cors(request: Request, call_next):
     """Allow the GitLab Pages frontend (a different origin) to call this API. The

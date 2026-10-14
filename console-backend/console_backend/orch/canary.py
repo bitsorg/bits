@@ -35,12 +35,13 @@ DIGEST = "v2:"
 
 def content_digest(manifest):
     """What the comparison compares: a manifest without its timestamps, its
-    certifiers, its source_commit, its sequence and issuer (the worker's
-    numbering, which the CI's manifests lack) and its packages' provenance."""
+    certifiers, its source_commit, its sequence, issuer and audit position
+    (the worker's, which the CI's manifests lack) and its packages' provenance."""
     c = shadow.content(manifest)
     c.pop("source_commit", None)
     c.pop("sequence", None)
     c.pop("issuer", None)
+    c.pop("event", None)
     c["packages"] = [{k: v for k, v in e.items() if k not in PROVENANCE}
                      if isinstance(e, dict) else e for e in c.get("packages") or []]
     return DIGEST + hashlib.sha256(shadow._canonical(c).encode()).hexdigest()

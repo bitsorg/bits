@@ -373,7 +373,7 @@ class StoreWriter(FakeWriter):
         self.s3.docs[Key] = Body
 
 
-class WithdrawTest(CertifierBase):
+class _StoreBase(CertifierBase):
     def setUp(self):
         super().setUp()
         docs = self.s3.docs
@@ -398,6 +398,8 @@ class WithdrawTest(CertifierBase):
     def written(self):
         return json.loads(self.s3.docs["CANARY/common-manifest-el9.json"])
 
+
+class WithdrawTest(_StoreBase):
     def test_a_bom_removed_from_the_set_is_withdrawn_without_a_preapproval(self):
         self.approve()
         self.certify()
@@ -529,3 +531,96 @@ class CliBuildTest(CertifierBase):
         self.cli_approve(groups=("lcg", "ship"))
         self.certify()
         self.assertEqual(self.cli_rows()["*"]["state"], "refused")
+
+
+class OwnedSetTest(_StoreBase):
+    """M8b: the worker owns the set, writes MANIFESTS/ and is the only signer."""
+
+    def setUp(self):
+        super().setUp()
+        self.settings = self.deps.settings = config.Settings(env=dict(
+            SETTINGS, BITS_ADMINS_POLICY="lcg @alice\n* @carol", BITS_ORCH_CERTIFY="1",
+            BITS_ORCH_MANIFESTS_PROJECT="buncic/bits-manifests", BITS_ORCH_OWNS_SET="1"))
+
+    def written(self):
+        return json.loads(self.s3.docs["MANIFESTS/common-manifest-el9.json"])
+
+    def test_a_certification_writes_manifests_and_adds_the_build_to_the_set(self):
+        self.approve()
+        self.certify()
+        m = self.written()
+        self.assertNotIn("expires", m)
+        self.assertEqual((m["sequence"], sorted(m["event"])), (1, ["hash", "seq"]))
+        live = [r["path"] for r in self.conn.execute(
+            "SELECT path FROM certified WHERE removed_version IS NULL")]
+        self.assertEqual(live, ["lcg/b2.el9.host-1.json"])
+        v = self.conn.execute("SELECT * FROM set_versions ORDER BY version DESC").fetchone()
+        self.assertEqual((v["source"], v["added"]), ("orchestrator", 1))
+        self.assertIsNone(self.rows()["el9"]["set_body"])
+
+    def test_decertify_takes_the_build_out_and_its_manifest_is_withdrawn(self):
+        self.approve()
+        self.certify()
+        row, _ = actions.request(self.conn, certifier.DECERTIFY,
+                                 {"group": "lcg", "build_id": "b2", "reason": "compliance"},
+                                 events.Actor("person", "alice"), "lcg", True)
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.DECERTIFY})
+        self.assertEqual(actions.get(self.conn, row["id"])["state"], "done")
+        self.assertEqual(self.withdraw(), 1)
+        m = self.written()
+        self.assertEqual((m["packages"], m["sequence"]), ([], 2))
+
+    def test_decertify_in_another_group_is_refused(self):
+        self.approve()
+        self.certify()
+        row, _ = actions.request(self.conn, certifier.DECERTIFY,
+                                 {"group": "ship", "build_id": "b2"},
+                                 events.Actor("person", "carol"), "ship", True)
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.DECERTIFY})
+        self.assertNotEqual(actions.get(self.conn, row["id"])["state"], "done")
+        self.assertEqual(len(self.conn.execute("SELECT * FROM certified WHERE removed_version"
+                                               " IS NULL").fetchall()), 1)
+
+    def test_the_mirror_commits_each_version_to_bits_manifests(self):
+        from console_backend.orch import mirror
+
+        class Forge:
+            def __init__(self):
+                self.files, self.commits = set(), []
+
+            def file_exists(self, path, ref):
+                return path in self.files
+
+            def create_commit(self, branch, acts, message):
+                self.commits.append((branch, acts, message))
+                for a in acts:
+                    (self.files.discard if a["action"] == "delete" else self.files.add)(
+                        a["file_path"])
+                return {"id": "c%d" % len(self.commits)}
+        forge = Forge()
+        self.assertEqual(mirror.push(self.conn, self.settings, forge), 0)     # nothing yet
+        self.approve()
+        self.certify()
+        self.assertEqual(mirror.push(self.conn, self.settings, forge), 1)
+        branch, acts, _msg = forge.commits[0]
+        self.assertEqual((branch, [(a["action"], a["file_path"]) for a in acts]),
+                         ("main", [("create", "manifests/lcg/b2.el9.host-1.json")]))
+        self.assertEqual(self.conn.execute("SELECT commit_sha FROM set_versions ORDER BY"
+                                           " version DESC").fetchone()[0], "c1")
+        self.assertEqual(mirror.push(self.conn, self.settings, forge), 0)
+
+    def test_the_store_says_whose_manifests_these_are(self):
+        from console_backend.orch import mirror
+        store = self.deps.store()
+        self.assertTrue(mirror.write_marker(self.conn, self.settings, store, self.writer,
+                                            certifier.issuer(store), "MANIFESTS/common-manifest"))
+        m = json.loads(self.s3.docs["MANIFESTS/orchestrator.json"])
+        self.assertEqual((m["issuer"], m["manifests"]),
+                         ("bits-orchestrator/bucket", "MANIFESTS/common-manifest"))
+        self.assertFalse(mirror.write_marker(self.conn, self.settings, store, self.writer,
+                                             certifier.issuer(store), "MANIFESTS/common-manifest"))
+
+    def test_decertify_waits_for_the_switch(self):
+        self.settings.orch_owns_set = False
+        with self.assertRaises(certifier.Refused):
+            certifier.run_decertify({"group": "lcg", "build_id": "b2"}, self.deps)

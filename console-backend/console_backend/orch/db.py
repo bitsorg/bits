@@ -351,6 +351,12 @@ MIGRATIONS = [
         "ALTER TABLE certify_runs ADD COLUMN sequence INTEGER",
         "CREATE INDEX certify_runs_sequence ON certify_runs(arch, sequence)",
     ],
+    # 9 (M8b): the BOM a certification adds to the set the worker owns, kept
+    # from compute until the set has it (then dropped).
+    [
+        "ALTER TABLE certify_runs ADD COLUMN set_path TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE certify_runs ADD COLUMN set_body BLOB",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

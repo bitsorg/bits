@@ -61,6 +61,9 @@ def _is_withdrawal(row):
 # Re-signing an architecture's manifest without the BOMs the certified set has
 # removed: it only takes trust away, so it needs no pre-approval.
 WITHDRAW = "withdraw"
+# Taking a build's BOMs out of the set the worker owns (M8b); the withdrawals
+# then re-sign the manifests without them.
+DECERTIFY = "decertify"
 DEFAULT_REMOTE = "https://gitlab.cern.ch/buncic/bits-manifests"
 WAIT_MS = 24 * 3600 * 1000            # how long a build waits for its pre-approval
 PER_PASS = 20
@@ -114,8 +117,14 @@ def _name(value, what):
 
 
 def write_prefix(settings):
-    """Where the worker writes its manifests: until M8b, the canary prefix,
-    which must stay out of the production manifests' place and be plain names."""
+    """Where the worker writes its manifests: the production manifests' place
+    once it owns the set (M8b); before, the canary prefix, which must stay out
+    of it. Plain names either way."""
+    if settings.orch_owns_set:
+        mp = settings.orch_manifest_prefix.strip("/")
+        if not mp or not all(_NAME.fullmatch(x) and ".." not in x for x in mp.split("/")):
+            raise RuntimeError("BITS_ORCH_MANIFEST_PREFIX %r must be plain names" % mp)
+        return mp
     cp = settings.orch_canary_prefix.strip("/")
     top = settings.orch_manifest_prefix.strip("/").split("/")[0]
     parts = cp.split("/")
@@ -124,6 +133,17 @@ def write_prefix(settings):
         raise RuntimeError("BITS_ORCH_CANARY_PREFIX %r must be plain names, not under %s/"
                            % (cp, top))
     return cp
+
+
+def _valid_days(settings):
+    """The manifests' expiry in days: none once a sequence bounds them (M8b)."""
+    return None if settings.orch_owns_set else (settings.orch_certify_valid_days or None)
+
+
+def _chain_position(conn):
+    """The audit chain's head: which state of it a manifest was made at."""
+    r = conn.execute("SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1").fetchone()
+    return {"seq": r["seq"], "hash": r["hash"]} if r else {"seq": 0, "hash": events.GENESIS}
 
 
 def _project_of(remote):
@@ -453,7 +473,7 @@ def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_
     tmp = tempfile.mkdtemp(prefix="certify-")
     try:
         root = certified.materialize(conn, version, os.path.join(tmp, "set"))
-        in_set = {}
+        in_set, set_files = {}, {}
         for arch, (key, doc) in sorted(boms.items()):
             path = live.get((bid, arch)) or _path(group, bid, arch, key)
             if path.split("/")[0] != group:
@@ -464,15 +484,18 @@ def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_
             if not os.path.realpath(dest).startswith(os.path.realpath(root) + os.sep):
                 raise Refused("unsafe BOM path %r" % path)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
+            text = json.dumps(dict(doc, certified_by=[approver]), indent=1)
             with open(dest, "w") as fh:
-                json.dump(dict(doc, certified_by=[approver]), fh, indent=1)
+                fh.write(text)
+            if not in_set[arch]:
+                set_files[arch] = (path, text.encode())
         if probe is None:
             s3, bucket = store
             probe = certify.s3_probe(s3, bucket, settings.orch_default_arch,
                                      cache=shadow.DigestCache(conn))
         try:
             results = certify.build_by_arch(root, probe=probe, only_archs=sorted(boms),
-                                            valid_days=settings.orch_certify_valid_days or None)
+                                            valid_days=_valid_days(settings))
         except certify.CertifyError as e:
             if shadow._transient_cause(e):
                 raise
@@ -496,13 +519,15 @@ def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_
             raise Refused("signing key %s is not allowed for %s" % (key_id, ", ".join(bad)))
         seq = next_sequence(conn, settings, store, arch)
         m = dict(m, certified_by=[approver], certified_at=certify._now_iso(), sequence=seq,
-                 issuer=issuer(store))
+                 issuer=issuer(store), event=_chain_position(conn))
         body = json.dumps(m, indent=1, sort_keys=True).encode()
         out.append((arch, body, {
             "set_version": version, "set_commit": commit or "", "in_set": int(in_set.get(arch, False)),
             "boms": json.dumps([[boms[arch][0], hashlib.sha256(json.dumps(
                 boms[arch][1], sort_keys=True).encode()).hexdigest()]] if arch in boms else []),
-            "sha256": hashlib.sha256(body).hexdigest(), "key_id": key_id, "sequence": seq}))
+            "sha256": hashlib.sha256(body).hexdigest(), "key_id": key_id, "sequence": seq,
+            "set_path": set_files.get(arch, ("", None))[0],
+            "set_body": set_files.get(arch, ("", None))[1]}))
     return out
 
 
@@ -629,6 +654,16 @@ def run(params, deps):
         "SELECT arch FROM certify_runs WHERE pipeline_id = ? AND build_id = ? AND arch != '*'",
         (pid, bid)))
     with db.transaction(conn):
+        if settings.orch_owns_set:
+            # The set the worker owns now holds the build (M8b).
+            add = {r["set_path"]: bytes(r["set_body"]) for r in conn.execute(
+                "SELECT set_path, set_body FROM certify_runs WHERE pipeline_id = ? AND"
+                " build_id = ? AND arch != '*' AND set_path != '' AND set_body IS NOT NULL",
+                (pid, bid))}
+            if add:
+                certified.change(conn, add=add, cause="certify:%s:%s" % (pid or "cli", bid))
+        conn.execute("UPDATE certify_runs SET set_body = NULL WHERE pipeline_id = ? AND"
+                     " build_id = ?", (pid, bid))
         _upsert(conn, pid, bid, "*", "signed", "")
     return {"archs": archs}
 
@@ -730,7 +765,7 @@ def compute_withdrawal(conn, settings, store, arch, version, probe=None, key_id=
         try:
             results = dict(certify.build_by_arch(
                 root, probe=probe, only_archs=[arch],
-                valid_days=settings.orch_certify_valid_days or None))
+                valid_days=_valid_days(settings)))
         except certify.CertifyError as e:
             if shadow._transient_cause(e):
                 raise
@@ -742,7 +777,8 @@ def compute_withdrawal(conn, settings, store, arch, version, probe=None, key_id=
         key_id = signproxy.call(settings, trust.proxy_pubkey)[0]
     seq = next_sequence(conn, settings, store, arch)
     m = dict(results[arch], certified_by=[], certified_at=certify._now_iso(), sequence=seq,
-             issuer=issuer(store), withdrawn={"set_version": version})
+             issuer=issuer(store), withdrawn={"set_version": version},
+             event=_chain_position(conn))
     body = json.dumps(m, indent=1, sort_keys=True).encode()
     return body, {"set_version": version, "set_commit": r["commit_sha"] or "", "in_set": 1,
                   "boms": "[]", "sha256": hashlib.sha256(body).hexdigest(), "key_id": key_id,
@@ -827,6 +863,54 @@ actions.register(actions.Kind(
     run=run,
     safe_to_rerun=True,
     requesters=frozenset({"worker"})))
+
+def run_decertify(params, deps):
+    """The decertify action: a new version of the set without the build's BOMs
+    (of one architecture, or all), which must be in the requested group."""
+    conn, settings = deps.conn, deps.settings
+    if not settings.orch_owns_set:
+        raise Refused("the certified set is bits-manifests' until the switch: remove the BOMs"
+                      " with a merge request there")
+    q, args = ("SELECT * FROM certified WHERE removed_version IS NULL AND build_id = ?",
+               [params["build_id"]])
+    if params.get("arch"):
+        q += " AND arch = ?"
+        args.append(params["arch"])
+    rows = conn.execute(q, args).fetchall()
+    if not rows:
+        raise Refused("build %s%s is not in the certified set"
+                      % (params["build_id"], " (%s)" % params["arch"] if params.get("arch") else ""))
+    other = sorted({r["grp"] for r in rows} - {params["group"]})
+    if other:
+        raise Refused("build %s is certified in %s too, not only %s: decertify it there as well"
+                      % (params["build_id"], ", ".join(other), params["group"]))
+    with db.transaction(conn):
+        version, _added, removed = certified.change(
+            conn, remove={r["path"] for r in rows},
+            cause="decertify:%s:%s" % (params["build_id"], params.get("arch") or "*"))
+        events.append(conn, "decertify.done", "build:%s" % params["build_id"], events.WORKER,
+                      {"build_id": params["build_id"], "arch": params.get("arch") or "",
+                       "group": params["group"], "reason": params.get("reason", ""),
+                       "version": version, "removed": removed})
+    return {"version": version, "removed": removed}
+
+
+actions.register(actions.Kind(
+    name=DECERTIFY,
+    summary="Take a build's BOMs out of the certified set (all architectures, or one);"
+            " its manifests are then re-signed without them",
+    params={"type": "object",
+            "properties": {"group": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$"},
+                           "build_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,200}$"},
+                           "arch": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,200}$"},
+                           "reason": {"type": "string", "pattern": "^[^\\n]{0,500}$"}},
+            "required": ["group", "build_id"], "additionalProperties": False},
+    approval="requester",
+    subject=lambda p: "decertify:%s:%s" % (p["build_id"], p.get("arch") or "*"),
+    scope=lambda p, deps: p["group"],
+    run=run_decertify,
+    safe_to_rerun=True,
+    requesters=frozenset({"person"})))
 
 actions.register(actions.Kind(
     name=WITHDRAW,
@@ -941,11 +1025,13 @@ class Certifier(threading.Thread):
                 while not self.stop_event.is_set():
                     began = time.monotonic()
                     try:
-                        actions.run_due(conn, deps, self.authorize, kinds={KIND, WITHDRAW})
+                        actions.run_due(conn, deps, self.authorize,
+                                        kinds={KIND, WITHDRAW, DECERTIFY})
                         failed_actions(conn)
                         # Until M8b: compared with the CI's certifications.
-                        from . import canary
-                        canary.match(conn, self.settings)
+                        if not self.settings.orch_owns_set:
+                            from . import canary
+                            canary.match(conn, self.settings)
                     except Exception as exc:
                         log.exception("certifier step failed")
                         self.note(conn, "certifier", "%s: %s" % (type(exc).__name__, exc))

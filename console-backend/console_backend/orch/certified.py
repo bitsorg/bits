@@ -34,6 +34,7 @@ from . import db, events, shadow
 log = logging.getLogger("bits_orchestrator.certified")
 
 SOURCE_GIT = "bits-manifests"
+SOURCE_ORCHESTRATOR = "orchestrator"            # M8b: a version the worker made
 MAX_VERSIONS = 10                 # per pass
 MAX_ATTEMPTS = 5                  # a pipeline whose tree cannot be read is then left out
 MATCH_PER_PASS = 50
@@ -120,54 +121,80 @@ def apply_tree(conn, root, pipeline_id, commit, source=SOURCE_GIT):
     for path, p in shadow._files(root).items():
         body = shadow._read(p)
         files[path] = (body, hashlib.sha256(body).hexdigest())
-    now = db.now_ms()
     with db.transaction(conn):
-        version = (conn.execute("SELECT MAX(version) AS v FROM set_versions").fetchone()["v"] or 0) + 1
-        live = {r["path"]: r for r in conn.execute(
-            "SELECT * FROM certified WHERE removed_version IS NULL")}
-        first = conn.execute("SELECT 1 FROM certified LIMIT 1").fetchone() is None
-        added = removed = 0
-        for path in sorted(set(files) | set(live)):
-            body, sha = files.get(path, (None, None))
-            old = live.get(path)
-            if old is not None and sha != old["bom_sha256"]:
-                ev = events.append(conn, "certified.removed", _subject(old["grp"], old["arch"]),
-                                   events.WORKER,
-                                   {"path": path, "group": old["grp"], "arch": old["arch"],
-                                    "build_id": old["build_id"], "sha256": old["bom_sha256"],
-                                    "version": version, "commit": commit})
-                conn.execute("UPDATE certified SET removed_version = ?, removed_event = ?"
-                             " WHERE id = ?", (version, ev, old["id"]))
-                removed += 1
-            if body is not None and (old is None or sha != old["bom_sha256"]):
-                build_id, arch, problem = _describe(body)
-                problem = problem or _layout_problem(path)
-                group = _group(path)
-                conn.execute("INSERT OR IGNORE INTO boms (sha256, body, size, first_ms)"
-                             " VALUES (?, ?, ?, ?)", (sha, body, len(body), now))
-                payload = {"path": path, "group": group, "arch": arch, "build_id": build_id,
-                           "sha256": sha, "version": version, "commit": commit}
-                if first:
-                    payload["imported"] = True
-                if problem:
-                    payload["problem"] = problem
-                ev = events.append(conn, "certified.added", _subject(group, arch),
-                                   events.WORKER, payload)
-                conn.execute(
-                    "INSERT INTO certified (path, grp, arch, build_id, bom_sha256, problem,"
-                    " added_version, added_event, added_ms) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (path, group, arch, build_id, sha, problem, version, ev, now))
-                added += 1
-        digest = digest_of({p: h for p, (_b, h) in files.items()})
-        conn.execute("INSERT INTO set_versions (version, pipeline_id, commit_sha, source,"
-                     " added, removed, digest, created_ms) VALUES (?,?,?,?,?,?,?,?)",
-                     (version, pipeline_id, commit, source, added, removed, digest, now))
-        if pipeline_id is not None:
-            _set_followed(conn, pipeline_id)
-        events.append(conn, "certified.imported" if first else "certified.version", "certified",
-                      events.WORKER, {"version": version, "pipeline": pipeline_id,
-                                      "commit": commit, "added": added, "removed": removed,
-                                      "digest": digest, "source": source})
+        return _apply(conn, files, pipeline_id, commit, source)
+
+
+def change(conn, add=None, remove=(), cause=None):
+    """A version the worker makes (M8b): the set as it is, with *add*
+    ({path: BOM bytes}) put in and the paths in *remove* taken out. Call inside
+    a transaction. Returns (version, added, removed); (None, 0, 0) when nothing
+    changes."""
+    live = {r["path"]: r["bom_sha256"] for r in conn.execute(
+        "SELECT path, bom_sha256 FROM certified WHERE removed_version IS NULL")}
+    files = {}
+    for path, sha in live.items():
+        if path not in remove:
+            files[path] = (conn.execute("SELECT body FROM boms WHERE sha256 = ?",
+                                        (sha,)).fetchone()["body"], sha)
+    for path, body in (add or {}).items():
+        body = bytes(body)
+        files[path] = (body, hashlib.sha256(body).hexdigest())
+    if {p: h for p, (_b, h) in files.items()} == live:
+        return None, 0, 0
+    return _apply(conn, files, None, "", SOURCE_ORCHESTRATOR, cause)
+
+
+def _apply(conn, files, pipeline_id, commit, source, cause=None):
+    """Make the set equal *files* ({path: (body, sha256)}) as a new version, in
+    the caller's transaction."""
+    now = db.now_ms()
+    version = (conn.execute("SELECT MAX(version) AS v FROM set_versions").fetchone()["v"] or 0) + 1
+    live = {r["path"]: r for r in conn.execute(
+        "SELECT * FROM certified WHERE removed_version IS NULL")}
+    first = conn.execute("SELECT 1 FROM certified LIMIT 1").fetchone() is None
+    added = removed = 0
+    for path in sorted(set(files) | set(live)):
+        body, sha = files.get(path, (None, None))
+        old = live.get(path)
+        if old is not None and sha != old["bom_sha256"]:
+            ev = events.append(conn, "certified.removed", _subject(old["grp"], old["arch"]),
+                               events.WORKER,
+                               {"path": path, "group": old["grp"], "arch": old["arch"],
+                                "build_id": old["build_id"], "sha256": old["bom_sha256"],
+                                "version": version, "commit": commit})
+            conn.execute("UPDATE certified SET removed_version = ?, removed_event = ?"
+                         " WHERE id = ?", (version, ev, old["id"]))
+            removed += 1
+        if body is not None and (old is None or sha != old["bom_sha256"]):
+            build_id, arch, problem = _describe(body)
+            problem = problem or _layout_problem(path)
+            group = _group(path)
+            conn.execute("INSERT OR IGNORE INTO boms (sha256, body, size, first_ms)"
+                         " VALUES (?, ?, ?, ?)", (sha, body, len(body), now))
+            payload = {"path": path, "group": group, "arch": arch, "build_id": build_id,
+                       "sha256": sha, "version": version, "commit": commit}
+            if first:
+                payload["imported"] = True
+            if problem:
+                payload["problem"] = problem
+            ev = events.append(conn, "certified.added", _subject(group, arch),
+                               events.WORKER, payload)
+            conn.execute(
+                "INSERT INTO certified (path, grp, arch, build_id, bom_sha256, problem,"
+                " added_version, added_event, added_ms) VALUES (?,?,?,?,?,?,?,?,?)",
+                (path, group, arch, build_id, sha, problem, version, ev, now))
+            added += 1
+    digest = digest_of({p: h for p, (_b, h) in files.items()})
+    conn.execute("INSERT INTO set_versions (version, pipeline_id, commit_sha, source,"
+                 " added, removed, digest, created_ms) VALUES (?,?,?,?,?,?,?,?)",
+                 (version, pipeline_id, commit, source, added, removed, digest, now))
+    if pipeline_id is not None:
+        _set_followed(conn, pipeline_id)
+    events.append(conn, "certified.imported" if first else "certified.version", "certified",
+                  events.WORKER, {"version": version, "pipeline": pipeline_id,
+                                  "commit": commit, "added": added, "removed": removed,
+                                  "digest": digest, "source": source}, cause=cause)
     return version, added, removed
 
 

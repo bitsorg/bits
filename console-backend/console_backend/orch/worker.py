@@ -25,7 +25,8 @@ import threading
 import time
 
 from .. import config
-from . import actions, authority, certifier, db, events, failures, kinds, outside, reconcile, shadow
+from . import (actions, authority, certifier, db, events, failures, kinds, mirror, outside,
+               reconcile, shadow)
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -66,8 +67,31 @@ class Worker:
             # Its own step: a paused or failing certify step never holds back a
             # revocation.
             self.steps.insert(at, ("withdraw", lambda: certifier.withdrawals(self.conn, settings)))
+        if settings.orch_owns_set:
+            # M8b: the set is the worker's; bits-manifests mirrors it, and the
+            # store says whose manifests these are.
+            self.steps.insert(len(self.steps) - 2, ("mirror", self._mirror))
+            self.steps.insert(len(self.steps) - 2, ("marker", self._marker))
         self._errors = {}                 # step -> last error text
         self._stop = threading.Event()
+
+    def _mirror(self):
+        from .. import forge_ops
+        forge = forge_ops.GitLabForge.from_settings(self.settings, "mirror",
+                                                    project=self.settings.orch_manifests_project)
+        mirror.push(self.conn, self.settings, forge)
+
+    def _marker(self):
+        if self._errors.get("marker") is None and getattr(self, "_marked", False):
+            return
+        from .. import credproxy
+        store = self.deps.store()
+        if store is None:
+            raise RuntimeError("BITS_ORCH_STORE is not set: the worker that owns the set"
+                               " writes its manifests there")
+        mirror.write_marker(self.conn, self.settings, store, credproxy.s3_writer(self.settings)[0],
+                            certifier.issuer(store), certifier.write_prefix(self.settings))
+        self._marked = True
 
     def _backup(self):
         if self.settings.orch_backup_dir:
@@ -78,7 +102,8 @@ class Worker:
     def _run_actions(self):
         # Certifications run on the certifier thread: hashing a stack must
         # never delay a cancel.
-        actions.run_due(self.conn, self.deps, self.authorize, exclude={certifier.KIND, certifier.WITHDRAW})
+        actions.run_due(self.conn, self.deps, self.authorize, exclude={certifier.KIND, certifier.WITHDRAW,
+                                                                   certifier.DECERTIFY})
 
     def _note(self, step, error, conn=None):
         """Record a step's failure or recovery as an event, but only when it
@@ -148,7 +173,9 @@ class Worker:
         n = actions.recover(self.conn)
         if n:
             log.warning("recovered %d interrupted action(s)", n)
-        if self.path and self.settings.orch_manifests_project:
+        if self.path and self.settings.orch_manifests_project and not self.settings.orch_owns_set:
+            # Until M8b: the set is read from bits-manifests and its certifications
+            # compared. Once the worker owns the set, it mirrors it there instead.
             self.shadow = shadow.Runner(self.path, self.settings, self.deps, self.interval,
                                         self._stop, lambda c, step, err: self._note(step, err, c))
             self.shadow.start()

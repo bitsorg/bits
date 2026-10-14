@@ -153,6 +153,15 @@ class GitLabForge:
                 return False
             raise
 
+    def file_exists(self, path, ref):
+        return self._file_exists(path, ref)
+
+    def create_commit(self, branch, actions, message):
+        """One commit of *actions* (the commits API's create/update/delete) on
+        *branch*; returns it (its id is the sha)."""
+        return self._json("POST", "/repository/commits",
+                          {"branch": branch, "commit_message": message, "actions": actions})
+
     def put_file(self, path, branch, content_b64, message):
         """Create or update a repo file (base64 content) on `branch`. Upsert: PUT
         when it exists, else POST. Raises ForgeError on failure."""
