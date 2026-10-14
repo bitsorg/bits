@@ -59,8 +59,11 @@ def push(conn, settings, forge, limit=5):
             acts = []
             for path, body in sorted(adds.items()):
                 fp = "manifests/" + path
-                acts.append({"action": "update" if forge.file_exists(fp, branch) else "create",
-                             "file_path": fp, "content": body.decode()})
+                if not forge.file_exists(fp, branch):
+                    acts.append({"action": "create", "file_path": fp, "content": body.decode()})
+                elif forge.file_raw(fp, branch) != body:
+                    acts.append({"action": "update", "file_path": fp, "content": body.decode()})
+                # (already there as it is: pushed before a crash, nothing to commit)
             for path in sorted(gone):
                 fp = "manifests/" + path
                 if forge.file_exists(fp, branch):

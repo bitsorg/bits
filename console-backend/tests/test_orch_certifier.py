@@ -549,7 +549,7 @@ class OwnedSetTest(_StoreBase):
         self.approve()
         self.certify()
         m = self.written()
-        self.assertNotIn("expires", m)
+        self.assertIn("expires", m)                    # bounds a node that remembers nothing
         self.assertEqual((m["sequence"], sorted(m["event"])), (1, ["hash", "seq"]))
         live = [r["path"] for r in self.conn.execute(
             "SELECT path FROM certified WHERE removed_version IS NULL")]
@@ -586,16 +586,21 @@ class OwnedSetTest(_StoreBase):
 
         class Forge:
             def __init__(self):
-                self.files, self.commits = set(), []
+                self.files, self.commits = {}, []
 
             def file_exists(self, path, ref):
                 return path in self.files
 
+            def file_raw(self, path, ref):
+                return self.files.get(path)
+
             def create_commit(self, branch, acts, message):
                 self.commits.append((branch, acts, message))
                 for a in acts:
-                    (self.files.discard if a["action"] == "delete" else self.files.add)(
-                        a["file_path"])
+                    if a["action"] == "delete":
+                        self.files.pop(a["file_path"], None)
+                    else:
+                        self.files[a["file_path"]] = a["content"].encode()
                 return {"id": "c%d" % len(self.commits)}
         forge = Forge()
         self.assertEqual(mirror.push(self.conn, self.settings, forge), 0)     # nothing yet
@@ -608,6 +613,10 @@ class OwnedSetTest(_StoreBase):
         self.assertEqual(self.conn.execute("SELECT commit_sha FROM set_versions ORDER BY"
                                            " version DESC").fetchone()[0], "c1")
         self.assertEqual(mirror.push(self.conn, self.settings, forge), 0)
+        # A crash after the commit, before it was recorded: pushed again, no commit.
+        self.conn.execute("UPDATE kv SET value = '1' WHERE key = 'mirror.version'")
+        self.assertEqual(mirror.push(self.conn, self.settings, forge), 1)
+        self.assertEqual(len(forge.commits), 1)
 
     def test_the_store_says_whose_manifests_these_are(self):
         from console_backend.orch import mirror
@@ -624,3 +633,16 @@ class OwnedSetTest(_StoreBase):
         self.settings.orch_owns_set = False
         with self.assertRaises(certifier.Refused):
             certifier.run_decertify({"group": "lcg", "build_id": "b2"}, self.deps)
+
+    def test_a_manifest_is_refreshed_well_before_it_expires(self):
+        self.assertEqual(certifier.withdrawals(self.conn, self.settings), 0)   # the switch
+        self.approve()
+        self.certify()
+        now = db.now_ms()
+        self.assertEqual(certifier.withdrawals(self.conn, self.settings, now=now), 0)
+        later = now + 11 * certifier.DAY_MS                          # past a third of 30 days
+        self.assertEqual(certifier.withdrawals(self.conn, self.settings, now=later), 1)
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.WITHDRAW})
+        m = self.written()
+        self.assertEqual(([p["hash"] for p in m["packages"]], m["sequence"]), (["h2"], 2))
+        self.assertEqual(certifier.withdrawals(self.conn, self.settings, now=later), 0)

@@ -68,10 +68,10 @@ class GitLabForge:
         project = project or settings.forge_project
         if not (project and credproxy.has(settings, kind)):
             return None
-        if not (credproxy.proxied(settings) or settings.gitlab_api_url):
+        if not (credproxy.proxied(settings, kind) or settings.gitlab_api_url):
             return None
         return cls(None, None, project, resolve=lambda: credproxy.gitlab(settings, kind),
-                   proxied=credproxy.proxied(settings))
+                   proxied=credproxy.proxied(settings, kind))
 
     def _post(self, path, body):
         try:

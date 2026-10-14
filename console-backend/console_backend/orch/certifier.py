@@ -136,8 +136,10 @@ def write_prefix(settings):
 
 
 def _valid_days(settings):
-    """The manifests' expiry in days: none once a sequence bounds them (M8b)."""
-    return None if settings.orch_owns_set else (settings.orch_certify_valid_days or None)
+    """The manifests' expiry in days. Kept once a sequence orders them too
+    (M8b): a node that remembers no sequence (new, or its state lost) is
+    bounded by it; the worker refreshes each manifest well before (refreshes)."""
+    return settings.orch_certify_valid_days or None
 
 
 def _chain_position(conn):
@@ -598,6 +600,13 @@ def _sign_and_write(conn, settings, store, row, sign=None, writer=None):
                      " updated_ms = ? WHERE id = ?",
                      (written, "" if written else "not written: a newer build's manifest is in place",
                       db.now_ms(), row["id"]))
+        if settings.orch_owns_set and row["set_path"] and row["set_body"] is not None:
+            # The set the worker owns holds what it signed, architecture by
+            # architecture (M8b).
+            certified.change(conn, add={row["set_path"]: bytes(row["set_body"])},
+                             cause="certify:%s:%s" % (row["pipeline_id"] or "cli",
+                                                      row["build_id"]))
+            conn.execute("UPDATE certify_runs SET set_body = NULL WHERE id = ?", (row["id"],))
         events.append(conn, "certify.signed", "pipeline:%d" % row["pipeline_id"], events.WORKER,
                       {"pipeline": row["pipeline_id"], "build_id": row["build_id"],
                        "arch": arch, "sha256": row["sha256"], "key_id": row["key_id"],
@@ -654,16 +663,6 @@ def run(params, deps):
         "SELECT arch FROM certify_runs WHERE pipeline_id = ? AND build_id = ? AND arch != '*'",
         (pid, bid)))
     with db.transaction(conn):
-        if settings.orch_owns_set:
-            # The set the worker owns now holds the build (M8b).
-            add = {r["set_path"]: bytes(r["set_body"]) for r in conn.execute(
-                "SELECT set_path, set_body FROM certify_runs WHERE pipeline_id = ? AND"
-                " build_id = ? AND arch != '*' AND set_path != '' AND set_body IS NOT NULL",
-                (pid, bid))}
-            if add:
-                certified.change(conn, add=add, cause="certify:%s:%s" % (pid or "cli", bid))
-        conn.execute("UPDATE certify_runs SET set_body = NULL WHERE pipeline_id = ? AND"
-                     " build_id = ?", (pid, bid))
         _upsert(conn, pid, bid, "*", "signed", "")
     return {"archs": archs}
 
@@ -744,6 +743,41 @@ def withdrawals(conn, settings, now=None):
             conn, WITHDRAW, {"arch": arch, "set_version": str(version)}, events.WORKER, "",
             True, idempotency_key="withdraw:%s:%d" % (arch, version), cause="set:%d" % version)
         n += int(created)
+    if settings.orch_owns_set:
+        n += refreshes(conn, settings, version, now)
+    return n
+
+
+def refreshes(conn, settings, version, now):
+    """M8b: re-sign each architecture of the set whose manifest in place is not
+    the worker's since the switch, or older than a third of the manifests'
+    lifetime, so none expires while the set still vouches for it."""
+    r = conn.execute("SELECT value FROM kv WHERE key = 'owns_set.since_ms'").fetchone()
+    if r is None:
+        with db.transaction(conn):
+            conn.execute("INSERT INTO kv (key, value) VALUES ('owns_set.since_ms', ?)",
+                         (str(now),))
+        since = now
+    else:
+        since = int(r["value"])
+    stale = now - int((_valid_days(settings) or 30) * DAY_MS / 3)
+    day = time.strftime("%Y%m%d", time.gmtime(now / 1000))
+    n = 0
+    for a in conn.execute("SELECT DISTINCT arch FROM certified WHERE removed_version IS NULL"
+                          " AND arch != ''").fetchall():
+        arch = a["arch"]
+        last = conn.execute("SELECT MAX(written_ms) FROM certify_runs WHERE arch = ? AND"
+                            " written_ms >= ?", (arch, since)).fetchone()[0]
+        if last is not None and last > stale:
+            continue
+        if conn.execute("SELECT 1 FROM certify_runs WHERE arch = ? AND state = 'signing'"
+                        " LIMIT 1", (arch,)).fetchone():
+            continue                               # a certification will write it anyway
+        _row, created = actions.request(
+            conn, WITHDRAW, {"arch": arch, "set_version": str(version), "refresh": day},
+            events.WORKER, "", True, idempotency_key="refresh:%s:%s" % (arch, day),
+            cause="refresh")
+        n += int(created)
     return n
 
 
@@ -790,7 +824,10 @@ def run_withdraw(params, deps):
     conn, settings = deps.conn, deps.settings
     sign, writer = getattr(deps, "sign", None), getattr(deps, "writer", None)
     arch, version = _name(params["arch"], "architecture"), int(params["set_version"])
-    bid = WITHDRAWAL_PREFIX + str(version)
+    bid = WITHDRAWAL_PREFIX + str(version) + ("-" + params["refresh"] if params.get("refresh") else "")
+    # Made from the set as it is when it runs, not as it was when requested: a
+    # build the set took in meanwhile must stay in.
+    version = certified.current(conn)[0] or version
     try:
         try:
             row = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND"
@@ -880,7 +917,7 @@ def run_decertify(params, deps):
     if not rows:
         raise Refused("build %s%s is not in the certified set"
                       % (params["build_id"], " (%s)" % params["arch"] if params.get("arch") else ""))
-    other = sorted({r["grp"] for r in rows} - {params["group"]})
+    other = sorted({r["grp"] for r in rows} - {params["group"].lower()})
     if other:
         raise Refused("build %s is certified in %s too, not only %s: decertify it there as well"
                       % (params["build_id"], ", ".join(other), params["group"]))
@@ -907,7 +944,7 @@ actions.register(actions.Kind(
             "required": ["group", "build_id"], "additionalProperties": False},
     approval="requester",
     subject=lambda p: "decertify:%s:%s" % (p["build_id"], p.get("arch") or "*"),
-    scope=lambda p, deps: p["group"],
+    scope=lambda p, deps: p["group"].lower(),
     run=run_decertify,
     safe_to_rerun=True,
     requesters=frozenset({"person"})))
@@ -918,10 +955,12 @@ actions.register(actions.Kind(
             " removed (re-signed with fewer entries only, so no pre-approval)",
     params={"type": "object",
             "properties": {"arch": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,200}$"},
-                           "set_version": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"}},
+                           "set_version": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"},
+                           "refresh": {"type": "string", "pattern": "^[0-9]{8}$"}},
             "required": ["arch", "set_version"], "additionalProperties": False},
     approval="requester",
-    subject=lambda p: "withdraw:%s:%s" % (p["arch"], p["set_version"]),
+    subject=lambda p: "withdraw:%s:%s%s" % (p["arch"], p["set_version"],
+                                           "-" + p["refresh"] if p.get("refresh") else ""),
     scope=lambda p, deps: "",
     run=run_withdraw,
     safe_to_rerun=True,

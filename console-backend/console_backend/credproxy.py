@@ -51,8 +51,19 @@ class NoRoute(Unavailable):
     """The proxy's config has no such route: that credential is not provided."""
 
 
-def proxied(settings):
+def proxied(settings, kind=None):
+    if kind == "mirror":
+        return bool(getattr(settings, "store_writer_agent_socket", ""))
     return bool(getattr(settings, "cred_proxy_agent_socket", ""))
+
+
+def _instance(settings, kind):
+    """(socket, host) of the proxy holding *kind*: the mirror's token is in the
+    store writer, which only the worker reaches (a backend that could push to
+    bits-manifests could stage BOMs for the way back)."""
+    if kind == "mirror":
+        return settings.store_writer_agent_socket, settings.store_writer_host
+    return None, None
 
 
 def endpoint(settings, route, refresh=False, socket=None, host=None):
@@ -95,8 +106,9 @@ def gitlab(settings, kind):
     """``(api_url, token)`` for GitLab calls of *kind* (ops, read, groups):
     through the proxy when it is configured, else straight to GitLab with the
     environment's token. ('', '') when neither is configured."""
-    if proxied(settings):
-        base, token = endpoint(settings, ROUTES[kind])
+    if proxied(settings, kind):
+        socket, host = _instance(settings, kind)
+        base, token = endpoint(settings, ROUTES[kind], socket=socket, host=host)
         path = urlsplit(settings.gitlab_api_url or "").path.rstrip("/") or "/api/v4"
         return base + path, token
     token = _env_token(settings, kind)
@@ -118,10 +130,11 @@ def has(settings, kind):
     """Whether a credential of *kind* is configured. Through the proxy: whether
     its config has the route (a proxy that cannot be reached counts as having
     it, so its calls fail as an outage, not as "not configured")."""
-    if not proxied(settings):
+    if not proxied(settings, kind):
         return bool(_env_token(settings, kind))
     try:
-        endpoint(settings, ROUTES[kind])
+        socket, host = _instance(settings, kind)
+        endpoint(settings, ROUTES[kind], socket=socket, host=host)
     except NoRoute:
         return False
     except Unavailable:
