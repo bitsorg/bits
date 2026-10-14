@@ -52,6 +52,10 @@ def append(conn, kind, subject, actor, payload=None, cause=None):
     """Append one event; call inside `db.transaction`. Returns its seq."""
     if not conn.in_transaction:
         raise RuntimeError("events.append must run inside a transaction")
+    if conn.execute("SELECT 1 FROM kv WHERE key = 'outside.behind'").fetchone():
+        # Appending now would fork the chain from the outside copy's.
+        raise RuntimeError("this database was restored from a copy older than the outside"
+                           " audit copy: nothing is recorded until `outside recover` is run")
     text = _canonical(payload or {})
     if len(text) > MAX_PAYLOAD:
         raise ValueError("event payload over %d bytes" % MAX_PAYLOAD)

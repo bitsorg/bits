@@ -241,6 +241,22 @@ class CertifierTest(CertifierBase):
         self.assertNotIn("*", {k for k, r in self.rows().items() if r["state"] == "refused"})
         self.assertIn("action.deferred", self.kinds())
 
+    def test_nothing_is_signed_while_the_outside_copy_is_not_in_step(self):
+        self.approve()
+        self.settings.orch_audit_url = "http://audit-log:8443"
+        signed = []
+        sign = self.deps.sign
+        self.deps.sign = lambda body: signed.append(1) or sign(body)
+        self.certify()                                   # never checked yet
+        a = self.conn.execute("SELECT * FROM actions").fetchone()
+        self.assertEqual((a["state"], a["attempts"], signed), ("approved", 0, []))
+        self.assertEqual(self.rows()["el9"]["state"], "signing")
+        self.conn.execute("INSERT INTO kv (key, value) VALUES ('outside.head', ?)",
+                          (json.dumps({"seq": 1, "hash": "x", "ms": db.now_ms()}),))
+        self.conn.execute("UPDATE actions SET not_before_ms = 0")
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
+        self.assertEqual((len(signed), self.rows()["el9"]["state"]), (1, "signed"))
+
     def test_the_limit_counts_signatures_not_updates(self):
         self.approve()
         self.certify()

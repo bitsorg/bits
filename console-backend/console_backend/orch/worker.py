@@ -17,6 +17,7 @@ later milestones.
     python -m console_backend.orch.worker      # BITS_ORCH_DB=/orch/orch.db
 """
 
+import json
 import logging
 import os
 import signal
@@ -107,7 +108,36 @@ class Worker:
             with open(self.heartbeat, "w") as fh:
                 fh.write(str(int(time.time())))
 
+    def _check_outside(self):
+        """Refuse to start on a database restored from a copy older than the
+        outside one: the first event appended would fork the chain."""
+        if self.outside is None:
+            return
+        # Signing waits for this run's first comparison, not one the database
+        # (perhaps a restored copy) remembers.
+        with db.transaction(self.conn):
+            r = self.conn.execute("SELECT value FROM kv WHERE key = 'outside.head'").fetchone()
+            if r:
+                self.conn.execute("UPDATE kv SET value = ? WHERE key = 'outside.head'",
+                                  (json.dumps(dict(json.loads(r["value"]), ms=0)),))
+        try:
+            gap = outside.behind(self.conn, self.outside)
+        except outside.OutsideError as e:
+            log.warning("cannot compare with the outside audit copy (%s); signing waits until"
+                        " it is in step", e)
+            return
+        if gap:
+            with db.transaction(self.conn):
+                self.conn.execute("INSERT INTO kv (key, value) VALUES ('outside.behind', ?)"
+                                  " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                                  (json.dumps({"seq": gap[0], "outside": gap[1]}),))
+            raise outside.OutsideError(
+                "this database ends at event %d, the outside audit copy at %d: it was restored"
+                " from an older copy. With the worker stopped, run `python -m"
+                " console_backend.orch.outside recover --by <you>`" % gap)
+
     def start(self):
+        self._check_outside()
         with db.transaction(self.conn):
             events.append(self.conn, "worker.started", "worker", events.WORKER,
                           {"schema": db.SCHEMA_VERSION})

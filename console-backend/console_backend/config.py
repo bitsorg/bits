@@ -169,6 +169,10 @@ class Settings:
         self.orch_audit_url = e.get("BITS_ORCH_AUDIT_URL", "")
         self.orch_audit_token = e.get("BITS_ORCH_AUDIT_TOKEN", "")
         self.orch_audit_cafile = e.get("BITS_ORCH_AUDIT_CAFILE", "")
+        # The worker signs only while the outside copy was found in step within
+        # this many minutes (and is not diverged).
+        self.orch_sign_outside_minutes = float(e.get("BITS_ORCH_SIGN_OUTSIDE_MINUTES", "10")
+                                               or "10")
         # The credentials proxy (M6): a second security-proxy instance holding the
         # GitLab tokens and the store's keys, which the backend and the worker
         # reach with gate tokens from its agent socket. Set, it replaces

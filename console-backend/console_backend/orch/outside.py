@@ -21,6 +21,20 @@ Each pass the worker asks the service for its head, the last event it holds:
 
 walks the outside copy and this database side by side and reports the first
 event where they differ; `status` shows the last head and any alarm.
+
+After this database is restored from a copy older than the outside one, the
+worker does not start (it would append onto the old chain and fork it). With the
+worker stopped,
+
+    python -m console_backend.orch.outside recover --by <user>
+
+appends the events the restored database lacks, each checked to link onto it,
+then records outside.recovered; the worker then starts and continues the chain.
+Until then the worker marks the database (outside.behind) and nothing,
+the worker's or the console's, appends an event. The recovered events are the
+history; the tables the restored copy holds are not rebuilt from them. The worker signs only while the outside copy is in step
+with this database (`sign_hold`), so a restored database never signs again
+before it has caught up.
 """
 
 import argparse
@@ -114,9 +128,12 @@ class Client:
         return self._call("GET", "/v1/events?after=%d&limit=%d" % (after, limit))[1].get("events", [])
 
 
+FIELDS = ("seq", "ts_ms", "kind", "subject", "actor_kind", "actor_id", "cause", "payload",
+          "prev_hash", "hash")
+
+
 def _row(r):
-    return {k: r[k] for k in ("seq", "ts_ms", "kind", "subject", "actor_kind", "actor_id",
-                              "cause", "payload", "prev_hash", "hash")}
+    return {k: r[k] for k in FIELDS}
 
 
 def _kv(conn, key):
@@ -229,6 +246,116 @@ def ship(conn, client, batch=BATCH, max_batches=MAX_BATCHES):
     return sent
 
 
+def _last(conn):
+    return conn.execute("SELECT * FROM events ORDER BY seq DESC LIMIT 1").fetchone()
+
+
+def behind(conn, client):
+    """``(local_seq, outside_seq)`` when the outside copy holds events after this
+    database's last one and this database is a prefix of it (restored from an
+    older copy); None otherwise (in step, or diverged: ship says how)."""
+    head = client.head()
+    theirs = int(head.get("seq") or 0)
+    last = _last(conn)
+    mine = last["seq"] if last else 0
+    if theirs <= mine:
+        return None
+    if mine:
+        got = client.events(mine - 1, 1)
+        if not got or _row(last) != {k: got[0].get(k) for k in FIELDS}:
+            return None
+    return mine, theirs
+
+
+def _well_formed(o):
+    """An event as this database writes them (what events._public can read)."""
+    try:
+        canonical = events._canonical(json.loads(o["payload"])) == o["payload"]
+    except (TypeError, ValueError):
+        return False
+    return (canonical and all(isinstance(o.get(k), int) and not isinstance(o.get(k), bool)
+                              for k in ("seq", "ts_ms"))
+            and all(isinstance(o.get(k), str) and o.get(k) for k in ("kind", "subject",
+                                                                       "actor_id"))
+            and o.get("actor_kind") in events.ACTOR_KINDS
+            and (o.get("cause") is None or isinstance(o.get("cause"), str)))
+
+
+def recover(conn, client, who, page=1000):
+    """Append the events this database lacks from the outside copy, each checked
+    to link onto this chain (all or none), then outside.recovered. Run with the
+    worker stopped. Returns how many were appended."""
+    n, broken = events.verify(conn)
+    if broken is not None:
+        raise OutsideError("this database's own chain breaks at event %d: restore another"
+                           " copy" % broken)
+    gap = behind(conn, client)
+    if gap is None:
+        return 0
+    mine, theirs = gap
+    last = _last(conn)
+    prev, after, rows = (last["hash"] if last else events.GENESIS), mine, []
+    while after < theirs:
+        got = client.events(after, page)
+        if not got:
+            break
+        for o in got:
+            seq = o.get("seq")
+            if (seq != after + 1 or not _well_formed(o)
+                    or o.get("prev_hash") != prev or events._digest(prev, o) != o.get("hash")):
+                raise OutsideError("the outside copy does not link at event %s: nothing recovered"
+                                   % seq)
+            rows.append({k: o.get(k) for k in FIELDS})
+            prev, after = o["hash"], seq
+            if after == theirs:
+                break
+    if after != theirs:
+        raise OutsideError("the outside copy ends at event %d, before its head %d: nothing"
+                           " recovered" % (after, theirs))
+    kinds = {}
+    for r in rows:
+        kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
+    with db.transaction(conn):
+        last = _last(conn)
+        if (last["seq"] if last else 0) != mine:
+            raise OutsideError("this database changed while recovering: stop the worker and"
+                               " the console backend, then try again")
+        conn.execute("DELETE FROM kv WHERE key = 'outside.behind'")
+        conn.executemany("INSERT INTO events (seq, ts_ms, kind, subject, actor_kind, actor_id,"
+                         " cause, payload, prev_hash, hash) VALUES (:seq, :ts_ms, :kind,"
+                         " :subject, :actor_kind, :actor_id, :cause, :payload, :prev_hash,"
+                         " :hash)", rows)
+        alarm = _kv(conn, ALARM)
+        conn.execute("DELETE FROM kv WHERE key = ?", (ALARM,))
+        conn.execute("INSERT INTO kv (key, value) VALUES ('outside.head', ?) ON CONFLICT(key)"
+                     " DO UPDATE SET value = excluded.value",
+                     (json.dumps({"seq": theirs, "hash": prev, "ms": db.now_ms()}),))
+        events.append(conn, "outside.recovered", "outside", events.Actor("person", who),
+                      {"from": mine + 1, "to": theirs, "count": len(rows), "kinds": kinds,
+                       "first_ms": rows[0]["ts_ms"], "last_ms": rows[-1]["ts_ms"],
+                       "alarm": json.loads(alarm) if alarm else None})
+    return len(rows)
+
+
+def sign_hold(conn, settings, now=None):
+    """Why the worker must not sign now, or None. It signs only while the outside
+    copy is in step with this database: not diverged, and checked by a recent
+    pass (BITS_ORCH_SIGN_OUTSIDE_MINUTES)."""
+    if not settings.orch_audit_url:
+        return None
+    alarm = _kv(conn, ALARM)
+    if alarm:
+        return ("the outside audit copy diverged (%s): no signing until it is resolved"
+                % str(json.loads(alarm).get("reason", ""))[:200])
+    head = json.loads(_kv(conn, "outside.head") or "null") or {}
+    age = (now or db.now_ms()) - int(head.get("ms") or 0)
+    if age > settings.orch_sign_outside_minutes * 60 * 1000:
+        return ("the outside audit copy has not been checked for %d minutes: no signing until"
+                " it is" % (age // 60000) if head else
+                "the outside audit copy has not been checked yet: no signing until it is")
+    return None
+
+
 def clear(conn, who):
     """Clear the alarm once its cause is resolved, so shipping resumes."""
     alarm = _kv(conn, ALARM)
@@ -268,9 +395,9 @@ def verify(conn, client, page=1000):
 def main(argv=None):
     from .. import config
     ap = argparse.ArgumentParser(prog="python -m console_backend.orch.outside")
-    ap.add_argument("command", choices=["verify", "status", "clear"])
+    ap.add_argument("command", choices=["verify", "status", "clear", "recover"])
     ap.add_argument("--db", default=None, help="the orchestrator database (default BITS_ORCH_DB)")
-    ap.add_argument("--by", default=None, help="clear: who resolved it (recorded)")
+    ap.add_argument("--by", default=None, help="clear, recover: who did it (recorded)")
     args = ap.parse_args(argv)
     settings = config.Settings()
     conn = db.open_checked(args.db or settings.orch_db)
@@ -285,6 +412,26 @@ def main(argv=None):
     client = Client.from_settings(settings)
     if client is None:
         raise SystemExit("BITS_ORCH_AUDIT_URL is not set")
+    if args.command == "recover":
+        if not args.by:
+            raise SystemExit("recover needs --by <user>")
+        path = args.db or settings.orch_db
+        try:
+            with db.worker_lock(path):
+                n = recover(conn, client, args.by)
+        except db.LockedError:
+            raise SystemExit("the worker is running: stop it first")
+        except OutsideError as e:
+            raise SystemExit(str(e))
+        if not n:
+            print("nothing to recover: not behind the outside copy (or diverged from it:"
+                  " see `verify`)")
+            return 0
+        got = events.since(conn, after=conn.execute("SELECT MAX(seq) FROM events")
+                           .fetchone()[0] - 1)[-1]["payload"]
+        print("recovered %d event(s), %d to %d: %s" % (n, got["from"], got["to"], ", ".join(
+            "%s %d" % kv for kv in sorted(got["kinds"].items()))))
+        return 0
     n, local_break = events.verify(conn)
     checked, problem = verify(conn, client)
     print("local chain: %d events, %s" % (n, "intact" if local_break is None

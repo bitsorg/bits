@@ -176,6 +176,95 @@ class ShipTest(_DB):
         self.assertIn("own chain breaks at 2", outside.verify(self.conn, self.out)[1])
 
 
+class RecoverTest(_DB):
+    def restored(self):
+        self.add(4)
+        outside.ship(self.conn, self.out)
+        self.conn.execute("DELETE FROM events WHERE seq > 2")      # restored from an old copy
+        self.conn.execute("DELETE FROM kv WHERE key = 'outside.head'")
+
+    def test_a_restored_database_gets_back_the_events_it_lacks(self):
+        self.restored()
+        self.assertEqual(outside.behind(self.conn, self.out), (2, 4))
+        self.assertEqual(outside.recover(self.conn, self.out, "carol"), 2)
+        self.assertEqual(events.verify(self.conn), (5, None))
+        self.assertEqual(self.kinds()[-1], "outside.recovered")
+        self.assertEqual(self.out.rows, [outside._row(r) for r in self.conn.execute(
+            "SELECT * FROM events WHERE seq <= 4 ORDER BY seq")])
+        self.assertEqual(outside.ship(self.conn, self.out), 1)      # and the chain goes on
+        self.assertIsNone(outside.status(self.conn)["alarm"])
+        self.assertIsNone(outside.behind(self.conn, self.out))
+        self.assertEqual(outside.recover(self.conn, self.out, "carol"), 0)
+
+    def test_an_outside_copy_that_does_not_link_gives_nothing(self):
+        self.restored()
+        self.out.rows[3]["payload"] = '{"i":99}'                     # edited outside
+        with self.assertRaises(outside.OutsideError):
+            outside.recover(self.conn, self.out, "carol")
+        self.assertEqual(events.verify(self.conn), (2, None))
+
+    def test_a_database_that_diverged_is_not_recovered(self):
+        self.restored()
+        with db.transaction(self.conn):                              # started on the old copy
+            events.append(self.conn, "worker.started", "worker", events.WORKER, {})
+        self.assertIsNone(outside.behind(self.conn, self.out))      # event 3 is not theirs
+        self.assertEqual(outside.recover(self.conn, self.out, "carol"), 0)
+
+    def test_the_worker_does_not_start_on_a_restored_database(self):
+        from types import SimpleNamespace
+        from console_backend.orch import worker
+        self.restored()
+        w = SimpleNamespace(outside=self.out, conn=self.conn)
+        with self.assertRaises(outside.OutsideError) as cm:
+            worker.Worker._check_outside(w)
+        self.assertIn("recover", str(cm.exception))
+        self.assertEqual(events.verify(self.conn), (2, None))        # nothing appended
+        with self.assertRaises(RuntimeError), db.transaction(self.conn):
+            events.append(self.conn, "approval.created", "x", events.WORKER, {})  # the console
+        outside.recover(self.conn, self.out, "carol")
+        worker.Worker._check_outside(w)
+        with db.transaction(self.conn):
+            events.append(self.conn, "worker.started", "worker", events.WORKER, {})
+
+    def test_signing_waits_for_a_comparison_after_start(self):
+        from types import SimpleNamespace
+        from console_backend.orch import worker
+        s = config.Settings(env={"BITS_ORCH_AUDIT_URL": "http://audit-log:8443"})
+        self.add(1)
+        outside.ship(self.conn, self.out)
+        self.assertIsNone(outside.sign_hold(self.conn, s))
+
+        class Down:
+            def head(self):
+                raise outside.OutsideError("unreachable")
+        with self.assertLogs("bits_orchestrator", "WARNING"):
+            worker.Worker._check_outside(SimpleNamespace(outside=Down(), conn=self.conn))
+        self.assertIn("not been checked", outside.sign_hold(self.conn, s))
+
+    def test_malformed_outside_events_are_not_imported(self):
+        self.restored()
+        r = dict(self.out.rows[2], actor_kind="nobody")
+        r["hash"] = events._digest(r["prev_hash"], r)
+        self.out.rows[2] = r
+        self.out.rows[3] = dict(self.out.rows[3], prev_hash=r["hash"])
+        self.out.rows[3]["hash"] = events._digest(r["hash"], self.out.rows[3])
+        with self.assertRaises(outside.OutsideError):
+            outside.recover(self.conn, self.out, "carol")
+        self.assertEqual(events.verify(self.conn), (2, None))
+
+    def test_signing_waits_for_the_outside_copy(self):
+        s = config.Settings(env={"BITS_ORCH_AUDIT_URL": "http://audit-log:8443"})
+        now = db.now_ms()
+        self.assertIn("not been checked yet", outside.sign_hold(self.conn, s, now))
+        self.add(1)
+        outside.ship(self.conn, self.out)
+        self.assertIsNone(outside.sign_hold(self.conn, s))
+        self.assertIn("not been checked for", outside.sign_hold(self.conn, s, now + 11 * 60000))
+        outside._alarm(self.conn, "rewritten", None)
+        self.assertIn("diverged (rewritten)", outside.sign_hold(self.conn, s))
+        self.assertIsNone(outside.sign_hold(self.conn, config.Settings(env={})))
+
+
 class FakeHTTP:
     def __init__(self, status, body):
         self.status, self.body, self.calls = status, body, []

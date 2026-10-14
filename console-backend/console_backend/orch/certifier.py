@@ -45,7 +45,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-from . import actions, certified, db, events, replay, shadow
+from . import actions, certified, db, events, outside, replay, shadow
 
 log = logging.getLogger("bits_orchestrator.certifier")
 KIND = "certify"
@@ -374,6 +374,9 @@ def _sign_and_write(conn, settings, store, row, sign=None, writer=None):
         if signed_today(conn) >= settings.orch_certify_daily_signs:
             raise actions.Defer("the worker reached its limit of %d signatures a day"
                                 % settings.orch_certify_daily_signs, 3600 * 1000)
+        hold = outside.sign_hold(conn, settings)
+        if hold:
+            raise actions.Defer(hold, 5 * 60 * 1000)
         if sign is None:
             from .. import signproxy
             env = signproxy.call(settings, trust.sign_bytes_via_proxy, body)
