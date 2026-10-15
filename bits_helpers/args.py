@@ -1587,14 +1587,17 @@ def add_build_arguments(subparsers, ctx):
   (no VM, no overhead).  On Linux, podman (rootless) is used only when --docker
   is active (a nested podman container inside the builder image) or when
   requested explicitly with --sandbox=podman; a plain local Linux build is not
-  sandboxed and never invokes podman.
+  sandboxed and never invokes podman. In the macOS sandbox a build may write
+  only its own files in the work dir, the temp dirs and a few caches.
   """)
   build_sandbox.add_argument(
-      "--sandbox", dest="sandbox", metavar="MODE", default="off",
+      "--sandbox", dest="sandbox", metavar="MODE", default=None,
       choices=["off", "auto", "podman", "sandbox-exec"],
       help=(
           "Recipe sandbox mode. "
-          "'off' (default): no sandboxing. "
+          "'off' (default): no sandboxing, unless $BITS_SANDBOX=1 or `sandbox: on` "
+          "in the active defaults asks for sandbox-exec on a macOS build without "
+          "--docker ($BITS_SANDBOX=0 overrides the defaults). "
           "'auto': sandbox-exec on macOS, nested podman when --docker is active "
           "and podman is present in the builder image (else off), and off on a "
           "local Linux build. "
@@ -1602,6 +1605,10 @@ def add_build_arguments(subparsers, ctx):
           "'sandbox-exec': macOS only."
       ),
   )
+  build_sandbox.add_argument(
+      "--sandbox-allow-write", dest="sandboxAllowWrite", metavar="PATH", default=[],
+      action="append",
+      help="With sandbox-exec, also let builds write under PATH (repeatable).")
   build_sandbox.add_argument(
       "--sandbox-image", dest="sandboxImage", metavar="IMAGE", default=None,
       help=(
@@ -2397,7 +2404,7 @@ def finaliseArgs(args, parser):
     # --sandbox-image implies --sandbox=podman. Promote from the mode-unset
     # states ("off" is the default, "auto" the legacy default); an explicit
     # "podman"/"sandbox-exec" is left as chosen.
-    if getattr(args, "sandboxImage", None) and getattr(args, "sandbox", "off") in ("off", "auto"):
+    if getattr(args, "sandboxImage", None) and getattr(args, "sandbox", None) in (None, "off", "auto"):
       args.sandbox = "podman"
 
   if "annotate" in args:

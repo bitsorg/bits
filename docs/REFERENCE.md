@@ -1047,6 +1047,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--container-use-workdir` | Mount the work directory at the same absolute path inside the container (without this flag it is mounted at `/container/bits/sw`). Ignored when `--cvmfs-prefix` is set. |
 | `--docker-platform PLATFORM` | Docker `--platform` for cross-compilation (e.g. `linux/arm64`). Inferred automatically from `--architecture`; pass `native` to suppress. Requires QEMU binfmt handlers. See [§22.2 Cross-compilation via QEMU](#222-cross-compilation-via-qemu). |
 | `--sandbox MODE` | Sandbox recipe builds: `off` (default), `auto`, `podman`, or `sandbox-exec` (macOS). See [§22.1 Recipe Sandbox](#221-recipe-sandbox). |
+| `--sandbox-allow-write PATH` | With `sandbox-exec`, also let builds write under PATH (repeatable). |
 | `--sandbox-image IMAGE` | Container image for `--sandbox=podman` when not using `--docker`. Implies `--sandbox=podman`. |
 | `--sandbox-network MODE` | Default network restriction inside the sandbox: `on` blocks network access, `off` allows it. A recipe's `sandbox_network:` always wins; falls back to `sandbox_network:` in the active defaults, then `on`. No effect where sandboxing is off. |
 | `--no-auto-cleanup` | Keep the build directories after a successful build. |
@@ -3921,7 +3922,7 @@ Bits can run each recipe build script inside an isolated sandbox to limit the da
 
 #### How it works
 
-Sandboxing is **off by default** (`--sandbox=off`); opt in with `--sandbox=auto` (or a specific mode), or persist it with `bits use build --sandbox auto`. With `auto`:
+Sandboxing is **off by default** (`--sandbox=off`); opt in with `--sandbox=auto` (or a specific mode), or persist it with `bits use build --sandbox auto`. A macOS build without `--docker` also runs in `sandbox-exec` when `BITS_SANDBOX=1` is set, or when the active defaults say `sandbox: on` under `system:` (where a sandbox cannot start, with a warning, it does not); `BITS_SANDBOX=0` turns that off, and `--sandbox` overrides both. The network is then blocked as with any sandbox, unless `sandbox_network: off` (below). With `auto`:
 
 | Platform | With `--sandbox=auto` | Mechanism |
 |----------|-----------------|-----------|
@@ -3941,7 +3942,7 @@ Pass `--sandbox MODE` to `bits build`:
 |------|-----------|
 | `auto` | Pick the best available option: `sandbox-exec` on macOS, nested podman when `--docker` is active and the builder image contains `podman`, and `off` on a local Linux build (no `--docker`). On local Linux, podman is neither used nor probed — request it explicitly with `--sandbox=podman` if you want it. |
 | `podman` | Always use podman; fails with an error if it is not available. With `--docker`, `podman` must exist in the builder image. Without `--docker`, `podman info` must succeed on the host and `--sandbox-image` must name the image (otherwise sandboxing is disabled with a warning). |
-| `sandbox-exec` | macOS only. Fails with an error on Linux. |
+| `sandbox-exec` | macOS only. Fails with an error on Linux, and where a sandbox cannot start (inside another seatbelt sandbox, which cannot nest; `auto` is then `off`, with a warning). |
 | `off` | (default) No sandboxing. Recipe runs directly on the host. |
 
 ```bash
@@ -3961,6 +3962,10 @@ Giving `--sandbox-image` alone selects `--sandbox=podman`. When `--docker` is us
 # Docker build with nested podman sandbox — same image used for both layers
 bits build --docker --sandbox=auto --docker-image alisw/slc9-builder:latest ROOT
 ```
+
+#### What a build may write (macOS)
+
+Under `sandbox-exec` a build may write only its own files in the work dir: its `BUILD/<hash>`, `INSTALLROOT/<hash>`, `TMP/<hash>`, its store tarball and tarball links under `TARS/`, its installation (`<arch>/[<family>/]<package>/<version>-<revision>`, with its `latest` links), and its source directory under `SOURCES/` (a development package's checkout too); besides those, the temp directories, `$CCACHE_DIR`, `~/Library/Caches`, and the module files a `post-relocate.sh` writes to `$MODULES_STAGING` or the work dir's `MODULES/`. Other caches in the home directory (`~/.cargo`, `~/.m2`, `~/.npm`, `~/.cache`, …) are refused: `--sandbox-allow-write` them, or point the tool at a cache under the temp directory. Another package's installation, tarballs or sources are out of its reach. `--sandbox-allow-write PATH` (repeatable) allows more. The profile is kept as `sandbox.sb` beside the package's `build.sh`, and replays its build with `sandbox-exec -f sandbox.sb /bin/bash -e -x build.sh`; a failed build says so, and `grep 'Operation not permitted'` in its log shows what was refused.
 
 #### Per-recipe network control
 

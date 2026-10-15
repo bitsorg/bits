@@ -13,6 +13,7 @@ import types
 import unittest
 from unittest.mock import patch, mock_open, MagicMock
 
+from bits_helpers import sandbox
 from bits_helpers.sandbox import (
     detect_dind,
     podman_available,
@@ -170,8 +171,9 @@ class ResolveSandboxModeTests(unittest.TestCase):
         self.assertIn("builder image", str(ctx.exception))
 
     @patch("sys.platform", "darwin")
+    @patch("bits_helpers.sandbox.sandbox_exec_refusal", return_value=None)
     @patch("bits_helpers.sandbox.sandbox_exec_available", return_value=True)
-    def test_explicit_sandbox_exec_macos(self, _s):
+    def test_explicit_sandbox_exec_macos(self, _s, _r):
         self.assertEqual("sandbox-exec", resolve_sandbox_mode("sandbox-exec", False))
 
     @patch("sys.platform", "linux")
@@ -195,8 +197,9 @@ class ResolveSandboxModeTests(unittest.TestCase):
 
     # auto, no docker, macOS
     @patch("sys.platform", "darwin")
+    @patch("bits_helpers.sandbox.sandbox_exec_refusal", return_value=None)
     @patch("bits_helpers.sandbox.sandbox_exec_available", return_value=True)
-    def test_auto_macos_sandbox_exec(self, _s):
+    def test_auto_macos_sandbox_exec(self, _s, _r):
         self.assertEqual("sandbox-exec", resolve_sandbox_mode("auto", False))
 
     @patch("sys.platform", "darwin")
@@ -391,7 +394,8 @@ class WrapSandboxExecTests(unittest.TestCase):
             workdir="/sw",
         )
         # make_sbpl_profile should have been called with allow_network=False
-        mock_profile.assert_called_once_with(False, "/sw")
+        mock_profile.assert_called_once()
+        self.assertEqual(mock_profile.call_args[0], (False, "/sw"))
 
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
     @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
@@ -400,7 +404,8 @@ class WrapSandboxExecTests(unittest.TestCase):
             LOCAL_CMD, _spec(sandbox_network="off"), _opts(sandbox="sandbox-exec"),
             workdir="/sw",
         )
-        mock_profile.assert_called_once_with(True, "/sw")
+        mock_profile.assert_called_once()
+        self.assertEqual(mock_profile.call_args[0], (True, "/sw"))
 
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
     @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
@@ -411,7 +416,8 @@ class WrapSandboxExecTests(unittest.TestCase):
             LOCAL_CMD, _spec(sandbox_network=False), _opts(sandbox="sandbox-exec"),
             workdir="/sw",
         )
-        mock_profile.assert_called_once_with(True, "/sw")
+        mock_profile.assert_called_once()
+        self.assertEqual(mock_profile.call_args[0], (True, "/sw"))
 
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
     @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
@@ -421,7 +427,8 @@ class WrapSandboxExecTests(unittest.TestCase):
             LOCAL_CMD, _spec(sandbox_network=True), _opts(sandbox="sandbox-exec"),
             workdir="/sw",
         )
-        mock_profile.assert_called_once_with(False, "/sw")
+        mock_profile.assert_called_once()
+        self.assertEqual(mock_profile.call_args[0], (False, "/sw"))
 
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
     @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
@@ -432,7 +439,8 @@ class WrapSandboxExecTests(unittest.TestCase):
             LOCAL_CMD, {"package": "P", "system": {"sandbox_network": "off"}},
             _opts(sandbox="sandbox-exec", sandbox_network="on"), workdir="/sw",
         )
-        mock_profile.assert_called_once_with(True, "/sw")
+        mock_profile.assert_called_once()
+        self.assertEqual(mock_profile.call_args[0], (True, "/sw"))
 
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
     @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
@@ -442,7 +450,8 @@ class WrapSandboxExecTests(unittest.TestCase):
                         "system": {"sandbox_network": "off"}},
             _opts(sandbox="sandbox-exec", sandbox_network="off"), workdir="/sw",
         )
-        mock_profile.assert_called_once_with(False, "/sw")
+        mock_profile.assert_called_once()
+        self.assertEqual(mock_profile.call_args[0], (False, "/sw"))
 
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
     @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
@@ -452,7 +461,8 @@ class WrapSandboxExecTests(unittest.TestCase):
             LOCAL_CMD, _spec(), _opts(sandbox="sandbox-exec", sandbox_network="off"),
             workdir="/sw",
         )
-        mock_profile.assert_called_once_with(True, "/sw")
+        mock_profile.assert_called_once()
+        self.assertEqual(mock_profile.call_args[0], (True, "/sw"))
 
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
     @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
@@ -463,7 +473,8 @@ class WrapSandboxExecTests(unittest.TestCase):
             _opts(sandbox="sandbox-exec", sandbox_network="off"),
             workdir="/sw",
         )
-        mock_profile.assert_called_once_with(False, "/sw")
+        mock_profile.assert_called_once()
+        self.assertEqual(mock_profile.call_args[0], (False, "/sw"))
 
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
     @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
@@ -472,7 +483,8 @@ class WrapSandboxExecTests(unittest.TestCase):
             LOCAL_CMD, _spec(), _opts(sandbox="sandbox-exec", sandbox_network="on"),
             workdir="/sw",
         )
-        mock_profile.assert_called_once_with(False, "/sw")
+        mock_profile.assert_called_once()
+        self.assertEqual(mock_profile.call_args[0], (False, "/sw"))
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +548,131 @@ class MakeSbplProfileTests(unittest.TestCase):
             self.assertNotIn('"/dev/rdisk', content)
         finally:
             os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# The macOS sandbox: one package's own files, nesting, the default
+# ---------------------------------------------------------------------------
+
+ENV = {"PKGHASH": "ab12cd", "PKGNAME": "zlib", "EFFECTIVE_ARCHITECTURE": "osx_arm64",
+       "PKGVERSION": "v1.3", "PKGREVISION": "2", "COMMIT_HASH": "51b7f2a",
+       "PKGFAMILY": "", "DEVEL_PREFIX": "", "BUILD_FAMILY": ""}
+
+
+class PackageWritePathsTests(unittest.TestCase):
+
+    def test_only_the_packages_own_files(self):
+        with patch.dict(os.environ, {"CCACHE_DIR": "/cc"}):
+            sub, lit, dirs = sandbox.package_write_paths(ENV, "/sw", "/bw", ["/extra"])
+        self.assertEqual(sub[:7], [
+            "/bw/BUILD/ab12cd", "/sw/INSTALLROOT/ab12cd", "/sw/TMP/ab12cd",
+            "/sw/TARS/osx_arm64/store/ab/ab12cd", "/sw/TARS/osx_arm64/zlib",
+            "/sw/osx_arm64/zlib/v1.3-2", "/sw/SOURCES/zlib/v1.3/51b7f2a"])
+        self.assertIn("/cc", sub)
+        self.assertIn("/extra", sub)
+        self.assertIn("/sw/MODULES", sub)
+        self.assertEqual(lit, ["/bw/BUILD/zlib-latest", "/sw/osx_arm64/zlib/latest"])
+        for d in ("/sw", "/bw", "/sw/TARS/osx_arm64/store/ab", "/sw/osx_arm64/zlib",
+                  "/sw/SOURCES/zlib/v1.3", "/sw/SPECS"):
+            self.assertIn(d, dirs)
+        self.assertNotIn("/sw/osx_arm64", sub)        # not every package's tree
+
+    def test_family_devel_prefix_and_build_family(self):
+        env = dict(ENV, PKGFAMILY="externals", PKGREVISION="", DEVEL_PREFIX="dev",
+                   BUILD_FAMILY="gcc")
+        sub, lit, _dirs = sandbox.package_write_paths(env, "/sw", "/sw")
+        self.assertIn("/sw/osx_arm64/externals/zlib/v1.3", sub)
+        self.assertIn("/sw/BUILD/zlib-latest-dev", lit)
+        self.assertIn("/sw/osx_arm64/externals/zlib/latest-gcc", lit)
+
+    def test_profile_kept_beside_build_sh_and_scoped(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        write = sandbox.package_write_paths(ENV, "/sw", "/sw")
+        path = make_sbpl_profile(False, "/sw", write=write, path=os.path.join(d, "sandbox.sb"),
+                                 replay="sandbox-exec -f sandbox.sb /bin/bash -e -x build.sh")
+        content = open(path).read()
+        self.assertTrue(content.startswith("; Written by bits"))
+        self.assertIn('(allow file-write* (subpath "/sw/INSTALLROOT/ab12cd"))', content)
+        self.assertNotIn('(subpath "/sw")', content)
+        self.assertIn('file-write-create', content)
+        self.assertIn('(subpath "/private/tmp")', content)
+
+    def test_a_latest_link_is_not_resolved_to_its_target(self):
+        import tempfile
+        d = os.path.realpath(tempfile.mkdtemp())
+        os.makedirs(os.path.join(d, "v1"))
+        os.symlink("v1", os.path.join(d, "latest"))
+        self.assertEqual(sandbox._both(os.path.join(d, "latest"), literal=True),
+                         [os.path.join(d, "latest")])
+        self.assertEqual(sandbox._both(os.path.join(d, "latest")),
+                         [os.path.join(d, "latest"), os.path.join(d, "v1")])
+
+    def test_a_quote_in_a_path_is_refused(self):
+        with self.assertRaises(ValueError):
+            make_sbpl_profile(False, "/sw", write=(['/a"b'], [], []))
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    def test_wrap_writes_the_scoped_profile(self, _r):
+        import tempfile
+        d = tempfile.mkdtemp()
+        opts = _opts(sandbox="sandbox-exec")
+        opts.sandboxAllowWrite = ["/extra"]
+        cmd = wrap_build_command(LOCAL_CMD, _spec(), opts, workdir="/sw", pkg_env=ENV,
+                                 build_workdir="/sw", script_dir=d)
+        self.assertIn(os.path.join(d, "sandbox.sb"), cmd)
+        self.assertIn('(subpath "/extra")', open(os.path.join(d, "sandbox.sb")).read())
+        self.assertIn("grep 'Operation not permitted'", sandbox.failure_hint(cmd))
+        self.assertEqual(sandbox.failure_hint(LOCAL_CMD), "")
+
+
+class NestingTests(unittest.TestCase):
+
+    def setUp(self):
+        sandbox._REFUSAL.clear()
+        self.addCleanup(sandbox._REFUSAL.clear)
+
+    @patch("bits_helpers.sandbox.subprocess.run", return_value=MagicMock(returncode=1))
+    def test_already_in_a_sandbox(self, _run):
+        self.assertIn("do not nest", sandbox.sandbox_exec_refusal())
+
+    @patch("bits_helpers.sandbox.subprocess.run", return_value=MagicMock(returncode=0))
+    def test_usable_and_tried_once(self, run):
+        self.assertIsNone(sandbox.sandbox_exec_refusal())
+        self.assertIsNone(sandbox.sandbox_exec_refusal())
+        run.assert_called_once()
+
+    @patch("sys.platform", "darwin")
+    @patch("bits_helpers.sandbox.sandbox_exec_available", return_value=True)
+    @patch("bits_helpers.sandbox.sandbox_exec_refusal", return_value="nested")
+    def test_explicit_refused_auto_off(self, _r, _a):
+        with self.assertRaises(ValueError):
+            resolve_sandbox_mode("sandbox-exec", False)
+        self.assertEqual(resolve_sandbox_mode("auto", False), "off")
+
+
+class DefaultModeTests(unittest.TestCase):
+
+    @patch("sys.platform", "darwin")
+    @patch("bits_helpers.sandbox.sandbox_exec_available", return_value=True)
+    @patch("bits_helpers.sandbox.sandbox_exec_refusal", return_value=None)
+    def test_env_or_defaults_turn_it_on_for_a_local_mac_build(self, _r, _a):
+        self.assertEqual(sandbox.default_mode("1", None, False), "sandbox-exec")
+        self.assertEqual(sandbox.default_mode(None, True, False), "sandbox-exec")
+        self.assertEqual(sandbox.default_mode("", "on", False), "sandbox-exec")
+        self.assertEqual(sandbox.default_mode("0", True, False), "off")   # env wins
+        self.assertEqual(sandbox.default_mode("1", None, True), "off")    # --docker
+        self.assertEqual(sandbox.default_mode(None, None, False), "off")
+
+    @patch("sys.platform", "darwin")
+    @patch("bits_helpers.sandbox.sandbox_exec_available", return_value=True)
+    @patch("bits_helpers.sandbox.sandbox_exec_refusal", return_value="nested")
+    def test_by_default_where_it_cannot_run_it_is_off(self, _r, _a):
+        self.assertEqual(sandbox.default_mode("1", None, False), "off")
+
+    @patch("sys.platform", "linux")
+    def test_never_elsewhere(self):
+        self.assertEqual(sandbox.default_mode("1", True, False), "off")
 
 
 if __name__ == "__main__":

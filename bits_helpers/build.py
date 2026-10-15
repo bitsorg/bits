@@ -1564,6 +1564,10 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     if excerpt:
       buildErrMsg += f"\n{bold}Error excerpt:{reset}\n"
       buildErrMsg += excerpt + "\n"
+    from bits_helpers.sandbox import failure_hint
+    hint = failure_hint(build_command)
+    if hint:
+      buildErrMsg += f"\n{bold}Sandbox:{reset}\n  {hint}\n"
 
   updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
   if spec["is_devel_pkg"]:
@@ -2864,6 +2868,9 @@ def build_one_package(p, ctx):
   buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
 
 
+  # What the macOS sandbox lets this package's build write is derived from it.
+  _pkg_env = {k: v for k, v in buildEnvironment if isinstance(v, str)}
+
   # In case the --docker options is passed, we setup a docker container which
   # will perform the actual build. Otherwise build as usual using bash.
   if args.docker:
@@ -2971,6 +2978,10 @@ def build_one_package(p, ctx):
       docker_active=bool(getattr(args, "docker", False)),
       container_workdir=container_workDir if getattr(args, "docker", False) else None,
       docker_image=getattr(args, "dockerImage", None),
+      pkg_env=_pkg_env,
+      build_workdir=abspath(args.workDir if spec["is_devel_pkg"]
+                            else os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)),
+      script_dir=abspath(scriptDir),
   )
 
 
@@ -3384,6 +3395,12 @@ def doBuild(args, parser):
   # A recipe's own sandbox_network field still overrides this per package
   # (handled in sandbox.wrap_build_command). YAML parses bare on/off as bools,
   # so normalise to the "on"/"off" strings the sandbox layer expects.
+  # The sandbox, when --sandbox is not given: $BITS_SANDBOX, else the defaults'
+  # `sandbox:` (on/off), turns on sandbox-exec for a macOS build outside Docker.
+  if getattr(args, "sandbox", None) is None:
+    from bits_helpers.sandbox import default_mode
+    args.sandbox = default_mode(os.environ.get("BITS_SANDBOX"), _system_opt("sandbox", None),
+                                bool(getattr(args, "docker", False)))
   if getattr(args, "sandboxNetwork", None) is None:
     _dn = _system_opt("sandbox_network", "on")
     if isinstance(_dn, bool):
