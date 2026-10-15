@@ -27,6 +27,8 @@ COVERED = (
   "bits_helpers/build_template.sh",
   "bits_helpers/initdotsh.py",
   "bits_helpers/relativize-configs.sh",
+  "bits_helpers/relocate-references.sh",
+  "bits_helpers/reuse_symlinks.py",
   "bits_helpers/relocate-me.sh",
   "bits_helpers/view-list.sh",
 )
@@ -36,7 +38,9 @@ COVERED = (
 # by review, not by this check.
 
 # Progress markers only change console output; package contents and BUILD_EPOCH are unchanged.
-COVERED_SHA256 = "5d6fa38ec5543f35f0d2b6fa7ab791e9c07f9e123345608a89cb70f983c053a1"
+# --symlink-packages-from is opt-in; leave the epoch unchanged to preserve strict reuse of
+# existing deployments. The staging and post-install helpers are covered here.
+COVERED_SHA256 = "103d313dd5e9a3b53f0f572afef2829b28b956a180a0e9595457bb4582c5588b"
 
 
 def covered_sha256(root=None):

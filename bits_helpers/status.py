@@ -17,6 +17,8 @@ from_store                A matching tarball exists in the local TARS store;
                           will be unpacked (fast path, no compilation).
 from_remote_store         Tarball only in the remote store; will be downloaded
                           then unpacked (requires --check-store to detect).
+symlink_from_deployment   A deployed package matches --symlink-packages-from;
+                          its payload will be linked into the work directory.
 build_from_source         Nothing found; will compile from scratch.
 hash_unknown              Git refs unavailable; state cannot be determined
                           accurately (e.g. with --no-fetch-repos).
@@ -88,6 +90,7 @@ FROM_STORE               = "from_store"
 FROM_REMOTE_STORE        = "from_remote_store"
 BUILD_FROM_SOURCE        = "build_from_source"
 HASH_UNKNOWN             = "hash_unknown"
+SYMLINK_FROM_DEPLOYMENT  = "symlink_from_deployment"
 
 # Human-readable labels and terminal colours for each state
 _STATE_LABEL: Dict[str, str] = {
@@ -96,6 +99,7 @@ _STATE_LABEL: Dict[str, str] = {
     ALREADY_INSTALLED:        "already installed",
     FROM_STORE:               "from store       (local tarball)",
     FROM_REMOTE_STORE:        "from store       (remote tarball)",
+    SYMLINK_FROM_DEPLOYMENT:  "symlink from deployment",
     BUILD_FROM_SOURCE:        "build from source",
     HASH_UNKNOWN:             "unknown          (no ref cache)",
 }
@@ -106,6 +110,7 @@ _ANSI: Dict[str, str] = {
     ALREADY_INSTALLED:        "\033[32m",   # green
     FROM_STORE:                "\033[36m",   # cyan
     FROM_REMOTE_STORE:         "\033[36m",   # cyan
+    SYMLINK_FROM_DEPLOYMENT:   "\033[36m",   # cyan
     BUILD_FROM_SOURCE:         "\033[31m",   # red
     HASH_UNKNOWN:              "\033[35m",   # magenta
 }
@@ -224,7 +229,7 @@ def _is_already_installed(spec: dict, work_dir: str, architecture: str) -> bool:
 
 
 def _classify(spec: dict, work_dir: str, architecture: str,
-              sync_helper=None, write_store=None) -> str:
+              sync_helper=None, write_store=None, symlink_cfg=None) -> str:
     """Return the state string for one resolved package spec."""
     pkg = spec["package"]
 
@@ -236,6 +241,17 @@ def _classify(spec: dict, work_dir: str, architecture: str,
         if spec.get("devel_hash", "") + spec.get("deps_hash", "") == old_devel_hash:
             return LOCAL_CHECKOUT_UNCHANGED
         return LOCAL_CHECKOUT
+
+    if symlink_cfg is not None:
+        from bits_helpers.reuse_symlinks import select_symlink_package, matching_local_install
+        match = select_symlink_package(spec, symlink_cfg, architecture)
+        if match:
+            spec["hash"] = match["hash"]
+            spec["revision"] = match["revision"]
+            if matching_local_install(spec, match, work_dir, architecture):
+                return ALREADY_INSTALLED
+            spec["symlink_source"] = match["source"]
+            return SYMLINK_FROM_DEPLOYMENT
 
     # Non-devel: check in order of cost
     if _is_already_installed(spec, work_dir, architecture):
@@ -331,7 +347,7 @@ def _emit_table(rows: List[dict], architecture: str) -> None:
     for r in rows:
         counts[r["state"]] = counts.get(r["state"], 0) + 1
     parts = []
-    for state in (ALREADY_INSTALLED, FROM_STORE, FROM_REMOTE_STORE,
+    for state in (ALREADY_INSTALLED, SYMLINK_FROM_DEPLOYMENT, FROM_STORE, FROM_REMOTE_STORE,
                   LOCAL_CHECKOUT_UNCHANGED, LOCAL_CHECKOUT, BUILD_FROM_SOURCE,
                   HASH_UNKNOWN):
         n = counts.get(state, 0)
@@ -350,6 +366,7 @@ def _emit_json(rows: List[dict], architecture: str) -> None:
                 "version": r["version"],
                 "hash": r.get("hash", ""),
                 "state": r["state"],
+                **({"source": r["source"]} if r.get("source") else {}),
             }
             for r in rows
         ],
@@ -480,7 +497,16 @@ def doStatus(args, parser) -> None:
         _apply_source_mode, _source_mode, defaults_store_url, hash_local_changes,
         prepare_hash_inputs, storeHook)
     from bits_helpers.hashing import storeHashes
+    from bits_helpers.build_config import BuildConfig
     from bits_helpers.log import dieOnError
+
+    source_root = getattr(args, "symlinkPackagesFrom", None)
+    if source_root:
+        args.symlinkPackagesFrom = abspath(os.path.expanduser(source_root))
+        if not os.path.isdir(args.symlinkPackagesFrom):
+            parser.error("--symlink-packages-from is not a directory: %s" %
+                         args.symlinkPackagesFrom)
+    symlink_cfg = BuildConfig.from_args(args)
 
     r = resolve_specs(args, parser)
     specs, packages, work_dir, failed = r["specs"], r["packages"], r["work_dir"], r["failed"]
@@ -574,6 +600,9 @@ def doStatus(args, parser) -> None:
         remote_store_url = ""
     if not remote_store_url and write_store_url:
         remote_store_url = write_store_url
+    if (symlink_cfg.symlink_packages_from and symlink_cfg.symlink_policy == "relaxed"
+            and write_store_url):
+        parser.error("--symlink-policy relaxed cannot be combined with --write-store")
 
     # Optional remote store for --check-store probing
     sync_helper = None
@@ -678,7 +707,7 @@ def doStatus(args, parser) -> None:
             spec["revision"] = "1"
 
         state = _classify(spec, work_dir, args.architecture, sync_helper,
-                          write_store=status_write_store)
+                          write_store=status_write_store, symlink_cfg=symlink_cfg)
         if spec["is_devel_pkg"]:
             # Build disables remote writes after reaching a development package.
             status_write_store = False
@@ -692,6 +721,7 @@ def doStatus(args, parser) -> None:
             "hash":        spec.get("hash", ""),
             "state":       state,
             "state_label": _STATE_LABEL[state],
+            "source": spec.get("symlink_source") if state == SYMLINK_FROM_DEPLOYMENT else None,
         })
 
     if hash_error_pkgs:

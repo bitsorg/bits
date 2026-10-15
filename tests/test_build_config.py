@@ -26,6 +26,8 @@ class BuildConfigFromArgsTest(unittest.TestCase):
                     memPerJobDefault=2048, parallelDownloads=8,
                     parallelSources=4, prefetchWorkers=3,
                     reuseOverlay="/sw/MODULES/ov", reuseCvmfsBase="/cvmfs/x/Packages",
+                    symlinkPackagesFrom="/scratch/deploy/Packages",
+                    symlinkPolicy="relaxed",
                     reuseBeacon="https://beacon", storeIntegrity=True,
                     monitor="on", monitorUrl="https://m", monitorInstance="i7",
                     monitorInterval=30.0, monitorDiskInterval=90.0,
@@ -43,6 +45,8 @@ class BuildConfigFromArgsTest(unittest.TestCase):
     self.assertEqual(cfg.prefetch_workers, 3)
     self.assertEqual(cfg.reuse_overlay, "/sw/MODULES/ov")
     self.assertEqual(cfg.reuse_cvmfs_base, "/cvmfs/x/Packages")
+    self.assertEqual(cfg.symlink_packages_from, "/scratch/deploy/Packages")
+    self.assertEqual(cfg.symlink_policy, "relaxed")
     self.assertEqual(cfg.reuse_beacon, "https://beacon")
     self.assertIs(cfg.store_integrity, True)
     self.assertEqual(cfg.monitor, "on")
@@ -77,6 +81,8 @@ class BuildConfigFromArgsTest(unittest.TestCase):
     self.assertEqual(cfg.prefetch_workers, -1)
     self.assertIsNone(cfg.reuse_overlay)
     self.assertIsNone(cfg.reuse_cvmfs_base)
+    self.assertIsNone(cfg.symlink_packages_from)
+    self.assertEqual(cfg.symlink_policy, "strict")
     self.assertIsNone(cfg.reuse_beacon)
     self.assertIs(cfg.store_integrity, False)
     self.assertIsNone(cfg.monitor)

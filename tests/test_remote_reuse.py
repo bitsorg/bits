@@ -20,6 +20,7 @@ class TestRemoteReuse(unittest.TestCase):
         ctx.args.defaults = ["release"]
         ctx.args.develPrefix = ctx.develPackageBranch = ""
         ctx.cfg.reuse_overlay = None
+        ctx.cfg.symlink_packages_from = None
         ctx.syncHelper.writeStore = ""
         ctx.mainPackage = "fftw"
         link = "fftw-3.3.10-local1.%s.tar.gz" % arch

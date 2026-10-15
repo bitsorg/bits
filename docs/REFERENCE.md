@@ -1046,6 +1046,8 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--reuse-from PATH\|cvmfs` | Reuse components already deployed on CVMFS, found through their published modulefiles at this absolute modules-tree path (unlike `--remote-store`, which is a tarball store). The literal `cvmfs` takes the location from the defaults `system:` layout (`module_dir` under `cvmfs_dir`) or, failing that, from `cvmfs_modules_template`. A trailing `::relaxed` or `::strict` also sets the reuse policy (e.g. `cvmfs::relaxed`); it must agree with `--reuse-policy` if both are given. Defaults to `$BITS_REUSE_FROM`. See [Reusing deployed components](#relaxed-cvmfs-reuse). |
 | `--reuse-policy {strict,relaxed}` | How a `--reuse-from` component is matched. `strict` (default): only on an exact content-hash match; the result is publishable. `relaxed`: any deployed build of the **same version** (revision and hash may differ), for fast local development on top of e.g. an LCG release, so only the top of the stack is built. Relaxed builds have *loose* provenance and cannot be published: combining them with `--write-store` is refused. Falls back to the defaults `reuse_policy:` value. |
 | `--build-local PKG[,PKG…]` | Packages to always build locally even when they could be reused (e.g. one you need patched), instead of taking them from `--reuse-from`. |
+| `--symlink-packages-from ROOT` | Link matching installed packages into the local work directory with private relocated initialization files. ROOT contains `ROOT/<architecture>/[family/]<package>/<version[-revision]>`; shared packages are found under `ROOT/share`, and a family-free layout is supported. No modulefiles are required. An existing local installation with the same build hash is kept as is. Selection skips development packages, virtual packages and `--build-local` entries. Unmatched packages proceed through normal store/build handling. The source installation must remain accessible. |
+| `--symlink-policy {strict,relaxed}` | Independent of `--reuse-policy`. `strict` (default) requires `.build-hash` to match the computed remote package hash. `relaxed` matches the architecture, family and version path without requiring a matching hash. Explicit `force_revision` values, including an empty revision, are respected. Otherwise the expected directory label is preferred, followed by sorted versions of the same package version. Relaxed builds have loose provenance and cannot use `--write-store`. |
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [The `architecture:` template](#architecture-string-and-the-architecture-template)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `--day DAY` | Value of the `{day}` nightly CVMFS path slot (e.g. `Fri`). Default: the UTC weekday, filled in only when a template uses `{day}`; `''` collapses the slot. Layout only — never hashed. See [bits store / bits cvmfs](#bits-store--bits-cvmfs-admin--ci-groups). |
@@ -1388,6 +1390,18 @@ Show what `bits build` would do for each package in the dependency tree, without
 bits status [options] PACKAGE [PACKAGE...]
 ```
 
+To inspect the same deployment selection as a symlink build, use matching
+architecture, defaults, deployment root and remote store options:
+
+```bash
+bits status -c cms.bits -a el9_amd64_gcc14 -w temp \
+  --symlink-packages-from /path/to/sw \
+  --remote-store b3://bits --check-store Python
+```
+
+`--check-store` checks remote dependencies before status chooses their hashes;
+this matters when some dependencies are absent from the deployment root.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--defaults PROFILE` | `release` | Defaults profile(s); use `::` to combine. |
@@ -1407,6 +1421,9 @@ bits status [options] PACKAGE [PACKAGE...]
 | `--remote-store URL` | _(none)_ | Remote binary store URL(s), comma-separated, looked up in order. Only consulted when `--check-store` is given. |
 | `--no-remote-store` | off | Disable any remote store, even a configured default. |
 | `--check-store` | off | Probe the remote store to detect tarballs not mirrored locally. Adds a network round-trip per uncached package. |
+| `--symlink-packages-from ROOT` | off | Report packages that `bits build` would link from `ROOT`. Uses the same architecture, family, version and hash selection. |
+| `--symlink-policy {strict,relaxed}` | `strict` | Strict requires the deployed `.build-hash` to match the computed remote hash; relaxed matches the package path. |
+| `--build-local PKG[,PKG...]` | _(none)_ | Exclude these packages from symlink selection. |
 | `--json` | off | Emit a machine-readable JSON report. |
 | `--docker`, `--docker-image IMAGE`, `--docker-extra-args ARGS` | off | As for `bits build --docker`: the system packages are checked in the image, and `own_hash` packages (the toolchain) hash its container fingerprint. Use the build's image to get the hashes of a `--docker` build; without it, every package is built. |
 
@@ -1417,6 +1434,7 @@ bits status [options] PACKAGE [PACKAGE...]
 | `already_installed` | Hash matches the installed package; nothing to do. |
 | `from_store` | Matching tarball found in the local TARS store; will be unpacked. |
 | `from_remote_store` | Tarball only in remote store; will be downloaded then unpacked. Detected only with `--check-store`. |
+| `symlink_from_deployment` | Matching deployed package will be linked into the work directory. JSON output includes its `source` path. |
 | `local_checkout` | A directory matching the package name exists in cwd; will be compiled from local sources. |
 | `local_checkout_unchanged` | Devel package whose content hash has not changed; rebuild would be skipped. |
 | `build_from_source` | No cached result found; will be compiled from scratch. |
@@ -4168,6 +4186,41 @@ bits build --reuse-from cvmfs::relaxed \
 Reused components are logged as **Reusing CVMFS overlay module … (not built)**;
 only the requested top package is **Compiling**. Use `--build-local PKG[,PKG…]` to force specific
 packages to build locally anyway (e.g. one you need patched).
+
+Use `--symlink-packages-from ROOT` to stage each selected dependency at
+`<work-dir>/<effective-arch>/<family>/<package>/<version-revision>`. Payload
+entries such as `bin`, `lib`, and `include` link to the deployed package.
+Following CMS `REFERENCE_PACKAGE_POST`, bits copies all of `etc/profile.d`
+when it contains `init.sh`, `etc/scram.d`, and `tools` when `tools/selected`
+exists. For SCRAM projects it also copies `.SCRAM` and `config`, makes them
+writable, and runs `config/SCRAM/projectAreaRename.pl` before replacing
+reference paths. Copied regular files are made writable; symlinks inside copied
+directories remain symlinks. `init.sh` retains bits' local architecture setup. Builds
+source this local copy, so environment-derived dependency paths are inside the
+work directory and can be rewritten by the consumer's normal relocation step.
+The deployment is never modified. Existing local installations are not
+overwritten; repeated staging of the same source and initialization is accepted.
+
+```bash
+bits build -c cms.bits -a el9_amd64_gcc14 -w temp \
+  --symlink-packages-from /path/to/sw Python
+```
+
+This requires access to the source installation while using the links. A user
+moving a consumer elsewhere must provide its compatible dependencies in the
+destination layout. The option does not rewrite config files in linked packages
+(`.pc`, `.la`, `*-config`). Instead, after POST_INSTALL it rewrites reference paths
+in the newly built consumer's regular text files, like CMS `relocateReference`.
+Exact dependency roots retain their local family and effective architecture;
+reference work-directory prefixes recorded by the reused packages are also
+mapped to the local work directory. This runs before `.bits-relocate` is collected
+and before packing, so later relocation can rewrite the resulting local paths.
+Relocation uses CMS's `find`/`xargs`/`grep`/`perl` pattern: it substitutes each
+literal prefix globally, without restricting matches to path boundaries or
+special config extensions. It skips symlinks and binary files. Rewriting a leaked `BUILD/...` path does not
+provide the missing build directory; such references still need a recipe fix.
+`--reuse-from` continues to select packages through deployed modulefiles and
+source their initialization files directly; it does not create local package links.
 
 **Policy.** `--reuse-policy strict` (default) reuses a component only on an exact
 content-hash match, so the build stays reproducible and publishable.

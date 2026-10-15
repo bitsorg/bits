@@ -102,7 +102,8 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # A not-needed dependency (build-only, of a reused package) is not installed.
   _reqs = [d for d in spec.get("requires", ()) if not specs[d].get("not_needed")]
   _reused_set = {d for d in _reqs
-                 if reuse_cvmfs_base and specs[d].get("reuse_module_id")}
+                 if reuse_cvmfs_base and specs[d].get("reuse_module_id")
+                 and not specs[d].get("reuse_symlinked")}
 
   def _reused_dep_lines(d):
     # Point the deployed init.sh's "$WORK_DIR/$BITS_ARCH_PREFIX" at the CVMFS
@@ -121,7 +122,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       'unset _bits_swd _bits_sap',
     ]
 
-  if _reused_set:
+  if _reused_set or any(specs[d].get("reuse_symlinked") for d in _reqs):
     # Emit deps in topological order (prerequisites first) so a dep set up
     # before a reused dep whose deployed init.sh transitively references it —
     # e.g. a locally-built bits-recipe-tools before a reused CMake — sets its
@@ -161,7 +162,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       '  *) export PKG_CONFIG_PATH="$_bits_rpc${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" ;;',
       'esac',
       'unset _bits_rpc _bits_root _bits_pcd _bits_pc',
-    ])
+    ] if _reused_roots else [])
   else:
     lines.extend(_dep_init_path(dep) for dep in _reqs)
 

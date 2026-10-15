@@ -27,6 +27,8 @@ ARCHITECTURE_ERROR = "Unknown / unsupported architecture: foo.\n\n.*"
 PARSER_ERRORS = {
   "build --force-unknown-architecture": BUILD_MISSING_PKG_ERROR,
   "build --force-unknown-architecture zlib --foo": 'unrecognized arguments: --foo',
+  "build --force-unknown-architecture zlib --symlinks": 'unrecognized arguments: --symlinks',
+  "status zlib --symlinks": 'unrecognized arguments: --symlinks',
   "init --docker-image": 'unrecognized arguments: --docker-image',
   "builda --force-unknown-architecture zlib" : "argument action: invalid choice: 'builda'.*",
   "build --force-unknown-architecture zlib --no-system --always-prefer-system" : 'argument --prefer-system/--always-prefer-system: not allowed with argument --no-system',
@@ -45,6 +47,10 @@ class FakeExit(Exception):
   pass
 
 CORRECT_BEHAVIOR = [
+  ((), "build --force-unknown-architecture gcc --symlink-packages-from /deploy --symlink-policy relaxed", [("symlinkPolicy", "relaxed"), ("symlinkPackagesFrom", "/deploy")]),
+  ((), "build --force-unknown-architecture gcc --reuse-from /deployment/Modules/modulefiles", [("reuseFrom", "/deployment/Modules/modulefiles"), ("symlinkPackagesFrom", None)]),
+  ((), "build --force-unknown-architecture gcc --reuse-from /deployment/Modules/modulefiles --symlink-packages-from /local/Packages", [("symlinkPackagesFrom", "/local/Packages")]),
+  ((), "build --force-unknown-architecture gcc", [("symlinkPackagesFrom", None)]),
   ((), "build --force-unknown-architecture zlib"                                       , [("action", "build"), ("workDir", "sw"), ("referenceSources", "sw/MIRROR")]),
   ((), "init"                                                                          , [("action", "init"), ("workDir", "sw"), ("referenceSources", "sw/MIRROR")]),
   ((), "version"                                                                       , [("action", "version")]),
@@ -55,6 +61,7 @@ CORRECT_BEHAVIOR = [
   ((), "build --force-unknown-architecture -u zlib"                                    , [("fetchRepos", True)]),
   ((), "build --force-unknown-architecture --no-fetch-repos zlib"                      , [("fetchRepos", False)]),
   ((), "status zlib"                                                                   , [("fetchRepos", True)]),
+  ((), "status zlib --symlink-packages-from /deploy --symlink-policy relaxed --build-local gcc", [("symlinkPackagesFrom", "/deploy"), ("symlinkPolicy", "relaxed"), ("buildLocal", "gcc")]),
   ((), "status --no-fetch-repos zlib"                                                  , [("fetchRepos", False)]),
   ((), "build --force-unknown-architecture -j 10 zlib --disable gcc --disable foo"     , [("disable", ["gcc", "foo"])]),
   ((), "build --force-unknown-architecture -j 10 zlib --disable gcc --disable foo,bar" , [("disable", ["gcc", "foo", "bar"])]),

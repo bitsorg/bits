@@ -26,11 +26,12 @@ INSTALLED = "installed"
 LOCAL_TARBALL = "local tarball"
 REMOTE = "from store"
 OVERLAY = "from overlay"
+SYMLINK = "symlink from deployment"
 REMOTE_UNSIGNED = "build (unsigned)"     # in the store, but no signed manifest vouches for it
 BUILD = "build"
 DEVEL = "build (development)"
 NOT_NEEDED = "not needed"
-REUSED = (INSTALLED, LOCAL_TARBALL, REMOTE, OVERLAY)
+REUSED = (INSTALLED, LOCAL_TARBALL, REMOTE, OVERLAY, SYMLINK)
 LIST_WORKERS = 16     # store listings at once: one request each, mostly latency
 
 
@@ -101,7 +102,7 @@ def _local(spec, eff, work_dir, write_store):
 
 
 def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
-             overlay=None):
+             overlay=None, symlink=None):
   """Return (state, hash, revision) for *spec*, mirroring build_one_package.
 
   *trusted* is None (signed reuse off) or the verified {(arch, hash): sha256} map; *overlay* is a
@@ -111,6 +112,13 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
   eff = effective_arch(spec, arch)
   if spec.get("is_devel_pkg"):
     return DEVEL, spec["local_revision_hash"], ""
+  if symlink is not None:
+    match = symlink(spec)
+    if match:
+      from bits_helpers.reuse_symlinks import matching_local_install
+      if matching_local_install(spec, match, work_dir, arch):
+        return INSTALLED, match["hash"], match["revision"]
+      return SYMLINK, match["hash"], match["revision"]
   if overlay is not None and overlay(spec):
     return OVERLAY, spec["remote_revision_hash"], ""
   forced = spec.get("force_revision") if "force_revision" in spec else None
@@ -258,7 +266,8 @@ def print_plan(rows, store_checked, title="Dry run: build plan (nothing built)")
   reused = sum(count(s) for s in REUSED)
   summary = ["%d reused (%d installed, %d local tarball, %d from store%s), %d to build%s" % (
       reused, count(INSTALLED), count(LOCAL_TARBALL), count(REMOTE),
-      (", %d from overlay" % count(OVERLAY)) if count(OVERLAY) else "",
+      ((", %d from overlay" % count(OVERLAY)) if count(OVERLAY) else "") +
+      ((", %d symlinked" % count(SYMLINK)) if count(SYMLINK) else ""),
       len(rows) - reused - count(NOT_NEEDED),
       (", %d not needed" % count(NOT_NEEDED)) if count(NOT_NEEDED) else "")]
   if count(REMOTE_UNSIGNED):
@@ -417,6 +426,8 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
         what = "Checking the remote store for the hashes that changed"
     except Exception as exc:     # the plan then lists one package at a time
       debug("cannot list the store ahead: %s", exc)
+  from bits_helpers.reuse_symlinks import select_symlink_package
+  symlink = lambda spec: select_symlink_package(spec, cfg, args.architecture)   # noqa: E731
   states, unuploadable = {}, set()
   for p in build_order:
     spec = specs[p]
@@ -425,7 +436,7 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
       raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH))
     state, spec["hash"], spec["revision"] = classify(
         spec, args.architecture, work_dir, lister, can_list, write_store, trusted,
-        overlay)
+        overlay, symlink=symlink)
     debug("Plan %s: %s (hash %s, candidates %s)", p, state, spec["hash"],
           ", ".join(spec["remote_hashes"]))
     states[p] = state

@@ -6,10 +6,12 @@
 import json
 import os
 import re
+import shutil
 import tempfile
 import unittest
 from collections import OrderedDict
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from bits_helpers.status import (
@@ -20,6 +22,7 @@ from bits_helpers.status import (
     HASH_UNKNOWN,
     LOCAL_CHECKOUT,
     LOCAL_CHECKOUT_UNCHANGED,
+    SYMLINK_FROM_DEPLOYMENT,
     _classify,
     _emit_json,
     _emit_table,
@@ -29,6 +32,7 @@ from bits_helpers.status import (
 )
 from bits_helpers.hashing import storeHashes
 from bits_helpers.build import add_initdotsh_hash_marker, prepare_hash_inputs
+from bits_helpers.build_config import BuildConfig
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -96,6 +100,65 @@ def _write_tars_symlink(work_dir: str, arch: str, pkg: str, version: str,
     )
     if not os.path.exists(symlink_path):
         os.symlink(rel_target, symlink_path)
+
+
+# ── _try_populate_refs ─────────────────────────────────────────────────────────
+
+class TestStatusSymlinkSelection(unittest.TestCase):
+    def test_selection_matches_build_policy_and_reports_source(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            deployment = os.path.join(tmpdir, "deployment")
+            work = os.path.join(tmpdir, "work")
+            source = os.path.join(deployment, "arch", "external", "mylib", "1.0-1")
+            os.makedirs(os.path.join(source, "etc", "profile.d"))
+            with open(os.path.join(source, "etc", "profile.d", "init.sh"), "w") as fh:
+                fh.write("# deployed init\n")
+            with open(os.path.join(source, ".build-hash"), "w") as fh:
+                fh.write("aabbcc" + "0" * 34 + "\n")
+            spec = _make_spec()
+            spec["pkg_family"] = "external"
+            cfg = BuildConfig.from_args(SimpleNamespace(
+                symlinkPackagesFrom=deployment, symlinkPolicy="strict"))
+            self.assertEqual(_classify(spec, work, "arch", symlink_cfg=cfg),
+                             SYMLINK_FROM_DEPLOYMENT)
+            self.assertEqual(spec["symlink_source"], source)
+            with patch("sys.stdout", new_callable=StringIO) as stdout:
+                _emit_json([dict(package="mylib", version="1.0", hash=spec["hash"],
+                                 state=SYMLINK_FROM_DEPLOYMENT, source=source)], "arch")
+            self.assertEqual(json.loads(stdout.getvalue())["packages"][0]["source"], source)
+
+            local = os.path.join(work, "arch", "external", "mylib", "1.0-1")
+            os.makedirs(os.path.join(local, "etc", "profile.d"))
+            with open(os.path.join(local, "etc", "profile.d", "init.sh"), "w") as fh:
+                fh.write("# installed init\n")
+            with open(os.path.join(local, ".build-hash"), "w") as fh:
+                fh.write("aabbcc" + "0" * 34 + "\n")
+            installed_spec = _make_spec()
+            installed_spec["pkg_family"] = "external"
+            self.assertEqual(_classify(installed_spec, work, "arch", symlink_cfg=cfg),
+                             ALREADY_INSTALLED)
+            shutil.rmtree(local)
+
+            with open(os.path.join(source, ".build-hash"), "w") as fh:
+                fh.write("different\n")
+            mismatched = _make_spec()
+            mismatched["pkg_family"] = "external"
+            self.assertEqual(_classify(mismatched, work, "arch", symlink_cfg=cfg),
+                             BUILD_FROM_SOURCE)
+            relaxed = BuildConfig.from_args(SimpleNamespace(
+                symlinkPackagesFrom=deployment, symlinkPolicy="relaxed"))
+            relaxed_spec = _make_spec()
+            relaxed_spec["pkg_family"] = "external"
+            self.assertEqual(_classify(relaxed_spec, work, "arch", symlink_cfg=relaxed),
+                             SYMLINK_FROM_DEPLOYMENT)
+            self.assertEqual(relaxed_spec["hash"], "different")
+            excluded = BuildConfig.from_args(SimpleNamespace(
+                symlinkPackagesFrom=deployment, symlinkPolicy="relaxed",
+                buildLocal="mylib"))
+            excluded_spec = _make_spec()
+            excluded_spec["pkg_family"] = "external"
+            self.assertEqual(_classify(excluded_spec, work, "arch", symlink_cfg=excluded),
+                             BUILD_FROM_SOURCE)
 
 
 # ── _try_populate_refs ─────────────────────────────────────────────────────────

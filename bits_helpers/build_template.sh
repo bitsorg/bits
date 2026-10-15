@@ -498,6 +498,14 @@ unset _pack_root
 # ${pcfiledir}, .cmake on ${CMAKE_CURRENT_LIST_DIR}; the grep guard leaves
 # already-relative configs untouched.
 if [ -w "$INSTALLROOT" ]; then
+  # Like CMS relocateReference: linked dependencies can emit their original
+  # prefixes into a NEW package's text files. Rewrite those local files before
+  # collecting .bits-relocate, so subsequent relocation sees WORK_DIR paths.
+  # The helper uses find/xargs/grep/perl and never follows symlink directories.
+  if [ -n "${BITS_REUSE_RELOCATIONS_FILE:-}" ]; then
+    bash "${BITS_SCRIPT_DIR}/bits_helpers/relocate-references.sh" \
+      "$INSTALLROOT" --file "$BITS_REUSE_RELOCATIONS_FILE"
+  fi
   bash "${BITS_SCRIPT_DIR}/bits_helpers/relativize-configs.sh" "$INSTALLROOT"
   # Find which files need relocation — only now, after every tree mutation, so
   # configs made relative above drop out and files written by POST_INSTALL hooks

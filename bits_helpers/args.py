@@ -712,6 +712,7 @@ def add_status_arguments(subparsers, ctx):
           "from_store (local tarball), from_remote_store (remote tarball, requires "
           "--check-store), local_checkout (development package, will rebuild), "
           "local_checkout_unchanged (development package, nothing changed), "
+          "symlink_from_deployment (matching deployed package), "
           "build_from_source (will compile), or hash_unknown (git refs not cached; "
           "e.g. with --no-fetch-repos)."
       ),
@@ -794,6 +795,18 @@ def add_status_arguments(subparsers, ctx):
       "--check-store", dest="checkStore", action="store_true", default=False,
       help=("Probe the remote store to detect tarballs not yet mirrored "
             "locally. Implies a network round-trip per package."),
+  )
+  status_parser.add_argument(
+      "--symlink-packages-from", dest="symlinkPackagesFrom", metavar="DEPLOYMENT-ROOT",
+      help="Report packages that bits build would link from this deployment.",
+  )
+  status_parser.add_argument(
+      "--symlink-policy", dest="symlinkPolicy", choices=["strict", "relaxed"],
+      default="strict", help="Match deployed packages by hash (strict) or path (relaxed).",
+  )
+  status_parser.add_argument(
+      "--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",
+      help="Exclude these packages from deployment symlink selection.",
   )
   status_parser.add_argument(
       "--json", dest="json_output", action="store_true", default=False,
@@ -1768,6 +1781,18 @@ def add_build_arguments(subparsers, ctx):
                                   "not configured. A trailing '::relaxed' or '::strict' also sets the reuse "
                                   "policy (e.g. 'cvmfs::relaxed'); it must agree with --reuse-policy if both "
                                   "are given. Defaults to $BITS_REUSE_FROM; an empty value turns reuse off."))
+  build_remote.add_argument("--symlink-packages-from", dest="symlinkPackagesFrom",
+                            metavar="DEPLOYMENT-ROOT", default=None,
+                            help=("Find installed packages under ROOT/<architecture>/[family/]<package>/"
+                                  "<version[-revision]>, or ROOT/share for shared packages. "
+                                  "Link matches into the work directory with private relocated "
+                                  "initialization files. No modulefiles or --reuse-from are needed."))
+  build_remote.add_argument("--symlink-policy", dest="symlinkPolicy",
+                            choices=["strict", "relaxed"], default="strict",
+                            help=("Package symlink selection: strict (default) requires .build-hash "
+                                  "to match a computed package hash; relaxed matches the architecture, "
+                                  "family and version path without checking the hash. "
+                                  "Independent of --reuse-policy."))
   build_remote.add_argument("--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",
                             help=("Comma-separated packages to always build locally even under "
                                   "--reuse-policy relaxed (e.g. a package you need patched), rather than "
