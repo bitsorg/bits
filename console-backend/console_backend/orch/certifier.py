@@ -112,10 +112,14 @@ def _decide(conn, pid, bid, state, reason, event=True, archs=False, **fields):
 
 
 def signed_today(conn, now=None):
-    """Signatures the worker made in the last day (each pipeline, build and
-    architecture signs once)."""
-    return conn.execute("SELECT COUNT(*) FROM certify_runs WHERE signed_ms > ?",
-                        ((now or db.now_ms()) - DAY_MS,)).fetchone()[0]
+    """Signatures the worker made in the last day: each is an event (a run made
+    again signs again), and the runs' own count covers those made before."""
+    since = (now or db.now_ms()) - DAY_MS
+    made = conn.execute("SELECT COUNT(*) FROM events WHERE subject = 'signatures' AND"
+                        " ts_ms > ?", (since,)).fetchone()[0]
+    runs = conn.execute("SELECT COUNT(*) FROM certify_runs WHERE signed_ms > ?",
+                        (since,)).fetchone()[0]
+    return max(made, runs)
 
 
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -639,6 +643,9 @@ def _sign_and_write(conn, settings, store, row, sign=None, writer=None):
         with db.transaction(conn):
             conn.execute("UPDATE certify_runs SET signature = ?, signed_ms = ?, updated_ms = ?"
                          " WHERE id = ?", (json.dumps(env), db.now_ms(), db.now_ms(), row["id"]))
+            events.append(conn, "certify.signature", "signatures", events.WORKER,
+                          {"arch": arch, "build_id": row["build_id"], "sha256": row["sha256"],
+                           "key_id": kid, "sequence": row["sequence"]})
     newer = _newer_in_place(conn, settings, store, row)
     written = None
     if not newer:
