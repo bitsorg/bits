@@ -355,26 +355,17 @@ def _recipe_source_prefixes(recipes_dir, rec, restricted):
     return prefixes, unresolved
 
 
-def _decertify_packages(console, packages, dry_run):
+def _decertify_packages(console, groups, packages, dry_run):
     """Ask bits-orchestrator to take *packages* (names) out of the certified BOMs
-    of every group the caller administers: each BOM is replaced by itself without
-    them (removal only), and the manifests are re-signed. Returns the number of
-    requests that did not succeed."""
+    of *groups* (those the caller administers): each BOM is replaced by itself
+    without them (removal only), and the manifests are re-signed. Returns the
+    number of requests that did not succeed."""
     from bits_helpers import orchestrated
     if dry_run:
         for name in sorted(packages):
-            info("  [dry-run] would ask the orchestrator to decertify %s in the groups you "
-                 "administer", name)
+            info("  [dry-run] would ask the orchestrator to decertify %s in %s", name,
+                 ", ".join(groups) or "the groups you administer")
         return 0
-    try:
-        groups = console.groups()
-    except orchestrated.RequestError as exc:
-        error("  the certified set: %s", exc)
-        return 1
-    if not groups:
-        error("  you administer no group of the certified set: %s still certified wherever "
-              "it was (an admin of those groups must enforce)", ", ".join(sorted(packages)))
-        return len(packages)
     failed = 0
     for name in sorted(packages):
         for group in groups:
@@ -443,11 +434,18 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
               "the bits-console URL (--console, $BITS_CONSOLE_URL) and a GitLab token",
               orchestrated.describe(marker))
         return 1
+    groups = []
     if marker and not dry_run:
         try:
             console.check()
+            groups = console.groups()
         except orchestrated.RequestError as exc:
             error("--enforce: %s", exc)
+            return 1
+        if not groups:
+            error("--enforce: you administer no group of %s's certified set, so nothing "
+                  "could be decertified: an admin of its groups must enforce",
+                  marker["issuer"])
             return 1
     act = "[dry-run] would" if dry_run else "will"
 
@@ -545,7 +543,7 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
     if marker:
         # One spelling per package: the set matches names case-insensitively.
         names = {n.lower(): n for n in sorted(found, reverse=True)}
-        if names and _decertify_packages(console, set(names.values()), dry_run):
+        if names and _decertify_packages(console, groups, set(names.values()), dry_run):
             error("Restricted objects were removed, but not every package was "
                   "decertified; re-run this command (deletions are idempotent)")
             return 1

@@ -211,7 +211,7 @@ class SignTest(unittest.TestCase):
     def test_sign_refuses_a_store_that_cannot_say(self):
         with patch("bits_helpers.orchestrated.for_store",
                    side_effect=orchestrated.Unknown("x")):
-            with self.assertRaisesRegex(_Parser.Error, "no-store-check"):
+            with self.assertRaisesRegex(_Parser.Error, "cannot tell"):
                 certify._refuse_orchestrated("b3://bkt", "/tmp/sw", "el9", _Parser())
 
 
@@ -301,9 +301,11 @@ class EnforceTest(unittest.TestCase):
         self.assertEqual(compliance.enforce_store("b3://bkt", self.rec, self.d,
                                                   console=self.Console(state="approved")), 0)
 
-    def test_no_group_to_decertify_in_fails_the_enforcement(self):
+    def test_no_group_to_decertify_in_fails_before_anything_is_touched(self):
         self.assertEqual(compliance.enforce_store("b3://bkt", self.rec, self.d,
                                                   console=self.Console(groups=())), 1)
+        self.assertEqual(json.loads(self.objects["MANIFESTS/b1/h-1.el9.json"])["packages"][0]
+                         ["package"], "Secret")
 
     def test_a_decertify_that_fails_fails_the_enforcement(self):
         console = self.Console(state="failed")

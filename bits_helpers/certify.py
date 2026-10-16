@@ -873,8 +873,8 @@ def _refuse_orchestrated(store_url, work_dir, arch, parser):
     try:
         marker = orchestrated.for_store(store_url, work_dir, arch)
     except orchestrated.Unknown as exc:
-        parser.error("sign: %s; it says whether bits-orchestrator signs this store's "
-                     "manifests (--no-store-check signs without asking)" % exc)
+        parser.error("sign: cannot tell whether bits-orchestrator signs this store's "
+                     "manifests: %s (the store's readers need MANIFESTS/orchestrator.json)" % exc)
     if marker:
         parser.error("sign: %s signs the manifests of %s (since %s): its certified set "
                      "changes only through it (bits certify, the decertify action)"
