@@ -399,6 +399,61 @@ class _StoreBase(CertifierBase):
         return json.loads(self.s3.docs["CANARY/common-manifest-el9.json"])
 
 
+class NumberInPlaceTest(_StoreBase):
+    """What the store holds is never replaced by a lower number."""
+
+    def test_a_half_written_manifest_is_finished(self):
+        self.approve()
+        key = "%s-el9.json" % certifier.write_prefix(self.settings)
+        put = self.writer.put_object
+
+        def body_only(Bucket, Key, Body, ContentType=None):   # the .sig put fails once
+            if Key.endswith(".sig") and not getattr(self, "_failed", False):
+                self._failed = True
+                raise OSError("down")
+            return put(Bucket=Bucket, Key=Key, Body=Body, ContentType=ContentType)
+        self.writer.put_object = body_only
+        self.certify()
+        self.conn.execute("UPDATE actions SET not_before_ms = 0")
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
+        sig = json.loads(self.s3.docs[key + ".sig"])
+        self.assertEqual(trust.verify_bytes(self.s3.docs[key], sig, self.trusted), self.kid)
+        self.assertIsNotNone(self.rows()["el9"]["written_ms"])
+
+    def test_a_manifest_numbered_higher_in_the_store_is_not_overwritten(self):
+        self.approve()
+        self.writer.fail = OSError("down")                     # signed, not written
+        self.certify()
+        key = "%s-el9.json" % certifier.write_prefix(self.settings)
+        self.s3.docs[key] = json.dumps({"packages": [], "sequence": 50}).encode()
+        self.conn.execute("UPDATE actions SET not_before_ms = 0")
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
+        self.assertEqual(json.loads(self.s3.docs[key])["sequence"], 50)
+        self.assertIn("newer", self.rows()["el9"]["reason"])
+
+    def test_an_overtaken_certification_is_not_signed_in_vain(self):
+        self.settings.orch_owns_set = True
+        self.approve()
+        signs = []
+        sign = self.deps.sign
+        self.deps.sign = lambda body: signs.append(1) or sign(body)
+        key = "%s-el9.json" % certifier.write_prefix(self.settings)
+        real_compute = certifier.compute
+
+        def compute(*a, **kw):                                 # another manifest lands meanwhile
+            out = real_compute(*a, **kw)
+            if not signs:
+                self.s3.docs[key] = json.dumps({"packages": [], "sequence": 7}).encode()
+            return out
+        with patch.object(certifier, "compute", compute):
+            self.certify()
+            self.conn.execute("UPDATE actions SET not_before_ms = 0")
+            actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
+        self.assertEqual(len(signs), 1)                        # only the one written
+        self.assertEqual(json.loads(self.s3.docs[key])["sequence"], 8)
+        self.assertEqual(certifier.signed_today(self.conn), 1)
+
+
 class WithdrawTest(_StoreBase):
     def test_a_bom_removed_from_the_set_is_withdrawn_without_a_preapproval(self):
         self.approve()

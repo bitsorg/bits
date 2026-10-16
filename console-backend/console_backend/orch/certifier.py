@@ -442,10 +442,19 @@ def next_sequence(conn, settings, store, arch):
     the store, so a restored database never gives a number again."""
     mine = conn.execute("SELECT MAX(sequence) FROM certify_runs WHERE arch = ?",
                         (arch,)).fetchone()[0] or 0
+    return max(mine, published(settings, store, arch)[0]) + 1
+
+
+def published(settings, store, arch):
+    """(sequence, sha256) of the architecture's manifest in the store: 0 for none
+    or an unnumbered one, the sha256 of its bytes (None for none). Raises when
+    it cannot tell."""
     s3, bucket = store
+    raw = None
     try:
-        doc = json.loads(s3.get_object(Bucket=bucket, Key="%s-%s.json" % (
-            write_prefix(settings), arch))["Body"].read())
+        raw = s3.get_object(Bucket=bucket, Key="%s-%s.json" % (
+            write_prefix(settings), arch))["Body"].read()
+        doc = json.loads(raw)
     except ValueError:
         # Retried (and seen as a failing step), not a refusal of the build.
         raise RuntimeError("the store's %s manifest is not JSON: no number until it is"
@@ -454,10 +463,9 @@ def next_sequence(conn, settings, store, arch):
         if not shadow._missing(e):
             raise                     # cannot tell: no number rather than a reused one
         doc = {}
-    published = doc.get("sequence") if isinstance(doc, dict) else None
-    if not isinstance(published, int) or isinstance(published, bool):
-        published = 0
-    return max(mine, published) + 1
+    seq = doc.get("sequence") if isinstance(doc, dict) else None
+    return (seq if isinstance(seq, int) and not isinstance(seq, bool) else 0,
+            hashlib.sha256(raw).hexdigest() if raw is not None else None)
 
 
 def _decertified(path):
@@ -563,6 +571,27 @@ def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_
     return out
 
 
+def _newer_in_place(conn, settings, store, row):
+    """Whether a manifest newer than *row*'s is in place: the store's numbered
+    above it, or as it but other bytes (the number readers enforce; the same
+    bytes are this run's own, half written); for a run without a number, one
+    written after it. A certification not in the owned set yet is then made
+    again from the set as it is now (Defer): the manifest in place lacks it."""
+    if row["sequence"] is not None:
+        seq, sha = published(settings, store, row["arch"])
+        newer = seq > row["sequence"] or (seq == row["sequence"] and sha != row["sha256"])
+    else:
+        newer = conn.execute("SELECT 1 FROM certify_runs WHERE arch = ? AND written_ms IS NOT"
+                             " NULL AND created_ms > ?", (row["arch"], row["created_ms"])
+                             ).fetchone() is not None
+    if newer and settings.orch_owns_set and row["set_body"] is not None:
+        with db.transaction(conn):
+            conn.execute("UPDATE certify_runs SET manifest = NULL, updated_ms = ? WHERE id = ?",
+                         (db.now_ms(), row["id"]))
+        raise actions.Defer("a newer %s manifest is in place: made again" % row["arch"], 0)
+    return newer
+
+
 def _sign_and_write(conn, settings, store, row, sign=None, writer=None):
     """Sign the stored bytes (once: a rerun reuses the kept signature) and
     write them. The groups' checks are made again on the bytes being signed."""
@@ -570,6 +599,7 @@ def _sign_and_write(conn, settings, store, row, sign=None, writer=None):
     from .. import authz
     arch = _name(row["arch"], "architecture")
     body = bytes(row["manifest"])
+    _newer_in_place(conn, settings, store, row)          # not signed in vain
     if row["signature"]:
         env = json.loads(row["signature"])
     else:
@@ -609,17 +639,9 @@ def _sign_and_write(conn, settings, store, row, sign=None, writer=None):
         with db.transaction(conn):
             conn.execute("UPDATE certify_runs SET signature = ?, signed_ms = ?, updated_ms = ?"
                          " WHERE id = ?", (json.dumps(env), db.now_ms(), db.now_ms(), row["id"]))
-    newer = conn.execute("SELECT 1 FROM certify_runs WHERE arch = ? AND written_ms IS NOT NULL"
-                         " AND created_ms > ?", (arch, row["created_ms"])).fetchone()
-    if newer and settings.orch_owns_set and row["set_body"] is not None:
-        # The manifest in place was made without this build, which is not in the
-        # set yet: make this one again from the set as it is now.
-        with db.transaction(conn):
-            conn.execute("UPDATE certify_runs SET manifest = NULL, updated_ms = ? WHERE id = ?",
-                         (db.now_ms(), row["id"]))
-        raise actions.Defer("a newer %s manifest is in place: made again" % arch, 0)
+    newer = _newer_in_place(conn, settings, store, row)
     written = None
-    if newer is None:
+    if not newer:
         if writer is None:
             from .. import credproxy
             writer = credproxy.s3_writer(settings)[0]
@@ -674,11 +696,10 @@ def run(params, deps):
                     for arch, body, fields in todo:
                         if arch in keep:
                             continue
-                        # New bytes: nothing of an earlier run of this arch may stay.
-                        conn.execute("DELETE FROM certify_runs WHERE pipeline_id = ? AND"
-                                     " build_id = ? AND arch = ?", (pid, bid, arch))
+                        # New bytes: no signature of an earlier run of this arch.
                         _upsert(conn, pid, bid, arch, "signing", "", manifest=body,
-                                approval_id=a["id"], approver=a["approver"], **fields)
+                                approval_id=a["id"], approver=a["approver"], signature=None,
+                                written_ms=None, **fields)
                 rows = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND"
                                     " build_id = ? AND arch != '*' AND approval_id = ?",
                                     (pid, bid, a["id"])).fetchall()
