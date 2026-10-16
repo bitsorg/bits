@@ -482,6 +482,43 @@ class WithdrawTest(_StoreBase):
         self.assertEqual((row["build_id"], row["state"], row["approver"]), ("set@3", "signed", ""))
         self.assertEqual(self.withdraw(), 0)                                   # done once
 
+    def _withdraw_with_failing_puts(self, suffix):
+        self.approve()
+        self.certify()
+        self.set_at("bbbb000", 8, {"lcg/b2.el9.host-1.json": dict(self.bom, certified_by=["alice"])})
+        self.set_at("cccc000", 9, {})                                          # b2 removed
+        put = self.writer.put_object
+
+        def body_only(Bucket, Key, Body, ContentType=None):
+            if Key.endswith(suffix):
+                raise OSError("down")
+            return put(Bucket, Key, Body, ContentType)
+        self.writer.put_object = body_only
+        certifier.withdrawals(self.conn, self.settings)
+        for _ in range(actions.MAX_ATTEMPTS + 1):                              # retries spent
+            self.conn.execute("UPDATE actions SET not_before_ms = 0")
+            actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.WITHDRAW})
+        certifier.failed_actions(self.conn)
+        self.writer.put_object = put
+
+    def test_a_failed_withdrawal_is_asked_for_again(self):
+        self._withdraw_with_failing_puts(".json")                              # nothing written
+        self.assertEqual(certifier.withdrawals(self.conn, self.settings), 1)
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.WITHDRAW})
+        self.assertEqual(self.written()["packages"], [])
+
+    def test_a_refused_withdrawal_asked_for_again_is_made(self):
+        self.approve()
+        self.certify()
+        self.set_at("bbbb000", 8, {"lcg/b2.el9.host-1.json": dict(self.bom, certified_by=["alice"])})
+        self.set_at("cccc000", 9, {})                                          # b2 removed
+        with patch.object(trust, "load_key_policy", lambda dirs=None: None):   # no policy, for now
+            self.withdraw()
+        row = self.conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = 0").fetchone()
+        self.assertEqual(row["state"], "refused")
+        self.assertEqual(self.withdraw(), 1)                                   # asked again
+        self.assertEqual(self.written()["packages"], [])
+
     def test_a_withdrawal_that_would_add_an_entry_is_refused(self):
         self.approve()
         self.certify()

@@ -68,6 +68,7 @@ DECERTIFY_PACKAGE = "decertify-package"
 DEFAULT_REMOTE = "https://gitlab.cern.ch/buncic/bits-manifests"
 WAIT_MS = 24 * 3600 * 1000            # how long a build waits for its pre-approval
 PER_PASS = 20
+WITHDRAW_TRIES = 5                    # withdraw actions per set version, each with its retries
 DAY_MS = 24 * 3600 * 1000
 
 
@@ -849,9 +850,17 @@ def withdrawals(conn, settings, now=None):
                 " certified s WHERE s.build_id = c.build_id AND s.arch = c.arch))) LIMIT 1",
                 (arch, NO_PIPELINE, now - WAIT_MS)).fetchone():
             continue
+        # Asked for again when it failed (a few times): a removal must not stay trusted.
+        failed = conn.execute("SELECT COUNT(*) FROM actions WHERE kind = ? AND subject = ? AND"
+                              " state = 'failed'", (WITHDRAW, "withdraw:%s:%d" % (arch, version))
+                              ).fetchone()[0]
+        if failed >= WITHDRAW_TRIES:
+            continue
         _row, created = actions.request(
             conn, WITHDRAW, {"arch": arch, "set_version": str(version)}, events.WORKER, "",
-            True, idempotency_key="withdraw:%s:%d" % (arch, version), cause="set:%d" % version)
+            True, idempotency_key="withdraw:%s:%d%s" % (arch, version,
+                                                         ":%d" % failed if failed else ""),
+            cause="set:%d" % version)
         n += int(created)
     if settings.orch_owns_set:
         n += refreshes(conn, settings, version, now)
@@ -942,12 +951,13 @@ def run_withdraw(params, deps):
         try:
             row = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND"
                                " build_id = ? AND arch = ?", (NO_PIPELINE, bid, arch)).fetchone()
-            if row is None:
+            if row is None or row["state"] in ("failed", "refused"):   # (asked for again)
                 body, fields = compute_withdrawal(conn, settings, deps.store(), arch, version,
                                                   probe=getattr(deps, "probe", None),
                                                   key_id=getattr(deps, "key_id", None))
                 with db.transaction(conn):
-                    _upsert(conn, NO_PIPELINE, bid, arch, "signing", "", manifest=body, **fields)
+                    _upsert(conn, NO_PIPELINE, bid, arch, "signing", "", manifest=body,
+                            signature=None, written_ms=None, **fields)
                 row = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND"
                                    " build_id = ? AND arch = ?", (NO_PIPELINE, bid, arch)).fetchone()
             if row["state"] == "signing" and conn.execute(
