@@ -244,9 +244,11 @@ source_up
 EOF
 
 cd "$BUILDROOT"
-ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest"
+# The "latest" links with /bin/ln: GNU ln -f replaces a link through a temporary
+# name beside it, which the macOS sandbox (sandbox.py) does not allow.
+/bin/ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest"
 if [[ $DEVEL_PREFIX ]]; then
-  ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest-$DEVEL_PREFIX"
+  /bin/ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest-$DEVEL_PREFIX"
 fi
 
 cd "$BUILDDIR"
@@ -571,11 +573,11 @@ fi
 # Last package built gets a "latest" mark.
 # dirname of $PKGPATH = $EFFECTIVE_ARCHITECTURE[/$PKGFAMILY]/$PKGNAME
 # B4 FIX: quote ${_VERREV} and $(dirname ...) so spaces in PKGPATH don't split.
-ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest"
+/bin/ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest"
 
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
-  ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest-${BUILD_FAMILY}"
+  /bin/ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest-${BUILD_FAMILY}"
 fi
 
 # When the package is definitely fully installed, install the file that marks
