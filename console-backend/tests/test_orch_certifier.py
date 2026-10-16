@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """M8a: the worker certifies, signs and writes builds itself."""
 
+import hashlib
 import json
 import os
 import tempfile
@@ -464,6 +465,84 @@ class NumberInPlaceTest(_StoreBase):
         self.assertEqual(certifier.signed_today(self.conn), 1)
 
 
+    def test_a_half_written_certification_whose_approval_is_revoked_is_put_back(self):
+        self.approve()
+        self.certify()                                         # b2 written
+        before = self.written()
+        now = db.now_ms()
+        self.s3.docs["MANIFESTS/b3/host-1.el9.json"] = dict(_bom("b3", "el9", ("r", "h3")),
+                                                            source_pipeline_id=8)
+        self.store[("el9", "h3")] = "sh3"
+        self.conn.execute("INSERT INTO pipelines (id, is_build, community, sha, variables,"
+                          " outcome, first_seen_ms) VALUES (8, 1, 'lcg', 'c0ffee', ?,"
+                          " 'success', ?)", (json.dumps({"CERTIFY": "true"}), now))
+        self.conn.execute("INSERT INTO builds (pipeline_id, build_id, bom_keys, recorded_ms)"
+                          " VALUES (8, 'b3', '[\"MANIFESTS/b3/host-1.el9.json\"]', ?)", (now,))
+        aid = self.approve(subject="8")
+        put = self.writer.put_object
+
+        def body_only(Bucket, Key, Body, ContentType=None):
+            if Key.endswith(".sig"):
+                raise OSError("down")
+            return put(Bucket, Key, Body, ContentType)
+        self.writer.put_object = body_only
+        self.certify()                                         # b3's bytes, not its .sig
+        self.writer.put_object = put
+        self.conn.execute("UPDATE approvals SET revoked_ms = ? WHERE id = ?", (db.now_ms(), aid))
+        self.conn.execute("UPDATE actions SET not_before_ms = 0")
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
+        self.assertEqual(certifier.repair(self.conn, self.settings, self.deps.store(),
+                                          self.writer), 1)
+        key = "%s-el9.json" % certifier.write_prefix(self.settings)
+        self.assertEqual(trust.verify_bytes(self.s3.docs[key], json.loads(
+            self.s3.docs[key + ".sig"]), self.trusted), self.kid)
+        self.assertEqual(self.written(), before)               # without b3
+        self.assertEqual(certifier.repair(self.conn, self.settings, self.deps.store(),
+                                          self.writer), 0)
+
+
+    def test_a_manifest_written_in_full_is_recorded_not_rolled_back(self):
+        self.approve()
+        self.certify()                                         # sequence 1, written
+        row = self.rows()["el9"]
+        body = json.dumps(dict(json.loads(bytes(row["manifest"])), sequence=2)).encode()
+        sig = trust.sign_bytes(body, trust.load_private_key(self.key))
+        key = "%s-el9.json" % certifier.write_prefix(self.settings)
+        self.s3.docs[key], self.s3.docs[key + ".sig"] = body, json.dumps(sig).encode()
+        self.conn.execute(                                     # both put, its row not updated
+            "INSERT INTO certify_runs (pipeline_id, build_id, arch, state, signature, sequence,"
+            " sha256, created_ms, updated_ms) VALUES (5, 'bc', 'el9', 'refused', ?, 2, ?, 1, 1)",
+            (json.dumps(sig), hashlib.sha256(body).hexdigest()))
+        self.assertEqual(certifier.repair(self.conn, self.settings, self.deps.store(),
+                                          self.writer), 1)
+        self.assertEqual(self.s3.docs[key], body)
+        self.assertIsNotNone(self.conn.execute("SELECT written_ms FROM certify_runs WHERE"
+                                               " build_id = 'bc'").fetchone()[0])
+
+
+    def test_only_the_manifest_whose_signature_is_in_place_is_put_back(self):
+        self.approve()
+        self.certify()                                         # sequence 1, lists h2
+        row = self.rows()["el9"]
+        m = json.dumps(dict(json.loads(bytes(row["manifest"])), sequence=2, packages=[])).encode()
+        key = "%s-el9.json" % certifier.write_prefix(self.settings)
+        self.s3.docs[key + ".sig"] = json.dumps(trust.sign_bytes(       # its row lost in a restore
+            m, trust.load_private_key(self.key))).encode()
+        c = json.dumps({"packages": [], "sequence": 3}).encode()
+        self.s3.docs[key] = c                                  # a certification's bytes over it
+        self.conn.execute(
+            "INSERT INTO certify_runs (pipeline_id, build_id, arch, state, signature, sequence,"
+            " sha256, created_ms, updated_ms) VALUES (5, 'bc', 'el9', 'refused', '{}', 3, ?, 1, 1)",
+            (hashlib.sha256(c).hexdigest(),))
+        self.assertEqual(certifier.repair(self.conn, self.settings, self.deps.store(),
+                                          self.writer), 1)
+        self.assertEqual(self.s3.docs[key], c)                 # not sequence 1 again
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM actions WHERE"
+                                           " idempotency_key = 'repair:el9:3'").fetchone()[0], 1)
+        self.assertEqual(certifier.repair(self.conn, self.settings, self.deps.store(),
+                                          self.writer), 0)
+
+
 class WithdrawTest(_StoreBase):
     def test_a_bom_removed_from_the_set_is_withdrawn_without_a_preapproval(self):
         self.approve()
@@ -501,9 +580,77 @@ class WithdrawTest(_StoreBase):
         certifier.failed_actions(self.conn)
         self.writer.put_object = put
 
+    def test_a_half_written_manifest_whose_action_failed_is_repaired(self):
+        self._withdraw_with_failing_puts(".sig")
+        key = "CANARY/common-manifest-el9.json"
+        self.assertIsNone(trust.verify_bytes(self.s3.docs[key], json.loads(
+            self.s3.docs[key + ".sig"]), self.trusted))                       # broken
+        self.assertEqual(certifier.repair(self.conn, self.settings, self.deps.store(),
+                                          self.writer), 1)
+        self.assertEqual(trust.verify_bytes(self.s3.docs[key], json.loads(
+            self.s3.docs[key + ".sig"]), self.trusted), self.kid)
+        self.assertEqual(certifier.withdrawals(self.conn, self.settings), 0)  # done
+
     def test_a_failed_withdrawal_is_asked_for_again(self):
         self._withdraw_with_failing_puts(".json")                              # nothing written
         self.assertEqual(certifier.withdrawals(self.conn, self.settings), 1)
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.WITHDRAW})
+        self.assertEqual(self.written()["packages"], [])
+
+    def _overtaken_by_a_half_written_certification(self):
+        self.approve()
+        self.certify()                                         # sequence 1, lists h2
+        self.set_at("bbbb000", 8, {"lcg/b2.el9.host-1.json": dict(self.bom, certified_by=["alice"])})
+        self.set_at("cccc000", 9, {})                          # b2 removed
+        self.writer.fail = OSError("down")
+        self.withdraw()                                        # sequence 2, not written
+        self.writer.fail = None
+        body = json.dumps({"packages": [], "sequence": 3}).encode()
+        self.s3.docs["CANARY/common-manifest-el9.json"] = body  # a certification's bytes only
+        self.conn.execute(
+            "INSERT INTO certify_runs (pipeline_id, build_id, arch, state, signature, sequence,"
+            " sha256, created_ms, updated_ms) VALUES (5, 'bc', 'el9', 'signing', '{}', 3, ?, ?, ?)",
+            (hashlib.sha256(body).hexdigest(), db.now_ms(), db.now_ms()))
+        self.conn.execute("UPDATE actions SET not_before_ms = 0")
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.WITHDRAW})
+        self.conn.execute("UPDATE certify_runs SET state = 'refused' WHERE build_id = 'bc'")
+
+    def test_a_withdrawal_overtaken_by_a_half_written_certification_is_made_again(self):
+        self._overtaken_by_a_half_written_certification()
+        self.assertEqual(certifier.repair(self.conn, self.settings, self.deps.store(),
+                                          self.writer), 1)
+        self.assertEqual(self.written()["sequence"], 1)        # put back
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.WITHDRAW})
+        self.assertEqual(self.written()["packages"], [])       # and re-signed from the set
+        self.assertGreater(self.written()["sequence"], 3)
+
+    def test_a_withdrawal_waits_for_a_half_written_manifest_to_be_repaired(self):
+        self._overtaken_by_a_half_written_certification()
+        self.writer.fail = OSError("down")                     # the put-back fails once
+        certifier.repair(self.conn, self.settings, self.deps.store(), self.writer)
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.WITHDRAW})
+        self.assertEqual(self.conn.execute("SELECT state FROM actions WHERE idempotency_key ="
+                                           " 'repair:el9:3'").fetchone()[0], "approved")
+        certifier.repair(self.conn, self.settings, self.deps.store(), self.writer)
+        self.conn.execute("UPDATE actions SET not_before_ms = 0")
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.WITHDRAW})
+        self.assertEqual(self.written()["packages"], [])
+
+    def test_the_half_written_manifest_in_place_is_repaired_not_the_last_signed(self):
+        self.approve()
+        self.certify()                                         # sequence 1, lists h2
+        self.set_at("bbbb000", 8, {"lcg/b2.el9.host-1.json": dict(self.bom, certified_by=["alice"])})
+        self.set_at("cccc000", 9, {})                          # b2 removed
+        r1 = json.dumps({"packages": [], "sequence": 2}).encode()
+        self.s3.docs["CANARY/common-manifest-el9.json"] = r1   # its bytes only
+        for bid, seq, sha in (("r1", 2, hashlib.sha256(r1).hexdigest()), ("r2", 3, "f" * 64)):
+            self.conn.execute(                                 # r2: signed, nothing put
+                "INSERT INTO certify_runs (pipeline_id, build_id, arch, state, signature,"
+                " sequence, sha256, created_ms, updated_ms) VALUES (5, ?, 'el9', 'failed',"
+                " '{}', ?, ?, 1, 1)", (bid, seq, sha))
+        certifier.withdrawals(self.conn, self.settings)
+        self.assertEqual(certifier.repair(self.conn, self.settings, self.deps.store(),
+                                          self.writer), 1)
         actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.WITHDRAW})
         self.assertEqual(self.written()["packages"], [])
 

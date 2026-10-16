@@ -949,6 +949,9 @@ def run_withdraw(params, deps):
     version = certified.current(conn)[0] or version
     try:
         try:
+            if _repairable(conn, settings, deps.store(), arch)[0] in ("signature", "previous"):
+                raise actions.Defer("the %s manifest in place is half-written: it is"
+                                    " repaired first" % arch, 60 * 1000)
             row = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND"
                                " build_id = ? AND arch = ?", (NO_PIPELINE, bid, arch)).fetchone()
             if row is None or row["state"] in ("failed", "refused"):   # (asked for again)
@@ -1152,7 +1155,8 @@ actions.register(actions.Kind(
     params={"type": "object",
             "properties": {"arch": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,200}$"},
                            "set_version": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"},
-                           "refresh": {"type": "string", "pattern": "^[0-9]{8}$"}},
+                           # a day, or r<sequence> after a repair
+                           "refresh": {"type": "string", "pattern": "^([0-9]{8}|r[0-9]{1,19})$"}},
             "required": ["arch", "set_version"], "additionalProperties": False},
     approval="requester",
     subject=lambda p: "withdraw:%s:%s%s" % (p["arch"], p["set_version"],
@@ -1163,6 +1167,106 @@ actions.register(actions.Kind(
     requesters=frozenset({"worker"})))
 
 
+
+
+def _in_place(settings, store, arch):
+    """(bytes, .sig bytes) of the architecture's manifest in the store, each None
+    when missing."""
+    s3, bucket = store
+    key = "%s-%s.json" % (write_prefix(settings), arch)
+    out = []
+    for k in (key, key + ".sig"):
+        try:
+            out.append(s3.get_object(Bucket=bucket, Key=k)["Body"].read())
+        except Exception as e:
+            if not shadow._missing(e):
+                raise
+            out.append(None)
+    return out
+
+
+def _verifies(raw, sig):
+    from bits_helpers import trust
+    try:
+        return bool(raw and sig and trust.verify_bytes(raw, json.loads(sig),
+                                                       trust.load_trusted_keys()))
+    except ValueError:
+        return False
+
+
+def _repairable(conn, settings, store, arch):
+    """What repair does for the architecture's manifest in the store, when it is
+    one this database signed and did not record as written: (plan, row, previous),
+    plan 'recorded' (it verifies: written in full), 'signature' (a withdrawal's,
+    put back), 'previous' (the manifest before it goes back: its .sig is still
+    in place) or 're-sign' (nothing to put back); plan None otherwise."""
+    raw, sig = _in_place(settings, store, arch)
+    row = raw is not None and conn.execute(
+        "SELECT * FROM certify_runs WHERE arch = ? AND sha256 = ? AND signature IS NOT NULL"
+        " AND written_ms IS NULL AND sequence IS NOT NULL AND state != 'signing'"
+        " ORDER BY sequence DESC LIMIT 1", (arch, hashlib.sha256(raw).hexdigest())).fetchone()
+    if not row:
+        return None, None, None
+    if _verifies(raw, sig):
+        return "recorded", row, None
+    if _is_withdrawal(row):
+        return "signature", row, None
+    prev = conn.execute("SELECT * FROM certify_runs WHERE arch = ? AND written_ms IS NOT NULL"
+                        " AND manifest IS NOT NULL AND signature IS NOT NULL AND sequence < ?"
+                        " ORDER BY sequence DESC LIMIT 1", (arch, row["sequence"])).fetchone()
+    if prev is not None and sig == prev["signature"].encode():
+        return "previous", row, prev
+    return "re-sign", row, None
+
+
+def repair(conn, settings, store, writer=None):
+    """An architecture's manifest in the store that this database signed but
+    did not record as written, by a run that then ended. Written in full, it is
+    recorded. Half-written (its bytes, not its signature): a withdrawal's
+    signature is put back (removal only); a certification's is not (its
+    approval may be gone): a re-sign from the set is asked for, and meanwhile
+    the manifest before it goes back when the .sig in place is still its own.
+    Nothing new is signed here. Returns how many."""
+    n = 0
+    for (arch,) in conn.execute("SELECT DISTINCT arch FROM certify_runs WHERE signature IS NOT"
+                                " NULL AND written_ms IS NULL AND sequence IS NOT NULL AND"
+                                " state != 'signing'").fetchall():
+        key = "%s-%s.json" % (write_prefix(settings), arch)
+        try:
+            plan, row, prev = _repairable(conn, settings, store, arch)
+            if plan is None:
+                continue
+            if plan in ("previous", "re-sign"):          # asked first: it waits for the put
+                version = certified.current(conn)[0]
+                created = version and actions.request(
+                    conn, WITHDRAW, {"arch": arch, "set_version": str(version),
+                                     "refresh": "r%d" % row["sequence"]},
+                    events.WORKER, "", True, cause="repair",
+                    idempotency_key="repair:%s:%d" % (arch, row["sequence"]))[1]
+                if plan == "re-sign" and not created:
+                    continue
+            if plan in ("signature", "previous"):
+                if writer is None:
+                    from .. import credproxy
+                    writer = credproxy.s3_writer(settings)[0]
+                if plan == "signature":
+                    writer.put_object(Bucket=store[1], Key=key + ".sig",
+                                      Body=row["signature"].encode(),
+                                      ContentType="application/json")
+                else:
+                    writer.put_object(Bucket=store[1], Key=key, Body=bytes(prev["manifest"]),
+                                      ContentType="application/json")
+        except Exception:                         # pylint: disable=broad-except
+            log.exception("certifier: repairing the %s manifest", arch)
+            continue
+        with db.transaction(conn):
+            if plan in ("recorded", "signature"):
+                conn.execute("UPDATE certify_runs SET written_ms = ?, updated_ms = ? WHERE id = ?",
+                             (db.now_ms(), db.now_ms(), row["id"]))
+            events.append(conn, "certify.repaired", "arch:%s" % arch, events.WORKER,
+                          {"arch": arch, "sequence": row["sequence"], "done": plan})
+        n += 1
+    return n
 
 
 def failed_actions(conn):
@@ -1265,6 +1369,7 @@ class Certifier(threading.Thread):
                                         kinds={KIND, WITHDRAW, DECERTIFY,
                                                DECERTIFY_PACKAGE})
                         failed_actions(conn)
+                        repair(conn, self.settings, deps.store(), getattr(deps, "writer", None))
                         # Until M8b: compared with the CI's certifications.
                         if not self.settings.orch_owns_set:
                             from . import canary
