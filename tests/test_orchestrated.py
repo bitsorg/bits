@@ -208,12 +208,11 @@ class SignTest(unittest.TestCase):
             with self.assertRaisesRegex(_Parser.Error, "bits-orchestrator/bkt signs"):
                 certify._refuse_orchestrated("b3://bkt", "/tmp/sw", "el9", _Parser())
 
-    def test_sign_goes_on_when_the_store_cannot_say(self):
+    def test_sign_refuses_a_store_that_cannot_say(self):
         with patch("bits_helpers.orchestrated.for_store",
-                   side_effect=orchestrated.Unknown("x")), \
-             patch.object(certify, "warning") as warn:
-            certify._refuse_orchestrated("b3://bkt", "/tmp/sw", "el9", _Parser())
-        warn.assert_called_once()
+                   side_effect=orchestrated.Unknown("x")):
+            with self.assertRaisesRegex(_Parser.Error, "no-store-check"):
+                certify._refuse_orchestrated("b3://bkt", "/tmp/sw", "el9", _Parser())
 
 
 class EnforceTest(unittest.TestCase):

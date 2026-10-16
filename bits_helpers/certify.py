@@ -867,14 +867,14 @@ def _make_approval_check(args, parser):
 
 def _refuse_orchestrated(store_url, work_dir, arch, parser):
     """`bits sign` signs what is then put in the store: refuse a store whose
-    manifests bits-orchestrator signs (see orchestrated.py). A store that cannot
-    say is only warned about; nothing here writes to it."""
+    manifests bits-orchestrator signs (see orchestrated.py), or that cannot say
+    whether it does (the manifests CI would overwrite numbered manifests)."""
     from bits_helpers import orchestrated
     try:
         marker = orchestrated.for_store(store_url, work_dir, arch)
     except orchestrated.Unknown as exc:
-        warning("sign: %s", exc)
-        return
+        parser.error("sign: %s; it says whether bits-orchestrator signs this store's "
+                     "manifests (--no-store-check signs without asking)" % exc)
     if marker:
         parser.error("sign: %s signs the manifests of %s (since %s): its certified set "
                      "changes only through it (bits certify, the decertify action)"
