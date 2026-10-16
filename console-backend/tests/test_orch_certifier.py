@@ -751,6 +751,12 @@ class OwnedSetTest(_StoreBase):
                                               probe=self.probe, key_id=self.kid)
         self.assertEqual([p["package"] for p in json.loads(body)["packages"]], ["q"])
 
+    def test_decertify_package_says_which_groups_still_certify_it(self):
+        self.approve()
+        self.certify()
+        res = certifier.run_decertify_package({"group": "ship", "package": "q"}, self.deps)
+        self.assertEqual((res["version"], res["still_certified_by"]), (None, ["lcg"]))
+
     def test_decertify_package_where_another_group_certifies_the_object_too(self):
         self.s3.docs["MANIFESTS/b2/host-1.el9.json"] = _bom("b2", "el9", ("q", "h2"),
                                                             ("Secret", "h5"))

@@ -1064,11 +1064,11 @@ def run_decertify_package(params, deps):
         raise Refused("the certified set is bits-manifests' until the switch: remove the"
                       " package's entries with a merge request there")
     name, group = params["package"].lower(), params["group"].lower()
-    q, args = "SELECT * FROM certified WHERE removed_version IS NULL AND lower(grp) = ?", [group]
+    q, args = "SELECT * FROM certified WHERE removed_version IS NULL", []
     if params.get("arch"):
         q += " AND arch = ?"
         args.append(params["arch"])
-    add, remove, builds = {}, set(), set()
+    add, remove, builds, others = {}, set(), set(), set()
     for r in conn.execute(q, args).fetchall():
         body = conn.execute("SELECT body FROM boms WHERE sha256 = ?",
                             (r["bom_sha256"],)).fetchone()["body"]
@@ -1082,6 +1082,9 @@ def run_decertify_package(params, deps):
         kept = [e for e in entries
                 if not (isinstance(e, dict) and str(e.get("package") or "").lower() == name)]
         if len(kept) == len(entries):
+            continue
+        if r["grp"].lower() != group:
+            others.add(r["grp"])                   # another group's to take out
             continue
         builds.add(r["build_id"])
         if any(isinstance(e, dict) and e.get("hash") and e.get("tarball_sha256") for e in kept):
@@ -1102,8 +1105,9 @@ def run_decertify_package(params, deps):
                            "arch": params.get("arch") or "", "reason": params.get("reason", ""),
                            "version": version, "replaced": sorted(add),
                            "removed": sorted(remove)})
-    return {"version": version, "boms_replaced": len(add), "boms_removed": len(remove),
-            "builds": sorted(builds)}
+    return dict({"version": version, "boms_replaced": len(add), "boms_removed": len(remove),
+                 "builds": sorted(builds)}, **({"still_certified_by": sorted(others)}
+                                                if others else {}))
 
 
 actions.register(actions.Kind(
