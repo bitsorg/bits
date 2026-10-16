@@ -371,6 +371,10 @@ def _decertify_packages(console, packages, dry_run):
     except orchestrated.RequestError as exc:
         error("  the certified set: %s", exc)
         return 1
+    if not groups:
+        error("  you administer no group of the certified set: %s still certified wherever "
+              "it was (an admin of those groups must enforce)", ", ".join(sorted(packages)))
+        return len(packages)
     failed = 0
     for name in sorted(packages):
         for group in groups:

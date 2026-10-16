@@ -302,6 +302,10 @@ class EnforceTest(unittest.TestCase):
         self.assertEqual(compliance.enforce_store("b3://bkt", self.rec, self.d,
                                                   console=self.Console(state="approved")), 0)
 
+    def test_no_group_to_decertify_in_fails_the_enforcement(self):
+        self.assertEqual(compliance.enforce_store("b3://bkt", self.rec, self.d,
+                                                  console=self.Console(groups=())), 1)
+
     def test_a_decertify_that_fails_fails_the_enforcement(self):
         console = self.Console(state="failed")
         self.assertEqual(compliance.enforce_store("b3://bkt", self.rec, self.d,
