@@ -4,6 +4,8 @@
 """Exercise reuse through local paths without modifying the deployment."""
 
 from argparse import Namespace
+import hashlib
+import json
 import os
 from pathlib import Path
 from shlex import quote
@@ -100,6 +102,69 @@ class DeploymentSelectionTest(unittest.TestCase):
         self.assertFalse(local.is_symlink())
         self.assertNotIn("reuse_symlinked", spec)
         self.assertEqual(spec["hash"], "expected")
+
+    def test_shared_package_sources_arch_specific_dependency(self):
+        source = self.deploy()
+        (source / "etc/profile.d/init.sh").write_text(
+            ': "${BITS_ARCH_PREFIX:=el9_amd64_gcc14}"\n'
+            '. "$WORK_DIR/$BITS_ARCH_PREFIX/cms/cms-common/1/etc/profile.d/init.sh"\n'
+            'export DATA_EXAMPLE_ROOT="$WORK_DIR/share/cms/data-example/V00-03-00"\n')
+        common = self.work / self.arch / "cms/cms-common/1/etc/profile.d"
+        common.mkdir(parents=True)
+        (common / "init.sh").write_text(
+            'export CMS_COMMON_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX/cms/cms-common/1"\n')
+        match = find_symlink_package(self.spec, self.root, self.arch)
+        local = stage_reused_package(self.spec, match["install_base"], self.work,
+                                     self.arch, source_path=match["source"])
+        output = subprocess.check_output(
+            ["bash", "-e", "-c",
+             'BITS_ARCH_PREFIX=caller; . "$1"; '
+             'printf "%s\\n%s\\n" "$CMS_COMMON_ROOT" "$BITS_ARCH_PREFIX"',
+             "bash", str(Path(local) / "etc/profile.d/init.sh")], text=True)
+        self.assertEqual(output.splitlines(),
+                         [str(self.work / self.arch / "cms/cms-common/1"), "caller"])
+
+    def test_stale_shared_stage_is_refreshed_before_build(self):
+        source = self.deploy()
+        (source / "etc/profile.d/init.sh").write_text(
+            ': "${BITS_ARCH_PREFIX:=el9_amd64_gcc14}"\n'
+            '. "$WORK_DIR/$BITS_ARCH_PREFIX/defaults-release/1/etc/profile.d/init.sh"\n')
+        defaults = self.work / self.arch / "defaults-release/1/etc/profile.d"
+        defaults.mkdir(parents=True)
+        (defaults / "init.sh").write_text('export DEFAULTS_RELEASE_REVISION=loaded\n')
+        match = find_symlink_package(self.spec, self.root, self.arch)
+        local = Path(stage_reused_package(self.spec, match["install_base"], self.work,
+                                          self.arch, source_path=match["source"]))
+        local_init = local / "etc/profile.d/init.sh"
+        fresh = local_init.read_text()
+        stale = fresh.replace("BITS_ARCH_PREFIX=%s\n" % self.arch,
+                              "BITS_ARCH_PREFIX=share\n", 1)
+        self.assertNotEqual(stale, fresh)
+        local_init.write_text(stale)
+        marker = local / ".bits-reuse-symlinks.json"
+        old_identity = json.loads(marker.read_text())
+        old_identity["init_sha256"] = hashlib.sha256(stale.encode()).hexdigest()
+        marker.write_text(json.dumps(old_identity, sort_keys=True) + "\n")
+
+        args = Namespace(defaults=["release"], architecture=self.arch, docker=False,
+                         symlinkPackagesFrom=str(self.root), manifest=None)
+        cfg = BuildConfig.from_args(args)
+        spec = dict(self.spec)
+        ctx = _BuildLoopCtx(
+            args=args, cfg=cfg, specs={spec["package"]: spec}, workDir=str(self.work),
+            syncHelper=None, scheduler=None, mainPackage=spec["package"],
+            raw_architecture=self.arch, develPackageBranch="", defaultsMeta={},
+            buildTargets="", packages=[], prefetch_executor=None, cmake_prefix_env=False,
+            specs_for_checksum_phase=[], monitoredDirs={})
+        with patch("bits_helpers.build.storeHook"), patch("bits_helpers.build.storeHashes"), \
+             patch("bits_helpers.build.log_current_package"):
+            build_one_package(spec["package"], ctx)
+        self.assertTrue(spec["reuse_symlinked"])
+        self.assertEqual(local_init.read_text(), fresh)
+        output = subprocess.check_output(
+            ["bash", "-e", "-c", '. "$1"; printf "%s" "$DEFAULTS_RELEASE_REVISION"',
+             "bash", str(local_init)], text=True)
+        self.assertEqual(output, "loaded")
 
     def test_strict_checks_hash_relaxed_uses_path(self):
         source = self.deploy(hash_value="different")
@@ -299,6 +364,11 @@ class ReuseSymlinksTest(unittest.TestCase):
                 else:
                     self.spec.pop("architecture", None)
                     self.spec["_own_hash_arch"] = effective
+                # The source init.sh must reflect the effective architecture
+                # of the package being staged, as a real deployment does.
+                (self.source / "etc/profile.d/init.sh").write_text(generate_initdotsh(
+                    "gcc", {"gcc": self.spec}, self.arch,
+                    workDir=str(self.root / "old-build"), post_build=True))
                 local = self.stage()
                 env = self.environment('export BITS_ARCH_PREFIX=consumer\n. %s'
                                        % quote(str(local / "etc/profile.d/init.sh")))

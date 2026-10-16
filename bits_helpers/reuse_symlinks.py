@@ -105,6 +105,10 @@ def matching_local_install(spec, match, work_dir, architecture):
     if family:
         local /= family
     local = local / spec["package"] / label
+    # A staged view is a real directory with a copied .build-hash, but its
+    # private init.sh may need regeneration after bits changes its wrapper.
+    if (local / ".bits-reuse-symlinks.json").exists():
+        return None
     if local.is_symlink() or not (local / "etc/profile.d/init.sh").is_file():
         return None
     try:
@@ -261,31 +265,47 @@ def stage_reused_package(spec, install_base, work_dir, architecture,
     pattern = re.compile("|".join(
         re.escape(p) for p in sorted(replacements, key=len, reverse=True)))
     relocated = pattern.sub(lambda m: replacements[m.group()], original)
-    # A consumer can have a different effective architecture (share/toolchain).
-    # Keep WORK_DIR at the consumer's local root and scope BITS_ARCH_PREFIX to
-    # this package while sourcing. Unique names also allow nested dependency init.
+    # A shared or build-type-neutral package can still depend on packages under
+    # the consumer's architecture. Its own init.sh uses a literal effective arch
+    # for its ROOT, but its dependencies use BITS_ARCH_PREFIX. Keep that prefix
+    # at the consumer architecture while sourcing, then restore the caller's.
     saved = "_bits_reuse_arch_" + pkg_to_shell_id(package)
-    init = ('if [ -z "${WORK_DIR:-}" ]; then WORK_DIR=%s; fi\n'
-            '%s="${BITS_ARCH_PREFIX-}"; %s_set="${BITS_ARCH_PREFIX+x}"\n'
-            'BITS_ARCH_PREFIX=%s\n' % (quote(str(runtime)), saved, saved, quote(arch)))
-    init += relocated.rstrip() + "\n"
-    init += ('if [ -n "${%s_set}" ]; then BITS_ARCH_PREFIX="${%s}"; '
-             'else unset BITS_ARCH_PREFIX; fi\nunset %s %s_set\n'
-             % (saved, saved, saved, saved))
+    def wrapped_init(prefix):
+        return ('if [ -z "${WORK_DIR:-}" ]; then WORK_DIR=%s; fi\n'
+                '%s="${BITS_ARCH_PREFIX-}"; %s_set="${BITS_ARCH_PREFIX+x}"\n'
+                'BITS_ARCH_PREFIX=%s\n' % (quote(str(runtime)), saved, saved, quote(prefix))
+                + relocated.rstrip() + "\n"
+                + ('if [ -n "${%s_set}" ]; then BITS_ARCH_PREFIX="${%s}"; '
+                   'else unset BITS_ARCH_PREFIX; fi\nunset %s %s_set\n'
+                   % (saved, saved, saved, saved)))
+
+    init = wrapped_init(architecture)
 
     identity = {"source": str(source.resolve()), "layout_version": 2,
                 "init_sha256": hashlib.sha256(init.encode()).hexdigest()}
     marker = ".bits-reuse-symlinks.json"
-    # Keep an already completed stage as-is.
+    # Keep an already completed stage as-is. Earlier bits versions used the
+    # package's effective arch ("share") in this wrapper; refresh only that
+    # exact generated script, leaving modified private files untouched.
     if os.path.lexists(destination):
         if not destination.is_symlink() and (destination / marker).is_file():
-            if json.loads((destination / marker).read_text()) == identity:
-                local_init = destination / "etc/profile.d/init.sh"
-                private = all((not (destination / "etc").is_symlink(),
-                               not local_init.parent.is_symlink(),
-                               not local_init.is_symlink(), local_init.is_file()))
-                if private and local_init.read_text() == init:
+            previous = json.loads((destination / marker).read_text())
+            local_init = destination / "etc/profile.d/init.sh"
+            private = all((not (destination / "etc").is_symlink(),
+                           not local_init.parent.is_symlink(),
+                           not local_init.is_symlink(), local_init.is_file()))
+            if private:
+                current = local_init.read_text()
+                if previous == identity and current == init:
                     return str(destination)
+                if arch != architecture:
+                    legacy_init = wrapped_init(arch)
+                    legacy_identity = dict(identity, init_sha256=hashlib.sha256(
+                        legacy_init.encode()).hexdigest())
+                    if previous == legacy_identity and current == legacy_init:
+                        local_init.write_text(init)
+                        (destination / marker).write_text(json.dumps(identity, sort_keys=True) + "\n")
+                        return str(destination)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     staged = Path(tempfile.mkdtemp(prefix=".reuse-", dir=str(destination.parent)))
