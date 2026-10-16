@@ -627,6 +627,42 @@ class OwnedSetTest(_StoreBase):
         later = db.now_ms() + 11 * certifier.DAY_MS
         self.assertEqual(certifier.withdrawals(self.conn, self.settings, now=later), 1)
 
+    def test_a_certification_overtaken_by_a_withdrawal_is_made_again(self):
+        self.approve()
+        self.certify()                                         # b2, sequence 1
+        now = db.now_ms()
+        self.conn.execute("INSERT INTO pipelines (id, is_build, community, sha, variables, outcome,"
+                          " first_seen_ms) VALUES (8, 1, 'lcg', 'c0ffee', ?, 'success', ?)",
+                          (json.dumps({"COMMUNITY": "LCG", "CERTIFY": "true"}), now))
+        self.s3.docs["MANIFESTS/bx/host-1.el9.json"] = json.dumps(
+            dict(_bom("bx", "el9", ("x", "hx")), source_pipeline_id=8)).encode()
+        self.store[("el9", "hx")] = "shx"
+        self.conn.execute("INSERT INTO builds (pipeline_id, build_id, bom_keys, recorded_ms)"
+                          " VALUES (8, 'bx', '[\"MANIFESTS/bx/host-1.el9.json\"]', ?)", (now,))
+        self.approve(subject="8")
+        certifier.trigger(self.conn, self.settings, self.console)          # bx requested
+        actions.request(self.conn, certifier.DECERTIFY, {"group": "lcg", "build_id": "b2"},
+                        events.Actor("person", "alice"), "lcg", True)
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.DECERTIFY})
+        certifier.withdrawals(self.conn, self.settings)
+        self.writer.fail = OSError("down")                     # bx signs, its write fails
+        actions.run_due(self.conn, self.deps, lambda a, c: True,
+                        kinds={certifier.KIND, certifier.WITHDRAW})
+        self.writer.fail = None
+        for _ in range(3):                                     # the withdrawal, then bx again
+            self.conn.execute("UPDATE actions SET not_before_ms = 0")
+            actions.run_due(self.conn, self.deps, lambda a, c: True,
+                            kinds={certifier.KIND, certifier.WITHDRAW})
+        m = self.written()
+        self.assertEqual([p["hash"] for p in m["packages"]], ["hx"])
+        live = [r[0] for r in self.conn.execute(
+            "SELECT path FROM certified WHERE removed_version IS NULL")]
+        self.assertEqual(live, ["lcg/bx.el9.host-1.json"])
+        later = db.now_ms() + 11 * certifier.DAY_MS
+        certifier.withdrawals(self.conn, self.settings, now=later)        # a refresh
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.WITHDRAW})
+        self.assertNotIn("withdraw.refused", self.kinds())
+
     def test_decertify_package_replaces_each_bom_without_it_and_withdraws(self):
         self.s3.docs["MANIFESTS/b2/host-1.el9.json"] = _bom("b2", "el9", ("q", "h2"),
                                                             ("Secret", "h5"))

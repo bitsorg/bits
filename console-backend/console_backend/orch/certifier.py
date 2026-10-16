@@ -77,6 +77,12 @@ class Refused(Exception):
 
 # --- the rows ------------------------------------------------------------------
 
+def _overtaken(row):
+    """A run whose manifest a newer one overtook before it was written: it is
+    'signing' without one, to be made again."""
+    return row["state"] == "signing" and row["manifest"] is None
+
+
 def _upsert(conn, pid, bid, arch, state, reason="", **fields):
     now = db.now_ms()
     cols = dict(fields, state=state, reason=reason[:1000], updated_ms=now)
@@ -599,6 +605,13 @@ def _sign_and_write(conn, settings, store, row, sign=None, writer=None):
                          " WHERE id = ?", (json.dumps(env), db.now_ms(), db.now_ms(), row["id"]))
     newer = conn.execute("SELECT 1 FROM certify_runs WHERE arch = ? AND written_ms IS NOT NULL"
                          " AND created_ms > ?", (arch, row["created_ms"])).fetchone()
+    if newer and settings.orch_owns_set and row["set_body"] is not None:
+        # The manifest in place was made without this build, which is not in the
+        # set yet: make this one again from the set as it is now.
+        with db.transaction(conn):
+            conn.execute("UPDATE certify_runs SET manifest = NULL, updated_ms = ? WHERE id = ?",
+                         (db.now_ms(), row["id"]))
+        raise actions.Defer("a newer %s manifest is in place: made again" % arch, 0)
     written = None
     if newer is None:
         if writer is None:
@@ -644,14 +657,17 @@ def run(params, deps):
             a = _approval(conn, params)
             rows = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND build_id = ?"
                                 " AND arch != '*' AND approval_id = ?", (pid, bid, a["id"])).fetchall()
-            if not rows:
+            if not rows or any(_overtaken(r) for r in rows):
                 if signed_today(conn) >= settings.orch_certify_daily_signs:
                     raise actions.Defer("the worker reached its limit of %d signatures a day"
                                         % settings.orch_certify_daily_signs, 3600 * 1000)
                 todo = compute(conn, settings, deps.reader(), deps.store(), pid, bid,
                                a["approver"], probe=probe, key_id=key_id, approval=a)
+                keep = {r["arch"] for r in rows if not _overtaken(r)}
                 with db.transaction(conn):
                     for arch, body, fields in todo:
+                        if arch in keep:
+                            continue
                         # New bytes: nothing of an earlier run of this arch may stay.
                         conn.execute("DELETE FROM certify_runs WHERE pipeline_id = ? AND"
                                      " build_id = ? AND arch = ?", (pid, bid, arch))
@@ -661,7 +677,13 @@ def run(params, deps):
                                     " build_id = ? AND arch != '*' AND approval_id = ?",
                                     (pid, bid, a["id"])).fetchall()
             for row in rows:
-                if row["state"] == "signing":
+                if _overtaken(row):                  # made again without this arch
+                    with db.transaction(conn):
+                        conn.execute("UPDATE certify_runs SET state = 'skipped', reason = ?,"
+                                     " updated_ms = ? WHERE id = ?",
+                                     ("not made again: the build has no such BOM now",
+                                      db.now_ms(), row["id"]))
+                elif row["state"] == "signing":
                     _sign_and_write(conn, settings, deps.store(), row, sign, writer)
         except Exception as e:
             if isinstance(e, (Refused, actions.Defer)):
