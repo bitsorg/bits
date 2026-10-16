@@ -1110,10 +1110,18 @@ def failed_actions(conn):
     for r in conn.execute(
             "SELECT c.pipeline_id, c.build_id, a.error FROM certify_runs c JOIN actions a"
             " ON a.kind = ? AND a.subject = 'certify:' || CASE c.pipeline_id WHEN 0 THEN 'cli'"
-            " ELSE c.pipeline_id END || ':' || c.build_id"
+            " ELSE c.pipeline_id END || ':' || c.build_id AND a.approval_id IS c.approval_id"
             " WHERE c.arch = '*' AND c.state = 'signing' AND a.state = 'failed'",
             (KIND,)).fetchall():
-        _decide(conn, r["pipeline_id"], r["build_id"], "failed", r["error"] or "the action failed")
+        reason = (r["error"] or "the action failed")[:1000]
+        _decide(conn, r["pipeline_id"], r["build_id"], "failed", reason)
+        # Its architectures too: one left 'signing' would hold back every
+        # withdrawal and refresh of that architecture.
+        with db.transaction(conn):
+            conn.execute("UPDATE certify_runs SET state = 'failed', manifest = NULL, reason = ?,"
+                         " updated_ms = ? WHERE pipeline_id = ? AND build_id = ? AND arch != '*'"
+                         " AND state = 'signing'",
+                         (reason, db.now_ms(), r["pipeline_id"], r["build_id"]))
         n += 1
     return n
 

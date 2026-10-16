@@ -610,6 +610,23 @@ class OwnedSetTest(_StoreBase):
             "SELECT path FROM certified WHERE removed_version IS NULL")]
         self.assertEqual(live, ["ship/b2.el9.host-1.json"])
 
+    def test_a_failed_certification_holds_no_architecture_back(self):
+        self.approve()
+        self.writer.fail = OSError("down")
+        certifier.trigger(self.conn, self.settings, self.console)
+        for _ in range(actions.MAX_ATTEMPTS + 1):              # retries spent
+            self.writer.fail = OSError("down")                 # (it fails once each time)
+            self.conn.execute("UPDATE actions SET not_before_ms = 0")
+            actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
+        certifier.failed_actions(self.conn)
+        self.assertEqual({a: r["state"] for a, r in self.rows().items()},
+                         {"*": "failed", "el9": "failed"})
+        other = dict(_bom("b9", "el9", ("z", "h9")), source_pipeline_id=9)
+        with db.transaction(self.conn):
+            certified.change(self.conn, add={"lcg/b9.el9.host-1.json": json.dumps(other).encode()})
+        later = db.now_ms() + 11 * certifier.DAY_MS
+        self.assertEqual(certifier.withdrawals(self.conn, self.settings, now=later), 1)
+
     def test_decertify_package_replaces_each_bom_without_it_and_withdraws(self):
         self.s3.docs["MANIFESTS/b2/host-1.el9.json"] = _bom("b2", "el9", ("q", "h2"),
                                                             ("Secret", "h5"))
