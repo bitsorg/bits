@@ -57,7 +57,7 @@ jobs:
         run: tox
 
       - name: Convert coverage information
-        if: ${{ always() && github.event.repository.owner.login == 'bits' }}
+        if: ${{ always() && github.event.repository.owner.login == 'bitsorg' }}
         run: |
           coverage combine .tox/coverage.*
           # Codecov only understands XML, JSON and LCOV files.
@@ -67,7 +67,7 @@ jobs:
           coverage json --ignore-errors -o coverage.json
 
       - name: Upload coverage information
-        if: ${{ always() && github.event.repository.owner.login == 'bits' }}
+        if: ${{ always() && github.event.repository.owner.login == 'bitsorg' }}
         uses: codecov/codecov-action@v5
         with:
           files: coverage.json
@@ -117,7 +117,7 @@ jobs:
         run: tox -e darwin
 
       - name: Convert coverage information
-        if: ${{ always() && github.event.repository.owner.login == 'bits' }}
+        if: ${{ always() && github.event.repository.owner.login == 'bitsorg' }}
         run: |
           coverage combine .tox/coverage.*
           # Codecov only understands XML, JSON and LCOV files.
@@ -127,7 +127,7 @@ jobs:
           coverage json --ignore-errors -o coverage.json
 
       - name: Upload coverage information
-        if: ${{ always() && github.event.repository.owner.login == 'bits' }}
+        if: ${{ always() && github.event.repository.owner.login == 'bitsorg' }}
         uses: codecov/codecov-action@v5
         with:
           files: coverage.json
