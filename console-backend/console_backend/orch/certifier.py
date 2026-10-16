@@ -690,6 +690,13 @@ def run(params, deps):
     try:
         try:
             a = _approval(conn, params)
+            since = json.loads((conn.execute("SELECT value FROM kv WHERE key ="
+                                             " 'certify.decertified'").fetchone() or ["{}"])[0])
+            if bid in since and a["created_ms"] < since[bid]:
+                raise Refused("build %s was decertified after the database copy it was"
+                              " recovered from: %s" % (bid, "a new pre-approval certifies it"
+                                                       if pid == NO_PIPELINE else
+                                                       "a new build certifies it"))
             rows = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND build_id = ?"
                                 " AND arch != '*' AND approval_id = ?", (pid, bid, a["id"])).fetchall()
             if not rows or any(_overtaken(r) for r in rows):

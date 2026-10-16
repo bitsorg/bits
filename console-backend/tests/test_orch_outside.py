@@ -196,6 +196,95 @@ class RecoverTest(_DB):
         self.assertIsNone(outside.behind(self.conn, self.out))
         self.assertEqual(outside.recover(self.conn, self.out, "carol"), 0)
 
+    def test_the_set_is_brought_up_to_the_recovered_events(self):
+        from console_backend.orch import certified
+        a, b = b'{"build_id": "a", "packages": []}', b'{"build_id": "b", "packages": []}'
+        with db.transaction(self.conn):
+            certified.change(self.conn, add={"lcg/a.json": a})
+        outside.ship(self.conn, self.out)
+        copy = os.path.join(self.dir, "copy.db")
+        self.conn.execute("VACUUM INTO ?", (copy,))               # the backup
+        with db.transaction(self.conn):                          # a out, b in, since
+            certified.change(self.conn, add={"lcg/b.json": b}, remove={"lcg/a.json"})
+            events.append(self.conn, "mirror.pushed", "certified", events.WORKER,
+                          {"version": 2, "commit": "c2", "added": 1, "removed": 1})
+        outside.ship(self.conn, self.out)
+        self.conn.close()
+        self.conn = db.connect(copy)                             # restored
+        with self.assertRaisesRegex(outside.OutsideError, "--mirror"):
+            outside.recover(self.conn, self.out, "carol")        # b's bytes are not here
+        mirror = os.path.join(self.dir, "mirror")
+        os.makedirs(os.path.join(mirror, "manifests", "lcg"))
+        with open(os.path.join(mirror, "manifests", "lcg", "b.json"), "wb") as fh:
+            fh.write(b)
+        self.conn.execute("INSERT INTO boms (sha256, body, size, first_ms) VALUES (?,?,?,0)",
+                          (__import__("hashlib").sha256(b).hexdigest(), b, len(b)))
+        with self.assertRaisesRegex(outside.OutsideError, "--mirror"):
+            outside.recover(self.conn, self.out, "carol")        # held here is not enough
+        self.assertGreater(outside.recover(self.conn, self.out, "carol", mirror=mirror), 0)
+        live = [r[0] for r in self.conn.execute(
+            "SELECT path FROM certified WHERE removed_version IS NULL")]
+        self.assertEqual(live, ["lcg/b.json"])                   # a stays out
+        self.assertEqual(list(json.loads(outside._kv(self.conn, "certify.decertified"))), ["a"])
+        self.assertEqual((outside._kv(self.conn, "mirror.version"), certified.current(self.conn)[2]),
+                         ("2", "c2"))                            # not pushed again
+        self.assertEqual(certified.current(self.conn)[0], 2)
+        with db.transaction(self.conn):                          # numbering goes on
+            self.assertEqual(certified.change(self.conn, remove={"lcg/b.json"})[0], 3)
+
+    def _set_history(self, before, after):
+        """A database copied after *before*, the outside copy also after *after*;
+        returns the restored copy's path."""
+        before(self.conn)
+        outside.ship(self.conn, self.out)
+        copy = os.path.join(self.dir, "copy.db")
+        self.conn.execute("VACUUM INTO ?", (copy,))
+        after(self.conn)
+        outside.ship(self.conn, self.out)
+        self.conn.close()
+        self.conn = db.connect(copy)
+
+    def test_a_build_decertified_in_one_arch_only_is_blocked(self):
+        from console_backend.orch import certified
+        el9, el8 = (b'{"build_id": "B", "packages": [{"hash": "h", "tarball_sha256": "s",'
+                    b' "effective_architecture": "%s"}]}' % a for a in (b"el9", b"el8"))
+
+        def before(conn):
+            with db.transaction(conn):
+                certified.change(conn, add={"lcg/B.el9.json": el9, "lcg/B.el8.json": el8})
+
+        def after(conn):
+            with db.transaction(conn):
+                certified.change(conn, remove={"lcg/B.el9.json"})
+        self._set_history(before, after)
+        outside.recover(self.conn, self.out, "carol")
+        self.assertEqual(list(json.loads(outside._kv(self.conn, "certify.decertified"))), ["B"])
+
+    def test_a_set_that_does_not_match_its_digest_is_not_recovered(self):
+        from console_backend.orch import certified
+
+        def after(conn):
+            with db.transaction(conn):
+                certified.change(conn, add={"lcg/a.json": b"{}"})
+        self._set_history(lambda conn: None, after)
+        mirror = os.path.join(self.dir, "mirror")
+        os.makedirs(os.path.join(mirror, "manifests", "lcg"))
+        with open(os.path.join(mirror, "manifests", "lcg", "a.json"), "wb") as fh:
+            fh.write(b"{}")
+        with patch.object(certified, "digest_of", return_value="forged"):
+            with self.assertRaisesRegex(outside.OutsideError, "nothing recovered"):
+                outside.recover(self.conn, self.out, "carol", mirror=mirror)
+        self.assertEqual(certified.current(self.conn)[0], 0)
+
+    def test_a_pipeline_given_up_on_is_followed_past(self):
+        from console_backend.orch import certified
+
+        def after(conn):
+            certified._give_up(conn, 41, "c41", "test")
+        self._set_history(lambda conn: None, after)
+        outside.recover(self.conn, self.out, "carol")
+        self.assertEqual(certified.followed(self.conn), 41)
+
     def test_an_outside_copy_that_does_not_link_gives_nothing(self):
         self.restored()
         self.out.rows[3]["payload"] = '{"i":99}'                     # edited outside

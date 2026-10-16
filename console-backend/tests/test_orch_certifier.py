@@ -399,6 +399,16 @@ class _StoreBase(CertifierBase):
         return json.loads(self.s3.docs["CANARY/common-manifest-el9.json"])
 
 
+class RecoveredTest(CertifierBase):
+    def test_a_build_decertified_after_the_restored_copy_needs_a_new_approval(self):
+        self.approve()
+        self.conn.execute("INSERT INTO kv (key, value) VALUES ('certify.decertified', ?)",
+                          (json.dumps({"b2": db.now_ms() + 1000}),))
+        self.certify()
+        self.assertIn("a new build certifies it", self.rows()["*"]["reason"])
+        self.assertEqual(self.writer.puts, [])
+
+
 class NumberInPlaceTest(_StoreBase):
     """What the store holds is never replaced by a lower number."""
 
@@ -565,6 +575,18 @@ class CliBuildTest(CertifierBase):
         self.certify()
         body, sig = self.writer.puts[-2][1], json.loads(self.writer.puts[-1][1])
         self.assertEqual(trust.verify_bytes(body, sig, self.trusted), self.kid)
+
+    def test_a_build_decertified_after_a_restored_copy_needs_a_new_pre_approval(self):
+        self.cli_approve()
+        self.conn.execute("INSERT INTO kv (key, value) VALUES ('certify.decertified', ?)",
+                          (json.dumps({self.BID: db.now_ms() + 1000}),))
+        self.certify()
+        self.assertIn("a new pre-approval", self.cli_rows()["*"]["reason"])
+        self.conn.execute("UPDATE kv SET value = ? WHERE key = 'certify.decertified'",
+                          (json.dumps({self.BID: db.now_ms() - 1000}),))
+        self.cli_approve()                                     # approved again, after
+        self.certify()
+        self.assertEqual(self.cli_rows()["el9"]["state"], "signed")
 
     def test_store_boms_other_than_what_was_approved_wait_then_are_refused(self):
         self.cli_approve(packages=[["el9", "h3", "other", "r", "1"]])

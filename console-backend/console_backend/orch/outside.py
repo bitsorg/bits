@@ -31,16 +31,19 @@ worker stopped,
 appends the events the restored database lacks, each checked to link onto it,
 then records outside.recovered; the worker then starts and continues the chain.
 Until then the worker marks the database (outside.behind) and nothing,
-the worker's or the console's, appends an event. The recovered events are the
-history; the tables the restored copy holds are not rebuilt from them. The worker signs only while the outside copy is in step
-with this database (`sign_hold`), so a restored database never signs again
-before it has caught up.
+the worker's or the console's, appends an event. The certified set's tables are
+brought up to the recovered events (a removal since the copy stays removed, and a
+build decertified since needs a new pre-approval); BOMs it gained since come
+from `--mirror <a bits-manifests checkout>`, never from the events alone. The
+worker signs only while the outside copy is in step with this database
+(`sign_hold`), so a restored database never signs again before it has caught up.
 """
 
 import argparse
 import json
 import logging
 import os
+import sqlite3
 import sys
 
 import requests
@@ -281,10 +284,28 @@ def _well_formed(o):
             and (o.get("cause") is None or isinstance(o.get("cause"), str)))
 
 
-def recover(conn, client, who, page=1000):
+def _bodies(missing, mirror):
+    """The bytes of the *missing* BOMs ({sha256: path}) from *mirror*, a checkout
+    of the bits-manifests mirror (manifests/<path>), each checked by its sha256."""
+    import hashlib
+    got = {}
+    for sha, path in missing.items():
+        try:
+            with open(os.path.join(mirror, "manifests", path), "rb") as fh:
+                body = fh.read()
+        except OSError:
+            continue
+        if hashlib.sha256(body).hexdigest() == sha:
+            got[sha] = body
+    return got
+
+
+def recover(conn, client, who, page=1000, mirror=None):
     """Append the events this database lacks from the outside copy, each checked
-    to link onto this chain (all or none), then outside.recovered. Run with the
-    worker stopped. Returns how many were appended."""
+    to link onto this chain (all or none), and bring the certified set's tables
+    up to them; then outside.recovered. BOMs the set gained meanwhile come from
+    *mirror* (a bits-manifests checkout). Run with the worker stopped. Returns
+    how many events were appended."""
     n, broken = events.verify(conn)
     if broken is not None:
         raise OutsideError("this database's own chain breaks at event %d: restore another"
@@ -315,6 +336,21 @@ def recover(conn, client, who, page=1000):
     kinds = {}
     for r in rows:
         kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
+    from . import certified
+    # What the set gained comes from the mirror, not from these events alone: the
+    # outside copy's token could otherwise add to what the worker signs.
+    try:
+        live, decertified = certified.recovered_changes(rows)
+    except (KeyError, ValueError) as e:
+        raise OutsideError("a recovered event of the set is malformed (%s): nothing recovered"
+                           % e)
+    bodies = _bodies(live, mirror) if mirror and live else {}
+    lacking = sorted("%s (%s)" % (path, sha[:12]) for sha, path in live.items()
+                     if sha not in bodies)
+    if lacking:
+        raise OutsideError("the certified set gained %d BOM(s) since this copy: pass --mirror"
+                           " <a checkout of the bits-manifests mirror holding them>; missing: %s;"
+                           " nothing recovered" % (len(lacking), ", ".join(lacking[:5])))
     with db.transaction(conn):
         last = _last(conn)
         if (last["seq"] if last else 0) != mine:
@@ -325,6 +361,18 @@ def recover(conn, client, who, page=1000):
                          " cause, payload, prev_hash, hash) VALUES (:seq, :ts_ms, :kind,"
                          " :subject, :actor_kind, :actor_id, :cause, :payload, :prev_hash,"
                          " :hash)", rows)
+        try:
+            replayed = certified.replay(conn, rows, bodies)
+        except (ValueError, KeyError, sqlite3.IntegrityError) as e:
+            raise OutsideError("the certified set cannot follow the recovered events (%s:"
+                               " %s): nothing recovered" % (type(e).__name__, e))
+        if decertified:
+            # Their pre-approvals in this copy predate it: a new one certifies them.
+            blocked = json.loads(_kv(conn, "certify.decertified") or "{}")
+            blocked.update({b: db.now_ms() for b in decertified})
+            conn.execute("INSERT INTO kv (key, value) VALUES ('certify.decertified', ?) ON"
+                         " CONFLICT(key) DO UPDATE SET value = excluded.value",
+                         (json.dumps(blocked, sort_keys=True),))
         alarm = _kv(conn, ALARM)
         conn.execute("DELETE FROM kv WHERE key = ?", (ALARM,))
         conn.execute("INSERT INTO kv (key, value) VALUES ('outside.head', ?) ON CONFLICT(key)"
@@ -332,6 +380,7 @@ def recover(conn, client, who, page=1000):
                      (json.dumps({"seq": theirs, "hash": prev, "ms": db.now_ms()}),))
         events.append(conn, "outside.recovered", "outside", events.Actor("person", who),
                       {"from": mine + 1, "to": theirs, "count": len(rows), "kinds": kinds,
+                       "set_events": replayed, "decertified": decertified,
                        "first_ms": rows[0]["ts_ms"], "last_ms": rows[-1]["ts_ms"],
                        "alarm": json.loads(alarm) if alarm else None})
     return len(rows)
@@ -398,6 +447,9 @@ def main(argv=None):
     ap.add_argument("command", choices=["verify", "status", "clear", "recover"])
     ap.add_argument("--db", default=None, help="the orchestrator database (default BITS_ORCH_DB)")
     ap.add_argument("--by", default=None, help="clear, recover: who did it (recorded)")
+    ap.add_argument("--mirror", default=None,
+                    help="recover: a checkout of the bits-manifests mirror, for the BOMs the"
+                         " set gained since the restored copy")
     args = ap.parse_args(argv)
     settings = config.Settings()
     conn = db.open_checked(args.db or settings.orch_db)
@@ -418,7 +470,7 @@ def main(argv=None):
         path = args.db or settings.orch_db
         try:
             with db.worker_lock(path):
-                n = recover(conn, client, args.by)
+                n = recover(conn, client, args.by, mirror=args.mirror)
         except db.LockedError:
             raise SystemExit("the worker is running: stop it first")
         except OutsideError as e:

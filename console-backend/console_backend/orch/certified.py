@@ -198,6 +198,81 @@ def _apply(conn, files, pipeline_id, commit, source, cause=None):
     return version, added, removed
 
 
+_SET_EVENTS = ("certified.added", "certified.removed", "certified.version", "certified.imported",
+               "certified.gap", "mirror.pushed")
+
+
+def recovered_changes(rows):
+    """What recovered events *rows* did to the set: ({sha256: path} of the BOMs
+    they leave in it, the builds they took out of a group and architecture that
+    no BOM of theirs is in again)."""
+    live, out = {}, set()
+    for r in rows:
+        if r["kind"] in ("certified.added", "certified.removed"):
+            p = json.loads(r["payload"])
+            where = (p.get("group") or "", p.get("build_id") or "", p.get("arch") or "")
+            if r["kind"] == "certified.added":
+                live[(p["path"], p["sha256"])] = where
+            else:
+                live.pop((p["path"], p["sha256"]), None)
+                out.add(where)
+    return ({sha: path for (path, sha) in live},
+            sorted({b for (_g, b, _a) in out - set(live.values()) if b}))
+
+
+def replay(conn, rows, bodies):
+    """Bring the set's tables up to recovered events *rows* (in order, already in
+    the events table): its versions, additions and removals, the pipelines it
+    followed and the versions mirrored, so a restored copy does not certify again
+    what was taken out since. *bodies* {sha256: bytes} hold the BOMs left in it;
+    an addition removed again whose bytes are gone is left out. Call in a
+    transaction; it checks the newest version against its recorded digest.
+    Returns how many events it applied."""
+    n, last = 0, None
+    for r in rows:
+        if r["kind"] not in _SET_EVENTS:
+            continue
+        p = json.loads(r["payload"])
+        if r["kind"] == "certified.removed":
+            conn.execute("UPDATE certified SET removed_version = ?, removed_event = ? WHERE"
+                         " path = ? AND bom_sha256 = ? AND removed_version IS NULL",
+                         (p["version"], r["seq"], p["path"], p["sha256"]))
+        elif r["kind"] == "certified.added":
+            body = bodies.get(p["sha256"])
+            if body is not None:
+                conn.execute("INSERT OR IGNORE INTO boms (sha256, body, size, first_ms)"
+                             " VALUES (?, ?, ?, ?)", (p["sha256"], body, len(body), r["ts_ms"]))
+            elif conn.execute("SELECT 1 FROM boms WHERE sha256 = ?",
+                              (p["sha256"],)).fetchone() is None:
+                continue
+            conn.execute("INSERT INTO certified (path, grp, arch, build_id, bom_sha256, problem,"
+                         " added_version, added_event, added_ms) VALUES (?,?,?,?,?,?,?,?,?)",
+                         (p["path"], p["group"], p.get("arch") or "", p.get("build_id") or "",
+                          p["sha256"], p.get("problem") or "", p["version"], r["seq"],
+                          r["ts_ms"]))
+        elif r["kind"] == "mirror.pushed":
+            conn.execute("UPDATE set_versions SET commit_sha = ? WHERE version = ?",
+                         (p["commit"], p["version"]))
+            conn.execute("INSERT INTO kv (key, value) VALUES ('mirror.version', ?) ON"
+                         " CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS INTEGER),"
+                         " CAST(excluded.value AS INTEGER))", (str(int(p["version"])),))
+        else:
+            if r["kind"] != "certified.gap":
+                conn.execute("INSERT INTO set_versions (version, pipeline_id, commit_sha, source,"
+                             " added, removed, digest, created_ms) VALUES (?,?,?,?,?,?,?,?)",
+                             (p["version"], p.get("pipeline"), p.get("commit") or "",
+                              p.get("source") or SOURCE_GIT, p.get("added", 0),
+                              p.get("removed", 0), p.get("digest", ""), r["ts_ms"]))
+                last = p
+            if p.get("pipeline") is not None and int(p["pipeline"]) > (followed(conn) or 0):
+                _set_followed(conn, p["pipeline"])
+        n += 1
+    if last is not None and digest_of(members(conn, last["version"])) != last.get("digest"):
+        raise ValueError("the set rebuilt from the recovered events does not match version"
+                         " %s's digest" % last["version"])
+    return n
+
+
 def _attempt(conn, pid):
     key = "certified.attempts.%d" % int(pid)
     r = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
