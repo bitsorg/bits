@@ -95,10 +95,16 @@ def _upsert(conn, pid, bid, arch, state, reason="", **fields):
         dict(cols, pid=int(pid), bid=bid, arch=arch, now=now))
 
 
-def _decide(conn, pid, bid, state, reason, event=True, **fields):
-    """The whole build's decision (arch '*'), with an event."""
+def _decide(conn, pid, bid, state, reason, event=True, archs=False, **fields):
+    """The whole build's decision (arch '*'), with an event. With *archs*, its
+    architectures still 'signing' end in the same state, in the same transaction:
+    one left 'signing' would hold back every withdrawal of its architecture."""
     with db.transaction(conn):
         _upsert(conn, pid, bid, "*", state, reason, **fields)
+        if archs:
+            conn.execute("UPDATE certify_runs SET state = ?, manifest = NULL, reason = ?,"
+                         " updated_ms = ? WHERE pipeline_id = ? AND build_id = ? AND arch != '*'"
+                         " AND state = 'signing'", (state, reason[:1000], db.now_ms(), pid, bid))
         if event:
             events.append(conn, "certify." + state, "pipeline:%d" % int(pid), events.WORKER,
                           {"pipeline": int(pid), "build_id": bid,
@@ -696,11 +702,7 @@ def run(params, deps):
                 raise actions.Retry("%s: %s" % (type(e).__name__, str(e)[:300]))
             raise
     except Refused as e:
-        _decide(conn, pid, bid, "refused", str(e))
-        with db.transaction(conn):
-            conn.execute("UPDATE certify_runs SET state = 'refused', manifest = NULL, reason = ?,"
-                         " updated_ms = ? WHERE pipeline_id = ? AND build_id = ? AND arch != '*'"
-                         " AND state = 'signing'", (str(e)[:1000], db.now_ms(), pid, bid))
+        _decide(conn, pid, bid, "refused", str(e), archs=True)
         raise
     archs = sorted(r["arch"] for r in conn.execute(
         "SELECT arch FROM certify_runs WHERE pipeline_id = ? AND build_id = ? AND arch != '*'",
@@ -1135,15 +1137,8 @@ def failed_actions(conn):
             " ELSE c.pipeline_id END || ':' || c.build_id AND a.approval_id IS c.approval_id"
             " WHERE c.arch = '*' AND c.state = 'signing' AND a.state = 'failed'",
             (KIND,)).fetchall():
-        reason = (r["error"] or "the action failed")[:1000]
-        _decide(conn, r["pipeline_id"], r["build_id"], "failed", reason)
-        # Its architectures too: one left 'signing' would hold back every
-        # withdrawal and refresh of that architecture.
-        with db.transaction(conn):
-            conn.execute("UPDATE certify_runs SET state = 'failed', manifest = NULL, reason = ?,"
-                         " updated_ms = ? WHERE pipeline_id = ? AND build_id = ? AND arch != '*'"
-                         " AND state = 'signing'",
-                         (reason, db.now_ms(), r["pipeline_id"], r["build_id"]))
+        _decide(conn, r["pipeline_id"], r["build_id"], "failed",
+                r["error"] or "the action failed", archs=True)
         n += 1
     return n
 
