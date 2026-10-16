@@ -497,6 +497,20 @@ class CliBuildTest(CertifierBase):
         a = self.conn.execute("SELECT * FROM actions WHERE kind = 'certify'").fetchone()
         self.assertEqual((a["subject"], a["community"]), ("certify:cli:%s" % self.BID, "lcg"))
 
+    def test_a_new_approval_signs_its_own_bytes(self):
+        self.cli_approve()
+        self.writer.fail = OSError("down")                     # signed, not written
+        self.certify()
+        self.conn.execute("UPDATE approvals SET expires_ms = 1")
+        self.conn.execute("UPDATE actions SET not_before_ms = 0")
+        actions.run_due(self.conn, self.deps, lambda a, c: True, kinds={certifier.KIND})
+        self.assertEqual(self.cli_rows()["el9"]["state"], "refused")
+        self.writer.fail = None
+        self.cli_approve()                                     # approved again
+        self.certify()
+        body, sig = self.writer.puts[-2][1], json.loads(self.writer.puts[-1][1])
+        self.assertEqual(trust.verify_bytes(body, sig, self.trusted), self.kid)
+
     def test_store_boms_other_than_what_was_approved_wait_then_are_refused(self):
         self.cli_approve(packages=[["el9", "h3", "other", "r", "1"]])
         self.certify()

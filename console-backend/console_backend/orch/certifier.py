@@ -652,6 +652,9 @@ def run(params, deps):
                                a["approver"], probe=probe, key_id=key_id, approval=a)
                 with db.transaction(conn):
                     for arch, body, fields in todo:
+                        # New bytes: nothing of an earlier run of this arch may stay.
+                        conn.execute("DELETE FROM certify_runs WHERE pipeline_id = ? AND"
+                                     " build_id = ? AND arch = ?", (pid, bid, arch))
                         _upsert(conn, pid, bid, arch, "signing", "", manifest=body,
                                 approval_id=a["id"], approver=a["approver"], **fields)
                 rows = conn.execute("SELECT * FROM certify_runs WHERE pipeline_id = ? AND"
