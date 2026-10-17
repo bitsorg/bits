@@ -57,7 +57,7 @@ jobs:
         run: tox
 
       - name: Convert coverage information
-        if: ${{ always() && github.event.repository.owner.login == 'bits' }}
+        if: ${{ always() && github.event.repository.owner.login == 'bitsorg' }}
         run: |
           coverage combine .tox/coverage.*
           # Codecov only understands XML, JSON and LCOV files.
@@ -65,12 +65,15 @@ jobs:
           # finding some source files, but our source shouldn't be affected, so
           # ignore these errors.
           coverage json --ignore-errors -o coverage.json
+        continue-on-error: true   # coverage never fails the check
 
       - name: Upload coverage information
-        if: ${{ always() && github.event.repository.owner.login == 'bits' }}
+        if: ${{ always() && github.event.repository.owner.login == 'bitsorg' }}
         uses: codecov/codecov-action@v5
         with:
           files: coverage.json
+          token: ${{ secrets.CODECOV_TOKEN }}
+        continue-on-error: true
 
   mac-unittest:
     name: mac-python${{ matrix.python-version }}
@@ -117,7 +120,7 @@ jobs:
         run: tox -e darwin
 
       - name: Convert coverage information
-        if: ${{ always() && github.event.repository.owner.login == 'bits' }}
+        if: ${{ always() && github.event.repository.owner.login == 'bitsorg' }}
         run: |
           coverage combine .tox/coverage.*
           # Codecov only understands XML, JSON and LCOV files.
@@ -125,12 +128,15 @@ jobs:
           # finding some source files, but our source shouldn't be affected, so
           # ignore these errors.
           coverage json --ignore-errors -o coverage.json
+        continue-on-error: true   # coverage never fails the check
 
       - name: Upload coverage information
-        if: ${{ always() && github.event.repository.owner.login == 'bits' }}
+        if: ${{ always() && github.event.repository.owner.login == 'bitsorg' }}
         uses: codecov/codecov-action@v5
         with:
           files: coverage.json
+          token: ${{ secrets.CODECOV_TOKEN }}
+        continue-on-error: true
 
   # Lint with ruff (issue #59). CHECK-ONLY: the ruleset is configured in
   # pyproject.toml [tool.ruff.lint] to the real-bug subset (E9/F63/F7/F82), so
