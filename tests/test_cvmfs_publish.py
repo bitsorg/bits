@@ -1513,6 +1513,139 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         self.assertEqual(sent, [("g/el9-gcc15-opt/Modules/BASE", "BASE@g/el9-gcc15-opt/Modules(modules)", "ingest")])
 
 
+    ROOT_MF = """#%Module1.0
+set version @@PKGREVISION@h1@@
+if ![ is-loaded "zlib/1.3-1" ] { module load zlib/1.3-1 }
+set PKG_ROOT $::env(BASEDIR)/ROOT/6.36-$version
+if {[file isdirectory $PKG_ROOT/bin]} { prepend-path PATH $PKG_ROOT/bin }
+prepend-path CMAKE_PREFIX_PATH $PKG_ROOT
+setenv ROOTSYS $PKG_ROOT
+prepend-path ROOT_PLUGIN_PATH $PKG_ROOT/etc/plugins
+setenv BITS_VIEW 1
+"""
+    ZLIB_MF = """#%Module1.0
+set PKG_ROOT $::env(BASEDIR)/zlib/1.3-1
+if {[file isdirectory $PKG_ROOT/lib]} { prepend-path LD_LIBRARY_PATH $PKG_ROOT/lib }
+setenv ZLIB_ROOT $PKG_ROOT
+"""
+
+    def _release(self, ctx):
+        """zlib and ROOT, whose modulefile loads zlib; ROOT's tarball still has
+        the revision placeholder, as bits packs it."""
+        zlib = dict(self.SPEC, package="zlib", version="1.3", revision="1", hash="z")
+        root = dict(self.SPEC)
+        self._tarball(ctx, zlib, ["lib/libz.so", "etc/modulefiles/zlib"])
+        self._tarball(ctx, root, ["bin/root", "etc/plugins/p", "etc/modulefiles/ROOT"])
+        for spec, text in ((zlib, self.ZLIB_MF), (root, self.ROOT_MF)):
+            self._retar(ctx, spec, "etc/modulefiles/" + spec["package"], text)
+        return [zlib, root]
+
+    def _retar(self, ctx, spec, rel, text):
+        """Put *text* into *rel* of the package's tarball."""
+        import subprocess
+        tar = cp_tar_path(spec, ctx)
+        src = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, src, True)
+        subprocess.run(["tar", "-xzf", tar, "-C", src], check=True)
+        top = os.path.join(src, spec["effective_architecture"], spec["package"],
+                           spec["version"] + "-" + spec["revision"])
+        with open(os.path.join(top, rel), "w") as fh:
+            fh.write(text)
+        subprocess.run(["tar", "-czf", tar, "-C", src, spec["effective_architecture"]],
+                       check=True)
+
+    def test_view_setup_sets_what_the_modules_set(self):
+        import subprocess
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm)
+        specs = self._release(ctx)
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        env, problems = cp.view_environment(ctx, specs, vp, ["ROOT"])
+        self.assertEqual(problems, [])
+        # The published tree: the view and the packages beside it.
+        repo = os.path.realpath(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, repo, True)
+        view = os.path.join(repo, vp)
+        cp.merged_view(ctx, specs, view, vp)
+        for spec in specs:
+            os.makedirs(os.path.join(repo, cp.package_path(spec, ctx), "bin"))
+        cp.write_view_setup(view, "/cvmfs/r/" + vp, env)
+        out = subprocess.run(["bash", "-c", 'cd / && PATH=/usr/bin:/bin; unset LD_LIBRARY_PATH '
+                              'CMAKE_PREFIX_PATH ROOT_PLUGIN_PATH; . "%s/setup.sh" && '
+                              'echo "$PATH|$LD_LIBRARY_PATH|$CMAKE_PREFIX_PATH|$ROOTSYS|'
+                              '$ZLIB_ROOT|$ROOT_PLUGIN_PATH|${BITS_VIEW}|${_b-unset}"' % view],
+                             capture_output=True, text=True).stdout.strip()
+        pkgs = os.path.join(repo, "g/el9-gcc15-opt")
+        self.assertEqual(out.split("|"), [
+            view + "/bin:/usr/bin:/bin", view + "/lib", view,
+            pkgs + "/ROOT/6.36-2", pkgs + "/zlib/1.3-1",
+            pkgs + "/ROOT/6.36-2/etc/plugins",   # not in the view: the package's
+            view, "unset"])
+        csh = open(os.path.join(view, "setup.csh")).read()
+        self.assertIn('set _b = "/cvmfs/r/g/el9-gcc15-opt"', csh)
+        self.assertIn('setenv ROOTSYS "$_b/ROOT/6.36-2"', csh)
+
+    def test_view_setup_guards_follow_links_as_the_file_system(self):
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm)
+        zlib, root = self._release(ctx)
+        self._tarball(ctx, root, ["bin/root", "lib/pkgconfig/root.pc", "etc/modulefiles/ROOT"],
+                      links=[("lib64", "lib"), ("data", "/opt/data")])
+        guard = "if {[file isdirectory $PKG_ROOT/%s]} { prepend-path %s $PKG_ROOT/%s }\n"
+        self._retar(ctx, root, "etc/modulefiles/ROOT", self.ROOT_MF +
+                    guard % ("lib64/pkgconfig", "PKG_CONFIG_PATH", "lib64/pkgconfig"))
+        env, problems = cp.view_environment(ctx, [zlib, root], "g/views/LCG_110/el9-gcc15-opt",
+                                            ["ROOT"])
+        self.assertEqual(problems, [])
+        self.assertIn("@V@/lib64/pkgconfig", env["paths"]["PKG_CONFIG_PATH"])
+        # Below a link out of the package: modulecmd follows it, the listing cannot.
+        self._retar(ctx, root, "etc/modulefiles/ROOT", self.ROOT_MF +
+                    guard % ("data/x", "DATA_PATH", "data/x"))
+        _env, problems = cp.view_environment(ctx, [zlib, root], "g/views/LCG_110/el9-gcc15-opt",
+                                             ["ROOT"])
+        self.assertEqual(problems, ["ROOT: data is a link out of the package"])
+
+    def test_view_setup_problems_instead_of_failing(self):
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm)
+        zlib, root = self._release(ctx)
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        # A guarded directory that is a link out of the package: modulecmd
+        # follows it, the listing cannot.
+        self._tarball(ctx, root, ["bin/root", "etc/modulefiles/ROOT"],
+                      links=[("lib64", "/opt/elsewhere/lib")])
+        self._retar(ctx, root, "etc/modulefiles/ROOT", self.ROOT_MF +
+                    "if {[file isdirectory $PKG_ROOT/lib64]} { prepend-path LD_LIBRARY_PATH $PKG_ROOT/lib64 }\n")
+        _env, problems = cp.view_environment(ctx, [zlib, root], vp, ["ROOT"])
+        self.assertEqual(problems, ["ROOT: lib64 is a link out of the package"])
+        # A package whose tarball is not there: a problem, not a failed view.
+        os.unlink(cp_tar_path(zlib, ctx))
+        _env, problems = cp.view_environment(ctx, [zlib, root], vp, ["ROOT"])
+        self.assertTrue(problems[0].startswith("zlib: cannot read its modulefile: "), problems)
+
+    def test_view_records_whether_setup_sets_what_the_modules_set(self):
+        import tarfile
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm)
+        specs = self._release(ctx)
+        metas = []
+
+        def pub(c, p, t, lbl, **k):
+            with tarfile.open(t) as tf:
+                metas.append(json.load(tf.extractfile("./.meta.json"))["setup"])
+            return "JM"
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+             mock.patch.object(cp, "_publish_tar", pub):
+            self.assertEqual(cp._publish_merged_view(ctx, specs, [].extend, ["ROOT"]), 0)
+            self._retar(ctx, specs[0], "etc/modulefiles/zlib", self.ZLIB_MF + "puts hi\n")
+            self.assertEqual(cp._publish_merged_view(ctx, specs, [].extend, ["ROOT"]), 0)
+        self.assertEqual(metas[0], {"modules": True, "problems": []})
+        self.assertEqual(metas[1]["modules"], False)
+        self.assertIn("zlib: unknown command: puts hi", metas[1]["problems"])
+
 def _boom(*a, **k):
     raise AssertionError("must not be called")
 

@@ -515,6 +515,7 @@ but are not enforced by CI.
 | `bits_helpers/verify.py` | `bits verify` — check a deployment against a build manifest |
 | `bits_helpers/cvmfs_inspect.py` | `bits cvmfs` group — `platforms`/`show`/`summary`; dispatches `stage`/`publish` |
 | `bits_helpers/cvmfs_publish.py` | `bits cvmfs publish` — place a build's packages, release view and merged view on CVMFS |
+| `bits_helpers/modulefile_env.py` | What a release's bits modulefiles set, read without Tcl, for the merged view's `setup.sh` |
 | `bits_helpers/plan.py` | `bits build --dry-run` per-package reuse plan |
 | `bits_helpers/brew.py` | `bits brew` — macOS Brewfile from the recipes |
 | `bits_helpers/overlay/lcg.py` | `bits overlay lcg` — LCG release view over a built closure |
@@ -2066,7 +2067,12 @@ group can have views without `cvmfs_releases_template`; each is made when its
 template is set. A subdirectory only one package fills, with nothing of it excluded, is
 linked whole (e.g. `include/boost`); the top-level directories, `lib*/pkgconfig`
 and `lib*/python*/site-packages` stay real directories. The view also has
-`setup.sh` (locates itself under bash/zsh) and `setup.csh`.
+`setup.sh` (locates itself under bash/zsh) and `setup.csh`. They also set what
+loading the release's modules sets: each package's `<PKG>_ROOT` and the
+recipes' other `setenv`s (pointing at the packages, not the view), and path
+entries outside the view. The modulefiles are read without Tcl, in the forms bits
+writes; the view's `.meta.json` records under `setup` whether that covers all of
+them (`modules`) and, if not, what was not understood (`problems`).
 `system.cvmfs_view_exclude: [pkg, …]` leaves packages out. The file lists come from `.bits-view.json`, which every build writes into the package just
 before packing (so later changes to the local tree don't leak in); for a tarball
 built before that, from the tarball itself. A recipe shapes its own part of the
