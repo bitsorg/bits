@@ -16,7 +16,6 @@ bits.cfg
 bitsBuild
 bitsDeps
 bitsDoctor
-bitsenv
 codecov.yml
 pb
 pyproject.toml

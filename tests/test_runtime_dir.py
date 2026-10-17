@@ -32,14 +32,12 @@ class RuntimeDirTest(unittest.TestCase):
     self.tmp = tempfile.mkdtemp()
     self.inst = os.path.join(self.tmp, "inst")
     os.makedirs(self.inst)
-    for f in ("bits", "bitsBuild", "bitsStore", "bitsenv"):
+    for f in ("bits", "bitsBuild", "bitsStore"):
       shutil.copy2(os.path.join(ROOT, f), self.inst)
     shutil.copytree(os.path.join(ROOT, "bits_helpers"), os.path.join(self.inst, "bits_helpers"),
                     ignore=shutil.ignore_patterns("__pycache__"))
     self.work = os.path.join(self.tmp, "work")
     os.makedirs(os.path.join(self.work, "sw", "MODULES", "slc7_x86-64"))
-    self.tree = os.path.join(self.tmp, "tree")      # a published modules tree
-    os.makedirs(os.path.join(self.tree, "x86_64-el9-gcc15-opt", "Modules", "modulefiles"))
     self.path_log = os.path.join(self.tmp, "path.log")
     self.runtime_log = os.path.join(self.tmp, "runtime.log")
     fakebin = os.path.join(self.tmp, "fakebin")
@@ -60,11 +58,6 @@ class RuntimeDirTest(unittest.TestCase):
     return subprocess.run([os.path.join(self.inst, "bits")] + list(args), cwd=self.work,
                           env=self.env, capture_output=True, text=True, timeout=120)
 
-  def _bitsenv(self, *args):
-    return subprocess.run([os.path.join(self.inst, "bitsenv"), "-p", "x86_64-el9-gcc15-opt"] + list(args),
-                          cwd=self.work, env=dict(self.env, BITS_MODULEDIR=self.tree),
-                          capture_output=True, text=True, timeout=120)
-
   def _log(self, path):
     if not os.path.exists(path):
       return ""
@@ -75,12 +68,10 @@ class RuntimeDirTest(unittest.TestCase):
     self._bits("use")
     self._bits("modulecmd", "--version")
     self._bits("store", "--help")
-    self._bitsenv("q")
     log = self._log(self.path_log)
     self.assertIn("fakebin/python3 -c", log)
     self.assertIn("fakebin/modulecmd --version", log)
     self.assertIn("fakebin/python3 - --help", log)
-    self.assertIn("fakebin/modulecmd bash -t avail", log)
 
   def test_with_runtime_bits_uses_it_and_not_path(self):
     self._add_runtime()
@@ -89,13 +80,11 @@ class RuntimeDirTest(unittest.TestCase):
     self.assertEqual(r.returncode, 0, r.stderr)
     self._bits("modulecmd", "--version")
     self._bits("store", "--help")
-    self._bitsenv("q")
     log = self._log(self.runtime_log)
     self.assertIn("runtime/bin/python3 -E -s -c", log)
     self.assertIn("runtime/bin/python3 -E -s %s/bitsBuild version" % self.inst, log)
     self.assertIn("runtime/bin/modulecmd --version", log)
     self.assertIn("runtime/bin/python3 -E -s - --help", log)
-    self.assertIn("runtime/bin/modulecmd bash -t avail", log)
     self.assertEqual(self._log(self.path_log), "")
 
   def test_with_runtime_the_users_pythonpath_is_ignored(self):

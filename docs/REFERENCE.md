@@ -493,7 +493,6 @@ but are not enforced by CI.
 | `bitsModules` | Module listing on CVMFS through the serving catalog (used by `bits` with `BITS_CATALOG_LISTING=1`) |
 | `aliBuild` | Backward-compatible wrapper: sets the ALICE defaults and execs `bits` |
 | `pb` | Thin wrapper calling `bitsBuild` |
-| `bitsenv` | Legacy environment manager |
 | `bits_helpers/args.py` | Argument parsing for all sub-commands |
 | `bits_helpers/build.py` | Core build orchestration (~4 000 lines); `doBuild` |
 | `bits_helpers/hashing.py` | Build-hash computation (`storeHashes`) and the hash-excluded recipe keys |
@@ -2032,7 +2031,7 @@ modulefiles resolve against ($BASEDIR/<pkg>/<ver-rev>). Packages published
 elsewhere (noarch packages, a toolchain with [`own_hash: true`](#shared-toolchains-own_hash)) get a relative symlink there. With the
 ALICE-style templates
 `{prefix}/{arch}/Packages/…` and `{prefix}/{arch}/Modules/modulefiles/{pkg}`,
-`BITS_MODULEDIR=<prefix> BITS_PLATFORM=<arch> bitsenv …` then works unchanged.
+`BITS_CVMFS_PREFIX=<prefix> bits q`, `enter`, `setenv` … then use them.
 A package's modulefile is published inside it (`etc/modulefiles/<pkg>`); after
 the packages, one job adds a relative symlink `<modules dir>/<pkg>/<ver-rev>` to
 it for each package that has none yet, instead of a commit per modulefile. Like
