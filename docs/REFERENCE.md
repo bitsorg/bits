@@ -1663,6 +1663,15 @@ bits enter [-q] [--shellrc] [--dev] [--view] MODULE1[,MODULE2,...]
 | `-q` | Silence the module-load messages. |
 | `--view` | Collapse `PATH`, `LD_LIBRARY_PATH`, `CMAKE_PREFIX_PATH`, `PKG_CONFIG_PATH`, `PYTHONPATH` and `ROOT_INCLUDE_PATH` onto a merged view of the loaded closure (cached under `$WORK_DIR/VIEWS/<arch>`), so the environment stays small on big stacks. `<PKG>_ROOT` and other `setenv`s are untouched. Turned on automatically when a loaded package's recipe sets `view: true`. |
 
+**A release with a complete view.** When the request is one CVMFS module `<pkg>/<ver-rev>`
+of a release whose view is complete (its modules directory has `.<ver-rev>.view`, see
+[the merged view](#bits-store--bits-cvmfs-admin--ci-groups)) and the view is to be used
+(`--view`; for `enter` and `setenv` also `view: true`), `enter`, `setenv` and
+`load`/`printenv` source the view's `setup.sh` (`setup.csh` for csh) instead of loading
+the modules: no `modulecmd`, no Python, one file read. `bits list` then shows no modules, and `unload` does not undo it.
+A local build of the module, several modules, a bare `<pkg>` or `--dev` take the modules
+path as before.
+
 The shell type is auto-detected from the parent process (`bash`, `zsh`, `ksh`, `csh`/`tcsh`, `sh`). Override with the `MODULES_SHELL` environment variable. The prompt is set to `[MODULE_LIST] \w $>` (or the zsh/ksh equivalent) for the duration of the session. Nesting `bits enter` inside another bits environment is blocked.
 
 All module commands (`enter`, `load`, `unload`, `setenv`, `q`, `avail`, `modulecmd`) also accept `-w DIR` (default: `$BITS_WORK_DIR`, else `./sw` or `../sw`), `-a ARCH` (default: the installed architecture, preferring the host's when several are present) and `--no-refresh` (do not refresh the modules directory).

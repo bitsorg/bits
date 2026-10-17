@@ -461,6 +461,37 @@ function resolveLoaded() {
   return 0
 }
 
+function releaseView() {
+  # releaseView [auto]: the view of the requested release, when its setup.sh
+  # can stand in for loading the modules (no modulecmd, no Python): one module
+  # <pkg>/<ver-rev> from a CVMFS tree whose modules directory points to the
+  # view (.<ver-rev>.view, a link to the view's marker for that module, see
+  # bits cvmfs publish), and a view to use: --view or, with auto, a view: true
+  # package (its modulefile sets BITS_VIEW). Prints the view directory, or
+  # nothing.
+  local t m p v link d
+  [[ $DEVOPT != 1 && ${#GROUP_TREE[@]} == 1 && -n "${GROUP_TREE[0]}" ]] || return 0
+  m=${GROUP_MODS[0]}
+  [[ $m == */* && $m != *" "* ]] || return 0
+  t=${GROUP_TREE[0]}; p=${m%%/*}; v=${m#*/}
+  link="$t/$p/.$v.view"
+  [[ -f "$link" && -f "$t/$m" ]] || return 0
+  [[ $VIEWOPT == 1 ]] || { [[ ${1:-} == auto ]] &&
+    grep -q '^setenv BITS_VIEW 1$' "$t/$m" 2> /dev/null; } || return 0
+  d=$(readlink "$link") || return 0
+  [[ $d == /* ]] || d="$t/$p/$d"
+  d=$(cd "$(dirname "$d")" 2> /dev/null && pwd -P) || return 0
+  [[ -f "$d/setup.sh" && -f "$d/setup.csh" ]] && echo "$d"
+  return 0
+}
+
+function sourceReleaseView() {
+  # The release view's setup.sh in this shell; BITS_VIEW, which it sets to
+  # the view, is cleared as after loading the modules.
+  . "$1/setup.sh"
+  unset BITS_VIEW
+}
+
 function localOnly() {
   # --dev sources the packages' own init.sh from the work directory: local
   # modules only.
@@ -876,7 +907,11 @@ case "$ACTION" in
     resolveModules $MODULES
     _bt_mark resolveModules
     PS1DEV=
-    if [[ $DEVOPT == 1 ]];then
+    RELEASE_VIEW=$(releaseView auto)
+    if [[ -n "$RELEASE_VIEW" ]]; then
+      sourceReleaseView "$RELEASE_VIEW"
+      VIEWOPT=0                              # the view's own setup is the view
+    elif [[ $DEVOPT == 1 ]];then
       localOnly
       PS1DEV=" (dev)"
       for MODULE in $MODULES; do
@@ -910,11 +945,15 @@ case "$ACTION" in
         zsh)     export PS1="[$MODULES]$PS1DEV"' %~ %#> '  ;;
       esac
     fi
-    $MODULECMD bash list
-    if [[ $DEVOPT == 1 ]];then
-      echo "*** Development env loaded for '$MODULES' ***" >&2
+    if [[ -n "$RELEASE_VIEW" ]]; then
+      printf "${ET}Set up from the release view %s (no modules loaded). " "$RELEASE_VIEW" >&2
     else
-      printf "${ET}Use ${EM}bits list${ET} to list loaded modules. " >&2
+      $MODULECMD bash list
+      if [[ $DEVOPT == 1 ]];then
+        echo "*** Development env loaded for '$MODULES' ***" >&2
+      else
+        printf "${ET}Use ${EM}bits list${ET} to list loaded modules. " >&2
+      fi
     fi
     printf "Use ${EM}exit${ET} to exit this environment.${EZ}\n" >&2
     exec ${CLEAN_ENV:+env $SHELL_NORC_ENV} $MODULES_SHELL ${CLEAN_ENV:+$SHELL_NORC_PARAM} -i
@@ -923,13 +962,15 @@ case "$ACTION" in
     [[ $ACTION == printenv ]] && ACTION=load
     MODULES=$(normModules "${ARGS[@]}")
     _bt_mark preamble
+    RELEASE_VIEW=
     if [[ $ACTION == load ]]; then
       collectModules; _bt_mark collectModules
       resolveModules $MODULES; _bt_mark resolveModules
+      RELEASE_VIEW=$(releaseView)              # --view only, as the modules path
     else
       resolveLoaded $MODULES
     fi
-    [[ $VERBOSE == 1 ]] && printf "${ET}Use ${EM}bits list${ET} to list loaded modules.${EZ}\n" >&2
+    [[ $VERBOSE == 1 && -z "$RELEASE_VIEW" ]] && printf "${ET}Use ${EM}bits list${ET} to list loaded modules.${EZ}\n" >&2
     if [[ $DEVOPT == 1 ]];then
       localOnly
       echo "Warning: Development mode for '$ACTION' is not supported via bits. Please remove '--dev' or run manually shown below" >&2
@@ -943,6 +984,13 @@ case "$ACTION" in
       exit 0
     fi
     detectShell
+    if [[ -n "$RELEASE_VIEW" ]]; then
+      case "$MODULES_SHELL" in
+        csh|tcsh) printf 'source "%s/setup.csh";\nunsetenv BITS_VIEW;\n' "$RELEASE_VIEW" ;;
+        *)        printf '. "%s/setup.sh";\nunset BITS_VIEW;\n' "$RELEASE_VIEW" ;;
+      esac
+      exit 0
+    fi
     printGroups "$ACTION"
     # --view: emit the view-collapsed path overrides AFTER the module setup so they
     # win on eval. printenv/load only print (they don't load in-process), so the
@@ -963,6 +1011,11 @@ case "$ACTION" in
     MODULES=$(normModules "${ARGS[@]}")
     collectModules
     resolveModules $MODULES
+    RELEASE_VIEW=$(releaseView auto)
+    if [[ -n "$RELEASE_VIEW" ]]; then
+      sourceReleaseView "$RELEASE_VIEW"
+      exec "${COMMAND_IN_ENV[@]}"
+    fi
     evalGroups add
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
     [[ -n "${BITS_VIEW:-}" ]] && VIEWOPT=1   # view: true package auto-enables --view
