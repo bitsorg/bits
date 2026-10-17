@@ -969,6 +969,7 @@ bits [--debug|-d] [--dry-run|-n] <subcommand> [options]
 
 | Global option | Description |
 |---------------|-------------|
+| `--community NAME` | First, before the sub-command: the same as `BITS_COMMUNITY=NAME`. Through the CVMFS entry point it also selects the community's published modules, e.g. `/cvmfs/bits.cern.ch/bits/bin/bits --community key4hep setenv key4hep/2026-10-01 -c ./run.sh` in a grid job. |
 | `-d`, `--debug` | Enable verbose debug output |
 | `-n`, `--dry-run` | Print what would happen without executing. For `bits build`: a per-package plan (installed, local tarball, from the remote store, from the reuse overlay, or build) and a summary. Nothing is downloaded: the remote store is only listed, which is possible for `http(s)://` and `b3://` stores. |
 | `-a ARCH`, `-w DIR`, `--no-refresh` | Module commands (`enter`, `load`, `q`, …) only: architecture, work directory, and skip refreshing the modules directory. |
@@ -1596,7 +1597,7 @@ bits init --dry-run --remote-store https://store.example.com/store
 | `-c DIR`, `--config-dir DIR` | `[build]` | Default recipe directory. |
 | `-w DIR`, `--work-dir DIR` | `[build]` | Default work/output directory. |
 | `--reference-sources DIR` | `[build]` | Default mirror directory. |
-| `--community NAME` | env only | No build-time flag; set `$BITS_COMMUNITY` (the `aliBuild` wrapper sets it). `--organisation` is its former name. |
+| `--community NAME` | env only | Not saved; set `$BITS_COMMUNITY` or use `bits --community NAME build …` (the `aliBuild` wrapper sets it). `--organisation` is its former name. |
 | `--providers URL` | env only | No build-time flag; set `$BITS_PROVIDERS`. |
 
 > **`bits.rc` has been retired.** Earlier versions read a `bits.rc` / `.bitsrc` / `~/.bitsrc` file; it is no longer read. Per-directory settings now live in a `bits use` profile (above); global settings come from environment variables: `$BITS_WORK_DIR`, `$BITS_REPO_DIR` (config dir), `$BITS_COMMUNITY`, `$BITS_PROVIDERS`, `$BITS_PATH` (recipe search path — see `--search-path`), `$BITS_S3_STORE`, `$BITS_PREREQUISITES_URL`, `$BITS_CVMFS_REPOS`. Display prefix and branding (`$BITS_PKG_PREFIX`, `$BITS_BRANDING`) are set by the `aliBuild` wrapper.
@@ -3404,7 +3405,7 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `BITS_BRANDING` | _(empty)_ | Cosmetic program-name branding; set by the `aliBuild` wrapper. |
-| `BITS_COMMUNITY` | _(empty)_ | Community whose registry entry (`<community>.bits.sh`) the bootstrap clones when `-c` names a missing recipe directory. Empty by default; the `aliBuild` wrapper sets `ALICE`. (`bits init --community` does not persist it; set the variable.) `BITS_ORGANISATION`, its former name, still works. |
+| `BITS_COMMUNITY` | _(empty)_ | Community whose registry entry (`<community>.bits.sh`) the bootstrap clones when `-c` names a missing recipe directory. Empty by default; the `aliBuild` wrapper sets `ALICE`. (`bits init --community` does not persist it; set the variable, or give `bits --community NAME` before the sub-command.) `BITS_ORGANISATION`, its former name, still works. |
 | `BITS_PKG_PREFIX` | _(empty)_ | Display prefix for `bits q`. Empty prints native `PKG/VERSION`; when set (e.g. `VO_ALICE` via `aliBuild`) output becomes `PREFIX@PKG::VERSION`. |
 | `BITS_REPO_DIR` | `.` (`alidist` under the `aliBuild` wrapper) | Recipe directory (`-c`/`--config-dir` default): normally the community repository you run bits in. |
 | `BITS_WORK_DIR` | `sw` | Output and work directory (`ALICE_WORK_DIR` is accepted as a fallback). |

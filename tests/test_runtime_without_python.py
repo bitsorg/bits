@@ -192,5 +192,41 @@ class WithoutWorkDirTest(_Bits):
     self.assertFalse(self._python_ran())
 
 
+class CommunityOptionTest(_Bits):
+  """bits --community NAME … is $BITS_COMMUNITY=NAME."""
+
+  def setUp(self):
+    super().setUp()
+    _write(os.path.join(self.tmp, "stubs", "python3"),
+           '#!/bin/sh\necho "${BITS_COMMUNITY-unset} $*" >> "%s"\n' % self.calls, 0o755)
+
+  def _seen(self):
+    with open(self.calls) as f:
+      return f.read().split()
+
+  def test_the_option_sets_the_variable(self):
+    for opt in (["--community", "key4hep"], ["--community=key4hep"]):
+      self.env["BITS_COMMUNITY"] = "LHCB"
+      r = self._bits(*opt, "build", "K")
+      self.assertEqual(r.returncode, 0, r.stderr)
+      seen = self._seen()
+      self.assertEqual(seen[0], "KEY4HEP")
+      self.assertEqual(seen[-2:], ["build", "K"])   # and is not passed on
+      os.unlink(self.calls)
+
+  def test_after_the_sub_command_it_is_the_sub_commands(self):
+    self._bits("init", "--community", "lhcb")
+    self.assertEqual(self._seen()[0], "unset")
+    self.assertEqual(self._seen()[-3:], ["init", "--community", "lhcb"])
+
+  def test_a_bad_name_is_an_error(self):
+    for opt in (["--community"], ["--community", ""], ["--community=a/b"],
+                ["--community", "-a", "q"]):
+      r = self._bits(*opt)
+      self.assertEqual(r.returncode, 1, opt)
+      self.assertIn("--community needs a community name", r.stderr)
+    self.assertFalse(self._python_ran())
+
+
 if __name__ == "__main__":
   unittest.main()

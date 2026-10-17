@@ -15,6 +15,15 @@ BITSDIR="$(dirname "$0")"
 BITS_PY=
 [[ -x "$BITSDIR/runtime/bin/python3" ]] && BITS_PY="$BITSDIR/runtime/bin/python3"
 
+# `bits --community NAME <sub-command> …` (first, before the sub-command): the
+# same as $BITS_COMMUNITY=NAME, e.g. for a grid job's command line.
+while [[ ${1:-} == --community || ${1:-} == --community=* ]]; do
+  if [[ $1 == --community ]]; then _bits_c=${2-}; shift $(( $# > 1 ? 2 : 1 )); else _bits_c=${1#*=}; shift; fi
+  [[ $_bits_c =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || { echo "bits: --community needs a community name, not '$_bits_c'" >&2; exit 1; }
+  export BITS_COMMUNITY=$(printf %s "$_bits_c" | tr '[:lower:]' '[:upper:]')
+  unset _bits_c
+done
+
 # `.bitsuse` saved-arg profile (see `bits use`): inject the [common] + [<action>]
 # tokens right after the action, BEFORE anything is parsed, so both the build
 # path and the module commands (q/enter/…, which read ARGV below) see them.
@@ -76,12 +85,13 @@ function printHelp() {
 cat >&2 <<EoF
 $PROG -- load environment for bits packages through modulefiles
 
-Usage: $0 \\
+Usage: $0 [--community ${ET}NAME${EZ}] \\
          [--architecture|-a ${ET}ARCHITECTURE${EZ}] \\
          [--work-dir|-w ${ET}WORKDIR${EZ}]          \\
          [--no-refresh]                   \\
          ${ET}COMMAND...${EZ}
 
+  ${EM}--community${EZ} (first) sets \$BITS_COMMUNITY, for every command.
   ${EM}--no-refresh${EZ} skips refreshing the modules directory.
 
   ${ET}WORKDIR${EZ} defaults to sw.

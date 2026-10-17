@@ -681,8 +681,8 @@ def add_init_arguments(subparsers, ctx):
       description="With no PACKAGE, 'bits init' records the supplied options as a "
                   "'bits use' profile (./.bitsuse or a ~/.bits/use record) so you do not "
                   "repeat them on every build, then exits. --architecture goes to [common], "
-                  "the rest to [build]. community/providers have no build flag — set "
-                  "$BITS_COMMUNITY / $BITS_PROVIDERS for those.")
+                  "the rest to [build]. community/providers are not saved — set "
+                  "$BITS_COMMUNITY (or 'bits --community') / $BITS_PROVIDERS for those.")
   init_cfg.add_argument("--providers", dest="providers", default=None, metavar="URL",
                         help="URL of the bits-providers repository. Has no build-time flag; "
                              "set the BITS_PROVIDERS environment variable instead.")
@@ -694,9 +694,10 @@ def add_init_arguments(subparsers, ctx):
                              "'--write-store' in the [build] profile).")
   init_cfg.add_argument("--community", "--organisation", dest="organisation", default=None,
                         metavar="NAME",
-                        help="Community selecting the registry/provider 'home' repo. Has no "
-                             "build-time flag; set the BITS_COMMUNITY environment variable "
-                             "instead (the aliBuild wrapper sets it).")
+                        help="Community selecting the registry/provider 'home' repo. Not "
+                             "saved; set the BITS_COMMUNITY environment variable or give "
+                             "'bits --community NAME' before the sub-command (the aliBuild "
+                             "wrapper sets it).")
 
   # version takes no options; the architecture is auto-detected for display.
   return init_parser
