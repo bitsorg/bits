@@ -3851,6 +3851,16 @@ policy inline; an explicit `--reuse-policy` must agree with it.
 > binaries carry the toolchain they were built with, so run them in an image that
 > provides a compatible runtime.
 
+**Results depend on the reused paths.** Reused components are used in place, so a
+package built on top of them references their `/cvmfs/...` paths (its `init.sh`
+sources theirs, and its build may record them in RPATHs and config files) and
+needs that repository mounted at run time. Relocation moves only the package's
+own prefix. This is what publishing to the same CVMFS repository needs. For a
+self-contained, relocatable work directory, or to publish to a different
+repository or prefix, build without `--reuse-from`: the dependencies then come
+from the remote store (the same artifacts, where the store has them) or are
+built, and are installed and relocated with the rest of the tree.
+
 > **Note.** Earlier versions reused deployed packages through a `cvmfs://`
 > `--remote-store` and a `--reuse-base <build_id>` graft; that path has been
 > removed in favour of `--reuse-from`. A `cvmfs://` `--remote-store` now errors
