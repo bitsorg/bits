@@ -102,7 +102,7 @@ Usage: $0 [--community ${ET}NAME${EZ}] \\
     ${EM}help${EZ}
       This help screen.
 
-    ${EM}enter${EZ} [${ET}-q${EZ}] [${ET}--shellrc${EZ}] [${ET}--dev${EZ}] [${ET}--view${EZ}] MODULE1[,MODULE2...]
+    ${EM}enter${EZ} [${ET}-q${EZ}] [${ET}--shellrc${EZ}] [${ET}--dev${EZ}] [${ET}--view${EZ}] [${ET}--archive${EZ}] MODULE1[,MODULE2...]
       Enters a new shell with the given modules loaded (${ET}-q${EZ} silences the module-load messages).
       Return to the clean environment by exiting the shell with ${ET}exit${EZ}.
       Inside the environment you can use the native ${ET}modulecmd${EZ}.
@@ -112,13 +112,13 @@ Usage: $0 [--community ${ET}NAME${EZ}] \\
       If you want to add environment variables for development use ${ET}--dev${EZ}
       Alternatively you can use the ${EM}load${EZ} command in the current shell.
 
-    ${EM}setenv${EZ} [${ET}-q${EZ}] MODULE1[,MODULE2...] ${ET}-c${EZ} cmdInEnvironment [PARAM1 [PARAM2...]]
+    ${EM}setenv${EZ} [${ET}-q${EZ}] [${ET}--archive${EZ}] MODULE1[,MODULE2...] ${ET}-c${EZ} cmdInEnvironment [PARAM1 [PARAM2...]]
       Executes the given command with environment defined by the given modules.
       Everything after ${ET}-c${EZ} is executed as-is.  Use ${ET}-q${EZ} to silence the module-load messages.
       Exit code is preserved.
       Example: $ET$0 setenv AliRoot/v5-08-02-1 -c aliroot -b$EZ
 
-    ${EM}printenv${EZ} or ${EM}load${EZ} [${ET}-q${EZ}] [${ET}--view${EZ}] MODULE1[,MODULE2...]
+    ${EM}printenv${EZ} or ${EM}load${EZ} [${ET}-q${EZ}] [${ET}--view${EZ}] [${ET}--archive${EZ}] MODULE1[,MODULE2...]
       Prints the environment in the current shell for the given modules (${ET}-q${EZ} for quiet).
       This command does not set any environment and it must be executed through ${ET}eval${EZ} to be effective.
       Override shell with the environment variable ${ET}MODULES_SHELL${EZ}.
@@ -130,11 +130,12 @@ Usage: $0 [--community ${ET}NAME${EZ}] \\
       Override shell with the environment variable ${ET}MODULES_SHELL${EZ}.
       Example: ${ET}eval \`$0 unload AliRoot\`$EZ (version can be omitted)
 
-    ${EM}q${EZ} or ${EM}query${EZ} [REGEXP]
+    ${EM}q${EZ} or ${EM}query${EZ} [${ET}--archive${EZ}] [REGEXP]
       List all available modules, or the ones matching ${ET}REGEXP${EZ} if provided.
       With ${ET}BITS_CVMFS_PREFIX${EZ} set (the CVMFS entry point sets it for a community),
-      the modules the community published there for ${ET}ARCHITECTURE${EZ} are listed and
-      loaded too, after the local ones.
+      or a recipe repository's cvmfs.yaml, the modules the community published for
+      ${ET}ARCHITECTURE${EZ} are listed and loaded too, after the local ones. ${ET}--archive${EZ}
+      also finds their retired ones (Modules/archive, as alienv --archive).
 
     ${EM}list${EZ}
       List loaded modules.
@@ -359,17 +360,33 @@ function publishedArchs() {
   for d in "$pre"*; do [[ -d "$d$post" ]] && echo "${d#"$pre"}"; done
 }
 
+function archTokens() {
+  # archTokens ARCH: its CPU (x86_64, aarch64, ...) and OS (el<N>, from
+  # el/slc/alma/rhel/rocky/centos<N>, or ubuntu<NNNN>), as "CPU OS".
+  local cpu= os=
+  [[ "$1" =~ (x86[-_]64|aarch64|arm64|ppc64le|riscv64) ]] && cpu=${BASH_REMATCH[1]/x86-64/x86_64}
+  if [[ "$1" =~ (^|[-_])(el|slc|alma|rhel|rocky|centos)([0-9]+)([-_]|$) ]]; then
+    os=el${BASH_REMATCH[3]}
+  elif [[ "$1" =~ (^|[-_])(ubuntu[0-9]+)([-_]|$) ]]; then
+    os=${BASH_REMATCH[2]}
+  fi
+  echo "$cpu $os"
+}
+
 function hostMatches() {
-  # hostMatches: the architectures on stdin built for this host's CPU and OS, as
-  # the CVMFS entry point picks its view: the CPU token, and el<N> (or
-  # slc/alma/rhel/rocky/centos<N>) or ubuntu<NNNN> from /etc/os-release.
-  local cpu os a
-  cpu=$(uname -m)
-  os=$( . /etc/os-release 2> /dev/null
+  # hostMatches: the architectures on stdin built for this host's CPU and OS
+  # (from /etc/os-release), as the CVMFS entry point picks its view.
+  tokensMatch "$(uname -m)" "$( . /etc/os-release 2> /dev/null
         if [[ ${PLATFORM_ID:-} =~ ^platform:(el[0-9]+)$ ]]; then echo "${BASH_REMATCH[1]}"
         elif [[ ${ID:-} == ubuntu ]]; then echo "ubuntu${VERSION_ID//./}"
-        fi )
-  [[ -n "$os" ]] || return 0
+        fi )"
+}
+
+function tokensMatch() {
+  # tokensMatch CPU OS: the architectures on stdin with that CPU token and that
+  # OS (el<N> also as slc/alma/rhel/rocky/centos<N>); none without an OS.
+  local cpu=$1 os=$2 a
+  [[ -n "$cpu" && -n "$os" ]] || return 0
   while read -r a; do
     [[ "$a" == *"$cpu"* || "$a" == *"${cpu/_/-}"* ]] || continue
     case $os in
@@ -400,10 +417,21 @@ function isModuleAction() {
 
 function cvmfsTrees() {
   # cvmfsTrees TREE ARCH: add to CVMFS_TREES the trees (TREE with {arch}) of
-  # ARCH, of ARCH without its -opt/-dbg, then of that with -opt and -dbg.
-  local a b t
-  b=${2%-opt}; b=${b%-dbg}
-  for a in "$2" "$b" "$b-opt" "$b-dbg"; do
+  # ARCH, of ARCH without its -opt/-dbg, then of that with -opt and -dbg. With
+  # install dirs in place of archs (CVMFS_SLOT), ARCH if it is one, else the
+  # one with ARCH's CPU and OS.
+  local a b t cpu os cands
+  b=${2%-opt}; b=${b%-dbg}; cands=("$2" "$b" "$b-opt" "$b-dbg")
+  if [[ -n "$CVMFS_SLOT" ]]; then
+    cands=("$2"); t=${1//"{arch}"/"$2"}
+    if [[ ! -d "$t" ]]; then
+      read -r cpu os <<< "$(archTokens "$2")"
+      a=$(publishedArchs "$1" | tokensMatch "$cpu" "$os")
+      [[ -n "$a" && "$a" != *$'\n'* ]] || return 0
+      cands=("$a")
+    fi
+  fi
+  for a in "${cands[@]}"; do
     t=${1//"{arch}"/"$a"}
     [[ -d "$t" ]] || continue
     # Physical, as BASE/1.0 resolves its BASEDIR (file normalize): the same
@@ -424,22 +452,27 @@ function catalogListing() {
 
 function listCvmfsModules() {
   # Emit <pkg>/<version> for every modulefile in the CVMFS module trees (no
-  # BASE), with find, or first the serving catalog (catalogListing).
-  local t bm=
+  # BASE), with find, or first the serving catalog (catalogListing), and in
+  # their archives with --archive.
+  local t i bm=
   (( ${#CVMFS_TREES[@]} )) || return 0
   if ! catalogListing; then :
   elif [[ -n "$BITS_PY" ]]; then bm="${BITSDIR}/bitsModules"
   else bm=$(command -v bitsModules 2> /dev/null || echo "${BITSDIR}/bitsModules"); fi
-  for t in "${CVMFS_TREES[@]}"; do
+  for ((i = 0; i < ${#CVMFS_TREES[@]}; i++)); do
+    t=${CVMFS_TREES[i]}
     { [[ -n "$bm" && -x "$bm" ]] && ${BITS_PY:+"$BITS_PY" -E -s} "$bm" "$t" 2> /dev/null; } ||
       ( cd "$t" && find . -mindepth 2 -maxdepth 2 \( -type f -o -type l \) | sed -e 's|^\./||' )
+    t=${CVMFS_ARCHIVES[i]}
+    [[ -z "$t" ]] || ( cd "$t" && find . -mindepth 2 -maxdepth 2 \( -type f -o -type l \) | sed -e 's|^\./||' )
   done | grep -E '^[^/.][^/]*/[^/.][^/]*$' | grep -v '^BASE/' || true
 }
 
 function resolveModules() {
   # Find the module tree of each module <pkg>[/<version>]: the local MODULEPATH
   # (the modulefile cache, reuse overlays, the user's own entries), then the
-  # CVMFS trees in order; the first that has it wins. <pkg>/<version> is a
+  # CVMFS trees in order (each with its archive, with --archive); the first that
+  # has it wins. <pkg>/<version> is a
   # file there, a bare <pkg> a directory. Testing that directly is instant;
   # `modulecmd avail` (a full scan) runs only when no tree has it, so
   # default-version aliases still resolve locally. The `..` guard keeps the
@@ -447,7 +480,7 @@ function resolveModules() {
   # Sets GROUP_TREE (a CVMFS tree, or "" for the local MODULEPATH) and
   # GROUP_MODS (its modules, space-separated), one entry per tree used, in tree
   # order.
-  local M t i found mp trees=("" "${CVMFS_TREES[@]}") mods=()
+  local M t i found mp trees=("" "${CVMFS_TREES[@]}") arcs=("" "${CVMFS_ARCHIVES[@]}") mods=()
   IFS=: read -r -a mp <<< "$MODULEPATH"
   for t in "${trees[@]}"; do mods+=(""); done
   for M in "$@"; do
@@ -455,7 +488,7 @@ function resolveModules() {
     if [[ "$M" != *..* ]]; then
       for t in "${mp[@]}"; do [[ -n "$t" && -e "$t/$M" ]] && { found=0; break; }; done
       for ((i = 1; i < ${#trees[@]} && ${#found} == 0; i++)); do
-        [[ -e "${trees[i]}/$M" ]] && found=$i
+        [[ -e "${trees[i]}/$M" || ( -n "${arcs[i]}" && -e "${arcs[i]}/$M" ) ]] && found=$i
       done
     fi
     [[ -z "$found" ]] && $MODULECMD bash -t avail 2>&1 | grep -qFx "$M" && found=0
@@ -474,14 +507,16 @@ function resolveLoaded() {
   # _LMFILES_ (<tree>/<pkg>/<version>); any other module, e.g. one no tree has
   # any more, goes with the local MODULEPATH, as before. Sets GROUP_TREE and
   # GROUP_MODS as resolveModules does.
-  local M f t i found lm trees=("" "${CVMFS_TREES[@]}") mods=()
+  local M f t a i found lm trees=("" "${CVMFS_TREES[@]}") arcs=("" "${CVMFS_ARCHIVES[@]}") mods=()
   IFS=: read -r -a lm <<< "${_LMFILES_:-}"
   for t in "${trees[@]}"; do mods+=(""); done
   for M in "$@"; do
     found=0
     for ((i = 1; i < ${#trees[@]} && found == 0; i++)); do
       for f in "${lm[@]}"; do
-        [[ "$f" == "${trees[i]}/$M" || "$f" == "${trees[i]}/$M/"* ]] && { found=$i; break; }
+        for t in "${trees[i]}" ${arcs[i]:+"${arcs[i]}"}; do
+          [[ "$f" == "$t/$M" || "$f" == "$t/$M/"* ]] && { found=$i; break 2; }
+        done
       done
     done
     mods[found]+="${mods[found]:+ }$M"
@@ -542,13 +577,18 @@ function groupModulecmd() {
   # dependencies come from the same tree. BASEDIR is set to the tree's packages:
   # bits modulefiles find their package through it, and those of a second tree
   # skip their BASE/1.0 when the first tree's is loaded already.
-  local t="${GROUP_TREE[$3]}"
+  # A tree's archive (--archive) comes after it, with the same packages.
+  local t="${GROUP_TREE[$3]}" mp i
+  mp=$t
+  for ((i = 0; i < ${#CVMFS_TREES[@]}; i++)); do
+    [[ "${CVMFS_TREES[i]}" == "$t" && -n "${CVMFS_ARCHIVES[i]}" ]] && mp+=":${CVMFS_ARCHIVES[i]}"
+  done
   if [[ -z "$t" && -n "$NO_WORK_DIR" ]]; then
     $MODULECMD "$1" "$2" ${GROUP_MODS[$3]}   # from the user's own MODULEPATH
   elif [[ -z "$t" ]]; then
     BASEDIR="${WORK_DIR}/${ARCHITECTURE}" $MODULECMD "$1" "$2" ${GROUP_MODS[$3]}
   else
-    MODULEPATH="$t" BASEDIR="${t%/Modules/modulefiles}/Packages" $MODULECMD "$1" "$2" ${GROUP_MODS[$3]}
+    MODULEPATH="$mp" BASEDIR="${t%/Modules/modulefiles}/Packages" $MODULECMD "$1" "$2" ${GROUP_MODS[$3]}
   fi
 }
 
@@ -693,6 +733,7 @@ COMMAND_IN_ENV=()
 CLEAN_ENV=1
 DEVOPT=0
 VIEWOPT=0
+ARCHIVE=
 VERBOSE=1
 
 ARGS=()
@@ -714,6 +755,8 @@ do
 	  DEVOPT=1;;
       --view)
 	  VIEWOPT=1;;
+      --archive|-archive)
+	  ARCHIVE=1;;
       -h|--help|help)
 	  printHelp; exit 0 ;;
       -c) 
@@ -778,7 +821,7 @@ fi
 # else a note lists those published. They
 # come after the local MODULEPATH and stay off it: each tree is used on its own
 # (groupModulecmd), as its BASE/1.0 sets BASEDIR for it alone.
-CVMFS_TREES=()
+CVMFS_TREES=(); CVMFS_ARCHIVES=(); CVMFS_SLOT=
 _tree=; _layout=
 if [[ -n "${BITS_CVMFS_PREFIX+set}" ]]; then
   [[ -n "$BITS_CVMFS_PREFIX" ]] && _tree="${BITS_CVMFS_PREFIX%/}/{arch}/Modules/modulefiles"
@@ -791,11 +834,17 @@ else
     _tree=$(layoutValue "$_layout" cvmfs_modules_template)
     _tree=${_tree:-"{prefix}/{platform}/Modules/modulefiles/{pkg}"}
     _tree=${_tree//"{prefix}"/"${_p%/}"}; _tree=${_tree//"{platform}"/"{arch}"}
-    # Usable: a prefix, and <dir>/{pkg} with {arch} once in <dir>, its only slot.
-    _d=${_tree%"/{pkg}"}; _r=${_d//"{arch}"/}
-    if [[ -z "$_p" || "$_d" == "$_tree" || "$_r" == "$_d" || "$_r" == *"{"* ||
+    _d=${_tree%"/{pkg}"}
+    # The install dir in place of the arch (alice.bits: el9-x86_64, as on
+    # /cvmfs/alice.cern.ch): the one published with the arch's CPU and OS.
+    if [[ "$_d" != *"{arch}"* && "$_d" == *"{install_dir}"* ]]; then
+      _d=${_d//"{install_dir}"/"{arch}"}; CVMFS_SLOT=install_dir
+    fi
+    # Usable: a prefix, and <dir>/{pkg}, <dir> absolute with {arch} once, its only slot.
+    _r=${_d//"{arch}"/}
+    if [[ -z "$_p" || "$_tree" != *"/{pkg}" || "$_d" != /* || "$_r" == "$_d" || "$_r" == *"{"* ||
           "${_d#*"{arch}"}" == *"{arch}"* ]]; then
-      _tree=   # e.g. alice.bits' {install_dir}: no module trees for q/enter/load
+      _tree=; CVMFS_SLOT=   # no module trees for q/enter/load
     else
       _tree=$_d
     fi
@@ -834,7 +883,7 @@ if [[ -z "$_ARCH_GIVEN" ]]; then
   _present=()
   [[ -n "$NO_WORK_DIR" ]] || for _d in "$WORK_DIR/MODULES" "$WORK_DIR"; do
     for _a in $(ls -1t "$_d" 2> /dev/null); do
-      [[ -d "$_d/$_a" && "$_a" =~ (x86[-_]64|aarch64|arm64|ppc64le|ppc64) ]] && _present+=("$_a")
+      [[ -d "$_d/$_a" && "$_a" =~ (x86[-_]64|aarch64|arm64|ppc64le|ppc64|riscv64) ]] && _present+=("$_a")
     done
     (( ${#_present[@]} )) && break
   done
@@ -868,12 +917,16 @@ if [[ -z "$_ARCH_GIVEN" ]]; then
       printf "${EY}NOTE: several architectures present; selected most recent: %s${EZ}\n" "$ARCHITECTURE" >&2
       printf "${EY}      (override with  bits -a <arch> %s)${EZ}\n" "${ACTION:-q}" >&2
     fi
-  elif [[ -n "$_tree" ]] && _a=$(hostCvmfsArch "$_tree") && [[ -n "$_a" ]]; then
-    ARCHITECTURE="$_a-opt"                   # nothing installed: the community's, for this host
+  elif [[ -n "$_tree" && ( -z "$CVMFS_SLOT" || -n "$NO_WORK_DIR" ) ]] &&
+       _a=$(hostCvmfsArch "$_tree") && [[ -n "$_a" ]]; then
+    # Nothing installed: the community's, for this host (an install dir is no
+    # arch to build for: then only without a work dir).
+    ARCHITECTURE=$_a; [[ -n "$CVMFS_SLOT" ]] || ARCHITECTURE+=-opt
   elif [[ -n "$NO_WORK_DIR" ]]; then
     _p=$(publishedArchs "$_tree" | tr '\n' ' ' | sed 's/ $//')
-    printf "${ER}ERROR: no single architecture published for this host in %s; published: %s. Choose one: bits -a <arch> %s${EZ}\n" \
-      "$_tree" "${_p:-none}" "$ACTION" >&2
+    _s=${CVMFS_SLOT:-arch}; _d=${_tree//"{arch}"/"{$_s}"}
+    printf "${ER}ERROR: no single %s published for this host in %s; published: %s. Choose one: bits -a <%s> %s${EZ}\n" \
+      "$_s" "$_d" "${_p:-none}" "$_s" "$ACTION" >&2
     exit 1
   else
     # Nothing installed yet → host arch from python (e.g. for a first build).
@@ -921,11 +974,22 @@ if [[ -n "$_tree" ]]; then
   if [[ -n "$_layout$NO_WORK_DIR" && ${#CVMFS_TREES[@]} == 0 ]] && isModuleAction; then
     _p=$(publishedArchs "$_tree" | tr '\n' ' ' | sed 's/ $//')
     _a=$ARCHITECTURE; [[ -n "$_ARCH_GIVEN" ]] || _a="this host"
-    [[ -z "$_p" ]] || printf "${EY}NOTE: no CVMFS module tree %s (%s) for %s; published: %s. Choose one: bits -a <arch> %s${EZ}\n" \
-      "$_tree" "$_layout" "$_a" "$_p" "$ACTION" >&2
+    _s=${CVMFS_SLOT:-arch}; _d=${_tree//"{arch}"/"{$_s}"}
+    [[ -z "$_p" ]] || printf "${EY}NOTE: no CVMFS module tree %s%s for %s; published: %s. Choose one: bits -a <%s> %s${EZ}\n" \
+      "$_d" "${_layout:+ ($_layout)}" "$_a" "$_p" "$_s" "$ACTION" >&2
   fi
+  # Retired modulefiles, as alienv --archive finds them: Modules/archive beside
+  # Modules/modulefiles. With --archive (and for unload, which finds a module
+  # where it was loaded from).
+  for _d in "${CVMFS_TREES[@]}"; do
+    _a=
+    if [[ -n "$ARCHIVE" || $ACTION == unload ]] && [[ "$_d" == */Modules/modulefiles && -d "${_d%/modulefiles}/archive" ]]; then
+      _a=${_d%/modulefiles}/archive
+    fi
+    CVMFS_ARCHIVES+=("$_a")
+  done
 fi
-unset _a _d _r _p _tree _layout
+unset _a _d _r _p _s _tree _layout
 IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
 # -q (which unsets VERBOSE) silences environment-modules' "Loading <pkg>" /
 # "Loading requirement:" progress lines so setenv/printenv/load/enter output can

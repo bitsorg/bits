@@ -1749,7 +1749,11 @@ tree that has it, local builds first; `q` lists each name once. Each tree's modu
 are loaded against that tree alone, with its own `BASEDIR`, so modules from several
 trees can be loaded together; `unload` uses the tree each module was loaded from. The
 CVMFS trees are not put on `MODULEPATH`: inside `bits enter`, a `module load` by hand
-sees only the local modules. `--dev` works with local modules only.
+sees only the local modules. `--dev` works with local modules only. A tree's retired
+modulefiles, in `Modules/archive` beside `Modules/modulefiles` (ALICE's convention,
+which `alienv --archive` searches), are found only with `--archive` (`-archive`; not
+`-a`, the architecture): after the tree's own, against the same packages. `unload`
+always looks there too, for a module loaded from it.
 
 Without `BITS_CVMFS_PREFIX` (unset; set but empty turns CVMFS modules off), a recipe
 repository's [`cvmfs.yaml`](#the-cvmfs-layout-file-cvmfsyaml) gives the trees: in the
@@ -1758,7 +1762,13 @@ current directory, or beside the work directory (`sw/`). They are the directory 
 `<arch>` order above. Without `-a` and with no tree for the local architecture,
 `<arch>` is the one published for this host's CPU and OS (`el<N>` or `ubuntu<NNNN>`, as the CVMFS entry point picks its view) when there
 is exactly one compiler for it; otherwise bits uses none and says which there are, so
-`bits -a <arch> q` picks one.
+`bits -a <arch> q` picks one. A template with `{install_dir}` instead of `{arch}`, as
+alice.bits' `{prefix}/{install_dir}/Modules/modulefiles/{pkg}`, has a tree per install
+dir (`el9-x86_64`, as on `/cvmfs/alice.cern.ch`): bits uses the one published with the
+architecture's CPU and OS (`slc9_x86-64` → `el9-x86_64`), or, without a work
+directory and without `-a`, the host's. `-a` can also name the install dir itself;
+that is the only way to use one without an OS (`x86_64-2.6-gnu-4.8.3`) or one of
+several for the same CPU and OS.
 
 ---
 
@@ -2011,9 +2021,8 @@ cvmfs_views_template:       "{prefix}/views/{release}/{arch}"
 ```
 
 The shell reads `prefix` and `cvmfs_modules_template` as plain `key: value` lines; a
-modules template that is not `<directory with {arch}>/{pkg}` (e.g. one with
-`{install_dir}`), or a file without `prefix`, gives `bits q`, `enter` and `load` no
-CVMFS modules.
+modules template that is not `<absolute directory with {arch} or {install_dir}>/{pkg}`,
+or a file without `prefix`, gives `bits q`, `enter` and `load` no CVMFS modules.
 
 `bits cvmfs publish` places every package of the build with the build's own CVMFS
 templates (recorded in its manifest). A group that sets `cvmfs_packages_template`

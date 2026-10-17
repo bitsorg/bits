@@ -98,6 +98,12 @@ class RuntimeWithoutPythonTest(_Bits):
     self.assertEqual((r.returncode, r.stdout.split()), (0, ["K/1-1"]), r.stderr)
     self.assertFalse(self._python_ran())
 
+  def test_a_riscv64_install_without_python(self):
+    os.rename(os.path.join(self.work, "sw", ARCH), os.path.join(self.work, "sw", "ubuntu2604_riscv64"))
+    r = self._bits("q")
+    self.assertEqual((r.returncode, r.stdout.split()), (0, ["A/1-1"]), r.stderr)
+    self.assertFalse(self._python_ran())
+
   def test_of_several_installed_the_hosts_without_python(self):
     host = self._host() + "-opt"
     for arch, pkg in ((host, "H"), ("x86_64-el1-gcc9-opt", "G")):
@@ -165,7 +171,7 @@ class WithoutWorkDirTest(_Bits):
     no_work_dir("-a", ARCH, "q")
     del self.env["BITS_CVMFS_PREFIX"]
     no_work_dir("-a", ARCH, "q")
-    # A cvmfs.yaml that gives no module trees (e.g. alice.bits').
+    # A cvmfs.yaml that gives no module trees (not below the prefix).
     _write(os.path.join(self.job, "cvmfs.yaml"),
            "prefix: %s\ncvmfs_modules_template: \"{install_dir}/etc/modulefiles/{pkg}\"\n" % self.cvmfs)
     no_work_dir("-a", ARCH, "q")
