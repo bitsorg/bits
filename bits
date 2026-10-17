@@ -228,6 +228,7 @@ function installDir() {
 }
 
 function collectModules() {
+  [[ -z "$NO_WORK_DIR" ]] || return 0   # CVMFS modules only
   if [[ -n "$NO_REFRESH" ]]; then
     printf "${EY}WARNING: not updating modulefiles${EZ}\n" >&2
     return 0
@@ -307,7 +308,7 @@ function listAvailableModules() {
   # `modulecmd avail` just to enumerate — the two costs that make `q` slow on a
   # real filesystem. Output is unsorted; callers pipe through sort.
   local base="${WORK_DIR}/${ARCHITECTURE}" P pkgver pkgname
-  [[ -d "$base" ]] || return 0
+  [[ -z "$NO_WORK_DIR" && -d "$base" ]] || return 0
   while read -r P; do
     [[ -n "$P" ]] || continue
     pkgver=${P##*/}
@@ -532,7 +533,9 @@ function groupModulecmd() {
   # bits modulefiles find their package through it, and those of a second tree
   # skip their BASE/1.0 when the first tree's is loaded already.
   local t="${GROUP_TREE[$3]}"
-  if [[ -z "$t" ]]; then
+  if [[ -z "$t" && -n "$NO_WORK_DIR" ]]; then
+    $MODULECMD "$1" "$2" ${GROUP_MODS[$3]}   # from the user's own MODULEPATH
+  elif [[ -z "$t" ]]; then
     BASEDIR="${WORK_DIR}/${ARCHITECTURE}" $MODULECMD "$1" "$2" ${GROUP_MODS[$3]}
   else
     MODULEPATH="$t" BASEDIR="${t%/Modules/modulefiles}/Packages" $MODULECMD "$1" "$2" ${GROUP_MODS[$3]}
@@ -548,7 +551,7 @@ function evalGroups() {
   for ((i = 0; i < ${#GROUP_TREE[@]}; i++)); do
     eval "$(groupModulecmd bash "$1" "$i" 2> >(grep -v "$IGNORE_ERR" >&2))"
   done
-  [[ -z "${GROUP_TREE[*]}" ]] || export BASEDIR="${WORK_DIR}/${ARCHITECTURE}"
+  [[ -z "${GROUP_TREE[*]}" || -n "$NO_WORK_DIR" ]] || export BASEDIR="${WORK_DIR}/${ARCHITECTURE}"
 }
 
 function printGroups() {
@@ -753,12 +756,7 @@ if [[ -z "$WORK_DIR" ]]; then
   for WORK_DIR in "${DEFAULT_WORK_DIRS[@]}"; do
     [[ -d "$WORK_DIR" ]] && break || WORK_DIR=
   done
-  [[ -z "$WORK_DIR" ]] && { printHelp "No default work dir can be accessed:"                      \
-                                      "export \$BITS_WORK_DIR or run bits from a directory" \
-                                      "containing the \"sw\" dir"; false; }
 fi
-[[ ! -d "$WORK_DIR" ]] && { printHelp "Work dir $WORK_DIR cannot be accessed"; false; }
-WORK_DIR=$(cd "$WORK_DIR"; pwd)
 # The CVMFS module trees of a community: with $BITS_CVMFS_PREFIX (which the
 # CVMFS entry point sets; empty turns them off), <prefix>/<arch>/Modules/modulefiles;
 # else, with a cvmfs.yaml in the recipe repository (here, or beside the work
@@ -775,7 +773,7 @@ _tree=; _layout=
 if [[ -n "${BITS_CVMFS_PREFIX+set}" ]]; then
   [[ -n "$BITS_CVMFS_PREFIX" ]] && _tree="${BITS_CVMFS_PREFIX%/}/{arch}/Modules/modulefiles"
 else
-  for _layout in "$PWD/cvmfs.yaml" "$(dirname "$WORK_DIR")/cvmfs.yaml" ""; do
+  for _layout in "$PWD/cvmfs.yaml" ${WORK_DIR:+"$(dirname "$WORK_DIR")/cvmfs.yaml"} ""; do
     [[ -f "$_layout" ]] && break
   done
   if [[ -n "$_layout" ]]; then
@@ -793,6 +791,22 @@ else
     fi
   fi
 fi
+# The environment commands work on a community's CVMFS modules alone (e.g. in a
+# grid job): then no work dir is needed.
+NO_WORK_DIR=
+if [[ -z "$WORK_DIR" ]]; then
+  if [[ -n "$_tree" ]] && { isModuleAction || [[ $ACTION == unload ]]; }; then
+    NO_WORK_DIR=1
+    [[ $DEVOPT != 1 ]] || { printf "${ER}ERROR: --dev needs a work dir${EZ}\n" >&2; exit 1; }
+  else
+    printHelp "No default work dir can be accessed:"                      \
+              "export \$BITS_WORK_DIR or run bits from a directory" \
+              "containing the \"sw\" dir"; false
+  fi
+else
+  [[ ! -d "$WORK_DIR" ]] && { printHelp "Work dir $WORK_DIR cannot be accessed"; false; }
+  WORK_DIR=$(cd "$WORK_DIR"; pwd)
+fi
 # Remember whether the architecture was given explicitly (-a); if so, respect it
 # verbatim and never second-guess it below.
 _bt_mark startup            # script start → here (configBits, option/work-dir parsing)
@@ -808,7 +822,7 @@ if [[ -z "$_ARCH_GIVEN" ]]; then
   # can also hold <build_id> dirs with no CPU token — exclude those so an overlay
   # is never mistaken for an architecture.
   _present=()
-  for _d in "$WORK_DIR/MODULES" "$WORK_DIR"; do
+  [[ -n "$NO_WORK_DIR" ]] || for _d in "$WORK_DIR/MODULES" "$WORK_DIR"; do
     for _a in $(ls -1t "$_d" 2> /dev/null); do
       [[ -d "$_d/$_a" && "$_a" =~ (x86[-_]64|aarch64|arm64|ppc64le|ppc64) ]] && _present+=("$_a")
     done
@@ -846,6 +860,11 @@ if [[ -z "$_ARCH_GIVEN" ]]; then
     fi
   elif [[ -n "$_tree" ]] && _a=$(hostCvmfsArch "$_tree") && [[ -n "$_a" ]]; then
     ARCHITECTURE="$_a-opt"                   # nothing installed: the community's, for this host
+  elif [[ -n "$NO_WORK_DIR" ]]; then
+    _p=$(publishedArchs "$_tree" | tr '\n' ' ' | sed 's/ $//')
+    printf "${ER}ERROR: no single architecture published for this host in %s; published: %s. Choose one: bits -a <arch> %s${EZ}\n" \
+      "$_tree" "${_p:-none}" "$ACTION" >&2
+    exit 1
   else
     # Nothing installed yet → host arch from python (e.g. for a first build).
     ARCHITECTURE="$([[ -z "$BITS_PY" ]] && "bitsBuild" architecture 2> /dev/null || true)"
@@ -862,7 +881,7 @@ MODULECMD="$BITSDIR/runtime/bin/modulecmd"
 [[ -x "$MODULECMD" ]] || MODULECMD="$(brew --prefix modules 2> /dev/null || true)/libexec/modulecmd-compat"
 [[ -x "$MODULECMD" ]] || { installHint; false; }
 
-if [[ -d "${WORK_DIR}/MODULES/${ARCHITECTURE}" ]]; then
+if [[ -z "$NO_WORK_DIR" && -d "${WORK_DIR}/MODULES/${ARCHITECTURE}" ]]; then
   touch "${WORK_DIR}/MODULES/${ARCHITECTURE}/.testwrite" 2> /dev/null || NO_REFRESH=1
   rm -f "${WORK_DIR}/MODULES/${ARCHITECTURE}/.testwrite" 2> /dev/null || true
 fi
@@ -872,12 +891,14 @@ fi
 # package's `prereq <reused-dep>` cannot resolve at enter/load time without it.
 # Append every such overlay for this arch. Flat tree stays first (a local build
 # wins over a reused copy); no overlays -> MODULEPATH is unchanged.
-_bits_overlays=""
-for _ov in "$WORK_DIR"/MODULES/*/"$ARCHITECTURE"; do
-  [[ -d "$_ov" ]] && _bits_overlays="${_bits_overlays:+$_bits_overlays:}$_ov"
-done
-export MODULEPATH="$WORK_DIR/MODULES/$ARCHITECTURE${_bits_overlays:+":$_bits_overlays"}${MODULEPATH:+":$MODULEPATH"}"
-unset _bits_overlays _ov
+if [[ -z "$NO_WORK_DIR" ]]; then
+  _bits_overlays=""
+  for _ov in "$WORK_DIR"/MODULES/*/"$ARCHITECTURE"; do
+    [[ -d "$_ov" ]] && _bits_overlays="${_bits_overlays:+$_bits_overlays:}$_ov"
+  done
+  export MODULEPATH="$WORK_DIR/MODULES/$ARCHITECTURE${_bits_overlays:+":$_bits_overlays"}${MODULEPATH:+":$MODULEPATH"}"
+  unset _bits_overlays _ov
+fi
 MODULEPATH=$(echo "$MODULEPATH" | sed -e 's/::*/:/g; s/^://; s/:$//')
 
 if [[ -n "$_tree" ]]; then
@@ -887,7 +908,7 @@ if [[ -n "$_tree" ]]; then
     _a=$(hostCvmfsArch "$_tree")
     [[ -z "$_a" ]] || cvmfsTrees "$_tree" "$_a-opt"
   fi
-  if [[ -n "$_layout" && ${#CVMFS_TREES[@]} == 0 ]] && isModuleAction; then
+  if [[ -n "$_layout$NO_WORK_DIR" && ${#CVMFS_TREES[@]} == 0 ]] && isModuleAction; then
     _p=$(publishedArchs "$_tree" | tr '\n' ' ' | sed 's/ $//')
     _a=$ARCHITECTURE; [[ -n "$_ARCH_GIVEN" ]] || _a="this host"
     [[ -z "$_p" ]] || printf "${EY}NOTE: no CVMFS module tree %s (%s) for %s; published: %s. Choose one: bits -a <arch> %s${EZ}\n" \
@@ -917,6 +938,10 @@ _bitsView() {
 }
 applyView() {
   [[ $VIEWOPT == 1 ]] || return 0
+  if [[ -n "$NO_WORK_DIR" ]]; then
+    printf "${EY}NOTE: no work dir: the path variables are not collapsed onto a view${EZ}\n" >&2
+    return 0
+  fi
   eval "$(_bitsView --work-dir "${WORK_DIR}" --arch "${ARCHITECTURE}" 2> /dev/null)"
 }
 
@@ -1020,7 +1045,7 @@ case "$ACTION" in
     # win on eval. printenv/load only print (they don't load in-process), so the
     # closure is loaded in a subshell to compute the collapse; output is rendered
     # in the caller's shell syntax (sh export vs csh setenv).
-    if [[ $VIEWOPT == 1 && $ACTION == load ]]; then
+    if [[ $VIEWOPT == 1 && $ACTION == load && -z "$NO_WORK_DIR" ]]; then
       _vshell=sh; case "$MODULES_SHELL" in csh|tcsh) _vshell=csh;; esac
       ( evalGroups load 2> /dev/null
         _bitsView --work-dir "${WORK_DIR}" --arch "${ARCHITECTURE}" --shell "$_vshell" 2> /dev/null )

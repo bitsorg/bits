@@ -11,6 +11,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -25,7 +26,7 @@ def _write(path, text, mode=0o644):
   os.chmod(path, mode)
 
 
-class RuntimeWithoutPythonTest(unittest.TestCase):
+class _Bits(unittest.TestCase):
   def setUp(self):
     self.tmp = os.path.realpath(tempfile.mkdtemp())
     self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -50,6 +51,25 @@ class RuntimeWithoutPythonTest(unittest.TestCase):
   def _python_ran(self):
     return os.path.exists(self.calls)
 
+  def _host(self):
+    import platform
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    from test_cvmfs_modules import _host_os
+    if not _host_os():
+      self.skipTest("bits picks the host's arch on el<N> and Ubuntu hosts only")
+    return "%s-%s-gcc14" % (platform.machine(), _host_os())
+
+  def _real_modulecmd(self):
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    from test_release_view import _modulecmd
+    m = _modulecmd()
+    if not m:
+      self.skipTest("needs modulecmd (Environment Modules)")
+    os.unlink(os.path.join(self.tmp, "stubs", "modulecmd"))
+    os.symlink(m, os.path.join(self.tmp, "stubs", "modulecmd"))
+
+
+class RuntimeWithoutPythonTest(_Bits):
   def test_a_profile_of_another_directory_starts_no_python(self):
     _write(os.path.join(self.tmp, ".bits", "use", "0123456789abcdef.use"), "[common]\n")
     r = self._bits("-a", ARCH, "q")
@@ -66,16 +86,6 @@ class RuntimeWithoutPythonTest(unittest.TestCase):
     _write(os.path.join(self.work, ".bitsuse"), "[common]\n")
     self._bits("-a", ARCH, "q")
     self.assertTrue(self._python_ran())
-
-
-  def _host(self):
-    import platform
-    import sys
-    sys.path.insert(0, os.path.join(ROOT, "tests"))
-    from test_cvmfs_modules import _host_os
-    if not _host_os():
-      self.skipTest("bits picks the host's arch on el<N> and Ubuntu hosts only")
-    return "%s-%s-gcc14" % (platform.machine(), _host_os())
 
   def test_the_arch_published_for_this_host_without_python(self):
     host = self._host()
@@ -98,6 +108,89 @@ class RuntimeWithoutPythonTest(unittest.TestCase):
     r = self._bits("q")
     self.assertEqual((r.returncode, r.stdout.split()), (0, ["H/1-1"]), r.stderr)
     self.assertFalse(self._python_ran())
+
+
+class WithoutWorkDirTest(_Bits):
+  """A grid job: a community's CVMFS modules, no sw directory."""
+
+  def setUp(self):
+    super().setUp()
+    self.job = os.path.join(self.tmp, "job")
+    os.makedirs(self.job)
+    self.cvmfs = os.path.join(self.tmp, "cvmfs", "community")
+    self._publish(ARCH)
+    self.env["BITS_CVMFS_PREFIX"] = self.cvmfs
+
+  def _publish(self, arch):
+    mods = os.path.join(self.cvmfs, arch, "Modules", "modulefiles")
+    _write(os.path.join(mods, "BASE", "1.0"), "#%Module1.0\n")
+    _write(os.path.join(mods, "K", "1-1"),
+           "#%Module1.0\nmodule load BASE/1.0\nsetenv K_ROOT $::env(BASEDIR)/K/1-1\n")
+
+  def test_query_needs_no_work_dir(self):
+    r = self._bits("-a", ARCH, "q", cwd=self.job)
+    self.assertEqual((r.returncode, r.stdout.split()), (0, ["K/1-1"]), r.stderr)
+    self.assertFalse(self._python_ran())
+
+  def test_the_trees_of_a_cvmfs_yaml(self):
+    del self.env["BITS_CVMFS_PREFIX"]
+    _write(os.path.join(self.job, "cvmfs.yaml"), "prefix: %s\n" % self.cvmfs)
+    r = self._bits("-a", ARCH, "q", cwd=self.job)
+    self.assertEqual((r.returncode, r.stdout.split()), (0, ["K/1-1"]), r.stderr)
+    self.assertFalse(self._python_ran())
+
+  def test_the_hosts_arch(self):
+    host = self._host()
+    shutil.rmtree(os.path.join(self.cvmfs, ARCH))
+    self._publish(host + "-opt")
+    self._publish("x86_64-el1-gcc9-opt")
+    r = self._bits("q", cwd=self.job)
+    self.assertEqual((r.returncode, r.stdout.split()), (0, ["K/1-1"]), r.stderr)
+    self.assertFalse(self._python_ran())
+    # Two compilers for this host: bits cannot choose.
+    self._publish(host.replace("gcc14", "gcc13") + "-opt")
+    r = self._bits("q", cwd=self.job)
+    self.assertEqual(r.returncode, 1)
+    self.assertIn("Choose one: bits -a <arch> q", r.stderr)
+    self.assertIn(host + "-opt", r.stderr)
+    self.assertFalse(self._python_ran())
+
+  def test_other_commands_still_need_one(self):
+    def no_work_dir(*args):
+      r = self._bits(*args, cwd=self.job)
+      self.assertNotEqual(r.returncode, 0, args)
+      self.assertIn("No default work dir", r.stdout + r.stderr, args)
+    no_work_dir("-a", ARCH, "build", "K")
+    self.env["BITS_CVMFS_PREFIX"] = ""     # off
+    no_work_dir("-a", ARCH, "q")
+    del self.env["BITS_CVMFS_PREFIX"]
+    no_work_dir("-a", ARCH, "q")
+    # A cvmfs.yaml that gives no module trees (e.g. alice.bits').
+    _write(os.path.join(self.job, "cvmfs.yaml"),
+           "prefix: %s\ncvmfs_modules_template: \"{install_dir}/etc/modulefiles/{pkg}\"\n" % self.cvmfs)
+    no_work_dir("-a", ARCH, "q")
+    os.unlink(os.path.join(self.job, "cvmfs.yaml"))
+    self.env["BITS_CVMFS_PREFIX"] = self.cvmfs
+    r = self._bits("-a", ARCH, "--dev", "load", "K/1-1", cwd=self.job)
+    self.assertEqual(r.returncode, 1)
+    self.assertIn("--dev needs a work dir", r.stderr)
+
+  def test_printenv_with_modulecmd(self):
+    self._real_modulecmd()
+    for action in ("printenv", "load"):
+      r = self._bits("-a", ARCH, action, "K/1-1", cwd=self.job)
+      self.assertEqual(r.returncode, 0, r.stderr)
+      self.assertIn(os.path.join(self.cvmfs, ARCH, "Packages", "K", "1-1"), r.stdout)
+    self.assertFalse(self._python_ran())
+
+  def test_setenv_with_modulecmd(self):
+    self._real_modulecmd()
+    r = self._bits("-a", ARCH, "setenv", "K/1-1", "-c", "sh", "-c", 'echo "$K_ROOT"',
+                   cwd=self.job)
+    self.assertEqual(r.returncode, 0, r.stderr)
+    self.assertEqual(r.stdout.strip(), os.path.join(self.cvmfs, ARCH, "Packages", "K", "1-1"))
+    self.assertFalse(self._python_ran())
+
 
 if __name__ == "__main__":
   unittest.main()
