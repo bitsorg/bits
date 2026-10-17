@@ -2072,7 +2072,12 @@ loading the release's modules sets: each package's `<PKG>_ROOT` and the
 recipes' other `setenv`s (pointing at the packages, not the view), and path
 entries outside the view. The modulefiles are read without Tcl, in the forms bits
 writes; the view's `.meta.json` records under `setup` whether that covers all of
-them (`modules`) and, if not, what was not understood (`problems`).
+them (`modules`) and, if not, what was not understood (`problems`). When it covers them and
+the release has one top-level module, the view also has
+`.setup-complete.<pkg>.<ver-rev>`, and that module a link to it beside its
+modulefile, `<modules dir>/<pkg>/.<ver-rev>.view` (a file, so modulecmd passes it
+over). A view later made for another revision has no such file for this one: the
+link then leads nowhere.
 `system.cvmfs_view_exclude: [pkg, …]` leaves packages out. The file lists come from `.bits-view.json`, which every build writes into the package just
 before packing (so later changes to the local tree don't leak in); for a tarball
 built before that, from the tarball itself. A recipe shapes its own part of the

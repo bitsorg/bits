@@ -1629,22 +1629,76 @@ setenv ZLIB_ROOT $PKG_ROOT
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
         tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
-        ctx = self._ctx(templates=tm)
+        ctx = self._ctx(templates=tm, publish_path="ingest")
         specs = self._release(ctx)
-        metas = []
+        metas, pointers, lines = [], [], []
 
         def pub(c, p, t, lbl, **k):
             with tarfile.open(t) as tf:
-                metas.append(json.load(tf.extractfile("./.meta.json"))["setup"])
-            return "JM"
+                if lbl.startswith("view-pointer@"):
+                    pointers.append((p, {m.name: m.linkname for m in tf if m.issym()}))
+                else:
+                    names = tf.getnames()
+                    metas.append((json.load(tf.extractfile("./.meta.json"))["setup"],
+                                  [n for n in names if ".setup-complete" in n]))
+            return "J"
         with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
              mock.patch.object(cp, "_publish_tar", pub):
-            self.assertEqual(cp._publish_merged_view(ctx, specs, [].extend, ["ROOT"]), 0)
+            self.assertEqual(cp._publish_merged_view(ctx, specs, lines.extend, ["ROOT"]), 0)
             self._retar(ctx, specs[0], "etc/modulefiles/zlib", self.ZLIB_MF + "puts hi\n")
-            self.assertEqual(cp._publish_merged_view(ctx, specs, [].extend, ["ROOT"]), 0)
-        self.assertEqual(metas[0], {"modules": True, "problems": []})
-        self.assertEqual(metas[1]["modules"], False)
-        self.assertIn("zlib: unknown command: puts hi", metas[1]["problems"])
+            self.assertEqual(cp._publish_merged_view(ctx, specs, lines.extend, ["ROOT"]), 0)
+        self.assertEqual(metas[0], ({"modules": True, "problems": []},
+                                    ["./.setup-complete.ROOT.6.36-2"]))
+        self.assertEqual(metas[1][0]["modules"], False)
+        self.assertIn("zlib: unknown command: puts hi", metas[1][0]["problems"])
+        self.assertEqual(metas[1][1], [])
+        # Only the complete view gets a pointer from its top-level module, to
+        # that module's own marker: a view made for another one leaves it dangling.
+        self.assertEqual(pointers, [("g/el9-gcc15-opt/Modules", {
+            "ROOT/.6.36-2.view":
+                "../../../views/LCG_110/el9-gcc15-opt/.setup-complete.ROOT.6.36-2"})])
+        self.assertEqual(lines, ["PUBLISHED J merged-view@g/views/LCG_110/el9-gcc15-opt",
+                                 "PUBLISHED J view-pointer@g/el9-gcc15-opt/Modules",
+                                 "PUBLISHED J merged-view@g/views/LCG_110/el9-gcc15-opt"])
+
+    def test_view_pointer_is_added_once_also_to_an_unchanged_view(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm, publish_path="ingest")
+        specs = self._release(ctx)
+        sent, fps = [], {}
+
+        def pub(c, p, t, lbl, identity_hash=None, **k):
+            sent.append(lbl)
+            fps[p] = identity_hash
+            return "J"
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+             mock.patch.object(cp, "_publish_tar", pub):
+            cp._publish_merged_view(ctx, specs, [].extend, ["ROOT"])
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        for pointer_there in (False, True):
+            sent.clear()
+            state = lambda c, p: ({"exists": True, "hash": fps[vp]} if p == vp else
+                                  {"exists": pointer_there})
+            with mock.patch.object(cp, "published_state", state), \
+                 mock.patch.object(cp, "_publish_tar", pub):
+                self.assertEqual(cp._publish_merged_view(ctx, specs, [].extend, ["ROOT"]), 0)
+            self.assertEqual(sent, [] if pointer_there else
+                             ["view-pointer@g/el9-gcc15-opt/Modules"])
+
+    def test_no_view_pointer_for_several_top_level_modules(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm, publish_path="ingest")
+        specs = self._release(ctx)
+        sent = []
+        # setup.sh would set what both set, more than either one alone does.
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+             mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, **k: sent.append(lbl)):
+            self.assertEqual(cp._publish_merged_view(ctx, specs, [].extend, ["ROOT", "zlib"]), 0)
+        self.assertEqual(sent, ["merged-view@g/views/LCG_110/el9-gcc15-opt"])
 
 def _boom(*a, **k):
     raise AssertionError("must not be called")

@@ -1853,6 +1853,15 @@ def _publish_merged_view(ctx, specs, emit, top_level=None, force=False):
             sys.stderr.write("[publish] merged view: setup.sh does not set what the "
                              "modules do: %s\n" % why)
         write_view_setup(staging, "/cvmfs/%s/%s" % (ctx["repo"], view_path), env)
+        # The one top-level module setup.sh stands in for, when it does.
+        top = next((sp for sp in specs if sp["package"] in top_level), None) \
+            if not problems and len(top_level) == 1 else None
+        if top:
+            marker = os.path.join(staging, setup_marker(top))
+            with open(marker, "w") as fh:
+                fh.write("# setup.sh sets what loading %s/%s sets\n"
+                         % (top["package"], _vdir(top)))
+            os.chmod(marker, 0o644)
         # The view's identity: what prepub compares to decide to replace it.
         # Modes are hashed, so they must not depend on the publisher's umask.
         for dp, dns, _fns in os.walk(staging):
@@ -1866,7 +1875,7 @@ def _publish_merged_view(ctx, specs, emit, top_level=None, force=False):
         if exists:
             if state.get("hash") == fp:
                 emit(["SKIPPED merged view: %s is unchanged" % view_path])
-                return 0
+                return _publish_view_pointer(ctx, top, view_path, emit) if top else 0
             owner = _view_owner(ctx, view_path) if not force else None
             if owner and top_level and owner != top_level:
                 emit(["FAILED merged view: %s was made from %s, not %s; "
@@ -1896,12 +1905,47 @@ def _publish_merged_view(ctx, specs, emit, top_level=None, force=False):
         jid = _publish_tar(ctx, view_path, tar, label, identity=view_path,
                            identity_hash=fp, replace=replace)
         emit(["PUBLISHED %s %s" % (jid, label)])
-        return 0
+        return _publish_view_pointer(ctx, top, view_path, emit) if top else 0
     except (SystemExit, Exception) as exc:
         emit(["FAILED merged view: %s" % exc])
         return 1
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def setup_marker(spec):
+    """The file in a release's view that says its setup.sh sets what loading
+    the release's top-level module *spec* sets: there only while the view is
+    one made for that very module."""
+    return ".setup-complete.%s.%s" % (spec["package"], _vdir(spec))
+
+
+def view_pointer(spec, ctx):
+    """Where the modules directory points from a release's top-level module to
+    its view: <modules dir>/<pkg>/.<ver-rev>.view, a link to the view's
+    setup_marker (a file, not a modulefile, so modulecmd passes it over). A view
+    replaced by another release's has no such marker: the link then dangles."""
+    mod = _spec_path(spec, ctx, "modules")
+    return mod and "%s/.%s.view" % (mod, _vdir(spec))
+
+
+def _publish_view_pointer(ctx, spec, view_path, emit):
+    """The link from the release's top-level module *spec* to its view
+    (view_pointer), unless it is published already. Returns the rc contribution."""
+    root = (fixed_dir(ctx, "modules")
+            if (ctx.get("templates") or {}).get("modules") else None)
+    link = view_pointer(spec, ctx) if root else None
+    if not link:
+        return 0
+    st = published_state(ctx, link) if ctx["submit"] else None
+    if st and st.get("exists"):
+        return 0
+    label = "view-pointer@%s" % root
+    jid, err = publish_links(ctx, root, [(link, "%s/%s" % (view_path, setup_marker(spec)))],
+                             label)
+    emit(["PUBLISHED %s %s" % (jid, label)] if err is None else
+         ["FAILED view pointer %s: %s" % (link, err)])
+    return 0 if err is None else 1
 
 
 def _publish_release_links(ctx, specs, emit):
