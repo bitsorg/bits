@@ -18,10 +18,22 @@ BITS_PY=
 # `.bitsuse` saved-arg profile (see `bits use`): inject the [common] + [<action>]
 # tokens right after the action, BEFORE anything is parsed, so both the build
 # path and the module commands (q/enter/…, which read ARGV below) see them.
-# The profile is a local ./.bitsuse (or legacy ./.bitscmd) or a per-directory
-# record under ~/.bits/use; the guard fires for any of them and python resolves
-# which applies (a no-op when none does). `use` opts out; explicit args stay last.
-if [[ -f .bitsuse || -f .bitscmd || -d "$HOME/.bits/use" ]]; then
+# The profile is a local ./.bitsuse (or legacy ./.bitscmd) or this directory's
+# record under ~/.bits/use (~/.bits/use/<first 16 of sha256 of its real path>.use,
+# as bits_use names it); python reads it only when one is there, so the
+# environment commands start no Python otherwise. `use` opts out; explicit args
+# stay last.
+function bitsUseProfile() {
+  # Whether a profile may apply here (also when the record's name cannot be
+  # computed: python then decides).
+  [[ -f .bitsuse || -f .bitscmd ]] && return 0
+  [[ -d "$HOME/.bits/use" ]] || return 1
+  local d k
+  d=$(pwd -P) || return 0
+  k=$( { printf %s "$d" | sha256sum || printf %s "$d" | shasum -a 256; } 2> /dev/null | cut -c1-16)
+  [[ ${#k} != 16 || -f "$HOME/.bits/use/$k.use" ]]
+}
+if bitsUseProfile; then
   _bits_prof=()
   while IFS= read -r -d '' _bits_t; do _bits_prof+=("$_bits_t"); done \
     < <(BITS_SELF="${BITSDIR}" "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' --rewrite0 -- "$@")
