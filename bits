@@ -348,12 +348,11 @@ function publishedArchs() {
   for d in "$pre"*; do [[ -d "$d$post" ]] && echo "${d#"$pre"}"; done
 }
 
-function hostCvmfsArch() {
-  # hostCvmfsArch TREE: the published build arch (without -opt/-dbg) for this
-  # host's CPU and OS, when exactly one matches; as the CVMFS entry point picks
-  # its view: the CPU token, and el<N> (or slc/alma/rhel/rocky/centos<N>) or
-  # ubuntu<NNNN> from /etc/os-release.
-  local cpu os a b bases=()
+function hostMatches() {
+  # hostMatches: the architectures on stdin built for this host's CPU and OS, as
+  # the CVMFS entry point picks its view: the CPU token, and el<N> (or
+  # slc/alma/rhel/rocky/centos<N>) or ubuntu<NNNN> from /etc/os-release.
+  local cpu os a
   cpu=$(uname -m)
   os=$( . /etc/os-release 2> /dev/null
         if [[ ${PLATFORM_ID:-} =~ ^platform:(el[0-9]+)$ ]]; then echo "${BASH_REMATCH[1]}"
@@ -366,9 +365,19 @@ function hostCvmfsArch() {
       el*) [[ "$a" =~ (^|[-_])(el|slc|alma|rhel|rocky|centos)${os#el}([-_]|$) ]] || continue ;;
       *)   [[ "$a" =~ (^|[-_])$os([-_]|$) ]] || continue ;;
     esac
+    echo "$a"
+  done
+  return 0
+}
+
+function hostCvmfsArch() {
+  # hostCvmfsArch TREE: the published build arch (without -opt/-dbg) for this
+  # host (hostMatches), when exactly one matches.
+  local a b bases=()
+  while read -r a; do
     b=${a%-opt}; b=${b%-dbg}
     [[ " ${bases[*]} " == *" $b "* ]] || bases+=("$b")
-  done < <(publishedArchs "$1")
+  done < <(publishedArchs "$1" | hostMatches)
   (( ${#bases[@]} == 1 )) && echo "${bases[0]}"
   return 0
 }
@@ -750,90 +759,6 @@ if [[ -z "$WORK_DIR" ]]; then
 fi
 [[ ! -d "$WORK_DIR" ]] && { printHelp "Work dir $WORK_DIR cannot be accessed"; false; }
 WORK_DIR=$(cd "$WORK_DIR"; pwd)
-# Remember whether the architecture was given explicitly (-a); if so, respect it
-# verbatim and never second-guess it below.
-_bt_mark startup            # script start → here (configBits, option/work-dir parsing)
-_ARCH_GIVEN=; [[ -n "$ARCHITECTURE" ]] && _ARCH_GIVEN=1
-# Architecture autodetection (when -a not given). MODULES-first: for q/load/enter
-# the installed module trees are the source of truth, so choose from them
-# directly and skip the bitsBuild (python) host-arch spawn entirely in the common
-# single-arch case. A real arch has a $WORK_DIR/MODULES/<arch> dir; sw/ also holds
-# non-arch dirs (wrapper-scripts) which are excluded by going via MODULES. Fall
-# back to python only to disambiguate several installed arches (prefer the host's)
-# or when nothing is installed yet (e.g. a first build).
-if [[ -z "$_ARCH_GIVEN" ]]; then
-  # A real arch dir carries a CPU token (x86-64/aarch64/arm64/ppc64...). The
-  # reuse-from-modules overlays live under MODULES/<build_id>/<arch>, so MODULES/
-  # can also hold <build_id> dirs with no CPU token — exclude those so an overlay
-  # is never mistaken for an architecture.
-  _present=()
-  for _a in $(ls -1t "$WORK_DIR/MODULES" 2> /dev/null); do
-    [[ -d "$WORK_DIR/MODULES/$_a" ]] || continue
-    [[ "$_a" =~ (x86[-_]64|aarch64|arm64|ppc64le|ppc64) ]] || continue
-    _present+=("$_a")
-  done
-  if [[ ${#_present[@]} -eq 1 ]]; then
-    ARCHITECTURE="${_present[0]}"            # sole installed arch — no python spawn
-  elif [[ ${#_present[@]} -gt 1 ]]; then
-    # Several present: prefer the host's native arch if installed.
-    _host="$( { [[ -z "$BITS_PY" ]] && "bitsBuild" architecture 2> /dev/null; } ||
-              ${BITS_PY:+"$BITS_PY" -E -s} "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
-    ARCHITECTURE=
-    if [[ -n "$_host" ]]; then
-      for _a in "${_present[@]}"; do [[ "$_a" == "$_host" ]] && { ARCHITECTURE="$_a"; break; }; done
-    fi
-    # No host match (or the host-arch probe momentarily failed → empty $_host):
-    # do not blindly pick the newest tree — prefer an arch whose module tree
-    # actually holds the requested package, so a failed probe cannot send
-    # q/enter/load to a tree that lacks the module.
-    if [[ -z "$ARCHITECTURE" ]]; then
-      _want=
-      for _m in "${ARGS[@]}"; do [[ "$_m" == -* ]] && continue; _want="${_m%%/*}"; break; done
-      if [[ -n "$_want" ]]; then
-        for _a in "${_present[@]}"; do
-          [[ -d "$WORK_DIR/MODULES/$_a/$_want" ]] && { ARCHITECTURE="$_a"; break; }
-        done
-      fi
-    fi
-    if [[ -z "$ARCHITECTURE" ]]; then
-      ARCHITECTURE="${_present[0]}"          # ls -1t → most recently built
-      printf "${EY}NOTE: several architectures present; selected most recent: %s${EZ}\n" "$ARCHITECTURE" >&2
-      printf "${EY}      (override with  bits -a <arch> %s)${EZ}\n" "${ACTION:-q}" >&2
-    fi
-  else
-    # Nothing installed yet → host arch from python (e.g. for a first build).
-    ARCHITECTURE="$([[ -z "$BITS_PY" ]] && "bitsBuild" architecture 2> /dev/null || true)"
-    [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$(${BITS_PY:+"$BITS_PY" -E -s} "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
-  fi
-fi
-_bt_mark archdetect         # arch autodetect (python spawn only when needed)
-[[ -z "$ARCHITECTURE" ]] && { printHelp "Cannot autodetect architecture"; false; }
-
-# Look for modulecmd (v3) or modulecmd-compat (>= v4): bits' own runtime first
-MODULECMD="$BITSDIR/runtime/bin/modulecmd"
-[[ -x "$MODULECMD" ]] || MODULECMD=$(command -v modulecmd 2> /dev/null || true)
-[[ -x "$MODULECMD" ]] || MODULECMD="$(dirname $(command -v envml 2> /dev/null || true) 2> /dev/null || true)/../libexec/modulecmd-compat"
-[[ -x "$MODULECMD" ]] || MODULECMD="$(brew --prefix modules 2> /dev/null || true)/libexec/modulecmd-compat"
-[[ -x "$MODULECMD" ]] || { installHint; false; }
-
-if [[ -d "${WORK_DIR}/MODULES/${ARCHITECTURE}" ]]; then
-  touch "${WORK_DIR}/MODULES/${ARCHITECTURE}/.testwrite" 2> /dev/null || NO_REFRESH=1
-  rm -f "${WORK_DIR}/MODULES/${ARCHITECTURE}/.testwrite" 2> /dev/null || true
-fi
-
-# Reuse-from overlays: a reused dep's (re-anchored) modulefile lives under
-# MODULES/<build_id>/<ARCH>, not the flat per-arch tree, so a locally-built
-# package's `prereq <reused-dep>` cannot resolve at enter/load time without it.
-# Append every such overlay for this arch. Flat tree stays first (a local build
-# wins over a reused copy); no overlays -> MODULEPATH is unchanged.
-_bits_overlays=""
-for _ov in "$WORK_DIR"/MODULES/*/"$ARCHITECTURE"; do
-  [[ -d "$_ov" ]] && _bits_overlays="${_bits_overlays:+$_bits_overlays:}$_ov"
-done
-export MODULEPATH="$WORK_DIR/MODULES/$ARCHITECTURE${_bits_overlays:+":$_bits_overlays"}${MODULEPATH:+":$MODULEPATH"}"
-unset _bits_overlays _ov
-MODULEPATH=$(echo "$MODULEPATH" | sed -e 's/::*/:/g; s/^://; s/:$//')
-
 # The CVMFS module trees of a community: with $BITS_CVMFS_PREFIX (which the
 # CVMFS entry point sets; empty turns them off), <prefix>/<arch>/Modules/modulefiles;
 # else, with a cvmfs.yaml in the recipe repository (here, or beside the work
@@ -868,6 +793,93 @@ else
     fi
   fi
 fi
+# Remember whether the architecture was given explicitly (-a); if so, respect it
+# verbatim and never second-guess it below.
+_bt_mark startup            # script start → here (configBits, option/work-dir parsing)
+_ARCH_GIVEN=; [[ -n "$ARCHITECTURE" ]] && _ARCH_GIVEN=1
+# Architecture autodetection (when -a not given), without Python where it can:
+# the installed architectures (their MODULES/<arch>, else <arch> in the work
+# dir); of several, the one for this host's CPU and OS (hostMatches); with none,
+# the one the community's CVMFS module trees publish for this host. Python's
+# host architecture only when that does not settle it.
+if [[ -z "$_ARCH_GIVEN" ]]; then
+  # A real arch dir carries a CPU token (x86-64/aarch64/arm64/ppc64...). The
+  # reuse-from-modules overlays live under MODULES/<build_id>/<arch>, so MODULES/
+  # can also hold <build_id> dirs with no CPU token — exclude those so an overlay
+  # is never mistaken for an architecture.
+  _present=()
+  for _d in "$WORK_DIR/MODULES" "$WORK_DIR"; do
+    for _a in $(ls -1t "$_d" 2> /dev/null); do
+      [[ -d "$_d/$_a" && "$_a" =~ (x86[-_]64|aarch64|arm64|ppc64le|ppc64) ]] && _present+=("$_a")
+    done
+    (( ${#_present[@]} )) && break
+  done
+  if [[ ${#_present[@]} -eq 1 ]]; then
+    ARCHITECTURE="${_present[0]}"            # sole installed arch — no python spawn
+  elif [[ ${#_present[@]} -gt 1 ]]; then
+    # Several present: the host's, if exactly one is; else Python's host arch.
+    ARCHITECTURE=
+    _host=$(printf '%s\n' "${_present[@]}" | hostMatches)
+    [[ -n "$_host" && "$_host" != *$'\n'* ]] && ARCHITECTURE=$_host
+    if [[ -z "$ARCHITECTURE" ]]; then
+      _host="$( { [[ -z "$BITS_PY" ]] && "bitsBuild" architecture 2> /dev/null; } ||
+                ${BITS_PY:+"$BITS_PY" -E -s} "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
+      for _a in "${_present[@]}"; do [[ "$_a" == "$_host" ]] && { ARCHITECTURE="$_a"; break; }; done
+    fi
+    # No host match (or the host-arch probe momentarily failed → empty $_host):
+    # do not blindly pick the newest tree — prefer an arch whose module tree
+    # actually holds the requested package, so a failed probe cannot send
+    # q/enter/load to a tree that lacks the module.
+    if [[ -z "$ARCHITECTURE" ]]; then
+      _want=
+      for _m in "${ARGS[@]}"; do [[ "$_m" == -* ]] && continue; _want="${_m%%/*}"; break; done
+      if [[ -n "$_want" ]]; then
+        for _a in "${_present[@]}"; do
+          [[ -d "$WORK_DIR/MODULES/$_a/$_want" ]] && { ARCHITECTURE="$_a"; break; }
+        done
+      fi
+    fi
+    if [[ -z "$ARCHITECTURE" ]]; then
+      ARCHITECTURE="${_present[0]}"          # ls -1t → most recently built
+      printf "${EY}NOTE: several architectures present; selected most recent: %s${EZ}\n" "$ARCHITECTURE" >&2
+      printf "${EY}      (override with  bits -a <arch> %s)${EZ}\n" "${ACTION:-q}" >&2
+    fi
+  elif [[ -n "$_tree" ]] && _a=$(hostCvmfsArch "$_tree") && [[ -n "$_a" ]]; then
+    ARCHITECTURE="$_a-opt"                   # nothing installed: the community's, for this host
+  else
+    # Nothing installed yet → host arch from python (e.g. for a first build).
+    ARCHITECTURE="$([[ -z "$BITS_PY" ]] && "bitsBuild" architecture 2> /dev/null || true)"
+    [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$(${BITS_PY:+"$BITS_PY" -E -s} "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
+  fi
+fi
+_bt_mark archdetect         # arch autodetect (python spawn only when needed)
+[[ -z "$ARCHITECTURE" ]] && { printHelp "Cannot autodetect architecture"; false; }
+
+# Look for modulecmd (v3) or modulecmd-compat (>= v4): bits' own runtime first
+MODULECMD="$BITSDIR/runtime/bin/modulecmd"
+[[ -x "$MODULECMD" ]] || MODULECMD=$(command -v modulecmd 2> /dev/null || true)
+[[ -x "$MODULECMD" ]] || MODULECMD="$(dirname $(command -v envml 2> /dev/null || true) 2> /dev/null || true)/../libexec/modulecmd-compat"
+[[ -x "$MODULECMD" ]] || MODULECMD="$(brew --prefix modules 2> /dev/null || true)/libexec/modulecmd-compat"
+[[ -x "$MODULECMD" ]] || { installHint; false; }
+
+if [[ -d "${WORK_DIR}/MODULES/${ARCHITECTURE}" ]]; then
+  touch "${WORK_DIR}/MODULES/${ARCHITECTURE}/.testwrite" 2> /dev/null || NO_REFRESH=1
+  rm -f "${WORK_DIR}/MODULES/${ARCHITECTURE}/.testwrite" 2> /dev/null || true
+fi
+
+# Reuse-from overlays: a reused dep's (re-anchored) modulefile lives under
+# MODULES/<build_id>/<ARCH>, not the flat per-arch tree, so a locally-built
+# package's `prereq <reused-dep>` cannot resolve at enter/load time without it.
+# Append every such overlay for this arch. Flat tree stays first (a local build
+# wins over a reused copy); no overlays -> MODULEPATH is unchanged.
+_bits_overlays=""
+for _ov in "$WORK_DIR"/MODULES/*/"$ARCHITECTURE"; do
+  [[ -d "$_ov" ]] && _bits_overlays="${_bits_overlays:+$_bits_overlays:}$_ov"
+done
+export MODULEPATH="$WORK_DIR/MODULES/$ARCHITECTURE${_bits_overlays:+":$_bits_overlays"}${MODULEPATH:+":$MODULEPATH"}"
+unset _bits_overlays _ov
+MODULEPATH=$(echo "$MODULEPATH" | sed -e 's/::*/:/g; s/^://; s/:$//')
+
 if [[ -n "$_tree" ]]; then
   cvmfsTrees "$_tree" "$ARCHITECTURE"
   # cvmfs.yaml, no -a, and nothing for the local arch: the one for this host.

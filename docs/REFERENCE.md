@@ -1674,7 +1674,7 @@ path as before.
 
 The shell type is auto-detected from the parent process (`bash`, `zsh`, `ksh`, `csh`/`tcsh`, `sh`). Override with the `MODULES_SHELL` environment variable. The prompt is set to `[MODULE_LIST] \w $>` (or the zsh/ksh equivalent) for the duration of the session. Nesting `bits enter` inside another bits environment is blocked.
 
-All module commands (`enter`, `load`, `unload`, `setenv`, `q`, `avail`, `modulecmd`) also accept `-w DIR` (default: `$BITS_WORK_DIR`, else `./sw` or `../sw`), `-a ARCH` (default: the installed architecture, preferring the host's when several are present) and `--no-refresh` (do not refresh the modules directory).
+All module commands (`enter`, `load`, `unload`, `setenv`, `q`, `avail`, `modulecmd`) also accept `-w DIR` (default: `$BITS_WORK_DIR`, else `./sw` or `../sw`), `-a ARCH` (default: the installed architecture, preferring the host's CPU and OS when several are present; with none installed, the one the community's CVMFS module trees publish for this host) and `--no-refresh` (do not refresh the modules directory).
 
 ---
 

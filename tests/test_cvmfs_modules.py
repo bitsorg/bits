@@ -264,12 +264,13 @@ class CvmfsModulesTest(unittest.TestCase):
     q = lambda: subprocess.run([os.path.join(self.inst, "bits"), "q"], cwd=self.work,
                                env=self.env, capture_output=True, text=True)
     r = q()
-    self.assertEqual(r.stdout.split(), ["B/2-1", "gcc/14-1"], r.stderr)
+    # A, built here for the local arch (no -a: the one installed), then the host's.
+    self.assertEqual(r.stdout.split(), ["A/1-1", "B/2-1", "gcc/14-1"], r.stderr)
     # Two compilers for this host: none is picked, the note lists them.
     _write(os.path.join(root, "%s-%s-gcc15-opt" % (cpu, osname), "Modules", "modulefiles",
                         "BASE", "1.0"), _CVMFS_BASE)
     r = q()
-    self.assertEqual(r.stdout.split(), [])
+    self.assertEqual(r.stdout.split(), ["A/1-1"])
     self.assertIn("%s-%s-gcc15-opt" % (cpu, osname), r.stderr)
     self.assertIn("bits -a <arch> q", r.stderr)
 

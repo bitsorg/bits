@@ -68,5 +68,36 @@ class RuntimeWithoutPythonTest(unittest.TestCase):
     self.assertTrue(self._python_ran())
 
 
+  def _host(self):
+    import platform
+    import sys
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    from test_cvmfs_modules import _host_os
+    if not _host_os():
+      self.skipTest("bits picks the host's arch on el<N> and Ubuntu hosts only")
+    return "%s-%s-gcc14" % (platform.machine(), _host_os())
+
+  def test_the_arch_published_for_this_host_without_python(self):
+    host = self._host()
+    shutil.rmtree(os.path.join(self.work, "sw", ARCH))   # nothing installed
+    cvmfs = os.path.join(self.tmp, "cvmfs", "community")
+    for arch in (host + "-opt", "x86_64-el1-gcc9-opt"):
+      _write(os.path.join(cvmfs, arch, "Modules", "modulefiles", "K", "1-1"), "#%Module1.0\n")
+    self.env["BITS_CVMFS_PREFIX"] = cvmfs
+    r = self._bits("q")
+    self.assertEqual((r.returncode, r.stdout.split()), (0, ["K/1-1"]), r.stderr)
+    self.assertFalse(self._python_ran())
+
+  def test_of_several_installed_the_hosts_without_python(self):
+    host = self._host() + "-opt"
+    for arch, pkg in ((host, "H"), ("x86_64-el1-gcc9-opt", "G")):
+      _write(os.path.join(self.work, "sw", arch, pkg, "1-1", "etc", "modulefiles", pkg),
+             "#%Module1.0\n")
+      os.makedirs(os.path.join(self.work, "sw", "MODULES", arch))
+    shutil.rmtree(os.path.join(self.work, "sw", ARCH))
+    r = self._bits("q")
+    self.assertEqual((r.returncode, r.stdout.split()), (0, ["H/1-1"]), r.stderr)
+    self.assertFalse(self._python_ran())
+
 if __name__ == "__main__":
   unittest.main()
