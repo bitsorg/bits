@@ -44,7 +44,6 @@ from bits_helpers.utilities import (
     is_virtual_package,
 )
 from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults
-from bits_helpers.matchers import resolve_variables
 from bits_helpers.arch import (
     SHARED_ARCH,
     compute_combined_arch,
@@ -363,7 +362,9 @@ def doStatus(args, parser) -> None:
     from bits_helpers.build import (
         add_initdotsh_hash_marker, apply_defaults_legacy_initdotsh,
         defaults_store_url, hash_local_changes, prepare_hash_inputs,
-        resolve_initdotsh_mode, storeHook)
+        providers_and_defaults, resolve_defaults_variables, resolve_initdotsh_mode,
+        storeHook)
+    from bits_helpers.repo_provider import announce_providers
     from bits_helpers.hashing import storeHashes
     from bits_helpers.log import dieOnError
     from bits_helpers.git import git
@@ -376,6 +377,13 @@ def doStatus(args, parser) -> None:
 
     from bits_helpers.repo_provider import resolve_config_dir
     resolve_config_dir(args)
+    _branch_err, _branch_value = git(
+        ("symbolic-ref", "-q", "HEAD"), directory=args.configDir, check=False)
+    branch_basename = (re.sub("refs/heads/", "", _branch_value)
+                       if _branch_err == 0 else "")
+    branch_stream = re.sub("-patches$", "", branch_basename)
+    if branch_stream == branch_basename:
+        branch_stream = ""
 
     # ── Defaults and overrides ─────────────────────────────────────────────────
     # The init.sh mode is part of the defaults-release hash: decide it as build
@@ -387,55 +395,24 @@ def doStatus(args, parser) -> None:
         meta, body = readDefaults(
             args.configDir, args.defaults, parser.error, args.architecture
         )
+        resolve_defaults_variables(meta, args, branch_basename)   # as build does
         add_initdotsh_hash_marker(meta, args.initdotshFromModules)
-        # As build resolves them (without --set, which status does not take).
-        meta["variables"] = resolve_variables(
-            meta.get("variables"), {}, args.architecture, args.defaults)
         return meta, body
 
+    _cli_disable = list(args.disable)
     err, overrides, taps, defaults_meta = parseDefaults(
         args.disable, defaults_reader, debug, args.architecture, args.configDir
     )
     dieOnError(err, err)
+    # The providers and the defaults they hold, exactly as bits build gets them.
+    overrides, taps, defaults_meta, provider_dirs, fetched = providers_and_defaults(
+        args, packages, work_dir, defaults_reader, _cli_disable, overrides, taps,
+        defaults_meta, parse=parseDefaults)
+    announce_providers(fetched)
     apply_defaults_legacy_initdotsh(args, defaults_meta, initdotsh_explicit)
 
     raw_architecture = args.architecture
     args.architecture = compute_combined_arch(defaults_meta, args.defaults, raw_architecture)
-
-    # ── Repository-provider discovery ──────────────────────────────────────────
-    # Mirrors bits build (both phases + the defaults-file seed): status reports
-    # what `bits build` WOULD do, so it must see the same provider-supplied
-    # recipes — previously it passed provider_dirs={} and reported packages a
-    # build would resolve via a provider as missing/hash_unknown.
-    from bits_helpers.repo_provider import (fetch_repo_providers_iteratively,
-                                            load_always_on_providers)
-    always_on_dirs = load_always_on_providers(
-        config_dir        = args.configDir,
-        work_dir          = work_dir,
-        reference_sources = args.referenceSources,
-        fetch_repos       = getattr(args, "fetchRepos", True),
-        bits_providers    = getattr(args, "bits_providers", None),
-        taps              = taps,
-        provider_policy   = getattr(args, "provider_policy", {}),
-        overrides         = overrides,
-        defaults          = args.defaults,
-        default_vars      = defaults_meta.get("variables"),
-    )
-    provider_seed = (list(defaults_meta.get("requires", []))
-                     + list(defaults_meta.get("build_requires", [])))
-    provider_dirs = fetch_repo_providers_iteratively(
-        packages          = packages + provider_seed,
-        config_dir        = args.configDir,
-        work_dir          = work_dir,
-        reference_sources = args.referenceSources,
-        fetch_repos       = getattr(args, "fetchRepos", True),
-        taps              = taps,
-        provider_policy   = getattr(args, "provider_policy", {}),
-        overrides         = overrides,
-        defaults          = args.defaults,
-        default_vars      = defaults_meta.get("variables"),
-    )
-    provider_dirs.update(always_on_dirs)
 
     # ── Package list resolution ────────────────────────────────────────────────
     # Use no-op lambdas for prefer_check and requirement_check: bits status does
@@ -560,13 +537,6 @@ def doStatus(args, parser) -> None:
     hash_error_pkgs: List[str] = []
 
     status_write_store = bool(write_store_url)
-    _branch_err, _branch_value = git(
-        ("symbolic-ref", "-q", "HEAD"), directory=args.configDir, check=False)
-    branch_basename = (re.sub("refs/heads/", "", _branch_value)
-                       if _branch_err == 0 else "")
-    branch_stream = re.sub("-patches$", "", branch_basename)
-    if branch_stream == branch_basename:
-        branch_stream = ""
 
     # Git refs: clone/fetch the mirrors, 8 at a time as bits build does, or
     # (--no-fetch-repos) read what they have.

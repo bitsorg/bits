@@ -3008,6 +3008,109 @@ def build_one_package(p, ctx):
 
 
 
+def providers_and_defaults(args, packages, workDir, defaultsReader, _cli_disable,
+                           overrides, taps, defaultsMeta, parse=parseDefaults):
+  """Clone the repository providers and re-read the defaults until both settle
+  (bits status uses this too, for the same defaults and hashes). Returns
+  (overrides, taps, defaultsMeta, provider_dirs, fetched provider dirs)."""
+  always_on_dirs = load_always_on_providers(
+    config_dir        = args.configDir,
+    work_dir          = workDir,
+    reference_sources = args.referenceSources,
+    fetch_repos       = getattr(args, "fetchRepos", True),
+    bits_providers    = getattr(args, "bits_providers", None),
+    taps              = taps,
+    provider_policy   = getattr(args, "provider_policy", {}),
+    force_tracked     = getattr(args, "forceTracked", False),
+    overrides         = overrides,
+    defaults          = args.defaults,
+    default_vars      = defaultsMeta.get("variables"),
+  )
+  # Discovery <-> defaults resolution is a FIXED POINT, not one pass. The override
+  # that turns the `release` variable into an lcg.bits branch tag
+  # (`overrides: lcg.bits: tag: "%(release)s"`) can itself live INSIDE a provider
+  # (the shared stacks base), so it is invisible on the first, config-dir-only
+  # parse: a stacks-inheriting community (key4hep/ship/lhcb) would otherwise fetch
+  # lcg.bits at the bare `requires:` default (main) regardless of `release` or a
+  # `--set release=` on the CLI, because there is no override yet to consume the
+  # value. So fetch with the overrides/variables known so far, re-parse now that
+  # the providers (and their overrides) are on BITS_PATH, and repeat until the set
+  # of (provider, commit) pins stops moving. Re-pointing a provider changes its
+  # checkout dir, so BITS_PATH is rebuilt from a stable base each pass to stop a
+  # superseded tag from shadowing the new one. atlas declares the override in its
+  # own config dir, so it converges on the first fetch (the second pass just
+  # confirms the fixed point); an inheriting community converges once the stacks
+  # override/release become visible.
+  _base_bits_path = os.environ.get("BITS_PATH", "")
+  provider_dirs = {}
+  _prev_pin_sig = None
+  for _disc_pass in range(MAX_PROVIDER_ITERATIONS):
+    os.environ["BITS_PATH"] = _base_bits_path
+    defaults_provider_seed = (
+      list(defaultsMeta.get("requires", []))
+      + list(defaultsMeta.get("build_requires", []))
+      + list(getattr(args, "_bootstrap_provider_requires", []) or [])
+    )
+    provider_dirs = fetch_repo_providers_iteratively(
+      packages          = packages + defaults_provider_seed,
+      config_dir        = args.configDir,
+      work_dir          = workDir,
+      reference_sources = args.referenceSources,
+      fetch_repos       = getattr(args, "fetchRepos", True),
+      taps              = taps,
+      provider_policy   = getattr(args, "provider_policy", {}),
+      overrides         = overrides,
+      defaults          = args.defaults,
+      default_vars      = defaultsMeta.get("variables"),
+      force_tracked     = getattr(args, "forceTracked", False),
+      announce          = False,  # once, after the loop converges
+    )
+    _fetched_dirs = dict(provider_dirs)
+    provider_dirs.update(always_on_dirs)
+    # (provider, commit) pin set: order-independent and re-point-sensitive.
+    _pin_sig = frozenset((_n, _h) for (_d, (_n, _h)) in provider_dirs.items())
+    # Re-resolve the defaults chain now that the provider repos are on BITS_PATH,
+    # so the full stacks base + compiler axis contribute their env / package_family
+    # / overrides / append_arch / system. Reset disable to the original CLI set so
+    # a provider-supplied disable is picked up without double-counting config-dir
+    # ones.
+    args.disable = list(_cli_disable)
+    (err, overrides, taps, defaultsMeta) = parse(args.disable,
+                                          defaultsReader, debug, args.architecture, args.configDir)
+    dieOnError(err, err)
+    if _pin_sig == _prev_pin_sig:
+      break
+    _prev_pin_sig = _pin_sig
+  else:
+    warning("Provider discovery did not reach a fixed point after %d passes; "
+            "using the last resolved provider set (some provider pins may still "
+            "be moving).", MAX_PROVIDER_ITERATIONS)
+  return overrides, taps, defaultsMeta, provider_dirs, _fetched_dirs
+
+
+def resolve_defaults_variables(meta, args, branch_basename):
+  """The defaults' variables as a build resolves them: gated entries, the --set
+  flavours, the release (bits status uses this too, for the same hashes)."""
+  flavours = getattr(args, "flavours", None) or {}
+  exported = exported_flavours(meta.get("variables"), flavours)
+  meta["variables"] = resolve_variables(
+      meta.get("variables"), flavours, args.architecture, args.defaults)
+  # The release: an explicit non-trunk release:, else the recipe branch, else
+  # main; %(release)s then picks the lcg.bits branch, as the CVMFS {release} does.
+  from bits_helpers.cvmfs_layout import (
+      resolve_release as _resolve_release, _declared_release as _declared)
+  if isinstance(meta.get("variables"), dict) and _declared(meta):
+    meta["variables"]["release"] = _resolve_release(meta, branch_basename)
+  # Flavours also go into the env (so the hash), not those of `export: false` variables.
+  if exported:
+    from collections import OrderedDict as _OD
+    # An empty `env:` block parses to None, so setdefault would keep it None.
+    if not isinstance(meta.get("env"), dict):
+      meta["env"] = _OD()
+    for _k, _v in exported.items():
+      meta["env"][_k] = _v
+
+
 def doBuild(args, parser):
   packages = args.pkgname
   specs = {}
@@ -3061,34 +3164,7 @@ def doBuild(args, parser):
     # --flavour values are folded in as inputs. The resulting map feeds the
     # (?NAME) conditional matchers that gate package requires and %(NAME)s recipe
     # templating. CLI flavours override a defaults entry of the same name.
-    flavours = getattr(args, "flavours", None) or {}
-    exported = exported_flavours(meta.get("variables"), flavours)
-    meta["variables"] = resolve_variables(
-        meta.get("variables"), flavours, args.architecture, args.defaults)
-    # Resolve the release LABEL and write it back into `release`, so that
-    # %(release)s (which the defaults feed to the lcg.bits branch override)
-    # follows the same rule as the CVMFS {release} slot: an explicit non-trunk
-    # release: wins, else the working-dir branch, else "main". This is what makes
-    # a build on a recipe branch fetch the matching lcg.bits branch, while the
-    # default/main line keeps building lcg.bits `main` exactly as before.
-    # Only groups that OPT IN by declaring a `release` are touched — a group using
-    # a different convention (e.g. %(lcgversion)s) is left untouched, so no extra
-    # variable is introduced and its package hashes are unchanged.
-    from bits_helpers.cvmfs_layout import (
-        resolve_release as _resolve_release, _declared_release as _declared)
-    if isinstance(meta.get("variables"), dict) and _declared(meta):
-      meta["variables"]["release"] = _resolve_release(meta, branch_basename)
-    # Flavours are ALSO exported into the build environment + package hash (via
-    # the `env:` map, which becomes the defaults-release env every package
-    # depends on), exactly as before; but not those of variables declared
-    # `export: false`, which reach only the recipes that use them.
-    if exported:
-      from collections import OrderedDict as _OD
-      # An empty `env:` block parses to None, so setdefault would keep it None.
-      if not isinstance(meta.get("env"), dict):
-        meta["env"] = _OD()
-      for _k, _v in exported.items():
-        meta["env"][_k] = _v
+    resolve_defaults_variables(meta, args, branch_basename)
     # init.sh-from-modules (the default) publishes a build-mode marker through the
     # defaults-release env. Routing it here is deliberate: the defaults env is
     # (a) folded into every package's hash, so the mode yields a distinct,
@@ -3129,78 +3205,8 @@ def doBuild(args, parser):
   # Discovery is transitive (fetch_repo_providers_iteratively re-reads each
   # cloned provider's own requires), so the config-dir seed only needs the
   # first hop and a single re-parse then covers the whole provider graph.
-  always_on_dirs = load_always_on_providers(
-    config_dir        = args.configDir,
-    work_dir          = workDir,
-    reference_sources = args.referenceSources,
-    fetch_repos       = args.fetchRepos,
-    bits_providers    = getattr(args, "bits_providers", None),
-    taps              = taps,
-    provider_policy   = getattr(args, "provider_policy", {}),
-    force_tracked     = getattr(args, "forceTracked", False),
-    overrides         = overrides,
-    defaults          = args.defaults,
-    default_vars      = defaultsMeta.get("variables"),
-  )
-  # Discovery <-> defaults resolution is a FIXED POINT, not one pass. The override
-  # that turns the `release` variable into an lcg.bits branch tag
-  # (`overrides: lcg.bits: tag: "%(release)s"`) can itself live INSIDE a provider
-  # (the shared stacks base), so it is invisible on the first, config-dir-only
-  # parse: a stacks-inheriting community (key4hep/ship/lhcb) would otherwise fetch
-  # lcg.bits at the bare `requires:` default (main) regardless of `release` or a
-  # `--set release=` on the CLI, because there is no override yet to consume the
-  # value. So fetch with the overrides/variables known so far, re-parse now that
-  # the providers (and their overrides) are on BITS_PATH, and repeat until the set
-  # of (provider, commit) pins stops moving. Re-pointing a provider changes its
-  # checkout dir, so BITS_PATH is rebuilt from a stable base each pass to stop a
-  # superseded tag from shadowing the new one. atlas declares the override in its
-  # own config dir, so it converges on the first fetch (the second pass just
-  # confirms the fixed point); an inheriting community converges once the stacks
-  # override/release become visible.
-  _base_bits_path = os.environ.get("BITS_PATH", "")
-  provider_dirs = {}
-  _prev_pin_sig = None
-  for _disc_pass in range(MAX_PROVIDER_ITERATIONS):
-    os.environ["BITS_PATH"] = _base_bits_path
-    defaults_provider_seed = (
-      list(defaultsMeta.get("requires", []))
-      + list(defaultsMeta.get("build_requires", []))
-      + list(getattr(args, "_bootstrap_provider_requires", []) or [])
-    )
-    provider_dirs = fetch_repo_providers_iteratively(
-      packages          = packages + defaults_provider_seed,
-      config_dir        = args.configDir,
-      work_dir          = workDir,
-      reference_sources = args.referenceSources,
-      fetch_repos       = args.fetchRepos,
-      taps              = taps,
-      provider_policy   = getattr(args, "provider_policy", {}),
-      overrides         = overrides,
-      defaults          = args.defaults,
-      default_vars      = defaultsMeta.get("variables"),
-      force_tracked     = getattr(args, "forceTracked", False),
-      announce          = False,  # once, after the loop converges
-    )
-    _fetched_dirs = dict(provider_dirs)
-    provider_dirs.update(always_on_dirs)
-    # (provider, commit) pin set: order-independent and re-point-sensitive.
-    _pin_sig = frozenset((_n, _h) for (_d, (_n, _h)) in provider_dirs.items())
-    # Re-resolve the defaults chain now that the provider repos are on BITS_PATH,
-    # so the full stacks base + compiler axis contribute their env / package_family
-    # / overrides / append_arch / system. Reset disable to the original CLI set so
-    # a provider-supplied disable is picked up without double-counting config-dir
-    # ones.
-    args.disable = list(_cli_disable)
-    (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
-                                          defaultsReader, debug, args.architecture, args.configDir)
-    dieOnError(err, err)
-    if _pin_sig == _prev_pin_sig:
-      break
-    _prev_pin_sig = _pin_sig
-  else:
-    warning("Provider discovery did not reach a fixed point after %d passes; "
-            "using the last resolved provider set (some provider pins may still "
-            "be moving).", MAX_PROVIDER_ITERATIONS)
+  overrides, taps, defaultsMeta, provider_dirs, _fetched_dirs = providers_and_defaults(
+    args, packages, workDir, defaultsReader, _cli_disable, overrides, taps, defaultsMeta)
   announce_providers(_fetched_dirs)
   # A defaults name with no defaults-<name>.sh anywhere on the (now complete)
   # search path is a typo or a missing repository, not a flavour: say so, rather

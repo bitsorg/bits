@@ -446,6 +446,12 @@ class CvmfsPathSetTest(unittest.TestCase):
       args, _ = doParseArgs()
     self.assertEqual(args.flavours, {"release": "LCG_110", "foo": "true"})
 
+  def test_status_takes_set_too(self):
+    with patch.object(sys, "argv", ["bits"] + shlex.split(
+        "status ROOT -a slc7_x86-64 --set release=LCG_110")):
+      args, _ = doParseArgs()
+    self.assertEqual(args.flavours, {"release": "LCG_110"})
+
 class SubcommandDryRunTestCase(unittest.TestCase):
   """-n/--dry-run listed in init/clean/publish help keeps the hoisted value."""
 

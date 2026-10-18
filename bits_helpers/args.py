@@ -744,6 +744,11 @@ def add_status_arguments(subparsers, ctx):
             "'%%(workDir)s' will be substituted. Default '%(default)s'."),
   )
   status_parser.add_argument(
+      "--flavour", "--flavor", "--set", dest="flavours", action="append",
+      default=[], metavar="NAME[=VALUE]",
+      help="Same as `bits build --set`; pass the build's values (e.g. "
+           "release=LCG_110) for the same package hashes.")
+  status_parser.add_argument(
       "--no-local", dest="noDevel", metavar="PACKAGE", default=[],
       action="append",
       help=("Do not treat the named package as a local checkout even if a "
@@ -2183,6 +2188,7 @@ def finaliseArgs(args, parser):
     args.noDevel       = normalise_multiple_options(args.noDevel)
     args.disable       = normalise_multiple_options(args.disable)
     args.force_rebuild = normalise_multiple_options(args.force_rebuild)
+    args.flavours      = _parse_flavours(getattr(args, "flavours", None))
     args.referenceSources = args.referenceSources % {"workDir": args.workDir}
     # Repository-provider configuration, mirroring the general path below:
     # `bits status` reports what `bits build` WOULD do, so it must resolve

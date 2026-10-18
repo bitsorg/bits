@@ -1328,6 +1328,7 @@ bits status [options] PACKAGE [PACKAGE...]
 | `-w DIR`, `--work-dir DIR` | `sw` | bits work directory to inspect. |
 | `-c DIR`, `--config-dir DIR` | `.` | Recipe directory. |
 | `--search-path NAMES` | _(none)_ | Extra recipe sub-repos, as for `bits build`. |
+| `--set NAME=VALUE` | _(none)_ | As for `bits build` (e.g. `release=LCG_110`), so the packages get the build's hashes. |
 | `-C DIR`, `--chdir DIR` | `.` | Change to DIR first. |
 | `--reference-sources DIR` | `<workDir>/MIRROR` | Mirror directory for git ref cache. |
 | `--no-local PACKAGE` | _(none)_ | Exclude a package from local-checkout detection. May be repeated. |

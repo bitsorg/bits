@@ -1026,5 +1026,25 @@ class TestDoStatus(unittest.TestCase):
         self.assertEqual(data["packages"][0]["state"], HASH_UNKNOWN)
 
 
+
+class TestDefaultsVariablesAsBuild(unittest.TestCase):
+    """status resolves the defaults' variables with build's code: same hashes."""
+
+    def test_set_and_release(self):
+        from types import SimpleNamespace
+        from bits_helpers.build import resolve_defaults_variables
+        args = SimpleNamespace(flavours={"release": "LCG_110", "foo": "1"},
+                               architecture="slc9_x86-64", defaults=["release"])
+        meta = {"variables": {"release": "main"}, "env": None}
+        resolve_defaults_variables(meta, args, "")
+        self.assertEqual(meta["variables"]["release"], "LCG_110")
+        self.assertEqual(dict(meta["env"]), {"release": "LCG_110", "foo": "1"})
+        # Without --set, the recipe branch names the release.
+        meta = {"variables": {"release": "main"}}
+        resolve_defaults_variables(meta, SimpleNamespace(
+            flavours={}, architecture="slc9_x86-64", defaults=["release"]), "LCG_110-patches")
+        self.assertEqual(meta["variables"]["release"], "LCG_110")
+
+
 if __name__ == "__main__":
     unittest.main()
