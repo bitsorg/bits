@@ -450,6 +450,106 @@ def _writes_outside_pkgroot(before, after, pkgroot):
                   if p != root and not p.startswith(root + os.sep))
 
 
+def _pkginfo(pkgroot):
+    """(PKG_DIR, PP) from etc/profile.d/.bits-pkginfo, or (None, None)."""
+    info = {}
+    try:
+        with open(os.path.join(pkgroot, "etc", "profile.d", ".bits-pkginfo")) as fh:
+            for line in fh:
+                k, _, v = line.strip().partition("=")
+                info[k] = v.strip('"')
+    except OSError:
+        return None, None
+    m = re.fullmatch(r"\$\{PKGPATH:-(.*)\}", info.get("PP", ""))
+    return info.get("PKG_DIR") or None, (m.group(1) if m else info.get("PP")) or info.get("OP")
+
+
+def dependency_targets(pkgroot, ctx):
+    """{work-dir path: CVMFS path} for every dependency in the package's
+    .meta.json, and its own path to PKG_DIR (relocate-me.sh maps that). A value
+    is a ValueError (or None) when the dependency has no CVMFS path."""
+    pkg_dir, pp = _pkginfo(pkgroot)
+    if not pkg_dir or not pp:
+        return {}
+    out = {"%s/%s" % (pkg_dir, pp): pkg_dir}
+    try:
+        with open(os.path.join(pkgroot, ".meta.json")) as fh:
+            rec = (json.load(fh).get("dependencies") or {}).get("recursive") or {}
+    except (OSError, ValueError):
+        rec = {}
+    for d in (rec.get("build") or []) + (rec.get("runtime") or []):
+        if not d.get("name"):
+            continue
+        ver, rev = str(d.get("version") or ""), str(d.get("revision") or "")
+        fam = d.get("pkg_family") or ""
+        vdir = ver + ("-" + rev if rev else "")
+        arch = d.get("effective_architecture") or ctx["arch"]
+        old = "/".join([pkg_dir, arch] + ([fam] if fam else []) + [d["name"], vdir])
+        if old in out:
+            continue
+        try:   # .meta.json has no dependency commits: {commit} stays unresolved
+            p = resolve_pkg_path(
+                pkgroot, ctx["repo"], d["name"], vdir, ver, rev, ctx.get("platform", ""),
+                ctx.get("install_dir", ""), "{commit}", ctx.get("user", ""), fam,
+                kind="path", tmpl_prefix=ctx["tmpl_prefix"], arch=arch,
+                prefix_fallback=ctx.get("prefix_fallback"), templates=ctx.get("templates"))
+            out[old] = "/cvmfs/%s/%s" % (ctx["repo"], p) if p else None
+        except ValueError as e:
+            out[old] = e
+    return out
+
+
+def relocate_dependencies(pkgroot, targets):
+    """Rewrite the dependencies' work-dir paths in the files relocate-me.sh
+    relocates to their CVMFS paths, before it runs: it maps everything under
+    PKG_DIR to the package's own path. Returns the files still naming PKG_DIR."""
+    listing = os.path.join(pkgroot, "etc", "profile.d", ".bits-relocate")
+    if not targets or not os.path.isfile(listing):
+        return []
+    pkg_dir, _pp = _pkginfo(pkgroot)
+    olds = sorted(targets, key=len, reverse=True)
+    # A path ends where a version could not go on: 1.0-1 is not 1.0-10.
+    rx = re.compile(b"(?:" + b"|".join(re.escape(o.encode()) for o in olds)
+                    + rb")(?![\w.+~-])")
+    # Left for relocate-me.sh: the package's own staging dir. Anything else
+    # (BUILD/, SOURCES/, a package not in the closure) would land in the package.
+    left = re.compile(re.escape(pkg_dir.encode()) + b"/(?!INSTALLROOT/)")
+    with open(listing) as fh:
+        rels = [l.rstrip("\n") for l in fh if l.strip()]
+    leftover = []
+    for rel in rels:
+        if os.path.isabs(rel) or ".." in rel.split("/"):
+            continue   # relocate-me.sh only edits files in the package
+        f = os.path.join(pkgroot, rel)
+        if os.path.islink(f) or not os.path.isfile(f):
+            continue
+        with open(f, "rb") as fh:
+            data = fh.read()
+
+        def new(m):
+            old = m.group(0).decode()
+            t = targets[old]
+            if t == pkg_dir:
+                return t.encode()
+            if not isinstance(t, str):
+                raise SystemExit("%s refers to %s, which has no CVMFS path: %s"
+                                 % (rel, old, t or "no template"))
+            if pkg_dir in t:   # relocate-me.sh would rewrite it again
+                raise SystemExit("cannot relocate %s to %s: it contains the build dir %s"
+                                 % (old, t, pkg_dir))
+            return t.encode()
+        out = rx.sub(new, data)
+        if left.search(rx.sub(b"", data)):
+            leftover.append(rel)
+        if out != data:   # replace, as sed -i does: keeps the mode, breaks hard links
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(f), prefix=".reloc-")
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(out)
+            os.chmod(tmp, os.stat(f).st_mode & 0o7777)
+            os.replace(tmp, f)
+    return leftover
+
+
 def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash="",
                  replace=False):
     """Publish ONE prepared tar via the configured path; return its job id and
@@ -1281,8 +1381,13 @@ def publish_one(spec, ctx):
 
         reloc = os.path.join(pkgroot, "relocate-me.sh")
         if os.path.isfile(reloc):
-            env = dict(os.environ,
-                       INSTALL_BASE="/cvmfs/%s/%s" % (ctx["repo"], path),
+            own = "/cvmfs/%s/%s" % (ctx["repo"], path)
+            stray = relocate_dependencies(pkgroot, dependency_targets(pkgroot, ctx))
+            if stray:
+                print("WARNING: %s@%s: %d file(s) name the build area outside the package "
+                      "and its dependencies: %s" % (pkg, vdir, len(stray), " ".join(stray[:5])
+                      + (" ..." if len(stray) > 5 else "")), file=sys.stderr)
+            env = dict(os.environ, INSTALL_BASE=own,
                        WORK_DIR=work_dir, BITS_RELOCATE_STRIP_PP="1")
             # Views (lcg-view) place the packages they reference with these.
             if ctx.get("templates"):
