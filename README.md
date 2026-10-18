@@ -70,6 +70,9 @@ bits build --parallel 4 ROOT # build up to 4 independent packages at once (--bui
 
 ## Basic Commands
 
+`bits help` lists every command by group; `bits help COMMAND` (the same as
+`bits COMMAND --help`) prints one command's options.
+
 | Command | Description |
 |---------|-------------|
 | `bits build <pkg>` | Build a package and its dependencies (`--dry-run` prints the reuse plan instead). |

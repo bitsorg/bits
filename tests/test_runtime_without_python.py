@@ -165,8 +165,7 @@ class WithoutWorkDirTest(_Bits):
     def no_work_dir(*args):
       r = self._bits(*args, cwd=self.job)
       self.assertNotEqual(r.returncode, 0, args)
-      self.assertIn("No default work dir", r.stdout + r.stderr, args)
-    no_work_dir("-a", ARCH, "build", "K")
+      self.assertIn("no work dir", r.stdout + r.stderr, args)
     self.env["BITS_CVMFS_PREFIX"] = ""     # off
     no_work_dir("-a", ARCH, "q")
     del self.env["BITS_CVMFS_PREFIX"]

@@ -125,7 +125,7 @@ class InstallDirTreesTest(unittest.TestCase):
            % self.cvmfs)
     r = self._bits("-a", "slc9_x86-64", "q")
     self.assertNotEqual(r.returncode, 0)
-    self.assertIn("No default work dir", r.stdout + r.stderr)
+    self.assertIn("no work dir", r.stdout + r.stderr)
 
   def test_no_install_dir_for_the_arch(self):
     for arch in ("slc1_x86-64", "slc7_x86-64", "ubuntu2404_x86-64", "x86_64-gnu"):

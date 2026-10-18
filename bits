@@ -15,6 +15,67 @@ BITSDIR="$(dirname "$0")"
 BITS_PY=
 [[ -x "$BITSDIR/runtime/bin/python3" ]] && BITS_PY="$BITSDIR/runtime/bin/python3"
 
+function printHelp() {
+  # The commands, by group. Every command gives its own help with --help.
+  cat <<'EoF'
+bits: build, publish and use software stacks.
+
+Usage: bits [--community NAME] COMMAND [OPTIONS]
+       bits help [COMMAND...]       the same as: bits COMMAND... --help
+       bits --version
+
+  --community NAME   first, for every command: the community ($BITS_COMMUNITY)
+  -h, --help         this help; after a command, that command's help
+  -d, --debug        debug output; not for the module commands, cvmfs, store,
+                     use, overlay and preload
+
+Using software (bits enter --help: their options, e.g. -a ARCH, -w DIR):
+  q, query [REGEXP]       list the modules: local builds, then the community's
+  enter MODULES           open a shell with MODULES loaded
+  setenv MODULES -c CMD   run CMD with MODULES loaded
+  load, printenv MODULES  print the shell code loading MODULES (to eval)
+  unload MODULES          print the shell code unloading MODULES (to eval)
+  list, avail             the loaded modules; all modules
+  modulecmd ARGS          run modulecmd with ARGS
+  shell-helper            a bits shell function for your shell startup file
+
+Building:
+  build PACKAGE           build a package and its dependencies
+  status PACKAGE          what bits build would do
+  deps PACKAGE            the dependency graph
+  doctor [PACKAGE]        check this machine (and the recipes) for a build
+  init [PACKAGE]          check out PACKAGE to develop it here
+  use [SECTION] ARGS      save options for the commands run in this directory
+  checksums               check (--write: record) a repository's checksums
+  stats                   the resource report of a monitored build
+  brew                    a Homebrew Brewfile from the recipes (macOS)
+  clean                   remove temporary build trees and unused versions
+  prune                   evict old packages from a persistent work directory
+  architecture, version   the detected architecture; the bits version
+
+CVMFS:
+  cvmfs SUBCOMMAND        a deployed tree (platforms, show, summary), or
+                          publishing a build (stage, publish, release)
+  publish [PACKAGE]       publish packages of the work directory
+  cvmfs-path              where a package is published
+  import                  a foreign CVMFS deployment as a reuse overlay
+  overlay FORMAT          the built packages in another format (e.g. lcg)
+  preload                 CVMFS prefetch files for deployed packages
+
+Trust and compliance:
+  certify                 make a build trusted (passkey approval)
+  sign                    sign the common manifest (manifests CI)
+  verify                  check a deployment against its build manifest
+  sbom                    a build manifest as an SBOM (CycloneDX, SPDX)
+  compliance              audit licence metadata and the store
+
+Binary store:
+  store SUBCOMMAND        ls, cat, verify, stats, upload, rm, gc
+
+Documentation: https://github.com/bitsorg/bits/tree/main/docs
+EoF
+}
+
 # `bits --community NAME <sub-command> …` (first, before the sub-command): the
 # same as $BITS_COMMUNITY=NAME, e.g. for a grid job's command line.
 while [[ ${1:-} == --community || ${1:-} == --community=* ]]; do
@@ -23,6 +84,14 @@ while [[ ${1:-} == --community || ${1:-} == --community=* ]]; do
   export BITS_COMMUNITY=$(printf %s "$_bits_c" | tr '[:lower:]' '[:upper:]')
   unset _bits_c
 done
+
+# bits, bits -h|--help|help: the commands; bits help COMMAND: COMMAND --help.
+case "${1:-}" in
+  "")          printHelp >&2; exit 1 ;;
+  -h|--help)   printHelp; exit 0 ;;
+  help)        shift; (( $# )) || { printHelp; exit 0; }
+               set -- "$@" --help ;;
+esac
 
 # `.bitsuse` saved-arg profile (see `bits use`): inject the [common] + [<action>]
 # tokens right after the action, BEFORE anything is parsed, so both the build
@@ -81,90 +150,46 @@ fi
 # else GNU date; no overhead when unset.
 [[ -n "${BITS_TIMING:-}" ]] && _BT_PREV="${EPOCHREALTIME/,/.}" && _BT_PREV="${_BT_PREV:-$(date +%s.%N 2>/dev/null || echo 0)}"
 
-function printHelp() {
-cat >&2 <<EoF
-$PROG -- load environment for bits packages through modulefiles
+function printModuleHelp() {
+  cat <<'EoF'
+bits: the module commands, for the packages built here and those a community
+published on CVMFS ($BITS_CVMFS_PREFIX, set by --community on CVMFS, or a
+recipe repository's cvmfs.yaml). Local builds come first.
 
-Usage: $0 [--community ${ET}NAME${EZ}] \\
-         [--architecture|-a ${ET}ARCHITECTURE${EZ}] \\
-         [--work-dir|-w ${ET}WORKDIR${EZ}]          \\
-         [--no-refresh]                   \\
-         ${ET}COMMAND...${EZ}
+Usage: bits [OPTIONS] COMMAND [MODULES] ...      MODULES: PKG[/VERSION][,PKG...]
 
-  ${EM}--community${EZ} (first) sets \$BITS_COMMUNITY, for every command.
-  ${EM}--no-refresh${EZ} skips refreshing the modules directory.
+  q, query [REGEXP]        list the modules (matching REGEXP)
+  enter MODULES            open a shell with MODULES loaded; leave it with exit
+  setenv MODULES -c CMD    run CMD (all after -c) with MODULES loaded
+  load, printenv MODULES   print the shell code loading MODULES:
+                             eval "$(bits load ROOT/latest)"
+  unload MODULES           print the shell code unloading MODULES
+  list                     the loaded modules
+  avail                    all modules, through modulecmd
+  modulecmd ARGS           run modulecmd with ARGS (e.g. zsh load ROOT/v6)
+  shell-helper             a bits function for load/unload in your shell:
+                             eval "$(bits shell-helper)"
 
-  ${ET}WORKDIR${EZ} defaults to sw.
-  ${ET}ARCHITECTURE${EZ} is automatically detected in most cases.
+Options:
+  -a, --architecture ARCH  default: the one installed, else the community's for
+                           this host, else the host's
+  -w, --work-dir DIR       default: $BITS_WORK_DIR, else sw or ../sw; not needed
+                           for a community's CVMFS modules alone
+  --no-refresh             do not refresh the modules directory
+  -q                       no module-load messages
+  --view                   collapse the paths onto the merged view (automatic
+                           in enter and setenv for a package with view: true)
+  --archive                also the retired modules (Modules/archive, as alienv)
+  --dev                    enter: the packages' own init.sh, for development
+  --shellrc                enter: read your shell startup file too
 
-  ${ET}COMMAND...${EZ} might be:
-
-    ${EM}help${EZ}
-      This help screen.
-
-    ${EM}enter${EZ} [${ET}-q${EZ}] [${ET}--shellrc${EZ}] [${ET}--dev${EZ}] [${ET}--view${EZ}] [${ET}--archive${EZ}] MODULE1[,MODULE2...]
-      Enters a new shell with the given modules loaded (${ET}-q${EZ} silences the module-load messages).
-      Return to the clean environment by exiting the shell with ${ET}exit${EZ}.
-      Inside the environment you can use the native ${ET}modulecmd${EZ}.
-      By default you enter the same shell type you are in. Override with environment variable ${ET}MODULES_SHELL${EZ}.
-      The new shell will not load your shell startup file by default (e.g. ~/.bashrc) to avoid environment conflicts.
-      If you want to retain your shell startup files use ${ET}--shellrc${EZ}.
-      If you want to add environment variables for development use ${ET}--dev${EZ}
-      Alternatively you can use the ${EM}load${EZ} command in the current shell.
-
-    ${EM}setenv${EZ} [${ET}-q${EZ}] [${ET}--archive${EZ}] MODULE1[,MODULE2...] ${ET}-c${EZ} cmdInEnvironment [PARAM1 [PARAM2...]]
-      Executes the given command with environment defined by the given modules.
-      Everything after ${ET}-c${EZ} is executed as-is.  Use ${ET}-q${EZ} to silence the module-load messages.
-      Exit code is preserved.
-      Example: $ET$0 setenv AliRoot/v5-08-02-1 -c aliroot -b$EZ
-
-    ${EM}printenv${EZ} or ${EM}load${EZ} [${ET}-q${EZ}] [${ET}--view${EZ}] [${ET}--archive${EZ}] MODULE1[,MODULE2...]
-      Prints the environment in the current shell for the given modules (${ET}-q${EZ} for quiet).
-      This command does not set any environment and it must be executed through ${ET}eval${EZ} to be effective.
-      Override shell with the environment variable ${ET}MODULES_SHELL${EZ}.
-      Example: ${ET}eval \`$0 load AliRoot/latest\`$EZ (those are backquotes!)
-
-    ${EM}unload${EZ} [${ET}-q${EZ}] MODULE1[,MODULE2...]
-      Prints the environment in the current shell for unloading the given modules (${ET}-q${EZ} for quiet).
-      This command does not set any environment and it must be executed through ${ET}eval${EZ} to be effective.
-      Override shell with the environment variable ${ET}MODULES_SHELL${EZ}.
-      Example: ${ET}eval \`$0 unload AliRoot\`$EZ (version can be omitted)
-
-    ${EM}q${EZ} or ${EM}query${EZ} [${ET}--archive${EZ}] [REGEXP]
-      List all available modules, or the ones matching ${ET}REGEXP${EZ} if provided.
-      With ${ET}BITS_CVMFS_PREFIX${EZ} set (the CVMFS entry point sets it for a community),
-      or a recipe repository's cvmfs.yaml, the modules the community published for
-      ${ET}ARCHITECTURE${EZ} are listed and loaded too, after the local ones. ${ET}--archive${EZ}
-      also finds their retired ones (Modules/archive, as alienv --archive).
-
-    ${EM}list${EZ}
-      List loaded modules.
-
-    ${EM}modulecmd${EZ} [PARAM1 [PARAM2...]]]
-      Pass all arguments as-is to the ${ET}modulecmd${EZ} command.
-      Example: print AliRoot env for zsh: $ET$0 modulecmd zsh load AliRoot/v5-08-02-1$EZ
-      Consult ${ET}man modulecmd${EZ} for more information.
-
-    ${EM}shell-helper${EZ}
-      Returns a script to be ${ET}eval${EZ}d in your shell rc file to allow easier loading/unloading.
-      In your shell rc put:
-        ${ET}BITS_WORK_DIR=<path_to_bits_sw_dir>${EZ}
-        ${ET}eval "\`bits shell-helper\`"${EZ}
-
-    ${EM}build${EZ}   Build a package. Use ${ET}bits build --help${EZ} for details.
-    ${EM}checksums${EZ} Compute/record a recipe repository's checksums. Use ${ET}bits checksums --help${EZ} for details.
-    ${EM}clean${EZ}   Clean build artifacts. Use ${ET}bits clean --help${EZ} for details.
-    ${EM}compliance${EZ} Audit licence metadata and the store. Use ${ET}bits compliance --help${EZ} for details.
-    ${EM}deps${EZ}    Show dependency tree. Use ${ET}bits deps --help${EZ} for details.
-    ${EM}doctor${EZ}  Verify build environment. Use ${ET}bits doctor --help${EZ} for details.
-    ${EM}init${EZ}    Initialise a local package. Use ${ET}bits init --help${EZ} for details.
-    ${EM}prune${EZ}   Evict stale packages from a persistent workDir. Use ${ET}bits prune --help${EZ} for details.
-    ${EM}sbom${EZ}    Export a build manifest as a CycloneDX/SPDX SBOM. Use ${ET}bits sbom --help${EZ} for details.
-    ${EM}store${EZ}   Inspect/verify/clean the S3 content store. Use ${ET}bits store --help${EZ} for details.
-    ${EM}version${EZ} Display bits version: tag, commit and date (also ${ET}bits --version${EZ}).
-
+The shell is the one you run, or $MODULES_SHELL.
 EoF
-[[ -z "$1" ]] || printf "${ER}ERROR: $*${EZ}\n" >&2
+}
+
+function usageError() {
+  printf "${ER}bits: %s${EZ}\n" "$*" >&2
+  echo "Run 'bits help' for the commands, 'bits help COMMAND' for one of them." >&2
 }
 
 function installHint() {
@@ -690,7 +715,8 @@ fi
 for arg in "$@"
 do
   case $arg in
-    architecture|brew|build|certify|checksums|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|verify|version|-debug|-d)
+    architecture|brew|build|certify|checksums|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|verify|version|--debug|-d)
+        # (the same list in the unknown-command check below)
         # bitsBuild creates the work directory when a command runs (not for
         # --help, version or architecture).
         ${BITS_PY:+"$BITS_PY" -E -s} "$BITSDIR/bitsBuild" "$@"
@@ -734,6 +760,7 @@ CLEAN_ENV=1
 DEVOPT=0
 VIEWOPT=0
 ARCHIVE=
+_HELP=
 VERBOSE=1
 
 ARGS=()
@@ -757,8 +784,8 @@ do
 	  VIEWOPT=1;;
       --archive|-archive)
 	  ARCHIVE=1;;
-      -h|--help|help)
-	  printHelp; exit 0 ;;
+      -h|--help)
+	  _HELP=1;;
       -c) 
 	  i=$((i+1)); COMMAND_IN_ENV=("${ARGV[@]:${i}}");
 	  break ;;
@@ -770,6 +797,17 @@ done
 ACTION="${ARGS[0]}"
 
 ARGS=("${ARGS[@]:1}")
+
+case "$ACTION" in
+  q|query|enter|setenv|load|printenv|unload|list|avail|modulecmd|shell-helper)
+      [[ -z "$_HELP" ]] || { printModuleHelp; exit 0; } ;;
+  help) printHelp; exit 0 ;;
+  "") [[ -z "$_HELP" ]] || { printHelp; exit 0; }
+      usageError "no command given"; exit 1 ;;
+  architecture|brew|build|certify|checksums|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|verify|version|store|use|cvmfs|cvmfs-stage|cvmfs-publish|store-stats|preload|overlay|lcg-view)
+      usageError "$ACTION takes its options after it: bits $ACTION [OPTIONS]"; exit 1 ;;
+  *)  usageError "unknown command: $ACTION"; exit 1 ;;
+esac
 
 export BITSLVL=$((BITSLVL+1))
 
@@ -785,6 +823,7 @@ bits() {
     echo "bits not found"
     return 1
   fi
+  case " $* " in *" -h "*|*" --help "*) "$BITS_ENV__" "$@"; return $? ;; esac
   for A in "$@"; do
     if ! test `echo "$A" | cut -b1` = -; then
       if test "$A" = load || test "$A" = unload; then
@@ -858,12 +897,10 @@ if [[ -z "$WORK_DIR" ]]; then
     NO_WORK_DIR=1
     [[ $DEVOPT != 1 ]] || { printf "${ER}ERROR: --dev needs a work dir${EZ}\n" >&2; exit 1; }
   else
-    printHelp "No default work dir can be accessed:"                      \
-              "export \$BITS_WORK_DIR or run bits from a directory" \
-              "containing the \"sw\" dir"; false
+    usageError "no work dir: export \$BITS_WORK_DIR, or run bits where the \"sw\" dir is"; false
   fi
 else
-  [[ ! -d "$WORK_DIR" ]] && { printHelp "Work dir $WORK_DIR cannot be accessed"; false; }
+  [[ ! -d "$WORK_DIR" ]] && { usageError "work dir $WORK_DIR cannot be accessed"; false; }
   WORK_DIR=$(cd "$WORK_DIR"; pwd)
 fi
 # Remember whether the architecture was given explicitly (-a); if so, respect it
@@ -935,7 +972,7 @@ if [[ -z "$_ARCH_GIVEN" ]]; then
   fi
 fi
 _bt_mark archdetect         # arch autodetect (python spawn only when needed)
-[[ -z "$ARCHITECTURE" ]] && { printHelp "Cannot autodetect architecture"; false; }
+[[ -z "$ARCHITECTURE" ]] && { usageError "cannot detect the architecture: give it with -a ARCH"; false; }
 
 # Look for modulecmd (v3) or modulecmd-compat (>= v4): bits' own runtime first
 MODULECMD="$BITSDIR/runtime/bin/modulecmd"
@@ -1130,7 +1167,7 @@ case "$ACTION" in
   ;;
   setenv)
     [[ $DEVOPT == 1 ]] && echo "Warning: Development mode for '$ACTION' is not supported. Please remove '--dev'" >&2
-    [[ -z "${COMMAND_IN_ENV[*]}" ]] && { printHelp "No command specified with -c"; false; }
+    [[ -z "${COMMAND_IN_ENV[*]}" ]] && { usageError "setenv needs a command after -c"; false; }
     MODULES=$(normModules "${ARGS[@]}")
     collectModules
     resolveModules $MODULES
@@ -1171,12 +1208,6 @@ case "$ACTION" in
     collectModules
     exec "$MODULECMD" "${ARGS[@]}"
     ;;
-  '')
-    printHelp "What do you want to do?"
-    ;;
-  *)
-    printHelp "Unknown command: $1"
-  ;;
 esac
 
 false

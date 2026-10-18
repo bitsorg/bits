@@ -960,18 +960,33 @@ The project is licensed under the terms in `LICENSE.md`.
 
 ## 16. Command-Line Reference
 
-All sub-commands are accessed through the unified `bits` entry point:
+All commands go through the `bits` entry point. `bits help` (or `bits -h`) lists
+them by group; `bits help COMMAND...`, the same as `bits COMMAND... --help`, prints
+one command's options (`bits help cvmfs stage`).
 
 ```
-bits [--debug|-d] [--dry-run|-n] <subcommand> [options]
+bits [--community NAME] COMMAND [OPTIONS]
+bits --version
 ```
 
-| Global option | Description |
-|---------------|-------------|
-| `--community NAME` | First, before the sub-command: the same as `BITS_COMMUNITY=NAME`. Through the CVMFS entry point it also selects the community's published modules, e.g. `/cvmfs/bits.cern.ch/bits/bin/bits --community key4hep setenv key4hep/2026-10-01 -c ./run.sh` in a grid job. |
-| `-d`, `--debug` | Enable verbose debug output |
-| `-n`, `--dry-run` | Print what would happen without executing. For `bits build`: a per-package plan (installed, local tarball, from the remote store, from the reuse overlay, or build) and a summary. Nothing is downloaded: the remote store is only listed, which is possible for `http(s)://` and `b3://` stores. |
-| `-a ARCH`, `-w DIR`, `--no-refresh` | Module commands (`enter`, `load`, `q`, …) only: architecture, work directory, and skip refreshing the modules directory. |
+| Option | Applies to | Description |
+|--------|------------|-------------|
+| `--community NAME` | every command, first | The same as `BITS_COMMUNITY=NAME`. Through the CVMFS entry point it also selects the community's published modules, e.g. `/cvmfs/bits.cern.ch/bits/bin/bits --community key4hep setenv key4hep/2026-10-01 -c ./run.sh` in a grid job. |
+| `-h`, `--help` | every command | The commands; after a command, that command's help. |
+| `--version` | alone | The bits version. |
+| `-d`, `--debug` | all but the module commands, `cvmfs`, `store`, `use`, `overlay`, `preload` | Verbose debug output. |
+| `-n`, `--dry-run` | `build`, `clean`, `init`, `publish`, `prune` (`compliance`: `--dry-run`) | Print what would happen without executing. For `bits build`: a per-package plan (installed, local tarball, from the remote store, from the reuse overlay, or build) and a summary. Nothing is downloaded: the remote store is only listed, which is possible for `http(s)://` and `b3://` stores. |
+| `-a ARCH`, `-w DIR`, `--no-refresh`, `-q`, `--view`, `--archive`, `--dev`, `--shellrc` | module commands | See [bits enter](#bits-enter) and `bits enter --help`. |
+
+A command's own options come after it (`bits build -a ARCH PKG`, not `bits -a ARCH build PKG`).
+
+| Group | Commands |
+|-------|----------|
+| Using software (the module commands) | [`q`, `query`, `list`, `avail`](#bits-query--list--avail), [`enter`](#bits-enter), [`setenv`](#bits-setenv), [`load`, `printenv`](#bits-load--printenv), [`unload`](#bits-unload), [`modulecmd`](#bits-modulecmd), [`shell-helper`](#bits-shell-helper) |
+| Building | [`build`](#bits-build), [`status`](#bits-status), [`deps`](#bits-deps), [`doctor`](#bits-doctor), [`init`](#bits-init), `use` (in [bits init](#bits-init)), [`checksums`](#bits-checksums), [`stats`](#bits-stats), [`brew`](#bits-brew), [`clean`](#bits-clean), [`prune`](#bits-prune), [`architecture`, `version`](#bits-version--architecture) |
+| CVMFS | [`cvmfs`](#bits-store--bits-cvmfs-admin--ci-groups), [`publish`](#bits-publish), [`cvmfs-path`](#bits-cvmfs-path), [`import`](#bits-import), [`overlay`](#bits-overlay-lcg), `preload` (`bits preload --help`) |
+| Trust and compliance | [`certify`, `sign`](#bits-certify--bits-sign), [`verify`](#bits-verify), [`sbom`](#bits-sbom), [`compliance`](#bits-compliance) |
+| Binary store | [`store`](#bits-store--bits-cvmfs-admin--ci-groups) |
 
 Saved arguments from a `bits use` profile are inserted right after the sub-command, before your own (see [bits init](#bits-init)); `bits.rc` is no longer read.
 

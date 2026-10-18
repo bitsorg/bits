@@ -178,6 +178,12 @@ For another community the steps are the same, e.g.
 Record per-directory options (work directory, stores) once with `bits use build …`
 inside the repository (see [Configuration](#4-configuration)).
 
+### Getting help
+
+`bits help` lists the commands by group, and `bits help COMMAND` (or
+`bits COMMAND --help`) one command's options; `bits help enter` covers all the
+module commands (`q`, `enter`, `setenv`, `load`, …).
+
 ### ALICE: the aliBuild workflow
 
 The `aliBuild` wrapper keeps ALICE's classic workflow, working from an `alidist` checkout:
