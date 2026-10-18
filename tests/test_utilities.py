@@ -382,6 +382,21 @@ class TestUtilities(unittest.TestCase):
     self.assertEqual(["herwig3"], list(filterByArchitectureDefaults(
         linux, ["dev4"], ["herwig3:(?heavygen)"], rv)))
 
+  def test_variables_not_exported(self) -> None:
+    """`export: false`: a --set of the variable sets it, but stays out of the env."""
+    from bits_helpers.matchers import exported_flavours
+    linux = "ubuntu2510_x86-64-gcc15"
+    block = {"release": "main", "athena_release": {"value": "main", "export": False}}
+    self.assertEqual("main", resolve_variables(block, {}, linux, ["atlas"])["athena_release"])
+    cli = {"release": "LCG_110", "athena_release": "release/25.0.75"}
+    self.assertEqual("release/25.0.75",
+                     resolve_variables(block, cli, linux, ["atlas"])["athena_release"])
+    self.assertEqual({"release": "LCG_110"}, dict(exported_flavours(block, cli)))
+    self.assertEqual(cli, dict(exported_flavours({"release": "main"}, cli)))
+    with patch("bits_helpers.matchers.dieOnError", side_effect=SystemExit):
+      with self.assertRaises(SystemExit):
+        exported_flavours({"x": {"value": 1, "export": "no"}}, {})
+
   def test_parse_req_matcher(self) -> None:
     """_parse_req_matcher should correctly parse all requirement syntax variants."""
     # Plain name

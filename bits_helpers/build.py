@@ -21,7 +21,7 @@ from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, 
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, ver_rev, is_virtual_package
 from bits_helpers.arch import detectArch, effective_arch, SHARED_ARCH, compute_combined_arch, compute_own_hash_arch
 from bits_helpers.defaults import parseDefaults, readDefaults
-from bits_helpers.matchers import resolve_variables
+from bits_helpers.matchers import resolve_variables, exported_flavours
 from bits_helpers.packages import getPackageList
 from bits_helpers.initdotsh import generate_initdotsh
 from bits_helpers.hashing import storeHashes
@@ -3062,6 +3062,7 @@ def doBuild(args, parser):
     # (?NAME) conditional matchers that gate package requires and %(NAME)s recipe
     # templating. CLI flavours override a defaults entry of the same name.
     flavours = getattr(args, "flavours", None) or {}
+    exported = exported_flavours(meta.get("variables"), flavours)
     meta["variables"] = resolve_variables(
         meta.get("variables"), flavours, args.architecture, args.defaults)
     # Resolve the release LABEL and write it back into `release`, so that
@@ -3079,13 +3080,14 @@ def doBuild(args, parser):
       meta["variables"]["release"] = _resolve_release(meta, branch_basename)
     # Flavours are ALSO exported into the build environment + package hash (via
     # the `env:` map, which becomes the defaults-release env every package
-    # depends on), exactly as before.
-    if flavours:
+    # depends on), exactly as before; but not those of variables declared
+    # `export: false`, which reach only the recipes that use them.
+    if exported:
       from collections import OrderedDict as _OD
       # An empty `env:` block parses to None, so setdefault would keep it None.
       if not isinstance(meta.get("env"), dict):
         meta["env"] = _OD()
-      for _k, _v in flavours.items():
+      for _k, _v in exported.items():
         meta["env"][_k] = _v
     # init.sh-from-modules (the default) publishes a build-mode marker through the
     # defaults-release env. Routing it here is deliberate: the defaults env is

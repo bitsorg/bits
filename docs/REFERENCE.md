@@ -988,7 +988,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | Option | Description |
 |--------|-------------|
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
-| `--flavour NAME[=VALUE]` (aliases `--flavor`, `--set`) | Set a build-wide flavour variable (repeatable, comma-separated). `NAME`→`true`, `NAME=VALUE`→`VALUE`, `!NAME`→`false`. Gates `(?NAME)` conditional requires/sources/patches and is exported into the build environment; overrides a defaults `variables:` entry of the same name. See [Flavours](#flavours). |
+| `--flavour NAME[=VALUE]` (aliases `--flavor`, `--set`) | Set a build-wide flavour variable (repeatable, comma-separated). `NAME`→`true`, `NAME=VALUE`→`VALUE`, `!NAME`→`false`. Gates `(?NAME)` conditional requires/sources/patches and is exported into the build environment (not for a variable declared `export: false`); overrides a defaults `variables:` entry of the same name. See [Flavours](#flavours). |
 | `--reuse-from PATH\|cvmfs` | Reuse components already deployed on CVMFS, found through their published modulefiles at this absolute modules-tree path (unlike `--remote-store`, which is a tarball store). The literal `cvmfs` takes the location from the defaults `system:` layout (`module_dir` under `cvmfs_dir`) or, failing that, from `cvmfs_modules_template`. A trailing `::relaxed` or `::strict` also sets the reuse policy (e.g. `cvmfs::relaxed`); it must agree with `--reuse-policy` if both are given. Defaults to `$BITS_REUSE_FROM`. See [Reusing deployed components](#relaxed-cvmfs-reuse). |
 | `--reuse-policy {strict,relaxed}` | How a `--reuse-from` component is matched. `strict` (default): only on an exact content-hash match; the result is publishable. `relaxed`: any deployed build of the **same version** (revision and hash may differ), for fast local development on top of e.g. an LCG release, so only the top of the stack is built. Relaxed builds have *loose* provenance and cannot be published: combining them with `--write-store` is refused. Falls back to the defaults `reuse_policy:` value. |
 | `--build-local PKG[,PKG…]` | Packages to always build locally even when they could be reused (e.g. one you need patched), instead of taking them from `--reuse-from`. |
@@ -2422,8 +2422,9 @@ Grammar (repeatable, comma-separated): `NAME` → `true`, `NAME=VALUE` → `VALU
 `!NAME` → `false`. A value is *truthy* unless it is empty, `0`, `false`, `off`,
 or `no`. Each flavour is merged into the defaults' `variables:` map (so `(?NAME)`
 sees it) **and** the `env:` map (so it is exported as `$NAME` in every recipe's
-build and contributes to the package hash). A `--flavour` overrides a defaults
-`variables:`/`env:` entry of the same name.
+build and contributes to the package hash), unless the variable is declared
+`export: false` (below). A `--flavour` overrides a defaults `variables:`/`env:`
+entry of the same name.
 
 `NAME` must be a plain identifier — `[A-Za-z_][A-Za-z0-9_]*` (a letter or
 underscore, then letters/digits/underscores). **Hyphens are not allowed:** use
@@ -2464,6 +2465,21 @@ variables:
 A truthy value is anything except empty, `0`, `false`, `off`, or `no`. A
 `--flavour` of the same name overrides a defaults `variables:` value.
 
+A `--flavour`/`--set` normally also goes into the build environment, and so into
+every package's hash. For a variable declared `export: false` it sets only the
+variable, which then enters only the hashes of the recipes that use it:
+
+```yaml
+variables:
+  athena_release:
+    value: main
+    export: false     # --set athena_release=release/25.0.75 rebuilds only what uses it
+```
+
+Defaults variables expand in a recipe's `tag:` and body (not in `version:`, which can
+use `%(tag_basename)s`). A later profile in the chain that sets the same name to a
+plain value replaces the whole entry, `export: false` included.
+
 ##### `variables` vs `env` vs `flavours` — quick comparison
 
 These three are easy to confuse. `variables:` is **text templating only** (Python
@@ -2476,8 +2492,8 @@ the name **verbatim** — none of them upper-cases it.
 | Defined in | defaults / recipe `variables:` | defaults `env:` | CLI (repeatable) |
 | Surface in recipe | `%(NAME)s` (text) | `$NAME` (shell) | both `%(NAME)s` **and** `$NAME` |
 | Gates `(?NAME)` in requires/patches/overrides | defaults `variables:` only | no | yes |
-| Exported into build shell | no | yes (via `defaults-release`) | yes |
-| In the package hash | only through the text they expand into: recipe `variables:` in `version`/`tag`/`source`/`sources`/`patches`/body; defaults `variables:` in `tag` and the body | yes (via the `defaults-release` environment) | yes (both paths) |
+| Exported into build shell | no | yes (via `defaults-release`) | yes, unless the variable is `export: false` |
+| In the package hash | only through the text they expand into: recipe `variables:` in `version`/`tag`/`source`/`sources`/`patches`/body; defaults `variables:` in `tag` and the body | yes (via the `defaults-release` environment) | yes (both paths; for an `export: false` variable only through the text) |
 | When evaluated | build-time text substitution, **before** hashing | exported into the shell before the recipe body runs | both |
 | Name case | verbatim | verbatim | verbatim |
 
