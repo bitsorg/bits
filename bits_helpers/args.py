@@ -1979,8 +1979,8 @@ def doParseArgs():
     # have their own (see _own_dry_run above).
     if x in ["--debug", "-d"]:
       return 0
-    if x in ["-n", "--dry-run"] and not _own_dry_run:
-      return 0
+    if x in ["-n", "--dry-run"]:
+      return 3 if _own_dry_run else 0   # their own -n goes after them
 #   if x in ["build", "init", "clean", "analytics", "doctor", "deps"]:
     if x in ["build", "init", "clean", "doctor", "deps"]:
       return 1

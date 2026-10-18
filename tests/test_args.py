@@ -467,5 +467,28 @@ class DistStringTestCase(unittest.TestCase):
     self.assertEqual(bits_string(""), {"repo": "alisw/alidist", "ver": ""})
 
 
+
+class DryRunOrderTestCase(unittest.TestCase):
+  """-n before a command with its own --dry-run is that command's."""
+
+  def _parse(self, cmd):
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
+         mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
+         mock.patch("bits_helpers.args.commands") as mock_cmd, \
+         patch.object(sys, "argv", ["bits"] + shlex.split(cmd)):
+      mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
+      args, _ = doParseArgs()
+      return vars(args)
+
+  def test_prune(self):
+    self.assertTrue(self._parse("-n prune")["dryRun"])
+    self.assertTrue(self._parse("prune -n")["dryRun"])
+    self.assertFalse(self._parse("prune")["dryRun"])
+
+  def test_compliance(self):
+    self.assertTrue(self._parse("--dry-run compliance")["dryRun"])
+    with self.assertRaises(SystemExit):   # it has no -n: refused, not ignored
+      self._parse("-n compliance")
+
 if __name__ == '__main__':
   unittest.main()
