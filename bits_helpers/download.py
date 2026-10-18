@@ -515,7 +515,7 @@ downloadHandlers = {
 
 
 def download(source, dest, work_dir, checksum=None, enforce_mode="off",
-             sync_helper=None):
+             sync_helper=None, progress=None):
     """Download *source* into *dest*, optionally verifying its checksum.
 
     Parameters
@@ -547,6 +547,9 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
           with the same remote store) can skip the upstream download.
 
         Pass ``None`` (the default) to preserve the previous behaviour.
+    progress:
+        Optional callback receiving the source location before retrieval,
+        including local-cache and remote-store attempts.
     """
     noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
     isCmsdistGenerated = True if 'cmdist-generated=1' in source else False
@@ -628,16 +631,23 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
                 break
     fetched_from_upstream = False
     try:
-        if not exists(realFile):
+        if exists(realFile):
+            if progress:
+                progress("local cache {} (source: {})".format(realFile, source))
+        else:
             # Before hitting the upstream URL, check whether the remote store
             # already has an archived copy of this source.  This makes rebuilds
             # resilient to upstream URL disappearance.
             if sync_helper is not None:
                 debug("Trying remote store for source file: %s", filename)
+                if progress and getattr(sync_helper, "remoteStore", ""):
+                    progress("{} (source: {})".format(sync_helper.remoteStore, source))
                 sync_helper.fetch_source(url_checksum, filename, downloadDir)
 
             if not exists(realFile):
                 debug("Trying to fetch source file: %s", source)
+                if progress:
+                    progress(source)
                 downloadHandler(source, downloadDir, work_dir)
                 fetched_from_upstream = True
     finally:

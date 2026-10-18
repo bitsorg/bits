@@ -36,6 +36,7 @@ from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url
 from bits_helpers.build_config import BuildConfig
+from bits_helpers.build_progress import BuildProgress, package_label, set_package_progress
 from dataclasses import dataclass
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 try:
@@ -1425,28 +1426,19 @@ def write_failure_summary(work_dir, scheduler, arch):
 def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper):
   spec = specs[p]
   debug("Build command: %s", build_command)
-  progress = debug
   # Reuse marker (shown even without --debug): "[from store]" when a remote store
   # is configured (tarball from the shared cache), "[cached]" for a local-only
   # tarball. Blank when the package is compiled.
   _reuse_tag = ((" [from store]" if getattr(syncHelper, "remoteStore", "")
                  else " [cached]") if cachedTarball else "")
-  if args.builders==1:
-    progress_msg = ("Unpacking %s@%s" + _reuse_tag) if cachedTarball else "Compiling %s@%s"
-    if not cachedTarball and not args.debug:
-      progress_msg += " (use --debug for full output)"
-    progress = ProgressPrint(
-      progress_msg %
-      (spec["package"],
-      args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
-    )
-  else:
-    scheduler.log (
-      (("Unpacking %s@%s" + _reuse_tag) if cachedTarball else
-      "Compiling %s@%s (use --debug for full output)") %
-      (spec["package"],
-      args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
-    )
+  stage = "Unpacking" + _reuse_tag if cachedTarball else "Building"
+  if not cachedTarball and not args.debug:
+    stage += " (use --debug for full output)"
+  version = (args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"]
+             else spec["version"])
+  progress = BuildProgress(package_label(spec, version), stage,
+                           emit=scheduler.log if args.builders > 1 else info,
+                           interactive=args.builders == 1)
   # Report progress (no-op unless running under gitlab-runner): this package is
   # now starting. defaults-release is excluded to match the planned total.
   if spec["package"] != "defaults-release":
@@ -1498,12 +1490,15 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=progress)
     else:
       err = execute(build_command, printer=progress)
+  except BaseException:
+    progress.end(error=True)
+    raise
   finally:
     _bits_monitor.note_build(p, getattr(args, "architecture", ""), False)
     if nice_ladder is not None:
       nice_ladder.release(nice_token)
-  if args.builders==1:
-    progress.end("failed" if err else "done", err)
+  if err:
+    progress.end(error=True)
 
   # We do not use the override for devel packages, because we
   # want to avoid having to rebuild things when the /tmp gets cleaned.
@@ -1698,7 +1693,14 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     else:
       dieOnError(err, buildErrMsg.strip())
 
-  doFinalSync(spec, specs, args, syncHelper)
+  progress.update("Syncing package to store" if getattr(syncHelper, "writeStore", "")
+                  else "Finalizing package", interactive=False)
+  try:
+    doFinalSync(spec, specs, args, syncHelper)
+  except BaseException:
+    progress.end(error=True)
+    raise
+  progress.end()
 
 
 def _doCheckout(spec, workDir, referenceSources, docker, enforce_mode,
@@ -2072,6 +2074,7 @@ def build_one_package(p, ctx):
   monitoredDirs = ctx.monitoredDirs
 
   spec = specs[p]
+  info("%s: Preparing (checking installed packages and cache)", package_label(spec))
   log_current_package(p, mainPackage, specs, getattr(args, "develPrefix", None))
 
   # Calculate the hashes. We do this in build order so that we can guarantee
@@ -2118,7 +2121,7 @@ def build_one_package(p, ctx):
         spec["hash"] = spec.get("remote_revision_hash") or spec.get("hash", "")
         spec["cachedTarball"] = ""
         spec.setdefault("deps_hash", "")
-        info("Reuse: %s from CVMFS overlay as module %s (not built)", p, _mid)
+        info("%s: Reusing CVMFS overlay module %s (not built)", package_label(spec), _mid)
         if getattr(args, "manifest", None) is not None:
           args.manifest.add_package(spec, "already_installed",
                                     effective_architecture=effective_arch(spec, args.architecture))
@@ -2412,7 +2415,7 @@ def build_one_package(p, ctx):
       workDir, effective_arch(spec, args.architecture), spec)
     if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"] \
        and os.path.isdir(devel_install_dir):
-      info("Development package %s does not need rebuild", spec["package"])
+      info("%s: Development package does not need rebuild", package_label(spec))
       return
     if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"]:
       debug("Devel package %s source unchanged but install dir %s is missing "
@@ -2440,7 +2443,7 @@ def build_one_package(p, ctx):
     if fileHash == spec["hash"] and not spec["is_devel_pkg"]:
       # If we get here, the installed package matches the selected hash. It is
       # already usable, so we can register its dependency closure and skip work.
-      debug("Package %s is already installed with the expected hash.", spec["package"])
+      info("%s: Already installed", package_label(spec))
       # own_hash arch bridge (reuse compatibility): an own_hash package (the
       # toolchain) is installed ONLY under its build-type-NEUTRAL arch. A consumer
       # whose init.sh was generated by the current initdotsh sources it from that
@@ -4199,6 +4202,7 @@ def doBuild(args, parser):
       buildTargets=buildTargets, packages=packages,
       prefetch_executor=_prefetch_executor, cmake_prefix_env=_cmake_prefix_env,
       specs_for_checksum_phase=specs_for_checksum_phase, monitoredDirs=monitoredDirs)
+  set_package_progress(specs, buildOrder)
   while buildOrder:
     build_one_package(buildOrder.pop(0), ctx)
   buildWorkDir = ctx.build_work_dir
