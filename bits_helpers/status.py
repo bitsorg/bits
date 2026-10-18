@@ -44,6 +44,7 @@ from bits_helpers.utilities import (
     is_virtual_package,
 )
 from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults
+from bits_helpers.matchers import resolve_variables
 from bits_helpers.arch import (
     SHARED_ARCH,
     compute_combined_arch,
@@ -387,6 +388,9 @@ def doStatus(args, parser) -> None:
             args.configDir, args.defaults, parser.error, args.architecture
         )
         add_initdotsh_hash_marker(meta, args.initdotshFromModules)
+        # As build resolves them (without --set, which status does not take).
+        meta["variables"] = resolve_variables(
+            meta.get("variables"), {}, args.architecture, args.defaults)
         return meta, body
 
     err, overrides, taps, defaults_meta = parseDefaults(
