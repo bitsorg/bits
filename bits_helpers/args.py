@@ -313,8 +313,8 @@ def add_architecture_arguments(subparsers, ctx):
 
 def add_version_arguments(subparsers, ctx):
   """`bits version` — display the version and architecture (no options)."""
-  return subparsers.add_parser("version", help="display %(prog)s version",
-                               description="Display the %(prog)s version (tag, commit and "
+  return subparsers.add_parser("version", help="display the bits version",
+                               description="Display the bits version (tag, commit and "
                                            "date) and the architecture. Same as --version.")
 
 
@@ -1883,9 +1883,11 @@ def doParseArgs():
   # `ctx` carries the shared cross-cutting adders (architecture, work_dir, …).
   ctx = _ArgCtx(detectedArch)
 
-  parser = argparse.ArgumentParser(epilog="""\
-  For help about each option, specify --help after the option itself. For
-  complete documentation please refer to https://alisw.github.io/alibuild.
+  # The command people type (bitsBuild is run through it).
+  _prog = "aliBuild" if os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild" else "bits"
+  parser = argparse.ArgumentParser(prog=_prog, epilog="""\
+  Each command lists its options with --help. Documentation:
+  https://github.com/bitsorg/bits/tree/main/docs
   """)
 
   from bits_helpers import _VERSION_INFO

@@ -87,7 +87,7 @@ except Exception:
     trust = None
 
 STORE = os.environ["BITSSTORE_STORE"]
-PROG = "bitsStore"
+PROG = "bits store"
 NOW = datetime.datetime.now(datetime.timezone.utc)
 # Default bits work dir (S3 client + default MANIFESTS) for the gc/stats verbs;
 # mirrors bits_helpers.args without importing that heavy module on every call.
