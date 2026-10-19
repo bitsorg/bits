@@ -1364,6 +1364,7 @@ def publish_one(spec, ctx):
                     _safe_rmtree(_mstage)
                 _mlbl = "%s@%s(modules)" % (pkg, vdir)
                 mjid = _publish_tar(ctx, mod_path, mod_tar, _mlbl,
+                                    fp=tree_fingerprint(os.path.dirname(modfile)),
                                     identity="%s/%s" % (mod_path, vdir) if publish_once else "")
                 jobs.append((mjid, _mlbl))
     finally:
