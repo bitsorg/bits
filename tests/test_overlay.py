@@ -58,6 +58,28 @@ class TestLcgCollect(unittest.TestCase):
         self.assertEqual(sorted(records), ["ROOT", "evtgen"])
         self.assertTrue(records["evtgen"][0].endswith("MCGenerators/evtgen/1-1"))
 
+    def test_closure_only(self):
+        # Another build's packages and versions in the work dir stay out.
+        from bits_helpers.overlay.lcg import closure_of, collect
+        with tempfile.TemporaryDirectory() as wd:
+            a = os.path.join(wd, "x86_64-el9-gcc14-opt")
+            for pkg, ver in (("ROOT", "1"), ("ROOT", "2"), ("Athena", "1")):
+                d = os.path.join(a, pkg, ver + "-1")
+                os.makedirs(d)
+                with open(os.path.join(d, ".meta.json"), "w") as fh:
+                    json.dump({"package": {"name": pkg, "version": ver, "revision": "1"}}, fh)
+            view = os.path.join(wd, "view.json")
+            with open(view, "w") as fh:
+                json.dump({"dependencies": {"recursive": {"build": [], "runtime": [
+                    {"name": "ROOT", "version": "1", "revision": "1"},
+                    {"name": "GCC-Toolchain", "version": "14", "revision": "1"}]}}}, fh)
+            records, warnings, errors = collect(wd, "x86_64-el9-gcc14-opt", closure_of(view))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("GCC-Toolchain 14-1", warnings[0])
+        self.assertEqual(list(records), ["ROOT"])
+        self.assertTrue(records["ROOT"][0].endswith("ROOT/1-1"))
+
 
 if __name__ == "__main__":
     unittest.main()

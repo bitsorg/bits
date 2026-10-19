@@ -1912,7 +1912,7 @@ lists the available formats.
 
 ```bash
 bits overlay lcg -a ARCH --platform PLATFORM --version-number N \
-                 [--postfix P] [--out DIR] [--build-view DIR] [-w DIR]
+                 [--postfix P] [--out DIR] [--build-view DIR] [-w DIR] [--closure META]
 ```
 
 | Option | Description |
@@ -1923,6 +1923,7 @@ bits overlay lcg -a ARCH --platform PLATFORM --version-number N \
 | `--version-number N` | LCG version number of the release directory (e.g. `110`). Required. |
 | `--postfix P` | LCG version postfix (e.g. `_ATLAS_5`). Default: none. |
 | `--out DIR` | `LCG_RELEASE_BASE` root to write `LCG_<num><postfix>/` under (default: current directory). |
+| `--closure META` | List only the packages of the dependency closure in META, a `.meta.json` (the view package passes its own), at their versions; without it every package of the arch subtree is listed. |
 | `--build-view DIR` | Also build the merged symlink view of the closure in DIR, with a `setup.sh` that collapses `PATH`/`LD_LIBRARY_PATH`/… onto it (no lcgcmake `create_lcg_view` needed). |
 | `--lib-path-var VAR` | Loader path variable for that `setup.sh` (default `LD_LIBRARY_PATH`; use `DYLD_LIBRARY_PATH` on macOS). |
 
