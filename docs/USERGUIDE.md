@@ -294,7 +294,7 @@ Without `--parallel` packages are built one after another, each with the full `-
 bits build --dry-run ROOT
 ```
 
-Computes every package's hash exactly as the build would and prints, in build order, where each one would come from — **installed**, **local tarball**, **from remote store**, **from reuse overlay** — or that it would be **built**, followed by a summary. Nothing is downloaded or installed; http(s):// and b3:// stores are only listed, and other stores (s3://, rsync) are not checked. `bits status --check-store` uses the same store listing. On macOS a dry run also writes `sw/<arch>/Brewfile`.
+Computes every package's hash exactly as the build would and prints, in build order, where each one would come from — **installed**, **local tarball**, **from remote store**, **from reuse overlay** — or that it would be **built**, followed by a summary. Nothing is downloaded or installed; http(s)://, s3:// and b3:// stores are only listed, and rsync stores are not checked. `bits status --check-store` uses the same store listing. On macOS a dry run also writes `sw/<arch>/Brewfile`.
 
 ### Sharing binaries through a store
 

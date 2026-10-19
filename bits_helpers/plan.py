@@ -27,10 +27,10 @@ DEVEL = "build (development package)"
 
 
 def store_can_list(sync_helper):
-  """Whether *sync_helper* can list store objects (http(s):// and b3:// stores).
+  """Whether *sync_helper* can list store objects (http(s)://, s3:// and b3:// stores).
 
-  The base RemoteSync.list_store_tarballs is a no-op; s3:// (s3cmd) and rsync
-  stores keep it, so their contents cannot be checked without downloading."""
+  The base RemoteSync.list_store_tarballs is a no-op; rsync stores keep it, so
+  their contents cannot be checked without downloading."""
   from bits_helpers.sync import RemoteSync
   return getattr(type(sync_helper), "list_store_tarballs", None) not in (
       None, RemoteSync.list_store_tarballs)
@@ -167,7 +167,7 @@ def print_plan(rows, store_checked):
       reused, count(INSTALLED), count(LOCAL_TARBALL), count(REMOTE),
       (", %d from overlay" % count(OVERLAY)) if count(OVERLAY) else "", len(rows) - reused)
   if not store_checked:
-    summary += "; remote store not checked (only http(s):// and b3:// stores can be listed)"
+    summary += "; remote store not checked (rsync stores cannot be listed)"
   banner("Dry run: build plan (nothing built)\n%s\n\n%s", "\n".join(lines), summary)
 
 

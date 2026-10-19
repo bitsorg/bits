@@ -902,6 +902,24 @@ class S3RemoteSync(RemoteSync):
     ))
     dieOnError(err, "Unable to fetch tarball from specified store.")
 
+  def list_store_tarballs(self, arch, pkg_hash):
+    """Basenames of the content objects stored under *pkg_hash* (s3cmd ls), so
+    bits build --dry-run and bits status see the store. Best-effort: [] on any error."""
+    import subprocess
+    url = "s3://%s/%s/" % (self.remoteStore.rstrip("/"), resolve_store_path(arch, pkg_hash))
+    try:
+      out = subprocess.run(["s3cmd", "ls", "-s", "--host", "s3.cern.ch", "--host-bucket",
+                            "%s.s3.cern.ch" % self.remoteStore, url],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+      debug("store listing failed for %s (%s)", url, exc)
+      return []
+    if out.returncode:
+      debug("store listing failed for %s: %s", url, out.stderr.strip())
+      return []
+    keys = (l.split(None, 3)[-1] for l in out.stdout.splitlines() if l.strip())
+    return [os.path.basename(k) for k in keys if k.startswith(url) and not k.endswith("/")]
+
   def fetch_symlinks(self, spec) -> None:
     err = execute("""\
     mkdir -p "{workDir}/{linksPath}"

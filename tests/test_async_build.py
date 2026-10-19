@@ -100,6 +100,26 @@ class RsyncRemoteSyncUploadCmdTest(unittest.TestCase):
         self.assertTrue(cmd.startswith("bash -e -c '"))
 
 
+class S3RemoteSyncListTest(unittest.TestCase):
+    """S3RemoteSync lists a store path with s3cmd ls (bits build --dry-run)."""
+
+    def test_listing(self):
+        from unittest import mock
+        from bits_helpers.sync import S3RemoteSync
+        from bits_helpers.plan import store_can_list
+        sync = S3RemoteSync("s3://bkt", "", "slc9_x86-64", "/sw")
+        self.assertTrue(store_can_list(sync))
+        out = ("2026-10-19 10:00  1234  s3://bkt/TARS/slc9_x86-64/store/ab/abc/zlib-1.3-1.slc9_x86-64.tar.gz\n"
+               "                     DIR  s3://bkt/TARS/slc9_x86-64/store/ab/abc/sub/\n")
+        run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=out, stderr=""))
+        with mock.patch("subprocess.run", run):
+            self.assertEqual(sync.list_store_tarballs("slc9_x86-64", "abc"),
+                             ["zlib-1.3-1.slc9_x86-64.tar.gz"])
+        self.assertEqual(run.call_args[0][0][-1], "s3://bkt/TARS/slc9_x86-64/store/ab/abc/")
+        with mock.patch("subprocess.run", mock.Mock(side_effect=OSError("no s3cmd"))):
+            self.assertEqual(sync.list_store_tarballs("slc9_x86-64", "abc"), [])
+
+
 class S3RemoteSyncUploadCmdTest(unittest.TestCase):
     """S3RemoteSync (s3cmd backend) upload_shell_command tests."""
 
