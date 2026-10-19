@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from argparse import Namespace
 from collections import OrderedDict
 from unittest.mock import MagicMock, patch
 
@@ -590,9 +591,69 @@ class WriteFailureSummaryTest(unittest.TestCase):
         self.assertTrue(full and os.path.exists(full))
         self.assertIn("build:motif", open(full).read())
 
+    def test_banner_lists_each_failed_package_log(self):
+        from bits_helpers.build import report_failure_summary
+        sched = self._Sched(
+            fails=[{"package": "zlib@1.3.1", "log": "/scratch/BUILD/zlib-latest/log"},
+                   {"package": "motif@2.3.8", "log": "/sw/BUILD/motif-latest-dev/log"}],
+            errors={"build:foo": "The following dependencies could not complete:\nbuild:motif"})
+        with self.assertLogs("bits", level="INFO") as logs:
+            report_failure_summary(self.dir, sched, ARCH)
+        text = "\n".join(logs.output)
+        self.assertIn("motif@2.3.8: /sw/BUILD/motif-latest-dev/log", text)
+        self.assertIn("zlib@1.3.1: /scratch/BUILD/zlib-latest/log", text)
+        self.assertLess(text.index("motif@"), text.index("zlib@"))
+        self.assertNotIn("<package>", text)
+        self.assertNotIn("foo", text)
+        self.assertIn(os.path.join(self.dir, "LOGS", ARCH, "build-summary.log"), text)
+
+    def test_success_has_no_failure_banner(self):
+        from bits_helpers.build import report_failure_summary
+        with patch("bits_helpers.build.info") as info:
+            report_failure_summary(self.dir, self._Sched([], {}), ARCH)
+        info.assert_not_called()
+
     def test_no_failures_writes_nothing(self):
         from bits_helpers.build import write_failure_summary
         self.assertEqual(write_failure_summary(self.dir, self._Sched([], {}), "el9_x86-64"),
                          (None, None))
         self.assertFalse(os.path.exists(
             os.path.join(self.dir, "LOGS", "el9_x86-64", "build-summary.log")))
+
+    def test_failure_log_paths_are_absolute(self):
+        from bits_helpers.build import runBuildCommand
+        for builders in (1, 2):
+            for devel in (False, True):
+                for override in ("", os.path.relpath(os.path.join(self.dir, "scratch"))):
+                    with self.subTest(builders=builders, devel=devel, override=override):
+                        args = Namespace(builders=builders, workDir=os.path.relpath(self.dir),
+                                         develPrefix="dev", debug=False, resourceMonitoring=False,
+                                         architecture=ARCH)
+                        spec = dict(GOOD_SPEC, is_devel_pkg=devel, requires=[])
+                        build_dir = self.dir if devel or not override else os.path.abspath(override)
+                        log_path = os.path.join(build_dir, "BUILD",
+                                               "zlib-latest-dev" if devel else "zlib-latest", "log")
+                        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                        with open(log_path, "w") as log:
+                            log.write("error: fixture build failed\n")
+                        sched = self._Sched([], {})
+                        sched.buildFailuresLock = threading.Lock()
+                        sched.log = MagicMock()
+                        with patch.dict(os.environ, {"BITS_BUILD_WORK_DIR": override or args.workDir,
+                                                     "BITS_DIST_HASH": "0123456789"}), \
+                             patch("bits_helpers.build.execute", return_value=7), \
+                             patch("bits_helpers.build.detectArch", return_value=ARCH), \
+                             patch("bits_helpers.monitor.note_build"):
+                            if builders == 1:
+                                with self.assertLogs("bits", level="ERROR") as logs:
+                                    with self.assertRaises(SystemExit) as exc:
+                                        runBuildCommand(sched, "zlib", {"zlib": spec}, args,
+                                                        "exit 7", None, self.dir, self.dir, None)
+                                self.assertEqual(exc.exception.code, 1)
+                                message = "\n".join(logs.output)
+                            else:
+                                message = runBuildCommand(sched, "zlib", {"zlib": spec}, args,
+                                                          "exit 7", None, self.dir, self.dir, None)
+                                self.assertEqual(sched.buildFailures[0]["log"], log_path)
+                        self.assertIn("  " + log_path + "\n", message)
+                        self.assertIn("error: fixture build failed", message)

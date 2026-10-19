@@ -1375,13 +1375,13 @@ def write_failure_summary(work_dir, scheduler, arch):
   # different effective platforms, and these run-level logs are not otherwise
   # arch-scoped, so write them under LOGS/<arch>/ to avoid cross-platform
   # clobbering. Fall back to the work-dir root if the directory can't be made.
-  log_dir = os.path.join(work_dir, "LOGS", arch or "")
+  log_dir = os.path.join(abspath(work_dir), "LOGS", arch or "")
   try:
     os.makedirs(log_dir, exist_ok=True)
   except OSError as exc:
     warning("Could not create log dir %s (%s); writing logs to %s instead",
             log_dir, exc, work_dir)
-    log_dir = work_dir
+    log_dir = abspath(work_dir)
   full_path = os.path.join(log_dir, "build-errors-full.log")
   try:
     with open(full_path, "w") as fh:
@@ -1420,6 +1420,25 @@ def write_failure_summary(work_dir, scheduler, arch):
     warning("Could not write failure summary %s: %s", path, exc)
     return (None, full_path)
   return (path, full_path)
+
+
+def report_failure_summary(work_dir, scheduler, arch):
+  """Write failure reports and print the log paths for each failed package."""
+  summary_path, full_path = write_failure_summary(work_dir, scheduler, arch)
+  fails = getattr(scheduler, "buildFailures", None) or []
+  if not (summary_path or full_path or fails):
+    return
+  info("=" * 70)
+  info("Build finished with errors. Where to look:")
+  if summary_path:
+    info("  Summary (start here):   %s", summary_path)
+  if full_path:
+    info("  Full error log:         %s", full_path)
+  if fails:
+    info("  Failed package build logs:")
+    for failure in sorted(fails, key=lambda x: x["package"].lower()):
+      info("    %s: %s", failure["package"], failure["log"])
+  info("=" * 70)
 
 
 def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper):
@@ -1514,8 +1533,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
 
   # Determine paths
   devSuffix = "-" + args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else ""
-  log_path = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/log"
-  log_abs_path = log_path  # keep the absolute path; log_path may become relative below
+  log_path = abspath(join(buildWorkDir, "BUILD", f"{spec['package']}-latest{devSuffix}", "log"))
   build_dir = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/{spec['package']}"
   # Staging install prefix ($INSTALLROOT in the recipe): where the package's
   # files are installed before being tarred. Useful for inspecting a partial
@@ -1527,10 +1545,10 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   except Exception:  # pylint: disable=broad-except
     install_root = None
 
-  # Use relative paths if we're inside the work directory
+  # Use relative paths for the build and install directories, but keep the log
+  # path absolute so it can be opened directly from any working directory.
   try:
     from os.path import relpath
-    log_path = relpath(log_path, os.getcwd())
     build_dir = relpath(build_dir, os.getcwd())
     if install_root:
       install_root = relpath(install_root, os.getcwd())
@@ -1560,7 +1578,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   # Surface the proximate error so the user does not have to open the full log.
   excerpt = ""
   if err:
-    excerpt = _extract_error_excerpt(log_abs_path) or ""
+    excerpt = _extract_error_excerpt(log_path) or ""
     if excerpt:
       buildErrMsg += f"\n{bold}Error excerpt:{reset}\n"
       buildErrMsg += excerpt + "\n"
@@ -4237,16 +4255,7 @@ def doBuild(args, parser):
       info("* The action \"{}\" was not completed successfully because {}".format(action, error))
     # Write a concise failure summary plus a combined full error log, and tell
     # the user where to find them and the individual per-package logs.
-    _summary_path, _full_path = write_failure_summary(workDir, scheduler, args.architecture)
-    if _summary_path or _full_path:
-      info("=" * 70)
-      info("Build finished with errors. Where to look:")
-      if _summary_path:
-        info("  Summary (start here):   %s", _summary_path)
-      if _full_path:
-        info("  Full error log:         %s", _full_path)
-      info("  Per-package build logs: %s/BUILD/<package>-latest/log", workDir)
-      info("=" * 70)
+    report_failure_summary(workDir, scheduler, args.architecture)
     # End-of-run resource-tuning hint. Only on a clean build — the utilisation
     # numbers are meaningless for a partial/failed run. The full report is in
     # bits_build_stats.json under "tuning".
