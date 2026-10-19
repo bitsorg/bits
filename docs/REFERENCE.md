@@ -1756,11 +1756,12 @@ with the same result.
 **A community's modules on CVMFS.** With `BITS_CVMFS_PREFIX` set to a community's
 CVMFS prefix (the bits entry point on CVMFS sets it), `bits q`, `enter`, `load`,
 `printenv`, `unload` and `setenv` also use the modules the community published there,
-after the local ones. bits uses the trees `<prefix>/<arch>/Modules/modulefiles` whose
-`<arch>` is `ARCHITECTURE` but for a trailing `-opt`/`-dbg`, in this order: the exact
-one, the one without build type (the toolchain), `-opt`, `-dbg`. So
-`-a x86_64-el9-gcc14-opt` uses `x86_64-el9-gcc14-opt`, `x86_64-el9-gcc14` and
-`x86_64-el9-gcc14-dbg`, never another compiler or OS. A module comes from the first
+after the local ones. bits uses the trees `<prefix>/<arch>/Modules/modulefiles` of
+`ARCHITECTURE` and of `ARCHITECTURE` without its `-opt`/`-dbg` (the toolchain, and
+communities published without a build type); an `ARCHITECTURE` without one is `-opt`.
+So `-a x86_64-el9-gcc14-opt` uses `x86_64-el9-gcc14-opt` and `x86_64-el9-gcc14`, never
+the `-dbg` tree, another compiler or OS; `bits q` notes when the other build type is
+published. A module comes from the first
 tree that has it, local builds first; `q` lists each name once. Each tree's modules
 are loaded against that tree alone, with its own `BASEDIR`, so modules from several
 trees can be loaded together; `unload` uses the tree each module was loaded from. The

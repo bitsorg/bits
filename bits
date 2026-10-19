@@ -442,11 +442,12 @@ function isModuleAction() {
 
 function cvmfsTrees() {
   # cvmfsTrees TREE ARCH: add to CVMFS_TREES the trees (TREE with {arch}) of
-  # ARCH, of ARCH without its -opt/-dbg, then of that with -opt and -dbg. With
-  # install dirs in place of archs (CVMFS_SLOT), ARCH if it is one, else the
-  # one with ARCH's CPU and OS.
+  # ARCH and of ARCH without its -opt/-dbg (the toolchain); ARCH without one is
+  # -opt. Never the other build type. With install dirs in place of archs
+  # (CVMFS_SLOT), ARCH if it is one, else the one with ARCH's CPU and OS.
   local a b t cpu os cands
-  b=${2%-opt}; b=${b%-dbg}; cands=("$2" "$b" "$b-opt" "$b-dbg")
+  b=${2%-opt}; b=${b%-dbg}
+  if [[ "$b" == "$2" ]]; then cands=("$2" "$2-opt"); else cands=("$2" "$b"); fi
   if [[ -n "$CVMFS_SLOT" ]]; then
     cands=("$2"); t=${1//"{arch}"/"$2"}
     if [[ ! -d "$t" ]]; then
@@ -456,6 +457,7 @@ function cvmfsTrees() {
       cands=("$a")
     fi
   fi
+  CVMFS_ARCH=$2
   for a in "${cands[@]}"; do
     t=${1//"{arch}"/"$a"}
     [[ -d "$t" ]] || continue
@@ -853,14 +855,15 @@ fi
 # CVMFS entry point sets; empty turns them off), <prefix>/<arch>/Modules/modulefiles;
 # else, with a cvmfs.yaml in the recipe repository (here, or beside the work
 # dir), the directory of its cvmfs_modules_template. For each deployed arch that
-# is $ARCHITECTURE but for a trailing -opt/-dbg, in this order: the exact one,
-# the one without build type (own_hash packages, the toolchain), -opt, -dbg.
+# is $ARCHITECTURE or that without its -opt/-dbg (own_hash packages, the
+# toolchain); an $ARCHITECTURE without a build type is -opt. Never the other
+# build type: bits q notes when it is published.
 # With cvmfs.yaml, no -a and no tree for $ARCHITECTURE, the arch is the one
 # published for this host's CPU and OS, if there is exactly one (a compiler);
 # else a note lists those published. They
 # come after the local MODULEPATH and stay off it: each tree is used on its own
 # (groupModulecmd), as its BASE/1.0 sets BASEDIR for it alone.
-CVMFS_TREES=(); CVMFS_ARCHIVES=(); CVMFS_SLOT=
+CVMFS_TREES=(); CVMFS_ARCHIVES=(); CVMFS_SLOT=; CVMFS_ARCH=
 _tree=; _layout=
 if [[ -n "${BITS_CVMFS_PREFIX+set}" ]]; then
   [[ -n "$BITS_CVMFS_PREFIX" ]] && _tree="${BITS_CVMFS_PREFIX%/}/{arch}/Modules/modulefiles"
@@ -1014,6 +1017,12 @@ if [[ -n "$_tree" ]]; then
     _s=${CVMFS_SLOT:-arch}; _d=${_tree//"{arch}"/"{$_s}"}
     [[ -z "$_p" ]] || printf "${EY}NOTE: no CVMFS module tree %s%s for %s; published: %s. Choose one: bits -a <%s> %s${EZ}\n" \
       "$_d" "${_layout:+ ($_layout)}" "$_a" "$_p" "$_s" "$ACTION" >&2
+  fi
+  # bits q: the other build type of this arch, if published, is only noted.
+  if [[ -z "$CVMFS_SLOT" && ( "$ACTION" == q || "$ACTION" == query ) && -n "$CVMFS_ARCH" ]]; then
+    _b=${CVMFS_ARCH%-opt}; _b=${_b%-dbg}; _o=$_b-dbg; [[ "$CVMFS_ARCH" != *-dbg ]] || _o=$_b-opt
+    [[ ! -d "${_tree//"{arch}"/"$_o"}" ]] ||
+      printf "${EY}NOTE: also published: %s (bits -a %s %s)${EZ}\n" "$_o" "$_o" "$ACTION" >&2
   fi
   # Retired modulefiles, as alienv --archive finds them: Modules/archive beside
   # Modules/modulefiles. With --archive (and for unload, which finds a module

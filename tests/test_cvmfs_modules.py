@@ -3,8 +3,8 @@
 
 """bits q/printenv/setenv with a community's CVMFS module trees ($BITS_CVMFS_PREFIX).
 
-The trees of the arch that match up to -opt/-dbg are listed and loaded after the
-local ones; each module is loaded against its own tree, with that tree's BASEDIR.
+The trees of the arch and of the arch without its build type (the toolchain) are
+listed and loaded after the local ones, never the other build type; each module is loaded against its own tree, with that tree's BASEDIR.
 Needs a real modulecmd (Environment Modules): on PATH, or $BITS_TEST_MODULECMD.
 """
 
@@ -82,7 +82,8 @@ class CvmfsModulesTest(unittest.TestCase):
     trees = {ARCH: {"A/1-1": (), "B/2-1": ("E/5-1",), "E/5-1": ()},
              "x86_64-el9-gcc14": {"gcc/14-1": ()},
              "x86_64-el9-gcc14-dbg": {"C/3-1": ()},
-             "x86_64-el9-gcc15-opt": {"D/1-1": ()}}
+             "x86_64-el9-gcc15-opt": {"D/1-1": ()},
+             "x86_64-el9-gcc13": {"S/1-1": ()}}   # published without a build type (ship)
     for arch, mods in trees.items():
       mroot = os.path.join(self.cvmfs, arch, "Modules", "modulefiles")
       _write(os.path.join(mroot, "BASE", "1.0"), _CVMFS_BASE)
@@ -119,7 +120,7 @@ class CvmfsModulesTest(unittest.TestCase):
   def test_q_lists_local_then_matching_trees_once(self):
     r = self._bits("q")
     self.assertEqual(r.returncode, 0, r.stderr)
-    self.assertEqual(r.stdout.split(), ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"])
+    self.assertEqual(r.stdout.split(), ["A/1-1", "B/2-1", "E/5-1", "gcc/14-1"])
 
   def test_options_after_the_command(self):
     # bits q -a ARCH: -a after the command, and an argument after it.
@@ -134,11 +135,11 @@ class CvmfsModulesTest(unittest.TestCase):
     with open(os.path.join(self.inst, "bitsModules"), "w") as f:
       f.write("#!/bin/sh\ntouch %s\nexit 3\n" % mark)
     os.chmod(os.path.join(self.inst, "bitsModules"), 0o755)
-    self.assertEqual(self._bits("q").stdout.split(), ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"])
+    self.assertEqual(self._bits("q").stdout.split(), ["A/1-1", "B/2-1", "E/5-1", "gcc/14-1"])
     self.assertFalse(os.path.exists(mark))
     self.assertEqual(self._bits("q", BITS_CATALOG_LISTING="1",
                                 PATH=self.inst + ":" + self.env["PATH"]).stdout.split(),
-                     ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"])
+                     ["A/1-1", "B/2-1", "E/5-1", "gcc/14-1"])
     self.assertTrue(os.path.exists(mark))
 
   def test_q_without_prefix_is_local_only(self):
@@ -146,15 +147,30 @@ class CvmfsModulesTest(unittest.TestCase):
     self.assertEqual(r.stdout.split(), ["A/1-1"])
 
   def test_each_module_from_its_own_tree(self):
-    roots = self._printenv("A/1-1", "B/2-1", "gcc/14-1", "C/3-1")
+    roots = self._printenv("A/1-1", "B/2-1", "gcc/14-1")
     self.assertEqual(roots["A"], os.path.join(self.sw, ARCH, "A", "1-1"))   # local wins
     opt = os.path.join(self.cvmfs, ARCH, "Packages")
     self.assertEqual(roots["B"], os.path.join(opt, "B", "2-1"))
     self.assertEqual(roots["E"], os.path.join(opt, "E", "5-1"))             # B's dep, same tree
     self.assertEqual(roots["GCC"],
                      os.path.join(self.cvmfs, "x86_64-el9-gcc14", "Packages", "gcc", "14-1"))
-    self.assertEqual(roots["C"],
-                     os.path.join(self.cvmfs, "x86_64-el9-gcc14-dbg", "Packages", "C", "3-1"))
+
+  def test_build_types(self):
+    # -opt never loads -dbg (bits q notes it); -dbg gets its own tree and the
+    # toolchain; no build type is -opt; an arch published without one is found.
+    r = self._bits("q")
+    self.assertIn("also published: x86_64-el9-gcc14-dbg", r.stderr)
+    r = subprocess.run([os.path.join(self.inst, "bits"), "-a", "x86_64-el9-gcc14-dbg", "q"],
+                       cwd=self.work, env=self.env, capture_output=True, text=True)
+    self.assertEqual(r.stdout.split(), ["C/3-1", "gcc/14-1"], r.stderr)
+    self.assertIn("also published: x86_64-el9-gcc14-opt", r.stderr)
+    r = subprocess.run([os.path.join(self.inst, "bits"), "-a", "x86_64-el9-gcc14", "q"],
+                       cwd=self.work, env=self.env, capture_output=True, text=True)
+    self.assertEqual(r.stdout.split(), ["A/1-1", "B/2-1", "E/5-1", "gcc/14-1"], r.stderr)
+    for arch in ("x86_64-el9-gcc13-opt", "x86_64-el9-gcc13-dbg", "x86_64-el9-gcc13"):
+      r = subprocess.run([os.path.join(self.inst, "bits"), "-a", arch, "q"],
+                         cwd=self.work, env=self.env, capture_output=True, text=True)
+      self.assertEqual(r.stdout.split(), ["S/1-1"], (arch, r.stderr))
 
   def test_cvmfs_only(self):
     roots = self._printenv("B")
@@ -218,7 +234,7 @@ class CvmfsModulesTest(unittest.TestCase):
     self._layout()
     r = self._bits("q")
     self.assertEqual(r.returncode, 0, r.stderr)
-    self.assertEqual(r.stdout.split(), ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"])
+    self.assertEqual(r.stdout.split(), ["A/1-1", "B/2-1", "E/5-1", "gcc/14-1"])
     self.assertEqual(self._printenv("B")["B"], os.path.join(self.cvmfs, ARCH, "Packages", "B", "2-1"))
 
   def test_layout_file_beside_the_work_dir(self):
@@ -246,7 +262,7 @@ class CvmfsModulesTest(unittest.TestCase):
     self._layout()
     r = subprocess.run([os.path.join(self.inst, "bits"), "q"], cwd=self.work,
                        env=self.env, capture_output=True, text=True)
-    self.assertEqual(r.stdout.split(), ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"], r.stderr)
+    self.assertEqual(r.stdout.split(), ["A/1-1", "B/2-1", "E/5-1", "gcc/14-1"], r.stderr)
 
   def test_layout_file_picks_this_hosts_arch(self):
     # No -a and no tree for the local arch: the trees published for this
