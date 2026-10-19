@@ -5,6 +5,7 @@
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -18,13 +19,21 @@ from test_orch_reconcile import FakeReader, _job
 ESC = "\x1b"
 
 
+def _day(ago):
+    """The UTC date *ago* days back: fixtures stay inside the collector's windows."""
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() - ago * 86400))
+
+
+DAY = _day(1)
+
+
 def bits_failure(pkg="arrow", ver="23.0.1", path="/home/gitlab-runner/jobs/9911/sw/BUILD/a1b2c3d4e5/arrow",
                  error="flatbuffers/base.h:42:3: error: Non-compatible flatbuffers version included",
                  line=42):
     """A job log as GitLab serves it: section markers, colours, bits' failure."""
     return (
         "section_start:1760000000:step_script\r" + ESC + "[0K" + ESC + "[0;m$ bits build ...\n"
-        "2026-10-11T09:00:01Z Building arrow ...\n"
+        + DAY + "T09:00:01Z Building arrow ...\n"
         "export PRIVATE-TOKEN: glpat-AbCdEf0123456789xyz\n"
         "cloning https://ci-bot:s3cr3tpass@gitlab.cern.ch/x/y.git\n"
         + ESC + "[31m" + ESC + "[1mBUILD FAILED:" + ESC + "[0m %s@%s\n" % (pkg, ver) +
@@ -85,10 +94,10 @@ class _DB(unittest.TestCase):
     def _fail(self, pid, log, job_id=None, community="lcg", package="arrow", **kw):
         jid = job_id or pid * 10
         self.gl.add(pid, status="failed", community=community, package=package,
-                    updated=kw.pop("updated", "2026-10-11T10:%02d:00Z" % (pid % 60)),
+                    updated=kw.pop("updated", DAY + "T10:%02d:00Z" % (pid % 60)),
                     jobs=[_job(jid, "bits-prepub-build", "failed", web_url="https://gl/j/%d" % jid,
                                failure_reason=kw.pop("reason", "script_failure"),
-                               finished_at="2026-10-11T11:00:00Z",
+                               finished_at=DAY + "T11:00:00Z",
                                runner={"description": "bits-build-01"})])
         self.gl.logs[jid] = log
         return jid
@@ -152,7 +161,7 @@ class ParseTest(unittest.TestCase):
         plain = bits_failure()
         prefixed = "\n".join(("ERROR: " + ln) if i > 4 else ln
                               for i, ln in enumerate(plain.split("\n")))
-        debug = "\n".join(("2026-10-11@09:00:01:ERROR:LCG:abc12345: " + ln) if i > 4 else ln
+        debug = "\n".join((DAY + "@09:00:01:ERROR:LCG:abc12345: " + ln) if i > 4 else ln
                            for i, ln in enumerate(plain.split("\n")))
         for log in (prefixed, debug):
             (pkg, ver, excerpt, bv), = failures.parse(failures.clean(log))
@@ -275,7 +284,7 @@ class CollectTest(_DB):
         self.gl.jobs[1] = self.gl.jobs[1] + [_job(11, "notify", "failed", stage="status")]
         self.gl.logs[11] = "curl: (6) Could not resolve host: hooks.example\n"
         self.gl.add(1, status="failed", community="lcg", package="arrow",
-                    updated="2026-10-11T13:00:00Z", jobs=self.gl.jobs[1])
+                    updated=DAY + "T13:00:00Z", jobs=self.gl.jobs[1])
         self._pass()
         self.assertEqual(sorted(f["job"] for f in failures.list_failures(self.conn)), [10, 11])
 
@@ -294,7 +303,7 @@ class CollectTest(_DB):
     def test_a_retry_that_fails_again_is_collected_again(self):
         self._fail(1, bits_failure())
         self._pass()
-        self.gl.add(1, status="failed", community="lcg", package="arrow", updated="2026-10-11T12:00:00Z",
+        self.gl.add(1, status="failed", community="lcg", package="arrow", updated=DAY + "T12:00:00Z",
                     jobs=[_job(10, "bits-prepub-build", "failed"),
                           _job(12, "bits-prepub-build", "failed", failure_reason="script_failure")])
         self.gl.logs[12] = bits_failure()
@@ -324,8 +333,8 @@ class CollectTest(_DB):
 class BackfillTest(_DB):
     def test_older_failed_pipelines_are_read_page_by_page_until_the_horizon(self):
         for i in range(1, 46):
-            self._fail(i, bits_failure(), updated="2026-09-%02dT10:00:00Z" % (1 + i % 28))
-        self._fail(99, bits_failure(), updated="2025-01-01T00:00:00Z")   # beyond 365 days
+            self._fail(i, bits_failure(), updated=_day(10 + i % 28) + "T10:00:00Z")
+        self._fail(99, bits_failure(), updated=_day(400) + "T00:00:00Z")   # beyond 365 days
         n = 0
         while failures.backfill(self.conn, self.gl, days=365, lookback_days=7, budget=20):
             n += 1
@@ -342,8 +351,8 @@ class BackfillTest(_DB):
         self.assertEqual(failures.list_issues(self.conn)[0]["count"], 45 + (99 in ids))
 
     def test_asking_for_more_days_later_carries_on(self):
-        self._fail(1, bits_failure(), updated="2026-09-20T10:00:00Z")
-        self._fail(2, bits_failure(), updated="2026-03-01T10:00:00Z")
+        self._fail(1, bits_failure(), updated=_day(30) + "T10:00:00Z")
+        self._fail(2, bits_failure(), updated=_day(200) + "T10:00:00Z")
         while failures.backfill(self.conn, self.gl, days=60, budget=1):
             pass
         ids = {r[0] for r in self.conn.execute("SELECT id FROM pipelines")}
