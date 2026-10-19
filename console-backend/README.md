@@ -20,6 +20,14 @@ Endpoints: `/healthz`, `/me`, `/sign` (CI single-shot), `/sign/request` +
 authenticated GitHub read proxy for package browsing — see `BITS_GITHUB_TOKEN`,
 `BITS_CATALOG_OWNERS`, `BITS_CATALOG_TTL`).
 
+## Part of bits
+
+The backend signs, certifies and reads the store with the same `bits_helpers`
+code as the bits CLI (`trust`, `certify`, `forge`, `sync`, `cvmfs_release`), so
+the formats cannot drift apart. It is therefore not released on its own: it is
+deployed from the bits commit that bits-console pins as a submodule, and it
+uses only the public functions of those modules (no `_private` helpers).
+
 ## Run / test (dev)
 
     # from bits/console-backend, with the bits repo on the path for bits_helpers:

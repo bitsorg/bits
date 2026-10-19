@@ -70,11 +70,12 @@ class CertifyConflict(CertifyError):
     """Two builds disagree on the tarball_sha256 for one content hash."""
 
 
-def _now_iso() -> str:
+def now_iso() -> str:
+    """Now, in UTC, as ISO 8601 to the second (…Z)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _norm_sha(value) -> str:
+def norm_sha(value) -> str:
     """Normalise 'sha256:HEX' / 'HEX' to a bare lowercase hex string."""
     s = str(value or "").strip().lower()
     return s.split(":", 1)[1] if ":" in s else s
@@ -178,7 +179,7 @@ def _settle_conflict(key, cands, probe, stale):
     arch, h = key
     stored = [probe(arch, h, e.get("tarball")) for e, _b in cands] if probe is not None else []
     confirmed = [c for c, actual in zip(cands, stored)
-                 if actual is not None and _norm_sha(actual) == _norm_sha(c[0].get("tarball_sha256"))]
+                 if actual is not None and norm_sha(actual) == norm_sha(c[0].get("tarball_sha256"))]
     if len(confirmed) == 1:
         keep = confirmed[0]
         stale.extend((c[0].get("package", "?"), h, c[1]) for c in cands if c is not keep)
@@ -266,7 +267,7 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
             for _fld in ("bits_version", "bits_dist_hash"):
                 if man.get(_fld) and _fld not in entry:
                     entry[_fld] = man[_fld]
-            by_key.setdefault((arch, h), {}).setdefault(_norm_sha(sha), (entry, bid))
+            by_key.setdefault((arch, h), {}).setdefault(norm_sha(sha), (entry, bid))
     stale = []                # (package, hash, build_id) claims the store refuted
     packages = []
     for key in sorted(by_key):
@@ -287,7 +288,7 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
     common = {
         "schema_version": SCHEMA_VERSION,
         "kind": COMMON_MANIFEST_KIND,
-        "created_at": _now_iso(),
+        "created_at": now_iso(),
         "sources": sources,
         "packages": packages,
     }
@@ -324,7 +325,7 @@ def validate_against_store(common, probe):
     for p in common.get("packages") or []:
         h = p.get("hash")
         arch = p.get("effective_architecture") or ""
-        claimed = _norm_sha(p.get("tarball_sha256"))
+        claimed = norm_sha(p.get("tarball_sha256"))
         actual = probe(arch, h, p.get("tarball"))
         if actual is None:
             # The store has no object for this hash. We cannot vouch for it, but
@@ -333,13 +334,13 @@ def validate_against_store(common, probe):
             # upload, a layout migration). So this is DROPPABLE, not fatal: the
             # caller removes the entry and signs the rest.
             missing.append(p)
-        elif _norm_sha(actual) != claimed:
+        elif norm_sha(actual) != claimed:
             # The object exists but its bytes differ from what the manifest
             # claims. This IS the manifest lying about the store — corruption or
             # tampering — and must never be signed. Fatal.
             fatal.append(
                 "sha256 mismatch for %s %s: manifest=%s store=%s"
-                % (p.get("package", "?"), h, claimed, _norm_sha(actual)))
+                % (p.get("package", "?"), h, claimed, norm_sha(actual)))
     return fatal, missing
 
 
@@ -568,7 +569,7 @@ def _prepare_common(manifests, key_id, probe, default_group, valid_days,
                 % (kid, ", ".join(bad)))
     if certified_by:
         common["certified_by"] = sorted(set(certified_by))
-        common["certified_at"] = _now_iso()
+        common["certified_at"] = now_iso()
     return common
 
 

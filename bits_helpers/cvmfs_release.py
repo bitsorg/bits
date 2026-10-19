@@ -27,12 +27,14 @@ class ReleaseError(Exception):
     pass
 
 
-def _get_json(s3, bucket, key):
+def get_json(s3, bucket, key):
+    """The JSON object stored at *key* (boto3 client *s3*)."""
     body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
     return json.loads(body)
 
 
-def _list_keys(s3, bucket, prefix):
+def list_keys(s3, bucket, prefix):
+    """All keys under *prefix*, across listing pages."""
     out, token = [], None
     while True:
         kw = {"Bucket": bucket, "Prefix": prefix}
@@ -45,7 +47,8 @@ def _list_keys(s3, bucket, prefix):
         token = page.get("NextContinuationToken")
 
 
-def _is_bom(doc):
+def is_bom(doc):
+    """Whether *doc* has the shape of a build manifest (BOM)."""
     return (isinstance(doc, dict) and doc.get("build_id") and doc.get("effective_architecture")
             and isinstance(doc.get("packages"), list)
             and all(isinstance(p, dict) and p.get("package") for p in doc["packages"]))
@@ -58,9 +61,9 @@ def find_boms(s3, bucket, pipeline=None, build_id=None):
     keys, indexed = None, False
     if pipeline:
         builds = {}
-        for key in _list_keys(s3, bucket, "BUILDS/by-pipeline/%s/" % pipeline):
+        for key in list_keys(s3, bucket, "BUILDS/by-pipeline/%s/" % pipeline):
             try:
-                index = _get_json(s3, bucket, key)
+                index = get_json(s3, bucket, key)
             except Exception as exc:
                 raise ReleaseError("unreadable %s: %s" % (key, exc))
             builds[index.get("build_id", "")] = index.get("keys") or []
@@ -77,18 +80,18 @@ def find_boms(s3, bucket, pipeline=None, build_id=None):
     if keys is None:
         if not build_id:
             raise ReleaseError("name the build with --pipeline or --build-id")
-        keys = [k for k in _list_keys(s3, bucket, "MANIFESTS/%s/" % build_id)
+        keys = [k for k in list_keys(s3, bucket, "MANIFESTS/%s/" % build_id)
                 if k.endswith(".json")]
     newest = {}
     for key in keys:
         try:
-            bom = _get_json(s3, bucket, key)
+            bom = get_json(s3, bucket, key)
         except Exception as exc:
             if indexed:   # a BOM of this build: without it the release is incomplete
                 raise ReleaseError("cannot read %s: %s" % (key, exc))
             warning("skipping unreadable %s: %s", key, exc)
             continue
-        if not _is_bom(bom):
+        if not is_bom(bom):
             continue   # NOTICE, SBOMs and other files beside the BOMs
         if pipeline and str(bom.get("source_pipeline_id", "")) != str(pipeline):
             continue
@@ -144,12 +147,12 @@ def merge_boms(boms, arch=None):
 def check_signed(packages, index):
     """Refuse a package the signed manifests do not attest with this sha256
     (*index*: {(effective_architecture, hash): sha256})."""
-    from bits_helpers.certify import _norm_sha
+    from bits_helpers.certify import norm_sha
     def certified(p):
         return index.get((p.get("effective_architecture"), p.get("hash")))
     bad = [p["package"] for p in packages
            if not certified(p)
-           or _norm_sha(certified(p)) != _norm_sha(p.get("tarball_sha256", ""))]
+           or norm_sha(certified(p)) != norm_sha(p.get("tarball_sha256", ""))]
     if bad:
         raise ReleaseError("not in the signed manifests (or another sha256): %s"
                            % ", ".join(bad))
@@ -161,7 +164,7 @@ def fetch_missing(reader, packages, tars_root, published):
     BOM's sha256, and place it where `bits cvmfs publish` looks for it. Returns
     how many were fetched."""
     from bits_helpers.checksum import checksum_file
-    from bits_helpers.certify import _norm_sha
+    from bits_helpers.certify import norm_sha
     from bits_helpers.cvmfs_publish import tar_path
     from bits_helpers.utilities import resolve_store_path
     store = os.path.join(os.path.dirname(tars_root.rstrip("/")), "store")
@@ -180,7 +183,7 @@ def fetch_missing(reader, packages, tars_root, published):
         except Exception as exc:
             raise ReleaseError("%s@%s: cannot fetch %s from the store: %s"
                                % (p["package"], p["hash"], key, exc))
-        if _norm_sha(checksum_file(got)) != _norm_sha(p.get("tarball_sha256", "")):
+        if norm_sha(checksum_file(got)) != norm_sha(p.get("tarball_sha256", "")):
             raise ReleaseError("%s@%s: the store's tarball does not match the BOM's sha256"
                                % (p["package"], p["hash"]))
         dest = tar_path(p, tars_root, arch)

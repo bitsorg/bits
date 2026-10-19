@@ -353,15 +353,15 @@ def settle(conn, reader):
 def _bom_facts(s3, bucket, keys):
     """arches, package count, top-level packages and publish time of a build's
     BOMs; an unreadable or non-BOM key is skipped (and logged)."""
-    from bits_helpers.cvmfs_release import _get_json, _is_bom
+    from bits_helpers.cvmfs_release import get_json, is_bom
     arches, packages, top, published = set(), 0, [], ""
     for key in keys:
         try:
-            bom = _get_json(s3, bucket, key)
+            bom = get_json(s3, bucket, key)
         except Exception as exc:
             log.warning("unreadable BOM %s: %s", key, exc)
             continue
-        if not _is_bom(bom):
+        if not is_bom(bom):
             continue
         arches.add(str(bom["effective_architecture"]))
         packages += len(bom["packages"])
@@ -374,11 +374,11 @@ def _bom_facts(s3, bucket, keys):
 def _index_one(conn, s3, bucket, r):
     """Read one pipeline's build index and record its builds, all in one
     transaction with indexed_ms, so a failure part way records nothing."""
-    from bits_helpers.cvmfs_release import _get_json, _list_keys
+    from bits_helpers.cvmfs_release import get_json, list_keys
     found = {}
-    for key in _list_keys(s3, bucket, "BUILDS/by-pipeline/%d/" % r["id"]):
+    for key in list_keys(s3, bucket, "BUILDS/by-pipeline/%d/" % r["id"]):
         try:
-            idx = _get_json(s3, bucket, key)
+            idx = get_json(s3, bucket, key)
         except Exception as exc:
             log.warning("unreadable build index %s: %s", key, exc)
             continue

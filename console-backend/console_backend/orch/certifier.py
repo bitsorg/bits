@@ -410,7 +410,7 @@ def cli_boms(store, bid, approval):
         run[arch] = (key, doc)
     bound = {(a, h, sha) for a, h, sha, *_rest in json.loads(approval["packages"] or "[]")}
     for leaf in sorted(runs):
-        got = {(arch, str(e.get("hash")), certify._norm_sha(e.get("tarball_sha256")))
+        got = {(arch, str(e.get("hash")), certify.norm_sha(e.get("tarball_sha256")))
                for arch, (_k, doc) in runs[leaf].items() for e in doc["packages"]
                if isinstance(e, dict)}
         if got != bound:
@@ -563,7 +563,7 @@ def compute(conn, settings, console, store, pid, bid, approver, probe=None, key_
         if bad:
             raise Refused("signing key %s is not allowed for %s" % (key_id, ", ".join(bad)))
         seq = next_sequence(conn, settings, store, arch)
-        m = dict(m, certified_by=[approver], certified_at=certify._now_iso(), sequence=seq,
+        m = dict(m, certified_by=[approver], certified_at=certify.now_iso(), sequence=seq,
                  issuer=issuer(store), event=_chain_position(conn))
         body = json.dumps(m, indent=1, sort_keys=True).encode()
         out.append((arch, body, {
@@ -929,7 +929,7 @@ def compute_withdrawal(conn, settings, store, arch, version, probe=None, key_id=
         from .. import signproxy
         key_id = signproxy.call(settings, trust.proxy_pubkey)[0]
     seq = next_sequence(conn, settings, store, arch)
-    m = dict(results[arch], certified_by=[], certified_at=certify._now_iso(), sequence=seq,
+    m = dict(results[arch], certified_by=[], certified_at=certify.now_iso(), sequence=seq,
              issuer=issuer(store), withdrawn={"set_version": version},
              event=_chain_position(conn))
     body = json.dumps(m, indent=1, sort_keys=True).encode()
