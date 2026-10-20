@@ -12,6 +12,8 @@
     GET  /ops/builds?community=&outcome=&pipelines=&limit=
                                        build pipelines and their builds
     GET  /ops/builds/{pipeline}        one, with its jobs, variables and events
+    GET  /ops/builds/{pipeline}/sbom?format=&build=   the SBOM a build published
+                                       (CycloneDX or SPDX): any signed-in user
     POST /ops/ci/published, /ops/ci/failed   {pipeline}: a CI job's hint to look
                                        at its pipeline now (GitLab CI ID token)
     GET  /ops/issues?community=&package=&limit=   deduplicated failures, last seen first
@@ -401,6 +403,67 @@ async def get_build(pipeline: int, request: Request):
     if b is None:
         raise HTTPException(404, "no such build")
     return JSONResponse(b, headers={"Cache-Control": "no-store"})
+
+
+SBOM_FILES = {"cyclonedx": "sbom.cdx.json", "spdx": "sbom.spdx.json"}
+
+
+_deps = None
+
+
+def _store():
+    """(s3 client, bucket) of BITS_ORCH_STORE, or None; one client per settings."""
+    global _deps
+    if _deps is None or _deps.settings is not _m().settings:
+        _deps = kinds.Deps(_m().settings)
+    return _deps.store()
+
+
+def _no_such_key(e):
+    # Without ListBucket a missing key answers 403: there is nothing to read either way.
+    code = str(getattr(e, "response", {}).get("Error", {}).get("Code", ""))
+    return code in ("NoSuchKey", "404", "NotFound", "AccessDenied", "403")
+
+
+@router.get("/ops/builds/{pipeline}/sbom")
+async def build_sbom(pipeline: int, request: Request, format: str = "cyclonedx", build: str = ""):
+    """The SBOM a build published beside its BOMs (MANIFESTS/<build_id>/), as
+    published. It describes released software: any signed-in user may read it."""
+    await _caller(request)
+    name = SBOM_FILES.get(format)
+    if name is None:
+        raise HTTPException(400, "format is one of: %s" % ", ".join(sorted(SBOM_FILES)))
+
+    def ids(conn):
+        return [r["build_id"] for r in conn.execute(
+            "SELECT build_id FROM builds WHERE pipeline_id = ? ORDER BY build_id", (pipeline,))]
+    builds = [b for b in await run_in_threadpool(_read, ids) if not build or b == build]
+    if not builds:
+        raise HTTPException(404, "pipeline %d published no build%s" % (
+            pipeline, " %s" % build if build else ""))
+    if len(builds) > 1:
+        raise HTTPException(400, "pipeline %d published several builds; give build= one of: %s"
+                            % (pipeline, ", ".join(builds)))
+    try:
+        store = await run_in_threadpool(_store)
+    except kinds.NotConfigured as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:                    # pylint: disable=broad-except
+        log.warning("the store for SBOMs: %s", e)     # e.g. the credentials proxy down
+        raise HTTPException(503, "the store is not reachable")
+    if store is None:
+        raise HTTPException(503, "no store configured (BITS_ORCH_STORE)")
+    s3, bucket = store
+    key = "MANIFESTS/%s/%s" % (builds[0], name)
+    try:
+        body = await run_in_threadpool(lambda: s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+    except Exception as e:                    # pylint: disable=broad-except
+        if _no_such_key(e):
+            raise HTTPException(404, "build %s has no %s" % (builds[0], name))
+        log.warning("reading %s: %s", key, e)
+        raise HTTPException(502, "the store did not answer")
+    return Response(content=body, media_type="application/json",
+                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 # --- CI hints -------------------------------------------------------------------

@@ -541,6 +541,47 @@ class ApiTest(_DB):
         self.assertEqual(self._get("bob", "/ops/builds/1").status_code, 404)
         self.assertEqual(self._get("carol", "/ops/builds/77").status_code, 404)
 
+    def test_a_builds_sbom_for_any_signed_in_user(self):
+        from console_backend.orch import api
+
+        class Missing(Exception):
+            response = {"Error": {"Code": "NoSuchKey"}}
+
+        class S3(FakeS3):
+            def get_object(self, Bucket, Key):
+                if Key not in self.objects:
+                    raise Missing(Key)
+                return FakeS3.get_object(self, Bucket, Key)
+        rec = lambda pid, bid: self.conn.execute(
+            "INSERT INTO builds (pipeline_id, build_id, community, arches, bom_keys, top_level,"
+            " packages, published_at, recorded_ms) VALUES (?,?,?,?,?,?,?,?,?)",
+            (pid, bid, "testbed", "[]", "[]", "[]", 0, "", 0))
+        rec(1, "b-1")
+        self.conn.commit()
+        s3 = S3({"MANIFESTS/b-1/sbom.cdx.json": {"bomFormat": "CycloneDX"},
+                 "MANIFESTS/b-1/sbom.spdx.json": {"spdxVersion": "SPDX-2.3"}})
+        with patch.object(api, "_store", lambda: (s3, "bkt")):
+            r = self._get("dave", "/ops/builds/1/sbom")      # administers nothing
+            self.assertEqual((r.status_code, r.json()), (200, {"bomFormat": "CycloneDX"}))
+            r = self._get("bob", "/ops/builds/1/sbom?format=spdx")
+            self.assertEqual(r.json(), {"spdxVersion": "SPDX-2.3"})
+            self.assertEqual(self.client.get("/ops/builds/1/sbom").status_code, 401)
+            self.assertEqual(self._get("dave", "/ops/builds/1/sbom?format=x").status_code, 400)
+            self.assertEqual(self._get("dave", "/ops/builds/2/sbom").status_code, 404)
+            rec(1, "b-2")
+            self.conn.commit()
+            r = self._get("dave", "/ops/builds/1/sbom")       # several builds: say which
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("b-1, b-2", r.json()["detail"])
+            self.assertEqual(self._get("dave", "/ops/builds/1/sbom?build=b-2").status_code, 404)
+        with patch.object(api, "_store", lambda: None):
+            self.assertEqual(self._get("dave", "/ops/builds/1/sbom?build=b-1").status_code, 503)
+
+        def down():
+            raise OSError("credentials proxy unavailable")
+        with patch.object(api, "_store", down):
+            self.assertEqual(self._get("dave", "/ops/builds/1/sbom?build=b-1").status_code, 503)
+
     def _ci(self, claims, body, kind="published"):
         seen = {}
 
