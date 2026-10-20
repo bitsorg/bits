@@ -469,7 +469,7 @@ if [ -w "$INSTALLROOT" ]; then
   # configs made relative above drop out and files written by POST_INSTALL hooks
   # are included.
   ( cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH" && \
-    { grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } \
+    { grep -I -H -l -r "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } \
       | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate" )
   # The package's file list for release merged views (.bits-view.json).
   # Not fatal: without it a view lists the package from its tarball.
