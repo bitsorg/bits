@@ -473,8 +473,9 @@ def _extract_zip_strip(archive_path, dest_dir, strip=1):
 
 
 def _patchset_fingerprint(spec, patches_dir):
-  """Return a stable hex digest of the recipe's patch set (each patch's name and
-  full content, in declaration order), or None when the package has no patches.
+  """Return a stable hex digest of the recipe's patch set (each patch's name, its
+  declared strip level and full content, in declaration order), or None when the
+  package has no patches.
   Patch files are read from *patches_dir*.
 
   Used to detect when a previously-patched source tree must be re-extracted
@@ -487,9 +488,14 @@ def _patchset_fingerprint(spec, patches_dir):
     return None
   import hashlib
   h = hashlib.sha256()
+  strips = spec.get("patch_strip") or {}
   for patch_entry in patches:
     patch_name, _ = parse_entry(patch_entry)
     h.update(patch_name.encode("utf-8", "replace"))
+    # A declared strip level is part of how the tree was patched; the -p1
+    # default adds nothing, so trees patched with it keep their fingerprint.
+    if str(strips.get(patch_name, 1)) != "1":
+      h.update(b":strip=" + str(strips[patch_name]).encode())
     h.update(b"\0")
     with open(os.path.join(patches_dir, patch_name), "rb") as fh:
       h.update(fh.read())
