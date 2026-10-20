@@ -6,7 +6,8 @@ Each pass runs the steps in order. A step reads the database and the outside
 world, then writes what it decided; a step that fails is logged, recorded as an
 event when its error changes, and tried again on the next pass. The steps:
 running due actions, then hints, discover, settle and index (reconcile.py: what
-is true of builds, from GitLab and S3), then collect and backfill (failures.py:
+is true of builds, from GitLab and S3), with BITS_ORCH_CVMFS_STATUS the console's
+CVMFS status document (cvmfs_status.py), then collect and backfill (failures.py:
 every failed job's record, deduplicated into issues), then ship (outside.py: the
 events to the outside copy of the audit chain) and the daily backup. Certification
 in shadow (shadow.py) runs on a thread of its own, since a first comparison
@@ -25,8 +26,8 @@ import threading
 import time
 
 from .. import config
-from . import (actions, authority, certifier, db, events, failures, kinds, mirror, outside,
-               reconcile, shadow)
+from . import (actions, authority, certifier, cvmfs_status, db, events, failures, kinds, mirror,
+               outside, reconcile, shadow)
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -67,6 +68,10 @@ class Worker:
             # Its own step: a paused or failing certify step never holds back a
             # revocation.
             self.steps.insert(at, ("withdraw", lambda: certifier.withdrawals(self.conn, settings)))
+        if settings.orch_cvmfs_status:
+            # The console's CVMFS status, from the builds just recorded.
+            at = [n for n, _ in self.steps].index("index") + 1
+            self.steps.insert(at, ("cvmfs_status", self._cvmfs_status))
         if settings.orch_owns_set:
             # M8b: the set is the worker's; bits-manifests mirrors it, and the
             # store says whose manifests these are.
@@ -74,6 +79,14 @@ class Worker:
             self.steps.insert(len(self.steps) - 2, ("marker", self._marker))
         self._errors = {}                 # step -> last error text
         self._stop = threading.Event()
+
+    def _cvmfs_status(self):
+        from .. import forge_ops
+        forge, store = forge_ops.GitLabForge.from_settings(self.settings), self.deps.store()
+        if forge is None or store is None:
+            raise RuntimeError("BITS_ORCH_CVMFS_STATUS needs the ops token (BITS_FORGE_OPS_TOKEN)"
+                               " and the store (BITS_ORCH_STORE)")
+        cvmfs_status.step(self.conn, forge, store)
 
     def _mirror(self):
         from .. import forge_ops

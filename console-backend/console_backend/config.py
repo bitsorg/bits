@@ -148,6 +148,10 @@ class Settings:
         # Failure backfill (M2): how many days of older failed pipelines to read
         # from GitLab, a page per pass, once. 0 = off.
         self.orch_backfill_days = float(e.get("BITS_ORCH_BACKFILL_DAYS", "0") or "0")
+        # The worker keeps the console's CVMFS status document (cvmfs-status.json
+        # in the build project's package registry), in place of a CI job per build.
+        self.orch_cvmfs_status = (e.get("BITS_ORCH_CVMFS_STATUS", "") or "").strip().lower() \
+            in ("1", "true", "yes")
         # A daily copy of the orchestrator database (approvals, failures, the
         # audit chain cannot be rebuilt): a directory, ideally on another disk.
         # Empty = no copies.

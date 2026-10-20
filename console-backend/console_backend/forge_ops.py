@@ -300,6 +300,25 @@ class GitLabForge:
                 raise ForgeError(0, str(e)[:200])
             return bytes(buf)
 
+    def _generic(self, package, version, name):
+        return "/packages/generic/%s/%s/%s" % (self._seg(package), self._seg(version), self._seg(name))
+
+    def generic_file(self, package, version, name, max_bytes=16 << 20):
+        """A file of this project's generic package registry, or None when it is not there."""
+        return self._raw(self._generic(package, version, name), max_bytes)
+
+    def put_generic_file(self, package, version, name, data):
+        """Upload *data* (bytes) as a generic package file of this project."""
+        try:
+            r = requests.put("%s/projects/%s%s" % (self._api, self._project,
+                                                   self._generic(package, version, name)),
+                             headers={"PRIVATE-TOKEN": self._token}, data=data,
+                             timeout=self._timeout)
+        except requests.RequestException as e:
+            raise ForgeError(0, str(e)[:200])
+        if r.status_code // 100 != 2:
+            raise ForgeError(r.status_code, (r.text or "")[:200])
+
     def file_raw(self, path, ref, max_bytes=1 << 20):
         """A repository file at *ref* (a commit), or None when it is not there."""
         return self._raw("/repository/files/%s/raw?ref=%s" % (self._seg(path), quote(ref, safe="")),

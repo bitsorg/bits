@@ -35,7 +35,7 @@ ACTIVE = {"created", "waiting_for_resource", "preparing", "pending", "running",
           "scheduled", "manual"}
 # A manual job nobody started is finished as far as the build is concerned.
 TERMINAL_JOB = {"success", "failed", "canceled", "skipped", "manual"}
-_VARS = ("COMMUNITY", "PACKAGE", "VERSION", "PLATFORM")
+_VARS = ("COMMUNITY", "PACKAGE", "VERSION", "PLATFORM", "PUBLISH_CVMFS")
 MAX_VARIABLES = 16 * 1024
 OVERLAP = datetime.timedelta(minutes=5)
 RECHECK_MS = 120 * 1000            # a running pipeline's jobs, at most this often

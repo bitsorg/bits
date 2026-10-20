@@ -476,6 +476,16 @@ class WorkerStepsTest(_DB):
         w.run_once()
         self.assertEqual(self._row(1)["outcome"], "running")
 
+    def test_the_cvmfs_status_step_follows_index_when_asked_for(self):
+        w = worker.Worker(self.conn, config.Settings(env={"BITS_ORCH_CVMFS_STATUS": "1"}))
+        names = [n for n, _ in w.steps]
+        self.assertEqual(names[names.index("index") + 1], "cvmfs_status")
+        w.steps = [s for s in w.steps if s[0] == "cvmfs_status"]
+        with self.assertLogs("bits_orchestrator", "ERROR"):
+            w.run_once()                      # no ops token, no store: says so
+        got = [e for e in events.since(self.conn) if e["kind"] == "worker.step_failed"]
+        self.assertIn("BITS_ORCH_CVMFS_STATUS needs", got[0]["payload"]["error"])
+
     def test_unconfigured_gitlab_is_one_event(self):
         w = worker.Worker(self.conn, config.Settings(env={}))
         w.steps = [s for s in w.steps if s[0] == "hints"]
