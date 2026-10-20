@@ -740,13 +740,14 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         self.assertEqual(os.path.normpath(os.path.join(
             "g/releases/LCG_110/ROOT/6.36", link.linkname)), "g/el9-gcc15-opt/ROOT/6.36-2")
 
-    def _main(self, fake, extra=(), templates=None, base_state={"exists": True}):
+    def _main(self, fake, extra=(), templates=None, base_state={"exists": True}, manifest=None):
         import io, contextlib
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
         m = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-        json.dump({"cvmfs_templates": templates or self.TM, "architecture": "el9-gcc15-opt",
-                   "packages": [self.SPEC, dict(self.SPEC, package="six", hash="h2")]}, m)
+        json.dump(dict({"cvmfs_templates": templates or self.TM, "architecture": "el9-gcc15-opt",
+                        "packages": [self.SPEC, dict(self.SPEC, package="six", hash="h2")]},
+                       **(manifest or {})), m)
         m.close(); self.addCleanup(os.unlink, m.name)
         sent = []
         out, err = io.StringIO(), io.StringIO()
@@ -925,6 +926,30 @@ class TestPackagesAndReleaseView(unittest.TestCase):
             self.assertEqual((rc, sent), (0, []), why)
             self.assertIn("no release: ", err)
             self.assertIn(why, err)
+
+    def test_no_release_for_a_toolchain_build(self):
+        """The toolchain (own_hash) lives outside the build arch: a build of it
+        alone makes no release links and no merged view, and does not fail."""
+        fake = lambda s, c: [("J", "x(pkg)")]
+        tm = dict(self.TM, views="{prefix}/views/{release}/{arch}")
+        gcc = dict(self.SPEC, package="GCC-Toolchain", effective_architecture="el9-gcc15")
+        rc, sent, _, err = self._main(fake, ["--release-view"], templates=tm, manifest={
+            "packages": [gcc], "requested_packages": ["GCC-Toolchain"]})
+        self.assertEqual((rc, sent), (0, []))
+        self.assertIn("no release: its top-level packages (GCC-Toolchain) live outside "
+                      "el9-gcc15-opt", err)
+        # A noarch top level is a release of the build arch.
+        six = dict(self.SPEC, package="six", effective_architecture="share")
+        rc, sent, _, err = self._main(fake, ["--release-view"], manifest={
+            "packages": [six], "requested_packages": ["six"]}, base_state={"exists": False})
+        self.assertNotIn("no release", err)
+        # With a top-level package of the build arch the release is made.
+        rc, sent, _, err = self._main(fake, ["--release-view"], manifest={
+            "packages": [gcc, self.SPEC], "requested_packages": ["ROOT", "GCC-Toolchain"]},
+            base_state={"exists": False})
+        self.assertEqual(rc, 0)
+        self.assertNotIn("no release", err)
+        self.assertTrue(any("release-view@" in lbl for _p, lbl, _h in sent))
 
     def test_view_without_release_links(self):
         """The merged view links into the packages, so a group with a views

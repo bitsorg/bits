@@ -1741,8 +1741,16 @@ def main(argv=None):
     rel_links = rel_view = False
     if a.release_view:
         tm = templates or {}
+        # A build of the toolchain (own_hash) alone is no release of this arch:
+        # its top-level packages live under another one (noarch ones may).
+        tops = [s for s in pkgs if s.get("package") in (_man.get("requested_packages") or [])]
+        outside = bool(tops and a.arch) and all(
+            (s.get("effective_architecture") or a.arch) not in (a.arch, SHARED_ARCH, "shared")
+            for s in tops)
         why = ("the group has no cvmfs_packages_template" if not tm.get("packages")
                else "the build has no release (the main line)" if not tm.get("release")
+               else "its top-level packages (%s) live outside %s"
+               % (", ".join(sorted(s["package"] for s in tops)), a.arch) if outside
                else "")
         rel_links = not why and bool(tm.get("path")) and tm["path"] != tm["packages"]
         rel_view = not why and bool(tm.get("views"))

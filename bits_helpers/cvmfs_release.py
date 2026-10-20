@@ -107,8 +107,8 @@ def merge_boms(boms, arch=None):
     """One build manifest for `bits cvmfs publish` from a build's BOMs (one per
     effective architecture: the build's, its own_hash toolchain's, noarch),
     in dependency order, with the build's templates. The build's architecture
-    is its top-level package's, or for a noarch top level the one most of its
-    packages have. Returns (manifest, architecture)."""
+    is the one its BOMs record, else its top-level package's, or for a noarch
+    top level the one most of its packages have. Returns (manifest, architecture)."""
     from bits_helpers.arch import SHARED_ARCH
     from bits_helpers.cvmfs_publish import dependency_order
     if not boms:
@@ -126,7 +126,8 @@ def merge_boms(boms, arch=None):
             packages.append(dict(p, effective_architecture=p.get("effective_architecture")
                                  or b["effective_architecture"]))
     top = [p["effective_architecture"] for p in packages if p["package"] in requested]
-    arch = arch or (top[0] if top and top[0] != SHARED_ARCH else None)
+    arch = (arch or next((b["architecture"] for b in boms if b.get("architecture")), None)
+            or (top[0] if top and top[0] != SHARED_ARCH else None))
     if not arch:
         counts = {}
         for p in packages:

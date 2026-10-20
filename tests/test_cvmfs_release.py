@@ -109,6 +109,14 @@ class FindAndMergeTest(unittest.TestCase):
         self.assertEqual(rel.merge_boms(boms)[1], ARCH)
         self.assertEqual(rel.merge_boms(boms, TOOL)[1], TOOL)   # --arch decides
 
+    def test_the_architecture_the_boms_record_wins(self):
+        # A build of the toolchain alone: its BOM is under the toolchain's arch,
+        # the build's own is the one recorded (publish then makes no release).
+        boms = [_bom(TOOL, [_pkg("GCC", "g1", arch=TOOL)], architecture=ARCH,
+                     requested_packages=["GCC"])]
+        self.assertEqual(rel.merge_boms(boms)[1], ARCH)
+        self.assertEqual(rel.merge_boms(boms, TOOL)[1], TOOL)   # --arch decides
+
     def test_merge_refuses_boms_without_templates_or_disagreeing(self):
         with self.assertRaises(rel.ReleaseError):
             rel.merge_boms([_bom(ARCH, [_pkg("ROOT", "r1")], cvmfs_templates=None)])

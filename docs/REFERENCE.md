@@ -2049,7 +2049,8 @@ path: one already published by the same build hash is skipped, one published by 
 different build is refused. Its `cvmfs_releases_template` is then the **release
 view** (the release links), created only with `--release-view` (bits-console:
 *Create release view*) or by `bits cvmfs release`, and only after every package
-published: one relative symlink per package, sent
+published (never for a build whose top-level packages all live outside its arch,
+such as the toolchain alone): one relative symlink per package, sent
 via prepub's ingest path so it merges into a release directory other platforms
 already use (without ingest, only a new release directory works). Such a publish
 also adds, once per arch, a `BASE/1.0` modulefile in the modules directory that
