@@ -103,12 +103,23 @@ def find_boms(s3, bucket, pipeline=None, build_id=None):
     return [newest[a] for a in sorted(newest)]
 
 
+def build_architecture(boms):
+    """The build's architecture as its BOMs record it, or None. Trusted only when it
+    is a package's effective architecture, or one qualified further (the toolchain's
+    with the build type): older BOMs recorded the publishing host's instead."""
+    rec = next((str(b["architecture"]) for b in boms if b.get("architecture")), "")
+    effs = {str(p.get("effective_architecture") or b.get("effective_architecture") or "")
+            for b in boms for p in b.get("packages") or []}
+    return rec if rec and any(e and (rec == e or rec.startswith(e + "-")) for e in effs) else None
+
+
 def merge_boms(boms, arch=None):
     """One build manifest for `bits cvmfs publish` from a build's BOMs (one per
     effective architecture: the build's, its own_hash toolchain's, noarch),
     in dependency order, with the build's templates. The build's architecture
-    is the one its BOMs record, else its top-level package's, or for a noarch
-    top level the one most of its packages have. Returns (manifest, architecture)."""
+    is the one its BOMs record (build_architecture), else its top-level package's,
+    or for a noarch top level the one most of its packages have. Returns
+    (manifest, architecture)."""
     from bits_helpers.arch import SHARED_ARCH
     from bits_helpers.cvmfs_publish import dependency_order
     if not boms:
@@ -126,8 +137,7 @@ def merge_boms(boms, arch=None):
             packages.append(dict(p, effective_architecture=p.get("effective_architecture")
                                  or b["effective_architecture"]))
     top = [p["effective_architecture"] for p in packages if p["package"] in requested]
-    arch = (arch or next((b["architecture"] for b in boms if b.get("architecture")), None)
-            or (top[0] if top and top[0] != SHARED_ARCH else None))
+    arch = arch or build_architecture(boms) or (top[0] if top and top[0] != SHARED_ARCH else None)
     if not arch:
         counts = {}
         for p in packages:

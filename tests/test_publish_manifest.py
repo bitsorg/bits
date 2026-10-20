@@ -158,6 +158,14 @@ class TestPublishFromManifest(unittest.TestCase):
         self.assertTrue(top["tarball"])
         self.assertTrue(top["tarball_sha256"].startswith("sha256:"))
 
+    def test_bom_records_the_builds_architecture_not_the_hosts(self):
+        self.writer = _FakeWriter()
+        with patch.object(sync, "remote_from_url", return_value=self.writer):
+            publish._publish_from_manifest(
+                "x86_64-el9", self.work, "https://s3.example/mybucket", _Parser(),
+                manifest=self.man_path)
+        self.assertEqual(self.writer.s3.uploads[-1][2]["architecture"], ARCH)
+
     def test_bom_carries_what_a_release_needs(self):
         """A release is made later from the BOM alone: the build's templates,
         what it was asked to build, per package its view rules and requires;

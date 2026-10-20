@@ -356,6 +356,9 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
         entries = manifest_doc.get("packages", [])
     except Exception as exc:
         parser.error("could not read manifest %s: %s" % (man, exc))
+    # The build's own architecture, not the publishing host's: it is what the
+    # BOMs record and the fallback for entries without an effective one.
+    architecture = manifest_doc.get("architecture") or architecture
     if not entries:
         parser.error("no packages listed in manifest %s" % man)
     write_store = _normalize_s3_store(store_url)

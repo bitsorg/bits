@@ -116,6 +116,12 @@ class FindAndMergeTest(unittest.TestCase):
                      requested_packages=["GCC"])]
         self.assertEqual(rel.merge_boms(boms)[1], ARCH)
         self.assertEqual(rel.merge_boms(boms, TOOL)[1], TOOL)   # --arch decides
+        # The publishing host's arch (older BOMs) is not the build's: not trusted.
+        lcg = [_bom(ARCH, [_pkg("LCG", "l1")], architecture="x86_64-el9")]
+        self.assertIsNone(rel.build_architecture(lcg))
+        self.assertEqual(rel.merge_boms(lcg)[1], ARCH)
+        self.assertEqual(rel.build_architecture([_bom(ARCH, [_pkg("LCG", "l1")],
+                                                       architecture=ARCH)]), ARCH)
 
     def test_merge_refuses_boms_without_templates_or_disagreeing(self):
         with self.assertRaises(rel.ReleaseError):
