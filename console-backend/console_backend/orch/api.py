@@ -30,8 +30,12 @@
     GET  /ops/certified?group=&arch=&build=&removed=&limit=   the certified set (the groups
                                        the caller administers), its version and summary
     GET  /ops/certified/bom/{sha256}   one certified BOM, its exact bytes
-    POST /ops/queue                    {community, ref?, builds: [{name?, variables[]}]}:
-                                       queue builds, started one per build host
+    POST /ops/queue                    {community, ref?, builds: [{name?, variables[]}],
+                                       certify_groups?[]}: queue builds, started one per
+                                       build host; with certify_groups, a passkey challenge
+                                       over the builds that certify
+    POST /ops/queue/approve            {request_id, assertion}: the batch's approval, each
+                                       certifying build's pre-approval when it starts
     GET  /ops/queue?community=&limit=  queued builds and those started in the last day,
                                        with the build hosts
     POST /ops/queue/{id}/cancel        take a build that has not started out of the queue
@@ -598,12 +602,23 @@ def _queue_on():
 async def queue_builds(request: Request):
     """Queue builds of one community, checked as /ops/build checks a build: the
     caller an admin of the community, the ref allowed, one COMMUNITY variable,
-    BITS_CERTIFIER the caller. The worker starts them one per build host."""
+    BITS_CERTIFIER the caller. The worker starts them one per build host. With
+    certify_groups (the caller an admin of each), the answer has a passkey
+    challenge over the builds that certify (CERTIFY=true), for
+    /ops/queue/approve; the builds wait in the queue either way."""
     data = await _caller(request)
     _queue_on()
     m = _m()
     payload = await _body(request)
     builds = payload.get("builds")
+    groups = payload.get("certify_groups") or []
+    if not isinstance(groups, list) or not all(isinstance(g, str) and _GROUP_RE.fullmatch(g)
+                                               for g in groups):
+        raise HTTPException(400, "certify_groups is a list of group names")
+    groups = sorted(set(groups))
+    if groups and not await run_in_threadpool(_admin_of_all, data, groups):
+        raise HTTPException(403, "%s is not an admin for all of: %s"
+                            % (data["user"], ", ".join(groups)))
     if not isinstance(builds, list) or not 0 < len(builds) <= build_queue.MAX_BUILDS:
         raise HTTPException(400, "expected {community, ref?, builds: [1-%d of {name?, variables[]}]}"
                             % build_queue.MAX_BUILDS)
@@ -627,13 +642,86 @@ async def queue_builds(request: Request):
             raise HTTPException(400, "each variable is a {key, value}, every key once")
         checked.append((name, variables))
 
+    digests = [build_queue.digest(ref, n, v) for n, v in checked
+               if build_queue.certifies(v)]
+    # Without a passkey the builds are queued all the same; certifying them
+    # waits for a pre-approval of each pipeline (the Certifications page).
+    creds, why = None, ""
+    if groups and digests:
+        if not m.settings.webauthn_configured():
+            why = "WebAuthn is not configured"
+        else:
+            creds = m.credstore.get(data["user"])
+            why = "" if creds else "no passkey enrolled; enrol first"
+
     def write():
         with _open() as conn:
             return build_queue.add(conn, community, data["user"], ref, checked)
     batch, ids = await run_in_threadpool(write)
     audit.record("queued", user=data["user"], community=community, batch=batch, entries=ids,
                  principal="human")
-    return {"batch": batch, "entries": ids}
+    out = {"batch": batch, "entries": ids, "approval": None, "approval_error": why}
+    if creds:
+        nonce = secrets.token_bytes(16)
+        challenge = approvals.standing_challenge(
+            approvals.queue_binding(batch, community, groups, digests), nonce)
+        req_id = secrets.token_urlsafe(24)
+        _queue_pending.put(req_id, {"user": data["user"], "batch": batch,
+                                       "community": community, "groups": groups,
+                                       "digests": digests, "challenge": challenge,
+                                       "nonce": nonce})
+        out["approval"] = {"request_id": req_id, "builds": len(digests), "groups": groups,
+                           "publicKey": json.loads(m.webauthn_rp.authentication_options(
+                               m.settings, challenge, creds))}
+    return out
+
+
+@router.post("/ops/queue/approve")
+async def approve_queued(request: Request):
+    """The passkey's answer to a queued batch's challenge: the batch's approval
+    (a standing approval, one run per certifying build, 7 days). A build that
+    started already gets its pre-approval now; the others as they start."""
+    data = await _caller(request)
+    _queue_on()
+    m = _m()
+    payload = await _body(request)
+    req_id, assertion = payload.get("request_id"), payload.get("assertion")
+    if not isinstance(req_id, str) or not isinstance(assertion, dict):
+        raise HTTPException(400, "expected {request_id, assertion}")
+    req = _queue_pending.get(req_id)
+    if not req:
+        raise HTTPException(400, "unknown or expired request")
+    if req["user"] != data["user"]:
+        raise HTTPException(403, "the request belongs to another user")
+    _queue_pending._store.pop(req_id, None)            # single use, before any await
+    if not await run_in_threadpool(_admin_of_all, data, req["groups"]):
+        raise HTTPException(403, "%s is no longer an admin for all of: %s"
+                            % (data["user"], ", ".join(req["groups"])))
+    cred_id = assertion.get("rawId") or assertion.get("id")
+    cred = next((c for c in m.credstore.get(data["user"]) if c["id"] == cred_id), None)
+    if not cred:
+        raise HTTPException(400, "unknown credential")
+    try:
+        count = await run_in_threadpool(m.webauthn_rp.verify_authentication, m.settings,
+                                        json.dumps(assertion), req["challenge"], cred)
+    except Exception:
+        audit.record("queue_approval_denied", user=data["user"], batch=req["batch"],
+                     reason="approval_failed", principal="human")
+        raise HTTPException(403, "approval verification failed")
+    m.credstore.update_sign_count(data["user"], cred_id, count)
+
+    def write():
+        with _open() as conn:
+            with db.transaction(conn):
+                return approvals.grant_queue(conn, req["batch"], req["community"], req["groups"],
+                                             req["digests"], data["user"], assertion, req["nonce"])
+    got = await run_in_threadpool(write)
+    if got is None:
+        raise HTTPException(409, "this batch is approved already")
+    aid, done = got
+    audit.record("queue_approved", user=data["user"], batch=req["batch"], approval=aid,
+                 builds=len(req["digests"]), principal="human")
+    return {"status": "approved", "approval": aid, "preapproved": done}
 
 
 @router.get("/ops/queue")
@@ -679,6 +767,7 @@ async def cancel_queued(entry_id: int, request: Request):
 
 
 _standing_pending = session.CliSignStore(ttl_seconds=300, max_entries=64)
+_queue_pending = session.CliSignStore(ttl_seconds=300, max_entries=64)
 _GROUP_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _SCHEDULE_RE = re.compile(r"communities/[A-Za-z0-9._-]+/pipelines/[A-Za-z0-9._-]+\.json")

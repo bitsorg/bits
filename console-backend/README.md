@@ -90,7 +90,15 @@ pinned to it. A host is busy while a build pipeline runs on it, the queue's or
 not. GitLab refusing a pipeline (its job limit) leaves the build in its place;
 refusing one build five times refuses it. `GET /ops/queue` lists the waiting
 builds and the hosts, `POST /ops/queue/{id}/cancel` takes one out before it
-starts. A Retry of a pipeline restarts it at once, outside the queue.
+starts. A Retry of a pipeline restarts it at once, outside the queue. With
+`certify_groups` the answer carries a passkey challenge over the builds that
+certify (by digest of ref, name and variables); `POST /ops/queue/approve
+{request_id, assertion}` records it as the batch's standing approval (one run
+per build, 7 days), and each such build, as it starts, takes a run that becomes
+the console pre-approval of its pipeline (24 hours), which the worker's
+certification needs. Without a passkey the builds are queued all the same
+(`approval_error` says why). Revoking the batch's approval revokes the
+pre-approvals it gave.
 
 Every failed job of a failed build pipeline is then **recorded**
 (`orch/failures.py`): the end of its log, or of its `bits-build.log` artifact

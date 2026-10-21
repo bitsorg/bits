@@ -12,7 +12,9 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from console_backend import config, forge_ops, main
-from console_backend.orch import build_queue as bq, db
+from console_backend.orch import approvals, build_queue as bq, db, replay
+
+import test_preapprove as tp
 
 HOSTS = """
 hosts:
@@ -46,7 +48,7 @@ class FakeForge:
         return {"id": self.next_id, "status": "created"}
 
 
-class QueueTest(unittest.TestCase):
+class _Queue(unittest.TestCase):
     def setUp(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
@@ -76,6 +78,9 @@ class QueueTest(unittest.TestCase):
         return [(r["id"], r["state"], r["host"], r["pipeline_id"])
                 for r in self.conn.execute("SELECT * FROM build_queue ORDER BY id")]
 
+
+
+class QueueTest(_Queue):
     def test_the_hosts_file(self):
         self.assertEqual([(h["name"], h["arch"], h["runner"]) for h in self.hosts],
                          [("bits", "x86_64", "bits"), ("pc", "x86_64", "pc-runner"), ("arm", "", "arm")])
@@ -210,6 +215,51 @@ class QueueTest(unittest.TestCase):
         self.assertEqual(bq.listing(self.conn, communities={"atlas"}), [])
 
 
+class BatchApprovalTest(_Queue):
+    """A passkey approves a batch's certifying builds; each, as it starts, gets
+    the pre-approval of its pipeline the certifier reads."""
+
+    def _grant(self, ids, groups=("lcg",)):
+        rows = [bq.get(self.conn, i) for i in ids]
+        digests = [r["digest"] for r in rows if r["certify"]]
+        with db.transaction(self.conn):
+            got = approvals.grant_queue(self.conn, rows[0]["batch"], "lcg", list(groups), digests,
+                                        "alice", {"id": "cred"}, b"n" * 16)
+        return got and got[0]
+
+    def test_each_started_build_is_preapproved(self):
+        ids = self._queue(_build(pkg="A", CERTIFY="true"), _build(pkg="B"),
+                          _build(pkg="C", CERTIFY="true"))
+        aid = self._grant(ids)
+        self.assertIsNone(self._grant(ids))                 # one per batch
+        self.assertTrue(approvals.verify_standing(approvals.get(self.conn, aid)))
+        then = approvals.preapprove_queued
+        bq.dispatch(self.conn, self.forge, self.hosts, then)       # A on bits, B on pc
+        pre = replay.preapproval_at(self.conn, 101, db.now_ms())
+        self.assertEqual((pre["approver"], json.loads(pre["groups"]), json.loads(pre["binding"])),
+                         ("alice", ["lcg"], {"queue": bq.get(self.conn, ids[0])["batch"],
+                                             "entry": ids[0], "approval": aid}))
+        self.assertIsNone(replay.preapproval_at(self.conn, 102, db.now_ms()))   # B certifies not
+        self.assertEqual(approvals.get(self.conn, aid)["runs_left"], 1)
+        self._pipeline(101, "success")
+        bq.dispatch(self.conn, self.forge, self.hosts, then)       # C on bits
+        self.assertIsNotNone(replay.preapproval_at(self.conn, 103, db.now_ms()))
+        self.assertEqual(approvals.get(self.conn, aid)["runs_left"], 0)
+
+    def test_a_revoked_batch_preapproves_nothing_more(self):
+        ids = self._queue(_build(pkg="A", CERTIFY="true"), _build("bits-host-bits", pkg="B",
+                                                                   CERTIFY="true"))
+        aid = self._grant(ids)
+        bq.dispatch(self.conn, self.forge, self.hosts, approvals.preapprove_queued)   # A
+        self.assertIsNotNone(replay.preapproval_at(self.conn, 101, db.now_ms()))
+        approvals.revoke(self.conn, aid, "alice")           # A's goes with it
+        self.assertIsNone(replay.preapproval_at(self.conn, 101, db.now_ms()))
+        self._pipeline(101, "success")
+        bq.dispatch(self.conn, self.forge, self.hosts, approvals.preapprove_queued)   # B
+        self.assertIsNone(replay.preapproval_at(self.conn, 102, db.now_ms()))
+        self.assertIsNone(bq.get(self.conn, ids[1])["approval_id"])
+
+
 class ApiTest(unittest.TestCase):
     def setUp(self):
         self.addCleanup(setattr, main, "settings", main.settings)
@@ -261,6 +311,52 @@ class ApiTest(unittest.TestCase):
         name, variables = _build()
         r = self._post("alice", "/ops/build", {"community": "lcg", "variables": variables})
         self.assertEqual(r.status_code, 409, r.text)
+
+    def test_a_batch_approved_with_a_passkey(self):
+        from soft_webauthn import SoftWebauthnDevice
+        from console_backend import credentials, webauthn_rp
+        self.addCleanup(setattr, main, "credstore", main.credstore)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        main.settings = config.Settings(env={
+            "GITLAB_API_URL": "https://gl/api/v4", "BITS_ORCH_DB": main.settings.orch_db,
+            "BITS_ORCH_QUEUE": "1", "BITS_ADMINS_POLICY": "lcg @alice\natlas @bob\n* @carol",
+            "BITS_WEBAUTHN_RP_ID": tp.RP_ID, "BITS_WEBAUTHN_ORIGIN": tp.ORIGIN,
+            "BITS_WEBAUTHN_REQUIRE_UV": "0",
+            "BITS_WEBAUTHN_CREDENTIALS": os.path.join(d, "creds.json")})
+        main.credstore = credentials.CredentialStore(main.settings.credentials_path)
+        body = dict(self._body(CERTIFY="true"), certify_groups=["lcg"])
+        r = self._post("alice", "/ops/queue", body).json()           # no passkey: queued all the same
+        self.assertEqual((len(r["entries"]), r["approval"], r["approval_error"]),
+                         (1, None, "no passkey enrolled; enrol first"))
+        self.assertEqual(self._post("alice", "/ops/queue", dict(body, certify_groups=["atlas"])
+                                    ).status_code, 403)
+        dev = SoftWebauthnDevice()
+        opts_json, chal = webauthn_rp.registration_options(main.settings, "alice", [])
+        main.credstore.add("alice", webauthn_rp.verify_registration(
+            main.settings, tp._attestation(dev, opts_json), chal))
+        r = self._post("alice", "/ops/queue", body).json()
+        self.assertEqual((r["approval"]["builds"], r["approval"]["groups"]), (1, ["lcg"]))
+        eid, = r["entries"]
+        # Started before the passkey answered: pre-approved on approval.
+        with db.transaction(self.conn):
+            self.conn.execute("UPDATE build_queue SET state = 'dispatched', pipeline_id = 77"
+                              " WHERE id = ?", (eid,))
+        asr = tp._assertion(dev, r["approval"]["publicKey"])
+        ok = {"request_id": r["approval"]["request_id"], "assertion": asr}
+        self.assertEqual(self._post("bob", "/ops/queue/approve", ok).status_code, 403)
+        got = self._post("alice", "/ops/queue/approve", ok)
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertEqual(got.json()["preapproved"], [77])
+        self.assertEqual(self._post("alice", "/ops/queue/approve", ok).status_code, 400)
+        self.assertEqual(replay.preapproval_at(self.conn, 77, db.now_ms())["approver"], "alice")
+        # A batch's request is not a schedule's.
+        r2 = self._post("alice", "/ops/queue", body).json()
+        self.assertEqual(self._post("alice", "/approvals/standing/approve",
+                                    {"request_id": r2["approval"]["request_id"],
+                                     "assertion": asr}).status_code, 400)
+        # Without certify_groups, or no build that certifies: no challenge.
+        self.assertIsNone(self._post("alice", "/ops/queue", self._body()).json()["approval"])
 
     def test_requests_are_checked(self):
         for body in (self._body(tag="self-hosted"), self._body(pkg=""),

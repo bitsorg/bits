@@ -9,7 +9,9 @@ orchestrator's database.
 * A **standing approval** lets the builds of one schedule (its file, by content
   hash, and its groups) be certified without a person each time, for a number of
   runs or up to 30 days, whichever ends first. It is consumed by milestones M5
-  and M7; this module records, lists, uses and revokes it.
+  and M7; this module records, lists, uses and revokes it. One for a batch of
+  queued builds (build_queue.py) is bound to the builds themselves, for 7 days:
+  as each starts, a run of it becomes the pre-approval of its pipeline.
 
 Each record keeps the passkey assertion that approved it and the challenge it
 answered. A standing approval also keeps the exact binding and nonce its
@@ -36,6 +38,8 @@ PREAPPROVAL_TTL_MS = 24 * 3600 * 1000
 PENDING_TTL_S = 600                # a pre-approval request waits this long for its passkey
 API_BUSY_MS = 3000                 # the API waits this long for the worker's write lock
 STANDING_MAX_DAYS = 30
+QUEUE_DAYS = 7
+PREAPPROVAL_SIGN_CAP = 16
 STANDING_MAX_RUNS = 100
 MAX_ASSERTION = 16 * 1024
 
@@ -95,7 +99,7 @@ class Preapprovals:
     """The sign path's pre-approval store (same operations as
     session.PreapprovalStore): get, put, approve, reserve_sign, release_sign."""
 
-    def __init__(self, settings_fn, sign_cap=16):
+    def __init__(self, settings_fn, sign_cap=PREAPPROVAL_SIGN_CAP):
         self._settings = settings_fn
         self._mem = session.PreapprovalStore()                      # no database: all here
         self._pending = session.PreapprovalStore(ttl_seconds=PENDING_TTL_S)
@@ -214,8 +218,11 @@ def verify_standing(row):
     (i.e. did the passkey sign what the record says)? The assertion itself is
     checked against that challenge by WebAuthn when it is granted."""
     b = json.loads(row["binding"])
-    exact = standing_binding(b["schedule"], b["sha256"], json.loads(row["groups"]), b["runs"],
-                             b["days"])
+    if "queue" in b:
+        exact = queue_binding(b["queue"], b["community"], json.loads(row["groups"]), b["digests"])
+    else:
+        exact = standing_binding(b["schedule"], b["sha256"], json.loads(row["groups"]), b["runs"],
+                                 b["days"])
     return (b.get("hashed") == exact and
             standing_challenge(exact, bytes.fromhex(b.get("nonce", ""))).hex() == row["challenge"])
 
@@ -276,8 +283,84 @@ def use_standing(conn, schedule, sha256, groups, run):
     return r
 
 
+# --- a batch of queued builds ----------------------------------------------------
+
+def queue_binding(batch, community, groups, digests):
+    """The exact text a queued batch's passkey challenge is computed from: the
+    builds that certify, by digest (build_queue.digest)."""
+    return json.dumps(["queue", batch, community, sorted(groups), list(digests)])
+
+
+def queue_subject(batch):
+    return "queue:%s" % batch
+
+
+def grant_queue(conn, batch, community, groups, digests, approver, assertion, nonce):
+    """Within the caller's transaction: record the standing approval of a
+    queued batch whose passkey assertion answered
+    standing_challenge(queue_binding(...), *nonce*), one run per build, for
+    QUEUE_DAYS, and give the builds started already their pre-approvals. None
+    when the batch has one, else (its id, the pipelines pre-approved)."""
+    binding = queue_binding(batch, community, groups, digests)
+    now = db.now_ms()
+    if _active(conn, "standing", queue_subject(batch), now) is not None:
+        return None
+    cur = conn.execute(
+        "INSERT INTO approvals (kind, subject, groups, approver, binding, assertion,"
+        " challenge, created_ms, expires_ms, runs_left) VALUES"
+        " ('standing', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (queue_subject(batch), json.dumps(sorted(groups)), approver,
+         json.dumps({"queue": batch, "community": community, "digests": list(digests),
+                     "nonce": nonce.hex(), "hashed": binding}),
+         _assertion_text(assertion), standing_challenge(binding, nonce).hex(), now,
+         now + QUEUE_DAYS * 86400 * 1000, len(digests)))
+    events.append(conn, "approval.granted", "approval:%d" % cur.lastrowid, _actor(approver),
+                  {"approval": cur.lastrowid, "kind": "standing", "queue": batch,
+                   "groups": sorted(groups), "runs": len(digests)})
+    started = conn.execute("SELECT * FROM build_queue WHERE batch = ? AND state = 'dispatched'"
+                           " ORDER BY id", (batch,)).fetchall()
+    return cur.lastrowid, [r["pipeline_id"] for r in started if preapprove_queued(conn, r)]
+
+
+def preapprove_queued(conn, entry):
+    """Within the caller's transaction: a queued build that certifies, started
+    as entry["pipeline_id"], takes one run of its batch's approval in force,
+    which becomes the console pre-approval of that pipeline (the batch's
+    assertion and challenge, the build in its binding). Returns the
+    pre-approval's id, or None (no approval, not this build, already done)."""
+    pid = entry["pipeline_id"]
+    if not entry["certify"] or pid is None:
+        return None
+    r = _active(conn, "standing", queue_subject(entry["batch"]))
+    if r is None or entry["digest"] not in json.loads(r["binding"]).get("digests", []) \
+            or _active(conn, "preapproval", str(pid)) is not None:
+        return None
+    if conn.execute("UPDATE approvals SET runs_left = runs_left - 1 WHERE id = ? AND runs_left > 0",
+                    (r["id"],)).rowcount != 1:
+        return None
+    now = db.now_ms()
+    cur = conn.execute(
+        "INSERT INTO approvals (kind, subject, groups, approver, via, binding, assertion,"
+        " challenge, created_ms, expires_ms, sign_cap) VALUES"
+        " ('preapproval', ?, ?, ?, 'console', ?, ?, ?, ?, ?, ?)",
+        (str(pid), r["groups"], r["approver"],
+         json.dumps({"queue": entry["batch"], "entry": entry["id"], "approval": r["id"]}),
+         r["assertion"], r["challenge"], now, now + PREAPPROVAL_TTL_MS, PREAPPROVAL_SIGN_CAP))
+    conn.execute("UPDATE build_queue SET approval_id = ? WHERE id = ?", (r["id"], entry["id"]))
+    events.append(conn, "approval.used", "approval:%d" % r["id"], events.WORKER,
+                  {"approval": r["id"], "kind": "standing", "queue": entry["batch"],
+                   "entry": entry["id"], "runs_left": r["runs_left"] - 1})
+    events.append(conn, "approval.granted", "approval:%d" % cur.lastrowid,
+                  _actor(r["approver"]),
+                  {"approval": cur.lastrowid, "kind": "preapproval", "build_id": str(pid),
+                   "groups": json.loads(r["groups"]), "via": "queue", "from": r["id"]},
+                  cause="pipeline:%d" % int(pid))
+    return cur.lastrowid
+
+
 def revoke(conn, approval_id, by):
-    """Revoke an approval; False when it is unknown or already revoked."""
+    """Revoke an approval, and the pre-approvals a queued batch's gave; False
+    when it is unknown or already revoked."""
     with db.transaction(conn):
         cur = conn.execute("UPDATE approvals SET revoked_ms = ?, revoked_by = ? WHERE id = ?"
                            " AND revoked_ms IS NULL", (db.now_ms(), by, int(approval_id)))
@@ -285,6 +368,13 @@ def revoke(conn, approval_id, by):
             return False
         events.append(conn, "approval.revoked", "approval:%d" % int(approval_id), _actor(by),
                       {"approval": int(approval_id)})
+        for r in conn.execute("SELECT id FROM approvals WHERE kind = 'preapproval' AND"
+                              " revoked_ms IS NULL AND json_extract(binding, '$.approval') = ?",
+                              (int(approval_id),)).fetchall():
+            conn.execute("UPDATE approvals SET revoked_ms = ?, revoked_by = ? WHERE id = ?",
+                         (db.now_ms(), by, r["id"]))
+            events.append(conn, "approval.revoked", "approval:%d" % r["id"], _actor(by),
+                          {"approval": r["id"], "with": int(approval_id)})
     return True
 
 

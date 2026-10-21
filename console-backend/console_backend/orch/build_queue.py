@@ -60,6 +60,10 @@ def digest(ref, name, variables):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def certifies(variables):
+    return _vars(variables).get("CERTIFY", "").strip().lower() == "true"
+
+
 def check_target(variables):
     """The build's routing tag, or a ValueError: the queue routes only to a
     build host or an architecture."""
@@ -86,7 +90,7 @@ def add(conn, community, user, ref, builds):
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
                 (batch, community, user, ref, name or "", json.dumps(variables),
                  digest(ref, name, variables), check_target(variables),
-                 int(_vars(variables).get("CERTIFY", "").lower() == "true"), now, now))
+                 int(certifies(variables)), now, now))
             ids.append(cur.lastrowid)
         events.append(conn, "queue.requested", "queue:%s" % batch, events.Actor("person", user),
                       {"batch": batch, "community": community, "entries": ids})
@@ -253,7 +257,8 @@ def _refuse(conn, r, reason):
 
 def _dispatched(conn, entry_id, pipeline_id, then=None):
     """The build started as *pipeline_id*: its request is amended with it.
-    *then(conn, row)* runs in the same transaction."""
+    *then(conn, row)* runs in the same transaction (the worker's: a certifying
+    build's pre-approval, approvals.preapprove_queued)."""
     now = db.now_ms()
     with db.transaction(conn):
         conn.execute("UPDATE build_queue SET state = 'dispatched', pipeline_id = ?, reason = '',"

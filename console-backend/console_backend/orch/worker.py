@@ -27,8 +27,8 @@ import threading
 import time
 
 from .. import config
-from . import (actions, authority, build_queue, certifier, cvmfs_status, db, events, failures,
-               kinds, mirror, outside, reconcile, shadow)
+from . import (actions, approvals, authority, build_queue, certifier, cvmfs_status, db, events,
+               failures, kinds, mirror, outside, reconcile, shadow)
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -96,7 +96,8 @@ class Worker:
     def _dispatch(self):
         hs = build_queue.hosts(self.deps.reader(), self.settings.orch_build_hosts)
         try:
-            build_queue.dispatch(self.conn, self.deps.forge(), hs)
+            # A certifying build's batch approval becomes its pipeline's pre-approval.
+            build_queue.dispatch(self.conn, self.deps.forge(), hs, approvals.preapprove_queued)
         except build_queue.Stop as e:
             raise RuntimeError("builds wait: %s" % e)
 
