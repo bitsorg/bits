@@ -36,6 +36,7 @@ ACTIVE = {"created", "waiting_for_resource", "preparing", "pending", "running",
 # A manual job nobody started is finished as far as the build is concerned.
 TERMINAL_JOB = {"success", "failed", "canceled", "skipped", "manual"}
 _VARS = ("COMMUNITY", "PACKAGE", "VERSION", "PLATFORM", "PUBLISH_CVMFS")
+_QUEUE_VARS = ("BITS_RUNNER_TAG", "BITS_QUEUE_ENTRY")
 MAX_VARIABLES = 16 * 1024
 OVERLAP = datetime.timedelta(minutes=5)
 RECHECK_MS = 120 * 1000            # a running pipeline's jobs, at most this often
@@ -193,7 +194,8 @@ def record_pipeline(conn, reader, p):
     is_build = is_build and bool(_var(variables, "PACKAGE"))
     text = json.dumps(variables, sort_keys=True)
     if len(text) > MAX_VARIABLES:
-        text = json.dumps({k: _var(variables, k) for k in _VARS}, sort_keys=True)
+        # What the build queue reads of a pipeline is kept too.
+        text = json.dumps({k: _var(variables, k) for k in _VARS + _QUEUE_VARS}, sort_keys=True)
     row = dict({col: "" for col in names.values()}, **fields)
     row.update(id=pid, is_build=int(is_build), source=p.get("source") or "",
                community=_var(variables, "COMMUNITY").strip().lower(),

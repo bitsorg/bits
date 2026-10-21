@@ -30,6 +30,11 @@
     GET  /ops/certified?group=&arch=&build=&removed=&limit=   the certified set (the groups
                                        the caller administers), its version and summary
     GET  /ops/certified/bom/{sha256}   one certified BOM, its exact bytes
+    POST /ops/queue                    {community, ref?, builds: [{name?, variables[]}]}:
+                                       queue builds, started one per build host
+    GET  /ops/queue?community=&limit=  queued builds and those started in the last day,
+                                       with the build hosts
+    POST /ops/queue/{id}/cancel        take a build that has not started out of the queue
     POST /approvals/standing/request   {schedule, sha256, groups[], runs, days}: a passkey
                                        challenge bound to them
     POST /approvals/standing/approve   {request_id, assertion}
@@ -53,8 +58,8 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
-from . import (actions, approvals, canary, certified, certifier, db, events, failures, kinds,
-               outside, reconcile, shadow)
+from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
+               failures, kinds, outside, reconcile, shadow)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -581,6 +586,97 @@ async def list_signatures(request: Request):
 
 
 # --- approvals ------------------------------------------------------------------
+
+# --- the build queue ------------------------------------------------------------
+
+def _queue_on():
+    if not _m().settings.orch_queue:
+        raise HTTPException(503, "the build queue is off (BITS_ORCH_QUEUE)")
+
+
+@router.post("/ops/queue")
+async def queue_builds(request: Request):
+    """Queue builds of one community, checked as /ops/build checks a build: the
+    caller an admin of the community, the ref allowed, one COMMUNITY variable,
+    BITS_CERTIFIER the caller. The worker starts them one per build host."""
+    data = await _caller(request)
+    _queue_on()
+    m = _m()
+    payload = await _body(request)
+    builds = payload.get("builds")
+    if not isinstance(builds, list) or not 0 < len(builds) <= build_queue.MAX_BUILDS:
+        raise HTTPException(400, "expected {community, ref?, builds: [1-%d of {name?, variables[]}]}"
+                            % build_queue.MAX_BUILDS)
+    checked = []
+    for b in builds:
+        if not isinstance(b, dict):
+            raise HTTPException(400, "each build is {name?, variables[]}")
+        community, ref, name, variables = m._build_payload(
+            dict(b, community=payload.get("community"), ref=payload.get("ref")))
+        variables = await run_in_threadpool(m._checked_build, data, community, ref, variables,
+                                            "queue")
+        try:
+            build_queue.check_target(variables)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if not any(str(v.get("key", "")).upper() == "PACKAGE" and v.get("value")
+                   for v in variables if isinstance(v, dict)):
+            raise HTTPException(400, "a queued build names its PACKAGE")
+        keys = [str(v.get("key", "")) for v in variables if isinstance(v, dict)]
+        if len(keys) != len(set(keys)) or len(keys) != len(variables):
+            raise HTTPException(400, "each variable is a {key, value}, every key once")
+        checked.append((name, variables))
+
+    def write():
+        with _open() as conn:
+            return build_queue.add(conn, community, data["user"], ref, checked)
+    batch, ids = await run_in_threadpool(write)
+    audit.record("queued", user=data["user"], community=community, batch=batch, entries=ids,
+                 principal="human")
+    return {"batch": batch, "entries": ids}
+
+
+@router.get("/ops/queue")
+async def list_queue(request: Request, community: str = "", limit: int = 200):
+    """Queued builds of the communities the caller administers (all, for an
+    overall admin), and the build hosts as the worker last saw them."""
+    data = await _caller(request)
+    _queue_on()
+    mine = await _scope(data)
+    if community:
+        c = community.strip().lower()
+        mine = {c} if mine is None or c in mine else set()
+
+    def read():
+        with _open() as conn:
+            return {"entries": build_queue.listing(conn, communities=mine, limit=limit),
+                    "hosts": build_queue.host_status(conn)}
+    return JSONResponse(await run_in_threadpool(read), headers={"Cache-Control": "no-store"})
+
+
+@router.post("/ops/queue/{entry_id}/cancel")
+async def cancel_queued(entry_id: int, request: Request):
+    """By an admin of its community (as whoever queued it was)."""
+    data = await _caller(request)
+    _queue_on()
+
+    def read():
+        with _open() as conn:
+            return build_queue.get(conn, entry_id)
+    r = await run_in_threadpool(read)
+    if r is None:
+        raise HTTPException(404, "no such queued build")
+    if not await run_in_threadpool(_may_act, data, r["community"]):
+        raise HTTPException(403, "not authorized for queued build %d" % entry_id)
+
+    def write():
+        with _open() as conn:
+            return build_queue.cancel(conn, entry_id, data["user"])
+    if not await run_in_threadpool(write):
+        raise HTTPException(409, "build %d is no longer waiting" % entry_id)
+    audit.record("queue_canceled", user=data["user"], entry=entry_id, principal="human")
+    return {"status": "canceled", "entry": entry_id}
+
 
 _standing_pending = session.CliSignStore(ttl_seconds=300, max_entries=64)
 _GROUP_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")

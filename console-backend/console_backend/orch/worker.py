@@ -6,7 +6,8 @@ Each pass runs the steps in order. A step reads the database and the outside
 world, then writes what it decided; a step that fails is logged, recorded as an
 event when its error changes, and tried again on the next pass. The steps:
 running due actions, then hints, discover, settle and index (reconcile.py: what
-is true of builds, from GitLab and S3), with BITS_ORCH_CVMFS_STATUS the console's
+is true of builds, from GitLab and S3; with BITS_ORCH_QUEUE, after settle, dispatch
+starts queued builds on free hosts, build_queue.py), with BITS_ORCH_CVMFS_STATUS the console's
 CVMFS status document (cvmfs_status.py), then collect and backfill (failures.py:
 every failed job's record, deduplicated into issues), then ship (outside.py: the
 events to the outside copy of the audit chain) and the daily backup. Certification
@@ -26,8 +27,8 @@ import threading
 import time
 
 from .. import config
-from . import (actions, authority, certifier, cvmfs_status, db, events, failures, kinds, mirror,
-               outside, reconcile, shadow)
+from . import (actions, authority, build_queue, certifier, cvmfs_status, db, events, failures,
+               kinds, mirror, outside, reconcile, shadow)
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -72,6 +73,10 @@ class Worker:
             # The console's CVMFS status, from the builds just recorded.
             at = [n for n, _ in self.steps].index("index") + 1
             self.steps.insert(at, ("cvmfs_status", self._cvmfs_status))
+        if settings.orch_queue:
+            # Queued builds start on free hosts, once the running ones are settled.
+            at = [n for n, _ in self.steps].index("settle") + 1
+            self.steps.insert(at, ("dispatch", self._dispatch))
         if settings.orch_owns_set:
             # M8b: the set is the worker's; bits-manifests mirrors it, and the
             # store says whose manifests these are.
@@ -87,6 +92,13 @@ class Worker:
             raise RuntimeError("BITS_ORCH_CVMFS_STATUS needs the ops token (BITS_FORGE_OPS_TOKEN)"
                                " and the store (BITS_ORCH_STORE)")
         cvmfs_status.step(self.conn, forge, store)
+
+    def _dispatch(self):
+        hs = build_queue.hosts(self.deps.reader(), self.settings.orch_build_hosts)
+        try:
+            build_queue.dispatch(self.conn, self.deps.forge(), hs)
+        except build_queue.Stop as e:
+            raise RuntimeError("builds wait: %s" % e)
 
     def _mirror(self):
         from .. import forge_ops

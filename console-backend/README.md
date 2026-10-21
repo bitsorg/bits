@@ -76,6 +76,22 @@ the audience `BITS_ORCH_CI_AUDIENCE` (default `bits-orchestrator`), from the
 build project on a protected ref; the worker then looks at that pipeline on
 its next pass.
 
+**The build queue** (`orch/build_queue.py`, with `BITS_ORCH_QUEUE=1`): the
+console queues its builds (`POST /ops/queue {community, ref?, builds[]}`, each
+checked as `/ops/build` checks one) instead of starting them, and the worker
+starts them, oldest first, at most one per build host, so a long build never
+waits in GitLab (where its pending jobs count against the project's job limit)
+nor shares a host. The hosts are the build project's `config/build-hosts.yaml`
+(`BITS_ORCH_BUILD_HOSTS`): `name`, `tag` (`bits-host-<name>`), `arch`, and
+`runner` when the GitLab runner's description is not the name. A build pinned to
+a host (`BITS_RUNNER_TAG=bits-host-<name>`) waits for it; one routed by
+architecture (`bits-build-<arch>`) takes the first free host of that arch and is
+pinned to it. A host is busy while a build pipeline runs on it, the queue's or
+not. GitLab refusing a pipeline (its job limit) leaves the build in its place;
+refusing one build five times refuses it. `GET /ops/queue` lists the waiting
+builds and the hosts, `POST /ops/queue/{id}/cancel` takes one out before it
+starts. A Retry of a pipeline restarts it at once, outside the queue.
+
 Every failed job of a failed build pipeline is then **recorded**
 (`orch/failures.py`): the end of its log, or of its `bits-build.log` artifact
 when GitLab cut the log at its size limit, is parsed for bits' `BUILD FAILED:

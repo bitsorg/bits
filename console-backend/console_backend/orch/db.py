@@ -357,6 +357,36 @@ MIGRATIONS = [
         "ALTER TABLE certify_runs ADD COLUMN set_path TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE certify_runs ADD COLUMN set_body BLOB",
     ],
+    # 10: the build queue. One row per build the console asked for, started by
+    # the worker on a free build host; batch groups the builds of one request.
+    [
+        """CREATE TABLE build_queue (
+            id             INTEGER PRIMARY KEY,
+            batch          TEXT NOT NULL,
+            community      TEXT NOT NULL,
+            requested_by   TEXT NOT NULL,
+            ref            TEXT NOT NULL,
+            name           TEXT NOT NULL DEFAULT '',
+            variables      TEXT NOT NULL,
+            digest         TEXT NOT NULL,
+            target         TEXT NOT NULL,
+            certify        INTEGER NOT NULL DEFAULT 0,
+            state          TEXT NOT NULL CHECK (state IN
+                             ('queued', 'dispatching', 'dispatched', 'canceled', 'refused')),
+            reason         TEXT NOT NULL DEFAULT '',
+            attempts       INTEGER NOT NULL DEFAULT 0,
+            token          TEXT NOT NULL DEFAULT '',
+            host           TEXT NOT NULL DEFAULT '',
+            pipeline_id    INTEGER,
+            approval_id    INTEGER,
+            created_ms     INTEGER NOT NULL,
+            updated_ms     INTEGER NOT NULL,
+            dispatched_ms  INTEGER
+        )""",
+        "CREATE INDEX build_queue_state ON build_queue(state, id)",
+        "CREATE INDEX build_queue_batch ON build_queue(batch, id)",
+        "CREATE INDEX build_queue_pipeline ON build_queue(pipeline_id)",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

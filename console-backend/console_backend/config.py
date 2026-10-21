@@ -152,6 +152,12 @@ class Settings:
         # in the build project's package registry), in place of a CI job per build.
         self.orch_cvmfs_status = (e.get("BITS_ORCH_CVMFS_STATUS", "") or "").strip().lower() \
             in ("1", "true", "yes")
+        # The build queue: the console's builds wait here and the worker starts
+        # them one per build host (the hosts file of the build project).
+        self.orch_queue = (e.get("BITS_ORCH_QUEUE", "") or "").strip().lower() \
+            in ("1", "true", "yes")
+        self.orch_build_hosts = e.get("BITS_ORCH_BUILD_HOSTS", "config/build-hosts.yaml") \
+            or "config/build-hosts.yaml"
         # A daily copy of the orchestrator database (approvals, failures, the
         # audit chain cannot be rebuilt): a directory, ideally on another disk.
         # Empty = no copies.

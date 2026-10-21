@@ -153,25 +153,10 @@ async def gh_proxy(path: str, request: Request):
     return Response(content=body, status_code=status, media_type=ctype)
 
 
-@app.post("/ops/build")
-async def ops_build(request: Request):
-    """Trigger a build pipeline on the shared project on the caller's behalf, using
-    the backend's forge token — gated by the caller's identity AND their admin rights
-    for the TARGET community (deny-by-default). The caller holds no forge write scope;
-    this backend check is the only gate, so it must pass before anything is actuated.
-
-    Body: {community, ref?, name?, variables?[]}. `community` is authorized against the
-    single admin policy; group-admin of that community or an overall (bits-)admin may
-    build. The community is resolved here — never taken from the pipeline variables."""
-    data = await _current_async(request)
-    if not data:
-        raise HTTPException(401, "not authenticated")
-    forge = forge_ops.GitLabForge.from_settings(settings)   # per-call: settings may change
-    if forge is None:
-        raise HTTPException(503, "ops backend not configured (BITS_FORGE_OPS_TOKEN/PROJECT)")
-    raw = await _read_capped(request, _MAX_BODY)
+def _build_payload(payload):
+    """(community, ref, name, variables) of a build request {community, ref?,
+    name?, variables[]}, or a 400."""
     try:
-        payload = json.loads(raw)
         community = str(payload["community"]).strip().lower()
         ref = str(payload.get("ref") or "main").strip()
         name = payload.get("name")
@@ -181,8 +166,15 @@ async def ops_build(request: Request):
                 or not _valid_ref(ref) or not isinstance(variables, list) \
                 or (name is not None and (not isinstance(name, str) or len(name) > 256)):
             raise ValueError
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, AttributeError):
         raise HTTPException(400, "expected {community, ref?, name?, variables[]}")
+    return community, ref, name, variables
+
+
+def _checked_build(data, community, ref, variables, op="build"):
+    """The variables of a build *data*'s user may start for *community*, with
+    BITS_CERTIFIER set to that user; else an HTTPException. Shared by /ops/build
+    and the build queue (POST /ops/queue)."""
     # Community isolation (all communities share ONE project, and the backend gate
     # is the only per-user check once we act with the project token):
     #   * ref is pinned to an allowlist, so an admin cannot trigger an arbitrary
@@ -202,7 +194,7 @@ async def ops_build(request: Request):
     user = data["user"]
     resolved = _resolved_policy(data["token"])
     if not authz.is_admin_for(user, community, resolved):
-        audit.record("ops_denied", op="build", user=user, community=community, principal="human")
+        audit.record("ops_denied", op=op, user=user, community=community, principal="human")
         raise HTTPException(403, "%s is not an admin for community %s" % (user, community))
     # Propagate the VERIFIED human as the certifier for the downstream certify/sign
     # step. We trigger the pipeline with the backend's ops token, so GITLAB_USER_LOGIN
@@ -213,10 +205,42 @@ async def ops_build(request: Request):
     # GITLAB_USER_LOGIN. Strip any caller-supplied BITS_CERTIFIER first so the value
     # is always server-verified and a caller cannot certify as someone else. (The
     # signature itself remains separately gated by that human's passkey pre-approval.)
+    # BITS_QUEUE_ENTRY is the build queue's own mark of the pipelines it starts.
     variables = [v for v in variables
-                 if not (isinstance(v, dict)
-                         and str(v.get("key", "")).strip().upper() == "BITS_CERTIFIER")]
+                 if not (isinstance(v, dict) and str(v.get("key", "")).strip().upper()
+                         in ("BITS_CERTIFIER", "BITS_QUEUE_ENTRY"))]
     variables.append({"key": "BITS_CERTIFIER", "value": user})
+    return variables
+
+
+@app.post("/ops/build")
+async def ops_build(request: Request):
+    """Trigger a build pipeline on the shared project on the caller's behalf, using
+    the backend's forge token — gated by the caller's identity AND their admin rights
+    for the TARGET community (deny-by-default). The caller holds no forge write scope;
+    this backend check is the only gate, so it must pass before anything is actuated.
+
+    Body: {community, ref?, name?, variables?[]}. `community` is authorized against the
+    single admin policy; group-admin of that community or an overall (bits-)admin may
+    build. The community is resolved here — never taken from the pipeline variables."""
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    forge = forge_ops.GitLabForge.from_settings(settings)   # per-call: settings may change
+    if forge is None:
+        raise HTTPException(503, "ops backend not configured (BITS_FORGE_OPS_TOKEN/PROJECT)")
+    raw = await _read_capped(request, _MAX_BODY)
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        raise HTTPException(400, "expected {community, ref?, name?, variables[]}")
+    community, ref, name, variables = _build_payload(payload)
+    variables = _checked_build(data, community, ref, variables)
+    if settings.orch_queue and any(isinstance(v, dict) and str(v.get("key", "")).upper()
+                                   == "PACKAGE" and v.get("value") for v in variables):
+        raise HTTPException(409, "builds go through the build queue (POST /ops/queue): reload"
+                                 " the console")
+    user = data["user"]
     try:
         result = await run_in_threadpool(forge.trigger_pipeline, ref, variables, name)
     except forge_ops.ForgeError as e:
@@ -569,6 +593,7 @@ def healthz():
         "bits_helpers": _BITS_HELPERS,
         "sign_proxy_configured": settings.sign_proxy_configured(),
         "webauthn_configured": settings.webauthn_configured(),
+        "build_queue": bool(settings.orch_queue and settings.orch_db),
     }
 
 
