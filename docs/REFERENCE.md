@@ -1341,6 +1341,7 @@ bits status [options] PACKAGE [PACKAGE...]
 | `--no-remote-store` | off | Disable any remote store, even a configured default. |
 | `--check-store` | off | Probe the remote store to detect tarballs not mirrored locally. Adds a network round-trip per uncached package. |
 | `--json` | off | Emit a machine-readable JSON report. |
+| `--docker`, `--docker-image IMAGE`, `--docker-extra-args ARGS` | off | As for `bits build --docker`: the system packages are checked in the image, and `own_hash` packages (the toolchain) hash its container fingerprint. Use the build's image to get the hashes of a `--docker` build; without it, every package is built. |
 
 **Package states:**
 

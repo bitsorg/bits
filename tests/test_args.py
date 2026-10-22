@@ -117,6 +117,25 @@ class ArgsTestCase(unittest.TestCase):
         for k, v in effects:
           self.assertEqual(args[k], v)
 
+  @mock.patch.dict(os.environ, {"BITS_DOCKER_REGISTRY": "", "BITS_LEGACY_REGISTRY": "", "BITS_DOCKER_TAG": ""})
+  @mock.patch("bits_helpers.args._defaults_docker_registry", return_value=None)
+  @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
+  @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
+  @mock.patch("bits_helpers.args._docker_memory_args", return_value=[])
+  @mock.patch("bits_helpers.args._is_rootless_podman", return_value=False)
+  @mock.patch('bits_helpers.args.commands')
+  def test_status_docker_as_build(self, mock_commands, *_):
+    """bits status takes the container options as bits build does."""
+    mock_commands.getstatusoutput.side_effect = lambda x : GETSTATUSOUTPUT_MOCKS[x]
+    with patch.object(sys, "argv", ["bits", "status", "--docker-image", "img:1", "zlib"]):
+      args, _ = doParseArgs()
+    self.assertTrue(args.docker)
+    self.assertEqual(args.dockerImage, "img:1")
+    self.assertIn("--network=host", args.docker_extra_args)
+    with patch.object(sys, "argv", ["bits", "status", "--docker", "-a", "slc9_x86-64", "zlib"]):
+      args, _ = doParseArgs()
+    self.assertEqual(args.dockerImage, "gitlab-registry.cern.ch/bits/containers/x86_64-slc9:latest")
+
   @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
   @mock.patch('bits_helpers.args.argparse.ArgumentParser.error')
   def test_failingParsing(self, mock_print):

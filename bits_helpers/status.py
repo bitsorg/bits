@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from glob import glob
 from os.path import abspath, basename, dirname, join
 from pathlib import Path
@@ -47,8 +48,10 @@ from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults
 from bits_helpers.arch import (
     SHARED_ARCH,
     compute_combined_arch,
+    compute_own_hash_arch,
     effective_arch,
 )
+from bits_helpers.cmd import DockerRunner
 from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
 from bits_helpers.workarea import updateReferenceRepoSpec
 
@@ -414,33 +417,59 @@ def doStatus(args, parser) -> None:
 
     raw_architecture = args.architecture
     args.architecture = compute_combined_arch(defaults_meta, args.defaults, raw_architecture)
+    own_hash_arch = compute_own_hash_arch(defaults_meta, args.defaults, raw_architecture)
 
     # ── Package list resolution ────────────────────────────────────────────────
-    # Use no-op lambdas for prefer_check and requirement_check: bits status does
-    # not run any external commands to test system package compatibility.
-    _noop_check = lambda pkg, cmd: (0, "")
-
+    # Without --docker no system checks run: every package is built. With it, as
+    # bits build --docker: the system packages and the container fingerprint
+    # (own_hash packages hash it) come from the build image.
+    docker = bool(getattr(args, "docker", False))
     os.makedirs(join(work_dir, "SPECS"), exist_ok=True)
 
-    systemPackages, ownPackages, failed, validDefaults = getPackageList(
-        packages                = packages,
-        specs                   = specs,
-        configDir               = args.configDir,
-        preferSystem            = False,
-        noSystem                = "*",
-        architecture            = raw_architecture,
-        disable                 = args.disable,
-        force_rebuild           = args.force_rebuild,
-        defaults                = args.defaults,
-        performPreferCheck      = _noop_check,
-        performRequirementCheck = _noop_check,
-        performValidateDefaults = lambda spec: validateDefaults(spec, args.defaults),
-        overrides               = overrides,
-        taps                    = taps,
-        log                     = debug,
-        provider_dirs           = provider_dirs,
-        defaults_meta           = defaults_meta,
-    )
+    config_dir = abspath(args.configDir)
+    with DockerRunner(args.dockerImage if docker else None,
+                      args.docker_extra_args if docker else [],
+                      extra_env={"BITS_CONFIG_DIR": "/pkgdist.bits" if docker else config_dir},
+                      extra_volumes=[config_dir + ":/pkgdist.bits:ro"] if docker else [],
+                      platform=getattr(args, "dockerPlatform", None)) as run:
+        def _check(pkg, cmd):
+            if not docker:
+                return 0, ""
+            with tempfile.TemporaryDirectory(prefix="bits_status_check_") as tmp:
+                return run(cmd, cwd=tmp)
+
+        systemPackages, ownPackages, failed, validDefaults = getPackageList(
+            packages                = packages,
+            specs                   = specs,
+            configDir               = args.configDir,
+            preferSystem            = False,
+            noSystem                = None if docker else "*",
+            architecture            = raw_architecture,
+            disable                 = args.disable,
+            force_rebuild           = args.force_rebuild,
+            defaults                = args.defaults,
+            performPreferCheck      = _check,
+            performRequirementCheck = _check,
+            performValidateDefaults = lambda spec: validateDefaults(spec, args.defaults),
+            overrides               = overrides,
+            taps                    = taps,
+            log                     = debug,
+            provider_dirs           = provider_dirs,
+            defaults_meta           = defaults_meta,
+        )
+        # As build: from the container, or from this host when it is a bits image.
+        rc, out = run("cat /opt/bits/container-fingerprint.hash 2>/dev/null || true")
+        fingerprint = out.strip() if rc == 0 else ""
+
+    if systemPackages:
+        info("Taken from the system: %s", ", ".join(sorted(systemPackages)))
+    own = sorted(p for p, s in specs.items() if s.get("own_hash"))
+    if docker and own and not fingerprint:
+        warning("%s has no readable /opt/bits/container-fingerprint.hash: the hashes of "
+                "%s are not those of a build in it", args.dockerImage, ", ".join(own))
+    for p in own:   # as bits build: the build environment, and the build-type-neutral arch
+        specs[p]["container_fingerprint"] = fingerprint
+        specs[p]["_own_hash_arch"] = own_hash_arch
 
     if failed:
         warning(

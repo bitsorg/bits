@@ -951,6 +951,67 @@ class TestDoStatus(unittest.TestCase):
     @patch("bits_helpers.status.readDefaults")
     @patch("bits_helpers.hashing.storeHashes")
     @patch("bits_helpers.build.storeHook")
+    def test_docker_checks_and_fingerprint_as_in_build(self, mock_hook, mock_store_hashes,
+                                                       mock_read_defaults, mock_parse_defaults,
+                                                       mock_get_package_list):
+        """--docker: system checks run in the container; own_hash folds its fingerprint."""
+        rh = "abcdef" + "0" * 34
+        mock_parse_defaults.return_value = (None, {}, {}, {})
+        mock_read_defaults.return_value = None
+        spec = _make_spec(pkg="GCC-Toolchain", version="v15", remote_revision_hash=rh,
+                          remote_hashes=[rh])
+        spec["own_hash"] = True
+        ran, seen = [], {}
+
+        class FakeRunner:
+            def __init__(self, image, *a, **kw):
+                seen["image"] = image
+            def __enter__(self):
+                def run(cmd, cwd=None):
+                    ran.append(cmd)
+                    return (0, "fp123\n") if "container-fingerprint" in cmd else (1, "")
+                return run
+            def __exit__(self, *exc):
+                return False
+
+        def fake_get_pkg_list(*args, **kwargs):
+            seen["noSystem"] = kwargs["noSystem"]
+            seen["check"] = kwargs["performPreferCheck"](spec, "rpm -q zlib")
+            kwargs["specs"]["GCC-Toolchain"] = spec
+            return ([], ["GCC-Toolchain"], set(), None)
+        mock_get_package_list.side_effect = fake_get_pkg_list
+
+        def fake_store_hashes(p, specs, considerRelocation):
+            seen.update(fp=specs[p].get("container_fingerprint"),
+                        arch=specs[p].get("_own_hash_arch"))
+            specs[p].update(remote_revision_hash=rh, local_revision_hash="l" + rh,
+                            remote_hashes=[rh], local_hashes=["l" + rh], deps_hash="")
+        mock_store_hashes.side_effect = fake_store_hashes
+
+        import bits_helpers.status as status_mod
+        args = self._make_args(["GCC-Toolchain"], json_output=True)
+        args.docker, args.dockerImage, args.docker_extra_args = True, "img:1", []
+        with patch("sys.stdout", new_callable=StringIO), \
+             patch("bits_helpers.status.DockerRunner", FakeRunner), \
+             patch("bits_helpers.status.topological_sort", return_value=["GCC-Toolchain"]), \
+             patch("bits_helpers.status.compute_combined_arch", return_value=self.arch), \
+             patch("bits_helpers.status.compute_own_hash_arch", return_value="neutral-arch"), \
+             patch("bits_helpers.status.prunePaths"):
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.error = lambda msg: (_ for _ in ()).throw(SystemExit(msg))
+            status_mod.doStatus(args, parser)
+        self.assertEqual(seen["image"], "img:1")
+        self.assertIsNone(seen["noSystem"])
+        self.assertEqual(seen["check"], (1, ""))
+        self.assertIn("rpm -q zlib", ran)
+        self.assertEqual((seen["fp"], seen["arch"]), ("fp123", "neutral-arch"))
+
+    @patch("bits_helpers.status.getPackageList")
+    @patch("bits_helpers.status.parseDefaults")
+    @patch("bits_helpers.status.readDefaults")
+    @patch("bits_helpers.hashing.storeHashes")
+    @patch("bits_helpers.build.storeHook")
     def test_tarball_sources_win_over_git_as_in_build(self, mock_hook, mock_store_hashes,
                                                        mock_read_defaults, mock_parse_defaults,
                                                        mock_get_package_list):

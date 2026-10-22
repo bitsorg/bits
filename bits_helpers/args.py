@@ -802,6 +802,17 @@ def add_status_arguments(subparsers, ctx):
       "--json", dest="json_output", action="store_true", default=False,
       help="Emit a machine-readable JSON report instead of the human-readable table.",
   )
+  status_docker = status_parser.add_argument_group(
+      title="Use a Docker container",
+      description="As bits build --docker: the system packages and the container "
+                  "fingerprint (in the toolchain's hash) come from the container.")
+  status_docker.add_argument("--docker", dest="docker", action="store_true",
+                             help="Check for system packages inside a Docker container.")
+  status_docker.add_argument("--docker-image", dest="dockerImage", metavar="IMAGE", default=None,
+                             help=("The Docker image to use, as for the build. Implies --docker. "
+                                   "By default, an image is chosen from the architecture."))
+  status_docker.add_argument("--docker-extra-args", metavar="ARGLIST", default="",
+                             help="Command-line arguments to pass to 'docker run'. Implies --docker.")
   return status_parser
 
 
@@ -2164,6 +2175,125 @@ def _with_release_base(defaults):
   return defaults
 
 
+def _finalise_docker(args, parser):
+  """The container options of build, doctor, deps and status: --docker implied by
+  an image or extra args, the docker run arguments, the image and the platform."""
+  if args.dockerImage or args.docker_extra_args:
+    args.docker = True
+
+  args.docker_extra_args = shlex.split(args.docker_extra_args)
+  args.docker_extra_args.append("--network=host")
+  # Pin the build container to the full set of online host CPUs so that
+  # make -j sees the real core count rather than the cgroup
+  # quota inherited from the GitLab runner process.
+  # /sys/devices/system/cpu/online gives the kernel-reported online CPU
+  # list (e.g. "0-7") which reflects actual hardware, not the caller's
+  # cgroup CPU quota.  Only inject if the user hasn't already specified
+  # --cpuset-cpus in --docker-extra-args.
+  # Rootless podman can only apply limits whose cgroup controller is delegated
+  # to the user; skip the others rather than fail to start the container.
+  # (build.py also runs such containers with --userns=keep-id, not --user.)
+  args.rootless_podman = bool(args.docker) and _is_rootless_podman()
+  _ctrls = _rootless_podman_controllers() if args.rootless_podman else None
+  # Podman labels containers for SELinux (docker-ce does not), which blocks
+  # the bind-mounted home-dir workdir/configdir; :z relabelling is too slow on
+  # SOURCES and impossible on /cvmfs, so turn labelling off instead.
+  if args.rootless_podman and not any(a.startswith("--security-opt")
+                                      for a in args.docker_extra_args):
+    args.docker_extra_args.append("--security-opt=label=disable")
+  _skipped = []
+  if not any(a.startswith("--cpuset-cpus") for a in args.docker_extra_args):
+    if _ctrls is None or "cpuset" in _ctrls:
+      args.docker_extra_args.append("--cpuset-cpus=" + _host_online_cpus())
+    else:
+      _skipped.append("cpuset")
+
+  # Hard memory cap on the build container so that no single build can OOM
+  # the HOST (see _docker_memory_args). Skipped when the user passes any
+  # --memory* themselves.
+  if not any(a.startswith("--memory") for a in args.docker_extra_args):
+    if _ctrls is None or "memory" in _ctrls:
+      args.docker_extra_args.extend(_docker_memory_args())
+    else:
+      _skipped.append("memory")
+  if _skipped:
+    from bits_helpers.log import warning
+    warning("rootless podman: cgroup controller(s) %s not available to this user, "
+            "so the build container is not limited by them. To enable (root): put "
+            "'[Service]' and 'Delegate=cpu cpuset io memory pids' in "
+            "/etc/systemd/system/user@.service.d/delegate.conf, run "
+            "'systemctl daemon-reload', then log in again.",
+            ", ".join(_skipped))
+
+  if args.docker and args.architecture.startswith("osx"):
+    parser.error("cannot use `-a %s` and --docker" % args.architecture)
+
+  if args.docker and commands.getstatusoutput("which docker")[0]:
+    parser.error("cannot use --docker as docker executable is not found")
+
+  # If specified, used the docker image requested, otherwise, if running
+  # in docker the docker image is given by the first part of the
+  # architecture we want to build for.
+  if args.docker and not args.dockerImage:
+    # Choose the builder image from the architecture. Resolution order:
+    #   1. BITS_LEGACY_REGISTRY truthy  -> legacy alisw/<distro>-builder
+    #      (ALICE guard, mirrors BITS_LEGACY_INITDOTSH; the aliBuild wrapper
+    #      sets it so ALICE keeps its images regardless of any registry here).
+    #   2. otherwise -> a bits-containers-style image from the configured
+    #      registry: BITS_DOCKER_REGISTRY env, else a `docker_registry:` field
+    #      in defaults-release, else the built-in DEFAULT_DOCKER_REGISTRY.
+    #      Image = <registry>/<machine>-<distro>[-cuda]:<tag> (BITS_DOCKER_TAG,
+    #      default latest). If the arch cannot be decomposed, fall back to the
+    #      legacy alisw builder.
+    # Only the base OS and the -cuda axis pick the image; the compiler axes
+    # (-gccNN/-clang) and build type (-opt/-dbg) are resolved inside the
+    # container by the entrypoint shim, so they do not change it.
+    distro_token = arch_distro_token(args.architecture) or args.architecture.split("_")[0]
+    _legacy = os.environ.get("BITS_LEGACY_REGISTRY", "").strip().lower() in ("1", "true", "yes", "on")
+    _registry = None if _legacy else (
+      os.environ.get("BITS_DOCKER_REGISTRY", "").strip()
+      or _defaults_docker_registry(args)
+      or DEFAULT_DOCKER_REGISTRY)
+    _machine = (arch_machine_token(args.architecture) or "").replace("-", "_")
+    if _registry and _machine and distro_token:
+      _name = "%s-%s" % (_machine, distro_token)
+      if re.search(r"(^|-)cuda(-|$)", args.architecture):
+        _name += "-cuda"
+      _tag = os.environ.get("BITS_DOCKER_TAG", "").strip() or "latest"
+      args.dockerImage = "%s/%s:%s" % (_registry.rstrip("/"), _name, _tag)
+    else:
+      args.dockerImage = "registry.cern.ch/alisw/%s-builder" % distro_token
+
+  # ── --docker-platform / cross-compilation ─────────────────────────────────
+  # Derive the Docker --platform value from --architecture when the user has
+  # not set it explicitly.  If the target architecture matches the host we
+  # leave it as None (no --platform flag → daemon uses native image variant,
+  # zero overhead).  If they differ we inject the matching platform string so
+  # that Docker pulls the correct image variant and QEMU transparently
+  # emulates the target ISA inside the builder container.
+  #
+  # The special sentinel value "native" lets users opt out of automatic
+  # injection even when cross-compiling (useful on native ARM runners that
+  # happen to run an x86-64 bits client, or for testing).
+  if args.docker:
+    if getattr(args, "dockerPlatform", None) == "native":
+      args.dockerPlatform = None
+    elif not getattr(args, "dockerPlatform", None):
+      from bits_helpers.arch import docker_platform_for_arch, detectArch as _detectArch
+      target_plat = docker_platform_for_arch(args.architecture)
+      host_plat   = docker_platform_for_arch(_detectArch())
+      if target_plat and target_plat != host_plat:
+        args.dockerPlatform = target_plat
+      else:
+        args.dockerPlatform = None
+
+  # --sandbox-image implies --sandbox=podman. Promote from the mode-unset
+  # states ("off" is the default, "auto" the legacy default); an explicit
+  # "podman"/"sandbox-exec" is left as chosen.
+  if getattr(args, "sandboxImage", None) and getattr(args, "sandbox", None) in (None, "off", "auto"):
+    args.sandbox = "podman"
+
+
 def finaliseArgs(args, parser):
 
   # Nothing to finalise for version, architecture, or verify
@@ -2202,6 +2332,7 @@ def finaliseArgs(args, parser):
       os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
     args.provider_policy = _parse_provider_policy(
       getattr(args, "providerPolicy", None) or "")
+    _finalise_docker(args, parser)
     return args
 
   # compliance group mode rides the general finalisation: it needs the
@@ -2301,120 +2432,7 @@ def finaliseArgs(args, parser):
     cleanup_git_log(args.referenceSources)
 
   if args.action in ("build", "doctor", "deps"):
-    if args.dockerImage or args.docker_extra_args:
-      args.docker = True
-
-    args.docker_extra_args = shlex.split(args.docker_extra_args)
-    args.docker_extra_args.append("--network=host")
-    # Pin the build container to the full set of online host CPUs so that
-    # make -j sees the real core count rather than the cgroup
-    # quota inherited from the GitLab runner process.
-    # /sys/devices/system/cpu/online gives the kernel-reported online CPU
-    # list (e.g. "0-7") which reflects actual hardware, not the caller's
-    # cgroup CPU quota.  Only inject if the user hasn't already specified
-    # --cpuset-cpus in --docker-extra-args.
-    # Rootless podman can only apply limits whose cgroup controller is delegated
-    # to the user; skip the others rather than fail to start the container.
-    # (build.py also runs such containers with --userns=keep-id, not --user.)
-    args.rootless_podman = bool(args.docker) and _is_rootless_podman()
-    _ctrls = _rootless_podman_controllers() if args.rootless_podman else None
-    # Podman labels containers for SELinux (docker-ce does not), which blocks
-    # the bind-mounted home-dir workdir/configdir; :z relabelling is too slow on
-    # SOURCES and impossible on /cvmfs, so turn labelling off instead.
-    if args.rootless_podman and not any(a.startswith("--security-opt")
-                                        for a in args.docker_extra_args):
-      args.docker_extra_args.append("--security-opt=label=disable")
-    _skipped = []
-    if not any(a.startswith("--cpuset-cpus") for a in args.docker_extra_args):
-      if _ctrls is None or "cpuset" in _ctrls:
-        args.docker_extra_args.append("--cpuset-cpus=" + _host_online_cpus())
-      else:
-        _skipped.append("cpuset")
-
-    # Hard memory cap on the build container so that no single build can OOM
-    # the HOST (see _docker_memory_args). Skipped when the user passes any
-    # --memory* themselves.
-    if not any(a.startswith("--memory") for a in args.docker_extra_args):
-      if _ctrls is None or "memory" in _ctrls:
-        args.docker_extra_args.extend(_docker_memory_args())
-      else:
-        _skipped.append("memory")
-    if _skipped:
-      from bits_helpers.log import warning
-      warning("rootless podman: cgroup controller(s) %s not available to this user, "
-              "so the build container is not limited by them. To enable (root): put "
-              "'[Service]' and 'Delegate=cpu cpuset io memory pids' in "
-              "/etc/systemd/system/user@.service.d/delegate.conf, run "
-              "'systemctl daemon-reload', then log in again.",
-              ", ".join(_skipped))
-
-    if args.docker and args.architecture.startswith("osx"):
-      parser.error("cannot use `-a %s` and --docker" % args.architecture)
-
-    if args.docker and commands.getstatusoutput("which docker")[0]:
-      parser.error("cannot use --docker as docker executable is not found")
-
-    # If specified, used the docker image requested, otherwise, if running
-    # in docker the docker image is given by the first part of the
-    # architecture we want to build for.
-    if args.docker and not args.dockerImage:
-      # Choose the builder image from the architecture. Resolution order:
-      #   1. BITS_LEGACY_REGISTRY truthy  -> legacy alisw/<distro>-builder
-      #      (ALICE guard, mirrors BITS_LEGACY_INITDOTSH; the aliBuild wrapper
-      #      sets it so ALICE keeps its images regardless of any registry here).
-      #   2. otherwise -> a bits-containers-style image from the configured
-      #      registry: BITS_DOCKER_REGISTRY env, else a `docker_registry:` field
-      #      in defaults-release, else the built-in DEFAULT_DOCKER_REGISTRY.
-      #      Image = <registry>/<machine>-<distro>[-cuda]:<tag> (BITS_DOCKER_TAG,
-      #      default latest). If the arch cannot be decomposed, fall back to the
-      #      legacy alisw builder.
-      # Only the base OS and the -cuda axis pick the image; the compiler axes
-      # (-gccNN/-clang) and build type (-opt/-dbg) are resolved inside the
-      # container by the entrypoint shim, so they do not change it.
-      distro_token = arch_distro_token(args.architecture) or args.architecture.split("_")[0]
-      _legacy = os.environ.get("BITS_LEGACY_REGISTRY", "").strip().lower() in ("1", "true", "yes", "on")
-      _registry = None if _legacy else (
-        os.environ.get("BITS_DOCKER_REGISTRY", "").strip()
-        or _defaults_docker_registry(args)
-        or DEFAULT_DOCKER_REGISTRY)
-      _machine = (arch_machine_token(args.architecture) or "").replace("-", "_")
-      if _registry and _machine and distro_token:
-        _name = "%s-%s" % (_machine, distro_token)
-        if re.search(r"(^|-)cuda(-|$)", args.architecture):
-          _name += "-cuda"
-        _tag = os.environ.get("BITS_DOCKER_TAG", "").strip() or "latest"
-        args.dockerImage = "%s/%s:%s" % (_registry.rstrip("/"), _name, _tag)
-      else:
-        args.dockerImage = "registry.cern.ch/alisw/%s-builder" % distro_token
-
-    # ── --docker-platform / cross-compilation ─────────────────────────────────
-    # Derive the Docker --platform value from --architecture when the user has
-    # not set it explicitly.  If the target architecture matches the host we
-    # leave it as None (no --platform flag → daemon uses native image variant,
-    # zero overhead).  If they differ we inject the matching platform string so
-    # that Docker pulls the correct image variant and QEMU transparently
-    # emulates the target ISA inside the builder container.
-    #
-    # The special sentinel value "native" lets users opt out of automatic
-    # injection even when cross-compiling (useful on native ARM runners that
-    # happen to run an x86-64 bits client, or for testing).
-    if args.docker:
-      if getattr(args, "dockerPlatform", None) == "native":
-        args.dockerPlatform = None
-      elif not getattr(args, "dockerPlatform", None):
-        from bits_helpers.arch import docker_platform_for_arch, detectArch as _detectArch
-        target_plat = docker_platform_for_arch(args.architecture)
-        host_plat   = docker_platform_for_arch(_detectArch())
-        if target_plat and target_plat != host_plat:
-          args.dockerPlatform = target_plat
-        else:
-          args.dockerPlatform = None
-
-    # --sandbox-image implies --sandbox=podman. Promote from the mode-unset
-    # states ("off" is the default, "auto" the legacy default); an explicit
-    # "podman"/"sandbox-exec" is left as chosen.
-    if getattr(args, "sandboxImage", None) and getattr(args, "sandbox", None) in (None, "off", "auto"):
-      args.sandbox = "podman"
+    _finalise_docker(args, parser)
 
   if "annotate" in args:
     for comment_assignment in args.annotate:
