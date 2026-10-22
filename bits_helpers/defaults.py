@@ -22,6 +22,11 @@ from bits_helpers.utilities import asList
 SOURCE_KEYS = frozenset({"version", "tag", "source", "sources", "patches"})
 
 
+def override_key(key):
+  pkg, sep, matcher = str(key).split("@", 1)[0].partition(":")
+  return pkg.lower() + sep + matcher
+
+
 def validateDefaults(finalPkgSpec, defaults):
   if "valid_defaults" not in finalPkgSpec:
     return (True, "", [])
@@ -244,7 +249,7 @@ def readDefaults(configDir, defaults, error, architecture):
         # changes what the package fetches claims it (the blocks deep-merge).
         for key, block in xMeta["overrides"].items():
           if SOURCE_KEYS & set(block or {}):
-            override_dirs[str(key).split("@", 1)[0].lower()] = defaults_dirs.get(xdefaults)
+            override_dirs[override_key(key)] = defaults_dirs.get(xdefaults)
       # A repository's cvmfs.yaml (its CVMFS layout) counts as part of the
       # first profile taken from it, beneath that profile's own keys.
       d = defaults_dirs.get(xdefaults)
@@ -379,7 +384,7 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
   commonEnv = {"env": defaultsMeta["env"]} if "env" in defaultsMeta else {}
   overrides["defaults-release"] = commonEnv
   for k, v in defaultsMeta.get("overrides", {}).items():
-    f = k.split("@", 1)[0].lower()
+    f = override_key(k)
     if "@" in k:
       taps[f] = "dist:"+k
     overrides[f] = dict(**(v or {}))
