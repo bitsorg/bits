@@ -360,6 +360,7 @@ def doStatus(args, parser) -> None:
     """Resolve the dependency tree and report the build state of each package."""
     # Deferred heavy imports (build.py pulls in jinja2, analytics, etc.)
     from bits_helpers.build import (
+        _apply_source_mode, _source_mode,
         add_initdotsh_hash_marker, apply_defaults_legacy_initdotsh,
         defaults_store_url, hash_local_changes, prepare_hash_inputs,
         providers_and_defaults, resolve_defaults_variables, resolve_initdotsh_mode,
@@ -474,10 +475,15 @@ def doStatus(args, parser) -> None:
                 "treated as local checkouts): %s", ", ".join(sorted(mismatched))
             )
 
+    # As bits build: a recipe with both a git source and tarball sources keeps
+    # the form the defaults' source_mode picks (tar: no clone, version identity).
+    source_mode = _source_mode(defaults_meta)
     for pkg, spec in specs.items():
         spec["is_devel_pkg"] = pkg in devel_pkgs
         if spec["is_devel_pkg"]:
             spec["source"] = str(Path.cwd() / pkg)
+        else:
+            _apply_source_mode(spec, source_mode)
         # Initialise SCM (Sapling or Git)
         use_sapling = False
         if "source" in spec:

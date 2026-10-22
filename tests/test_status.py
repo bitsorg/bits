@@ -951,6 +951,52 @@ class TestDoStatus(unittest.TestCase):
     @patch("bits_helpers.status.readDefaults")
     @patch("bits_helpers.hashing.storeHashes")
     @patch("bits_helpers.build.storeHook")
+    def test_tarball_sources_win_over_git_as_in_build(self, mock_hook, mock_store_hashes,
+                                                       mock_read_defaults, mock_parse_defaults,
+                                                       mock_get_package_list):
+        """source: and sources: → tar mode, as bits build: no git source, no tag."""
+        rh = "abcdef" + "0" * 34
+        mock_parse_defaults.return_value = (None, {}, {}, {})
+        mock_read_defaults.return_value = None
+        spec = _make_spec(pkg="syscalc", version="1.1.7", tag="v1.1.7",
+                          source="https://github.com/syscalc/syscalc",
+                          remote_revision_hash=rh, remote_hashes=[rh])
+        spec["sources"] = ["https://example.org/sysCalc-1.1.7.tar.gz"]
+
+        def fake_get_pkg_list(*args, **kwargs):
+            kwargs["specs"]["syscalc"] = spec
+            return ([], ["syscalc"], set(), None)
+        mock_get_package_list.side_effect = fake_get_pkg_list
+        seen = {}
+
+        def fake_store_hashes(p, specs, considerRelocation):
+            seen.update(source="source" in specs[p], tag=specs[p].get("tag"))
+            specs[p].update(remote_revision_hash=rh, local_revision_hash="l" + rh,
+                            remote_hashes=[rh], local_hashes=["l" + rh], deps_hash="")
+        mock_store_hashes.side_effect = fake_store_hashes
+
+        import bits_helpers.status as status_mod
+        args = self._make_args(["syscalc"], json_output=True)
+        with patch("sys.stdout", new_callable=StringIO), \
+             patch("bits_helpers.status.topological_sort", return_value=["syscalc"]), \
+             patch("bits_helpers.status.compute_combined_arch", return_value=self.arch), \
+             patch("bits_helpers.status.prunePaths"), \
+             patch("bits_helpers.status._fetch_refs_with_clone") as clone, \
+             patch("bits_helpers.status._try_populate_refs") as refs:
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.error = lambda msg: (_ for _ in ()).throw(SystemExit(msg))
+            status_mod.doStatus(args, parser)
+        self.assertEqual(seen["source"], False)
+        self.assertNotEqual(seen["tag"], "v1.1.7")
+        clone.assert_not_called()
+        refs.assert_not_called()
+
+    @patch("bits_helpers.status.getPackageList")
+    @patch("bits_helpers.status.parseDefaults")
+    @patch("bits_helpers.status.readDefaults")
+    @patch("bits_helpers.hashing.storeHashes")
+    @patch("bits_helpers.build.storeHook")
     def test_json_output_structure(self, mock_hook, mock_store_hashes,
                                    mock_read_defaults, mock_parse_defaults,
                                    mock_get_package_list):
