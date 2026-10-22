@@ -108,6 +108,17 @@ package prepub's work and the gateway's commit. They come from the job's
 both kept as job artifacts, else from the job's own times; a retried pipeline is
 looked at again. `GET /ops/builds` returns them as `phases: {host, segments}`.
 
+**Trace** (`orch/trace.py`, with `BITS_ORCH_PREPUB_URLS`, the prepub nodes,
+comma-separated): which build published each CVMFS path, read from every prepub's
+measurement records (`GET /api/v1/measurements`), which prepub keeps for every
+build, so the index reaches back before the orchestrator; a recent build is read
+again while its records still come. `GET /ops/trace?repo=&path=&build_id=`
+answers `bits trace`: the publishes of the longest published path above *path*,
+and for each publishing pipeline and each pipeline of the build *build_id* (from
+the package's `.meta.json`) who requested it (`BITS_CERTIFIER`, or the queue's
+requester) and its passkey pre-approval with its event in the audit chain; for a
+caller who does not administer the pipeline's community, the pipeline id only.
+
 Every failed job of a failed build pipeline is then **recorded**
 (`orch/failures.py`): the end of its log, or of its `bits-build.log` artifact
 when GitLab cut the log at its size limit, is parsed for bits' `BUILD FAILED:

@@ -1390,6 +1390,26 @@ bits verify --from-manifest FILE [options]
 
 ---
 
+### bits trace
+
+Who built, published and approved a file on CVMFS.
+
+```bash
+bits trace /cvmfs/bits.cern.ch/atlas/x86_64-el9-gcc15-opt/Packages/ROOT/v6.40.02-2/lib/libCore.so
+```
+
+From the file (symlinks of a release view resolved) it finds its package, the `.meta.json` above it: package, version, content hash, the build that compiled it, the recipes' commit and the bits version. The console backend's orchestrator then names the pipeline that published the package (from prepub's measurement records, `BITS_ORCH_PREPUB_URLS`) and the pipelines of the build that compiled it, and for each who requested it and who approved it with their passkey, with the approval's event in the orchestrator's audit chain. Pipelines of communities you do not administer are named by id only. The path need not be mounted: without a `.meta.json` only the publish is shown.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--backend URL` | `$BITS_BACKEND_URL`, else site `console.backend_url` | Console backend to ask. |
+| `--cafile FILE` | system | CA bundle for the backend's certificate. |
+| `--json` | off | The answer as JSON. |
+
+It authenticates with your GitLab token, as `bits certify` does (`~/.bits/gitlab-token` or `$BITS_GITLAB_TOKEN`); without one it shows the package only.
+
+---
+
 ### bits sbom
 
 Export a build manifest as a Software Bill of Materials: CycloneDX 1.6 JSON
@@ -3277,6 +3297,7 @@ A file in a later directory replaces the one of the same name, so an empty `10-C
 | `containers.registry`, `containers.tag`, `containers.legacy_image` | The default `--docker` image; see [§22](#22-docker-support). |
 | `providers.url` | The always-on providers repository (after `$BITS_PROVIDERS`). |
 | `sbom.namespace` | SPDX document namespace base. |
+| `console.backend_url` | The console backend `bits trace` asks (after `--backend`, `$BITS_BACKEND_URL`). |
 | `paths.work_dir`, `paths.gitlab_token_file`, `paths.s3_keys_file` | Defaults after `$BITS_WORK_DIR`, the token and S3 key file variables. |
 
 ```yaml

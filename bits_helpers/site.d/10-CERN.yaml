@@ -16,3 +16,5 @@ containers:
   legacy_image: registry.cern.ch/alisw/{distro}-builder
 sbom:
   namespace: https://bits.cern.ch/sbom
+console:
+  backend_url: https://bits.cern.ch

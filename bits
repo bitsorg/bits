@@ -67,6 +67,7 @@ Trust and compliance:
   sign                    sign the common manifest (manifests CI)
   verify                  check a deployment against its build manifest
   sbom                    a build manifest as an SBOM (CycloneDX, SPDX)
+  trace FILE              who built, published and approved a file on CVMFS
   compliance              audit licence metadata and the store
 
 Binary store:
@@ -702,6 +703,13 @@ fi
 if [[ "${1:-}" == "use" ]]; then
   shift
   BITS_SELF="${BITSDIR}" exec "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' "$@"
+fi
+
+# `bits trace FILE`: its package, and from the console backend who built,
+# published and approved it. No work dir: it reads CVMFS and the backend.
+if [[ "${1:-}" == "trace" ]]; then
+  shift
+  BITS_SELF="${BITSDIR}" exec "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.trace import main; sys.exit(main())' "$@"
 fi
 
 # `bits cvmfs {platforms,show,summary,stage,publish} …` → the CVMFS group.

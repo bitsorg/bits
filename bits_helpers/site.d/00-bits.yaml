@@ -9,6 +9,8 @@ containers:
   registry:             # --docker without --docker-image: <registry>/<machine>-<distro>[-cuda]:<tag>
   tag: latest
   legacy_image:         # with BITS_LEGACY_REGISTRY, or without a registry; {distro} is filled in
+console:
+  backend_url:          # the console backend (bits trace)
 providers:
   url: https://github.com/bitsorg/bits-providers
 sbom:

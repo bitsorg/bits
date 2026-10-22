@@ -398,6 +398,29 @@ MIGRATIONS = [
             recorded_ms  INTEGER NOT NULL
         )""",
     ],
+    # 12: the CVMFS paths prepub published and the build (pipeline) that did, from
+    # prepub's measurement records (trace.py, `bits trace`).
+    [
+        """CREATE TABLE published_paths (
+            repo      TEXT NOT NULL,
+            path      TEXT NOT NULL,
+            build_id  TEXT NOT NULL,
+            job_id    TEXT NOT NULL,
+            ts_ms     INTEGER NOT NULL,
+            replaced  INTEGER NOT NULL DEFAULT 0,
+            prepub    TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (repo, path, job_id)
+        )""",
+        "CREATE INDEX published_paths_build ON published_paths(build_id)",
+        """CREATE TABLE traced_builds (
+            prepub      TEXT NOT NULL,
+            build_id    TEXT NOT NULL,
+            records     INTEGER NOT NULL,
+            last_ms     INTEGER NOT NULL,
+            checked_ms  INTEGER NOT NULL,
+            PRIMARY KEY (prepub, build_id)
+        )""",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

@@ -158,6 +158,10 @@ class Settings:
             in ("1", "true", "yes")
         self.orch_build_hosts = e.get("BITS_ORCH_BUILD_HOSTS", "config/build-hosts.yaml") \
             or "config/build-hosts.yaml"
+        # prepub nodes whose measurement records say which build published each
+        # CVMFS path (trace.py, for `bits trace`); none: no such index.
+        self.orch_prepub_urls = [u.strip() for u in (e.get("BITS_ORCH_PREPUB_URLS") or "").split(",")
+                                 if u.strip()]
         # A daily copy of the orchestrator database (approvals, failures, the
         # audit chain cannot be rebuilt): a directory, ideally on another disk.
         # Empty = no copies.

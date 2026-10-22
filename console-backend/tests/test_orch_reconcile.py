@@ -469,7 +469,7 @@ class WorkerStepsTest(_DB):
     def test_the_worker_runs_reconcile_before_actions(self):
         w = worker.Worker(self.conn, config.Settings(env={}))
         self.assertEqual([n for n, _ in w.steps], ["actions", "hints", "discover", "settle", "index",
-                                                    "collect", "backfill", "phases", "ship", "backup"])
+                                                    "collect", "backfill", "phases", "trace", "ship", "backup"])
         w.deps.reader = lambda: self.gl
         w.deps.store = lambda: None
         self.gl.add(1)
@@ -550,6 +550,18 @@ class ApiTest(_DB):
         self.assertEqual([e["kind"] for e in r.json()["events"]], ["pipeline.seen"])
         self.assertEqual(self._get("bob", "/ops/builds/1").status_code, 404)
         self.assertEqual(self._get("carol", "/ops/builds/77").status_code, 404)
+
+    def test_trace_names_the_publishing_pipeline_to_its_community(self):
+        with db.transaction(self.conn):
+            self.conn.execute("INSERT INTO published_paths (repo, path, build_id, job_id, ts_ms)"
+                              " VALUES ('r', 'a/ROOT/6-1', '1', 'j', 1)")
+        q = "/ops/trace?repo=r&path=/a/ROOT/6-1/lib/x.so"
+        (pub,) = self._get("alice", q).json()["publishes"]
+        self.assertEqual((pub["pipeline"], pub["visible"], pub["package"]), (1, True, "ROOT"))
+        (pub,) = self._get("bob", q).json()["publishes"]
+        self.assertEqual(pub, dict(pub, pipeline=1, visible=False))
+        self.assertNotIn("approval", pub)
+        self.assertEqual(self.client.get(q).status_code, 401)
 
     def test_a_builds_sbom_for_any_signed_in_user(self):
         from console_backend.orch import api

@@ -14,6 +14,7 @@
                                        what each job spent its time on)
     GET  /ops/builds/{pipeline}        one, with its jobs, variables and events
     GET  /ops/builds/{pipeline}/sbom?format=&build=   the SBOM a build published
+    GET  /ops/trace?repo=&path=&build_id=   who built and approved a CVMFS path (bits trace)
                                        (CycloneDX or SPDX): any signed-in user
     POST /ops/ci/published, /ops/ci/failed   {pipeline}: a CI job's hint to look
                                        at its pipeline now (GitLab CI ID token)
@@ -64,7 +65,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, kinds, outside, phases, reconcile, shadow)
+               failures, kinds, outside, phases, reconcile, shadow, trace)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -422,6 +423,20 @@ async def get_build(pipeline: int, request: Request):
     if b is None:
         raise HTTPException(404, "no such build")
     return JSONResponse(b, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/trace")
+async def trace_path(request: Request, repo: str = "", path: str = "", build_id: str = ""):
+    """Who built and who approved what is at *path* (repo-relative) on CVMFS, and
+    the build *build_id* that compiled its package (bits trace). Pipelines of
+    communities the caller does not administer are named by id only."""
+    data = await _caller(request)
+    mine = await _scope(data)
+
+    def read():
+        with _open() as conn:
+            return trace.lookup(conn, repo.strip(), path, build_id.strip(), visible=mine)
+    return JSONResponse(await run_in_threadpool(read), headers={"Cache-Control": "no-store"})
 
 
 SBOM_FILES = {"cyclonedx": "sbom.cdx.json", "spdx": "sbom.spdx.json"}

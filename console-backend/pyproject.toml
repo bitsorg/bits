@@ -18,6 +18,8 @@ dependencies = [
     # both were installed only by the image until now.
     "requests>=2.31",
     "boto3>=1.34",
+    # bits_helpers' site configuration (site.py) reads YAML.
+    "pyyaml",
 ]
 # bits_helpers comes from the bits checkout this lives in (the commit bits-console
 # pins as a submodule): the backend is part of bits, not released on its own.

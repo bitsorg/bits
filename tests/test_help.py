@@ -13,10 +13,10 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Run by the launcher itself, not by bitsBuild.
-LAUNCHER = {"store", "use", "cvmfs", "preload", "overlay", "q", "query", "enter",
+LAUNCHER = {"store", "use", "cvmfs", "preload", "overlay", "trace", "q", "query", "enter",
             "setenv", "load", "printenv", "unload", "list", "avail", "modulecmd",
             "shell-helper"}
-MODULE_COMMANDS = LAUNCHER - {"store", "use", "cvmfs", "preload", "overlay"}
+MODULE_COMMANDS = LAUNCHER - {"store", "use", "cvmfs", "preload", "overlay", "trace"}
 DEPRECATED = {"cleanup", "lcg-view", "cvmfs-stage", "cvmfs-publish", "store-stats"}
 
 

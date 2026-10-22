@@ -10,7 +10,8 @@ is true of builds, from GitLab and S3; with BITS_ORCH_QUEUE, after settle, dispa
 starts queued builds on free hosts, build_queue.py), with BITS_ORCH_CVMFS_STATUS the console's
 CVMFS status document (cvmfs_status.py), then collect and backfill (failures.py:
 every failed job's record, deduplicated into issues), phases (phases.py:
-what each finished build's job spent its time on), then ship (outside.py: the
+what each finished build's job spent its time on), trace (trace.py: which
+build published each CVMFS path), then ship (outside.py: the
 events to the outside copy of the audit chain) and the daily backup. Certification
 in shadow (shadow.py) runs on a thread of its own, since a first comparison
 hashes a whole architecture of the store; so do the worker's certifications
@@ -29,7 +30,7 @@ import time
 
 from .. import config
 from . import (actions, approvals, authority, build_queue, certifier, cvmfs_status, db, events,
-               failures, kinds, mirror, outside, phases, reconcile, shadow)
+               failures, kinds, mirror, outside, phases, reconcile, shadow, trace)
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -60,6 +61,8 @@ class Worker:
                                                    settings.orch_lookback_days)),
             # What each finished build's job spent its time on (the timeline).
             ("phases", lambda: phases.step(self.conn, self.deps.reader())),
+            # Which build published each CVMFS path (bits trace).
+            ("trace", lambda: trace.step(self.conn, settings.orch_prepub_urls)),
             ("ship", lambda: outside.ship(self.conn, self.outside)),
             ("backup", self._backup),
         ]
