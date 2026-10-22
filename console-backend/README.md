@@ -100,6 +100,14 @@ certification needs. Without a passkey the builds are queued all the same
 (`approval_error` says why). Revoking the batch's approval revokes the
 pre-approvals it gave.
 
+**Phases** (`orch/phases.py`): for each build pipeline finished in the last week,
+what its build job spent its time on, for the console's timeline: queued (from
+the build queue's request, else the pipeline's creation), setup, build, and per
+package prepub's work and the gateway's commit. They come from the job's
+`bits-phases.txt` and prepub's measurement records (`measurements-<pipeline>.json`),
+both kept as job artifacts, else from the job's own times; a retried pipeline is
+looked at again. `GET /ops/builds` returns them as `phases: {host, segments}`.
+
 Every failed job of a failed build pipeline is then **recorded**
 (`orch/failures.py`): the end of its log, or of its `bits-build.log` artifact
 when GitLab cut the log at its size limit, is parsed for bits' `BUILD FAILED:

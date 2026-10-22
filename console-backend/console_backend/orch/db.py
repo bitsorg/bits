@@ -387,6 +387,17 @@ MIGRATIONS = [
         "CREATE INDEX build_queue_batch ON build_queue(batch, id)",
         "CREATE INDEX build_queue_pipeline ON build_queue(pipeline_id)",
     ],
+    # 11: what a build pipeline's job spent its time on (phases.py), for the
+    # console's timeline: derived from GitLab and the job's artifacts.
+    [
+        """CREATE TABLE pipeline_phases (
+            pipeline_id  INTEGER PRIMARY KEY,
+            job_id       INTEGER NOT NULL,
+            host         TEXT NOT NULL DEFAULT '',
+            segments     TEXT NOT NULL DEFAULT '[]',
+            recorded_ms  INTEGER NOT NULL
+        )""",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

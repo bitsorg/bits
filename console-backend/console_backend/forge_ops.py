@@ -281,6 +281,11 @@ class GitLabForge:
         it expired)."""
         return self._tail("/jobs/%s/artifacts/%s" % (job_id, quote(name, safe="/")), max_bytes)
 
+    def job_artifact(self, job_id, name, max_bytes=8 << 20):
+        """One whole artifact file of a job, or None when it has none (or it
+        expired); larger than *max_bytes* is a ForgeError (413)."""
+        return self._raw("/jobs/%s/artifacts/%s" % (job_id, quote(name, safe="/")), max_bytes)
+
     def _raw(self, path, max_bytes):
         """A whole raw response of at most *max_bytes*; None on 404. Larger is a
         ForgeError (413), never a silently cut body."""

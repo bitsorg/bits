@@ -9,7 +9,8 @@ running due actions, then hints, discover, settle and index (reconcile.py: what
 is true of builds, from GitLab and S3; with BITS_ORCH_QUEUE, after settle, dispatch
 starts queued builds on free hosts, build_queue.py), with BITS_ORCH_CVMFS_STATUS the console's
 CVMFS status document (cvmfs_status.py), then collect and backfill (failures.py:
-every failed job's record, deduplicated into issues), then ship (outside.py: the
+every failed job's record, deduplicated into issues), phases (phases.py:
+what each finished build's job spent its time on), then ship (outside.py: the
 events to the outside copy of the audit chain) and the daily backup. Certification
 in shadow (shadow.py) runs on a thread of its own, since a first comparison
 hashes a whole architecture of the store; so do the worker's certifications
@@ -28,7 +29,7 @@ import time
 
 from .. import config
 from . import (actions, approvals, authority, build_queue, certifier, cvmfs_status, db, events,
-               failures, kinds, mirror, outside, reconcile, shadow)
+               failures, kinds, mirror, outside, phases, reconcile, shadow)
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -57,6 +58,8 @@ class Worker:
             ("backfill", lambda: failures.backfill(self.conn, self.deps.reader(),
                                                    settings.orch_backfill_days,
                                                    settings.orch_lookback_days)),
+            # What each finished build's job spent its time on (the timeline).
+            ("phases", lambda: phases.step(self.conn, self.deps.reader())),
             ("ship", lambda: outside.ship(self.conn, self.outside)),
             ("backup", self._backup),
         ]

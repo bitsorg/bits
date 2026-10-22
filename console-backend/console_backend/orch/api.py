@@ -10,7 +10,8 @@
     POST /ops/actions/{id}/reject      {reason?}
     GET  /ops/events?after=&limit=&wait=   the event log (overall admins), long-polled
     GET  /ops/builds?community=&outcome=&pipelines=&limit=
-                                       build pipelines and their builds
+                                       build pipelines and their builds (and phases:
+                                       what each job spent its time on)
     GET  /ops/builds/{pipeline}        one, with its jobs, variables and events
     GET  /ops/builds/{pipeline}/sbom?format=&build=   the SBOM a build published
                                        (CycloneDX or SPDX): any signed-in user
@@ -63,7 +64,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, kinds, outside, reconcile, shadow)
+               failures, kinds, outside, phases, reconcile, shadow)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -365,6 +366,15 @@ def _with_certify(conn, rows, reasons=False):
     return rows
 
 
+def _with_phases(conn, rows):
+    """Each row with what its build job spent its time on, when recorded."""
+    found = phases.for_pipelines(conn, [r["pipeline"] for r in rows])
+    for r in rows:
+        if r["pipeline"] in found:
+            r["phases"] = found[r["pipeline"]]
+    return rows
+
+
 @router.get("/ops/builds")
 async def list_builds(request: Request, community: str = "", outcome: str = "",
                       pipelines: str = "", limit: int = 50):
@@ -390,9 +400,9 @@ async def list_builds(request: Request, community: str = "", outcome: str = "",
 
     def read():
         with _open() as conn:
-            return _with_certify(conn, reconcile.list_builds(
+            return _with_phases(conn, _with_certify(conn, reconcile.list_builds(
                 conn, communities=mine, outcome=outcome or None, pipelines=ids, limit=limit),
-                reasons=overall)
+                reasons=overall))
     return JSONResponse({"builds": await run_in_threadpool(read)},
                         headers={"Cache-Control": "no-store"})
 
@@ -407,7 +417,7 @@ async def get_build(pipeline: int, request: Request):
             b = reconcile.get_build(conn, pipeline)
             if b is None or (mine is not None and b["community"] not in mine):
                 return None
-            return _with_certify(conn, [b], reasons=mine is None)[0]
+            return _with_phases(conn, _with_certify(conn, [b], reasons=mine is None))[0]
     b = await run_in_threadpool(read)
     if b is None:
         raise HTTPException(404, "no such build")
