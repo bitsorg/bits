@@ -5,6 +5,7 @@
 
 import hashlib
 import json
+import shutil
 import os
 import tarfile
 import tempfile
@@ -474,3 +475,31 @@ class TestSignedRequestsAreNotReplayed(unittest.TestCase):
         finally:
             os.unlink(tar)
             server.shutdown()
+
+
+class MultipartFileTest(unittest.TestCase):
+    """The streamed upload body: what requests' files= sent, read in pieces."""
+
+    def test_parts_length_and_rewind(self):
+        import email.parser
+        from bits_helpers.prepub import MultipartFile
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        tar = os.path.join(d, "p.tar")
+        payload = os.urandom(300000)
+        with open(tar, "wb") as fh:
+            fh.write(payload)
+        fields = {"repo": (None, "r"), "tar": ("p.tar", tar, "application/x-tar"),
+                  "tar_sha256": (None, "abc")}
+        with MultipartFile(fields) as body:
+            first = b"".join(iter(lambda: body.read(4096), b""))
+            self.assertEqual(len(first), len(body))
+            body.seek(0)                                   # urllib3's retry rewind
+            self.assertEqual(body.read(), first)
+            msg = email.parser.BytesParser().parsebytes(
+                b"Content-Type: " + body.content_type.encode() + b"\r\n\r\n" + first)
+        parts = {p.get_param("name", header="content-disposition"): p for p in msg.get_payload()}
+        self.assertEqual(list(parts), ["repo", "tar_sha256", "tar"])   # the file last
+        self.assertEqual(parts["repo"].get_payload(decode=True), b"r")
+        self.assertEqual(parts["tar"].get_payload(decode=True), payload)
+        self.assertEqual(parts["tar"].get_content_type(), "application/x-tar")

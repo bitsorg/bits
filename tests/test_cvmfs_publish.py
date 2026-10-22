@@ -1745,8 +1745,8 @@ class TestSubmitIngest(unittest.TestCase):
             def json(self): return {"job_id": "JID-1"}
 
         class Sess:
-            def post(self, url, files=None, headers=None, timeout=None):
-                cap["files"] = files; return Resp()
+            def post(self, url, data=None, headers=None, timeout=None):
+                cap["files"] = data.fields; return Resp()
 
         def fake_auth(token, method, uri, fields=None, body_hash=None,
                       bearer_auth=False, no_verify_tls=False):
@@ -1784,8 +1784,8 @@ class TestSubmitIngest(unittest.TestCase):
             def json(self): return {"job_id": "J"}
 
         class Sess:
-            def post(self, url, files=None, headers=None, timeout=None):
-                cap["files"] = files; return Resp()
+            def post(self, url, data=None, headers=None, timeout=None):
+                cap["files"] = data.fields; return Resp()
 
         def fake_auth(token, method, uri, fields=None, body_hash=None,
                       bearer_auth=False, no_verify_tls=False):
@@ -1813,8 +1813,8 @@ class TestSubmitIngest(unittest.TestCase):
             def json(self): return {"job_id": "J"}
 
         class Sess:
-            def post(self, url, files=None, headers=None, timeout=None):
-                cap["files"] = files; return Resp()
+            def post(self, url, data=None, headers=None, timeout=None):
+                cap["files"] = data.fields; return Resp()
 
         def fake_auth(token, method, uri, fields=None, body_hash=None,
                       bearer_auth=False, no_verify_tls=False):
@@ -1850,7 +1850,7 @@ class TestSubmitIngest(unittest.TestCase):
 
         class Sess:
             def get(self, url, timeout=None): return Health()
-            def post(self, url, files=None, headers=None, timeout=None):
+            def post(self, url, data=None, headers=None, timeout=None):
                 posted.append(url)
                 if post_exc:
                     raise post_exc
@@ -1888,8 +1888,8 @@ class TestSubmitIngest(unittest.TestCase):
         sess, _ = self._sess()
         cap = {}
         orig_post = sess.post
-        def post(url, files=None, headers=None, timeout=None):
-            cap["files"] = files; return orig_post(url, files, headers, timeout)
+        def post(url, data=None, headers=None, timeout=None):
+            cap["files"] = data.fields; return orig_post(url, data, headers, timeout)
         sess.post = post
         def fake_auth(token, method, uri, fields=None, **kw):
             cap["signed"] = fields; return {}
@@ -1912,8 +1912,8 @@ class TestSubmitIngest(unittest.TestCase):
         sess, _ = self._sess()
         cap = {}
         orig_post = sess.post
-        def post(url, files=None, headers=None, timeout=None):
-            cap["files"] = files; return orig_post(url, files, headers, timeout)
+        def post(url, data=None, headers=None, timeout=None):
+            cap["files"] = data.fields; return orig_post(url, data, headers, timeout)
         sess.post = post
         def fake_auth(token, method, uri, fields=None, **kw):
             cap["signed"] = fields; return {}

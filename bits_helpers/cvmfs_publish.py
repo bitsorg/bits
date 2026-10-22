@@ -359,10 +359,11 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         fields["prewarm"] = (None, "true")
     for k, v in identity.items():
         fields[k] = (None, v)
-    with open(tar_file, "rb") as tfh:
-        fields["tar"] = ("pkg.tar", tfh, "application/octet-stream")
+    fields["tar"] = ("pkg.tar", tar_file, "application/octet-stream")
+    with _pp.MultipartFile(fields) as body:   # streamed: the tar is not held in memory
+        headers["Content-Type"] = body.content_type
         try:
-            resp = session.post(url, files=fields, headers=headers, timeout=1800)
+            resp = session.post(url, data=body, headers=headers, timeout=1800)
         except requests.ConnectionError as exc:
             raise SystemExit("upload of %s cut off by prepub (%s); prepub refuses"
                              " an upload that is too large or would fill its"
