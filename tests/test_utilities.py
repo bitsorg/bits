@@ -16,7 +16,7 @@ from bits_helpers.utilities import resolve_version, resolve_spec_data, resolve_t
 from bits_helpers.utilities import apply_version_from
 from bits_helpers.utilities import topological_sort
 from bits_helpers.matchers import _parse_req_matcher, _collect_version_pins
-from bits_helpers.defaults import asDict, merge_dicts
+from bits_helpers.defaults import asDict, merge_dicts, parseDefaults
 from bits_helpers.matchers import _version_compare, _parse_patch_entry, filterPatches, _matcher_active
 from collections import OrderedDict
 import bits_helpers
@@ -647,6 +647,41 @@ class AsDictTest(unittest.TestCase):
     def test_empty_is_empty(self):
         self.assertEqual(asDict([]), {})
         self.assertEqual(asDict(None), {})
+
+class OverrideMatcherCaseTest(unittest.TestCase):
+    """parseDefaults lowercases an override's package regex, not its matcher:
+    variable names, versions and profile names in the matcher keep their case."""
+
+    ARCH = "slc9_x86-64"
+
+    def _keys(self, *keys):
+        meta = {"package": "defaults-release", "version": "v1",
+                "overrides": OrderedDict((k, {"tag": "t"}) for k in keys)}
+        err, overrides, _, _ = parseDefaults([], lambda: (meta, ""), print)
+        self.assertIsNone(err)
+        return [k for k in overrides if k != "defaults-release"]
+
+    def _active(self, key, version):
+        matcher = key.partition(":")[2]
+        return _matcher_active(matcher, self.ARCH, ["release", "O2"],
+                               {"ENABLE_CUDA": True}, version)
+
+    def test_package_lowercased_matcher_kept(self):
+        self.assertEqual(self._keys("ROOT:(?ENABLE_CUDA)", "Boost@dist", "ROOT"),
+                         ["root:(?ENABLE_CUDA)", "boost", "root"])
+
+    def test_variable_matcher_still_active(self):
+        key, = self._keys("ROOT:(?ENABLE_CUDA)")
+        self.assertTrue(self._active(key, "v6-32-01"))
+
+    def test_version_matcher_still_active(self):
+        key, = self._keys("ROOT:version>=v6-30-01-ALICE")
+        self.assertTrue(self._active(key, "v6-32-01-ALICE"))
+        self.assertFalse(self._active(key, "v6-28-01-ALICE"))
+
+    def test_defaults_matcher_still_active(self):
+        key, = self._keys("ROOT:defaults=O2")
+        self.assertTrue(self._active(key, None))
 
 
 class DefaultsChainMergeTest(unittest.TestCase):
