@@ -37,10 +37,11 @@ except ImportError:
 
 from bits_helpers.spdx_ids import EXCEPTIONS, LICENSES
 from bits_helpers.sync import redistributable_forms
+from bits_helpers import site
 
 CDX_SPEC = "1.6"
 SPDX_VERSION = "SPDX-2.3"
-NAMESPACE = "https://bits.cern.ch/sbom"      # SPDX documentNamespace base
+NAMESPACE = str(site.get("sbom.namespace") or "https://spdx.org/spdxdocs/bits")   # SPDX documentNamespace base
 
 _ALGS = {"md5": ("MD5", "MD5", 32), "sha1": ("SHA-1", "SHA1", 40),
          "sha256": ("SHA-256", "SHA256", 64), "sha384": ("SHA-384", "SHA384", 96),

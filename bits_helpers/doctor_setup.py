@@ -59,6 +59,19 @@ def check_modules(modules, missing_status):
       sys.executable, ", ".join(missing), _pip_hint(missing))
 
 
+def check_site():
+  """The site configuration files in effect, and where the main values come from."""
+  from bits_helpers import site
+  found = site.files()
+  if not found:
+    return WARN, "no site configuration files (bits' own site.d is missing)"
+  keys = ("store.read", "store.operations", "store.s3_endpoint", "containers.registry",
+          "containers.tag", "providers.url")
+  values = ["%s=%s [%s]" % (k, site.get(k), os.path.basename(site.origin(k) or "?"))
+            for k in keys if site.get(k) is not None]
+  return PASS, "%s; %s" % (", ".join(found), "; ".join(values) or "no values")
+
+
 def check_root():
   if os.geteuid() != 0:
     return PASS, "running as %s" % getpass.getuser()
@@ -202,6 +215,7 @@ def run_setup_checks(args):
     ("python modules", *check_modules(_MODULES, FAIL)),
     ("python modules (signing)", *check_modules(_SIGNING_MODULES, WARN)),
     ("python modules (b3:// store)", *check_modules(_B3_MODULES, FAIL if b3 else WARN)),
+    ("site configuration", *check_site()),
     ("user", *check_root()),
     ("git", *_check_host_tool("git")),
     ("C++ compiler", *_check_compiler()),

@@ -27,6 +27,7 @@ import re
 import urllib.request
 
 from bits_helpers.log import banner, debug, error, info, warning
+from bits_helpers import site
 
 # Front-matter keys read from each recipe. Values may be quoted (the header
 # auto-quoting writes them back quoted); strip one level of quotes.
@@ -219,7 +220,7 @@ def scan_specs(specs):
 
 def _anonymous_store_access(endpoint, bucket):
     """True when the bucket answers an UNAUTHENTICATED listing request."""
-    url = "%s/%s/?max-keys=1" % (endpoint.rstrip("/"), bucket)
+    url = "%s/%s/?max-keys=1" % ((endpoint or "https://s3.amazonaws.com").rstrip("/"), bucket)   # boto3's default
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
             return resp.status == 200 and b"ListBucketResult" in resp.read(4096)
@@ -245,7 +246,7 @@ def _s3_client(store_url):
     bucket = store.split("://", 1)[-1].strip("/")
     resolve_and_export_s3_config()
     endpoint = os.environ.get("S3_ENDPOINT_URL") or os.environ.get(
-        "BITS_S3_ENDPOINT_URL") or "https://s3.cern.ch"
+        "BITS_S3_ENDPOINT_URL") or site.get("store.s3_endpoint")
     style = os.environ.get("S3_ADDRESSING_STYLE", "path")
     if os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
         cfg = Config(s3={"addressing_style": style})

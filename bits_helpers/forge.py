@@ -16,6 +16,7 @@ actually approved before anything is signed.
 import os
 
 from bits_helpers.log import warning
+from bits_helpers import site
 
 
 def load_admin_policy(source) -> dict:
@@ -241,7 +242,7 @@ def gitlab_identify(api_url, token, timeout=15):
         return None
 
 
-DEFAULT_GITLAB_TOKEN_FILE = "~/.bits/gitlab-token"
+DEFAULT_GITLAB_TOKEN_FILE = site.get("paths.gitlab_token_file") or "~/.bits/gitlab-token"
 
 
 def resolve_gitlab_token(explicit=None):

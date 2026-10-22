@@ -1,0 +1,19 @@
+# bits' own defaults, site-neutral. Override any key in a later NN-<name>.yaml
+# (see "Site configuration" in docs/REFERENCE.md); null removes a value.
+store:
+  read:                 # read store of build and doctor when none is given
+  read_by_arch: {}      # architecture -> read store, before `read`
+  operations:           # store of certify, compliance, gc, store-stats, publish and bitsStore
+  s3_endpoint:          # endpoint of b3:// stores (unset: boto3's own default)
+containers:
+  registry:             # --docker without --docker-image: <registry>/<machine>-<distro>[-cuda]:<tag>
+  tag: latest
+  legacy_image:         # with BITS_LEGACY_REGISTRY, or without a registry; {distro} is filled in
+providers:
+  url: https://github.com/bitsorg/bits-providers
+sbom:
+  namespace: https://spdx.org/spdxdocs/bits
+paths:
+  work_dir: sw
+  gitlab_token_file: ~/.bits/gitlab-token
+  s3_keys_file: ~/.bits/s3keys

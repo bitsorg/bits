@@ -97,7 +97,7 @@ GETSTATUSOUTPUT_MOCKS = {
 
 class ArgsTestCase(unittest.TestCase):
   @mock.patch.dict(os.environ, {"BITS_DOCKER_REGISTRY": "", "BITS_LEGACY_REGISTRY": "", "BITS_DOCKER_TAG": ""})
-  @mock.patch("bits_helpers.args._defaults_docker_registry", return_value=None)
+  @mock.patch("bits_helpers.args._defaults_docker", return_value=None)
   @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
   @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
   # Neutralise the host-dependent --memory/--memory-swap docker injection so
@@ -118,7 +118,7 @@ class ArgsTestCase(unittest.TestCase):
           self.assertEqual(args[k], v)
 
   @mock.patch.dict(os.environ, {"BITS_DOCKER_REGISTRY": "", "BITS_LEGACY_REGISTRY": "", "BITS_DOCKER_TAG": ""})
-  @mock.patch("bits_helpers.args._defaults_docker_registry", return_value=None)
+  @mock.patch("bits_helpers.args._defaults_docker", return_value=None)
   @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
   @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
   @mock.patch("bits_helpers.args._docker_memory_args", return_value=[])

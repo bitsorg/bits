@@ -43,13 +43,11 @@
 # selectors now only match LEGACY pointer objects left by older builds and
 # are retained for one-time migration cleanup (`bits store rm --links …`).
 #
-# Credentials: ~/.bits/s3keys (override $BITS_AWS_KEYS_FILE).
-# Store:       CERN S3 by default  (override $BITS_S3_STORE).
+# Credentials: $BITS_AWS_KEYS_FILE, else the site's paths.s3_keys_file.
+# Store:       $BITS_S3_STORE, else the site's store.operations.
 set -euo pipefail
 
 PROG=$(basename "$0")
-STORE="${BITS_S3_STORE:-https://s3.cern.ch/lcgapp-bits-testing}"
-S3KEYS="${BITS_AWS_KEYS_FILE:-$HOME/.bits/s3keys}"
 
 # bitsStore lives next to the bits_helpers package (bits/), so it imports the
 # helpers from its own directory — no dependency on `bits` being on PATH.
@@ -58,6 +56,13 @@ SELFDIR="$(cd "$(dirname "$0")" && pwd)"
 # The runtime ignores PYTHONPATH (-E -s), so it gets this directory as BITSSTORE_SELF.
 BITS_PY=(python3)
 [[ -x "$SELFDIR/runtime/bin/python3" ]] && BITS_PY=("$SELFDIR/runtime/bin/python3" -E -s)
+
+S3KEYS="${BITS_AWS_KEYS_FILE:-}"
+if [[ -z "$S3KEYS" ]]; then
+  S3KEYS=$(BITSSTORE_SELF="$SELFDIR" "${BITS_PY[@]}" -c 'import os, sys; sys.path.insert(0, os.environ["BITSSTORE_SELF"]); from bits_helpers import site; site.main(["paths.s3_keys_file"])')
+  S3KEYS="${S3KEYS:-~/.bits/s3keys}"
+  S3KEYS="${S3KEYS/#\~/$HOME}"
+fi
 
 # Load creds if present; a missing file is not fatal here (--help needs no S3).
 # The Python side checks for credentials before it actually touches S3.
@@ -70,7 +75,7 @@ if [ -f "$S3KEYS" ]; then
   [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN || true
 fi
 
-BITSSTORE_STORE="$STORE" BITSSTORE_SELF="$SELFDIR" \
+BITSSTORE_STORE="${BITS_S3_STORE:-}" BITSSTORE_SELF="$SELFDIR" \
   PYTHONPATH="${SELFDIR}${PYTHONPATH:+:$PYTHONPATH}" \
   exec "${BITS_PY[@]}" - "$@" <<'PY'
 import argparse, datetime, fnmatch, hashlib, json, os, sys, tempfile
@@ -86,12 +91,17 @@ try:
 except Exception:
     trust = None
 
-STORE = os.environ["BITSSTORE_STORE"]
+from bits_helpers import site
+STORE = os.environ.get("BITSSTORE_STORE") or str(site.get("store.operations") or "")
+if not STORE and not set(sys.argv[1:]) & {"-h", "--help"}:
+    sys.exit("bits store: no store: set $BITS_S3_STORE, or store.operations in a site "
+             "configuration file (see bits doctor)")
 PROG = "bits store"
 NOW = datetime.datetime.now(datetime.timezone.utc)
 # Default bits work dir (S3 client + default MANIFESTS) for the gc/stats verbs;
 # mirrors bits_helpers.args without importing that heavy module on every call.
-_WORKDIR = os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR") or "sw"
+_WORKDIR = (os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR")
+            or site.get("paths.work_dir") or "sw")
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────

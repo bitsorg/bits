@@ -8,6 +8,7 @@ from bits_helpers.arch import (detectArch, arch_distro_token, arch_machine_token
                                normalise_arch_key, detectArchComponents,
                                apply_arch_template)
 from bits_helpers.workarea import cleanup_git_log
+from bits_helpers import site
 import multiprocessing
 
 import re
@@ -19,13 +20,9 @@ import subprocess as commands
 from os.path import abspath, dirname, basename
 import sys
 
-# Default workdir: fall back on "sw" if env is not set or empty
-DEFAULT_WORK_DIR = os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR") or "sw"
-# Default container registry for --docker image selection (the bits-containers
-# minimal-OS toolchain images). Overridable per invocation via BITS_DOCKER_REGISTRY
-# or per community via a `docker_registry:` field in defaults-release; bypassed
-# entirely by BITS_LEGACY_REGISTRY=1 (legacy alisw builders).
-DEFAULT_DOCKER_REGISTRY = "gitlab-registry.cern.ch/bits/containers"
+# Default workdir: the environment, else the site configuration (paths.work_dir).
+DEFAULT_WORK_DIR = (os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR")
+                    or site.get("paths.work_dir") or "sw")
 
 
 def _add_s3_connection_opts(group):
@@ -43,7 +40,7 @@ def _add_s3_connection_opts(group):
                      help=("S3 endpoint URL for b3:// stores (e.g. "
                            "https://s3.amazonaws.com or http://minio.local:9000). "
                            "Overrides $S3_ENDPOINT_URL / $AWS_ENDPOINT_URL_S3. "
-                           "Default: https://s3.cern.ch. Set this to use a non-CERN bucket."))
+                           "Default: the site configuration's store.s3_endpoint (CERN: https://s3.cern.ch)."))
   group.add_argument("--s3-access-key", dest="s3AccessKey", metavar="KEY", default=None,
                      help=("S3 access key id. Overrides $AWS_ACCESS_KEY_ID. Prefer the "
                            "env var (a CI/CD variable or gitlab-runner `environment` entry) "
@@ -156,10 +153,9 @@ def _docker_memory_args():
 # cd to this directory before start
 DEFAULT_CHDIR = os.environ.get("BITS_CHDIR") or "."
 
-# Default S3 content store for the store-operating actions (certify, compliance,
-# gc, store-stats, publish). Precedence: CLI --remote-store (or a .bitsuse-recorded
-# one) > $BITS_S3_STORE > this literal. Same env var the bitsStore launcher reads.
-DEFAULT_S3_STORE = os.environ.get("BITS_S3_STORE") or "https://s3.cern.ch/lcgapp-bits-testing"
+# Store of the store-operating actions (certify, compliance, gc, store-stats,
+# publish): --remote-store > $BITS_S3_STORE > the site's store.operations.
+DEFAULT_S3_STORE = os.environ.get("BITS_S3_STORE") or site.get("store.operations") or ""
 
 # Worker count assumed when --parallel/--builders is given with no number.
 BUILDERS_AUTO = 4
@@ -517,9 +513,9 @@ def add_doctor_arguments(subparsers, ctx):
   be rebuilt from scratch. rsync://, https://, b3:// and s3:// remote stores
   are recognised. Some of these require credentials: s3:// remotes require an
   ~/.s3cfg; b3:// remotes require AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-  environment variables. A useful remote store is
-  'https://s3.cern.ch/swift/v1/alibuild-repo'. It requires no credentials and
-  provides tarballs for the most common supported architectures.
+  environment variables. Without --remote-store, the site configuration's
+  store.read_by_arch / store.read (at CERN: ALICE's public alibuild-repo for its
+  architectures) or the community's system: remote_store is used.
   """)
   doctor_remote.add_argument("--no-remote-store", action="store_true",
                             help="Disable the use of the remote store, even if it is enabled by default.")
@@ -1550,11 +1546,11 @@ def add_build_arguments(subparsers, ctx):
   Builds can be done inside a Docker container, to make it easier to get a
   common, usable environment. The Docker daemon must be installed and running
   on your system. With --docker and no --docker-image, the image is derived from
-  the architecture as <registry>/<machine>-<distro>[-cuda]:latest, where the
-  registry is BITS_DOCKER_REGISTRY, else a `docker_registry:` field in
-  defaults-release, else the built-in default (BITS_DOCKER_TAG overrides the
-  tag). Set BITS_LEGACY_REGISTRY=1 for the legacy alisw/<distro>-builder images
-  (the aliBuild wrapper sets this). Images are fetched if unavailable.
+  the architecture as <registry>/<machine>-<distro>[-cuda]:<tag>. The registry is
+  BITS_DOCKER_REGISTRY, else system: docker_registry in defaults-release, else
+  the site configuration's containers.registry; the tag likewise BITS_DOCKER_TAG,
+  system: docker_tag, containers.tag. BITS_LEGACY_REGISTRY=1 (set by the aliBuild
+  wrapper) uses containers.legacy_image. Images are fetched if unavailable.
   """)
   build_docker.add_argument("--docker", dest="docker", action="store_true",
                             help="Build inside a Docker container.")
@@ -1654,9 +1650,9 @@ def add_build_arguments(subparsers, ctx):
   be rebuilt from scratch. rsync://, https://, b3:// and s3:// remote stores
   are recognised. Some of these require credentials: s3:// remotes require an
   ~/.s3cfg; b3:// remotes require AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-  environment variables. A useful remote store is
-  'https://s3.cern.ch/swift/v1/alibuild-repo'. It requires no credentials and
-  provides tarballs for the most common supported architectures. To archive to
+  environment variables. Without --remote-store, the site configuration's
+  store.read_by_arch / store.read (at CERN: ALICE's public alibuild-repo for its
+  architectures) or the community's system: remote_store is used. To archive to
   and reuse from your own bucket, use a b3://<bucket> store (append ::rw to
   --remote-store, or add --write-store) and set the connection via the --s3-*
   options / env vars below; a non-CERN endpoint (AWS, MinIO, Ceph) is supported
@@ -2106,24 +2102,17 @@ On Mac, 1-2 latest supported OSX versions:
    Apple Silicon: osx_arm64
 """
 
-# When updating this variable, also update docs/docs/user.md!
-S3_SUPPORTED_ARCHS = "slc7_x86-64", "slc8_x86-64", "ubuntu2004_x86-64", "ubuntu2204_x86-64", "ubuntu2404_x86-64", "slc9_x86-64", "slc9_aarch64"
-# Match S3 support by (distro, machine) rather than exact string, so an
-# equivalent layout (e.g. ubuntu2404_x86_64) still resolves to the same entry.
-_S3_SUPPORTED_ARCH_KEYS = {normalise_arch_key(a) for a in S3_SUPPORTED_ARCHS}
+def _defaults_docker(args, key):
+  """A container setting (docker_registry, docker_tag) of the merged defaults
+  chain, under system: or, the old spelling, top-level; else None.
 
-def _defaults_docker_registry(args):
-  """Return the `docker_registry:` value from the merged defaults chain, or None.
-
-  A community pins its container registry in defaults-release either as a bare
-  top-level `docker_registry:` or under `system: docker_registry:`. Read
-  defensively: a malformed/unreadable defaults set must not break arg parsing.
+  Read defensively: a malformed/unreadable defaults set must not break arg parsing.
   """
   try:
     meta, _ = readDefaults(args.configDir, args.defaults,
                            lambda *a, **k: None, args.architecture)
     sysd = meta.get("system", {}) or {}
-    val = sysd.get("docker_registry", meta.get("docker_registry"))
+    val = sysd.get(key, meta.get(key))
     return val.strip() if isinstance(val, str) and val.strip() else None
   except (Exception, SystemExit):
     # readDefaults calls sys.exit(1) on a malformed defaults file; don't let this
@@ -2235,16 +2224,9 @@ def _finalise_docker(args, parser):
   # in docker the docker image is given by the first part of the
   # architecture we want to build for.
   if args.docker and not args.dockerImage:
-    # Choose the builder image from the architecture. Resolution order:
-    #   1. BITS_LEGACY_REGISTRY truthy  -> legacy alisw/<distro>-builder
-    #      (ALICE guard, mirrors BITS_LEGACY_INITDOTSH; the aliBuild wrapper
-    #      sets it so ALICE keeps its images regardless of any registry here).
-    #   2. otherwise -> a bits-containers-style image from the configured
-    #      registry: BITS_DOCKER_REGISTRY env, else a `docker_registry:` field
-    #      in defaults-release, else the built-in DEFAULT_DOCKER_REGISTRY.
-    #      Image = <registry>/<machine>-<distro>[-cuda]:<tag> (BITS_DOCKER_TAG,
-    #      default latest). If the arch cannot be decomposed, fall back to the
-    #      legacy alisw builder.
+    # The image from the architecture: <registry>/<machine>-<distro>[-cuda]:<tag>,
+    # each from the environment, the defaults' system: or the site configuration;
+    # BITS_LEGACY_REGISTRY (the aliBuild wrapper) or no registry: legacy_image.
     # Only the base OS and the -cuda axis pick the image; the compiler axes
     # (-gccNN/-clang) and build type (-opt/-dbg) are resolved inside the
     # container by the entrypoint shim, so they do not change it.
@@ -2252,17 +2234,21 @@ def _finalise_docker(args, parser):
     _legacy = os.environ.get("BITS_LEGACY_REGISTRY", "").strip().lower() in ("1", "true", "yes", "on")
     _registry = None if _legacy else (
       os.environ.get("BITS_DOCKER_REGISTRY", "").strip()
-      or _defaults_docker_registry(args)
-      or DEFAULT_DOCKER_REGISTRY)
+      or _defaults_docker(args, "docker_registry")
+      or site.get("containers.registry"))
     _machine = (arch_machine_token(args.architecture) or "").replace("-", "_")
     if _registry and _machine and distro_token:
       _name = "%s-%s" % (_machine, distro_token)
       if re.search(r"(^|-)cuda(-|$)", args.architecture):
         _name += "-cuda"
-      _tag = os.environ.get("BITS_DOCKER_TAG", "").strip() or "latest"
-      args.dockerImage = "%s/%s:%s" % (_registry.rstrip("/"), _name, _tag)
+      _tag = (os.environ.get("BITS_DOCKER_TAG", "").strip()
+              or _defaults_docker(args, "docker_tag") or site.get("containers.tag") or "latest")
+      args.dockerImage = "%s/%s:%s" % (str(_registry).rstrip("/"), _name, _tag)
+    elif site.get("containers.legacy_image"):
+      args.dockerImage = str(site.get("containers.legacy_image")).replace("{distro}", distro_token)
     else:
-      args.dockerImage = "registry.cern.ch/alisw/%s-builder" % distro_token
+      parser.error("--docker: no image for %s; give --docker-image, or set containers.registry "
+                   "in a site configuration file" % args.architecture)
 
   # ── --docker-platform / cross-compilation ─────────────────────────────────
   # Derive the Docker --platform value from --architecture when the user has
@@ -2327,7 +2313,7 @@ def finaliseArgs(args, parser):
     _alibuild = os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild"
     args.bits_providers = (
       os.environ.get("BITS_PROVIDERS")
-      or ("" if _alibuild else "https://github.com/bitsorg/bits-providers"))
+      or ("" if _alibuild else site.get("providers.url") or ""))
     if args.bits_providers:
       os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
     args.provider_policy = _parse_provider_policy(
@@ -2356,9 +2342,8 @@ def finaliseArgs(args, parser):
   # child processes inherit it. Under the aliBuild wrapper (BITS_BRANDING=aliBuild)
   # the built-in default is off (classic aliBuild uses a local alidist checkout);
   # native `bits` defaults to the provider path.
-  _BITS_PROVIDERS_DEFAULT = "https://github.com/bitsorg/bits-providers"
   _alibuild_mode = os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild"
-  _providers_default = "" if _alibuild_mode else _BITS_PROVIDERS_DEFAULT
+  _providers_default = "" if _alibuild_mode else site.get("providers.url") or ""
   args.bits_providers = os.environ.get("BITS_PROVIDERS") or _providers_default
   if args.bits_providers:
     os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
@@ -2460,14 +2445,13 @@ def finaliseArgs(args, parser):
     # otherwise system.remote_store overrides the built-in arch default below.
     args.remoteStoreExplicit = bool(args.remoteStore)
 
-    # A public read store is enabled by default on selected platforms. Unlike
+    # Without one given, the site's read store for the architecture. Unlike
     # aliBuild, activating a store does NOT force --no-system (reuse is
     # content-hash addressed); use --no-system for a self-contained build.
-    if normalise_arch_key(args.architecture) in _S3_SUPPORTED_ARCH_KEYS and not args.preferSystem and not args.no_remote_store:
-      if not args.remoteStore:
-        args.remoteStore = "https://s3.cern.ch/swift/v1/alibuild-repo"
-    elif args.no_remote_store:
+    if args.no_remote_store:
       args.remoteStore = ""
+    elif not args.remoteStore and not args.preferSystem:
+      args.remoteStore = site.read_store(args.architecture)
 
     if args.remoteStore.endswith("::rw") and args.writeStore:
       parser.error("cannot specify ::rw and --write-store at the same time")

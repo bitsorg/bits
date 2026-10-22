@@ -18,16 +18,17 @@ from bits_helpers.log import debug, info, error, warning, dieOnError, ProgressPr
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, ver_rev
 from bits_helpers.arch import effective_arch
 from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
+from bits_helpers import site
 
 
-# Default S3 endpoint. Kept for backward compatibility with aliBuild: when no
-# endpoint is configured (neither CLI nor env), b3:// stores talk to CERN S3.
-DEFAULT_S3_ENDPOINT = "https://s3.cern.ch"
+# S3 endpoint of b3:// stores when neither CLI nor env gives one: the site's
+# store.s3_endpoint (CERN S3 in 10-CERN.yaml, as aliBuild had it).
+DEFAULT_S3_ENDPOINT = site.get("store.s3_endpoint")   # None: boto3's own default
 
 # Default private file to read S3 credentials from when they are not in the
 # environment: ~/.bits/s3keys (alongside ~/.bits/gitlab-token). Override with
 # $BITS_AWS_KEYS_FILE.
-DEFAULT_AWS_KEYS_FILE = "~/.bits/s3keys"
+DEFAULT_AWS_KEYS_FILE = site.get("paths.s3_keys_file") or "~/.bits/s3keys"
 
 def redistributable_forms(value) -> frozenset:
   """Parse a ``redistributable:`` value into the set of distributable forms.
@@ -203,7 +204,7 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
   connection without threading secrets through the command line.
 
   Backward compatible: with no --s3-* flags and no env vars, the endpoint
-  defaults to CERN S3 and credentials come from AWS_ACCESS_KEY_ID /
+  is the site's (CERN S3 at CERN) and credentials come from AWS_ACCESS_KEY_ID /
   AWS_SECRET_ACCESS_KEY exactly as before (aliBuild behaviour).
   """
   # Fallback credential source, below flags and env: a private ~/.bits/s3keys file
@@ -223,7 +224,8 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
                        "S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL")
               or _file.get("endpoint")
               or DEFAULT_S3_ENDPOINT)
-  os.environ["S3_ENDPOINT_URL"] = endpoint
+  if endpoint:
+    os.environ["S3_ENDPOINT_URL"] = endpoint
 
   access_key = access_key or _pick("BITS_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID") or _file.get("access_key")
   if access_key:
@@ -1091,7 +1093,7 @@ class Boto3RemoteSync(RemoteSync):
       sys.exit(1)
 
     # Connection settings from the environment (resolve_and_export_s3_config sets
-    # them): endpoint defaults to CERN S3; region and addressing style support
+    # them): endpoint from the site (unset: boto3's); region and addressing style support
     # non-CERN buckets (MinIO usually needs addressing_style='path').
     endpoint = os.environ.get("S3_ENDPOINT_URL") or DEFAULT_S3_ENDPOINT
     region = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION")

@@ -1040,7 +1040,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `-c DIR`, `--config-dir DIR` | Directory containing recipe files. Default: `.`. |
 | `--search-path NAMES` | Comma-separated recipe sub-repos to search besides the config dir. A relative NAME resolves to `<config-dir>/NAME.bits`; absolute paths are used as-is. Seeds `BITS_PATH` (an explicit `$BITS_PATH` wins). |
 | `--reference-sources DIR` | Directory for the local mirrors of git repositories. Default: `<work-dir>/MIRROR`. |
-| `--remote-store URL` | Binary store to fetch pre-built tarballs from. Append `::rw` to also upload to it (cannot be combined with `--write-store`). On supported architectures the public CERN store is the default; a `remote_store:` entry in the defaults `system:` block replaces that default. |
+| `--remote-store URL` | Binary store to fetch pre-built tarballs from. Append `::rw` to also upload to it (cannot be combined with `--write-store`). Without it, the [site configuration](#site-configuration)'s `store.read_by_arch` / `store.read` is the default (at CERN, ALICE's public store for its architectures); a `remote_store:` entry in the defaults `system:` block replaces that default. |
 | `--write-store URL` | Binary store to upload built tarballs to. Given alone (no `--remote-store`), it is also the read store, except where a default remote store applies (then use `--remote-store URL::rw`). |
 | `--no-remote-store` | Disable the default remote store; a `--write-store` is still read from. |
 | `--insecure` | Do not validate TLS certificates of an `https://` store. |
@@ -2844,7 +2844,7 @@ package_family:
 | `qualify_arch` | Set to `true` to append **all** non-`release` default names to the install architecture string; see [Qualifying the install architecture](#qualifying-the-install-architecture) below. |
 | `append_arch` | String appended **verbatim** to the install architecture string, **only for this defaults file** (include the separator, e.g. `-gcc13`). Unlike `qualify_arch`, which qualifies with every default name in the chain, each file opts in independently and chooses the exact string; see [Selective qualification with append_arch](#selective-qualification-with-append_arch) below. |
 | `own_hash_neutral` | Set to `true` next to an `append_arch` (typically a build type such as `opt`/`dbg`) to leave that qualifier out of the architecture of `own_hash` packages, so one toolchain build serves every build type. See [Shared toolchains](#shared-toolchains-own_hash). |
-| `docker_registry` | (in `defaults-release`) Registry the default `--docker` builder image is taken from; `$BITS_DOCKER_REGISTRY` wins. See [§22](#22-docker-support). |
+| `docker_registry`, `docker_tag` | (in `defaults-release`, under `system:`; a top-level `docker_registry:` is still read) Registry and tag of the default `--docker` builder image; `$BITS_DOCKER_REGISTRY` / `$BITS_DOCKER_TAG` win, the [site configuration](#site-configuration) comes after. See [§22](#22-docker-support). |
 | `checksum_mode` | Base checksum verification policy for every build using this profile. Accepted values: `off` (default), `warn`, `enforce`, `print`. Equivalent to passing the corresponding `--*-checksums` flag on every invocation. CLI flags override this setting; see [Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles) below. |
 | `write_checksums` | Set to `true` to automatically write/update `checksums/<pkg>.checksum` files after every build. Equivalent to passing `--write-checksums` on every invocation. The CLI flag overrides this setting. |
 | `variables` | Values for `(?NAME)` matchers and `%(NAME)s` substitution; see [Defaults `variables:` and predefined platform variables](#defaults-variables-and-predefined-platform-variables). |
@@ -3257,6 +3257,38 @@ The content-addressed store path (`TARS/<arch>/store/<h2>/<hash>/`) is unaffecte
 
 ---
 
+### Site configuration
+
+The defaults and assumptions an installation may change (stores, container images, the providers repository, the SBOM namespace and a few paths) are in YAML files named `NN-<name>.yaml`, read from these directories in order:
+
+1. `bits_helpers/site.d/` in bits: `00-bits.yaml` (site-neutral) and `10-CERN.yaml` (CERN);
+2. `/etc/bits/site.d/` (a host, a runner);
+3. `~/.config/bits/site.d/` (`$XDG_CONFIG_HOME`);
+4. `$BITS_SITE_DIR`.
+
+A file in a later directory replaces the one of the same name, so an empty `10-CERN.yaml` in `/etc/bits/site.d` switches off CERN's. All files are then merged in name order, the last winning: mappings key by key, other values replaced whole, `null` removing a value. Suggested ranges: `00`–`09` bits, `10`–`49` organisation, `50`–`89` host or runner, `90`–`99` personal. The command line, the environment and the community's `system:` defaults come before all of them. `bits doctor` lists the files in effect and where the main values come from; a file that does not parse stops bits.
+
+| Key | Use |
+|-----|-----|
+| `store.read` | Read store of `bits build`/`doctor` without `--remote-store` (after `system: remote_store`). |
+| `store.read_by_arch` | Architecture → read store, before `store.read` (matched by distribution and CPU). |
+| `store.operations` | Store of `certify`, `compliance`, `gc`, `store-stats`, `publish` and `bits store` (after `$BITS_S3_STORE`). |
+| `store.s3_endpoint` | Endpoint of `b3://` stores (after `--s3-endpoint` and the environment); unset: boto3's default. |
+| `containers.registry`, `containers.tag`, `containers.legacy_image` | The default `--docker` image; see [§22](#22-docker-support). |
+| `providers.url` | The always-on providers repository (after `$BITS_PROVIDERS`). |
+| `sbom.namespace` | SPDX document namespace base. |
+| `paths.work_dir`, `paths.gitlab_token_file`, `paths.s3_keys_file` | Defaults after `$BITS_WORK_DIR`, the token and S3 key file variables. |
+
+```yaml
+# /etc/bits/site.d/50-runner.yaml: this runner reads and writes its own bucket
+store:
+  read: b3://my-bucket
+  operations: b3://my-bucket
+  s3_endpoint: https://minio.example.org
+```
+
+---
+
 ## 19. Architecture-Independent (Shared) Packages
 
 Some packages — calibration databases, reference data files, pure-Python libraries, architecture-neutral scripts — produce identical output regardless of the build platform. Rebuilding them on every architecture wastes time and storage. The `architecture: share` recipe field tells bits to install such packages into a single, platform-neutral directory tree that all architectures can read.
@@ -3456,9 +3488,10 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 | `BITS_PATH` | _(empty)_ | Comma-separated list of additional recipe search directories. Absolute paths are used directly; a relative name resolves to `<recipe dir>/<name>.bits`. `--search-path` seeds it; an explicit `BITS_PATH` wins. |
 | `BITS_CHDIR` | _(unset)_ | Directory to change to before building (same as `-C`). |
 | `BITS_TAR_COMPRESSOR` | `gzip -n` | Compressor for package tarballs. Must be deterministic (e.g. `pigz -n -p4` on a farm with a uniform pigz, never plain `pigz`). |
-| `BITS_DOCKER_REGISTRY` | `gitlab-registry.cern.ch/bits/containers` | Registry of the default `--docker` builder image (wins over `docker_registry:` in `defaults-release`). |
-| `BITS_DOCKER_TAG` | `latest` | Tag of the default builder image. |
-| `BITS_LEGACY_REGISTRY` | _(unset)_ | `1` selects the legacy `alisw/<distro>-builder` images (the `aliBuild` wrapper sets it). |
+| `BITS_DOCKER_REGISTRY` | site `containers.registry` | Registry of the default `--docker` builder image (wins over `system: docker_registry` in `defaults-release`). |
+| `BITS_DOCKER_TAG` | site `containers.tag` (`latest`) | Tag of the default builder image. |
+| `BITS_LEGACY_REGISTRY` | _(unset)_ | `1` selects the site's `containers.legacy_image` (the `aliBuild` wrapper sets it). |
+| `BITS_SITE_DIR` | _(unset)_ | One more directory of [site configuration](#site-configuration) files, read last. |
 | `BITS_LEGACY_INITDOTSH` | _(unset)_ | `1` selects the legacy build-time `init.sh` (same as `--legacy-initdotsh`); the `aliBuild` wrapper sets it. |
 | `BITS_PROVIDERS` | `https://github.com/bitsorg/bits-providers` (empty under the `aliBuild` wrapper) | URL of the repository-provider set; an `@<tag>` suffix pins a snapshot. Environment only (no build flag). |
 | `BITS_CVMFS_PREFIX` | _(unset)_ | A community's CVMFS prefix (e.g. `/cvmfs/bits.cern.ch/key4hep`): `bits q`, `enter`, `load`, `printenv`, `unload` and `setenv` also use its modules for the architecture, after the local ones (see [bits query](#bits-query--list--avail)). The bits entry point on CVMFS sets it for a community. Unset, a recipe repository's `cvmfs.yaml` gives the trees; empty turns them off. |
@@ -3506,7 +3539,7 @@ A **remote binary store** is an external storage location where bits uploads com
 | `--insecure` | Skip TLS certificate verification for `https://` stores. |
 | `--trust-manifest SRC`, `--no-require-signed-reuse` | Signed reuse is on by default: a remote tarball is reused only if a verified signed manifest lists it. `--trust-manifest` names the manifest (otherwise derived from an `http(s)`/`s3`/`b3` store); `--no-require-signed-reuse` disables the check (insecure, warns). See [Signing and verifying the archive tier](#signing-and-verifying-the-archive-tier). |
 
-A `--write-store` given on its own is also used as the read store, unless the architecture has a default read store (`https://s3.cern.ch/swift/v1/alibuild-repo` on slc7/slc8/slc9 and ubuntu2004/2204/2404 x86-64 and on slc9_aarch64, unless `--always-prefer-system` is given): that one stays the read store, so use `--remote-store URL::rw` to read from and write to one store. Unlike aliBuild, configuring a store does **not** force `--no-system` (reuse is content-hash addressed); pass `--no-system` for a self-contained build. Store URLs may also come from the environment (`REMOTE_STORE`/`WRITE_STORE`, overridden by `BITS_`-prefixed names; see [S3 store: common CI/CD config](#s3-store-common-cicd-config-with-per-runner-overrides)) or from `remote_store:` under the defaults `system:` block. CERN S3 path-style URLs (`https://s3.cern.ch/<bucket>`) are accepted and rewritten to the listable form.
+A `--write-store` given on its own is also used as the read store, unless the architecture has a default read store in the [site configuration](#site-configuration) (at CERN `https://s3.cern.ch/swift/v1/alibuild-repo` on slc7/slc8/slc9 and ubuntu2004/2204/2404 x86-64 and on slc9_aarch64), unless `--always-prefer-system` is given: that one stays the read store, so use `--remote-store URL::rw` to read from and write to one store. Unlike aliBuild, configuring a store does **not** force `--no-system` (reuse is content-hash addressed); pass `--no-system` for a self-contained build. Store URLs may also come from the environment (`REMOTE_STORE`/`WRITE_STORE`, overridden by `BITS_`-prefixed names; see [S3 store: common CI/CD config](#s3-store-common-cicd-config-with-per-runner-overrides)) or from `remote_store:` under the defaults `system:` block. CERN S3 path-style URLs (`https://s3.cern.ch/<bucket>`) are accepted and rewritten to the listable form.
 
 ### Supported backends
 
@@ -3948,7 +3981,7 @@ bits build --docker --docker-image alisw/slc9-builder:latest ROOT
 bits build --docker --docker-extra-args "--memory=8g --cpus=4" ROOT
 ```
 
-Without `--docker-image`, the image is derived from the architecture as `<registry>/<machine>-<distro>[-cuda]:<tag>`, for example `gitlab-registry.cern.ch/bits/containers/x86_64-slc9:latest` for `slc9_x86-64`. Only the OS, the CPU and a `cuda` part of the architecture select the image; compiler and build-type parts do not. The registry is `$BITS_DOCKER_REGISTRY`, else `docker_registry:` in `defaults-release` (top level or under `system:`), else `gitlab-registry.cern.ch/bits/containers`. The tag is `$BITS_DOCKER_TAG`, else `latest`. With `BITS_LEGACY_REGISTRY=1` (set by default by the `aliBuild` wrapper), or when the architecture cannot be split into OS and CPU, the legacy `registry.cern.ch/alisw/<distro>-builder` image is used instead. Images are pulled when missing.
+Without `--docker-image`, the image is derived from the architecture as `<registry>/<machine>-<distro>[-cuda]:<tag>`, for example `gitlab-registry.cern.ch/bits/containers/x86_64-slc9:latest` for `slc9_x86-64`. Only the OS, the CPU and a `cuda` part of the architecture select the image; compiler and build-type parts do not. The registry is `$BITS_DOCKER_REGISTRY`, else `system: docker_registry` in `defaults-release` (a top-level `docker_registry:` is still read), else the [site configuration](#site-configuration)'s `containers.registry` (at CERN `gitlab-registry.cern.ch/bits/containers`). The tag is `$BITS_DOCKER_TAG`, else `system: docker_tag`, else `containers.tag` (`latest`). With `BITS_LEGACY_REGISTRY=1` (set by default by the `aliBuild` wrapper), or without a registry or when the architecture cannot be split into OS and CPU, the site's `containers.legacy_image` is used instead (at CERN `registry.cern.ch/alisw/<distro>-builder`); without one, `--docker-image` must be given. Images are pulled when missing.
 
 Bits mounts into the container the work directory (read-write, except `SOURCES/`, which is read-only so a recipe cannot modify shared sources in place; `BITS_READONLY_SOURCES=0` turns this off), the recipe directory (read-only), the bits installation, and any `-v` volumes. `~/.ssh` is **not** mounted. When components deployed on CVMFS are reused (`--reuse-from`), `/cvmfs` is also mounted read-only.
 

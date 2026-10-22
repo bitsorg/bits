@@ -1,0 +1,18 @@
+# CERN: the bits stores, images and SBOM namespace, and ALICE's public store for
+# its architectures. Elsewhere, mask this file with an empty 10-CERN.yaml.
+store:
+  read_by_arch:
+    slc7_x86-64: https://s3.cern.ch/swift/v1/alibuild-repo
+    slc8_x86-64: https://s3.cern.ch/swift/v1/alibuild-repo
+    slc9_x86-64: https://s3.cern.ch/swift/v1/alibuild-repo
+    slc9_aarch64: https://s3.cern.ch/swift/v1/alibuild-repo
+    ubuntu2004_x86-64: https://s3.cern.ch/swift/v1/alibuild-repo
+    ubuntu2204_x86-64: https://s3.cern.ch/swift/v1/alibuild-repo
+    ubuntu2404_x86-64: https://s3.cern.ch/swift/v1/alibuild-repo
+  operations: https://s3.cern.ch/lcgapp-bits-testing
+  s3_endpoint: https://s3.cern.ch
+containers:
+  registry: gitlab-registry.cern.ch/bits/containers
+  legacy_image: registry.cern.ch/alisw/{distro}-builder
+sbom:
+  namespace: https://bits.cern.ch/sbom

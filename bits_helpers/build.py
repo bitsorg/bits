@@ -7,6 +7,7 @@ from pathlib import Path
 from bits_helpers import __version__
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
+from bits_helpers import site
 from bits_helpers.repo_provider import (fetch_repo_providers_iteratively, load_always_on_providers,
                                         announce_providers, MAX_PROVIDER_ITERATIONS,
                                         no_recipes_hint)
@@ -678,7 +679,9 @@ def _store_container_root(store, endpoint=None):
   if store.startswith(("b3://", "s3://")):
     bucket = store.split("://", 1)[1].split("/", 1)[0].split("::", 1)[0]
     if bucket:
-      ep = str(endpoint or "https://s3.cern.ch").rstrip("/")
+      ep = str(endpoint or site.get("store.s3_endpoint") or "").rstrip("/")
+      if not ep:
+        return None
       return "%s/swift/v1/%s" % (ep, bucket)
   return None
 

@@ -28,6 +28,9 @@ from os.path import abspath, basename, exists, join
 from bits_helpers.log import debug, error, info, warning, banner
 from bits_helpers.arch import detectArch
 
+_NO_STORE = ("no store: give --remote-store, set $BITS_S3_STORE, or store.operations "
+             "in a site configuration file")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -759,6 +762,8 @@ def doCertify(args, parser):
     passkey = getattr(args, "approval", "passkey") == "passkey"
     architecture = getattr(args, "architecture", None) or detectArch()
     store_url = getattr(args, "publishStore", None) or DEFAULT_S3_STORE
+    if not store_url:
+        parser.error(_NO_STORE)
     marker = None if dry else _orchestrator_marker(store_url, abspath(args.workDir), architecture)
     if not passkey and not marker and not getattr(args, "certifier", None):
         # Without an approval the MR merges but can never be signed; that is only
@@ -828,6 +833,8 @@ def doPublish(args, parser):
         architecture = getattr(args, "architecture", None) or detectArch()
         from bits_helpers.args import DEFAULT_S3_STORE
         store_url = getattr(args, "publishStore", None) or DEFAULT_S3_STORE
+        if not store_url:
+            parser.error(_NO_STORE)
         _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
                                manifest=_fm, dry_run=getattr(args, "dryRun", False))
         return
