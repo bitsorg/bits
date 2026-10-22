@@ -65,6 +65,17 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(e["bits_version"], "1.2.3")
         self.assertEqual(e["bits_dist_hash"], "deadbeefcafe")
 
+    def test_who_built_it_comes_from_the_build_that_compiled_it(self):
+        # A later build that only reused the package lists it without built_by,
+        # and with its own completed_at; the build that compiled it wins either way.
+        reused = _manifest("b2", [_pkg("A", "h1", "sha256:aa", built_by=None,
+                                       completed_at="2026-10-22T00:00:00Z")])
+        built = _manifest("b1", [_pkg("A", "h1", "sha256:aa", built_by="u@host",
+                                      completed_at="2026-10-20T00:00:00Z")])
+        for order in ([reused, built], [built, reused]):
+            e = certify.merge_common_manifest(order)["packages"][0]
+            self.assertEqual((e["built_by"], e["completed_at"]), ("u@host", "2026-10-20T00:00:00Z"))
+
     def test_conflicting_sha_same_arch_fails_closed(self):
         # Same hash + same architecture => same store path => must be same bytes.
         m1 = _manifest("b1", [_pkg("A", "h1", "sha256:aa", arch="slc7_x86-64")])

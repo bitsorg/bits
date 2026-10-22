@@ -267,7 +267,12 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
             for _fld in ("bits_version", "bits_dist_hash"):
                 if man.get(_fld) and _fld not in entry:
                     entry[_fld] = man[_fld]
-            by_key.setdefault((arch, h), {}).setdefault(norm_sha(sha), (entry, bid))
+            slot = by_key.setdefault((arch, h), {})
+            have = slot.setdefault(norm_sha(sha), (entry, bid))[0]
+            if entry.get("built_by") and not have.get("built_by"):
+                # Who compiled it and when: the build that did, not one that reused it.
+                have.update({k: entry[k] for k in ("built_by", "completed_at", "bits_version",
+                                                   "bits_dist_hash") if entry.get(k)})
     stale = []                # (package, hash, build_id) claims the store refuted
     packages = []
     for key in sorted(by_key):
