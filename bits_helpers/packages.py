@@ -203,9 +203,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     _ovr_vars = (defaults_meta or {}).get("variables")
     _ovr_dir = None   # repo of the profile whose override changed the sources
     for override in overrides:
-      # We downcase the regex in parseDefaults(), so downcase the package name
-      # as well. FIXME: This is probably a bad idea; we should use
-      # re.IGNORECASE instead or just match case-sensitively.
+      # parseDefaults() lowercases an override's package regex, not its matcher,
+      # so the package name is matched lowercased. FIXME: re.IGNORECASE would do.
       pkg_re, sep, matcher = override.partition(":")
       if not re.fullmatch(pkg_re, p.lower()):
         continue

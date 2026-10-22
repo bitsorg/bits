@@ -23,6 +23,8 @@ SOURCE_KEYS = frozenset({"version", "tag", "source", "sources", "patches"})
 
 
 def override_key(key):
+  """An override's key as the overrides are kept: the package regex lowercased
+  (anything from an @ on dropped), the :matcher as written."""
   pkg, sep, matcher = str(key).split("@", 1)[0].partition(":")
   return pkg.lower() + sep + matcher
 
