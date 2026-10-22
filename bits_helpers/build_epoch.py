@@ -40,7 +40,9 @@ COVERED = (
 # Progress markers only change console output; package contents and BUILD_EPOCH are unchanged.
 # --symlink-packages-from is opt-in; leave the epoch unchanged to preserve strict reuse of
 # existing deployments. The staging and post-install helpers are covered here.
-COVERED_SHA256 = "a0eb6b0aed4b35d0f09ca79e5b5b7bd1a68cc3ca33d8c07911a8f6388cc29161"
+# grep -r: symlinks in a package are no longer listed for relocation; existing
+# tarballs stay valid, so BUILD_EPOCH is unchanged.
+COVERED_SHA256 = "12cc30e296ffb95b4b9c090b1fd918b57dfa5cd46db86bf40c348ff0bdd25725"
 
 
 def covered_sha256(root=None):
