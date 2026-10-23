@@ -1445,6 +1445,13 @@ is not exported. The output is deterministic: the same manifest and bits
 version give byte-identical files. The SBOMs `bits publish` uploads carry the
 stored tarballs' sha256, as the BOM does.
 
+The console backend serves a published build's SBOMs to any signed-in user
+(`GET /ops/builds/{pipeline}/sbom?format=cyclonedx|spdx`), and the CycloneDX one
+as an HTML report of its components, dependencies and licences
+(`GET /ops/builds/{pipeline}/sbom/report`), drawn by a vendored, unmodified
+[CycloneDX Sunshine](https://github.com/CycloneDX/Sunshine). The report lists the
+vulnerabilities an SBOM carries; bits SBOMs carry none yet.
+
 ---
 
 ### bits checksums

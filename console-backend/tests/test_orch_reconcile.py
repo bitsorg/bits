@@ -604,6 +604,35 @@ class ApiTest(_DB):
         with patch.object(api, "_store", down):
             self.assertEqual(self._get("dave", "/ops/builds/1/sbom?build=b-1").status_code, 503)
 
+    def test_a_builds_sbom_report_is_a_sandboxed_page(self):
+        from console_backend.orch import api, sbom_report
+        from test_orch_sbom_report import cdx
+        self.conn.execute(
+            "INSERT INTO builds (pipeline_id, build_id, community, arches, bom_keys, top_level,"
+            " packages, published_at, recorded_ms) VALUES (1, 'b-1', 'testbed', '[]', '[]',"
+            " '[]', 0, '', 0)")
+        self.conn.commit()
+        sbom_report._cache.clear()
+        s3 = FakeS3({})
+        s3.objects["MANIFESTS/b-1/sbom.cdx.json"] = cdx()
+        with patch.object(api, "_store", lambda: (s3, "bkt")):
+            r = self._get("dave", "/ops/builds/1/sbom/report")     # administers nothing
+            self.assertEqual(r.status_code, 200)
+            self.assertTrue(r.headers["content-type"].startswith("text/html"))
+            self.assertEqual(r.headers["content-security-policy"], api.SBOM_REPORT_SANDBOX)
+            self.assertTrue(api.SBOM_REPORT_SANDBOX.startswith("sandbox "))
+            self.assertNotIn("allow-same-origin", api.SBOM_REPORT_SANDBOX)
+            self.assertIn("LGPL-2.1-or-later", r.text)
+            self.assertEqual(self.client.get("/ops/builds/1/sbom/report").status_code, 401)
+            self.assertEqual(self._get("dave", "/ops/builds/2/sbom/report").status_code, 404)
+            s3.objects["MANIFESTS/b-1/sbom.cdx.json"] = b"not json"
+            r = self._get("dave", "/ops/builds/1/sbom/report")
+            self.assertEqual(r.status_code, 500)
+            self.assertIn("no report of build b-1", r.json()["detail"])
+            with patch.object(sbom_report, "render", side_effect=sbom_report.Busy("busy")):
+                r = self._get("dave", "/ops/builds/1/sbom/report")
+                self.assertEqual((r.status_code, r.headers.get("retry-after")), (503, "10"))
+
     def _ci(self, claims, body, kind="published"):
         seen = {}
 

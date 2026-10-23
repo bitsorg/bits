@@ -76,6 +76,8 @@ readme = {file = ["README.md"], content-type = "text/markdown"}
 # config drives a CHECK-ONLY lint gate.
 line-length = 127
 target-version = "py38"
+# Third-party code kept unmodified (its own globals come from the browser build).
+extend-exclude = ["console-backend/console_backend/vendor"]
 
 [tool.ruff.lint]
 # Start with the real-bug subset only — syntax errors (E9), bad comparisons/

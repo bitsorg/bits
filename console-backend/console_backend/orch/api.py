@@ -14,8 +14,10 @@
                                        what each job spent its time on)
     GET  /ops/builds/{pipeline}        one, with its jobs, variables and events
     GET  /ops/builds/{pipeline}/sbom?format=&build=   the SBOM a build published
-    GET  /ops/trace?repo=&path=&build_id=   who built and approved a CVMFS path (bits trace)
                                        (CycloneDX or SPDX): any signed-in user
+    GET  /ops/builds/{pipeline}/sbom/report?build=   that CycloneDX SBOM as an HTML
+                                       report (CycloneDX Sunshine), sandboxed
+    GET  /ops/trace?repo=&path=&build_id=   who built and approved a CVMFS path (bits trace)
     POST /ops/ci/published, /ops/ci/failed   {pipeline}: a CI job's hint to look
                                        at its pipeline now (GitLab CI ID token)
     GET  /ops/issues?community=&package=&limit=   deduplicated failures, last seen first
@@ -65,7 +67,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, kinds, outside, phases, reconcile, shadow, trace)
+               failures, kinds, outside, phases, reconcile, sbom_report, shadow, trace)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -440,6 +442,8 @@ async def trace_path(request: Request, repo: str = "", path: str = "", build_id:
 
 
 SBOM_FILES = {"cyclonedx": "sbom.cdx.json", "spdx": "sbom.spdx.json"}
+# The report runs scripts (and prints, through a popup): never on this origin.
+SBOM_REPORT_SANDBOX = "sandbox allow-scripts allow-downloads allow-popups allow-modals"
 
 
 _deps = None
@@ -459,15 +463,9 @@ def _no_such_key(e):
     return code in ("NoSuchKey", "404", "NotFound", "AccessDenied", "403")
 
 
-@router.get("/ops/builds/{pipeline}/sbom")
-async def build_sbom(pipeline: int, request: Request, format: str = "cyclonedx", build: str = ""):
-    """The SBOM a build published beside its BOMs (MANIFESTS/<build_id>/), as
-    published. It describes released software: any signed-in user may read it."""
-    await _caller(request)
-    name = SBOM_FILES.get(format)
-    if name is None:
-        raise HTTPException(400, "format is one of: %s" % ", ".join(sorted(SBOM_FILES)))
-
+async def _published_sbom(pipeline, name, build):
+    """(build id, bytes) of the SBOM file *name* that *pipeline* published beside
+    its BOMs (MANIFESTS/<build_id>/); else HTTPException."""
     def ids(conn):
         return [r["build_id"] for r in conn.execute(
             "SELECT build_id FROM builds WHERE pipeline_id = ? ORDER BY build_id", (pipeline,))]
@@ -496,8 +494,38 @@ async def build_sbom(pipeline: int, request: Request, format: str = "cyclonedx",
             raise HTTPException(404, "build %s has no %s" % (builds[0], name))
         log.warning("reading %s: %s", key, e)
         raise HTTPException(502, "the store did not answer")
+    return builds[0], body
+
+
+@router.get("/ops/builds/{pipeline}/sbom")
+async def build_sbom(pipeline: int, request: Request, format: str = "cyclonedx", build: str = ""):
+    """The SBOM a build published beside its BOMs (MANIFESTS/<build_id>/), as
+    published. It describes released software: any signed-in user may read it."""
+    await _caller(request)
+    name = SBOM_FILES.get(format)
+    if name is None:
+        raise HTTPException(400, "format is one of: %s" % ", ".join(sorted(SBOM_FILES)))
+    _bid, body = await _published_sbom(pipeline, name, build)
     return Response(content=body, media_type="application/json",
                     headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/ops/builds/{pipeline}/sbom/report")
+async def build_sbom_report(pipeline: int, request: Request, build: str = ""):
+    """The build's CycloneDX SBOM as an HTML report, for the same readers. The
+    page runs scripts, so a CSP sandbox keeps it off this origin if opened here."""
+    await _caller(request)
+    bid, body = await _published_sbom(pipeline, SBOM_FILES["cyclonedx"], build)
+    try:
+        page = await run_in_threadpool(sbom_report.render, body, bid)
+    except sbom_report.Busy as e:
+        raise HTTPException(503, str(e), headers={"Retry-After": "10"})
+    except sbom_report.Failed as e:
+        log.warning("SBOM report of %s: %s", bid, e)
+        raise HTTPException(500, "no report of build %s: %s" % (bid, e))
+    return Response(content=page, media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+                             "Content-Security-Policy": SBOM_REPORT_SANDBOX})
 
 
 # --- CI hints -------------------------------------------------------------------
