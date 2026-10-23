@@ -2,6 +2,7 @@
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from bits_helpers import plan
@@ -176,7 +177,7 @@ class MoreClassifyTest(ClassifyTest):
 class PlanBuildTest(unittest.TestCase):
   def test_devel_disables_write_store_for_later_packages(self):
     import types
-    specs = {"a": _spec(package="a", is_devel_pkg=True), "b": _spec(package="b")}
+    specs = {"a": _spec(package="a", is_devel_pkg=True), "b": _spec(package="b", requires=["a"])}
     args = types.SimpleNamespace(defaults=["release"], architecture=ARCH)
     cfg = types.SimpleNamespace(require_signed_reuse=False, reuse_overlay=None)
     store = types.SimpleNamespace(writeStore="b3://bucket")
@@ -187,6 +188,101 @@ class PlanBuildTest(unittest.TestCase):
     self.assertEqual([r[2] for r in rows], [plan.DEVEL, plan.BUILD])
     self.assertEqual(specs["b"]["hash"], LH)   # local hash: uploads are off after a devel pkg
 
+
+class NeededTest(unittest.TestCase):
+  """Issue #141: a reused package's build_requires are not fetched."""
+
+  def _specs(self):
+    sp = lambda name, runtime=(), build=(): {
+        "package": name, "version": "1", "runtime_requires": list(runtime),
+        "build_requires": list(build), "untracked_requires": [],
+        "requires": list(runtime) + list(build) + ["defaults-release"]}
+    return {"defaults-release": sp("defaults-release"),
+            "gcc-prerequisites": sp("gcc-prerequisites", build=["rocm-sources"]),
+            "rocm-sources": sp("rocm-sources"),
+            "zlib": sp("zlib"),
+            "gcc": sp("gcc", runtime=["zlib"], build=["gcc-prerequisites"]),
+            "app": sp("app", runtime=["gcc"], build=["cmake"]), "cmake": sp("cmake")}
+
+  ORDER = ["defaults-release", "rocm-sources", "gcc-prerequisites", "zlib", "gcc", "cmake", "app"]
+
+  def test_a_reused_packages_build_requires_are_not_needed(self):
+    states = dict.fromkeys(self.ORDER, plan.BUILD)
+    states.update(gcc=plan.REMOTE, zlib=plan.REMOTE)
+    need = plan.needed(self.ORDER, self._specs(), states, ["app"])
+    self.assertEqual(need, {"defaults-release", "app", "cmake", "gcc", "zlib"})
+
+  def test_a_built_package_needs_everything_and_reuse_of_all_needs_runtime_only(self):
+    specs = self._specs()
+    built = plan.needed(self.ORDER, specs, dict.fromkeys(self.ORDER, plan.BUILD), ["app"])
+    self.assertEqual(built, set(self.ORDER))
+    reused = plan.needed(self.ORDER, specs, dict.fromkeys(self.ORDER, plan.INSTALLED), ["app"])
+    self.assertEqual(reused, {"defaults-release", "app", "gcc", "zlib"})
+    # --only-deps: the main package is built later, so its build_requires stay.
+    deps = plan.needed(self.ORDER, specs, dict.fromkeys(self.ORDER, plan.INSTALLED), ["app"],
+                       build_targets={"app"})
+    self.assertIn("cmake", deps)
+
+  def test_the_plan_names_who_does_not_need_it(self):
+    specs = self._specs()
+    states = dict.fromkeys(self.ORDER, plan.REMOTE)
+    need = plan.needed(self.ORDER, specs, states, ["app"], build_targets={"app"})
+    rows = {r[0]: r for r in plan.plan_rows(self.ORDER, specs, states, need,
+                                            source=lambda p: "lcg.bits@abc")}
+    self.assertNotIn("defaults-release", rows)
+    self.assertEqual(rows["gcc-prerequisites"][2:4],
+                     (plan.NOT_NEEDED, "  (build-only, for reused gcc)"))
+    self.assertEqual(rows["gcc"][2:], (plan.REMOTE, "", "lcg.bits@abc"))
+    with patch("bits_helpers.plan.banner") as b:
+      plan.print_plan(list(rows.values()), store_checked=True, title="Build plan")
+    text = b.call_args[0][0] % b.call_args[0][1:]
+    self.assertTrue(text.startswith("Build plan"))
+    self.assertIn("[lcg.bits@abc]", text)
+    self.assertIn("4 reused (0 installed, 0 local tarball, 4 from remote store), 0 to build,"
+                  " 2 not needed", text)
+
+
+  def test_what_defaults_and_development_packages_require_is_needed(self):
+    specs = self._specs()
+    specs["defaults-release"]["requires"] = ["zlib"]
+    specs["cmake"]["is_devel_pkg"] = True
+    order = ["zlib", "defaults-release"] + self.ORDER[1:]
+    need = plan.needed(order, specs, dict.fromkeys(order, plan.REMOTE), ["app"])
+    self.assertEqual(need, {"defaults-release", "zlib", "app", "gcc", "cmake"})
+
+  def test_fetch_build_requires_needs_everything(self):
+    specs, states = self._specs(), dict.fromkeys(self.ORDER, plan.REMOTE)
+    for fetch, not_needed in ((False, {"cmake", "gcc-prerequisites", "rocm-sources"}),
+                              (True, set())):
+      cfg = SimpleNamespace(fetch_build_requires=fetch)
+      with patch.object(plan, "plan", return_value=(states, set(), True)), \
+           patch.object(plan, "banner"):
+        _, _, need = plan.decide(self.ORDER, specs, None, "/sw", None, "", cfg, None,
+                                 targets=["app"])
+      self.assertEqual(set(self.ORDER) - need, not_needed)
+
+  def test_not_needed_packages_adopt_the_planned_hash(self):
+    specs, planned = self._specs(), self._specs()
+    planned["cmake"].update(hash="c" * 40, revision="2", deps_hash="x")
+    plan.adopt(specs, planned, {"cmake"})
+    self.assertEqual((specs["cmake"]["hash"], specs["cmake"]["revision"], specs["cmake"]["not_needed"]),
+                     ("c" * 40, "2", True))
+    self.assertNotIn("deps_hash", specs["cmake"])
+
+  def test_a_reused_package_hashes_as_planned_without_its_build_requires_built(self):
+    import copy
+    from bits_helpers.hashing import storeHashes
+    sp = lambda name, build=(): {"package": name, "version": "1", "recipe": name,
+                                 "commit_hash": "0", "is_devel_pkg": False,
+                                 "requires": list(build), "build_requires": list(build)}
+    specs = {"cmake": sp("cmake"), "app": sp("app", ["cmake"])}
+    planned = copy.deepcopy(specs)
+    for p in ("cmake", "app"):
+      storeHashes(p, planned, considerRelocation=False)
+      planned[p]["hash"], planned[p]["revision"] = planned[p]["remote_revision_hash"], "1"
+    plan.adopt(specs, planned, {"cmake"})       # the loop then starts at app
+    storeHashes("app", specs, considerRelocation=False)
+    self.assertEqual(specs["app"]["remote_hashes"], planned["app"]["remote_hashes"])
 
 if __name__ == "__main__":
   unittest.main()

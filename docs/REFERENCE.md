@@ -515,7 +515,7 @@ but are not enforced by CI.
 | `bits_helpers/cvmfs_inspect.py` | `bits cvmfs` group — `platforms`/`show`/`summary`; dispatches `stage`/`publish` |
 | `bits_helpers/cvmfs_publish.py` | `bits cvmfs publish` — place a build's packages, release view and merged view on CVMFS |
 | `bits_helpers/modulefile_env.py` | What a release's bits modulefiles set, read without Tcl, for the merged view's `setup.sh` |
-| `bits_helpers/plan.py` | `bits build --dry-run` per-package reuse plan |
+| `bits_helpers/plan.py` | The build plan (`bits build`, `--dry-run`): per-package reuse and what is not needed |
 | `bits_helpers/brew.py` | `bits brew` — macOS Brewfile from the recipes |
 | `bits_helpers/overlay/lcg.py` | `bits overlay lcg` — LCG release view over a built closure |
 | `bits_helpers/bits_use.py` | `bits use` — per-directory saved-argument profiles |
@@ -975,7 +975,7 @@ bits --version
 | `-h`, `--help` | every command | The commands; after a command, that command's help. |
 | `--version` | alone | The bits version. |
 | `-d`, `--debug` | all but the module commands, `cvmfs`, `store`, `use`, `overlay`, `preload` | Verbose debug output. |
-| `-n`, `--dry-run` | `build`, `clean`, `init`, `publish`, `prune` (`compliance`: `--dry-run`) | Print what would happen without executing. For `bits build`: a per-package plan (installed, local tarball, from the remote store, from the reuse overlay, or build) and a summary. Nothing is downloaded: the remote store is only listed, which is possible for `http(s)://` and `b3://` stores. |
+| `-n`, `--dry-run` | `build`, `clean`, `init`, `publish`, `prune` (`compliance`: `--dry-run`) | Print what would happen without executing. For `bits build`: the build plan a real build prints before it starts: per package where it comes from (installed, local tarball, from the remote store, from the reuse overlay, build, or not needed), its recipe source, and a summary. Nothing is downloaded: the remote store is only listed, which is possible for `http(s)://` and `b3://` stores. |
 | `-a ARCH`, `-w DIR`, `--no-refresh`, `-q`, `--view`, `--archive`, `--dev`, `--shellrc` | module commands | See [bits enter](#bits-enter) and `bits enter --help`. |
 
 A command's own options come after it (`bits build -a ARCH PKG`, not `bits -a ARCH build PKG`).
@@ -1021,6 +1021,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--build-nice-step N` | Nice increment between concurrent build slots when `--build-nice` is set: slot *k* → nice `min(k×N, 19)`. `N=1` gives a gentle `0,1,2,3` ladder; larger values separate the slots more aggressively. Default: 5. |
 | `--build-nice-boost-after SECONDS` | With `--build-nice`, a watchdog raises the priority of one long-running straggler at a time, so a single heavy compile does not drag out the end of the build. Native builds: the longest-running lowered build is reniced towards 0 (needs root or `CAP_SYS_NICE`; otherwise a logged no-op). `--docker`/podman builds: a compiler process (e.g. `cc1plus`, `f951`) running longer than this is reniced as root inside the container; this **needs `ps` (package `procps`) in the build image**, see the note below. `0` disables. Default: 600. |
 | `--prefetch-workers N` | Spawn *N* background threads to fetch remote tarballs and source archives ahead of the main build loop, so downloads overlap with compilation instead of blocking the serial preparation pass. Default: `-1` (auto — scales with `--parallel`, capped at 4); `0` disables. No effect without `--remote-store`. |
+| `--fetch-build-requires` | Also fetch or build the build-only dependencies (`build_requires`) of packages reused from a store. By default they are **not needed** and skipped: the build plan printed before the build lists them as `not needed (build-only, for reused X)`. If a package planned as reused is built after all (e.g. its tarball is not vouched for by the signed manifest), its skipped dependencies are fetched or built first. |
 | `--parallel-downloads N` | Maximum concurrent source/tarball downloads the `--parallel` scheduler runs as standalone download tasks (so a checkout overlaps the previous package's build). Default: 2. |
 | `--auto-resources` | Opt-in for `--parallel` > 1: load the per-package CPU and memory statistics recorded by a previous run, and turn on monitoring to refresh them, so a new build starts only while the machine still has CPU and memory to spare. Off by default (concurrency is then limited only by `--parallel`); explicit `--resources` / `--resource-monitoring` still apply. |
 | `--brew` | **macOS only.** Let a recipe that sources a system library from Homebrew run `brew install <formula>` on demand (during dependency resolution) when the formula is missing. Without it, such a recipe fails with a message naming the formula to install. Exported to recipe `prefer_system_check` scripts as `BITS_BREW=1`. See [macOS Homebrew system layer](#macos-homebrew-system-layer). |

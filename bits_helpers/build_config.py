@@ -34,6 +34,7 @@ class BuildConfig:
   parallel_downloads: int        # raw --parallel-downloads (site clamps to >= 1)
   parallel_sources: int          # concurrent source fetches
   prefetch_workers: int          # tarball prefetch workers, -1 = auto
+  fetch_build_requires: bool     # also fetch/build build_requires of reused packages
 
   # Reuse / store consumers (resolved during import; read later in the loop).
   reuse_overlay: Optional[str]   # host path of the imported reuse overlay
@@ -74,6 +75,7 @@ class BuildConfig:
         parallel_downloads=getattr(args, "parallelDownloads", 2),
         parallel_sources=getattr(args, "parallelSources", 1),
         prefetch_workers=getattr(args, "prefetchWorkers", -1),
+        fetch_build_requires=getattr(args, "fetchBuildRequires", False),
         reuse_overlay=getattr(args, "reuseOverlay", None),
         reuse_cvmfs_base=getattr(args, "reuseCvmfsBase", None),
         reuse_beacon=getattr(args, "reuseBeacon", None),

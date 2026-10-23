@@ -99,7 +99,8 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # sourcing (and restore after) so its own and its transitive deps' paths land
   # on CVMFS. Per-DEPENDENCY, so a legacy-built package can consume a reused dep.
   # Needs /cvmfs mounted in the build container (no modulecmd required).
-  _reqs = list(spec.get("requires", ()))
+  # A not-needed dependency (build-only, of a reused package) is not installed.
+  _reqs = [d for d in spec.get("requires", ()) if not specs[d].get("not_needed")]
   _reused_set = {d for d in _reqs
                  if reuse_cvmfs_base and specs[d].get("reuse_module_id")}
 

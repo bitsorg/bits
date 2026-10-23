@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Read-only reuse plan for ``bits build --dry-run``.
+"""Read-only reuse plan, shown before every build and as ``bits build --dry-run``.
 
 For each package in build order: compute its hash as the build would, then say
 where it would come from (installed, local tarball, remote store) or that it
 would be built. Nothing is downloaded, installed or linked; the remote store is
 only listed (one request per candidate hash).
+
+A package only another, reused, package needs to build (its build_requires) is
+"not needed": the build neither fetches nor builds it (issue #141).
 """
 import os
 from glob import glob
@@ -24,6 +27,8 @@ OVERLAY = "from reuse overlay"
 REMOTE_UNSIGNED = "build (in store, not signed)"
 BUILD = "build"
 DEVEL = "build (development package)"
+NOT_NEEDED = "not needed"
+REUSED = (INSTALLED, LOCAL_TARBALL, REMOTE, OVERLAY)
 
 
 def store_can_list(sync_helper):
@@ -154,26 +159,88 @@ def _overlay_predicate(cfg):
   return satisfied
 
 
-def print_plan(rows, store_checked):
+def needed(build_order, specs, states, targets, build_targets=()):
+  """The packages the build needs: *targets* and what they require, where a
+  reused package needs only its runtime and untracked requirements, not its
+  build_requires. *build_targets* are followed as if built (--only-deps)."""
+  # defaults-* and development packages are always needed, and so is what they require.
+  out = set()
+  todo = list(targets) + [p for p in build_order
+                          if p.startswith("defaults-") or specs[p].get("is_devel_pkg")]
+  while todo:
+    p = todo.pop()
+    if p in out or p not in specs:
+      continue
+    out.add(p)
+    spec = specs[p]
+    if states.get(p) in REUSED and p not in build_targets:
+      todo += list(spec.get("runtime_requires") or ()) + list(spec.get("untracked_requires") or ())
+    else:
+      todo += list(spec.get("requires") or ())
+  return out
+
+
+def adopt(specs, planned, packages):
+  """Give the not-needed *packages* the hash and revision the plan found for them
+  in *planned*: the reused packages that build with them fold those in. Marked
+  not_needed, they are left out of those packages' init.sh."""
+  found = {p: (planned[p]["hash"], planned[p]["revision"]) for p in packages}
+  for p, (h, rev) in found.items():
+    specs[p].update(hash=h, revision=rev, not_needed=True)
+
+
+def plan_rows(build_order, specs, states, need, unuploadable=(), source=None):
+  """(package, version, plan, note, recipe source) per package; defaults-* left out."""
+  rows = []
+  for p in build_order:
+    if p.startswith("defaults-"):
+      continue
+    state, note = states[p], ""
+    if p not in need:
+      state = NOT_NEEDED
+      users = [q for q in build_order if q in need and states.get(q) in REUSED
+               and p in (specs[q].get("full_requires") or specs[q].get("requires") or ())]
+      if users:
+        note = "  (build-only, for reused %s%s)" % (", ".join(users[:3]),
+                                                    ", ..." if len(users) > 3 else "")
+    elif p in unuploadable:
+      note = "  (not uploadable: redistributable)"
+    rows.append((p, specs[p]["version"], state, note, source(p) if source else ""))
+  return rows
+
+
+def print_plan(rows, store_checked, title="Dry run: build plan (nothing built)"):
   """Print the per-package plan and a one-line summary."""
+  src = any(len(r) > 4 and r[4] for r in rows)
   w0 = max([len("Package")] + [len(r[0]) for r in rows])
   w1 = max([len("Version")] + [len(r[1]) for r in rows])
-  lines = ["  %-*s  %-*s  %s" % (w0, "Package", w1, "Version", "Plan")]
-  for pkg, ver, state, note in rows:
-    lines.append("  %-*s  %-*s  %s%s" % (w0, pkg, w1, ver, state, note))
+  w2 = max([len("Plan")] + [len(r[2] + r[3]) for r in rows]) if src else 0
+  head = "  %-*s  %-*s  %s" % (w0, "Package", w1, "Version", "Plan")
+  lines = [head + ("%*s  Recipes" % (w2 - len("Plan"), "") if src else "")]
+  for r in rows:
+    pkg, ver, state, note = r[:4]
+    line = "  %-*s  %-*s  %s%s" % (w0, pkg, w1, ver, state, note)
+    if src:
+      line += "%*s  [%s]" % (w2 - len(state + note), "", r[4])
+    lines.append(line.rstrip())
   count = lambda s: sum(1 for r in rows if r[2] == s)
-  reused = count(INSTALLED) + count(LOCAL_TARBALL) + count(REMOTE) + count(OVERLAY)
+  reused = sum(count(s) for s in REUSED)
   summary = "%d reused (%d installed, %d local tarball, %d from remote store%s), %d to build" % (
       reused, count(INSTALLED), count(LOCAL_TARBALL), count(REMOTE),
-      (", %d from overlay" % count(OVERLAY)) if count(OVERLAY) else "", len(rows) - reused)
+      (", %d from overlay" % count(OVERLAY)) if count(OVERLAY) else "",
+      len(rows) - reused - count(NOT_NEEDED))
+  if count(NOT_NEEDED):
+    summary += ", %d not needed" % count(NOT_NEEDED)
   if not store_checked:
     summary += "; remote store not checked (rsync stores cannot be listed)"
-  banner("Dry run: build plan (nothing built)\n%s\n\n%s", "\n".join(lines), summary)
+  banner("%s\n%s\n\n%s", title, "\n".join(lines), summary)
 
 
-def plan_build(build_order, specs, args, work_dir, sync_helper, raw_architecture,
-               cfg, trusted_index_fn):
-  """Compute hashes in build order and print what the build would do."""
+def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
+         cfg, trusted_index_fn):
+  """({package: state}, packages not uploadable, whether the store was listed),
+  as the build would decide. Sets each spec's hash and revision: a real build
+  passes a copy of its specs, so that its own loop decides afresh."""
   from bits_helpers.build import storeHook
   from bits_helpers.hashing import storeHashes
   from bits_helpers.arch import SHARED_ARCH
@@ -181,7 +248,7 @@ def plan_build(build_order, specs, args, work_dir, sync_helper, raw_architecture
   can_list = store_can_list(sync_helper)
   trusted = trusted_index_fn() if (cfg.require_signed_reuse and can_list) else None
   overlay = _overlay_predicate(cfg)
-  rows = []
+  states, unuploadable = {}, set()
   for p in build_order:
     spec = specs[p]
     storeHook(p, specs, args.defaults[0])
@@ -192,13 +259,31 @@ def plan_build(build_order, specs, args, work_dir, sync_helper, raw_architecture
         overlay)
     debug("Plan %s: %s (hash %s, candidates %s)", p, state, spec["hash"],
           ", ".join(spec["remote_hashes"]))
+    states[p] = state
     if state == DEVEL:
       write_store = False   # the build disables uploads from here on (build.py)
-    if p.startswith("defaults-"):
-      continue
-    note = ""
     if state in (BUILD, REMOTE_UNSIGNED) and write_store and not binary_redistributable(spec):
-      note = "  (not uploadable: redistributable)"
-    rows.append((p, spec["version"], state, note))
-  print_plan(rows, can_list)
-  return rows
+      unuploadable.add(p)
+  return states, unuploadable, can_list
+
+
+def decide(build_order, specs, args, work_dir, sync_helper, raw_architecture, cfg,
+           trusted_index_fn, targets=None, build_targets=(), title=None, source=None):
+  """Plan, find what is needed and print it: (rows, states, needed packages).
+  With cfg.fetch_build_requires every package is needed (the old behaviour)."""
+  states, unuploadable, can_list = plan(build_order, specs, args, work_dir, sync_helper,
+                                        raw_architecture, cfg, trusted_index_fn)
+  if getattr(cfg, "fetch_build_requires", False):
+    need = set(build_order)
+  else:
+    need = needed(build_order, specs, states, targets or build_order[-1:], build_targets)
+  rows = plan_rows(build_order, specs, states, need, unuploadable, source)
+  print_plan(rows, can_list, *([title] if title else []))
+  return rows, states, need
+
+
+def plan_build(build_order, specs, args, work_dir, sync_helper, raw_architecture,
+               cfg, trusted_index_fn, **kw):
+  """`bits build --dry-run`: print what the build would do; returns the rows."""
+  return decide(build_order, specs, args, work_dir, sync_helper, raw_architecture, cfg,
+                trusted_index_fn, **kw)[0]

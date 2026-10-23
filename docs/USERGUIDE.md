@@ -264,6 +264,7 @@ Bits resolves the full transitive dependency graph of each requested package, co
 | `--build-nice` | Stagger concurrent builders across OS priority levels so CPU contention degrades gracefully — one build runs at full speed, the others are backed off, and the freed top slot is taken over as builds finish. Native builds use `nice`; `--docker` builds use `docker run --cpu-shares`. Opt-in; only affects `--parallel > 1`. Memory is still capped separately. |
 | `--build-nice-step N` | Priority spread between concurrent build slots for `--build-nice` (slot *k* → nice `min(k×N, 19)`). `N=1` is a gentle ladder; larger separates slots more. Default: 5. |
 | `--prefetch-workers N` | Background threads that fetch remote tarballs and sources ahead of the build loop. Default: auto (`min(builders, 4)`); `0` disables. |
+| `--fetch-build-requires` | Also fetch or build the build-only dependencies of reused packages (by default they are not needed and skipped). |
 | `-u`, `--fetch-repos` | Update all source mirrors before building (the default), so a branch builds its current commit. |
 | `--no-fetch-repos` | Build what the mirrors already have (offline). |
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
@@ -294,7 +295,7 @@ Without `--parallel` packages are built one after another, each with the full `-
 bits build --dry-run ROOT
 ```
 
-Computes every package's hash exactly as the build would and prints, in build order, where each one would come from — **installed**, **local tarball**, **from remote store**, **from reuse overlay** — or that it would be **built**, followed by a summary. Nothing is downloaded or installed; http(s)://, s3:// and b3:// stores are only listed, and rsync stores are not checked. `bits status --check-store` uses the same store listing. On macOS a dry run also writes `sw/<arch>/Brewfile`.
+Computes every package's hash exactly as the build would and prints, in build order, where each one would come from — **installed**, **local tarball**, **from remote store**, **from reuse overlay** — or that it would be **built**, followed by a summary. A real build prints the same plan before it starts. A package that only reused packages need to build (their `build_requires`) is **not needed**: it is neither fetched nor built (`--fetch-build-requires` fetches it anyway). Nothing is downloaded or installed; http(s)://, s3:// and b3:// stores are only listed, and rsync stores are not checked. `bits status --check-store` uses the same store listing. On macOS a dry run also writes `sw/<arch>/Brewfile`.
 
 ### Sharing binaries through a store
 

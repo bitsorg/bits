@@ -1754,12 +1754,15 @@ def add_build_arguments(subparsers, ctx):
                             metavar="N",
                             help="""\
                             Start N background threads that pre-download pre-built tarballs and source
-                            archives for all packages in the build graph before they are needed, so that
+                            archives for the packages the build needs before it needs them, so that
                             downloads overlap the (serial) preparation loop instead of blocking it. A
                             .downloading sentinel file coordinates with the build loop so no file is
                             fetched twice. Default: -1 (auto = min(builders, 4)); 0 disables prefetch.
                             Works in all build modes.
                             """)
+  build_remote.add_argument("--fetch-build-requires", dest="fetchBuildRequires", action="store_true",
+                            help=("Fetch or build the build-only dependencies of packages that are "
+                                  "reused from a store too (by default they are skipped: nothing needs them)."))
   build_remote.add_argument("--parallel-downloads", dest="parallelDownloads", type=int, default=2,
                             metavar="N",
                             help="""\

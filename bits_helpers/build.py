@@ -37,7 +37,8 @@ from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url
 from bits_helpers.build_config import BuildConfig
-from dataclasses import dataclass
+from bits_helpers import plan as _plan
+from dataclasses import dataclass, field
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 try:
   from bits_helpers.resource_monitor import run_monitor_on_command
@@ -2069,6 +2070,13 @@ class _BuildLoopCtx:
   prefetch_executor: object; cmake_prefix_env: bool
   specs_for_checksum_phase: object; monitoredDirs: dict
   build_work_dir: str = ""
+  # Issue #141: the plan's states, the packages it found not needed (build-only
+  # dependencies of reused packages), the live build order (they go back into it
+  # when such a package is built after all) and the full order they are sorted by.
+  planned: dict = field(default_factory=dict)
+  skipped: set = field(default_factory=set)
+  build_order: list = field(default_factory=list)
+  full_order: list = field(default_factory=list)
 
 
 def build_one_package(p, ctx):
@@ -2589,6 +2597,7 @@ def build_one_package(p, ctx):
   tar_hash_dir = os.path.join(workDir, resolve_store_path(effective_arch(spec, args.architecture), spec["hash"]))
   debug("Looking for cached tarball in %s", tar_hash_dir)
   spec["cachedTarball"] = ""
+  _remote_tars = set()   # tarballs the fetch below brings from the remote store
   # Virtual packages (provides_repository, defaults-release) are never in the
   # store: skip the fetch/select/trusted-reuse scan entirely and build locally.
   if not spec["is_devel_pkg"] and not is_virtual_package(spec):
@@ -2635,6 +2644,7 @@ def build_one_package(p, ctx):
       syncHelper.fetch_tarball(spec)
       tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
                   if os.path.isfile(t)]  # skip dangling symlinks
+      _remote_tars = set(tarballs) - _preFetchTars
     finally:
       if _hold_sentinel:
         try:
@@ -2708,6 +2718,24 @@ def build_one_package(p, ctx):
       if _handle_already_installed(local_hash_path):
         return
       shutil.rmtree(local_hash_path.encode("utf-8"), True)
+
+  # Planned as reused but built after all (e.g. its tarball failed the signed
+  # manifest check): the build-only dependencies the plan skipped for it come
+  # back first, then this package again. Its remote tarballs stay gated.
+  _back = []
+  if ctx.skipped and not spec["cachedTarball"] and ctx.planned.get(p) in _plan.REUSED:
+    _want = _plan.needed(ctx.full_order, specs, ctx.planned, [p], build_targets={p})
+    _back = [d for d in ctx.full_order if d in ctx.skipped and d in _want]
+  if _back:
+    warning("%s is built after all: fetching or building first what it needs to build: %s",
+            p, ", ".join(_back))
+    ctx.skipped.difference_update(_back)
+    for d in _back:                          # their own loop pass decides afresh
+      for k in ("hash", "revision", "not_needed"):
+        specs[d].pop(k, None)
+    spec["prefetched_tarballs"] = sorted(set(spec.get("prefetched_tarballs", ())) | _remote_tars)
+    ctx.build_order[0:0] = _back + [p]
+    return
 
   # Why this package is built here (the end-of-build reuse summary says).
   if not spec["cachedTarball"] and not spec.get("reuse_note"):
@@ -3825,7 +3853,8 @@ def doBuild(args, parser):
       spec = specs[pkg]
       return resolve_spec_data(spec, str(spec.get("tag", spec.get("version", "?"))),
                                args.defaults, strict=False)
-    if len(builtPackages) > 1:
+    if args.plugin != "legacy" and len(builtPackages) > 1:
+      # The legacy build prints its plan instead (further below).
       # One row per package as (name/ref, source); source is the recipe origin
       # "repo@commit" (already includes its own '@'), or the devel marker. Align
       # the source column so a long build order is easy to scan, e.g.:
@@ -3845,18 +3874,8 @@ def doBuild(args, parser):
       banner("Packages will be built in the following order:\n - %s",
              "\n - ".join("{}  [{}]".format(label.ljust(_w), source)
                           for label, source in _rows))
-    else:
+    elif len(builtPackages) <= 1:
       banner("No dependencies of package %s to build.", buildOrder[-1])
-
-    # Tell the progress reporter how many packages will be built, so it can post
-    # a percentage to the GitLab commit status as each one starts (no-op unless
-    # running under gitlab-runner). defaults-release is excluded to match the
-    # plan shown above.
-    try:
-      from bits_helpers import progress as _progress
-      _progress.set_total(len([x for x in builtPackages if x != "defaults-release"]))
-    except Exception:
-      pass
 
 
   if develPkgs:
@@ -4038,12 +4057,47 @@ def doBuild(args, parser):
 
   debug("We will build packages in the following order: %s", " ".join(buildOrder))
 
+  # The plan: where each package comes from, decided as the loop will decide it
+  # (read-only; the store is only listed). Build-only dependencies of reused
+  # packages are not needed, so not fetched nor built (issue #141).
+  _plan_args = dict(
+      targets=[x for x in packages if x in specs] or buildOrder[-1:],
+      build_targets={buildOrder[-1]} if args.onlyDeps else set(),
+      source=lambda x: ("development package" if specs[x].get("is_devel_pkg")
+                        else specs[x].get("recipe_source", "?")))
   if args.dryRun:
-    from bits_helpers.plan import plan_build
-    plan_build(buildOrder, specs, args, workDir, syncHelper, raw_architecture,
-               cfg, lambda: trusted_reuse_index(args, workDir))
+    _plan.plan_build(buildOrder, specs, args, workDir, syncHelper, raw_architecture,
+                     cfg, lambda: trusted_reuse_index(args, workDir), **_plan_args)
     info("--dry-run / -n specified. Not building.")
     return
+  _full_order, _skipped, _states = list(buildOrder), set(), {}
+  try:
+    import copy
+    _planned = copy.deepcopy(specs)
+    _, _plan_states, _need = _plan.decide(
+        buildOrder, _planned, args, workDir, syncHelper, raw_architecture, cfg,
+        lambda: trusted_reuse_index(args, workDir), title="Build plan", **_plan_args)
+    _plan.adopt(specs, _planned, set(buildOrder) - _need)
+    _skipped, _states = set(buildOrder) - _need, _plan_states
+    buildOrder = [x for x in buildOrder if x in _need]
+  except Exception as exc:          # pylint: disable=broad-except
+    warning("Could not plan the build (%s): every package is fetched or built.", exc)
+  try:
+    from bits_helpers.cleanup import touch_sentinel as _touch
+    for d in _skipped:     # kept by bits cleanup: an older init.sh may still source them
+      if _states.get(d) == _plan.INSTALLED:
+        _touch(workDir, args.architecture, d, ver_rev(specs[d]))
+  except OSError as exc:
+    debug("Could not mark the installed packages not needed as used: %s", exc)
+  # Tell the progress reporter how many packages will be built, so it can post
+  # a percentage to the GitLab commit status as each one starts (no-op unless
+  # running under gitlab-runner). defaults-release is excluded, as in the plan.
+  try:
+    from bits_helpers import progress as _progress
+    _progress.set_total(len([x for x in buildOrder if x != "defaults-release"])
+                        - (1 if args.onlyDeps and len(buildOrder) > 1 else 0))
+  except Exception:
+    pass
 
   # We now iterate on all the packages, making sure we build correctly every
   # single one of them. This is done this way so that the second time we run we
@@ -4227,7 +4281,8 @@ def doBuild(args, parser):
       develPackageBranch=develPackageBranch, defaultsMeta=defaultsMeta,
       buildTargets=buildTargets, packages=packages,
       prefetch_executor=_prefetch_executor, cmake_prefix_env=_cmake_prefix_env,
-      specs_for_checksum_phase=specs_for_checksum_phase, monitoredDirs=monitoredDirs)
+      specs_for_checksum_phase=specs_for_checksum_phase, monitoredDirs=monitoredDirs,
+      planned=_states, skipped=_skipped, build_order=buildOrder, full_order=_full_order)
   while buildOrder:
     build_one_package(buildOrder.pop(0), ctx)
   buildWorkDir = ctx.build_work_dir

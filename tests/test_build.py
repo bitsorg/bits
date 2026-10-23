@@ -17,6 +17,7 @@ from collections import OrderedDict
 from bits_helpers.utilities import resolve_tag, resolve_store_path
 from bits_helpers.recipe import parseRecipe
 from bits_helpers.build import doBuild, build_one_package, _BuildLoopCtx
+from bits_helpers import plan
 from bits_helpers.hashing import storeHashes
 from bits_helpers.initdotsh import generate_initdotsh
 
@@ -595,6 +596,11 @@ class BuildTestCase(unittest.TestCase):
         self.assertIn("export APPEND_ROOT_1=", complete_initdotsh)
         self.assertIn("export PREPEND_ROOT_1=", complete_initdotsh)
 
+        # A not-needed dependency (issue #141: build-only, of a reused package)
+        # is not installed, so it is not sourced.
+        specs["zlib"]["not_needed"] = True
+        self.assertNotIn("/zlib/", generate_initdotsh("ROOT", specs, "slc7_x86-64", post_build=True))
+
     def test_initdotsh_from_modules(self) -> None:
         """--initdotsh-from-modules adds the modulefile-equivalent dev env
         (<PKG>_INCLUDE_DIR, PYTHONPATH site-packages) to the package's own
@@ -741,7 +747,7 @@ class HashPolicyBuildFallbackTest(unittest.TestCase):
     class StopAtBuildScript(Exception):
         pass
 
-    def _run_package(self, work_dir, *, remote_tarball=False):
+    def _run_package(self, work_dir, *, remote_tarball=False, prepare=None):
         arch = TEST_ARCHITECTURE
         remote_hash = self.remote_hash
         spec = {
@@ -790,6 +796,8 @@ class HashPolicyBuildFallbackTest(unittest.TestCase):
             packages=[], prefetch_executor=None, cmake_prefix_env=False,
             specs_for_checksum_phase=[], monitoredDirs={},
         )
+        if prepare:
+            ctx = prepare(ctx)
 
         real_open = _REAL_OPEN
 
@@ -851,6 +859,57 @@ class HashPolicyBuildFallbackTest(unittest.TestCase):
             self.assertTrue(spec["cachedTarball"].endswith(
                 "hash-policy-test-1.0-{}.{}.tar.gz".format(
                     self.remote_hash, TEST_ARCHITECTURE)))
+
+
+
+class PlannedReuseBuiltAfterAllTest(unittest.TestCase):
+    """Issue #141: a package planned as reused whose remote tarball the signed
+    manifest does not vouch for gets the build-only dependencies the plan
+    skipped back first, and its remote tarball stays gated on the next pass."""
+
+    remote_hash = HashPolicyBuildFallbackTest.remote_hash
+    local_hash = HashPolicyBuildFallbackTest.local_hash
+    StopAtBuildScript = HashPolicyBuildFallbackTest.StopAtBuildScript
+    _run_package = HashPolicyBuildFallbackTest._run_package
+
+    def _run(self, work_dir, skipped, order, prefetched=None, planned=plan.REMOTE):
+        def prepare(ctx):
+            app = ctx.specs["hash-policy-test"]
+            if prefetched is not None:            # what the pass before brought
+                app["prefetched_tarballs"] = prefetched
+            ctx.specs["cmake"] = {"package": "cmake", "is_devel_pkg": False, "requires": [],
+                                  "hash": "c" * 40, "revision": "1", "not_needed": True}
+            app["requires"] = app["build_requires"] = ["cmake"]
+            ctx.cfg.require_signed_reuse = True
+            ctx.planned = {"hash-policy-test": planned, "cmake": plan.REMOTE}
+            ctx.skipped, ctx.build_order = skipped, order
+            ctx.full_order = ["cmake", "hash-policy-test"]
+            self.ctx = ctx
+            return ctx
+        with patch("bits_helpers.build.trusted_reuse_index", return_value={}):
+            return self._run_package(work_dir, remote_tarball=True, prepare=prepare)
+
+    def test_skipped_dependencies_come_back_first(self):
+        with tempfile.TemporaryDirectory() as work_dir:
+            order = []
+            result, spec = self._run(work_dir, {"cmake"}, order)
+            self.assertIsNone(result)
+            self.assertEqual(order, ["cmake", "hash-policy-test"])
+            self.assertEqual(self.ctx.skipped, set())
+            self.assertEqual(set(self.ctx.specs["cmake"]), {"package", "is_devel_pkg", "requires"})
+            self.assertEqual(len(spec["prefetched_tarballs"]), 1)
+            # The next pass: the remote tarball left on disk is still not reused.
+            result, spec = self._run(work_dir, set(), [], spec["prefetched_tarballs"])
+            self.assertIsInstance(result, self.StopAtBuildScript)
+            self.assertEqual(spec["cachedTarball"], "")
+
+    def test_without_skipped_dependencies_it_is_built_at_once(self):
+        for skipped, planned in ((set(), plan.REMOTE), ({"cmake"}, plan.BUILD)):
+            with self.subTest(planned=planned), tempfile.TemporaryDirectory() as work_dir:
+                order = []
+                result, spec = self._run(work_dir, skipped, order, planned=planned)
+                self.assertIsInstance(result, self.StopAtBuildScript)
+                self.assertEqual((order, spec["cachedTarball"]), ([], ""))
 
 
 if __name__ == '__main__':
