@@ -155,6 +155,8 @@ fi
 export BUILDROOT="$BITS_BUILD_WORK_DIR/BUILD/$PKGHASH"
 export SOURCEDIR="$WORK_DIR/SOURCES/$PKGNAME/$PKGVERSION/$COMMIT_HASH"
 export BUILDDIR="$BUILDROOT/$PKGNAME"
+# fetch_cache: true: the directory bits restored the recipe's downloads into.
+if [ -n "${BITS_FETCH_CACHE:-}" ]; then export BITS_FETCH_CACHE="$WORK_DIR/$BITS_FETCH_CACHE"; fi
 
 # All caching for RECC should happen relative to $WORK_DIR
 export RECC_PROJECT_ROOT=$WORK_DIR
@@ -332,6 +334,14 @@ else
   popd
   find "$INSTALLROOT" -name "*.unrelocated" -delete
   rm -rf "$WORK_DIR/TMP/$PKGHASH"
+fi
+
+# What the build left in its fetch cache, by sha256, for bits to save (a failure only skips that).
+if [ -z "$CACHED_TARBALL" ] && [ -n "${BITS_FETCH_CACHE:-}" ] && [ -d "$BITS_FETCH_CACHE" ]; then
+  _bits_sha=sha256sum; command -v sha256sum >/dev/null || _bits_sha="shasum -a 256"
+  (cd "$BITS_FETCH_CACHE" && find . -type f -exec $_bits_sha {} + | LC_ALL=C sort -k2) \
+    > "$BUILDROOT/fetched-sources.sha256" || rm -f "$BUILDROOT/fetched-sources.sha256"
+  unset _bits_sha
 fi
 
 # Regenerate init.sh, in case the package build clobbered it. This

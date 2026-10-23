@@ -38,6 +38,7 @@ from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url
 from bits_helpers.build_config import BuildConfig
 from bits_helpers import plan as _plan
+from bits_helpers import fetch_cache
 from dataclasses import dataclass, field
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 try:
@@ -1514,6 +1515,11 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
                 "in command); container build runs unthrottled this slot.")
       else:
         build_command = "nice -n %d /bin/sh -c %s" % (nice_level, shlex.quote(build_command))
+  _cache = getattr(args, "fetchCache", "")
+  _cache = _cache if not cachedTarball and fetch_cache.enabled(spec, _cache) else ""
+  _arch = effective_arch(spec, args.architecture)
+  if _cache:
+    _cache_state = fetch_cache.restore(spec, syncHelper, workDir, _cache, _arch)
   from bits_helpers import monitor as _bits_monitor
   _bits_monitor.note_build(p, getattr(args, "architecture", ""), True)
   try:
@@ -1527,6 +1533,10 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       nice_ladder.release(nice_token)
   if args.builders==1:
     progress.end("failed" if err else "done", err)
+  if _cache and not err:
+    _bwd = args.workDir if spec["is_devel_pkg"] else os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)
+    fetch_cache.save(spec, syncHelper, workDir, _cache, _arch, _cache_state,
+                     os.path.join(_bwd, "BUILD", spec["hash"], fetch_cache.LISTING))
 
   # We do not use the override for devel packages, because we
   # want to avoid having to rebuild things when the /tmp gets cleaned.
@@ -2891,6 +2901,9 @@ def build_one_package(p, ctx):
     # build_template.sh makes a private writable copy so the shared read-only
     # SOURCES tree is never mutated. Empty (off) for modern out-of-tree builds.
     ("BITS_PRIVATE_SOURCE", "1" if not getattr(args, "initdotshFromModules", True) else ""),
+    # fetch_cache: true (issue #129), relative to WORK_DIR; empty when off.
+    ("BITS_FETCH_CACHE", fetch_cache.relative_dir(spec, effective_arch(spec, args.architecture))
+     if fetch_cache.enabled(spec, getattr(args, "fetchCache", "")) else ""),
   ]
   if "sources" in spec:
     for idx, src in enumerate(spec["sources"]):
@@ -3458,6 +3471,8 @@ def doBuild(args, parser):
     from bits_helpers.sandbox import default_mode
     args.sandbox = default_mode(os.environ.get("BITS_SANDBOX"), _system_opt("sandbox", None),
                                 bool(getattr(args, "docker", False)))
+  # The cache of sources builds download themselves (issue #129), if any.
+  args.fetchCache = fetch_cache.cache_name(_system_opt("fetch_cache", None))
   if getattr(args, "sandboxNetwork", None) is None:
     _dn = _system_opt("sandbox_network", "on")
     if isinstance(_dn, bool):

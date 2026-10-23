@@ -319,7 +319,7 @@ def _try_evict(entry: _SentinelEntry, dry_run: bool) -> Optional[int]:
 #     * sentinels whose install dir is gone.
 
 _NON_ARCH_DIRS = {"TARS", "BUILD", "TMP", "INSTALLROOT", "SOURCES", "SPECS",
-                  "MIRROR", "REPOS", "MANIFESTS", "LOGS", "MODULES",
+                  "MIRROR", "REPOS", "MANIFESTS", "LOGS", "MODULES", "FETCH_CACHE",
                   "wrapper-scripts"}
 _HEX_HASH_RE = None   # compiled lazily (re imported locally)
 

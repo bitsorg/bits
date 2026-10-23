@@ -2343,6 +2343,7 @@ rebuilds anything; see [Licence compliance and redistribution policy](#licence-c
 | `license` | SPDX licence identifier (`LicenseRef-*` for custom licences; `NOASSERTION` for system shims). Recorded in the build manifest, the publish BOM and the signed manifest; feeds the per-package and per-release `NOTICE` files and the `bits compliance` audit. |
 | `acknowledgment` | Attribution text required by the licence; written into the per-package `NOTICE`. |
 | `references` | Names of the package for vulnerability scanners: CPEs (`cpe:2.3:a:<vendor>:<product>:<version>:…`) and purls (`pkg:…`), with `%(version)s`, `%(name)s` and `%(tag)s` filled in. A leading `v` is dropped from a CPE's version. Written into the SBOMs: the first CPE and the purl on the CycloneDX component, further CPEs as `syft:cpe23` properties (as syft writes them, which grype reads), every CPE in SPDX. Hash-excluded. A `PythonPipRecipe` without a purl gets `pkg:pypi/…` automatically. |
+| `fetch_cache` | `true` for a recipe whose build downloads sources itself (Bazel externals, OpenLoops process lists, ATLAS externals). bits fills `$BITS_FETCH_CACHE` from the store before the build and saves what the build left there after a successful build, so a later build of the same version keeps working when upstream changes or disappears. Only honoured when the defaults name the cache under `system: fetch_cache: <name>`. The recipe points its tool at the directory, e.g. `bazel build ${BITS_FETCH_CACHE:+--repository_cache=$BITS_FETCH_CACHE}`. Each file is stored once by sha256 (under `SOURCES/cache/`, shared by all versions). The list of files of a version on an architecture is written once, by the first build that saves it; a later build restores exactly that list and warns about files it downloaded that are not in it. Not part of the package hash; nothing is saved without a write store or when `redistributable` forbids sources. File names with a newline or a backslash are not saved. |
 | `redistributable` | Which forms may be redistributed: `all` (default), `binaries`, `sources`, `none`. Restricted binaries are never uploaded to the store nor published to CVMFS; restricted sources are never mirrored to `SOURCES/cache/`. Legacy `true`/`false` = `all`/`none`; unknown values fail closed as `none`. |
 | `description`, `url`, `homepage`, `source_url` | Free-text metadata, also hash-excluded. |
 
@@ -2889,7 +2890,7 @@ package_family:
 | `expand_recipe` | `true` expands every recipe body strictly, as a recipe's own `variables:` or `expand_recipe: true` does: an unknown `%(name)s` in it is an error. |
 | `auto_patch` | `false` turns off automatic patch application for every package; see [Controlling patch application](#controlling-patch-application). |
 | `force_revision`, `revision_policy` | Revision labels for installed packages; see [Forcing or dropping the revision suffix](#forcing-or-dropping-the-revision-suffix-force_revision). |
-| `system` | Build-host and publishing settings, e.g. `remote_store`, `sandbox_network`, `mem_per_job_default`, `build_oversubscribe`, `build_unleash_final`, `source_mode` and the CVMFS path templates (see [CVMFS layout](#cvmfs-layout)). |
+| `system` | Build-host and publishing settings, e.g. `remote_store`, `fetch_cache` (the name of the community's cache of downloaded sources, see the recipe field `fetch_cache`), `sandbox_network`, `mem_per_job_default`, `build_oversubscribe`, `build_unleash_final`, `source_mode` and the CVMFS path templates (see [CVMFS layout](#cvmfs-layout)). |
 
 
 ---
@@ -3448,6 +3449,7 @@ bits sets these variables in each package's build script before the recipe body 
 | `$WORK_DIR` | Absolute path of the work directory (`sw/` by default). |
 | `$PKGDIR` | Directory containing the package's recipe file (its `patches/` live here). |
 | `$BITS_CONFIG_DIR` | Absolute path of the recipe directory (`-c`/`--config-dir`). |
+| `$BITS_FETCH_CACHE` | With `fetch_cache: true`: `FETCH_CACHE/<arch>/<pkg>/<version>/` in the work directory, restored from the store before the build; empty otherwise. |
 
 #### Package identity
 

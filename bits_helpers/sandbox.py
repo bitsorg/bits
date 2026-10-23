@@ -330,6 +330,8 @@ def package_write_paths(env: dict, workdir: str, build_workdir: str,
         os.path.join(w, pkgpath),
         os.path.join(w, "SOURCES", name, env["PKGVERSION"], env.get("COMMIT_HASH") or "0"),
     ]
+    if env.get("BITS_FETCH_CACHE"):          # relative to the work dir
+        subpaths.append(os.path.join(w, env["BITS_FETCH_CACHE"]))
     literals = [os.path.join(b, "BUILD", name + "-latest"),
                 os.path.join(w, os.path.dirname(pkgpath), "latest")]
     if env.get("DEVEL_PREFIX"):
