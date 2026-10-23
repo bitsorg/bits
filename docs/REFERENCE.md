@@ -161,6 +161,44 @@ update source mirrors          ← refresh the reference mirror of each source r
                  upload the tarball to the write store (if configured)
 ```
 
+The console shows each package's position in the selected plan and its current
+stage. Source fetching includes the URL or repository and ref, or the local cache
+or remote store being used. Configuration, compilation, and installation are
+reported separately. For example:
+
+```text
+[3/16] Python@3.13.11: Fetching sources from https://www.python.org/ftp/python/3.13.11/Python-3.13.11.tar.xz
+[3/16] Python@3.13.11: Configuring
+[3/16] Python@3.13.11: Compiling
+[3/16] Python@3.13.11: Installing
+[3/16] Python@3.13.11: done
+```
+
+The count includes packages reused from an existing installation or cache and
+excludes the internal `defaults-release` package. `--only-deps` counts only the
+selected dependencies. With multiple builders, each package keeps its position
+from the plan, so messages can arrive out of numerical order. Stage changes also
+appear in redirected output and CI logs. Terminal builds retain compiler
+percentages within a stage; `--debug` shows the full command output. Stage
+transitions are detected from the executed shell commands for Autotools, CMake,
+Make, Ninja, Meson, Python builds, and the `Configure`, `Make`, and `MakeInstall`
+recipe hooks. Post-install hooks, packaging, and relocation belong to the
+installation stage. Recipes using custom tools can mark their own transitions:
+
+```bash
+echo bits:stage:configure
+# Custom configuration commands
+echo bits:stage:compile
+# Custom compilation commands
+echo bits:stage:install
+# Custom installation commands
+```
+
+A recipe that does not expose a recognizable command or marker retains the
+`Running build recipe` label until installation. Incremental builds use the
+same stage detection. Only steps that actually run are shown; cached binaries
+report archive unpacking and installation.
+
 ### Artifact resolution order (trust-tiered reuse)
 
 Before compiling a package, bits looks for an existing, trusted build of the
@@ -3953,8 +3991,8 @@ bits build --reuse-from cvmfs::relaxed \
            --build-local xrootd  xrootd
 ```
 
-Reused components are logged as **Reuse: … (not built)**; only the requested top
-package is **Compiling**. Use `--build-local PKG[,PKG…]` to force specific
+Reused components are logged as **Reusing CVMFS overlay module … (not built)**;
+only the requested top package is **Compiling**. Use `--build-local PKG[,PKG…]` to force specific
 packages to build locally anyway (e.g. one you need patched).
 
 **Policy.** `--reuse-policy strict` (default) reuses a component only on an exact

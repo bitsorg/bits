@@ -3,6 +3,7 @@ BITS_START_TIMESTAMP=$(date +%%s)
 # Automatically generated build script
 unset DYLD_LIBRARY_PATH
 echo "bits: start building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP"
+echo "bits:stage:prepare"
 get_file_from_configDir() {
   # B2 FIX: quote $BITS_CONFIG_DIR in dirname/basename and quote ${repo_dir}/${d}
   # in the test so that paths with spaces are not word-split.
@@ -273,6 +274,7 @@ function Run() { # dummy function
 }
 
 if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
+  echo "bits:stage:recipe"
   set -o pipefail;
   # Keep DYLD_LIBRARY_PATH (set from dependencies by init.sh above) so build-time
   # tools on macOS find their dependencies' dylibs, mirroring LD_LIBRARY_PATH on
@@ -284,10 +286,12 @@ if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
   } 2>&1 | tee "$BUILDROOT/log"
   rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # read PIPESTATUS[0] BEFORE any command clobbers it
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
+    echo "bits:stage:incremental"
     set -o pipefail
     (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log"
     rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # propagate the real recipe exit code (was masked to 1)
 elif [[ "$CACHED_TARBALL" == "" ]]; then
+   echo "bits:stage:recipe"
    set -o pipefail;
    # Keep DYLD_LIBRARY_PATH (from dependencies via init.sh) — see note above.
    { set -e
@@ -297,6 +301,7 @@ elif [[ "$CACHED_TARBALL" == "" ]]; then
    } 2>&1 | tee "$BUILDROOT/log"
    rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # read PIPESTATUS[0] BEFORE any command clobbers it
 else
+  echo "bits:stage:unpack"
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
   # files.
   rm -rf "$BUILDROOT/log"
@@ -334,6 +339,7 @@ else
   rm -rf "$WORK_DIR/TMP/$PKGHASH"
 fi
 
+echo "bits:stage:relocate-config"
 # Regenerate init.sh, in case the package build clobbered it. This
 # particularly happens in the AliEn-Runtime package, since it copies other
 # packages into its installroot wholesale.
@@ -439,9 +445,11 @@ cd "$WORK_DIR/INSTALLROOT/$PKGHASH"
 
 # Run post-install hooks
 if [[ $PKGNAME != defaults-* ]]; then
+  echo "bits:stage:post-install"
   run_hooks "POST_INSTALL"
 fi
 
+echo "bits:stage:relocate-config"
 # Relativise in-tree absolute symlinks so the artefact is relocatable.
 # A build can install an absolute symlink into its own INSTALLROOT (e.g. bzip2's
 # bin/bzless -> $INSTALLROOT/bin/bzmore). That target is a build-time path: it
@@ -488,6 +496,7 @@ if [ -w "$INSTALLROOT" ]; then
     || echo "bits: WARNING: could not write $PKGNAME's .bits-view.json" >&2
 fi
 
+echo "bits:stage:package"
 # Archive creation
 # B7 FIX: replace backtick with $(...) and quote $PKGHASH; use -c (chars) consistently.
 HASHPREFIX=$(echo "$PKGHASH" | cut -c1,2)
@@ -562,6 +571,7 @@ elif [ -z "$CACHED_TARBALL" ]; then
 fi
 wait "$rsync_pid"
 
+echo "bits:stage:relocate"
 # We've copied files into their final place; now relocate.
 # Use $PKGPATH (= $EFFECTIVE_ARCHITECTURE[/$PKGFAMILY]/$PKGNAME/$_VERREV) so
 # that PKGFAMILY packages (e.g. externals/foo, cms/bar) are found correctly.
