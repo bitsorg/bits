@@ -174,6 +174,14 @@ class TestManifestInit(unittest.TestCase):
                          ["cpe:2.3:a:linuxfoundation:pytorch:2.1.0\\+cpu:*:*:*:*:*:*:*",
                           "pkg:generic/torch@2.1.0%2Bcpu"])
 
+    def test_a_cpe_version_loses_a_leading_v(self):
+        m = _make_manifest(self.tmp)
+        spec = {"package": "ROOT", "version": "v6.40.02", "revision": "1", "hash": "h",
+                "references": ["cpe:2.3:a:cern:root:%(version)s", "pkg:generic/root@%(version)s"]}
+        m.add_package(spec, "built_from_source")
+        self.assertEqual(self._load(m)["packages"][0]["references"],
+                         ["cpe:2.3:a:cern:root:6.40.02:*:*:*:*:*:*:*", "pkg:generic/root@v6.40.02"])
+
     def test_only_a_live_pip_include_names_a_pypi_package(self):
         m = _make_manifest(self.tmp)
         spec = {"package": "xgboost", "version": "2.0", "revision": "1", "hash": "h",

@@ -219,7 +219,7 @@ class TestScannerIdentity(unittest.TestCase):
         root = {c["name"]: c for c in sbom.to_cyclonedx(m)["components"]}["ROOT"]
         self.assertEqual(root["cpe"], "cpe:2.3:a:cern:root:6.40.02:*:*:*:*:*:*:*")
         self.assertEqual(root["purl"], "pkg:generic/root@6.40.02")
-        self.assertIn({"name": "bits:cpe", "value": "cpe:2.3:a:root-project:root:6.40.02:*:*:*:*:*:*:*"},
+        self.assertIn({"name": "syft:cpe23", "value": "cpe:2.3:a:root-project:root:6.40.02:*:*:*:*:*:*:*"},
                       root["properties"])
 
     def test_without_references_nothing_changes(self):

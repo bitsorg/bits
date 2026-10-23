@@ -2335,7 +2335,7 @@ rebuilds anything; see [Licence compliance and redistribution policy](#licence-c
 |-------|-------------|
 | `license` | SPDX licence identifier (`LicenseRef-*` for custom licences; `NOASSERTION` for system shims). Recorded in the build manifest, the publish BOM and the signed manifest; feeds the per-package and per-release `NOTICE` files and the `bits compliance` audit. |
 | `acknowledgment` | Attribution text required by the licence; written into the per-package `NOTICE`. |
-| `references` | Names of the package for vulnerability scanners: CPEs (`cpe:2.3:a:<vendor>:<product>:<version>:…`) and purls (`pkg:…`), with `%(version)s`, `%(name)s` and `%(tag)s` filled in. Written into the SBOMs: the first CPE and purl on the CycloneDX component, every CPE in SPDX. Hash-excluded. A `PythonPipRecipe` without a purl gets `pkg:pypi/…` automatically. |
+| `references` | Names of the package for vulnerability scanners: CPEs (`cpe:2.3:a:<vendor>:<product>:<version>:…`) and purls (`pkg:…`), with `%(version)s`, `%(name)s` and `%(tag)s` filled in. A leading `v` is dropped from a CPE's version. Written into the SBOMs: the first CPE and the purl on the CycloneDX component, further CPEs as `syft:cpe23` properties (as syft writes them, which grype reads), every CPE in SPDX. Hash-excluded. A `PythonPipRecipe` without a purl gets `pkg:pypi/…` automatically. |
 | `redistributable` | Which forms may be redistributed: `all` (default), `binaries`, `sources`, `none`. Restricted binaries are never uploaded to the store nor published to CVMFS; restricted sources are never mirrored to `SOURCES/cache/`. Legacy `true`/`false` = `all`/`none`; unknown values fail closed as `none`. |
 | `description`, `url`, `homepage`, `source_url` | Free-text metadata, also hash-excluded. |
 

@@ -292,7 +292,8 @@ def _props(c):
            ("bits:effective_architecture", e.get("effective_architecture")),
            ("bits:pkg_family", e.get("pkg_family")), ("bits:outcome", e.get("outcome")),
            ("bits:redistributable", e.get("redistributable")), ("bits:commit", _commit(e))]
-    out += [("bits:cpe", x) for x in _references(e, "cpe:2.3:")[1:]]
+    # Further CPEs under the property name syft and grype read them from.
+    out += [("syft:cpe23", x) for x in _references(e, "cpe:2.3:")[1:]]
     out += [("bits:build_requires", d) for d in e.get("build_requires") or []]
     out += [("bits:patch", ("%s %s" % (p.get("name"), p.get("checksum") or "")).strip())
             for p in e.get("patches") or [] if isinstance(p, dict)]

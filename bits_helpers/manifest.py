@@ -286,8 +286,11 @@ _CPE_FIELDS = re.compile(r"(?<!\\):")
 
 def _cpe(ref, fill):
     """*ref* (``cpe:2.3:…``, short forms padded with ``*``) with its %(…)s filled
-    in, escaped as CPE 2.3 requires; None unless it has the 13 fields."""
+    in, escaped as CPE 2.3 requires; None unless it has the 13 fields. A version
+    loses a leading ``v`` (v6.40.02): NVD versions never carry one."""
     for k, v in fill.items():
+        if k in ("%(version)s", "%(tag)s"):
+            v = re.sub(r"^v(?=\d)", "", v)
         ref = ref.replace(k, re.sub(r"([^A-Za-z0-9._-])", r"\\\1", v))
     n = len(_CPE_FIELDS.split(ref))
     return ref + ":*" * (13 - n) if 5 <= n <= 13 else None
