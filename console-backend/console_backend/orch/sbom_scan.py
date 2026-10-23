@@ -5,8 +5,9 @@
 The worker step sends each build's sbom.cdx.json (MANIFESTS/<build_id>/) to the
 sbom-scanner service (BITS_ORCH_SCANNER_URL, bits-services), which matches it with
 grype and returns it with a CycloneDX `vulnerabilities` section. A build is
-scanned once, and again whenever the scanner's vulnerability database is newer
-than the one of its last good scan, so old builds learn of new CVEs.
+scanned once, again whenever the scanner's vulnerability database is newer than
+the one of its last good scan, so old builds learn of new CVEs, and again when a
+newer pipeline publishes the build (a re-run writes its SBOM anew).
 
 sbom_scans keeps each build's counts by severity (findings: a vulnerability in a
 package) and the last error; the `vulnerabilities` section itself is a gzip file
@@ -95,7 +96,8 @@ def vulnerabilities(directory, bid):
 
 def due(conn, db_built, now, limit=None):
     """Build ids to scan, newest first: never scanned, last good scan with an
-    older database, or failed more than RETRY_MS ago."""
+    older database or older than the build's newest publication, or failed more
+    than RETRY_MS ago."""
     rows = conn.execute(
         "SELECT b.build_id, MAX(b.recorded_ms) AS seen, s.db_built, s.error, s.scanned_ms"
         " FROM builds b LEFT JOIN sbom_scans s ON s.build_id = b.build_id"
@@ -107,7 +109,7 @@ def due(conn, db_built, now, limit=None):
         elif r["error"]:
             if now - r["scanned_ms"] > RETRY_MS:
                 out.append(r["build_id"])
-        elif r["db_built"] != db_built:
+        elif r["db_built"] != db_built or r["seen"] > r["scanned_ms"]:
             out.append(r["build_id"])
         if len(out) >= limit:
             break

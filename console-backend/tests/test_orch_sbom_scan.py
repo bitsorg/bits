@@ -100,6 +100,22 @@ class SbomScanTest(unittest.TestCase):
         self.assertEqual((ev["payload"]["critical"], ev["payload"]["was"]), (1, [0, 1, 0, 0, 0]))
         self.assertEqual(self._scans()["b-1"]["db_built"], "2026-10-25T06:00:00Z")
 
+    def test_a_newer_publication_of_a_build_scans_it_again(self):
+        self._step(Scanner())
+        self.assertEqual(self._step(Scanner()), 0)
+        self.conn.execute("UPDATE sbom_scans SET scanned_ms = 1000")
+        self.conn.execute("INSERT INTO pipelines (id, is_build, community, first_seen_ms)"
+                          " VALUES (9, 1, 'atlas', 0)")
+        self.conn.execute("INSERT INTO builds (pipeline_id, build_id, community, recorded_ms)"
+                          " VALUES (9, 'b-1', 'atlas', 2000)")    # published after that scan
+        self.conn.commit()
+        self.objects["MANIFESTS/b-1/sbom.cdx.json"] = b'{"name": "b-1 again"}'
+        s = Scanner(summary={"high": 1})
+        self.assertEqual(self._step(s), 1)
+        self.assertEqual(s.scanned, ["b-1 again"])
+        self.assertEqual(self._scans()["b-1"]["high"], 1)
+        self.assertEqual(self._step(Scanner()), 0)             # and then not again
+
     def test_a_first_clean_scan_is_no_event(self):
         self._step(Scanner())
         self.assertEqual(self._events(), [])

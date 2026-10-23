@@ -1455,7 +1455,8 @@ as an HTML report of its components, dependencies and licences
 [CycloneDX Sunshine](https://github.com/CycloneDX/Sunshine). With
 `BITS_ORCH_SCANNER_URL` (the sbom-scanner service of bits-services, grype), the
 worker scans every published build's SBOM, and again whenever the vulnerability
-database is newer; the report then shows the build's vulnerabilities, and
+database is newer or a newer pipeline publishes the build (a re-run, which writes
+its SBOM anew; a re-publish replays the old build manifest, and so the old SBOM); the report then shows the build's vulnerabilities, and
 `GET /ops/sbom/scans?community=&flagged=` lists the scanned builds, most severe
 first (the console's Vulnerabilities page). A package is checked only through
 its purl or CPE (the recipe field `references`).
