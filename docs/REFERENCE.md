@@ -1452,8 +1452,13 @@ The console backend serves a published build's SBOMs to any signed-in user
 (`GET /ops/builds/{pipeline}/sbom?format=cyclonedx|spdx`), and the CycloneDX one
 as an HTML report of its components, dependencies and licences
 (`GET /ops/builds/{pipeline}/sbom/report`), drawn by a vendored, unmodified
-[CycloneDX Sunshine](https://github.com/CycloneDX/Sunshine). The report lists the
-vulnerabilities an SBOM carries; bits SBOMs carry none yet.
+[CycloneDX Sunshine](https://github.com/CycloneDX/Sunshine). With
+`BITS_ORCH_SCANNER_URL` (the sbom-scanner service of bits-services, grype), the
+worker scans every published build's SBOM, and again whenever the vulnerability
+database is newer; the report then shows the build's vulnerabilities, and
+`GET /ops/sbom/scans?community=&flagged=` lists the scanned builds, most severe
+first (the console's Vulnerabilities page). A package is checked only through
+its purl or CPE (the recipe field `references`).
 
 ---
 

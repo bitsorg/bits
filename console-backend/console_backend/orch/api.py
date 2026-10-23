@@ -16,7 +16,11 @@
     GET  /ops/builds/{pipeline}/sbom?format=&build=   the SBOM a build published
                                        (CycloneDX or SPDX): any signed-in user
     GET  /ops/builds/{pipeline}/sbom/report?build=   that CycloneDX SBOM as an HTML
-                                       report (CycloneDX Sunshine), sandboxed
+                                       report (CycloneDX Sunshine), sandboxed; for the
+                                       admins of its community, with the vulnerabilities
+                                       of its last good scan
+    GET  /ops/sbom/scans?community=&flagged=&limit=   the builds' vulnerability scans,
+                                       most severe first (the caller's communities)
     GET  /ops/trace?repo=&path=&build_id=   who built and approved a CVMFS path (bits trace)
     POST /ops/ci/published, /ops/ci/failed   {pipeline}: a CI job's hint to look
                                        at its pipeline now (GitLab CI ID token)
@@ -67,7 +71,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, kinds, outside, phases, reconcile, sbom_report, shadow, trace)
+               failures, kinds, outside, phases, reconcile, sbom_report, sbom_scan, shadow, trace)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -463,9 +467,9 @@ def _no_such_key(e):
     return code in ("NoSuchKey", "404", "NotFound", "AccessDenied", "403")
 
 
-async def _published_sbom(pipeline, name, build):
-    """(build id, bytes) of the SBOM file *name* that *pipeline* published beside
-    its BOMs (MANIFESTS/<build_id>/); else HTTPException."""
+async def _pipeline_build(pipeline, build):
+    """The build id *pipeline* published (*build*, when it published several);
+    else HTTPException."""
     def ids(conn):
         return [r["build_id"] for r in conn.execute(
             "SELECT build_id FROM builds WHERE pipeline_id = ? ORDER BY build_id", (pipeline,))]
@@ -476,6 +480,13 @@ async def _published_sbom(pipeline, name, build):
     if len(builds) > 1:
         raise HTTPException(400, "pipeline %d published several builds; give build= one of: %s"
                             % (pipeline, ", ".join(builds)))
+    return builds[0]
+
+
+async def _published_sbom(pipeline, name, build):
+    """(build id, bytes) of the SBOM file *name* that *pipeline* published beside
+    its BOMs (MANIFESTS/<build_id>/); else HTTPException."""
+    builds = [await _pipeline_build(pipeline, build)]
     try:
         store = await run_in_threadpool(_store)
     except kinds.NotConfigured as e:
@@ -514,8 +525,16 @@ async def build_sbom(pipeline: int, request: Request, format: str = "cyclonedx",
 async def build_sbom_report(pipeline: int, request: Request, build: str = ""):
     """The build's CycloneDX SBOM as an HTML report, for the same readers. The
     page runs scripts, so a CSP sandbox keeps it off this origin if opened here."""
-    await _caller(request)
+    data = await _caller(request)
     bid, body = await _published_sbom(pipeline, SBOM_FILES["cyclonedx"], build)
+    mine = await _scope(data)
+    community = await run_in_threadpool(_read, lambda conn: (conn.execute(
+        "SELECT community FROM builds WHERE pipeline_id = ? AND build_id = ?",
+        (pipeline, bid)).fetchone() or {"community": ""})["community"])
+    if mine is None or community in mine:      # its scan's findings, as /ops/sbom/scans shows
+        vulns = sbom_scan.vulnerabilities(_m().settings.orch_scans_dir, bid)
+        if vulns is not None:
+            body = sbom_scan.with_vulnerabilities(body, vulns)
     try:
         page = await run_in_threadpool(sbom_report.render, body, bid)
     except sbom_report.Busy as e:
@@ -526,6 +545,22 @@ async def build_sbom_report(pipeline: int, request: Request, build: str = ""):
     return Response(content=page, media_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
                              "Content-Security-Policy": SBOM_REPORT_SANDBOX})
+
+
+@router.get("/ops/sbom/scans")
+async def sbom_scans(request: Request, community: str = "", flagged: bool = False, limit: int = 200):
+    """The builds' vulnerability scans, most severe first: those of the
+    communities the caller administers (all, for an overall admin)."""
+    data = await _caller(request)
+    mine = await _scope(data)
+    if community:
+        c = community.strip().lower()
+        if mine is not None and c not in mine:
+            return {"scans": []}
+        mine = {c}
+    rows = await run_in_threadpool(_read, sbom_scan.listing, communities=mine,
+                                   flagged=flagged, limit=max(1, min(int(limit), 1000)))
+    return JSONResponse({"scans": rows}, headers={"Cache-Control": "no-store"})
 
 
 # --- CI hints -------------------------------------------------------------------

@@ -476,6 +476,11 @@ class WorkerStepsTest(_DB):
         w.run_once()
         self.assertEqual(self._row(1)["outcome"], "running")
 
+    def test_the_scan_step_follows_trace_when_a_scanner_is_set(self):
+        w = worker.Worker(self.conn, config.Settings(env={"BITS_ORCH_SCANNER_URL": "http://s:8080"}))
+        names = [n for n, _ in w.steps]
+        self.assertEqual(names[names.index("trace") + 1], "scan")
+
     def test_the_cvmfs_status_step_follows_index_when_asked_for(self):
         w = worker.Worker(self.conn, config.Settings(env={"BITS_ORCH_CVMFS_STATUS": "1"}))
         names = [n for n, _ in w.steps]
@@ -603,6 +608,33 @@ class ApiTest(_DB):
             raise OSError("credentials proxy unavailable")
         with patch.object(api, "_store", down):
             self.assertEqual(self._get("dave", "/ops/builds/1/sbom?build=b-1").status_code, 503)
+
+    def test_scans_are_those_of_ones_communities_and_feed_their_admins_report(self):
+        from console_backend.orch import api, sbom_report, sbom_scan
+        for pid, bid in ((1, "b-1"), (2, "b-2")):
+            self.conn.execute(
+                "INSERT INTO builds (pipeline_id, build_id, community, recorded_ms) VALUES"
+                " (?, ?, (SELECT community FROM pipelines WHERE id = ?), 0)", (pid, bid, pid))
+        self.conn.execute("INSERT INTO sbom_scans (build_id, db_built, scanned_ms, high)"
+                          " VALUES ('b-1', 'd', 1, 2)")
+        self.conn.execute("INSERT INTO sbom_scans (build_id, db_built, scanned_ms) VALUES ('b-2', 'd', 1)")
+        self.conn.commit()
+        sbom_scan._write(main.settings.orch_scans_dir, "b-1", [{"id": "CVE-9"}])
+        ids = lambda u, q="": [s["build_id"] for s in self._get(u, "/ops/sbom/scans" + q).json()["scans"]]
+        self.assertEqual(ids("alice"), ["b-1"])
+        self.assertEqual(ids("carol"), ["b-1", "b-2"])
+        self.assertEqual(ids("carol", "?flagged=true"), ["b-1"])
+        self.assertEqual(ids("alice", "?community=other"), [])
+        self.assertEqual(ids("dave"), [])
+        self.assertEqual(self.client.get("/ops/sbom/scans").status_code, 401)
+        s3 = FakeS3({"MANIFESTS/b-1/sbom.cdx.json": {"bomFormat": "CycloneDX"}})
+        seen = []
+        with patch.object(sbom_report, "render", lambda body, bid: seen.append(json.loads(body)) or b"<html>"), \
+                patch.object(api, "_store", lambda: (s3, "bkt")):
+            for user in ("alice", "carol", "bob", "dave"):
+                self.assertEqual(self._get(user, "/ops/builds/1/sbom/report").status_code, 200)
+        self.assertEqual([d.get("vulnerabilities") for d in seen],
+                         [[{"id": "CVE-9"}], [{"id": "CVE-9"}], None, None])   # admins of testbed only
 
     def test_a_builds_sbom_report_is_a_sandboxed_page(self):
         from console_backend.orch import api, sbom_report

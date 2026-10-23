@@ -421,6 +421,25 @@ MIGRATIONS = [
             PRIMARY KEY (prepub, build_id)
         )""",
     ],
+    # 13: vulnerability scans of the builds' SBOMs (sbom_scan.py): per build, the
+    # last good scan's counts by severity and its database, and the last error.
+    [
+        """CREATE TABLE sbom_scans (
+            build_id     TEXT PRIMARY KEY,
+            sbom_sha256  TEXT NOT NULL DEFAULT '',
+            db_built     TEXT NOT NULL DEFAULT '',
+            scanned_ms   INTEGER NOT NULL,
+            critical     INTEGER NOT NULL DEFAULT 0,
+            high         INTEGER NOT NULL DEFAULT 0,
+            medium       INTEGER NOT NULL DEFAULT 0,
+            low          INTEGER NOT NULL DEFAULT 0,
+            other        INTEGER NOT NULL DEFAULT 0,
+            packages        INTEGER NOT NULL DEFAULT 0,
+            vulnerabilities INTEGER NOT NULL DEFAULT 0,
+            vulns_sha256    TEXT NOT NULL DEFAULT '',
+            error           TEXT NOT NULL DEFAULT ''
+        )""",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

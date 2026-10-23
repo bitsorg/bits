@@ -162,6 +162,12 @@ class Settings:
         # CVMFS path (trace.py, for `bits trace`); none: no such index.
         self.orch_prepub_urls = [u.strip() for u in (e.get("BITS_ORCH_PREPUB_URLS") or "").split(",")
                                  if u.strip()]
+        # The sbom-scanner service (bits-services) that matches the builds' SBOMs
+        # with a vulnerability database (sbom_scan.py); empty: no scans.
+        self.orch_scanner_url = (e.get("BITS_ORCH_SCANNER_URL") or "").strip()
+        # The scans' vulnerabilities, beside the orchestrator database.
+        self.orch_scans_dir = (os.path.join(os.path.dirname(os.path.abspath(self.orch_db)),
+                                            "sbom-scans") if self.orch_db else "")
         # A daily copy of the orchestrator database (approvals, failures, the
         # audit chain cannot be rebuilt): a directory, ideally on another disk.
         # Empty = no copies.
