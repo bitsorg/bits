@@ -1428,10 +1428,13 @@ bits sbom MANIFEST [--format cyclonedx|spdx|both] [-o DIR|-] [--build-id ID]
 | `-o DIR`, `--output-dir DIR` | `.` | Where to write the files; `-` prints one format to stdout. |
 | `--build-id ID` | the manifest's build id | Release name in the SBOM. |
 
-Each built package is a component: version `<version>-<revision>`, the tarball
-SHA-256, the SPDX licence, a purl (`pkg:github/…@<commit>` for GitHub code,
-else `pkg:generic/…`), source archives with their checksums, the git origin,
-and bits properties (build hash, architecture, patches, redistributable).
+Each built package is a component: the upstream version (the bits revision is
+the `bits:revision` property), the tarball SHA-256, the SPDX licence, a purl and,
+when the recipe gives one, a CPE (see the recipe field `references`), source
+archives with their checksums, the git origin, and bits properties (build hash,
+architecture, patches, redistributable). The purl is the recipe's own, else
+`pkg:pypi/<PYPI_NAME or package>@<version>` for a `PythonPipRecipe`, else
+`pkg:github/…@<commit>` for GitHub code, else `pkg:generic/…`.
 Dependencies come from the manifest (schema v4 and later): runtime and
 untracked `requires` become dependency edges (CycloneDX `dependencies`, SPDX
 `DEPENDS_ON`); `build_requires` become a `bits:build_requires` property in
@@ -2332,6 +2335,7 @@ rebuilds anything; see [Licence compliance and redistribution policy](#licence-c
 |-------|-------------|
 | `license` | SPDX licence identifier (`LicenseRef-*` for custom licences; `NOASSERTION` for system shims). Recorded in the build manifest, the publish BOM and the signed manifest; feeds the per-package and per-release `NOTICE` files and the `bits compliance` audit. |
 | `acknowledgment` | Attribution text required by the licence; written into the per-package `NOTICE`. |
+| `references` | Names of the package for vulnerability scanners: CPEs (`cpe:2.3:a:<vendor>:<product>:<version>:…`) and purls (`pkg:…`), with `%(version)s`, `%(name)s` and `%(tag)s` filled in. Written into the SBOMs: the first CPE and purl on the CycloneDX component, every CPE in SPDX. Hash-excluded. A `PythonPipRecipe` without a purl gets `pkg:pypi/…` automatically. |
 | `redistributable` | Which forms may be redistributed: `all` (default), `binaries`, `sources`, `none`. Restricted binaries are never uploaded to the store nor published to CVMFS; restricted sources are never mirrored to `SOURCES/cache/`. Legacy `true`/`false` = `all`/`none`; unknown values fail closed as `none`. |
 | `description`, `url`, `homepage`, `source_url` | Free-text metadata, also hash-excluded. |
 

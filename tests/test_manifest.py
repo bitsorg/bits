@@ -133,6 +133,59 @@ class TestManifestInit(unittest.TestCase):
         self.assertEqual(pkgs[0]["view"], {"exclude": ["share/doc"]})
         self.assertNotIn("view", pkgs[1])
 
+    def test_references_recorded_only_when_set(self):
+        m = _make_manifest(self.tmp)
+        spec = {"package": "sqlite", "version": "3320300", "revision": "1", "hash": "h",
+                "tag": "v1", "references": ["cpe:2.3:a:sqlite:sqlite:3.32.3:*:*:*:*:*:*:*",
+                                            "pkg:generic/%(name)s@%(tag)s", "nonsense",
+                                            "pkg:generic/%(name)s@%(tag)s"]}
+        m.add_package(spec, "built_from_source")
+        m.add_package(dict(spec, package="zlib", references=None), "built_from_source")
+        pkgs = self._load(m)["packages"]
+        self.assertEqual(pkgs[0]["references"], ["cpe:2.3:a:sqlite:sqlite:3.32.3:*:*:*:*:*:*:*",
+                                                 "pkg:generic/sqlite@v1"])
+        self.assertNotIn("references", pkgs[1])
+
+    def test_a_pip_recipe_is_named_by_its_pypi_purl(self):
+        m = _make_manifest(self.tmp)
+        body = "package: dm_tree\n---\n. $(bits-include PythonPipRecipe)\nPYPI_NAME=\"dm-tree\"\n"
+        spec = {"package": "dm_tree", "version": "0.1.9", "revision": "1", "hash": "h", "recipe": body}
+        m.add_package(spec, "built_from_source")
+        m.add_package(dict(spec, package="Jinja2", hash="j",
+                           recipe="---\n. $(bits-include PythonPipRecipe)\n"), "built_from_source")
+        m.add_package(dict(spec, package="own", hash="o",
+                           references=["pkg:pypi/other@1"]), "built_from_source")
+        m.add_package(dict(spec, package="cmake", hash="c",
+                           recipe="---\n. $(bits-include CMakeRecipe)\n"), "built_from_source")
+        pkgs = {p["package"]: p for p in self._load(m)["packages"]}
+        self.assertEqual(pkgs["dm_tree"]["references"], ["pkg:pypi/dm-tree@0.1.9"])
+        self.assertEqual(pkgs["Jinja2"]["references"], ["pkg:pypi/jinja2@0.1.9"])
+        self.assertEqual(pkgs["own"]["references"], ["pkg:pypi/other@1"])   # the recipe's wins
+        self.assertNotIn("references", pkgs["cmake"])
+
+    def test_cpes_are_completed_escaped_or_dropped(self):
+        m = _make_manifest(self.tmp)
+        spec = {"package": "torch", "version": "2.1.0+cpu", "revision": "1", "hash": "h",
+                "references": ["cpe:2.3:a:linuxfoundation:pytorch:%(version)s",
+                               "cpe:2.3:a:x:y:1:*:*:*:*:*:*:*:*:extra", "cpe:2.3:a",
+                               "pkg:generic/torch@%(version)s"]}
+        m.add_package(spec, "built_from_source")
+        self.assertEqual(self._load(m)["packages"][0]["references"],
+                         ["cpe:2.3:a:linuxfoundation:pytorch:2.1.0\\+cpu:*:*:*:*:*:*:*",
+                          "pkg:generic/torch@2.1.0%2Bcpu"])
+
+    def test_only_a_live_pip_include_names_a_pypi_package(self):
+        m = _make_manifest(self.tmp)
+        spec = {"package": "xgboost", "version": "2.0", "revision": "1", "hash": "h",
+                "recipe": "---\n# . $(bits-include PythonPipRecipe)\n. $(bits-include CMakeRecipe)\n"}
+        m.add_package(spec, "built_from_source")
+        m.add_package(dict(spec, package="zope_interface", hash="z",
+                           recipe="---\n. $(bits-include PythonPipRecipe)\n"
+                                  "PYPI_NAME=zope.interface  # the pip name\n"), "built_from_source")
+        pkgs = {p["package"]: p for p in self._load(m)["packages"]}
+        self.assertNotIn("references", pkgs["xgboost"])
+        self.assertEqual(pkgs["zope_interface"]["references"], ["pkg:pypi/zope.interface@2.0"])
+
     def test_path_in_work_dir(self):
         m = _make_manifest(self.tmp)
         self.assertTrue(m.path.startswith(self.tmp))

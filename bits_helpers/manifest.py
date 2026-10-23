@@ -95,6 +95,7 @@ fields as additive and key off ``schema_version``.
       "build_requires":         [str],            # direct build-only dependencies (v4+)
       "source":                 str,              # git repository URL, "" if none (v4+)
       "tag":                    str,              # git tag/branch built, "" if none (v4+)
+      "references":             [str],            # CPEs / purls naming it for scanners; only when any
       "built_by":               str | None,       # user@host that compiled this hash; null unless built_from_source
       "completed_at":           ISO-8601
     }
@@ -278,6 +279,54 @@ def _dep_names(names) -> list:
     return out
 
 
+_PYPI_NAME = re.compile(r"""^\s*(?:export\s+)?PYPI_NAME=["']?([A-Za-z0-9._-]+)["']?\s*(?:#.*)?$""", re.M)
+_PIP_RECIPE = re.compile(r"^[^#\n]*bits-include\s+PythonPipRecipe\b", re.M)
+_CPE_FIELDS = re.compile(r"(?<!\\):")
+
+
+def _cpe(ref, fill):
+    """*ref* (``cpe:2.3:…``, short forms padded with ``*``) with its %(…)s filled
+    in, escaped as CPE 2.3 requires; None unless it has the 13 fields."""
+    for k, v in fill.items():
+        ref = ref.replace(k, re.sub(r"([^A-Za-z0-9._-])", r"\\\1", v))
+    n = len(_CPE_FIELDS.split(ref))
+    return ref + ":*" * (13 - n) if 5 <= n <= 13 else None
+
+
+def _references(spec: dict) -> list:
+    """The recipe's `references:` (``cpe:2.3:…`` and ``pkg:…`` strings, with
+    %(version)s, %(name)s and %(tag)s filled in). A PythonPipRecipe that names
+    no purl gets ``pkg:pypi/<PYPI_NAME or package>@<version>``."""
+    from urllib.parse import quote
+    name, version = str(spec.get("package") or ""), str(spec.get("version") or "")
+    fill = {"%(version)s": version, "%(name)s": name, "%(package)s": name,
+            "%(tag)s": str(spec.get("tag") or "")}
+    raw = spec.get("references") or []
+    out = []
+    for r in [raw] if isinstance(raw, str) else raw:
+        if not isinstance(r, str) or not r.strip():
+            continue
+        r = r.strip()
+        if r.startswith("cpe:2.3:"):
+            ref = _cpe(r, fill)
+        elif r.startswith("pkg:"):
+            ref = r
+            for k, v in fill.items():
+                ref = ref.replace(k, quote(v, safe=".-_~"))
+        else:
+            ref = None
+        if ref is None:
+            warning("%s: ignoring reference %r: not a cpe:2.3: CPE nor a pkg: purl", name, r)
+        elif ref not in out:
+            out.append(ref)
+    body = str(spec.get("recipe") or "")
+    if version and not any(r.startswith("pkg:") for r in out) and _PIP_RECIPE.search(body):
+        m = _PYPI_NAME.search(body)
+        pypi = (m.group(1) if m else name).lower().replace("_", "-")
+        out.append("pkg:pypi/%s@%s" % (quote(pypi, safe=".-"), quote(version, safe=".-_~")))
+    return out
+
+
 def _patch_entries(spec: dict) -> list:
     """Return ``[{name, checksum}]`` for each patch the recipe applied.
 
@@ -450,6 +499,7 @@ class BuildManifest:
         """
         from bits_helpers.sync import redistributable_forms
         _forms = redistributable_forms(spec.get("redistributable"))
+        _refs = _references(spec)
         entry = {
             "package":                spec.get("package", ""),
             "version":                spec.get("version", ""),
@@ -517,6 +567,7 @@ class BuildManifest:
             "build_requires":         _dep_names(
                 list(spec.get("build_requires") or [])
                 + list(self._sys_edges.get(spec.get("package"), ((), ()))[1])),
+            **({"references": _refs} if _refs else {}),
             "source":                 _no_userinfo(spec.get("source") or ""),
             "tag":                    str(spec.get("tag") or ""),
             # built_by identifies the host that actually compiled this hash.

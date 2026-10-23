@@ -33,6 +33,9 @@ _HASH_EXCLUDED_META_KEYS = frozenset({
     # view: what the package exports to a release's merged view — presentation
     # only, applied at publish time from the build manifest.
     "view",
+    # references: CPEs and purls naming the package for vulnerability scanners
+    # (written into the SBOM); they never affect the build.
+    "references",
 })
 
 # Source-selection keys are ALSO dropped from the recipe TEXT hash — not because

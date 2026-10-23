@@ -164,8 +164,17 @@ def _source_urls(e):
     return out
 
 
+def _references(e, prefix):
+    """The recipe's references (manifest ``references``) that start with *prefix*."""
+    return [r for r in e.get("references") or [] if isinstance(r, str) and r.startswith(prefix)]
+
+
 def _purl(e):
-    """A package URL: pkg:github for GitHub-hosted code, else pkg:generic."""
+    """A package URL: the recipe's own (e.g. pkg:pypi), else pkg:github for
+    GitHub-hosted code, else pkg:generic."""
+    own = _references(e, "pkg:")
+    if own:
+        return own[0]
     name, ver = str(e["package"]), str(e.get("version") or "")
     for u in [clean_url(e.get("source"))] + [u for u, _ in _source_urls(e)]:
         m = _GITHUB.search(u or "")
@@ -283,6 +292,7 @@ def _props(c):
            ("bits:effective_architecture", e.get("effective_architecture")),
            ("bits:pkg_family", e.get("pkg_family")), ("bits:outcome", e.get("outcome")),
            ("bits:redistributable", e.get("redistributable")), ("bits:commit", _commit(e))]
+    out += [("bits:cpe", x) for x in _references(e, "cpe:2.3:")[1:]]
     out += [("bits:build_requires", d) for d in e.get("build_requires") or []]
     out += [("bits:patch", ("%s %s" % (p.get("name"), p.get("checksum") or "")).strip())
             for p in e.get("patches") or [] if isinstance(p, dict)]
@@ -297,8 +307,13 @@ def to_cyclonedx(manifest, build_id="unknown"):
         e = c["entry"]
         comp = {"type": "library", "bom-ref": c["ref"], "name": c["name"]}
         if not c["system"]:
-            comp["version"] = _full_version(e)
+            # The upstream version, as scanners compare it; the bits revision is
+            # a property (bits:revision).
+            comp["version"] = str(e.get("version") or "")
             comp["purl"] = _purl(e)
+            cpes = _references(e, "cpe:2.3:")
+            if cpes:
+                comp["cpe"] = cpes[0]
             sha = _checksum(e.get("tarball_sha256"))
             if sha:
                 comp["hashes"] = [{"alg": _ALGS[sha[0]][0], "content": sha[1]}]
@@ -388,7 +403,7 @@ def to_spdx(manifest, build_id="unknown"):
         if c["system"]:
             pkg["comment"] = "Provided by the host system; not built by bits."
         else:
-            pkg["versionInfo"] = _full_version(e)
+            pkg["versionInfo"] = str(e.get("version") or "")
             loc = _download(e)
             pkg["downloadLocation"] = loc if _SPDX_DOWNLOAD.match(loc) else "NOASSERTION"
             lic = str(e.get("license") or "").strip()
@@ -401,6 +416,8 @@ def to_spdx(manifest, build_id="unknown"):
                 pkg["checksums"] = [{"algorithm": _ALGS[sha[0]][1], "checksumValue": sha[1]}]
             pkg["externalRefs"] = [{"referenceCategory": "PACKAGE-MANAGER",
                                     "referenceType": "purl", "referenceLocator": _purl(e)}]
+            pkg["externalRefs"] += [{"referenceCategory": "SECURITY", "referenceType": "cpe23Type",
+                                     "referenceLocator": x} for x in _references(e, "cpe:2.3:")]
             info = ["bits build hash %s" % e["hash"]] if e.get("hash") else []
             if _commit(e):
                 info.append("commit %s" % _commit(e))
