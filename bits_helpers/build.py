@@ -7,7 +7,7 @@ from pathlib import Path
 from bits_helpers import __version__
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
-from bits_helpers import site
+from bits_helpers import recipe_overlay, site
 from bits_helpers.repo_provider import (fetch_repo_providers_iteratively, load_always_on_providers,
                                         announce_providers, MAX_PROVIDER_ITERATIONS,
                                         no_recipes_hint)
@@ -1969,10 +1969,21 @@ def _cached_sources(spec, work_dir, architecture):
   return out
 
 
+def _recipe_overlay_session(directory):
+  """The session name in a recipe overlay's overlay.yaml, else the directory's."""
+  import yaml
+  try:
+    with open(join(directory, recipe_overlay.INDEX)) as f:
+      meta = yaml.safe_load(f) or {}
+    return str(meta.get("session") or os.path.basename(directory))
+  except (OSError, yaml.YAMLError, AttributeError):
+    return os.path.basename(directory)
+
+
 def _recipe_patches(spec):
   """``[(name, path)]`` of *spec*'s active patches, in the recipe's patches/."""
   from bits_helpers.checksum import parse_entry as _pe
-  return [(name, join(spec.get("pkgdir", ""), "patches", name))
+  return [(name, recipe_overlay.patch_file(spec, name))
           for name in (_pe(p)[0] for p in spec.get("patches") or [])]
 
 
@@ -3549,6 +3560,15 @@ def doBuild(args, parser):
 
   for _old, _new in dict(getattr(args, "normalisedStores", None) or []).items():
     debug("Store %s -> %s (bits lists CERN S3 stores via swift)", _old, _new)
+  if getattr(args, "recipeOverlay", None):
+    banner("Recipe overlay %s: a trial build (no upload, publish nor certification)",
+           args.recipeOverlay)
+    if getattr(args, "writeStore", ""):         # from the defaults' system.remote_store ::rw
+      args.remoteStore = args.remoteStore or args.writeStore
+      args.writeStore = ""
+      args.recipeOverlayDroppedWrite = True
+    if getattr(args, "recipeOverlayDroppedWrite", False):
+      warning("The recipe overlay makes this a trial build: the write store is not used.")
 
   # A write store alone is also the read store (as with ::rw). Set it here, not
   # only in remote_from_url, so the signed-reuse checks below see that store.
@@ -3752,6 +3772,7 @@ def doBuild(args, parser):
     config_commit     = os.environ.get("BITS_DIST_HASH", ""),
     # This build's CVMFS layout: the publish places the whole closure with it.
     cvmfs_templates   = getattr(args, "cvmfsTemplates", None),
+    raw_architecture  = raw_architecture,
     # Use the last (top-level) requested package as the filename identifier.
     # This mirrors how mainPackage = buildOrder[-1] is resolved later; using
     # packages[-1] here avoids having to delay manifest creation until after
@@ -3759,6 +3780,8 @@ def doBuild(args, parser):
     target            = packages[-1] if packages else "",
   )
   args.manifest.add_providers(provider_dirs)
+  if getattr(args, "recipeOverlay", None):
+    args.manifest.set_recipe_overlay(args.recipeOverlay, _recipe_overlay_session(args.recipeOverlay), recipe_overlay.files())
 
   with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env,
                     extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist.bits:ro"] if args.docker else [],
@@ -4397,6 +4420,9 @@ def doBuild(args, parser):
   _global_mode = checksum_enforcement_mode({}, args, defaultsMeta)
   _do_print = (_global_mode == "print")
   _do_write = write_checksums_enabled(args, defaultsMeta)
+  if _do_write and getattr(args, "recipeOverlay", None):
+    warning("A trial build (recipe overlay) records no checksums in the recipe repositories.")
+    _do_write = False
   if (_do_print or _do_write) and specs_for_checksum_phase:
     _run_post_build_checksum_phase(specs_for_checksum_phase, workDir,
                                    do_print=_do_print, do_write=_do_write,

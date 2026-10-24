@@ -117,8 +117,9 @@ def doPublishView(args, parser):
         from bits_helpers.certify import load_build_manifests
         from bits_helpers.notice import write_release_compliance
         from bits_helpers.provenance import build_id_from_manifest
+        from bits_helpers.recipe_overlay import is_trial
         for man in load_build_manifests(os.path.join(work_dir, "MANIFESTS")):
-            if build_id_from_manifest(man) == build_id:
+            if build_id_from_manifest(man) == build_id and not is_trial(man):
                 write_release_compliance(result["view_dir"],
                                          man.get("packages") or [], build_id,
                                          manifest=man)

@@ -10,6 +10,7 @@ import os
 from os.path import exists, join
 
 from bits_helpers.log import dieOnError, error
+from bits_helpers import recipe_overlay
 
 def checkForFilename(taps, pkg, d, ext=".sh"):
   filename = taps.get(pkg, "{}/{}{}".format(d, pkg, ext))
@@ -48,7 +49,8 @@ def getConfigPaths(configDir):
     original behaviour for named recipe repositories).
   """
   configPath = os.environ.get("BITS_PATH")
-  pkgDirs = [configDir]
+  overlay = recipe_overlay.directory()       # bits build --overlay: searched first
+  pkgDirs = ([overlay] if overlay else []) + [configDir]
   if configPath:
     for r in [x for x in configPath.split(",") if x]:
       if os.path.isabs(r):
@@ -60,13 +62,15 @@ def getConfigPaths(configDir):
   return pkgDirs
 
 def resolveFilename(taps, pkg, configDir, generatedPackages, ext=".sh", required_by=None):
-  for d in getConfigPaths(configDir):
+  paths = getConfigPaths(configDir)
+  for d in paths:
     if d in generatedPackages and pkg in generatedPackages[d]:
       meta = generatedPackages[d][pkg]
       return ("generate:{}@{}".format(pkg, meta["version"]), meta["pkgdir"])
     filename = checkForFilename(taps, pkg, d, ext=ext)
     if exists(filename):
-      return (filename, d)
+      # An overlay file stands for the recipe it shadows: that is its directory.
+      return (filename, recipe_overlay.home(filename, paths) if recipe_overlay.inside(filename) else d)
   # Name the recipe(s) that pulled this dependency in (with their origin), so the
   # operator sees WHO required a missing package, not just that it is missing.
   reqline = ""

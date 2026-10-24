@@ -359,23 +359,20 @@ def _emit_json(rows: List[dict], architecture: str) -> None:
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
-def doStatus(args, parser) -> None:
-    """Resolve the dependency tree and report the build state of each package."""
+def resolve_specs(args, parser):
+    """The specs of *args.pkgname* resolved exactly as ``bits build`` resolves them
+    (providers, defaults, overrides, pins; system checks only with --docker), and
+    the context that came with them. Also used by ``bits upgrade``."""
     # Deferred heavy imports (build.py pulls in jinja2, analytics, etc.)
     from bits_helpers.build import (
-        _apply_source_mode, _source_mode,
         add_initdotsh_hash_marker, apply_defaults_legacy_initdotsh,
-        defaults_store_url, hash_local_changes, prepare_hash_inputs,
-        providers_and_defaults, resolve_defaults_variables, resolve_initdotsh_mode,
-        storeHook)
+        providers_and_defaults, resolve_defaults_variables, resolve_initdotsh_mode)
     from bits_helpers.repo_provider import announce_providers
-    from bits_helpers.hashing import storeHashes
     from bits_helpers.log import dieOnError
     from bits_helpers.git import git
 
     packages = args.pkgname
     specs: dict = {}
-    buildOrder: list = []
     work_dir = abspath(args.workDir)
     prunePaths(work_dir)
 
@@ -470,6 +467,25 @@ def doStatus(args, parser) -> None:
     for p in own:   # as bits build: the build environment, and the build-type-neutral arch
         specs[p]["container_fingerprint"] = fingerprint
         specs[p]["_own_hash_arch"] = own_hash_arch
+    return dict(specs=specs, packages=packages, work_dir=work_dir,
+                branch_basename=branch_basename, branch_stream=branch_stream,
+                raw_architecture=raw_architecture, failed=failed,
+                defaults_meta=defaults_meta, provider_dirs=provider_dirs, taps=taps)
+
+
+def doStatus(args, parser) -> None:
+    """Resolve the dependency tree and report the build state of each package."""
+    # Deferred heavy imports (build.py pulls in jinja2, analytics, etc.)
+    from bits_helpers.build import (
+        _apply_source_mode, _source_mode, defaults_store_url, hash_local_changes,
+        prepare_hash_inputs, storeHook)
+    from bits_helpers.hashing import storeHashes
+    from bits_helpers.log import dieOnError
+
+    r = resolve_specs(args, parser)
+    specs, packages, work_dir, failed = r["specs"], r["packages"], r["work_dir"], r["failed"]
+    branch_basename, branch_stream = r["branch_basename"], r["branch_stream"]
+    raw_architecture, defaults_meta = r["raw_architecture"], r["defaults_meta"]
 
     if failed:
         warning(
@@ -558,6 +574,8 @@ def doStatus(args, parser) -> None:
         remote_store_url = ""
     if not remote_store_url and write_store_url:
         remote_store_url = write_store_url
+    if getattr(args, "recipeOverlay", None):
+        write_store_url = ""               # a trial build (recipe overlay) writes nowhere
 
     # Optional remote store for --check-store probing
     sync_helper = None
