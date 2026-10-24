@@ -248,7 +248,16 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
     spec["version"] = devel_version
 
 
-def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None) -> None:
+def prefetch_wanted(build_order, states):
+  """[(package, with its sources)] worth prefetching, from the plan *states*: an
+  installed package needs neither tarball nor sources, one from the store no
+  sources. Without a plan, everything."""
+  return [(p, states.get(p) != _plan.REMOTE) for p in build_order
+          if states.get(p) not in (_plan.INSTALLED, _plan.LOCAL_TARBALL, _plan.OVERLAY)]
+
+
+def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None,
+                      sources=True) -> None:
   """Background task: prefetch the prebuilt tarball + all source archives.
 
   Uses the sentinel-file mechanism (``<path>.downloading`` files; see
@@ -308,6 +317,8 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None)
       # Another thread is already fetching this tarball; just wait.
       _wait_for_sentinel(tar_hash_dir)
 
+  if not sources:              # reused from the store: its sources are not needed
+    return
   # --- Source archive prefetch ------------------------------------------------
   # Warms the download cache (SOURCES/cache) only; checkout_sources copies from
   # there. download() uses _acquire_download/_wait_for_sentinel internally, so
@@ -4313,22 +4324,19 @@ def doBuild(args, parser):
   _prefetch_workers = cfg.prefetch_workers
   if _prefetch_workers < 0:
     _prefetch_workers = min(max(int(getattr(args, "builders", 1)), 1), 4)
-  _prefetch_executor = None
-  if _prefetch_workers > 0 and buildOrder and not isinstance(syncHelper,
+  _prefetch_executor, _prefetch_futures = None, []
+  _prefetch_order = prefetch_wanted(buildOrder, _states)
+  if _prefetch_workers > 0 and _prefetch_order and not isinstance(syncHelper,
       __import__("bits_helpers.sync", fromlist=["NoRemoteSync"]).NoRemoteSync):
     debug("Starting %d prefetch worker(s)", _prefetch_workers)
     _prefetch_executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=_prefetch_workers,
         thread_name_prefix="bits-prefetch",
     )
-    for _pkg in buildOrder:
-      _pspec = specs[_pkg]
-      _prefetch_executor.submit(_prefetch_package, _pspec, syncHelper, workDir, args.architecture,
-                                raw_architecture)
-    # Do NOT call executor.shutdown() here — we let it run in the background
-    # and join lazily via a daemon-thread finaliser registered below.
-    import atexit
-    atexit.register(lambda ex=_prefetch_executor: ex.shutdown(wait=False, cancel_futures=True))
+    _prefetch_futures = [
+        _prefetch_executor.submit(_prefetch_package, specs[_pkg], syncHelper, workDir,
+                                  args.architecture, raw_architecture, sources=_src)
+        for _pkg, _src in _prefetch_order]
 
   # Default build_family for the final banner, matching the in-loop formula
   # (build.py sets it per-package below). Needed so a reused/skipped MAIN package
@@ -4345,45 +4353,51 @@ def doBuild(args, parser):
       prefetch_executor=_prefetch_executor, cmake_prefix_env=_cmake_prefix_env,
       specs_for_checksum_phase=specs_for_checksum_phase, monitoredDirs=monitoredDirs,
       planned=_states, skipped=_skipped, build_order=buildOrder, full_order=_full_order)
-  while buildOrder:
-    build_one_package(buildOrder.pop(0), ctx)
-  buildWorkDir = ctx.build_work_dir
+  try:
+    while buildOrder:
+      build_one_package(buildOrder.pop(0), ctx)
+    buildWorkDir = ctx.build_work_dir
 
-  if (args.builders > 1) and buildTargets:
-    _run_t0 = time.monotonic()
-    try:
-      scheduler.run()
-    finally:
-      # Always stop the straggler-renice watchdog, even if run() raised.
-      if getattr(scheduler, "renice_watchdog", None) is not None:
-        scheduler.renice_watchdog.stop()
-    _run_wall = time.monotonic() - _run_t0
-    # Refresh the self-tuning resource-stats file from this run's monitor traces
-    # so the next --builders invocation can schedule with up-to-date estimates (P3).
-    # Also estimate CPU utilisation and, when there is headroom, record/print a
-    # suggestion for --builders / --oversubscribe.
-    _tuning = None
-    if args.resourceMonitoring and monitoredDirs:
+    if (args.builders > 1) and buildTargets:
+      _run_t0 = time.monotonic()
       try:
-        from bits_helpers.build_stats import aggregate_and_write, tuning_report, default_stats_path
-        _tuning = tuning_report(monitoredDirs, _run_wall, args.builders, args.jobs,
-                                cfg.oversubscribe)
-        aggregate_and_write(workDir, monitoredDirs, tuning=_tuning, arch=args.architecture)
-      except Exception as exc:  # pylint: disable=broad-except
-        warning("Could not update build resource stats: %s", exc)
-    for (action, error) in scheduler.errors.items():
-      info("* The action \"{}\" was not completed successfully because {}".format(action, error))
-    # Write a concise failure summary plus a combined full error log, and tell
-    # the user where to find them and the individual per-package logs.
-    report_failure_summary(workDir, scheduler, args.architecture)
-    # End-of-run resource-tuning hint. Only on a clean build — the utilisation
-    # numbers are meaningless for a partial/failed run. The full report is in
-    # bits_build_stats.json under "tuning".
-    if _tuning and _tuning.get("headroom") and not scheduler.brokenJobs:
-      banner("Resource tuning (recorded in %s):\n  %s",
-             default_stats_path(workDir, args.architecture), _tuning["recommendation"])
-    if scheduler.brokenJobs:
-      dieOnError(True, "Please fix the above errors.")
+        scheduler.run()
+      finally:
+        # Always stop the straggler-renice watchdog, even if run() raised.
+        if getattr(scheduler, "renice_watchdog", None) is not None:
+          scheduler.renice_watchdog.stop()
+      _run_wall = time.monotonic() - _run_t0
+      # Refresh the self-tuning resource-stats file from this run's monitor traces
+      # so the next --builders invocation can schedule with up-to-date estimates (P3).
+      # Also estimate CPU utilisation and, when there is headroom, record/print a
+      # suggestion for --builders / --oversubscribe.
+      _tuning = None
+      if args.resourceMonitoring and monitoredDirs:
+        try:
+          from bits_helpers.build_stats import aggregate_and_write, tuning_report, default_stats_path
+          _tuning = tuning_report(monitoredDirs, _run_wall, args.builders, args.jobs,
+                                  cfg.oversubscribe)
+          aggregate_and_write(workDir, monitoredDirs, tuning=_tuning, arch=args.architecture)
+        except Exception as exc:  # pylint: disable=broad-except
+          warning("Could not update build resource stats: %s", exc)
+      for (action, error) in scheduler.errors.items():
+        info("* The action \"{}\" was not completed successfully because {}".format(action, error))
+      # Write a concise failure summary plus a combined full error log, and tell
+      # the user where to find them and the individual per-package logs.
+      report_failure_summary(workDir, scheduler, args.architecture)
+      # End-of-run resource-tuning hint. Only on a clean build — the utilisation
+      # numbers are meaningless for a partial/failed run. The full report is in
+      # bits_build_stats.json under "tuning".
+      if _tuning and _tuning.get("headroom") and not scheduler.brokenJobs:
+        banner("Resource tuning (recorded in %s):\n  %s",
+               default_stats_path(workDir, args.architecture), _tuning["recommendation"])
+      if scheduler.brokenJobs:
+        dieOnError(True, "Please fix the above errors.")
+  finally:
+    # The queued prefetches nobody needs any more: at exit Python would wait
+    # for every one (a pool worker drains its queue before it stops).
+    for _f in _prefetch_futures:
+      _f.cancel()
 
   # ── Post-build checksum phase ──────────────────────────────────────────────
   # Runs after all packages have been built (or confirmed up-to-date) so that
