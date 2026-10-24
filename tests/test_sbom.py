@@ -79,6 +79,32 @@ class TestComponents(unittest.TestCase):
         self.assertEqual(sbom._download(cmake), "https://cmake.org/files/cmake-3.30.6.tar.gz")
 
 
+    def test_a_system_package_with_a_version_is_identified(self):
+        m = _manifest()
+        m["system_package_info"] = {"zlib": {"version": "1.2.11", "references": [
+            "cpe:2.3:a:zlib:zlib:1.2.11:*:*:*:*:*:*:*", "cpe:2.3:a:gnu:zlib:1.2.11:*:*:*:*:*:*:*"]}}
+        zlib = {c["name"]: c for c in sbom.to_cyclonedx(m)["components"]}["zlib"]
+        self.assertEqual((zlib["version"], zlib["purl"], zlib["cpe"]),
+                         ("1.2.11", "pkg:generic/zlib@1.2.11", "cpe:2.3:a:zlib:zlib:1.2.11:*:*:*:*:*:*:*"))
+        self.assertIn({"name": "syft:cpe23", "value": "cpe:2.3:a:gnu:zlib:1.2.11:*:*:*:*:*:*:*"},
+                      zlib["properties"])
+        spdx = {p["name"]: p for p in sbom.to_spdx(m)["packages"]}["zlib"]
+        self.assertEqual(spdx["versionInfo"], "1.2.11")
+        plain = {c["name"]: c for c in sbom.to_cyclonedx(_manifest())["components"]}["zlib"]
+        self.assertNotIn("version", plain)                     # its check said nothing
+
+    def test_a_system_package_found_by_the_package_manager_goes_by_its_name(self):
+        m = _manifest()
+        purl = "pkg:deb/ubuntu/zlib1g@1:1.3.dfsg-3.1?arch=amd64&distro=ubuntu-24.04&upstream=zlib"
+        m["system_package_info"] = {"zlib": {"version": "1:1.3.dfsg-3.1", "references": [purl]}}
+        (zlib,) = [c for c in sbom.to_cyclonedx(m)["components"] if c["bom-ref"].startswith("zlib@")]
+        self.assertEqual((zlib["name"], zlib["version"], zlib["purl"]), ("zlib1g", "1:1.3.dfsg-3.1", purl))
+        self.assertIn({"name": "bits:package", "value": "zlib"}, zlib["properties"])
+        self.assertNotIn("cpe", zlib)
+        spdx = {p["name"]: p for p in sbom.to_spdx(m)["packages"]}["zlib1g"]
+        self.assertEqual(spdx["externalRefs"], [{"referenceCategory": "PACKAGE-MANAGER",
+                                                 "referenceType": "purl", "referenceLocator": purl}])
+
     def test_missing_dependencies_that_are_not_system_are_dropped(self):
         m = _manifest()
         m["system_packages"] = []            # e.g. a failed build: zlib never recorded

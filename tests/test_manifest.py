@@ -414,12 +414,15 @@ class TestAddPackage(unittest.TestCase):
         # The build drops system-provided packages from the specs' requires;
         # the manifest gets them back from set_system_packages.
         m = _make_manifest(self.tmp)
-        m.set_system_packages({"zlib", "OpenSSL"}, {"ROOT": (["zlib"], ["OpenSSL"])})
+        m.set_system_packages({"zlib", "OpenSSL"}, {"ROOT": (["zlib"], ["OpenSSL"])},
+                              {"zlib": {"version": "1.2.11", "references": []},
+                               "OpenSSL": {"version": "", "references": []}})
         spec = dict(self.spec, package="ROOT", runtime_requires=["Python"],
                     untracked_requires=["xrootd"], build_requires=["CMake"])
         m.add_package(spec, "already_installed")
         data = self._load(m)
         self.assertEqual(data["system_packages"], ["OpenSSL", "zlib"])
+        self.assertEqual(data["system_package_info"], {"zlib": {"version": "1.2.11", "references": []}})
         pkg = data["packages"][0]
         self.assertEqual(pkg["requires"], ["Python", "xrootd", "zlib"])
         self.assertEqual(pkg["build_requires"], ["CMake", "OpenSSL"])

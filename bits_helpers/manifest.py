@@ -60,6 +60,8 @@ fields as additive and key off ``schema_version``.
       "config_dir":        str,         # absolute path to the .bits checkout
       "config_commit":     str,         # BITS_DIST_HASH of the config repo
       "system_packages":   [str],       # taken from the system, not built (v4+)
+      "system_package_info": {name: {"version": str, "references": [str]}},
+                                        # their versions, when their checks said (v4+)
       "cvmfs_templates":   {str: str},  # this build's CVMFS layout (optional);
                                         # bits cvmfs publish uses it for all packages
       "providers":         [ProviderEntry],
@@ -466,12 +468,16 @@ class BuildManifest:
 
     # ── Package recording ─────────────────────────────────────────────────────
 
-    def set_system_packages(self, names, edges=None) -> None:
+    def set_system_packages(self, names, edges=None, info=None) -> None:
         """Record the packages taken from the system (not built) and, per built
         package, its (runtime, build) dependencies among them: the build drops
-        those from the specs' requires, so the SBOM graph needs them here."""
+        those from the specs' requires, so the SBOM graph needs them here.
+        *info* gives the versions (and CPEs/purls) known for them."""
         with self._lock:
             self._data["system_packages"] = sorted(names or ())
+            known = {n: i for n, i in (info or {}).items() if i.get("version")}
+            if known:
+                self._data["system_package_info"] = known
             self._sys_edges = dict(edges or {})
 
     def add_package(

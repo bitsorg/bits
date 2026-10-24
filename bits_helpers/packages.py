@@ -35,15 +35,130 @@ def shadowed_defaults_repo(pkg_filename, won_dir, search_dirs, defaults_dirs):
   return None
 
 
+# A line of a check's output that is only a version, e.g. `xml2-config --version`.
+_VERSION_LINE = re.compile(r"v?\d+(?:\.\d+)+(?:[._+~-][0-9A-Za-z]+)*")
+
+
+def system_version(output):
+  """The version of a package taken from the system, from its check's output: a
+  ``bits_system_version: X`` line, else the first line that is only a version."""
+  m = re.search(r"^bits_system_version:[ \t]*(\S+)[ \t]*$", output or "", re.MULTILINE)
+  if m:
+    return m.group(1)
+  return next((re.sub(r"^v", "", ln.strip()) for ln in (output or "").splitlines()
+               if _VERSION_LINE.fullmatch(ln.strip())), "")
+
+
+# q NAME...: the installed packages among NAME... (rpm and dpkg, in that order), as
+# "rpm NAME EPOCH VERSION RELEASE ARCH SOURCE-RPM" or "deb NAME - VERSION - ARCH SRC@SRCVER".
+_PKG_QUERY = r"""T=; command -v timeout >/dev/null 2>&1 && T="timeout 20"   # a locked rpm database
+q() {
+  for p in "$@"; do
+    command -v rpm >/dev/null 2>&1 &&
+      $T rpm -q --qf 'rpm %{NAME} %{EPOCH} %{VERSION} %{RELEASE} %{ARCH} %{SOURCERPM}\n' "$p" 2>/dev/null
+    command -v dpkg-query >/dev/null 2>&1 &&
+      $T dpkg-query -W -f='${db:Status-Abbrev}deb ${Package} - ${Version} - ${Architecture} ${source:Package}@${source:Version}\n' \
+        "$p" 2>/dev/null | sed -n 's/^.i. *//p'
+  done
+}
+"""
+_OS_QUERY = """. /etc/os-release 2>/dev/null && echo "os $ID $VERSION_ID"
+true
+"""
+_FOUND = re.compile(r"(rpm|deb) (\S+) (\S+) (\S+) (\S+) (\S+)(?: (\S+))?")
+
+
+def _query_names(spec):
+  """Package names to ask the package manager for: the recipe's
+  ``system_package:`` (one or a list), else the usual spellings of its name."""
+  own = spec.get("system_package")
+  if own:
+    return [own] if isinstance(own, str) else [str(x) for x in own]
+  n = spec["package"].lower()
+  return list(dict.fromkeys([spec["package"], n, n + "-libs"] +
+                            ([] if n.startswith("lib") else ["lib" + n])))
+
+
+def _purl(found, os_line):
+  """(version, purl) of a package the query found, as syft writes them."""
+  from urllib.parse import quote as pct
+  kind, name, epoch, version, release, arch, source = found
+  q = {"arch": arch}
+  if os_line and os_line.group(2):
+    q["distro"] = "%s-%s" % os_line.groups()
+  if kind == "rpm":
+    full = "%s-%s" % (version, release)
+    if epoch.isdigit() and epoch != "0":
+      q["epoch"] = epoch
+    if source and source != "(none)":
+      q["upstream"] = source
+    shown = ("%s:%s" % (epoch, full)) if "epoch" in q else full
+  else:
+    full = shown = version
+    src, _, src_version = (source or "").partition("@")
+    if src and (src != name or src_version not in ("", version)):
+      q["upstream"] = src if src_version in ("", version) else source
+  ns = os_line.group(1) if os_line else ("redhat" if kind == "rpm" else "debian")
+  return shown, "pkg:%s/%s/%s@%s?%s" % (
+      kind, pct(ns), pct(name), pct(full, safe=".-_~+:"),
+      "&".join("%s=%s" % (k, pct(v, safe=".-_~+")) for k, v in sorted(q.items())))
+
+
+def distro_packages(output):
+  """{package: (version, purl)} from the output of the query (see _system_query)."""
+  os_line = re.search(r"^os (\S+) ?(\S*)$", output or "", re.MULTILINE)
+  found, current = {}, None
+  for line in (output or "").splitlines():
+    if line.startswith("== "):
+      current = line[3:]
+    m = _FOUND.fullmatch(line)
+    if current and m and current not in found:
+      found[current] = _purl(m.groups(), os_line)
+  return found
+
+
+def _system_query(specs):
+  """One script asking the package manager about the system packages *specs*."""
+  return _PKG_QUERY + "".join("echo %s\nq %s\n" % (quote("== " + s["package"]),
+                                                   " ".join(quote(n) for n in _query_names(s)))
+                              for s in specs) + _OS_QUERY
+
+
+def _record_system(info, taken, query):
+  """Record in *info* the version of each system package in *taken* ([(spec, check
+  output)]) and what names it for scanners: the distribution's package (a purl), else
+  the version its check printed, with the recipe's references: filled with it."""
+  if info is None or not taken:
+    return
+  from bits_helpers.manifest import _references
+  try:
+    err, out = query({"package": "system-packages"}, _system_query([s for s, _ in taken]))
+    found = {} if err else distro_packages(out)
+  except Exception as exc:              # pylint: disable=broad-except
+    debug("Could not ask the package manager for the system packages: %s", exc)
+    found = {}
+  for spec, output in taken:
+    if spec["package"] in found:
+      version, purl = found[spec["package"]]
+      info[spec["package"]] = {"version": version, "references": [purl]}
+      continue
+    version = system_version(output)
+    info[spec["package"]] = {"version": version,
+                             "references": _references(dict(spec, version=version)) if version else []}
+
+
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,
                    performValidateDefaults, overrides, taps, log, force_rebuild=(),
-                   provider_dirs=None, defaults_meta=None, satisfied_requirements=None):
+                   provider_dirs=None, defaults_meta=None, satisfied_requirements=None,
+                   system_info=None):
   """Resolve the full set of packages required by *packages*.
 
   *satisfied_requirements*, when a set, collects the ``system_requirement``
   packages whose check passed (taken from the system, like the prefer_system
   ones in the returned ``systemPackages``, but not reported as such).
+  *system_info*, when a dict, gets for every package taken from the system its
+  version and references (see system_version), for the SBOM.
 
   *provider_dirs* is an optional ``dict`` returned by
   ``repo_provider.fetch_repo_providers_iteratively``, mapping each provider
@@ -64,6 +179,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   failedRequirements = set()
   testCache = {}
   requirementsCache = {}
+  takenFromSystem = {}      # package -> (spec, check output), for system_info
   trackingEnvCache = {}
   packages = packages[:]
   generatedPackages = getGeneratedPackages(configDir)
@@ -279,6 +395,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
           # No replacement spec name given. Fall back to old system package
           # behaviour and just disable the package.
           systemPackages.add(spec["package"])
+          takenFromSystem[spec["package"]] = (spec, output)
           if spec["package"] not in _disable_set:
             disable.append(spec["package"])
             _disable_set.add(spec["package"])
@@ -306,7 +423,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                            "recipe_source", "force_revision", "revision_policy"):
               if _carry in spec and _carry not in replacement:
                 replacement[_carry] = spec[_carry]
-            spec = replacement
+            recipeSpec, spec = spec, replacement
             # Allows generalising the version based on the actual key provided
             spec["version"] = spec["version"].replace("%(key)s", key)
             # We need the key to inject the version into the replacement recipe later.
@@ -320,6 +437,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
               ownPackages.add(spec["package"])
             else:
               systemPackages.add(spec["package"])
+              takenFromSystem[spec["package"]] = (recipeSpec, output)
           else:
             warning(f"Could not find named replacement spec for {spec['package']}: {key}, "
                     "falling back to building the package ourselves.")
@@ -341,6 +459,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
           _disable_set.add(spec["package"])
         if satisfied_requirements is not None:
           satisfied_requirements.add(spec["package"])
+        takenFromSystem[spec["package"]] = (spec, output)
 
     spec["disabled"] = list(disable)
     if spec["package"] in disable:
@@ -469,4 +588,5 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     for _src, _pkgs in by_source.items():
       log("  %s  ←  %s", _src, ", ".join(_pkgs))
 
+  _record_system(system_info, list(takenFromSystem.values()), performPreferCheck)
   return (systemPackages, ownPackages, failedRequirements, validDefaults)

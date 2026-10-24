@@ -8,6 +8,8 @@ from unittest import mock
 from unittest.mock import patch
 import tempfile
 
+from shlex import quote
+
 from bits_helpers.cmd import getstatusoutput
 from bits_helpers.packages import getPackageList
 
@@ -56,6 +58,24 @@ RECIPES = {
     prefer_system_check: |
         echo 'bits_system_replace: missing_tag'
     prefer_system_replacement_specs: {}
+    ---
+    """),
+    "CONFIG_DIR/sys-libxml2.sh": dedent("""\
+    package: sys-libxml2
+    version: "2.10.4"
+    prefer_system: '.*'
+    prefer_system_check: |
+        echo 2.9.13
+    references:
+      - cpe:2.3:a:xmlsoft:libxml2:%(version)s
+    ---
+    """),
+    "CONFIG_DIR/sys-marked.sh": dedent("""\
+    package: sys-marked
+    version: "1"
+    prefer_system: '.*'
+    prefer_system_check: |
+        echo "found it, see 3.1 notes"; echo 'bits_system_version: 7.4.0'
     ---
     """),
     "CONFIG_DIR/sentinel-command.sh": dedent("""\
@@ -136,7 +156,7 @@ class MockReader:
         return self._contents
 
 
-def getPackageListWithDefaults(packages, force_rebuild=(), satisfied=None):
+def getPackageListWithDefaults(packages, force_rebuild=(), satisfied=None, system_info=None):
     specs = {}   # getPackageList will mutate this
     def performPreferCheckWithTempDir(pkg, cmd):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
@@ -162,6 +182,7 @@ def getPackageListWithDefaults(packages, force_rebuild=(), satisfied=None):
         log=lambda *_: None,
         force_rebuild=force_rebuild,
         satisfied_requirements=satisfied,
+        system_info=system_info,
     )
     return (specs, *return_values)
 
@@ -194,6 +215,54 @@ class ReplacementTestCase(unittest.TestCase):
         for pkg in ("sbom-a", "sbom-c"):
             self.assertIn("disable", specs[pkg]["unfiltered_requires"]["runtime"], pkg)
         self.assertIn("disable", specs["sbom-b"]["unfiltered_requires"]["build"])
+
+    def _package_managers(self, rpm="", dpkg=""):
+        """Fake rpm and dpkg-query on PATH that answer *rpm* / *dpkg* for any name
+        ending in -libs, and log every call."""
+        bindir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, bindir, True)
+        for tool, answer in (("rpm", rpm), ("dpkg-query", dpkg)):
+            with open(os.path.join(bindir, tool), "w") as f:
+                f.write('#!/bin/sh\nfor a; do last=$a; done\n'
+                        'echo "$last" >> "%s/calls"\n' % bindir +
+                        'case "$last" in *-libs) printf "%%s\\n" "%s";; *) echo "package $last is not installed"; exit 1;; esac\n'
+                        % answer)
+            os.chmod(os.path.join(bindir, tool), 0o755)
+        patcher = mock.patch.dict(os.environ, PATH=bindir + os.pathsep + os.environ["PATH"])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return os.path.join(bindir, "calls")
+
+    def test_system_versions_come_from_the_checks(self):
+        self._package_managers()
+        info = {}
+        getPackageListWithDefaults(["sys-libxml2", "sys-marked", "disable"], system_info=info)
+        self.assertEqual(info["sys-libxml2"], {"version": "2.9.13",
+                         "references": ["cpe:2.3:a:xmlsoft:libxml2:2.9.13:*:*:*:*:*:*:*"]})
+        self.assertEqual(info["sys-marked"]["version"], "7.4.0")
+        self.assertEqual(info["disable"], {"version": "", "references": []})   # it said nothing
+
+    def test_the_package_manager_is_asked_first(self):
+        calls = self._package_managers(
+            rpm="rpm libxml2 (none) 2.9.13 6.el9_4 x86_64 libxml2-2.9.13-6.el9_4.src.rpm")
+        info = {}
+        getPackageListWithDefaults(["sys-libxml2", "disable"], system_info=info)
+        self.assertEqual(info["sys-libxml2"]["version"], "2.9.13-6.el9_4")
+        self.assertRegex(info["sys-libxml2"]["references"][0],
+                         r"^pkg:rpm/[^/]+/libxml2@2\.9\.13-6\.el9_4\?arch=x86_64(&distro=[^&]+)?"
+                         r"&upstream=libxml2-2\.9\.13-6\.el9_4\.src\.rpm$")
+        with open(calls) as f:                       # one query, for both packages
+            self.assertEqual(sorted(ln.strip() for ln in f), sorted(
+                ["sys-libxml2", "sys-libxml2-libs", "libsys-libxml2", "disable", "disable-libs",
+                 "libdisable"] * 2))
+
+    def test_dpkg_is_asked_too_and_held_packages_count(self):
+        self._package_managers(dpkg="hi deb sys-marked - 1:7.4.0-2 - amd64 marked@1:7.4.0-2")
+        info = {}
+        getPackageListWithDefaults(["sys-marked"], system_info=info)
+        self.assertEqual(info["sys-marked"]["version"], "1:7.4.0-2")
+        self.assertRegex(info["sys-marked"]["references"][0],
+                         r"^pkg:deb/[^/]+/sys-marked@1:7\.4\.0-2\?arch=amd64(&distro=[^&]+)?&upstream=marked$")
 
     def test_satisfied_system_requirements_are_collected(self):
         satisfied = set()
@@ -286,10 +355,6 @@ class ForceRebuildTestCase(unittest.TestCase):
 
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 RECIPES["CONFIG_DIR/pinned.sh"] = dedent("""\
     package: pinned
     version: v1
@@ -361,3 +426,38 @@ class ChecksumsDirTestCase(ChecksumStoreTestCase):
     def test_other_override_does_not(self):
         self.assertIsNone(self._dir({"pinned": {"env": {"X": "1"}}}))
         self.assertIsNone(self._dir({}))
+
+
+class SystemVersionTestCase(unittest.TestCase):
+    def test_a_version_line_or_the_marker(self):
+        from bits_helpers.packages import system_version
+        self.assertEqual(system_version("2.9.13\n"), "2.9.13")
+        self.assertEqual(system_version("cmake version 3.26.5\n3.26.5"), "3.26.5")
+        self.assertEqual(system_version("bits_system_version: 1.2\n9.9.9"), "1.2")
+        self.assertEqual(system_version("OpenSSL 3.0.7 1 Nov 2022"), "")      # not only a version
+        self.assertEqual(system_version(""), "")
+        self.assertEqual(system_version("bits_system_version:\nv2.1"), "2.1")   # no value: the line after
+
+    def test_the_distribution_packages(self):
+        from bits_helpers.packages import distro_packages, _query_names, _system_query
+        self.assertEqual(distro_packages(
+            "== zlib\npackage zlib is not installed\nrpm zlib 1 1.2.11 41.el9 x86_64 zlib-1.2.11-41.el9.src.rpm\n"
+            "rpm zlib-libs 1 1.2.11 41.el9 x86_64 zlib-1.2.11-41.el9.src.rpm\n== none\n"
+            "== libxml2\ndeb libxml2 - 1:2.9.14+dfsg-1.3 - amd64 libxml2@1:2.9.14+dfsg-1.3\nos debian 12\n"), {
+            "zlib": ("1:1.2.11-41.el9", "pkg:rpm/debian/zlib@1.2.11-41.el9?arch=x86_64&distro=debian-12"
+                     "&epoch=1&upstream=zlib-1.2.11-41.el9.src.rpm"),
+            "libxml2": ("1:2.9.14+dfsg-1.3", "pkg:deb/debian/libxml2@1:2.9.14+dfsg-1.3?arch=amd64&distro=debian-12")})
+        self.assertEqual(distro_packages("== libssl3\ndeb libssl3 - 3.0.13-0u3 - amd64 openssl@3.0.13-0u3\n"),
+                         {"libssl3": ("3.0.13-0u3", "pkg:deb/debian/libssl3@3.0.13-0u3?arch=amd64&upstream=openssl")})
+        self.assertEqual(distro_packages("== a\ndeb a - 2-1 - all b@1-1\n")["a"][1],
+                         "pkg:deb/debian/a@2-1?arch=all&upstream=b%401-1")
+        self.assertEqual(distro_packages("os ubuntu 24.04\n"), {})
+        self.assertEqual(distro_packages("== a\ndeb a - 1 - all\nos debian \n")["a"][1],
+                         "pkg:deb/debian/a@1?arch=all")                       # sid: no VERSION_ID
+        self.assertEqual(_query_names({"package": "OpenSSL"}), ["OpenSSL", "openssl", "openssl-libs", "libopenssl"])
+        self.assertEqual(_query_names({"package": "zlib", "system_package": "zlib1g"}), ["zlib1g"])
+        self.assertIn("echo %s\nq zlib1g\n" % quote("== it's"),
+                      _system_query([{"package": "it's", "system_package": "zlib1g"}]))
+
+if __name__ == '__main__':
+    unittest.main()

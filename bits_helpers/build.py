@@ -3768,6 +3768,7 @@ def doBuild(args, parser):
         return getstatusoutput_docker(cmd, cwd=temp_dir)
 
     _satisfied_reqs = set()   # system_requirement packages found present (SBOM)
+    _system_info = {}         # their versions and references, as their checks said
     systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = packages,
                      specs                   = specs,
@@ -3786,7 +3787,8 @@ def doBuild(args, parser):
                      log                     = debug,
                      provider_dirs          = provider_dirs,
                      defaults_meta           = defaultsMeta,
-                     satisfied_requirements  = _satisfied_reqs)
+                     satisfied_requirements  = _satisfied_reqs,
+                     system_info             = _system_info)
 
     # Read the container fingerprint (only present in a bits-containers image), so
     # own_hash packages can fold the build environment — bison/flex/glibc/binutils
@@ -3850,7 +3852,8 @@ def doBuild(args, parser):
       _u = x.get("unfiltered_requires") or {}
       _edges[n] = ([r for r in _u.get("runtime") or [] if r in _sys],
                    [r for r in _u.get("build") or [] if r in _sys])
-    args.manifest.set_system_packages(_sys, _edges)
+    args.manifest.set_system_packages(_sys, _edges,
+                                      {n: i for n, i in _system_info.items() if n in _sys})
   for x in specs.values():
     x["requires"] = [r for r in x["requires"] if r not in args.disable]
     x["build_requires"] = [r for r in x["build_requires"] if r not in args.disable]
