@@ -656,42 +656,47 @@ def doCompliance(args, parser):
         if getattr(args, "noStoreCheck", False):
             parser.error("--enforce audits and cleans the store; it cannot be "
                          "combined with --no-store-check")
-        return enforce_store(args.complianceStore, rec, recipes_dir,
-                             key_pem=getattr(args, "enforceKey", None),
-                             dry_run=getattr(args, "dryRun", False),
-                             work_dir=os.path.abspath(args.workDir),
-                             console=_console(args)) or (
-                                 1 if issues else 0)
+        from bits_helpers.sync import store_urls
+        left = 0
+        for url in store_urls(args.complianceStore):      # each store in turn
+            left += enforce_store(url, rec, recipes_dir,
+                                  key_pem=getattr(args, "enforceKey", None),
+                                  dry_run=getattr(args, "dryRun", False),
+                                  work_dir=os.path.abspath(args.workDir),
+                                  console=_console(args)) or 0
+        return left or (1 if issues else 0)
 
     if not getattr(args, "noStoreCheck", False):
         restricted = {p.lower() for p in rec["restricted"]}
-        try:
-            st = audit_store(args.complianceStore, restricted,
-                             os.path.abspath(args.workDir))
-        except Exception as exc:          # pylint: disable=broad-except
-            error("store audit failed: %s (use --no-store-check to audit "
-                  "recipes only)", exc)
-            return 1
-        info("Store %s: %d build manifest(s), %d signed manifest(s)",
-             st["bucket"], st["boms"], st["signed"])
-        info("  anonymous access ........ %s",
-             "WORLD-READABLE (unauthenticated listing succeeds)"
-             if st["public"] else "no (authenticated only)")
-        if st["stored"]:
-            sev = ("PUBLICLY EXPOSED (bucket is world-readable — this is "
-                   "redistribution)" if st["public"] else
-                   "present (private store: reuse only, do not publish)")
-            line = "%d restricted package build(s) in the store — %s:\n    %s" % (
-                len(st["stored"]), sev, "\n    ".join(sorted(st["stored"])))
-            if st["public"]:
-                issues.append(line)
-            else:
-                info("  %s", line)
-        if st["certified"]:
-            issues.append(
-                "%d restricted package(s) in SIGNED manifests (certified for "
-                "reuse — review): %s"
-                % (len(st["certified"]), "; ".join(sorted(st["certified"]))))
+        from bits_helpers.sync import store_urls
+        for store in store_urls(args.complianceStore):    # each store in turn
+            try:
+                st = audit_store(store, restricted,
+                                 os.path.abspath(args.workDir))
+            except Exception as exc:          # pylint: disable=broad-except
+                issues.append("store audit of %s failed: %s (use --no-store-check to audit "
+                              "recipes only)" % (store, exc))
+                continue
+            info("Store %s: %d build manifest(s), %d signed manifest(s)",
+                 st["bucket"], st["boms"], st["signed"])
+            info("  anonymous access ........ %s",
+                 "WORLD-READABLE (unauthenticated listing succeeds)"
+                 if st["public"] else "no (authenticated only)")
+            if st["stored"]:
+                sev = ("PUBLICLY EXPOSED (bucket is world-readable — this is "
+                       "redistribution)" if st["public"] else
+                       "present (private store: reuse only, do not publish)")
+                line = "%d restricted package build(s) in store %s — %s:\n    %s" % (
+                    len(st["stored"]), st["bucket"], sev, "\n    ".join(sorted(st["stored"])))
+                if st["public"]:
+                    issues.append(line)
+                else:
+                    info("  %s", line)
+            if st["certified"]:
+                issues.append(
+                    "%d restricted package(s) in SIGNED manifests of %s (certified for "
+                    "reuse — review): %s"
+                    % (len(st["certified"]), st["bucket"], "; ".join(sorted(st["certified"]))))
 
     if issues:
         banner("Compliance issues: %d", len(issues))

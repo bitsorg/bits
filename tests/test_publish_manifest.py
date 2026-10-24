@@ -617,7 +617,8 @@ class TestStoreUploadRedistributable(unittest.TestCase):
              patch.dict(os.environ, {}, clear=False):
             publish._publish_s3(entry["package"], entry.get("version"), ARCH,
                                 "/wd", store, _Parser())
-            self.endpoint = os.environ.get("BITS_S3_ENDPOINT_URL")
+            from bits_helpers.sync import bucket_endpoint     # the store's own
+            self.endpoint = bucket_endpoint(rfu.call_args[0][0][5:]) if rfu.call_args else None
         self.store_used = rfu.call_args[0][0] if rfu.call_args else None
         return writer
 
@@ -625,7 +626,7 @@ class TestStoreUploadRedistributable(unittest.TestCase):
         # The default store is an https:// URL; without normalisation the upload
         # fell through to the rsync backend.
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("BITS_S3_ENDPOINT_URL", None)
+            os.environ.pop("BITS_S3_ALIBUILD_REPO_ENDPOINT_URL", None)
             w = self._run({"package": "ROOT", "version": "6.30", "revision": "1", "hash": "h3"},
                           store="https://s3.cern.ch/swift/v1/alibuild-repo")
         self.assertEqual(self.store_used, "b3://alibuild-repo")

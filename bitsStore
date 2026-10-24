@@ -64,16 +64,9 @@ if [[ -z "$S3KEYS" ]]; then
   S3KEYS="${S3KEYS/#\~/$HOME}"
 fi
 
-# Load creds if present; a missing file is not fatal here (--help needs no S3).
-# The Python side checks for credentials before it actually touches S3.
-if [ -f "$S3KEYS" ]; then
-  set +u                     # a creds file may reference vars we don't set
-  # shellcheck disable=SC1090
-  . "$S3KEYS"
-  set -u
-  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
-  [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN || true
-fi
+# The Python side reads the creds file as bits build does ([bucket NAME] sections
+# included); a missing file is not fatal (--help needs no S3).
+export BITS_AWS_KEYS_FILE="$S3KEYS"
 
 BITSSTORE_STORE="${BITS_S3_STORE:-}" BITSSTORE_SELF="$SELFDIR" \
   PYTHONPATH="${SELFDIR}${PYTHONPATH:+:$PYTHONPATH}" \
@@ -83,7 +76,8 @@ if sys.flags.ignore_environment:   # bits' own runtime: PYTHONPATH is not read
     sys.path.insert(0, os.environ["BITSSTORE_SELF"])
 
 from bits_helpers.publish import _normalize_s3_store
-from bits_helpers.sync import remote_from_url
+from bits_helpers.sync import remote_from_url, resolve_and_export_s3_config
+resolve_and_export_s3_config()      # the keys file and environment, as bits build reads them
 from bits_helpers.utilities import resolve_store_path, resolve_links_path
 from bits_helpers import orchestrated, stale_boms
 try:
@@ -951,9 +945,11 @@ def main():
     # S3 client, so the dest names below must match what they read.
     gp = sub.add_parser("gc", help="reachability GC of the shared store")
     gp.add_argument("--trust-manifest", dest="trustManifest", required=True, metavar="PATH",
-                    help="signed common manifest whose hashes are the GC roots (must verify)")
+                    help="signed common manifest whose hashes are the GC roots (must verify); "
+                         "with several stores one per store, comma-separated, in the same order")
     gp.add_argument("--remote-store", "--store", dest="gcStore", metavar="URL", default=STORE,
-                    help="S3 store URL/bucket to sweep (default: %(default)s)")
+                    help="S3 store URL/bucket to sweep; several, comma-separated, each in "
+                         "turn (default: %(default)s)")
     gp.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=None,
                     help="architecture store tree to sweep (default: detected)")
     gp.add_argument("-w", "--work-dir", dest="workDir", metavar="WORKDIR", default=_WORKDIR,
@@ -1005,9 +1001,17 @@ def main():
     # do NOT use the ls/rm selection machinery — handle them before the
     # selection-attr normalisation below (which would csv-mangle package/version).
     if args.verb in ("gc", "stats", "upload"):
-        if not os.environ.get("AWS_ACCESS_KEY_ID"):
-            sys.exit(f"{PROG}: no S3 credentials — put them in ~/.bits/s3keys "
-                     "(or set $BITS_AWS_KEYS_FILE / AWS_ACCESS_KEY_ID).")
+        from bits_helpers.publish import _normalize_s3_store
+        from bits_helpers.sync import resolve_and_export_s3_config, s3_settings, store_urls
+        resolve_and_export_s3_config()
+        stores = store_urls(getattr(args, {"gc": "gcStore", "stats": "storeStatsStore",
+                                           "upload": "uploadStore"}[args.verb], ""))
+        for url in stores:                # each bucket's own credentials, else the run's
+            bucket = _normalize_s3_store(url).split("://", 1)[-1].split("/", 1)[0]
+            if not s3_settings(bucket)["access_key"]:
+                sys.exit(f"{PROG}: no S3 credentials for {url} — put them in ~/.bits/s3keys "
+                         "(or set $BITS_AWS_KEYS_FILE / AWS_ACCESS_KEY_ID, or "
+                         "BITS_S3_<BUCKET>_ACCESS_KEY_ID for that bucket).")
         if not getattr(args, "architecture", None):
             from bits_helpers.arch import detectArch
             args.architecture = detectArch()
@@ -1018,9 +1022,10 @@ def main():
         if args.verb == "stats":
             from bits_helpers.store_stats import doStoreStats
             return doStoreStats(args, ap) or 0
-        from bits_helpers.publish import _publish_s3       # upload
-        _publish_s3(args.package, args.version, args.architecture, args.workDir,
-                    args.uploadStore, ap, dry_run=args.dryRun)
+        from bits_helpers.publish import _publish_s3       # upload, to every store given
+        for url in stores:
+            _publish_s3(args.package, args.version, args.architecture, args.workDir,
+                        url, ap, dry_run=args.dryRun)
         return 0
 
     # Normalise multi-value filters; give safe defaults for attrs absent on a verb.

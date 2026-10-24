@@ -180,8 +180,10 @@ def _normalize_s3_store(url):
     if not m:
         return url
     host, bucket = m.group(1), m.group(2)
-    os.environ.setdefault("BITS_S3_ENDPOINT_URL", "https://%s" % host)
-    os.environ.setdefault("S3_ADDRESSING_STYLE", "path")  # CERN RGW path-style
+    # This bucket's endpoint (sync.s3_settings), so stores on other hosts keep theirs.
+    key = "BITS_S3_%s_" % re.sub(r"[^A-Za-z0-9]", "_", bucket).upper()
+    os.environ.setdefault(key + "ENDPOINT_URL", "https://%s" % host)
+    os.environ.setdefault(key + "ADDRESSING_STYLE", "path")  # CERN RGW path-style
     return "b3://%s" % bucket
 
 
@@ -336,7 +338,7 @@ def _published_bom(writers, build_id, published, manifest_doc, architecture):
 
 
 def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=None, dry_run=False,
-                           reuse_pipeline_bom=False):
+                           reuse_pipeline_bom=False, gauges=True):
     """Bulk-upload every built package in a manifest to the S3 store.
 
     *manifest* is a manifest file path, or 'latest'/None to use the newest under
@@ -615,16 +617,16 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
     # re-publish, which never runs `bits build`) is a store mutation, and the
     # Monitoring dashboard's store bar reads these gauges via the snapshot —
     # without this push the bar goes stale/empty between builds.
-    if not dry_run and ok:
+    # (*gauges*: once per publish, for the first store: they carry no bucket label.)
+    if not dry_run and ok and gauges:
         _mon = (os.environ.get("METRICS_URL") or "").strip().rstrip("/")
         _w = next(iter(writers.values()), None)
         if _mon and _w is not None and getattr(_w, "s3", None) and getattr(_w, "writeStore", None):
             from bits_helpers import store_stats as _ss
-            _pub_ep = (os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
-                       or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
+            from bits_helpers.sync import s3_settings
             _ss.push_store_gauges(_w.s3, _w.writeStore, _mon, work_dir=work_dir,
                                   store=getattr(_w, "remoteStore", "") or _w.writeStore,
-                                  endpoint=_pub_ep)
+                                  endpoint=s3_settings(_w.writeStore)["endpoint"])
     if dry_run or not bom:
         return None
     return build_id, bom, _system_from_manifest(manifest_doc)
@@ -742,6 +744,12 @@ def _submit_certification_mr(args, parser, build_id, bom):
 
 
 
+def _bom_shas(bom):
+    """{(arch, hash): tarball sha256} of a published build's BOMs."""
+    return {(arch, p.get("hash")): p.get("tarball_sha256")
+            for arch, doc in bom or () for p in doc.get("packages", ())}
+
+
 def _orchestrator_marker(store_url, work_dir, architecture):
     """The store's orchestrator marker (see orchestrated.py), or None. A store that
     cannot say is taken as unmarked: the MR is opened as before, and refused by the
@@ -764,10 +772,13 @@ def doCertify(args, parser):
     dry = getattr(args, "dryRun", False)
     passkey = getattr(args, "approval", "passkey") == "passkey"
     architecture = getattr(args, "architecture", None) or detectArch()
-    store_url = getattr(args, "publishStore", None) or DEFAULT_S3_STORE
-    if not store_url:
+    from bits_helpers.sync import store_urls
+    stores = store_urls(getattr(args, "publishStore", None) or DEFAULT_S3_STORE)
+    if not stores:
         parser.error(_NO_STORE)
-    marker = None if dry else _orchestrator_marker(store_url, abspath(args.workDir), architecture)
+    # Several stores: published to each, certified once, from the first (whose
+    # orchestrator marker decides how), as the build manifest records it.
+    marker = None if dry else _orchestrator_marker(stores[0], abspath(args.workDir), architecture)
     if not passkey and not marker and not getattr(args, "certifier", None):
         # Without an approval the MR merges but can never be signed; that is only
         # right for a build approved elsewhere, whose MR a bot opens for a human.
@@ -777,9 +788,21 @@ def doCertify(args, parser):
     if not dry and not marker and not forge.resolve_gitlab_token(getattr(args, "gitlabToken", None)):
         parser.error("certify: no GitLab token for the MR — ~/.bits/gitlab-token, "
                      "$BITS_CERTIFIER_TOKEN or --gitlab-token")
-    res = _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
-                                 manifest=getattr(args, "fromManifest", None) or "latest",
-                                 dry_run=dry, reuse_pipeline_bom=True)
+    res, ref = None, None
+    for i, url in enumerate(stores):
+        got = _publish_from_manifest(architecture, abspath(args.workDir), url, parser,
+                                     manifest=getattr(args, "fromManifest", None) or "latest",
+                                     dry_run=dry, reuse_pipeline_bom=True, gauges=i == 0)
+        if res is None:
+            res, ref = got, url                # the first store with a BOM is certified
+        elif got:
+            first, other = _bom_shas(res[1]), _bom_shas(got[1])
+            differ = sorted("%s@%s" % (k[1], k[0]) for k in first
+                            if k in other and other[k] != first[k])
+            if differ:
+                warning("certify: %s holds other tarballs than %s for %s; only %s's are "
+                        "certified (signed reuse rejects the others)",
+                        url, ref, ", ".join(differ), ref)
     if dry:
         info("[dry-run] would then %sopen the certification MR (no MR when the store "
              "says bits-orchestrator certifies)",
@@ -835,11 +858,14 @@ def doPublish(args, parser):
     if _fm is not None:
         architecture = getattr(args, "architecture", None) or detectArch()
         from bits_helpers.args import DEFAULT_S3_STORE
-        store_url = getattr(args, "publishStore", None) or DEFAULT_S3_STORE
-        if not store_url:
+        from bits_helpers.sync import store_urls
+        stores = store_urls(getattr(args, "publishStore", None) or DEFAULT_S3_STORE)
+        if not stores:
             parser.error(_NO_STORE)
-        _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
-                               manifest=_fm, dry_run=getattr(args, "dryRun", False))
+        for i, url in enumerate(stores):       # every write store gets the build
+            _publish_from_manifest(architecture, abspath(args.workDir), url, parser,
+                                   manifest=_fm, dry_run=getattr(args, "dryRun", False),
+                                   gauges=i == 0)
         return
 
     if not getattr(args, "package", None):

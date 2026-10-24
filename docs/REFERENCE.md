@@ -1136,8 +1136,12 @@ A package recalled from one store is not copied to the write stores; only
 packages built in the run are uploaded. If the write stores already hold
 different tarballs for a hash, the build manifest records the first store's.
 Signed reuse applies to every read store, with the signed manifests of each.
-Recipes never see any of these credentials. `bits publish`, `certify`, `gc`,
-`store-stats` and `compliance` still work on one store at a time. With no store and no env vars, behaviour is
+Recipes never see any of these credentials. `bits publish`, `bits store upload`
+and `bits gc` take a list too and work on every store in turn, `bits compliance`
+audits (and with `--enforce` cleans) each, and `bits certify` publishes to each
+but certifies the build once, as the first store holds it (it warns when another
+store holds other tarballs, which signed reuse then rejects). `bits store-stats`,
+`bits store ls/rm/verify/cat` and `bits cvmfs release` work on one store. With no store and no env vars, behaviour is
 unchanged: the public CERN read store on supported architectures, no upload.
 
 **Client requirement — install on the build host, not in the container.** bits

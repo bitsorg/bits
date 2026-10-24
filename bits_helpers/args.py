@@ -1053,8 +1053,8 @@ def add_publish_arguments(subparsers, ctx):
                                     "WORKDIR/MANIFESTS. Use --store to pick the target."))
   ctx.remote_store(publish_parser, dest="publishStore",
                    help=("S3 store URL/bucket for --from-manifest. Accepts an https URL "
-                         "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>. "
-                         "Default: %(default)s"))
+                         "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>; "
+                         "several, comma-separated, each get the build. Default: %(default)s"))
 
   # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
   _prepub = publish_parser.add_argument_group(
@@ -1136,7 +1136,8 @@ def add_certify_arguments(subparsers, ctx):
                  help=("Record USER as certified_by (when a bot opens the MR for a human already "
                        "verified upstream, e.g. bits-console). Default: $GITLAB_USER_LOGIN."))
   ctx.remote_store(p, dest="publishStore",
-                   help="S3 store the build is uploaded to / checked in. Default: %(default)s")
+                   help="S3 store the build is uploaded to / checked in; several, comma-"
+                        "separated, each get it, the first is certified. Default: %(default)s")
   ctx.work_dir(p, help="Work directory holding MANIFESTS/ and the build. Default: %(default)s")
   ctx.architecture(p, help="Architecture of the build. Default: detected")
   return p

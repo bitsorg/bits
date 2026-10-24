@@ -200,29 +200,36 @@ def _localize_manifest(src, work_dir):
 
 
 def doGc(args, parser):
-    """CLI entrypoint for ``bits gc``."""
+    """CLI entrypoint for ``bits gc``: each store of the (comma-separated) list is
+    swept against its own signed manifest (--trust-manifest, one per store)."""
     from bits_helpers.publish import _normalize_s3_store
-    from bits_helpers.sync import remote_from_url
+    from bits_helpers.sync import remote_from_url, store_urls
     from bits_helpers.log import banner
 
-    store = _normalize_s3_store(args.gcStore)
-    writer = remote_from_url(store, store, args.architecture, args.workDir)
-    bucket = getattr(writer, "remoteStore", None) or getattr(writer, "writeStore", None)
-    s3 = writer.s3
-    objects = gather_s3_store_objects(s3, bucket, args.architecture)
-    try:
-        manifest_path = _localize_manifest(args.trustManifest, args.workDir)
-    except Exception as exc:
-        parser.error("could not fetch trust manifest %s: %s"
-                     % (args.trustManifest, exc))
-    plan = collect_garbage(
-        objects, manifest_path,
-        grace_seconds=int(args.graceDays * 86400),
-        delete_fn=make_s3_deleter(s3, bucket, args.architecture),
-        dry_run=args.dryRun, allow_empty=args.allowEmpty,
-        architecture=args.architecture)
-    if not plan["verified"]:
-        parser.error("common manifest %s did not verify; nothing swept" % args.trustManifest)
-    verb = "would sweep" if args.dryRun else "swept"
-    banner("gc: %s %d object(s); kept %d, %d too young, %d unsafe/non-store",
-           verb, len(plan["delete"]), plan["kept"], plan["young"], plan["unsafe"])
+    # Each store's own certified set: deleting must never use another store's roots.
+    stores = store_urls(args.gcStore)
+    roots = [m.strip() for m in str(args.trustManifest or "").split(",") if m.strip()]
+    if len(stores) != len(roots):
+        parser.error("gc needs one --trust-manifest per store, in the same order "
+                     "(%d store(s), %d manifest(s))" % (len(stores), len(roots)))
+    for url, root in zip(stores, roots):
+        try:
+            manifest_path = _localize_manifest(root, args.workDir)
+        except Exception as exc:
+            parser.error("could not fetch trust manifest %s: %s" % (root, exc))
+        store = _normalize_s3_store(url)
+        writer = remote_from_url(store, store, args.architecture, args.workDir)
+        bucket = getattr(writer, "remoteStore", None) or getattr(writer, "writeStore", None)
+        s3 = writer.s3
+        objects = gather_s3_store_objects(s3, bucket, args.architecture)
+        plan = collect_garbage(
+            objects, manifest_path,
+            grace_seconds=int(args.graceDays * 86400),
+            delete_fn=make_s3_deleter(s3, bucket, args.architecture),
+            dry_run=args.dryRun, allow_empty=args.allowEmpty,
+            architecture=args.architecture)
+        if not plan["verified"]:
+            parser.error("common manifest %s did not verify; nothing swept in %s" % (root, store))
+        verb = "would sweep" if args.dryRun else "swept"
+        banner("gc %s: %s %d object(s); kept %d, %d too young, %d unsafe/non-store",
+               store, verb, len(plan["delete"]), plan["kept"], plan["young"], plan["unsafe"])
