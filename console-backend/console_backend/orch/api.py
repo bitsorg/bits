@@ -13,14 +13,25 @@
                                        build pipelines and their builds (and phases:
                                        what each job spent its time on)
     GET  /ops/builds/{pipeline}        one, with its jobs, variables and events
-    GET  /ops/builds/{pipeline}/sbom?format=&build=   the SBOM a build published
-                                       (CycloneDX or SPDX): any signed-in user
+    GET  /ops/builds/{pipeline}/sbom?format=&build=&vulnerabilities=   the SBOM a build
+                                       published (CycloneDX or SPDX): any signed-in user;
+                                       with vulnerabilities=1 (CycloneDX, the admins of its
+                                       community), with its last good scan's findings and
+                                       their triage (VEX analysis)
     GET  /ops/builds/{pipeline}/sbom/report?build=   that CycloneDX SBOM as an HTML
                                        report (CycloneDX Sunshine), sandboxed; for the
                                        admins of its community, with the vulnerabilities
                                        of its last good scan
     GET  /ops/sbom/scans?community=&flagged=&limit=   the builds' vulnerability scans,
                                        most severe first (the caller's communities)
+    GET  /ops/sbom/packages?name=&version=&community=&limit=   the scanned builds that
+                                       contain a package (2.9 covers 2.9.x), with findings
+    GET  /ops/sbom/names?community=    the package names in them
+    GET  /ops/sbom/vulnerabilities/{id}?community=&limit=   the builds it was found in
+    GET  /ops/sbom/triage?community=&revoked=   the triage rules (VEX) of the communities
+    POST /ops/sbom/triage              {community, vuln_id, package?, version?, state,
+                                       justification?, reason, days?}: by its admins
+    POST /ops/sbom/triage/{id}/revoke  by an admin of its community
     GET  /ops/trace?repo=&path=&build_id=   who built and approved a CVMFS path (bits trace)
     POST /ops/ci/published, /ops/ci/failed   {pipeline}: a CI job's hint to look
                                        at its pipeline now (GitLab CI ID token)
@@ -71,7 +82,8 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, kinds, outside, phases, reconcile, sbom_report, sbom_scan, shadow, trace)
+               failures, kinds, outside, phases, reconcile, sbom_report, sbom_scan, shadow, trace,
+               vuln_triage)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -508,15 +520,61 @@ async def _published_sbom(pipeline, name, build):
     return builds[0], body
 
 
+async def _with_findings(data, pipeline, bid, body):
+    """The CycloneDX *body* with its last good scan's findings (none published with
+    it) and their triage, marked with bits:community and bits:scanned (that scan's
+    database, or empty), if the caller administers the build's community; else None."""
+    mine = await _scope(data)
+
+    def read(conn):
+        r = conn.execute("SELECT community FROM builds WHERE pipeline_id = ? AND build_id = ?",
+                         (pipeline, bid)).fetchone()
+        community = r["community"] if r else ""
+        if mine is not None and community not in mine:
+            return None
+        try:
+            doc = json.loads(body)
+        except (ValueError, RecursionError):
+            return body
+        if not isinstance(doc, dict):
+            return body
+        vulns = sbom_scan.vulnerabilities(_m().settings.orch_scans_dir, bid)
+        scan = conn.execute("SELECT db_built FROM sbom_scans WHERE build_id = ?", (bid,)).fetchone()
+        doc.pop("vulnerabilities", None)
+        if vulns is not None:
+            comps = doc.get("components") if isinstance(doc.get("components"), list) else []
+            doc["vulnerabilities"] = vuln_triage.annotate(
+                vulns, {c.get("bom-ref"): c for c in comps if isinstance(c, dict)},
+                vuln_triage.Rules.load(conn, {community}), community)
+        if not isinstance(doc.get("metadata"), dict):
+            doc["metadata"] = {}
+        props = doc["metadata"].get("properties")
+        doc["metadata"]["properties"] = [
+            p for p in (props if isinstance(props, list) else [])
+            if isinstance(p, dict) and p.get("name") not in ("bits:community", "bits:scanned")] + [
+            {"name": "bits:community", "value": community},
+            {"name": "bits:scanned", "value": scan["db_built"] if scan and vulns is not None else ""}]
+        return json.dumps(doc).encode()
+    return await run_in_threadpool(_read, read)
+
+
 @router.get("/ops/builds/{pipeline}/sbom")
-async def build_sbom(pipeline: int, request: Request, format: str = "cyclonedx", build: str = ""):
+async def build_sbom(pipeline: int, request: Request, format: str = "cyclonedx", build: str = "",
+                     vulnerabilities: bool = False):
     """The SBOM a build published beside its BOMs (MANIFESTS/<build_id>/), as
-    published. It describes released software: any signed-in user may read it."""
-    await _caller(request)
+    published. It describes released software: any signed-in user may read it.
+    Its findings are for the admins of its community."""
+    data = await _caller(request)
     name = SBOM_FILES.get(format)
     if name is None:
         raise HTTPException(400, "format is one of: %s" % ", ".join(sorted(SBOM_FILES)))
-    _bid, body = await _published_sbom(pipeline, name, build)
+    if vulnerabilities and format != "cyclonedx":
+        raise HTTPException(400, "vulnerabilities come with the CycloneDX SBOM only")
+    bid, body = await _published_sbom(pipeline, name, build)
+    if vulnerabilities:
+        body = await _with_findings(data, pipeline, bid, body)
+        if body is None:
+            raise HTTPException(403, "the findings are for the admins of the build's community")
     return Response(content=body, media_type="application/json",
                     headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
@@ -527,14 +585,7 @@ async def build_sbom_report(pipeline: int, request: Request, build: str = ""):
     page runs scripts, so a CSP sandbox keeps it off this origin if opened here."""
     data = await _caller(request)
     bid, body = await _published_sbom(pipeline, SBOM_FILES["cyclonedx"], build)
-    mine = await _scope(data)
-    community = await run_in_threadpool(_read, lambda conn: (conn.execute(
-        "SELECT community FROM builds WHERE pipeline_id = ? AND build_id = ?",
-        (pipeline, bid)).fetchone() or {"community": ""})["community"])
-    if mine is None or community in mine:      # its scan's findings, as /ops/sbom/scans shows
-        vulns = sbom_scan.vulnerabilities(_m().settings.orch_scans_dir, bid)
-        if vulns is not None:
-            body = sbom_scan.with_vulnerabilities(body, vulns)
+    body = await _with_findings(data, pipeline, bid, body) or body
     try:
         page = await run_in_threadpool(sbom_report.render, body, bid)
     except sbom_report.Busy as e:
@@ -561,6 +612,88 @@ async def sbom_scans(request: Request, community: str = "", flagged: bool = Fals
     rows = await run_in_threadpool(_read, sbom_scan.listing, communities=mine,
                                    flagged=flagged, limit=max(1, min(int(limit), 1000)))
     return JSONResponse({"scans": rows}, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/sbom/packages")
+async def sbom_packages(request: Request, name: str = "", version: str = "", community: str = "",
+                        limit: int = 500):
+    """The scanned builds of the caller's communities that contain a package."""
+    data = await _caller(request)
+    if not name.strip():
+        raise HTTPException(400, "name is required")
+    mine = await _communities(data, community)
+    rows = await run_in_threadpool(_read, sbom_scan.packages, name, version, communities=mine,
+                                   limit=max(1, min(int(limit), 2000)))
+    return JSONResponse({"packages": rows}, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/sbom/names")
+async def sbom_names(request: Request, community: str = ""):
+    data = await _caller(request)
+    mine = await _communities(data, community)
+    out = await run_in_threadpool(_read, sbom_scan.names, communities=mine)
+    return JSONResponse({"names": out}, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/sbom/vulnerabilities/{vuln_id}")
+async def sbom_vulnerability(vuln_id: str, request: Request, community: str = "", limit: int = 500):
+    """The scanned builds of the caller's communities a vulnerability was found in."""
+    data = await _caller(request)
+    mine = await _communities(data, community)
+    rows = await run_in_threadpool(_read, sbom_scan.affected, vuln_id, communities=mine,
+                                   limit=max(1, min(int(limit), 2000)))
+    return JSONResponse({"builds": rows}, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/sbom/triage")
+async def sbom_triage(request: Request, community: str = "", revoked: bool = False):
+    """The triage rules of the caller's communities: active ones, or all."""
+    data = await _caller(request)
+    mine = await _communities(data, community)
+    rows = await run_in_threadpool(_read, vuln_triage.listing, communities=mine, revoked=revoked)
+    return JSONResponse({"rules": rows}, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/ops/sbom/triage")
+async def add_sbom_triage(request: Request):
+    """A triage rule, by an admin of its community."""
+    data = await _caller(request)
+    p = await _body(request)
+    community = str(p.get("community") or "").strip().lower()
+    if not community or not await run_in_threadpool(_may_act, data, community):
+        raise HTTPException(403, "not an admin of community %r" % community)
+
+    def write():
+        with _open() as conn:
+            return vuln_triage.add(conn, community, p.get("vuln_id"), p.get("state"),
+                                   p.get("reason"), data["user"], package=p.get("package"),
+                                   version=p.get("version"), justification=p.get("justification"),
+                                   days=p.get("days"))
+    try:
+        rid = await run_in_threadpool(write)
+    except vuln_triage.Invalid as e:
+        raise HTTPException(400, str(e))
+    audit.record("sbom_triaged", user=data["user"], community=community, rule=rid,
+                 vuln=str(p.get("vuln_id")), state=str(p.get("state")))
+    return {"id": rid}
+
+
+@router.post("/ops/sbom/triage/{rule_id}/revoke")
+async def revoke_sbom_triage(rule_id: int, request: Request):
+    data = await _caller(request)
+    r = await run_in_threadpool(_read, vuln_triage.get, rule_id)
+    if r is None:
+        raise HTTPException(404, "no such triage rule")
+    if not await run_in_threadpool(_may_act, data, r["community"]):
+        raise HTTPException(403, "not an admin of community %r" % r["community"])
+
+    def write():
+        with _open() as conn:
+            return vuln_triage.revoke(conn, rule_id, data["user"])
+    if not await run_in_threadpool(write):
+        raise HTTPException(409, "triage rule %d is already revoked" % rule_id)
+    audit.record("sbom_triage_revoked", user=data["user"], community=r["community"], rule=rule_id)
+    return {"status": "revoked"}
 
 
 # --- CI hints -------------------------------------------------------------------

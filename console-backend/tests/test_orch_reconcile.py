@@ -636,6 +636,60 @@ class ApiTest(_DB):
         self.assertEqual([d.get("vulnerabilities") for d in seen],
                          [[{"id": "CVE-9"}], [{"id": "CVE-9"}], None, None])   # admins of testbed only
 
+    def test_packages_findings_and_their_triage_for_the_communities_admins(self):
+        from console_backend.orch import api, sbom_scan
+        from test_orch_sbom_scan import SBOM, VULNS
+        self.conn.execute("INSERT INTO builds (pipeline_id, build_id, community, recorded_ms)"
+                          " VALUES (1, 'b-1', 'testbed', 0)")
+        self.conn.commit()
+        sbom_scan._scanned(self.conn, main.settings.orch_scans_dir, "b-1", "sha", "d", {"high": 2},
+                           VULNS, SBOM)
+        post = lambda u, path, body: self.client.post(path, json=body,
+                                                      headers={"Authorization": "Bearer %s" % u})
+        rule = {"community": "testbed", "vuln_id": "CVE-A", "package": "zlib",
+                "state": "not_affected", "justification": "code_not_present", "reason": "no gzip"}
+        self.assertEqual(post("dave", "/ops/sbom/triage", rule).status_code, 403)
+        self.assertEqual(post("bob", "/ops/sbom/triage", rule).status_code, 403)
+        self.assertEqual(post("alice", "/ops/sbom/triage", dict(rule, state="fixed")).status_code, 400)
+        rid = post("alice", "/ops/sbom/triage", rule).json()["id"]
+        self.assertEqual([r["id"] for r in self._get("carol", "/ops/sbom/triage").json()["rules"]], [rid])
+        self.assertEqual(self._get("bob", "/ops/sbom/triage").json()["rules"], [])
+
+        (scan,) = self._get("alice", "/ops/sbom/scans").json()["scans"]
+        self.assertEqual((scan["effective"]["high"], scan["suppressed"], scan["identified"]), (1, 1, 3))
+        rows = self._get("alice", "/ops/sbom/packages?name=libxml2&version=2.9").json()["packages"]
+        self.assertEqual([(r["build_id"], r["component_version"]) for r in rows], [("b-1", "2.9.13")])
+        self.assertEqual(self._get("bob", "/ops/sbom/packages?name=libxml2").json()["packages"], [])
+        self.assertEqual(self._get("alice", "/ops/sbom/packages").status_code, 400)
+        self.assertIn("zlib", self._get("alice", "/ops/sbom/names").json()["names"])
+        found = self._get("alice", "/ops/sbom/vulnerabilities/CVE-A").json()["builds"]
+        self.assertEqual(sorted((r["name"], r["suppressed"]) for r in found),
+                         [("libxml2", None), ("zlib1g", rid)])
+
+        s3 = FakeS3({"MANIFESTS/b-1/sbom.cdx.json": SBOM})
+        sbom_scan._write(main.settings.orch_scans_dir, "b-1", VULNS)
+        with patch.object(api, "_store", lambda: (s3, "bkt")):
+            self.assertEqual(self._get("dave", "/ops/builds/1/sbom?vulnerabilities=1").status_code, 403)
+            self.assertEqual(self._get("alice", "/ops/builds/1/sbom?format=spdx&vulnerabilities=1")
+                             .status_code, 400)
+            doc = self._get("alice", "/ops/builds/1/sbom?vulnerabilities=1").json()
+            self.assertEqual([(v["id"], v.get("analysis", {}).get("state")) for v in doc["vulnerabilities"]],
+                             [("CVE-A", None), ("CVE-A", "not_affected"), ("CVE-B", None), ("CVE-C", None)])
+            self.assertIn({"name": "bits:community", "value": "testbed"}, doc["metadata"]["properties"])
+            self.assertIn({"name": "bits:scanned", "value": "d"}, doc["metadata"]["properties"])
+            self.assertNotIn("vulnerabilities", self._get("dave", "/ops/builds/1/sbom").json())
+            s3.objects["MANIFESTS/b-1/sbom.cdx.json"] = json.dumps(dict(SBOM, vulnerabilities=[{"id": "FORGED"}])).encode()
+            os.unlink(sbom_scan._path(main.settings.orch_scans_dir, "b-1"))
+            doc = self._get("alice", "/ops/builds/1/sbom?vulnerabilities=1").json()
+            self.assertNotIn("vulnerabilities", doc)                   # only the scan's
+            self.assertIn({"name": "bits:scanned", "value": ""}, doc["metadata"]["properties"])
+
+        self.assertEqual(post("bob", "/ops/sbom/triage/%d/revoke" % rid, {}).status_code, 403)
+        self.assertEqual(post("alice", "/ops/sbom/triage/%d/revoke" % rid, {}).status_code, 200)
+        self.assertEqual(post("alice", "/ops/sbom/triage/%d/revoke" % rid, {}).status_code, 409)
+        self.assertEqual(post("alice", "/ops/sbom/triage/999/revoke", {}).status_code, 404)
+        self.assertEqual(self._get("alice", "/ops/sbom/scans").json()["scans"][0]["suppressed"], 0)
+
     def test_a_builds_sbom_report_is_a_sandboxed_page(self):
         from console_backend.orch import api, sbom_report
         from test_orch_sbom_report import cdx

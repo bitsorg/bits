@@ -440,6 +440,50 @@ MIGRATIONS = [
             error           TEXT NOT NULL DEFAULT ''
         )""",
     ],
+    # 14: what the scanned SBOMs contain (sbom_packages), what matched (sbom_findings),
+    # how many components a scanner can identify, and the admins' triage of findings.
+    [
+        "ALTER TABLE sbom_scans ADD COLUMN components INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE sbom_scans ADD COLUMN identified INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE sbom_scans ADD COLUMN index_version INTEGER NOT NULL DEFAULT 0",
+        """CREATE TABLE sbom_packages (
+            build_id  TEXT NOT NULL,
+            ref       TEXT NOT NULL,
+            name      TEXT NOT NULL,
+            alias     TEXT NOT NULL DEFAULT '',
+            version   TEXT NOT NULL DEFAULT '',
+            purl      TEXT NOT NULL DEFAULT '',
+            cpe       TEXT NOT NULL DEFAULT '',
+            system    INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (build_id, ref)
+        )""",
+        "CREATE INDEX sbom_packages_name ON sbom_packages(name COLLATE NOCASE)",
+        "CREATE INDEX sbom_packages_alias ON sbom_packages(alias COLLATE NOCASE)",
+        """CREATE TABLE sbom_findings (
+            build_id  TEXT NOT NULL,
+            vuln_id   TEXT NOT NULL,
+            ref       TEXT NOT NULL,
+            severity  TEXT NOT NULL,
+            PRIMARY KEY (build_id, vuln_id, ref)
+        )""",
+        "CREATE INDEX sbom_findings_vuln ON sbom_findings(vuln_id COLLATE NOCASE)",
+        """CREATE TABLE vuln_triage (
+            id            INTEGER PRIMARY KEY,
+            community     TEXT NOT NULL,
+            vuln_id       TEXT NOT NULL,
+            package       TEXT NOT NULL DEFAULT '',
+            version       TEXT NOT NULL DEFAULT '',
+            state         TEXT NOT NULL,
+            justification TEXT NOT NULL DEFAULT '',
+            reason        TEXT NOT NULL,
+            author        TEXT NOT NULL,
+            created_ms    INTEGER NOT NULL,
+            expires_ms    INTEGER,
+            revoked_ms    INTEGER,
+            revoked_by    TEXT NOT NULL DEFAULT ''
+        )""",
+        "CREATE INDEX vuln_triage_vuln ON vuln_triage(community, vuln_id)",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

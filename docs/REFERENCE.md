@@ -1487,7 +1487,22 @@ database is newer or a newer pipeline publishes the build (a re-run, which write
 its SBOM anew; a re-publish replays the old build manifest, and so the old SBOM); the report then shows the build's vulnerabilities, and
 `GET /ops/sbom/scans?community=&flagged=` lists the scanned builds, most severe
 first (the console's Vulnerabilities page). A package is checked only through
-its purl or CPE (the recipe field `references`).
+its purl or CPE (the recipe field `references`, or the distribution's package for
+one taken from the system); each scan counts the components a scanner can
+identify, and a build with none is not scannable: its zero findings say nothing.
+
+A scan also indexes the SBOM, for the admins of the build's community:
+`GET /ops/sbom/packages?name=&version=` lists the scanned builds that contain a
+package (by its SBOM name or its bits name; `2.9` or `2.9.x` covers 2.9.13, not
+2.90), with its findings, and `GET /ops/sbom/vulnerabilities/{id}` the builds a
+vulnerability was found in. They triage findings (`POST /ops/sbom/triage`): a
+vulnerability is `not_affected` (with a CycloneDX justification), a
+`false_positive` or `will_not_fix` (an accepted risk) in their community, for
+one version of a package, every version of it or every package, with a reason
+and an optional expiry in days; revoked with `POST /ops/sbom/triage/{id}/revoke`.
+Both are events. The findings a rule covers are left out of the effective counts
+of `/ops/sbom/scans`, and `GET /ops/builds/{pipeline}/sbom?vulnerabilities=1`
+serves the SBOM with its findings and the rules as CycloneDX `analysis` (VEX).
 
 ---
 
