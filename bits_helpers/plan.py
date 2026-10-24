@@ -11,24 +11,27 @@ only listed (one request per candidate hash).
 A package only another, reused, package needs to build (its build_requires) is
 "not needed": the build neither fetches nor builds it (issue #141).
 """
+import concurrent.futures
+import copy
 import os
 from glob import glob
 
 from bits_helpers.arch import effective_arch
-from bits_helpers.log import banner, debug
+from bits_helpers.log import ProgressPrint, banner, debug
 from bits_helpers.sync import binary_redistributable
 from bits_helpers.rev_index import revision_from_tarball
 from bits_helpers.utilities import is_virtual_package, resolve_store_path
 
 INSTALLED = "installed"
 LOCAL_TARBALL = "local tarball"
-REMOTE = "from remote store"
-OVERLAY = "from reuse overlay"
-REMOTE_UNSIGNED = "build (in store, not signed)"
+REMOTE = "from store"
+OVERLAY = "from overlay"
+REMOTE_UNSIGNED = "build (unsigned)"     # in the store, but no signed manifest vouches for it
 BUILD = "build"
-DEVEL = "build (development package)"
+DEVEL = "build (development)"
 NOT_NEEDED = "not needed"
 REUSED = (INSTALLED, LOCAL_TARBALL, REMOTE, OVERLAY)
+LIST_WORKERS = 16     # store listings at once: one request each, mostly latency
 
 
 def store_can_list(sync_helper):
@@ -211,44 +214,110 @@ def plan_rows(build_order, specs, states, need, unuploadable=(), source=None):
   return rows
 
 
-def _unsigned_reason():
+def _unsigned_reason(n):
   from bits_helpers.build import _try_import_trust
   if _try_import_trust() is None:
-    return "their signatures cannot be checked without the Python package cryptography"
-  return "no verified signed manifest vouches for them"
+    return "%s cannot be checked without the Python package cryptography" % (
+        "its signature" if n == 1 else "their signatures")
+  return "no verified signed manifest vouches for %s" % ("it" if n == 1 else "them")
+
+
+NAME_WIDTH, VERSION_WIDTH = 28, 16     # longer ones overflow their own row only
 
 
 def print_plan(rows, store_checked, title="Dry run: build plan (nothing built)"):
-  """Print the per-package plan and a one-line summary."""
-  src = any(len(r) > 4 and r[4] for r in rows)
-  w0 = max([len("Package")] + [len(r[0]) for r in rows])
-  w1 = max([len("Version")] + [len(r[1]) for r in rows])
-  w2 = max([len("Plan")] + [len(r[2] + r[3]) for r in rows]) if src else 0
-  head = "  %-*s  %-*s  %s" % (w0, "Package", w1, "Version", "Plan")
-  lines = [head + ("%*s  Recipes" % (w2 - len("Plan"), "") if src else "")]
+  """Print the per-package plan and a summary, narrow enough for a terminal: the
+  recipe source shared by most packages is named once, in the title."""
+  sources = [r[4] for r in rows if len(r) > 4 and r[4]]
+  common = max(dict.fromkeys(sources), key=sources.count) if sources else ""
+  if common and sources.count(common) * 2 <= len(rows):
+    common = ""
+  if common:
+    title += "\nRecipes from %s, unless shown" % common
+  shown = lambda r: r[4] if len(r) > 4 and r[4] and r[4] != common else ""   # noqa: E731
+  w0 = min(max([len("Package")] + [len(r[0]) for r in rows]), NAME_WIDTH)
+  w1 = min(max([len("Version")] + [len(r[1]) for r in rows]), VERSION_WIDTH)
+  w2 = max([len("Plan")] + [len(r[2] + r[3]) for r in rows if shown(r)])
+  lines = ["%-*s  %-*s  Plan" % (w0, "Package", w1, "Version")]
   for r in rows:
     pkg, ver, state, note = r[:4]
-    line = "  %-*s  %-*s  %s%s" % (w0, pkg, w1, ver, state, note)
-    if src:
-      line += "%*s  [%s]" % (w2 - len(state + note), "", r[4])
+    line = "%-*s  %-*s  %s%s" % (w0, pkg, w1, ver, state, note)
+    if shown(r):
+      line += "%*s  [%s]" % (max(w2 - len(state + note), 0), "", shown(r))
     lines.append(line.rstrip())
-  count = lambda s: sum(1 for r in rows if r[2] == s)
+  count = lambda s: sum(1 for r in rows if r[2] == s)   # noqa: E731
   reused = sum(count(s) for s in REUSED)
-  summary = "%d reused (%d installed, %d local tarball, %d from remote store%s), %d to build" % (
+  summary = ["%d reused (%d installed, %d local tarball, %d from store%s), %d to build%s" % (
       reused, count(INSTALLED), count(LOCAL_TARBALL), count(REMOTE),
       (", %d from overlay" % count(OVERLAY)) if count(OVERLAY) else "",
-      len(rows) - reused - count(NOT_NEEDED))
-  if count(NOT_NEEDED):
-    summary += ", %d not needed" % count(NOT_NEEDED)
+      len(rows) - reused - count(NOT_NEEDED),
+      (", %d not needed" % count(NOT_NEEDED)) if count(NOT_NEEDED) else "")]
   if count(REMOTE_UNSIGNED):
     n = count(REMOTE_UNSIGNED)
-    summary += "; %d to build %s in the remote store but not reused: %s" % (
-        n, "is" if n == 1 else "are", _unsigned_reason())
+    summary.append("%d to build %s in the remote store but not reused: %s" % (
+        n, "is" if n == 1 else "are", _unsigned_reason(n)))
   if store_checked is False:
-    summary += "; remote store not checked (rsync stores cannot be listed)"
+    summary.append("remote store not checked (rsync stores cannot be listed)")
   elif store_checked is None:
-    summary += "; no remote store used"
-  banner("%s\n%s\n\n%s", title, "\n".join(lines), summary)
+    summary.append("no remote store used")
+  banner("%s\n%s\n\n%s", title, "\n".join(lines), "\n".join(summary))
+
+
+class _Listings:
+  """The store listings of a plan, made in parallel up front: in front of
+  *helper*'s list_store_tarballs, one HTTP request per (architecture, hash)."""
+
+  def __init__(self, helper):
+    self.helper, self.cache = helper, {}
+
+  def list_store_tarballs(self, arch, pkg_hash):
+    key = (arch, pkg_hash)
+    if key not in self.cache:          # a hash the speculation did not foresee
+      self.cache[key] = self.helper.list_store_tarballs(arch, pkg_hash)
+    return self.cache[key]
+
+  def prefetch(self, keys):
+    keys = [k for k in dict.fromkeys(keys) if k not in self.cache]
+    if not keys:
+      return
+    progress = ProgressPrint("Checking the remote store")
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=LIST_WORKERS)
+    futures = {pool.submit(self.helper.list_store_tarballs, *k): k for k in keys}
+    try:
+      for i, f in enumerate(concurrent.futures.as_completed(futures)):
+        progress("[%d/%d] packages", i + 1, len(keys))
+        try:
+          self.cache[futures[f]] = f.result()
+        except Exception as exc:   # listed again, one by one, when needed
+          debug("store listing failed for %s: %s", futures[f], exc)
+    except BaseException:          # Ctrl-C: drop what has not started
+      for f in futures:
+        f.cancel()
+      pool.shutdown(wait=False)
+      raise
+    pool.shutdown()
+    progress.end("done")
+
+
+def _foreseen(build_order, specs, args, raw_architecture):
+  """The (architecture, hash) pairs the plan will list, assuming every package
+  comes from the store (the usual case): computed on a copy of *specs*."""
+  from bits_helpers.arch import SHARED_ARCH
+  from bits_helpers.build import storeHook
+  from bits_helpers.hashing import storeHashes
+  trial, keys = copy.deepcopy(specs), []
+  for p in build_order:
+    spec = trial[p]
+    storeHook(p, trial, args.defaults[0])
+    storeHashes(p, trial, considerRelocation=(
+      raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH))
+    spec["hash"] = spec["local_revision_hash" if spec.get("is_devel_pkg") else "remote_revision_hash"]
+    if spec.get("is_devel_pkg") or is_virtual_package(spec):
+      continue
+    eff = effective_arch(spec, args.architecture)
+    hashes = [spec["remote_revision_hash"]] if "force_revision" in spec else spec["remote_hashes"]
+    keys += [(eff, h) for h in hashes]
+  return keys
 
 
 def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
@@ -265,6 +334,13 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
   can_list = None if isinstance(sync_helper, NoRemoteSync) else store_can_list(sync_helper)
   trusted = trusted_index_fn() if (cfg.require_signed_reuse and can_list) else None
   overlay = _overlay_predicate(cfg)
+  lister = sync_helper
+  if can_list:
+    lister = _Listings(sync_helper)
+    try:
+      lister.prefetch(_foreseen(build_order, specs, args, raw_architecture))
+    except Exception as exc:     # the plan then lists one package at a time
+      debug("cannot list the store ahead: %s", exc)
   states, unuploadable = {}, set()
   for p in build_order:
     spec = specs[p]
@@ -272,7 +348,7 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
     storeHashes(p, specs, considerRelocation=(
       raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH))
     state, spec["hash"], spec["revision"] = classify(
-        spec, args.architecture, work_dir, sync_helper, can_list, write_store, trusted,
+        spec, args.architecture, work_dir, lister, can_list, write_store, trusted,
         overlay)
     debug("Plan %s: %s (hash %s, candidates %s)", p, state, spec["hash"],
           ", ".join(spec["remote_hashes"]))

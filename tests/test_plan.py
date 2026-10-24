@@ -130,7 +130,7 @@ class PrintPlanTest(unittest.TestCase):
     with patch("bits_helpers.plan.banner") as b:
       plan.print_plan(rows, store_checked=True)
     text = b.call_args[0][0] % b.call_args[0][1:]
-    self.assertIn("2 reused (1 installed, 0 local tarball, 1 from remote store), 2 to build", text)
+    self.assertIn("2 reused (1 installed, 0 local tarball, 1 from store), 2 to build", text)
     self.assertIn("1 to build is in the remote store but not reused: no verified signed manifest", text)
     self.assertNotIn("not checked", text)
     with patch("bits_helpers.plan.banner") as b:
@@ -141,7 +141,42 @@ class PrintPlanTest(unittest.TestCase):
       plan.print_plan(rows, store_checked=None)
     text = b.call_args[0][0] % b.call_args[0][1:]
     self.assertIn("no remote store used", text)
-    self.assertIn("cannot be checked without the Python package cryptography", text)
+    self.assertIn("its signature cannot be checked without the Python package cryptography", text)
+
+
+class NarrowPlanTest(unittest.TestCase):
+  def test_fits_a_terminal(self):
+    rows = [("jupyter_contrib_nbextensions_and_more", "0.7.0", plan.REMOTE, "", "lcg.bits@94a3bce60b"),
+            ("dask_histogram", "2025.2.0", plan.REMOTE, "", "lcg.bits@94a3bce60b"),
+            ("astropy_iers_data", "0.2026.5.25.1.14.13", plan.REMOTE, "", "lcg.bits@94a3bce60b"),
+            ("LCG", "1", plan.BUILD, "", ".@43badb4")]
+    with patch("bits_helpers.plan.banner") as b:
+      plan.print_plan(rows, store_checked=True)
+    lines = (b.call_args[0][0] % b.call_args[0][1:]).splitlines()
+    self.assertIn("Recipes from lcg.bits@94a3bce60b, unless shown", lines)
+    self.assertEqual(max(len(x) for x in lines if x.startswith("dask")), 58)
+    self.assertTrue([x for x in lines if x.startswith("LCG ")][0].endswith("build  [.@43badb4]"))
+    self.assertTrue(all(len(x) <= 76 for x in lines if not x.startswith(("jupyter", "astropy", "0 reused"))))
+
+
+class ListingsTest(unittest.TestCase):
+  def test_listed_once_in_parallel_then_from_the_cache(self):
+    calls = []
+
+    class Helper:
+      def list_store_tarballs(self, arch, h):
+        calls.append((arch, h))
+        if h == "bad":
+          raise OSError("timeout")
+        return ["%s.tar.gz" % h]
+    lister = plan._Listings(Helper())
+    lister.prefetch([("a", "1"), ("a", "2"), ("a", "1"), ("a", "bad")])
+    self.assertEqual(sorted(calls), [("a", "1"), ("a", "2"), ("a", "bad")])
+    self.assertEqual(lister.list_store_tarballs("a", "2"), ["2.tar.gz"])
+    self.assertEqual(lister.list_store_tarballs("a", "3"), ["3.tar.gz"])   # not foreseen
+    with self.assertRaises(OSError):                                       # failed: asked again
+      lister.list_store_tarballs("a", "bad")
+    self.assertEqual(len(calls), 5)
 
 
 class StoreListableTest(unittest.TestCase):
@@ -244,8 +279,9 @@ class NeededTest(unittest.TestCase):
       plan.print_plan(list(rows.values()), store_checked=True, title="Build plan")
     text = b.call_args[0][0] % b.call_args[0][1:]
     self.assertTrue(text.startswith("Build plan"))
-    self.assertIn("[lcg.bits@abc]", text)
-    self.assertIn("4 reused (0 installed, 0 local tarball, 4 from remote store), 0 to build,"
+    self.assertIn("\nRecipes from lcg.bits@abc, unless shown\n", text)
+    self.assertNotIn("[lcg.bits@abc]", text)
+    self.assertIn("4 reused (0 installed, 0 local tarball, 4 from store), 0 to build,"
                   " 2 not needed", text)
     with patch("bits_helpers.plan.banner") as b:
       plan.print_plan(list(rows.values()), store_checked=None)

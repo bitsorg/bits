@@ -4126,8 +4126,7 @@ def doBuild(args, parser):
   _plan_args = dict(
       targets=[x for x in packages if x in specs] or buildOrder[-1:],
       build_targets={buildOrder[-1]} if args.onlyDeps else set(),
-      source=lambda x: ("development package" if specs[x].get("is_devel_pkg")
-                        else specs[x].get("recipe_source", "?")))
+      source=lambda x: specs[x].get("recipe_source", "?"))
   if args.dryRun:
     _plan.plan_build(buildOrder, specs, args, workDir, syncHelper, raw_architecture,
                      cfg, lambda: trusted_reuse_index(args, workDir), **_plan_args)
