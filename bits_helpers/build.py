@@ -1344,6 +1344,22 @@ def _extract_error_excerpt(log_path, max_match=15, tail=12, scan_limit=20000):
   return "\n".join(out)
 
 
+def _after_recipe(output, log_path, limit=8):
+  """The error lines bits' build script printed after the recipe's log ended:
+  the failure when the recipe itself succeeded (a missing rsync)."""
+  try:
+    with open(log_path, errors="replace") as f:
+      last = [ln.rstrip("\n") for ln in f if ln.strip()][-1:]
+  except OSError:
+    return []                              # no recipe log to start after
+  output = list(output)
+  start = max((i + 1 for i, ln in enumerate(output) if [ln] == last), default=None)
+  if start is None:
+    return []
+  return [ln for ln in output[start:] if not ln.startswith("+")
+          and (_ERROR_PATTERNS.search(ln) or re.search(r": line \d+: ", ln))][-limit:]
+
+
 def write_failure_summary(work_dir, scheduler, arch):
   """Write a concise per-run failure summary for a --builders build.
 
@@ -1521,12 +1537,18 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   if _cache:
     _cache_state = fetch_cache.restore(spec, syncHelper, workDir, _cache, _arch)
   from bits_helpers import monitor as _bits_monitor
+  from collections import deque
+  _output = deque(maxlen=400)        # the end of the build script's output
+
+  def _printer(fmt, *a):
+    _output.append(fmt % a if a else fmt)
+    progress(fmt, *a)
   _bits_monitor.note_build(p, getattr(args, "architecture", ""), True)
   try:
     if args.resourceMonitoring:
-      err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=progress)
+      err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=_printer)
     else:
-      err = execute(build_command, printer=progress)
+      err = execute(build_command, printer=_printer)
   finally:
     _bits_monitor.note_build(p, getattr(args, "architecture", ""), False)
     if nice_ladder is not None:
@@ -1596,6 +1618,10 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     if excerpt:
       buildErrMsg += f"\n{bold}Error excerpt:{reset}\n"
       buildErrMsg += excerpt + "\n"
+    after = _after_recipe(_output, log_path)
+    if after:
+      buildErrMsg += f"\n{bold}After the recipe, bits' build script printed:{reset}\n"
+      buildErrMsg += "".join("    %s\n" % ln for ln in after)
     from bits_helpers.sandbox import failure_hint
     hint = failure_hint(build_command)
     if hint:
@@ -3578,7 +3604,7 @@ def doBuild(args, parser):
     if _guessed:
       args._guessedTrustManifests = _guessed     # names guessed, may not exist
     if _srcs:
-      args.trustManifest = ",".join(_srcs)
+      args.trustManifest, args._trustFromStore = ",".join(_srcs), True
       banner("Signed reuse: %d trust manifest(s) from\n  %s/",
              len(_srcs), os.path.dirname(os.path.commonprefix(_srcs)))
       debug("--require-signed-reuse: trust manifests -> %s", args.trustManifest)
@@ -3640,6 +3666,17 @@ def doBuild(args, parser):
                                s3_secret_key=getattr(args, "s3SecretKey", None),
                                s3_region=getattr(args, "s3Region", None),
                                s3_addressing_style=getattr(args, "s3AddressingStyle", None))
+  # A read-only store that cannot be reached (an offline laptop): build without it
+  # rather than retry every request. With a write store nothing changes.
+  from bits_helpers.sync import store_unreachable, NoRemoteSync
+  _down = "" if getattr(syncHelper, "writeStore", "") else \
+      store_unreachable(syncHelper, getattr(args, "insecure", False))
+  if _down:
+    warning("The store %s cannot be reached (%s): building without it "
+            "(--no-remote-store does so without trying).", args.remoteStore, _down)
+    syncHelper, args.remoteStore = NoRemoteSync(), ""
+    if getattr(args, "_trustFromStore", False):
+      args.trustManifest = None            # derived from that store: nothing to verify
 
   # If the bits workdir contains a .sl directory (or .git/sl for git repos
   # with Sapling enabled), we use Sapling as SCM. Otherwise, we default to git

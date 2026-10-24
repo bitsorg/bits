@@ -1043,7 +1043,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--reference-sources DIR` | Directory for the local mirrors of git repositories. Default: `<work-dir>/MIRROR`. |
 | `--remote-store URL` | Binary store to fetch pre-built tarballs from. Append `::rw` to also upload to it (cannot be combined with `--write-store`). Without it, the [site configuration](#site-configuration)'s `store.read_by_arch` / `store.read` is the default (at CERN, ALICE's public store for its architectures); a `remote_store:` entry in the defaults `system:` block replaces that default. |
 | `--write-store URL` | Binary store to upload built tarballs to. Given alone (no `--remote-store`), it is also the read store, except where a default remote store applies (then use `--remote-store URL::rw`). |
-| `--no-remote-store` | Disable the default remote store; a `--write-store` is still read from. |
+| `--no-remote-store` | Disable the default remote store; a `--write-store` is still read from. Without it, an http(s):// or b3:// read store that does not answer (an offline laptop) is noticed once at the start, and the build goes on without it, with a warning. Not when a write store is set. |
 | `--insecure` | Do not validate TLS certificates of an `https://` store. |
 | `--sign-manifest KEY.pem`, `--trust-manifest URL\|PATH`, `--require-signed-reuse` / `--no-require-signed-reuse`, `--trust-groups G1,G2` | Signed reuse of remote tarballs: on by default (fail-closed), trust derived from the store's signed manifests. See [Signing and verifying the archive tier](#signing-and-verifying-the-archive-tier). |
 | `--reuse-beacon URL` | Report reused-from-store hashes to `<URL>/api/reuse` (best-effort; falls back to `$BITS_REUSE_BEACON`). |

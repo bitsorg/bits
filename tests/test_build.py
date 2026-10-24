@@ -738,6 +738,20 @@ class BuildTestCase(unittest.TestCase):
                         "local prerequisite Tools must be sourced before reused CMake")
 
 
+class AfterRecipeTest(unittest.TestCase):
+    def test_the_error_after_a_successful_recipe_is_shown(self):
+        from bits_helpers.build import _after_recipe
+        with tempfile.NamedTemporaryFile("w", suffix=".log") as log:
+            log.write("+ make\nbuilt\n")
+            log.flush()
+            out = ["make: error: an earlier, harmless one", "+ make", "built", "+ rsync -aH a b",
+                   "build.sh: line 534: rsync: command not found", "+ grep error: x",
+                   "bits: done building"]
+            self.assertEqual(_after_recipe(out, log.name),
+                             ["build.sh: line 534: rsync: command not found"])
+            self.assertEqual(_after_recipe(["+ make", "built", "+ exit 2"], log.name), [])
+            self.assertEqual(_after_recipe(out, log.name + ".missing"), [])
+
 class HashPolicyBuildFallbackTest(unittest.TestCase):
     """Exercise the remote-first hash-policy decision in build_one_package."""
 

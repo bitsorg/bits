@@ -315,6 +315,26 @@ def _writer_from_url(write_url, architecture, work_dir):
   return RsyncRemoteSync(write_url, write_url, architecture, work_dir)
 
 
+def store_unreachable(sync_helper, insecure=False, timeout=5, tries=2):
+  """Why the store *sync_helper* reads from cannot be reached, or "" when it
+  answers (any HTTP status, a TLS error or a slow answer included) or cannot be
+  checked this way. Bounded: *tries* connection attempts of *timeout* seconds."""
+  url = sync_helper.probe_url()
+  if not url:
+    return ""
+  why = ""
+  for attempt in range(tries):
+    if attempt:
+      time.sleep(2)
+    try:
+      requests.head(url, timeout=(timeout, 60), verify=not insecure, allow_redirects=False)
+      return ""
+    except (requests.exceptions.SSLError, requests.exceptions.ReadTimeout):
+      return ""                          # something answered
+    except requests.RequestException as exc:
+      why = type(exc).__name__
+  return why
+
 class RemoteSync:
   """Base for remote-store backends. Supplies documented no-op defaults for the
   optional STORE-METADATA queries (rev-index markers and content-object
@@ -326,6 +346,10 @@ class RemoteSync:
   def read_rev_markers(self, *args, **kwargs):
     """{revision: hash} rev-index markers recorded in the store, or {}."""
     return {}
+
+  def probe_url(self):
+    """An http(s) URL that answers when the read store is reachable, or None."""
+    return None
 
   def list_store_tarballs(self, *args, **kwargs):
     """Store tarball object names for an (architecture, hash), or []."""
@@ -374,6 +398,9 @@ class DualRemoteSync(RemoteSync):
   @staticmethod
   def _was_recalled(spec) -> bool:
     return bool(spec.get("cachedTarball"))
+
+  def probe_url(self):
+    return self.reader.probe_url()
 
   # ── reads → reader ──────────────────────────────────────────────────────────
   def fetch_tarball(self, spec):
@@ -485,6 +512,9 @@ class HttpRemoteSync(RemoteSync):
     self.httpTimeoutSec = 15
     self.httpConnRetries = 4
     self.httpBackoff = 0.4
+
+  def probe_url(self):
+    return self.remoteStore
 
   def getRetry(self, url, dest=None, returnResult=False, log=True, session=None, progress=debug):
     get = session.get if session is not None else requests.get
@@ -691,9 +721,12 @@ class HttpRemoteSync(RemoteSync):
       # Now add any remaining symlinks that aren't in the manifest yet. There
       # should always be relatively few of these, as the separate network
       # requests are a bit expensive.
+      # A failed listing (None) means nothing to add, as an empty one.
       for link in self.getRetry("{}/{}/".format(self.remoteStore, links_path),
-                                session=session):
-        linkname = link["name"]
+                                session=session) or []:
+        linkname = link.get("name") if isinstance(link, dict) else None
+        if not isinstance(linkname, str):
+          continue
         if linkname in symlinks:
           # This symlink is already present in the manifest.
           continue
@@ -704,10 +737,10 @@ class HttpRemoteSync(RemoteSync):
           continue
         # This symlink isn't in the manifest yet, and we don't have it locally,
         # so download it individually.
-        symlinks[linkname] = \
-            self.getRetry("/".join((self.remoteStore, links_path, linkname)),
-                          returnResult=True, log=False, session=session) \
-                .decode("utf-8").rstrip("\r\n")
+        target = self.getRetry("/".join((self.remoteStore, links_path, linkname)),
+                               returnResult=True, log=False, session=session)
+        if target:
+          symlinks[linkname] = target.decode("utf-8").rstrip("\r\n")
     for linkname, target in symlinks.items():
       # Both fields are UNTRUSTED remote data (manifest lines / listing JSON):
       # same validation as every other backend.
@@ -1080,6 +1113,9 @@ class Boto3RemoteSync(RemoteSync):
     self.architecture = architecture
     self.workdir = workdir
     self._s3_init()
+
+  def probe_url(self):
+    return os.environ.get("S3_ENDPOINT_URL") or DEFAULT_S3_ENDPOINT or None
 
   def _s3_init(self) -> None:
     # This is a separate method so that we can patch it out for unit tests.

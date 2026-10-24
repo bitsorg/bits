@@ -231,7 +231,7 @@ def print_plan(rows, store_checked, title="Dry run: build plan (nothing built)")
       len(rows) - reused - count(NOT_NEEDED))
   if count(NOT_NEEDED):
     summary += ", %d not needed" % count(NOT_NEEDED)
-  if not store_checked:
+  if store_checked is False:
     summary += "; remote store not checked (rsync stores cannot be listed)"
   banner("%s\n%s\n\n%s", title, "\n".join(lines), summary)
 
@@ -245,7 +245,9 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
   from bits_helpers.hashing import storeHashes
   from bits_helpers.arch import SHARED_ARCH
   write_store = bool(getattr(sync_helper, "writeStore", ""))
-  can_list = store_can_list(sync_helper)
+  from bits_helpers.sync import NoRemoteSync
+  # None: there is no store, so nothing to check.
+  can_list = None if isinstance(sync_helper, NoRemoteSync) else store_can_list(sync_helper)
   trusted = trusted_index_fn() if (cfg.require_signed_reuse and can_list) else None
   overlay = _overlay_predicate(cfg)
   states, unuploadable = {}, set()

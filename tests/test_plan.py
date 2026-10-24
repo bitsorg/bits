@@ -240,6 +240,9 @@ class NeededTest(unittest.TestCase):
     self.assertIn("[lcg.bits@abc]", text)
     self.assertIn("4 reused (0 installed, 0 local tarball, 4 from remote store), 0 to build,"
                   " 2 not needed", text)
+    with patch("bits_helpers.plan.banner") as b:
+      plan.print_plan(list(rows.values()), store_checked=None)   # no store: nothing to say
+    self.assertNotIn("not checked", b.call_args[0][0] % b.call_args[0][1:])
 
 
   def test_what_defaults_and_development_packages_require_is_needed(self):
