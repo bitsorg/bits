@@ -98,6 +98,8 @@ fields as additive and key off ``schema_version``.
       "source":                 str,              # git repository URL, "" if none (v4+)
       "tag":                    str,              # git tag/branch built, "" if none (v4+)
       "references":             [str],            # CPEs / purls naming it for scanners; only when any
+      "pinned_by":              str,              # "defaults:<profile>" or "requires:<package>" that
+                                                  # set its version; only when pinned
       "built_by":               str | None,       # user@host that compiled this hash; null unless built_from_source
       "completed_at":           ISO-8601
     }
@@ -577,6 +579,7 @@ class BuildManifest:
                 list(spec.get("build_requires") or [])
                 + list(self._sys_edges.get(spec.get("package"), ((), ()))[1])),
             **({"references": _refs} if _refs else {}),
+            **({"pinned_by": spec["pinned_by"]} if spec.get("pinned_by") else {}),
             "source":                 _no_userinfo(spec.get("source") or ""),
             "tag":                    str(spec.get("tag") or ""),
             # built_by identifies the host that actually compiled this hash.

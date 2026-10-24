@@ -484,6 +484,16 @@ MIGRATIONS = [
         )""",
         "CREATE INDEX vuln_triage_vuln ON vuln_triage(community, vuln_id)",
     ],
+    # 15: what upgrade plans need (sbom_plan.py): each finding's threat (grype risk,
+    # EPSS, CISA KEV) and fixing versions, each package's pin and dependencies.
+    [
+        "ALTER TABLE sbom_findings ADD COLUMN risk REAL NOT NULL DEFAULT 0",
+        "ALTER TABLE sbom_findings ADD COLUMN epss REAL NOT NULL DEFAULT 0",
+        "ALTER TABLE sbom_findings ADD COLUMN kev TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE sbom_findings ADD COLUMN fixed_in TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE sbom_packages ADD COLUMN pinned_by TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE sbom_packages ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

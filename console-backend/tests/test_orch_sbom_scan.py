@@ -195,13 +195,22 @@ def component(ref, name, version, purl="", cpe="", **props):
 
 SBOM = {"bomFormat": "CycloneDX", "components": [
     component("libxml2@1", "libxml2", "2.9.13", cpe="cpe:2.3:a:xmlsoft:libxml2:2.9.13:*:*:*:*:*:*:*"),
-    component("ROOT@1", "ROOT", "6.32.0", purl="pkg:github/root-project/root@v6-32-00"),
+    component("ROOT@1", "ROOT", "6.32.0", purl="pkg:github/root-project/root@v6-32-00",
+              bits_pinned_by="defaults:lhcb", bits_build_requires="numpy"),
     component("zlib@system", "zlib1g", "1:1.3-1", purl="pkg:deb/ubuntu/zlib1g@1:1.3-1?arch=amd64",
               bits_provided_by="system", bits_package="zlib"),
     component("numpy@1", "numpy", "2.0.1", purl="pkg:pypi/numpy@2.0.1"),
-    component("libxml2x@1", "libxml2", "2.90.0")]}
+    component("libxml2x@1", "libxml2", "2.90.0")],
+    "metadata": {"component": {"bom-ref": "release", "name": "b"}},
+    "dependencies": [{"ref": "release", "dependsOn": ["ROOT@1", "numpy@1"]},
+                     {"ref": "ROOT@1", "dependsOn": ["libxml2@1"]},
+                     {"ref": "numpy@1", "dependsOn": ["zlib@system"]}]}
 VULNS = [{"id": "CVE-A", "ratings": [{"severity": "high"}],
-          "affects": [{"ref": "libxml2@1"}, {"ref": "zlib@system"}]},
+          "properties": [{"name": "grype:risk", "value": "42.5"}, {"name": "grype:epss", "value": "0.5"},
+                         {"name": "grype:kev", "value": "2024-01-02"}],
+          "affects": [{"ref": "libxml2@1", "versions": [{"version": "2.10.0", "status": "unaffected"},
+                                                         {"version": "2.9.14", "status": "unaffected"}]},
+                      {"ref": "zlib@system"}]},
          {"id": "CVE-B", "ratings": [{"severity": "info"}], "affects": [{"ref": "libxml2@1"}]},
          {"id": "CVE-C", "ratings": [{"severity": "critical"}], "affects": [{"ref": "gone"}]}]
 
@@ -295,17 +304,34 @@ class SbomIndexTest(Fixture):
                                            " build_id = 'b-1'").fetchone()[0], 2)
         self.assertEqual(len(self._events()), seen)            # same counts: no event
 
-    def test_an_odd_sbom_is_a_failed_scan_and_blocks_no_other(self):
-        doc = dict(SBOM, name="b-3", components=[{"bom-ref": "x", "name": "x", "properties": 5}])
-        self.objects["MANIFESTS/b-3/sbom.cdx.json"] = json.dumps(doc).encode()
-        odd = [{"id": "CVE-A", "affects": [{"ref": ["x"]}]}]
+    def test_an_odd_sbom_is_indexed_as_far_as_it_goes(self):
+        doc = dict(SBOM, name="b-3", components=[{"bom-ref": "x", "name": ["x"], "properties": 5}],
+                   dependencies=[{"ref": "x", "dependsOn": "y"}])
+        odd = [{"id": "CVE-A", "affects": [{"ref": ["x"]}, "y", {"ref": "x", "versions": 3}]}, "z"]
+        self.assertEqual(sbom_scan.index(doc, odd)[:2], (1, 0))
+        self.assertEqual(sbom_scan.index(doc, odd)[3], [("CVE-A", "x", "other", 0.0, 0.0, "", "[]")])
+
+    def test_an_indexing_error_is_a_failed_scan_and_blocks_no_other(self):
+        real = sbom_scan.index
+        def index(doc, vulns):
+            if doc.get("name") == "b-3":
+                raise TypeError("odd")
+            return real(doc, vulns)
         self.conn.execute("UPDATE sbom_scans SET index_version = 0")
         self.conn.commit()
-        self.assertEqual(self._step(Scanner(vulns=odd)), 0)
+        with patch.object(sbom_scan, "index", index):
+            self.assertEqual(self._step(Scanner(vulns=VULNS)), 2)
         scans = self._scans()
         self.assertIn("could not index", scans["b-3"]["error"])
-        self.assertEqual(scans["b-1"]["index_version"], 0)      # the same odd answer for all
-        self.assertEqual(sbom_scan.index(doc, [])[:2], (1, 0))
+        self.assertEqual(scans["b-1"]["index_version"], sbom_scan.INDEX_VERSION)
+
+    def test_threat_fixes_pins_and_dependencies_are_indexed(self):
+        f = self.conn.execute("SELECT * FROM sbom_findings WHERE build_id = 'b-1' AND vuln_id = 'CVE-A'"
+                              " AND ref = 'libxml2@1'").fetchone()
+        self.assertEqual((f["risk"], f["epss"], f["kev"], json.loads(f["fixed_in"])),
+                         (42.5, 0.5, "2024-01-02", ["2.10.0", "2.9.14"]))
+        p = self.conn.execute("SELECT * FROM sbom_packages WHERE build_id = 'b-1' AND ref = 'ROOT@1'").fetchone()
+        self.assertEqual((p["pinned_by"], json.loads(p["depends_on"])), ("defaults:lhcb", ["libxml2@1", "numpy@1"]))
 
     def test_a_sbom_that_is_not_json_is_a_failed_scan(self):
         self.objects["MANIFESTS/b-1/sbom.cdx.json"] = b"[1"

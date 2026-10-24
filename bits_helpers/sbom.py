@@ -305,7 +305,8 @@ def _props(c):
     out = [("bits:hash", e.get("hash")), ("bits:revision", e.get("revision")),
            ("bits:effective_architecture", e.get("effective_architecture")),
            ("bits:pkg_family", e.get("pkg_family")), ("bits:outcome", e.get("outcome")),
-           ("bits:redistributable", e.get("redistributable")), ("bits:commit", _commit(e))]
+           ("bits:redistributable", e.get("redistributable")), ("bits:commit", _commit(e)),
+           ("bits:pinned_by", e.get("pinned_by"))]
     # Further CPEs under the property name syft and grype read them from.
     out += [("syft:cpe23", x) for x in _references(e, "cpe:2.3:")[1:]]
     out += [("bits:build_requires", d) for d in e.get("build_requires") or []]

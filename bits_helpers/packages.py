@@ -204,6 +204,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   # is the shared base that group repos override on purpose: not a group repo.
   _ddirs = (defaults_meta or {}).get("_defaults_dirs") or {}
   _odirs = (defaults_meta or {}).get("_override_dirs") or {}
+  _vprofiles = (defaults_meta or {}).get("_version_profiles") or {}
+  _pin_owners = {}    # pinned package -> the package whose requires pin it
   _base = os.path.abspath(_ddirs["release"]) if "release" in _ddirs else None
   _defaults_dirs = {}
   for _dname, _ddir in _ddirs.items():
@@ -329,6 +331,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         continue
       log("Overrides for package %s: %s", spec["package"], overrides[override])
       spec.update(overrides.get(override, {}) or {})
+      if "version" in (overrides.get(override) or {}):
+        spec["pinned_by"] = "defaults:" + _vprofiles.get(override, "?")   # for the SBOM
       if SOURCE_KEYS & set(overrides.get(override) or {}):
         _ovr_dir = _odirs.get(override) or _ovr_dir
 
@@ -491,6 +495,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
       spec["package"], _version_pins, specs,
       default_vars=_default_vars, version=_own_version,
     )
+    for _pinned in _version_pins:
+      _pin_owners.setdefault(_pinned, spec["package"])
 
     # For the moment we treat build_requires just as requires.
     fn = lambda what: disabledByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars, _own_version)
@@ -539,6 +545,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
             spec.get("version"), _pin)
       spec["version"] = _pin
       spec["tag"] = _pin
+      spec["pinned_by"] = "requires:" + _pin_owners.get(spec["package"], "?")
     # External checksum store: the recipe repo's checksums/<pkg>.checksum, with
     # those of the repos providing the active defaults profiles merged over it
     # (for the sources their overrides introduce). Loaded only now, after the

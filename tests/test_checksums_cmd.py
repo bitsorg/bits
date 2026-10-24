@@ -427,6 +427,7 @@ class TestSmallerPoints(unittest.TestCase):
         with patch.dict(os.environ, {"BITS_PATH": b}):
             meta, _ = readDefaults(a, ["release", "dev"], lambda *_: None, "slc9_x86-64")
         self.assertEqual(meta["_override_dirs"], {"root": a, "root:osx": b, "boost": b})
+        self.assertEqual(meta["_version_profiles"], {"boost": "dev"})      # who pins a version
 
     def test_build_write_respects_a_legacy_pin(self):
         from unittest.mock import MagicMock

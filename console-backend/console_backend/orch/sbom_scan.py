@@ -39,7 +39,7 @@ RETRY_MS = 3600 * 1000             # a failed scan is tried again after this
 TIMEOUT_S = (5, 60)                # connect, read: the scanner gives up at 45 s
 SEVERITIES = ("critical", "high", "medium", "low", "other")
 SBOM = "sbom.cdx.json"
-INDEX_VERSION = 1                  # a good scan older than this indexes its build again
+INDEX_VERSION = 2                  # a good scan older than this indexes its build again
 # purl types grype matches (pkg:generic and pkg:github it cannot)
 MATCHED_PURLS = {"apk", "cargo", "cocoapods", "composer", "conan", "deb", "gem", "golang",
                  "hackage", "hex", "maven", "npm", "nuget", "pub", "pypi", "rpm", "swift"}
@@ -117,28 +117,63 @@ def _severity(v):
     return s if s in SEVERITIES else "other"
 
 
+def _list(x):
+    return x if isinstance(x, list) else []
+
+
+def _float(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def index(doc, vulns):
     """(components, identified, sbom_packages rows, sbom_findings rows) of the
     CycloneDX document *doc* and its scan's *vulns*, without the build id."""
     packages, identified = [], 0
-    comps = doc.get("components")
-    for c in comps if isinstance(comps, list) else []:
-        if not isinstance(c, dict) or not c.get("bom-ref"):
-            continue
+    comps = [c for c in _list(doc.get("components"))
+             if isinstance(c, dict) and c.get("bom-ref")]
+    by_name = {}                       # bits name -> bom-ref, for build_requires
+    for c in comps:
         props = _props(c)
+        by_name.setdefault(str(props.get("bits:package") or c.get("name") or ""), str(c["bom-ref"]))
+    deps = {}
+    for d in _list(doc.get("dependencies")):
+        if isinstance(d, dict) and isinstance(d.get("dependsOn"), list):
+            deps[str(d.get("ref"))] = [str(r) for r in d["dependsOn"]]
+    for c in comps:
+        props, ref = _props(c), str(c["bom-ref"])
         purl = str(c.get("purl") or "")
         cpe = str(c.get("cpe") or props.get("syft:cpe23") or "")
         if cpe or purl.partition(":")[2].partition("/")[0] in MATCHED_PURLS:
             identified += 1
-        alias = str(props.get("bits:package") or "")
-        packages.append((str(c["bom-ref"]), str(c.get("name") or ""), alias,
-                         str(c.get("version") or ""), purl, cpe,
-                         int(props.get("bits:provided_by") == "system")))
+        build = [by_name[str(p.get("value"))] for p in _list(c.get("properties"))
+                 if isinstance(p, dict) and p.get("name") == "bits:build_requires"
+                 and str(p.get("value")) in by_name]
+        on = sorted(set(deps.get(ref, []) + build) - {ref})
+        version, rev = str(c.get("version") or ""), props.get("bits:revision")
+        if rev and version.endswith("-" + rev):         # older SBOMs: version-revision
+            version = version[:-len(rev) - 1]
+        packages.append((ref, str(c.get("name") or ""), str(props.get("bits:package") or ""),
+                         version, purl, cpe,
+                         int(props.get("bits:provided_by") == "system"),
+                         str(props.get("bits:pinned_by") or ""), json.dumps(on)))
     refs = {p[0] for p in packages}
-    findings = {(str(v["id"]), a["ref"], _severity(v))
-                for v in vulns or [] if isinstance(v, dict) and v.get("id")
-                for a in v.get("affects") or [] if isinstance(a, dict) and a.get("ref") in refs}
-    return len(packages), identified, packages, sorted(findings)
+    findings = {}
+    for v in _list(vulns):
+        if not isinstance(v, dict) or not v.get("id"):
+            continue
+        threat = _props(v)
+        for a in _list(v.get("affects")):
+            if not isinstance(a, dict) or not isinstance(a.get("ref"), str) or a["ref"] not in refs:
+                continue
+            fixed = sorted({str(x.get("version")) for x in _list(a.get("versions"))
+                            if isinstance(x, dict) and x.get("status") == "unaffected" and x.get("version")})
+            findings[(str(v["id"]), a["ref"])] = (
+                _severity(v), _float(threat.get("grype:risk")), _float(threat.get("grype:epss")),
+                str(threat.get("grype:kev") or ""), json.dumps(fixed))
+    return len(packages), identified, packages, sorted(k + f for k, f in findings.items())
 
 
 def due(conn, db_built, now, limit=None):
@@ -202,12 +237,14 @@ def _scanned(conn, directory, bid, sha, db_built, summary, vulns, doc):
         if not (indexed and old["sbom_sha256"] == sha):      # the same SBOM: the same rows
             conn.execute("DELETE FROM sbom_packages WHERE build_id = ?", (bid,))
             conn.executemany("INSERT OR IGNORE INTO sbom_packages (build_id, ref, name, alias,"
-                             " version, purl, cpe, system) VALUES (?,?,?,?,?,?,?,?)",
+                             " version, purl, cpe, system, pinned_by, depends_on)"
+                             " VALUES (?,?,?,?,?,?,?,?,?,?)",
                              [(bid, *p) for p in packages])
         if not (indexed and old["sbom_sha256"] == sha and old["vulns_sha256"] == vsha):
             conn.execute("DELETE FROM sbom_findings WHERE build_id = ?", (bid,))
-            conn.executemany("INSERT INTO sbom_findings (build_id, vuln_id, ref, severity)"
-                             " VALUES (?,?,?,?)", [(bid, *f) for f in findings])
+            conn.executemany("INSERT INTO sbom_findings (build_id, vuln_id, ref, severity, risk,"
+                             " epss, kev, fixed_in) VALUES (?,?,?,?,?,?,?,?)",
+                             [(bid, *f) for f in findings])
         if counts != (before or [0] * len(SEVERITIES)):    # a first clean scan: no event
             events.append(conn, "sbom.scanned", "build:%s" % bid, events.WORKER,
                           {"build_id": bid, "db_built": db_built,

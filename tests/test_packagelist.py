@@ -60,6 +60,24 @@ RECIPES = {
     prefer_system_replacement_specs: {}
     ---
     """),
+    "CONFIG_DIR/pin-owner.sh": dedent("""\
+    package: pin-owner
+    version: "1"
+    requires:
+      - pin-dep = 2.0
+      - pin-ovr
+    ---
+    """),
+    "CONFIG_DIR/pin-dep.sh": dedent("""\
+    package: pin-dep
+    version: "1.0"
+    ---
+    """),
+    "CONFIG_DIR/pin-ovr.sh": dedent("""\
+    package: pin-ovr
+    version: "1.0"
+    ---
+    """),
     "CONFIG_DIR/sys-libxml2.sh": dedent("""\
     package: sys-libxml2
     version: "2.10.4"
@@ -156,7 +174,8 @@ class MockReader:
         return self._contents
 
 
-def getPackageListWithDefaults(packages, force_rebuild=(), satisfied=None, system_info=None):
+def getPackageListWithDefaults(packages, force_rebuild=(), satisfied=None, system_info=None,
+                               overrides=None, defaults_meta=None):
     specs = {}   # getPackageList will mutate this
     def performPreferCheckWithTempDir(pkg, cmd):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
@@ -177,7 +196,8 @@ def getPackageListWithDefaults(packages, force_rebuild=(), satisfied=None, syste
         performPreferCheck=performPreferCheckWithTempDir,
         performRequirementCheck=performPreferCheckWithTempDir,
         performValidateDefaults=lambda spec: (True, "", ["release"]),
-        overrides={"defaults-release": {}},
+        overrides=dict({"defaults-release": {}}, **(overrides or {})),
+        defaults_meta=defaults_meta,
         taps={},
         log=lambda *_: None,
         force_rebuild=force_rebuild,
@@ -263,6 +283,14 @@ class ReplacementTestCase(unittest.TestCase):
         self.assertEqual(info["sys-marked"]["version"], "1:7.4.0-2")
         self.assertRegex(info["sys-marked"]["references"][0],
                          r"^pkg:deb/[^/]+/sys-marked@1:7\.4\.0-2\?arch=amd64(&distro=[^&]+)?&upstream=marked$")
+
+    def test_who_pinned_a_version_is_recorded(self):
+        specs, *_ = getPackageListWithDefaults(
+            ["pin-owner"], overrides={"pin-ovr": {"version": "3.0"}},
+            defaults_meta={"_version_profiles": {"pin-ovr": "lcg"}})
+        self.assertEqual((specs["pin-dep"]["version"], specs["pin-dep"]["pinned_by"]), ("2.0", "requires:pin-owner"))
+        self.assertEqual((specs["pin-ovr"]["version"], specs["pin-ovr"]["pinned_by"]), ("3.0", "defaults:lcg"))
+        self.assertNotIn("pinned_by", specs["pin-owner"])
 
     def test_satisfied_system_requirements_are_collected(self):
         satisfied = set()

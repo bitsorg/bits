@@ -18,16 +18,14 @@
                                        with vulnerabilities=1 (CycloneDX, the admins of its
                                        community), with its last good scan's findings and
                                        their triage (VEX analysis)
-    GET  /ops/builds/{pipeline}/sbom/report?build=   that CycloneDX SBOM as an HTML
-                                       report (CycloneDX Sunshine), sandboxed; for the
-                                       admins of its community, with the vulnerabilities
-                                       of its last good scan
     GET  /ops/sbom/scans?community=&flagged=&limit=   the builds' vulnerability scans,
                                        most severe first (the caller's communities)
     GET  /ops/sbom/packages?name=&version=&community=&limit=   the scanned builds that
                                        contain a package (2.9 covers 2.9.x), with findings
     GET  /ops/sbom/names?community=    the package names in them
     GET  /ops/sbom/vulnerabilities/{id}?community=&limit=   the builds it was found in
+    GET  /ops/sbom/plan?community=     upgrade plans: per release line, and converged
+                                       across those of the caller's communities
     GET  /ops/sbom/triage?community=&revoked=   the triage rules (VEX) of the communities
     POST /ops/sbom/triage              {community, vuln_id, package?, version?, state,
                                        justification?, reason, days?}: by its admins
@@ -82,7 +80,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, kinds, outside, phases, reconcile, sbom_report, sbom_scan, shadow, trace,
+               failures, kinds, outside, phases, reconcile, sbom_plan, sbom_scan, shadow, trace,
                vuln_triage)
 
 log = logging.getLogger("bits_orchestrator.api")
@@ -458,8 +456,6 @@ async def trace_path(request: Request, repo: str = "", path: str = "", build_id:
 
 
 SBOM_FILES = {"cyclonedx": "sbom.cdx.json", "spdx": "sbom.spdx.json"}
-# The report runs scripts (and prints, through a popup): never on this origin.
-SBOM_REPORT_SANDBOX = "sandbox allow-scripts allow-downloads allow-popups allow-modals"
 
 
 _deps = None
@@ -579,25 +575,6 @@ async def build_sbom(pipeline: int, request: Request, format: str = "cyclonedx",
                     headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
-@router.get("/ops/builds/{pipeline}/sbom/report")
-async def build_sbom_report(pipeline: int, request: Request, build: str = ""):
-    """The build's CycloneDX SBOM as an HTML report, for the same readers. The
-    page runs scripts, so a CSP sandbox keeps it off this origin if opened here."""
-    data = await _caller(request)
-    bid, body = await _published_sbom(pipeline, SBOM_FILES["cyclonedx"], build)
-    body = await _with_findings(data, pipeline, bid, body) or body
-    try:
-        page = await run_in_threadpool(sbom_report.render, body, bid)
-    except sbom_report.Busy as e:
-        raise HTTPException(503, str(e), headers={"Retry-After": "10"})
-    except sbom_report.Failed as e:
-        log.warning("SBOM report of %s: %s", bid, e)
-        raise HTTPException(500, "no report of build %s: %s" % (bid, e))
-    return Response(content=page, media_type="text/html; charset=utf-8",
-                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
-                             "Content-Security-Policy": SBOM_REPORT_SANDBOX})
-
-
 @router.get("/ops/sbom/scans")
 async def sbom_scans(request: Request, community: str = "", flagged: bool = False, limit: int = 200):
     """The builds' vulnerability scans, most severe first: those of the
@@ -643,6 +620,16 @@ async def sbom_vulnerability(vuln_id: str, request: Request, community: str = ""
     rows = await run_in_threadpool(_read, sbom_scan.affected, vuln_id, communities=mine,
                                    limit=max(1, min(int(limit), 2000)))
     return JSONResponse({"builds": rows}, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/sbom/plan")
+async def sbom_upgrade_plan(request: Request, community: str = ""):
+    """The upgrade plans of the release lines of the caller's communities
+    (sbom_plan): each line's waves, and one version per package for all."""
+    data = await _caller(request)
+    mine = await _communities(data, community)
+    out = await run_in_threadpool(_read, sbom_plan.plan, communities=mine)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/ops/sbom/triage")

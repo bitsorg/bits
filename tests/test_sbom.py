@@ -93,6 +93,12 @@ class TestComponents(unittest.TestCase):
         plain = {c["name"]: c for c in sbom.to_cyclonedx(_manifest())["components"]}["zlib"]
         self.assertNotIn("version", plain)                     # its check said nothing
 
+    def test_a_pinned_version_says_who_pinned_it(self):
+        m = _manifest()
+        m["packages"][3]["pinned_by"] = "defaults:lhcb"
+        root = {c["name"]: c for c in sbom.to_cyclonedx(m)["components"]}["ROOT"]
+        self.assertIn({"name": "bits:pinned_by", "value": "defaults:lhcb"}, root["properties"])
+
     def test_a_system_package_found_by_the_package_manager_goes_by_its_name(self):
         m = _manifest()
         purl = "pkg:deb/ubuntu/zlib1g@1:1.3.dfsg-3.1?arch=amd64&distro=ubuntu-24.04&upstream=zlib"

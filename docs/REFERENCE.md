@@ -1460,7 +1460,7 @@ Each built package is a component: the upstream version (the bits revision is
 the `bits:revision` property), the tarball SHA-256, the SPDX licence, a purl and,
 when the recipe gives one, a CPE (see the recipe field `references`), source
 archives with their checksums, the git origin, and bits properties (build hash,
-architecture, patches, redistributable). The purl is the recipe's own, else
+architecture, patches, redistributable, and `bits:pinned_by` when a defaults override or another package pinned its version). The purl is the recipe's own, else
 `pkg:pypi/<PYPI_NAME or package>@<version>` for a `PythonPipRecipe`, else
 `pkg:github/…@<commit>` for GitHub code, else `pkg:generic/…`.
 Dependencies come from the manifest (schema v4 and later): runtime and
@@ -1477,10 +1477,8 @@ version give byte-identical files. The SBOMs `bits publish` uploads carry the
 stored tarballs' sha256, as the BOM does.
 
 The console backend serves a published build's SBOMs to any signed-in user
-(`GET /ops/builds/{pipeline}/sbom?format=cyclonedx|spdx`), and the CycloneDX one
-as an HTML report of its components, dependencies and licences
-(`GET /ops/builds/{pipeline}/sbom/report`), drawn by a vendored, unmodified
-[CycloneDX Sunshine](https://github.com/CycloneDX/Sunshine). With
+(`GET /ops/builds/{pipeline}/sbom?format=cyclonedx|spdx`); the console draws the
+CycloneDX one as a report of its components and dependencies. With
 `BITS_ORCH_SCANNER_URL` (the sbom-scanner service of bits-services, grype), the
 worker scans every published build's SBOM, and again whenever the vulnerability
 database is newer or a newer pipeline publishes the build (a re-run, which writes
@@ -1503,6 +1501,19 @@ and an optional expiry in days; revoked with `POST /ops/sbom/triage/{id}/revoke`
 Both are events. The findings a rule covers are left out of the effective counts
 of `/ops/sbom/scans`, and `GET /ops/builds/{pipeline}/sbom?vulnerabilities=1`
 serves the SBOM with its findings and the rules as CycloneDX `analysis` (VEX).
+
+`GET /ops/sbom/plan?community=` plans upgrades from them. For each release line
+(a community's release on one platform, from its newest scanned build), each
+package with open findings gets a target: the smallest stable version newer than
+its own that fixes each of them. The packages fall into waves, each one set of
+version bumps and one rebuild: known exploited (CISA KEV), upgrades within the
+major version, major upgrades, ordered by the risk they remove (grype's score:
+severity, EPSS, KEV) per package rebuilt; packages taken from the system and
+findings no version fixes are listed apart. The converged plan then picks one
+version per package for all the release lines in scope, the highest any needs or
+a higher one already built and scanned clean; a line whose version is pinned
+(`bits:pinned_by` in its SBOM: a defaults `overrides:` entry or another
+package's `name = version` requires) is an exception.
 
 ---
 

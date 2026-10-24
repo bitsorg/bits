@@ -209,6 +209,7 @@ def _read_defaults_chain(configDir, defaults, error, architecture):
   missing_defaults = []        # names with no defaults-<name>.sh on the search path
   defaults_dirs = {}           # name -> recipe dir its defaults file came from
   override_dirs = {}           # override key -> dir of the (last) profile setting it
+  version_profiles = {}        # override key -> the (last) profile setting its version
   layout_dirs = set()          # repositories whose cvmfs.yaml is merged already
   # A repository's cvmfs.yaml never overrides a key that a more specific
   # repository's file set, whatever the chain order: first the group's (the
@@ -288,6 +289,8 @@ def _read_defaults_chain(configDir, defaults, error, architecture):
         for key, block in xMeta["overrides"].items():
           if SOURCE_KEYS & set(block or {}):
             override_dirs[override_key(key)] = defaults_dirs.get(xdefaults)
+          if "version" in (block or {}):
+            version_profiles[override_key(key)] = xdefaults
       # A repository's cvmfs.yaml (its CVMFS layout) counts as part of the
       # first profile taken from it, beneath that profile's own keys.
       d = defaults_dirs.get(xdefaults)
@@ -320,6 +323,7 @@ def _read_defaults_chain(configDir, defaults, error, architecture):
   defaultsMeta["_missing_defaults"] = missing_defaults
   defaultsMeta["_defaults_dirs"] = defaults_dirs
   defaultsMeta["_override_dirs"] = override_dirs
+  defaultsMeta["_version_profiles"] = version_profiles
 
   debug("Merged Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
 

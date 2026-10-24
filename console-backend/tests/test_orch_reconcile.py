@@ -609,8 +609,8 @@ class ApiTest(_DB):
         with patch.object(api, "_store", down):
             self.assertEqual(self._get("dave", "/ops/builds/1/sbom?build=b-1").status_code, 503)
 
-    def test_scans_are_those_of_ones_communities_and_feed_their_admins_report(self):
-        from console_backend.orch import api, sbom_report, sbom_scan
+    def test_scans_are_those_of_ones_communities_and_their_findings_their_admins(self):
+        from console_backend.orch import api, sbom_scan
         for pid, bid in ((1, "b-1"), (2, "b-2")):
             self.conn.execute(
                 "INSERT INTO builds (pipeline_id, build_id, community, recorded_ms) VALUES"
@@ -628,13 +628,10 @@ class ApiTest(_DB):
         self.assertEqual(ids("dave"), [])
         self.assertEqual(self.client.get("/ops/sbom/scans").status_code, 401)
         s3 = FakeS3({"MANIFESTS/b-1/sbom.cdx.json": {"bomFormat": "CycloneDX"}})
-        seen = []
-        with patch.object(sbom_report, "render", lambda body, bid: seen.append(json.loads(body)) or b"<html>"), \
-                patch.object(api, "_store", lambda: (s3, "bkt")):
-            for user in ("alice", "carol", "bob", "dave"):
-                self.assertEqual(self._get(user, "/ops/builds/1/sbom/report").status_code, 200)
-        self.assertEqual([d.get("vulnerabilities") for d in seen],
-                         [[{"id": "CVE-9"}], [{"id": "CVE-9"}], None, None])   # admins of testbed only
+        with patch.object(api, "_store", lambda: (s3, "bkt")):
+            seen = [self._get(u, "/ops/builds/1/sbom?vulnerabilities=1") for u in ("alice", "carol", "bob")]
+        self.assertEqual([(r.status_code, r.json().get("vulnerabilities")) for r in seen],
+                         [(200, [{"id": "CVE-9"}]), (200, [{"id": "CVE-9"}]), (403, None)])  # testbed's admins
 
     def test_packages_findings_and_their_triage_for_the_communities_admins(self):
         from console_backend.orch import api, sbom_scan
@@ -662,6 +659,11 @@ class ApiTest(_DB):
         self.assertEqual(self._get("bob", "/ops/sbom/packages?name=libxml2").json()["packages"], [])
         self.assertEqual(self._get("alice", "/ops/sbom/packages").status_code, 400)
         self.assertIn("zlib", self._get("alice", "/ops/sbom/names").json()["names"])
+        plan = self._get("alice", "/ops/sbom/plan").json()
+        self.assertEqual([(r["build_id"], [w["wave"] for w in r["waves"]]) for r in plan["releases"]],
+                         [("b-1", [0])])                       # CVE-A is known exploited
+        self.assertEqual([c["name"] for c in plan["converged"]], ["libxml2"])
+        self.assertEqual(self._get("bob", "/ops/sbom/plan").json(), {"releases": [], "converged": []})
         found = self._get("alice", "/ops/sbom/vulnerabilities/CVE-A").json()["builds"]
         self.assertEqual(sorted((r["name"], r["suppressed"]) for r in found),
                          [("libxml2", None), ("zlib1g", rid)])
@@ -689,35 +691,6 @@ class ApiTest(_DB):
         self.assertEqual(post("alice", "/ops/sbom/triage/%d/revoke" % rid, {}).status_code, 409)
         self.assertEqual(post("alice", "/ops/sbom/triage/999/revoke", {}).status_code, 404)
         self.assertEqual(self._get("alice", "/ops/sbom/scans").json()["scans"][0]["suppressed"], 0)
-
-    def test_a_builds_sbom_report_is_a_sandboxed_page(self):
-        from console_backend.orch import api, sbom_report
-        from test_orch_sbom_report import cdx
-        self.conn.execute(
-            "INSERT INTO builds (pipeline_id, build_id, community, arches, bom_keys, top_level,"
-            " packages, published_at, recorded_ms) VALUES (1, 'b-1', 'testbed', '[]', '[]',"
-            " '[]', 0, '', 0)")
-        self.conn.commit()
-        sbom_report._cache.clear()
-        s3 = FakeS3({})
-        s3.objects["MANIFESTS/b-1/sbom.cdx.json"] = cdx()
-        with patch.object(api, "_store", lambda: (s3, "bkt")):
-            r = self._get("dave", "/ops/builds/1/sbom/report")     # administers nothing
-            self.assertEqual(r.status_code, 200)
-            self.assertTrue(r.headers["content-type"].startswith("text/html"))
-            self.assertEqual(r.headers["content-security-policy"], api.SBOM_REPORT_SANDBOX)
-            self.assertTrue(api.SBOM_REPORT_SANDBOX.startswith("sandbox "))
-            self.assertNotIn("allow-same-origin", api.SBOM_REPORT_SANDBOX)
-            self.assertIn("LGPL-2.1-or-later", r.text)
-            self.assertEqual(self.client.get("/ops/builds/1/sbom/report").status_code, 401)
-            self.assertEqual(self._get("dave", "/ops/builds/2/sbom/report").status_code, 404)
-            s3.objects["MANIFESTS/b-1/sbom.cdx.json"] = b"not json"
-            r = self._get("dave", "/ops/builds/1/sbom/report")
-            self.assertEqual(r.status_code, 500)
-            self.assertIn("no report of build b-1", r.json()["detail"])
-            with patch.object(sbom_report, "render", side_effect=sbom_report.Busy("busy")):
-                r = self._get("dave", "/ops/builds/1/sbom/report")
-                self.assertEqual((r.status_code, r.headers.get("retry-after")), (503, "10"))
 
     def _ci(self, claims, body, kind="published"):
         seen = {}
