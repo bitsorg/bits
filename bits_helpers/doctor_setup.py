@@ -11,6 +11,7 @@ one-line fix; any FAIL makes the exit code 1.
 import getpass
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -170,46 +171,54 @@ def check_s3cmd_store(url):
   return PASS, "%s: s3cmd and ~/.s3cfg present" % url
 
 
-def _s3_client():
-  """boto3 client configured as Boto3RemoteSync does, with short timeouts."""
+def _s3_client(settings):
+  """boto3 client for one bucket's *settings* (sync.s3_settings), as
+  Boto3RemoteSync makes it, with short timeouts."""
   import boto3
   from botocore.config import Config
-  style = os.environ.get("S3_ADDRESSING_STYLE")
+  style = settings["addressing_style"]
   config = Config(connect_timeout=10, read_timeout=10, retries={"max_attempts": 1},
                   **({"s3": {"addressing_style": style}} if style else {}))
-  kwargs = {"endpoint_url": os.environ.get("S3_ENDPOINT_URL"), "config": config}
-  region = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION")
-  if region:
-    kwargs["region_name"] = region
+  kwargs = {"endpoint_url": settings["endpoint"], "config": config,
+            "aws_access_key_id": settings["access_key"],
+            "aws_secret_access_key": settings["secret_key"]}
+  if settings["session_token"]:
+    kwargs["aws_session_token"] = settings["session_token"]
+  if settings["region"]:
+    kwargs["region_name"] = settings["region"]
   return boto3.client("s3", **kwargs)
 
 
 def check_s3_store(url, args, label):
   """Credentials and bucket access for a b3:// (boto3) store."""
-  from bits_helpers.sync import resolve_and_export_s3_config
+  from bits_helpers.sync import resolve_and_export_s3_config, s3_settings
   resolve_and_export_s3_config(getattr(args, "s3Endpoint", None),
                                getattr(args, "s3AccessKey", None),
                                getattr(args, "s3SecretKey", None),
                                getattr(args, "s3Region", None),
                                getattr(args, "s3AddressingStyle", None))
-  if not (os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY")):
-    return FAIL, ("%s: no S3 credentials. Set AWS_ACCESS_KEY_ID and "
-                  "AWS_SECRET_ACCESS_KEY, pass --s3-access-key/--s3-secret-key, or "
-                  "put them in ~/.bits/s3keys" % url)
+  bucket = url[len("b3://"):].split("/", 1)[0]
+  settings = s3_settings(bucket)
+  if not (settings["access_key"] and settings["secret_key"]):
+    key = "BITS_S3_%s_" % re.sub(r"[^A-Za-z0-9]", "_", bucket).upper()
+    return FAIL, ("%s: no S3 credentials. Set %sACCESS_KEY_ID and %sSECRET_ACCESS_KEY "
+                  "(or a [%s] section in ~/.bits/s3keys) for this bucket, or "
+                  "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, --s3-access-key/"
+                  "--s3-secret-key or ~/.bits/s3keys for all" % (url, key, key, bucket))
   if importlib.util.find_spec("boto3") is None:
     return FAIL, "%s: boto3 missing; %s" % (url, _pip_hint(["boto3"]))
-  bucket = url[len("b3://"):].split("/", 1)[0]
   try:
-    _s3_client().head_bucket(Bucket=bucket)
+    _s3_client(settings).head_bucket(Bucket=bucket)
   except Exception as exc:   # botocore ClientError, endpoint or network errors
     return FAIL, "%s: bucket not accessible with these credentials (%s)" % (url, exc)
   return PASS, "%s: credentials found, bucket accessible (%s)" % (url, label)
 
 
 def run_setup_checks(args):
-  read = (getattr(args, "remoteStore", "") or "").rstrip("/")
-  write = (getattr(args, "writeStore", "") or "").rstrip("/")
-  b3 = any(u.startswith("b3://") for u in (read, write))
+  from bits_helpers.sync import store_urls
+  reads = [u.rstrip("/") for u in store_urls(getattr(args, "remoteStore", ""))]
+  writes = [u.rstrip("/") for u in store_urls(getattr(args, "writeStore", ""))]
+  b3 = any(u.startswith("b3://") for u in reads + writes)
   checks = [
     ("python", *check_python()),
     ("python modules", *check_modules(_MODULES, FAIL)),
@@ -224,15 +233,16 @@ def run_setup_checks(args):
   work_dir = getattr(args, "workDir", "sw") or "sw"
   checks.append(("disk space (%s)" % work_dir,
                  *_check_disk_space(work_dir, float(getattr(args, "minDisk", None) or 10.0))))
-  for url, label in ((read, "read store"), (write, "write store")):
-    if not url or (label == "write store" and url == read):
-      continue
+  stores = [(u, "read store") for u in reads] + \
+           [(u, "write store") for u in writes if u not in reads]
+  for url, label in stores:
+    label = label + (" " + url if len(stores) > 1 else "")
     if url.startswith("b3://"):
       checks.append((label, *check_s3_store(url, args, label)))
     elif url.startswith("s3://"):
       checks.append((label, *check_s3cmd_store(url)))
     else:
       checks.append((label, *_check_store(url, getattr(args, "insecure", False))))
-  if not read and not write:
+  if not stores:
     checks.append(("stores", SKIP, "no --remote-store / --write-store configured"))
   return checks

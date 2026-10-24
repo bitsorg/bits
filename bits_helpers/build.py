@@ -134,6 +134,8 @@ def defaults_store_url(defaults_meta):
     return "", False
   url = str(url).strip()
   writable = url.endswith("::rw")
+  dieOnError("::rw" in url and "," in url,
+             "system: remote_store: ::rw takes one store, not a list (%s)" % url)
   from bits_helpers.sync import normalise_store_url
   return normalise_store_url(url[:-4] if writable else url), writable
 
@@ -3597,10 +3599,16 @@ def doBuild(args, parser):
            or os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
            or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
     _prefix = _system_opt("trust_manifest_prefix", "MANIFESTS/common-manifest")
-    _store = getattr(args, "remoteStore", "")
-    _srcs, _guessed = trust_manifest_srcs(
-        _store, _prefix, _ep, getattr(args, "workDir", None),
-        str(getattr(args, "architecture", "") or ""))
+    # The signed manifests of every read store (a b3:// one at its own endpoint).
+    from bits_helpers.sync import store_urls, bucket_endpoint
+    _srcs, _guessed = [], set()
+    for _store in store_urls(getattr(args, "remoteStore", "")):
+      _sep = (bucket_endpoint(_store[5:].split("/", 1)[0])
+              if _store.startswith("b3://") else None) or _ep
+      _s, _g = trust_manifest_srcs(_store, _prefix, _sep, getattr(args, "workDir", None),
+                                   str(getattr(args, "architecture", "") or ""))
+      _srcs += [x for x in _s if x not in _srcs]
+      _guessed |= _g
     if _guessed:
       args._guessedTrustManifests = _guessed     # names guessed, may not exist
     if _srcs:
@@ -3666,15 +3674,15 @@ def doBuild(args, parser):
                                s3_secret_key=getattr(args, "s3SecretKey", None),
                                s3_region=getattr(args, "s3Region", None),
                                s3_addressing_style=getattr(args, "s3AddressingStyle", None))
-  # A read-only store that cannot be reached (an offline laptop): build without it
+  # Read-only stores that cannot be reached (an offline laptop): build without them
   # rather than retry every request. With a write store nothing changes.
-  from bits_helpers.sync import store_unreachable, NoRemoteSync
-  _down = "" if getattr(syncHelper, "writeStore", "") else \
-      store_unreachable(syncHelper, getattr(args, "insecure", False))
-  if _down:
+  from bits_helpers.sync import drop_unreachable, NoRemoteSync
+  syncHelper, _down = drop_unreachable(syncHelper, getattr(args, "insecure", False))
+  for _url, _why in _down:
     warning("The store %s cannot be reached (%s): building without it "
-            "(--no-remote-store does so without trying).", args.remoteStore, _down)
-    syncHelper, args.remoteStore = NoRemoteSync(), ""
+            "(--no-remote-store does so without trying).", _url, _why)
+  if _down and isinstance(syncHelper, NoRemoteSync):
+    args.remoteStore = ""
     if getattr(args, "_trustFromStore", False):
       args.trustManifest = None            # derived from that store: nothing to verify
 
@@ -4480,16 +4488,14 @@ def doBuild(args, parser):
   # a conditional branch and may never have been assigned on this path.
   _store_mon_url = (cfg.monitor_url
                     or os.environ.get("METRICS_URL") or "").strip().rstrip("/")
-  if _store_mon_url and getattr(syncHelper, "writeStore", "") and getattr(syncHelper, "s3", None):
+  # The first b3:// write store's (the gauges carry no bucket label).
+  _w = next((w for w in (getattr(syncHelper, "writers", None) or [syncHelper])
+             if getattr(w, "writeStore", "") and getattr(w, "s3", None)), None)
+  if _store_mon_url and _w is not None:
     from bits_helpers import store_stats as _ss
-    _bucket = getattr(syncHelper, "remoteStore", "") or getattr(syncHelper, "writeStore", "")
-    # Endpoint precedence matches the S3 client / the require-signed-reuse derive.
-    _store_ep = (getattr(args, "s3Endpoint", None)
-                 or os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
-                 or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
-    _ss.push_store_gauges(syncHelper.s3, _bucket, _store_mon_url,
-                          work_dir=args.workDir,
-                          store=getattr(args, "remoteStore", "") or _bucket,
-                          endpoint=_store_ep)
+    from bits_helpers.sync import s3_settings
+    _bucket = getattr(_w, "remoteStore", "") or getattr(_w, "writeStore", "")
+    _ss.push_store_gauges(_w.s3, _bucket, _store_mon_url, work_dir=args.workDir,
+                          store="b3://" + _bucket, endpoint=s3_settings(_bucket)["endpoint"])
 
   debug("Everything done")

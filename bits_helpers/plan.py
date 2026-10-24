@@ -36,7 +36,9 @@ def store_can_list(sync_helper):
 
   The base RemoteSync.list_store_tarballs is a no-op; rsync stores keep it, so
   their contents cannot be checked without downloading."""
-  from bits_helpers.sync import RemoteSync
+  from bits_helpers.sync import RemoteSync, MultiRemoteSync
+  if isinstance(sync_helper, MultiRemoteSync):
+    return any(store_can_list(r) for r in sync_helper.readers)
   return getattr(type(sync_helper), "list_store_tarballs", None) not in (
       None, RemoteSync.list_store_tarballs)
 

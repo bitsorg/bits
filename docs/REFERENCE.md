@@ -1041,8 +1041,8 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `-c DIR`, `--config-dir DIR` | Directory containing recipe files. Default: `.`. |
 | `--search-path NAMES` | Comma-separated recipe sub-repos to search besides the config dir. A relative NAME resolves to `<config-dir>/NAME.bits`; absolute paths are used as-is. Seeds `BITS_PATH` (an explicit `$BITS_PATH` wins). |
 | `--reference-sources DIR` | Directory for the local mirrors of git repositories. Default: `<work-dir>/MIRROR`. |
-| `--remote-store URL` | Binary store to fetch pre-built tarballs from. Append `::rw` to also upload to it (cannot be combined with `--write-store`). Without it, the [site configuration](#site-configuration)'s `store.read_by_arch` / `store.read` is the default (at CERN, ALICE's public store for its architectures); a `remote_store:` entry in the defaults `system:` block replaces that default. |
-| `--write-store URL` | Binary store to upload built tarballs to. Given alone (no `--remote-store`), it is also the read store, except where a default remote store applies (then use `--remote-store URL::rw`). |
+| `--remote-store URL` | Binary store to fetch pre-built tarballs from; several, comma-separated, are tried in order (e.g. production, then the PR store). Append `::rw` to also upload to a single store (cannot be combined with `--write-store`). Without it, the [site configuration](#site-configuration)'s `store.read_by_arch` / `store.read` is the default (at CERN, ALICE's public store for its architectures); a `remote_store:` entry in the defaults `system:` block replaces that default. |
+| `--write-store URL` | Binary store to upload built tarballs to; several, comma-separated, all receive every built package (an upload failure to any fails the package). Revision numbers are chosen from the markers of every read and write store, so the stores never disagree on one. Given alone (no `--remote-store`), it is also the read store, except where a default remote store applies (then use `--remote-store URL::rw`). |
 | `--no-remote-store` | Disable the default remote store; a `--write-store` is still read from. Without it, an http(s):// or b3:// read store that does not answer (an offline laptop) is noticed once at the start, and the build goes on without it, with a warning. Not when a write store is set. |
 | `--insecure` | Do not validate TLS certificates of an `https://` store. |
 | `--sign-manifest KEY.pem`, `--trust-manifest URL\|PATH`, `--require-signed-reuse` / `--no-require-signed-reuse`, `--trust-groups G1,G2` | Signed reuse of remote tarballs: on by default (fail-closed), trust derived from the store's signed manifests. See [Signing and verifying the archive tier](#signing-and-verifying-the-archive-tier). |
@@ -1114,7 +1114,30 @@ S3 credentials, endpoint and region not set by 1–3 are also read from
 | Addressing style | `--s3-addressing-style` | `S3_ADDRESSING_STYLE` | `BITS_S3_ADDRESSING_STYLE` |
 
 A store set as `REMOTE_STORE=b3://mybucket::rw` (or the flag) reads from and
-uploads to the same bucket. With no store and no env vars, behaviour is
+uploads to the same bucket.
+
+**Several buckets, each with its own credentials.** Each `b3://` bucket may have
+its own endpoint and credentials: `BITS_S3_<BUCKET>_ACCESS_KEY_ID`,
+`BITS_S3_<BUCKET>_SECRET_ACCESS_KEY`, and optionally `…_SESSION_TOKEN`,
+`…_ENDPOINT_URL`, `…_REGION` and `…_ADDRESSING_STYLE`, where `<BUCKET>` is the
+bucket's name upper-cased with other characters as `_` (`cms-pr` →
+`BITS_S3_CMS_PR_…`), or a `[bucket cms-pr]` section in `~/.bits/s3keys` with the
+same keys (other sections still count for every bucket, as before). The key, secret and token are taken together from one of these. A bucket
+with none of its own uses the settings above. For example, a PR job that reuses
+production packages and uploads to the PR bucket:
+
+```bash
+export BITS_S3_CMS_PROD_ACCESS_KEY_ID=… BITS_S3_CMS_PROD_SECRET_ACCESS_KEY=…
+export BITS_S3_CMS_PR_ACCESS_KEY_ID=…   BITS_S3_CMS_PR_SECRET_ACCESS_KEY=…
+bits build --remote-store b3://cms-prod,b3://cms-pr --write-store b3://cms-pr …
+```
+
+A package recalled from one store is not copied to the write stores; only
+packages built in the run are uploaded. If the write stores already hold
+different tarballs for a hash, the build manifest records the first store's.
+Signed reuse applies to every read store, with the signed manifests of each.
+Recipes never see any of these credentials. `bits publish`, `certify`, `gc`,
+`store-stats` and `compliance` still work on one store at a time. With no store and no env vars, behaviour is
 unchanged: the public CERN read store on supported architectures, no upload.
 
 **Client requirement — install on the build host, not in the container.** bits
@@ -1256,8 +1279,8 @@ bits doctor --check-store  —  architecture: slc9_x86-64
 | `--defaults PROFILE` | `release` | Defaults profile for dependency resolution. |
 | `-w DIR`, `--work-dir DIR` | `sw` | Work directory checked for disk space (setup and `--runner` modes). |
 | `--docker` | off | Run recipe checks inside a Docker container, as `bits build --docker` would. |
-| `--remote-store URL` | _(none)_ | Remote binary store URL; checked for reachability in setup and `--runner` mode and probed per-package in `--check-store` mode. |
-| `--write-store URL` | _(none)_ | Write store; checked in setup mode like `--remote-store`. |
+| `--remote-store URL` | _(none)_ | Remote binary store URL(s), comma-separated; each is checked for reachability (and, for `b3://`, its bucket's credentials) in setup and `--runner` mode, and packages are looked up in all of them in `--check-store` mode. |
+| `--write-store URL` | _(none)_ | Write store(s); each checked in setup mode like `--remote-store`. |
 | `--no-remote-store` | off | Disable the default remote store. |
 | `--insecure` | off | Skip TLS certificate validation when probing an `https://` store. |
 | `--s3-endpoint`, `--s3-access-key`, `--s3-secret-key`, `--s3-region`, `--s3-addressing-style` | — | S3 connection for `b3://` stores, as for `bits build`. |
@@ -1338,7 +1361,7 @@ bits status [options] PACKAGE [PACKAGE...]
 | `--force-rebuild PACKAGE` | _(none)_ | Report the named package as needing a rebuild regardless of its hash. |
 | `-u`, `--fetch-repos` | on | Clone / fetch reference repos to populate the git ref cache before computing hashes. Requires network access. |
 | `--no-fetch-repos` | off | Use only the refs already cached (offline). |
-| `--remote-store URL` | _(none)_ | Remote binary store URL. Only consulted when `--check-store` is given. |
+| `--remote-store URL` | _(none)_ | Remote binary store URL(s), comma-separated, looked up in order. Only consulted when `--check-store` is given. |
 | `--no-remote-store` | off | Disable any remote store, even a configured default. |
 | `--check-store` | off | Probe the remote store to detect tarballs not mirrored locally. Adds a network round-trip per uncached package. |
 | `--json` | off | Emit a machine-readable JSON report. |
@@ -1484,7 +1507,7 @@ bits checksums [PACKAGE ...] [-c DIR] [--recipes DIR ...] [--defaults all|P1,P2]
 | `--write` | off | Record new entries. Without it the command only reports. |
 | `-w WORKDIR` | `sw` | Holds the download cache (`SOURCES/cache/`), shared with builds. |
 | `-a ARCH` | detected | Architecture for `$(...)` sources. |
-| `--remote-store URL` | upstream only | Store whose source mirror is tried before upstream (read only). |
+| `--remote-store URL` | upstream only | Store(s), comma-separated, whose source mirrors are tried in order before upstream (read only). |
 | `--fresh` | off | Download every source again from upstream into a private cache, ignoring the download cache and the remote store. |
 | `-j N`, `--jobs N` | 8 | Parallel downloads and git queries. |
 

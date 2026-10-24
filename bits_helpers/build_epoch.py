@@ -35,7 +35,7 @@ COVERED = (
 # the container settings. A change there that alters builds bumps BUILD_EPOCH
 # by review, not by this check.
 
-COVERED_SHA256 = "4766f45a52c59a26429c0d3f25ebc7838762ab79eddd2a6e7db8fb70a058eda3"
+COVERED_SHA256 = "5ba8673888529c93d1ae9d13ce5ab7b6e6f6d2906a61782bad2aab59dceb0cb5"
 
 
 def covered_sha256(root=None):

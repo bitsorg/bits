@@ -189,14 +189,15 @@ class _BareReader(sync.RemoteSync):
 class DualDelegationTestCase(unittest.TestCase):
     """DualRemoteSync routes store-metadata reads to reader, then writer."""
 
-    def test_delegates_read_rev_markers_to_reader(self):
+    def test_merges_read_rev_markers_the_reader_winning(self):
+        # Shared numbering: a revision either store uses is never handed out again.
         reader = MagicMock()
         reader.read_rev_markers.return_value = {"2": "bb"}
         writer = MagicMock()
+        writer.read_rev_markers.return_value = {"2": "cc", "3": "dd"}
         dual = sync.DualRemoteSync(reader=reader, writer=writer)
-        self.assertEqual(dual.read_rev_markers("fftw", "3.3.10", ARCH), {"2": "bb"})
+        self.assertEqual(dual.read_rev_markers("fftw", "3.3.10", ARCH), {"2": "bb", "3": "dd"})
         reader.read_rev_markers.assert_called_once_with("fftw", "3.3.10", ARCH)
-        writer.read_rev_markers.assert_not_called()
 
     def test_falls_back_to_writer_when_reader_lacks_method(self):
         # REGRESSION: `--remote-store https://…::rw` builds DualRemoteSync(Http, Boto3).

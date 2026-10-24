@@ -2458,6 +2458,10 @@ def finaliseArgs(args, parser):
 
     if args.remoteStore.endswith("::rw") and args.writeStore:
       parser.error("cannot specify ::rw and --write-store at the same time")
+    if "::rw" in args.writeStore:
+      parser.error("::rw belongs to --remote-store, not --write-store")
+    if "::rw" in args.remoteStore and "," in args.remoteStore:
+      parser.error("::rw takes one store; give several write stores with --write-store")
 
     if args.remoteStore.endswith("::rw"):
       args.remoteStore = args.remoteStore[0:-4]
@@ -2468,10 +2472,10 @@ def finaliseArgs(args, parser):
     from bits_helpers.sync import normalise_store_url
     args.normalisedStores = []
     for _attr in ("remoteStore", "writeStore"):
-      _url = getattr(args, _attr)
-      if normalise_store_url(_url) != _url:
-        args.normalisedStores.append((_url, normalise_store_url(_url)))
-        setattr(args, _attr, normalise_store_url(_url))
+      _urls = [u.strip() for u in getattr(args, _attr).split(",") if u.strip()]
+      args.normalisedStores += [(u, normalise_store_url(u)) for u in _urls
+                                if normalise_store_url(u) != u]
+      setattr(args, _attr, ",".join(normalise_store_url(u) for u in _urls))
 
   if args.action in ["build", "init"]:
     if "develPrefix" in args and args.develPrefix is None:

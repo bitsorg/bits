@@ -574,10 +574,6 @@ class DualRemoteSyncTestCase(unittest.TestCase):
         self.assertEqual(dual.writer.writeStore, "")
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class UnreachableStoreTestCase(unittest.TestCase):
     """An offline laptop: the store does not answer."""
 
@@ -607,3 +603,7 @@ class UnreachableStoreTestCase(unittest.TestCase):
         self.assertEqual(sync.store_unreachable(sync.NoRemoteSync()), "")
         dual = sync.DualRemoteSync(syncer, sync.NoRemoteSync())
         self.assertEqual(dual.probe_url(), "https://store.invalid")
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -253,6 +253,9 @@ def main(argv=None):
     from bits_helpers.sync import remote_from_url
     work = a.work_dir or tempfile.mkdtemp(prefix="bits-release-")
     try:
+        if "," in a.remote_store:
+            raise ReleaseError("--remote-store takes one S3 store here, not a list: %r"
+                               % a.remote_store)
         reader = remote_from_url(a.remote_store, "", "", work)
         if not hasattr(reader, "s3"):
             raise ReleaseError("--remote-store must be an S3 store (b3://): %r"

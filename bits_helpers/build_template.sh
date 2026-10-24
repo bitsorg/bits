@@ -50,9 +50,14 @@ cleanup() {
 
 trap cleanup EXIT
 
-# Cleanup variables which should not be exposed to user code
+# Cleanup variables which should not be exposed to user code: every S3 secret,
+# the run's and each bucket's (BITS_S3_<BUCKET>_*).
 unset AWS_ACCESS_KEY_ID
 unset AWS_SECRET_ACCESS_KEY
+for _bits_v in $(compgen -e | grep -E '^(AWS_SESSION_TOKEN|BITS_AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|BITS_S3_.+_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN))$'); do
+  unset "$_bits_v"
+done
+unset _bits_v
 
 set -e
 set +h

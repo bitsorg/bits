@@ -171,6 +171,9 @@ def _normalize_s3_store(url):
       https://<host>/[swift/v1/]<bucket>[/...]  -> b3://<bucket> (+ endpoint, path-style)
       b3://<bucket> / s3://<bucket> / rsync:...  -> passthrough
     """
+    if "," in (url or ""):
+        error("this command works on one store, not a list: %s", url)
+        sys.exit(1)
     if url.startswith(("b3://", "s3://", "rsync:", "cvmfs://")):
         return url
     m = re.match(r"^https?://([^/]+)/(?:swift/v1/)?([^/?#]+)", url)

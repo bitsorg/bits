@@ -547,6 +547,8 @@ def doStatus(args, parser) -> None:
         remote_store_url, defaults_rw = defaults_store_url(defaults_meta)
         if defaults_rw and not write_store_url:
             write_store_url = remote_store_url
+    if "::rw" in remote_store_url and "," in remote_store_url:
+        parser.error("::rw takes one store; give several write stores with --write-store")
     if remote_store_url.endswith("::rw"):
         if write_store_url:
             parser.error("cannot specify ::rw and --write-store at the same time")

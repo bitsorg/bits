@@ -5,6 +5,7 @@
 import errno
 import os
 import os.path
+import re
 import time
 from shlex import quote
 from subprocess import Popen, PIPE, STDOUT, TimeoutExpired
@@ -42,9 +43,21 @@ def getoutput(command, timeout=None):
   return decode_with_fallback(stdout)
 
 
-def getstatusoutput(command, timeout=None, cwd=None):
+# S3 secrets, the run's and each bucket's: never handed to recipe code.
+_SECRET = re.compile(r"^(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|"
+                     r"BITS_AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|"
+                     r"BITS_S3_.+_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN))$")
+
+
+def secret_free_env():
+  """os.environ without the S3 secrets (build_template.sh unsets the same)."""
+  return {k: v for k, v in os.environ.items() if not _SECRET.match(k)}
+
+
+def getstatusoutput(command, timeout=None, cwd=None, env=None):
   """Run command and return its return code and output (stdout and stderr)."""
-  proc = Popen(command, shell=isinstance(command, str), stdout=PIPE, stderr=STDOUT, cwd=cwd)
+  proc = Popen(command, shell=isinstance(command, str), stdout=PIPE, stderr=STDOUT, cwd=cwd,
+               env=env)
   try:
     merged_output, _ = proc.communicate(timeout=timeout)
   except TimeoutExpired:
@@ -113,8 +126,8 @@ class DockerRunner:
         command_prefix=""
         if self._extra_env:
           command_prefix="env " + " ".join(f"{k}={quote(v)}" for (k,v) in self._extra_env.items()) + " "
-        return getstatusoutput(f"{command_prefix}{BASH} -c {quote(cmd)}"
-                             , cwd=cwd)
+        return getstatusoutput(f"{command_prefix}{BASH} -c {quote(cmd)}",
+                               cwd=cwd, env=secret_free_env())   # recipe code
       envOpts = []
       for env in self._extra_env.items():
         envOpts.append("-e")

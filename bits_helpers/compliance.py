@@ -241,19 +241,25 @@ def _s3_client(store_url):
     from botocore import UNSIGNED
     from botocore.client import Config
     from bits_helpers.publish import _normalize_s3_store
-    from bits_helpers.sync import resolve_and_export_s3_config
+    from bits_helpers.sync import resolve_and_export_s3_config, s3_settings
     store = _normalize_s3_store(store_url)
     bucket = store.split("://", 1)[-1].strip("/")
     resolve_and_export_s3_config()
-    endpoint = os.environ.get("S3_ENDPOINT_URL") or os.environ.get(
+    settings = s3_settings(bucket)          # this bucket's, else the run's
+    endpoint = settings["endpoint"] or os.environ.get(
         "BITS_S3_ENDPOINT_URL") or site.get("store.s3_endpoint")
-    style = os.environ.get("S3_ADDRESSING_STYLE", "path")
-    if os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
+    style = settings["addressing_style"] or "path"
+    keys = {}
+    if settings["access_key"] and settings["secret_key"]:
         cfg = Config(s3={"addressing_style": style})
+        keys = {"aws_access_key_id": settings["access_key"],
+                "aws_secret_access_key": settings["secret_key"]}
+        if settings["session_token"]:
+            keys["aws_session_token"] = settings["session_token"]
     else:
         info("no S3 credentials found — auditing anonymously")
         cfg = Config(signature_version=UNSIGNED, s3={"addressing_style": style})
-    return boto3.client("s3", endpoint_url=endpoint, config=cfg), bucket, endpoint
+    return boto3.client("s3", endpoint_url=endpoint, config=cfg, **keys), bucket, endpoint
 
 
 def audit_store(store_url, restricted, work_dir):
@@ -416,8 +422,9 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
     restricted = {p.lower() for p in rec["restricted"]}
     restricted_src = {p.lower() for p in rec["restricted_sources"]}
     s3, bucket, _endpoint = _s3_client(store_url)
-    if not dry_run and not (os.environ.get("AWS_ACCESS_KEY_ID")
-                            and os.environ.get("AWS_SECRET_ACCESS_KEY")):
+    from bits_helpers.sync import s3_settings
+    if not dry_run and not (s3_settings(bucket)["access_key"]
+                            and s3_settings(bucket)["secret_key"]):
         error("--enforce needs S3 write credentials (a dry run does not)")
         return 1
     # Before touching anything: who signs this store's manifests.
