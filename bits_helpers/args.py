@@ -722,12 +722,6 @@ def add_status_arguments(subparsers, ctx):
   )
   ctx.defaults(status_parser,
                help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
-  status_parser.add_argument(
-      "--recipe-overlay", dest="recipeOverlay", metavar="DIR", default=None,
-      help=("A recipe overlay (bits upgrade): its recipes and defaults-*.sh profiles "
-            "are searched before every recipe repository. A build with one is a "
-            "trial: it uploads to no store, and its packages are never published, "
-            "certified nor uploaded. Default: $BITS_RECIPE_OVERLAY."))
   ctx.architecture(status_parser,
                    help=("Target architecture. Default is the current system architecture, "
                          "which is '%(default)s'."))
@@ -1387,60 +1381,6 @@ def add_checksums_arguments(subparsers, ctx):
   return cp
 
 
-def add_upgrade_arguments(subparsers, ctx):
-  """`bits upgrade` — new package versions as a recipe overlay, then back into the repositories."""
-  up = subparsers.add_parser(
-      "upgrade",
-      help="write new package versions into a recipe overlay; copy it back into the repositories",
-      description=(
-          "Without --apply: copy into the recipe overlay DIR each recipe, defaults "
-          "profile or pinning recipe that sets the version of a chosen package, as the "
-          "build of --manifest resolved it, with the version (and a tag spelling it) "
-          "changed, and check the new sources. Build it on trial with bits build "
-          "--recipe-overlay DIR. With --apply DIR: merge the overlay's files three-way "
-          "into each origin repository's --target branch, on a new branch "
-          "upgrade/<session>, one commit per file."),
-  )
-  up.add_argument("--manifest", metavar="FILE", default=None,
-                  help="The build manifest (bits-manifest.json) of the build to upgrade.")
-  up.add_argument("--recipe-overlay", dest="recipeOverlay", metavar="DIR", default=None,
-                  help="The recipe overlay to write (created, or added to).")
-  up.add_argument("--to", dest="to", action="append", default=[], metavar="PACKAGE=VERSION",
-                  help="A package and its new version (repeatable).")
-  up.add_argument("--plan", metavar="FILE", default=None,
-                  help="An upgrade plan (the orchestrator's /ops/sbom/plan, as JSON).")
-  up.add_argument("--line", metavar="BUILD_ID", default=None,
-                  help="The plan's release line, when it has several.")
-  up.add_argument("--wave", dest="waves", type=int, action="append", default=[], metavar="N",
-                  help="A wave of the plan's release line to take (repeatable).")
-  up.add_argument("--converged", action="store_true", default=False,
-                  help="Take the plan's converged versions for the release line instead.")
-  up.add_argument("--session", default=None,
-                  help="The session name in overlay.yaml. Default: the overlay's directory name.")
-  up.add_argument("--community", default=None, help="The community, recorded in overlay.yaml.")
-  up.add_argument("-a", "--architecture", dest="buildArchitecture", metavar="ARCH", default=None,
-                  help="The build's architecture before the defaults' qualifiers. Default: the manifest's.")
-  up.add_argument("-c", "--config-dir", "--config", dest="configDir", metavar="CONFIGDIR", default=None,
-                  help=("The primary recipe repository, as for the build. Default: the "
-                        "manifest's config_dir when it exists here, else $BITS_REPO_DIR or '.'."))
-  up.add_argument("--set", dest="variables", action="append", default=[], metavar="NAME=VALUE",
-                  help="As for the build (e.g. release=LCG_110): the build's variables (repeatable).")
-  ctx.search_path(up)
-  ctx.work_dir(up, help="Work directory (repositories for --apply go in UPGRADE/). Default: %(default)s.")
-  up.add_argument("--no-check", dest="no_check", action="store_true", default=False,
-                  help="Do not check the new sources (URLs, git tags, PyPI).")
-  up.add_argument("--report", metavar="FILE", default=None, help="Also write the report as JSON.")
-  up.add_argument("--apply", metavar="DIR", default=None,
-                  help="Copy the recipe overlay DIR back into its origin repositories.")
-  up.add_argument("--target", dest="targets", action="append", default=[], metavar="BRANCH",
-                  help="The branch to merge into (repeatable; --apply).")
-  up.add_argument("--repo", action="append", default=[], metavar="NAME=PATH",
-                  help="A local clone of origin repository NAME (--apply). Default: cloned into the work directory.")
-  up.add_argument("--push", action="store_true", default=False,
-                  help="Push the new branches (--apply). Default: commit only.")
-  return up
-
-
 def add_build_arguments(subparsers, ctx):
   """`bits build` — build a package."""
   build_parser = subparsers.add_parser("build", help="build a package",
@@ -1936,13 +1876,6 @@ def add_build_arguments(subparsers, ctx):
       ),
   )
 
-  build_parser.add_argument(
-      "--recipe-overlay", dest="recipeOverlay", metavar="DIR", default=None,
-      help=("A recipe overlay (bits upgrade): its recipes and defaults-*.sh profiles "
-            "are searched before every recipe repository. A build with one is a "
-            "trial: it uploads to no store, and its packages are never published, "
-            "certified nor uploaded. Default: $BITS_RECIPE_OVERLAY."))
-
   # From-manifest flag (build replay)
   build_parser.add_argument(
       "--from-manifest", dest="fromManifest", metavar="FILE", default=None,
@@ -2006,7 +1939,6 @@ def doParseArgs():
   verify_parser = add_verify_arguments(subparsers, ctx)
   add_sbom_arguments(subparsers, ctx)
   add_checksums_arguments(subparsers, ctx)
-  add_upgrade_arguments(subparsers, ctx)
   stats_parser = add_stats_arguments(subparsers, ctx)
 
   import_parser = add_import_arguments(subparsers, ctx)
@@ -2352,26 +2284,11 @@ def _finalise_docker(args, parser):
     args.sandbox = "podman"
 
 
-def _activate_recipe_overlay(args, parser):
-  """--recipe-overlay (or $BITS_RECIPE_OVERLAY): searched first (paths.getConfigPaths);
-  a build with one writes to no store (recipe_overlay), see the write stores below."""
-  args.recipeOverlay = getattr(args, "recipeOverlay", None) or os.environ.get("BITS_RECIPE_OVERLAY") or None
-  if args.recipeOverlay:
-    from bits_helpers import recipe_overlay
-    try:
-      args.recipeOverlay = recipe_overlay.activate(args.recipeOverlay)
-    except ValueError as exc:
-      parser.error(str(exc))
-
-
 def finaliseArgs(args, parser):
-  # A recipe overlay is for build and status (and only once validated there).
-  if args.action not in ("build", "status"):
-    os.environ.pop("BITS_RECIPE_OVERLAY", None)
 
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
-  if args.action in ["version", "architecture", "verify", "stats", "sbom", "checksums", "upgrade"]:
+  if args.action in ["version", "architecture", "verify", "stats", "sbom", "checksums"]:
     return args
 
   # Minimal finalisation for cvmfs-path: only the defaults profile is loaded
@@ -2406,7 +2323,6 @@ def finaliseArgs(args, parser):
     args.provider_policy = _parse_provider_policy(
       getattr(args, "providerPolicy", None) or "")
     _finalise_docker(args, parser)
-    _activate_recipe_overlay(args, parser)
     return args
 
   # compliance group mode rides the general finalisation: it needs the
@@ -2518,9 +2434,6 @@ def finaliseArgs(args, parser):
     }
 
 
-  if args.action == "build":
-    _activate_recipe_overlay(args, parser)
-
   if args.action in ("build", "doctor"):
 
     # Store URL from the environment when not set on the CLI. Precedence:
@@ -2554,10 +2467,6 @@ def finaliseArgs(args, parser):
     if args.remoteStore.endswith("::rw"):
       args.remoteStore = args.remoteStore[0:-4]
       args.writeStore = args.remoteStore
-    # A trial build (--recipe-overlay) reads the stores and writes to none.
-    args.recipeOverlayDroppedWrite = bool(getattr(args, "recipeOverlay", None) and args.writeStore)
-    if args.recipeOverlayDroppedWrite:
-      args.writeStore = ""
 
     # CERN S3 path-style store URLs cannot be listed; use the swift form.
     # (Logging is not set up yet: build.py reports the rewrite.)

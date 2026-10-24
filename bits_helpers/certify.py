@@ -30,7 +30,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-from bits_helpers import recipe_overlay, trust
+from bits_helpers import trust
 from bits_helpers.log import debug, warning
 
 SCHEMA_VERSION = 1
@@ -116,19 +116,6 @@ def load_build_manifests(source) -> list:
                     man.setdefault("_source_group", parts[-2])
             out.append(man)
     return out
-
-
-def _without_trials(manifests) -> list:
-    """*manifests* without those of trial builds (a recipe overlay): never
-    certified. CertifyError when nothing else is left."""
-    kept = [m for m in manifests if not recipe_overlay.is_trial(m)]
-    for m in manifests:
-        if recipe_overlay.is_trial(m):
-            warning("certify: skipping the manifest of a trial build (recipe overlay %s)",
-                    (m.get("recipe_overlay") or {}).get("session") or "?")
-    if manifests and not kept:
-        raise CertifyError(recipe_overlay.refuse(manifests[0], "certify or sign it"))
-    return kept
 
 
 def bom_architecture(man) -> "str | None":
@@ -543,7 +530,7 @@ def _prepare_common(manifests, key_id, probe, default_group, valid_days,
     check; None skips that check (a computation that signs nothing).
     """
     probe = _cached_probe(probe)
-    manifests = _drop_local_revisions(_without_trials(load_build_manifests(manifests)))
+    manifests = _drop_local_revisions(load_build_manifests(manifests))
     common = merge_common_manifest(manifests, default_group,
                                    valid_days=valid_days, source_commit=source_commit,
                                    probe=probe)
@@ -671,7 +658,7 @@ def build_by_arch(manifests, probe=None, default_group=None, valid_days=None,
     key-policy check; None skips it. The orchestrator uses this to compute what
     a certification would sign and compare it with what was signed.
     """
-    loaded = _without_trials(load_build_manifests(manifests))
+    loaded = load_build_manifests(manifests)
     only = None
     if only_archs is not None:
         only = {a.strip() for a in only_archs if a and a.strip()}

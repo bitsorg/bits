@@ -12,7 +12,6 @@ import tarfile as _tarfile_mod
 import tempfile
 import zipfile
 from glob import glob
-from bits_helpers import recipe_overlay
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -473,12 +472,11 @@ def _extract_zip_strip(archive_path, dest_dir, strip=1):
       zf.extract(member, dest_dir)
 
 
-def _patchset_fingerprint(spec, patches_dir=None):
+def _patchset_fingerprint(spec, patches_dir):
   """Return a stable hex digest of the recipe's patch set (each patch's name, its
   declared strip level and full content, in declaration order), or None when the
   package has no patches.
-  Patch files are read from *patches_dir*, else where the build takes them
-  (the recipe's patches/, or a recipe overlay's: recipe_overlay.patch_file).
+  Patch files are read from *patches_dir*.
 
   Used to detect when a previously-patched source tree must be re-extracted
   because the patch *content* changed — bits keys the source directory by
@@ -499,8 +497,7 @@ def _patchset_fingerprint(spec, patches_dir=None):
     if str(strips.get(patch_name, 1)) != "1":
       h.update(b":strip=" + str(strips[patch_name]).encode())
     h.update(b"\0")
-    with open(os.path.join(patches_dir, patch_name) if patches_dir
-              else recipe_overlay.patch_file(spec, patch_name), "rb") as fh:
+    with open(os.path.join(patches_dir, patch_name), "rb") as fh:
       h.update(fh.read())
     h.update(b"\0")
   return h.hexdigest()
@@ -528,7 +525,7 @@ def _wipe_source_if_patchset_changed(spec, source_dir):
   import json
   patched = os.path.join(source_dir, ".bits_patched")
   extracted = os.path.join(source_dir, ".bits_extracted")
-  current = _patchset_fingerprint(spec)
+  current = _patchset_fingerprint(spec, os.path.join(spec["pkgdir"], "patches"))
   if os.path.exists(patched):
     try:
       recorded = json.loads(open(patched).read()).get("patchset")
@@ -800,7 +797,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
       patch_name, inline_checksum = parse_entry(patch_entry)
       patch_checksum = _patch_checksums.get(patch_name) or inline_checksum
       dst = os.path.join(source_dir, patch_name)
-      shutil.copyfile(recipe_overlay.patch_file(spec, patch_name), dst)
+      shutil.copyfile(os.path.join(spec["pkgdir"], 'patches', patch_name), dst)
       check_file_checksum(dst, patch_name, patch_checksum, enforce_mode)
   if spec.get("sources"):
     # Resolve arch-conditional / bash-evaluated source entries before

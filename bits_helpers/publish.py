@@ -128,10 +128,6 @@ def _publish_s3(package, version, architecture, work_dir, write_store, parser, d
     """Upload an already-built package's tarball to the S3 write store for reuse."""
     from bits_helpers.sync import remote_from_url, binary_redistributable
     e = _load_manifest_spec(work_dir, package, version)
-    from bits_helpers import recipe_overlay
-    refused = recipe_overlay.refuse(e, "upload it")
-    if refused:
-        parser.error("%s: %s" % (package, refused))
     if not e or not e.get("hash"):
         parser.error("no built manifest entry for %s%s in %s — build it first"
                      % (package, (" " + version) if version else "", work_dir))
@@ -368,10 +364,6 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
         entries = manifest_doc.get("packages", [])
     except Exception as exc:
         parser.error("could not read manifest %s: %s" % (man, exc))
-    from bits_helpers import recipe_overlay
-    refused = recipe_overlay.refuse(manifest_doc, "publish it")
-    if refused:
-        parser.error(refused)
     # The build's own architecture, not the publishing host's: it is what the
     # BOMs record and the fallback for entries without an effective one.
     architecture = manifest_doc.get("architecture") or architecture
@@ -916,9 +908,6 @@ def doPublish(args, parser):
     # being absent from CVMFS. Legacy boolean values parse as all/none.
     from bits_helpers.sync import redistributable_forms
     _entry = _load_manifest_spec(work_dir, package, version)
-    from bits_helpers import recipe_overlay
-    if recipe_overlay.refuse(_entry, "publish it"):
-        parser.error("%s: %s" % (package, recipe_overlay.refuse(_entry, "publish it")))
     if _entry is not None and "redistributable" in _entry and \
        "binaries" not in redistributable_forms(_entry.get("redistributable")):
         banner("NOT publishing %s to CVMFS: its recipe declares "

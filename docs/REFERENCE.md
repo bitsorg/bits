@@ -515,7 +515,6 @@ but are not enforced by CI.
 | `bits_helpers/cvmfs_inspect.py` | `bits cvmfs` group — `platforms`/`show`/`summary`; dispatches `stage`/`publish` |
 | `bits_helpers/cvmfs_publish.py` | `bits cvmfs publish` — place a build's packages, release view and merged view on CVMFS |
 | `bits_helpers/modulefile_env.py` | What a release's bits modulefiles set, read without Tcl, for the merged view's `setup.sh` |
-| `bits_helpers/recipe_overlay.py`, `upgrade_cmd.py` | Recipe overlays (searched first; trial builds) and `bits upgrade` |
 | `bits_helpers/plan.py` | The build plan (`bits build`, `--dry-run`): per-package reuse and what is not needed |
 | `bits_helpers/brew.py` | `bits brew` — macOS Brewfile from the recipes |
 | `bits_helpers/overlay/lcg.py` | `bits overlay lcg` — LCG release view over a built closure |
@@ -984,7 +983,7 @@ A command's own options come after it (`bits build -a ARCH PKG`, not `bits -a AR
 | Group | Commands |
 |-------|----------|
 | Using software (the module commands) | [`q`, `query`, `list`, `avail`](#bits-query--list--avail), [`enter`](#bits-enter), [`setenv`](#bits-setenv), [`load`, `printenv`](#bits-load--printenv), [`unload`](#bits-unload), [`modulecmd`](#bits-modulecmd), [`shell-helper`](#bits-shell-helper) |
-| Building | [`build`](#bits-build), [`status`](#bits-status), [`deps`](#bits-deps), [`doctor`](#bits-doctor), [`init`](#bits-init), `use` (in [bits init](#bits-init)), [`checksums`](#bits-checksums), [`upgrade`](#bits-upgrade), [`stats`](#bits-stats), [`brew`](#bits-brew), [`clean`](#bits-clean), [`prune`](#bits-prune), [`architecture`, `version`](#bits-version--architecture) |
+| Building | [`build`](#bits-build), [`status`](#bits-status), [`deps`](#bits-deps), [`doctor`](#bits-doctor), [`init`](#bits-init), `use` (in [bits init](#bits-init)), [`checksums`](#bits-checksums), [`stats`](#bits-stats), [`brew`](#bits-brew), [`clean`](#bits-clean), [`prune`](#bits-prune), [`architecture`, `version`](#bits-version--architecture) |
 | CVMFS | [`cvmfs`](#bits-store--bits-cvmfs-admin--ci-groups), [`publish`](#bits-publish), [`cvmfs-path`](#bits-cvmfs-path), [`import`](#bits-import), [`overlay`](#bits-overlay-lcg), `preload` (`bits preload --help`) |
 | Trust and compliance | [`certify`, `sign`](#bits-certify--bits-sign), [`verify`](#bits-verify), [`sbom`](#bits-sbom), [`compliance`](#bits-compliance) |
 | Binary store | [`store`](#bits-store--bits-cvmfs-admin--ci-groups) |
@@ -1079,7 +1078,6 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--write-checksums` | Add the fetched sources', patches' and git tags' checksums to `checksums/<package>.checksum` after the build. For a whole repository, use `bits checksums`. |
 | `--store-integrity` | Record the SHA-256 of each uploaded tarball and verify it every time the tarball is fetched again; a mismatch is fatal. Persist it with `bits use build --store-integrity`. See [§21 Store integrity verification](#store-integrity-verification). |
 | `--provider-policy POLICY` | Control where each repository provider is inserted into `BITS_PATH`. Format: comma-separated `name:prepend\|append` pairs; every provider defaults to `append`, and this flag is the only way to grant `prepend`. See [§13 Provider policy](#provider-policy). |
-| `--recipe-overlay DIR` | Search the [recipe overlay](#bits-upgrade) `DIR` before every recipe repository (default: `$BITS_RECIPE_OVERLAY`). The build is a trial: it reads the stores but writes to none, and its manifest records the overlay, so `bits publish`, `bits cvmfs publish`, `bits certify` and `bits sign` refuse its packages. |
 | `--from-manifest FILE` | Rebuild the packages a manifest JSON file requested (`requested_packages`); versions and tarballs are resolved afresh, not pinned or checked against the manifest. `PACKAGE` is then optional: without it, the manifest's requested packages are built. See [§25 Build Manifest](#25-build-manifest). |
 
 The three `--*-checksums` flags are mutually exclusive. Precedence (highest → lowest): the command-line flag > per-recipe `enforce_checksums: true` > `checksum_mode:` in the defaults profile > `off`. `--write-checksums` is independent, can be combined with any of them, and can also be turned on with `write_checksums: true` in the defaults profile. See [§18 — Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles).
@@ -1359,7 +1357,6 @@ bits status [options] PACKAGE [PACKAGE...]
 | `-c DIR`, `--config-dir DIR` | `.` | Recipe directory. |
 | `--search-path NAMES` | _(none)_ | Extra recipe sub-repos, as for `bits build`. |
 | `--set NAME=VALUE` | _(none)_ | As for `bits build` (e.g. `release=LCG_110`), so the packages get the build's hashes. |
-| `--recipe-overlay DIR` | `$BITS_RECIPE_OVERLAY` | As for `bits build`: the hashes a trial build would give. |
 | `-C DIR`, `--chdir DIR` | `.` | Change to DIR first. |
 | `--reference-sources DIR` | `<workDir>/MIRROR` | Mirror directory for git ref cache. |
 | `--no-local PACKAGE` | _(none)_ | Exclude a package from local-checkout detection. May be repeated. |
@@ -1566,98 +1563,6 @@ checksum uses another algorithm. A disagreeing entry is never overwritten;
 new ones are added to their section, keeping the file's comments.
 A profile override that cannot be resolved is reported as `failed`, as the
 build would stop there too. Exit status 1 on any `MISMATCH` or `failed`.
-
----
-
-### bits upgrade
-
-Turn new package versions, picked by hand or from an upgrade plan, into a
-**recipe overlay**: a directory of edited recipes and `defaults-*.sh` profiles
-that a build searches before every recipe repository. Build it on trial until
-it works, then copy it back into the repositories the files came from.
-
-```bash
-bits upgrade --manifest MANIFEST --recipe-overlay DIR
-             (--to PKG=VER ... | --plan PLAN (--wave N ... | --converged) [--line BUILD_ID])
-             [--session NAME] [--community NAME] [-a ARCH] [-c DIR] [--set NAME=VALUE ...]
-             [--search-path NAMES] [-w WORKDIR] [--no-check] [--report FILE]
-bits build --recipe-overlay DIR --defaults ... -a ARCH PACKAGE ...      # the trial
-bits upgrade --apply DIR --target BRANCH ... [--repo NAME=PATH ...] [--push] [-w WORKDIR]
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--manifest FILE` | — | The build manifest of the build to upgrade: its requested packages, defaults and architecture. The manifest of a trial build is refused. |
-| `--recipe-overlay DIR` | — | The overlay to write: created, or added to. |
-| `--to PKG=VER` | — | A package and its new version (repeatable). |
-| `--plan FILE` | — | An upgrade plan as the console exports it (`/ops/sbom/plan`). |
-| `--wave N` | — | The waves of the plan's release line to take (repeatable). |
-| `--converged` | off | Take the plan's converged versions instead; a line where the package is pinned is reported, not changed. |
-| `--line BUILD_ID` | — | The plan's release line, when it has several. |
-| `--session`, `--community` | the directory's name, — | Recorded in `overlay.yaml`. |
-| `-a ARCH` | the manifest's | The architecture before the defaults' qualifiers. |
-| `-c DIR` | the manifest's `config_dir` when it exists here, else `$BITS_REPO_DIR` or `.` | The primary recipe repository, as for the build. |
-| `--set NAME=VALUE`, `--search-path NAMES` | — | As the build had them (e.g. `release=LCG_110`): the manifest does not record them. |
-| `-w WORKDIR` | `sw` | As for the build. |
-| `--no-check` | off | Do not check the new sources. |
-| `--report FILE` | — | Also write the report as JSON. |
-| `--apply DIR` | — | Copy the overlay back (below). |
-| `--target BRANCH` | — | The branch of each origin repository to merge into (repeatable). |
-| `--repo NAME=PATH` | cloned into `WORKDIR/UPGRADE/<session>/` | A local clone of origin repository `NAME`, with an `origin` remote. |
-| `--push` | off | Push the new branches. |
-
-**What is edited.** The packages are resolved as the build resolved them (as
-`bits status` does, with the manifest's defaults and architecture), and the
-file that sets each version is copied into the overlay and edited:
-
-| The version comes from | Edited |
-|---|---|
-| the recipe | its `version:`, and its `tag:` when the tag spells the version (`v1.2.3`, `curl-8_18_0`); a tag built from `%(version)s` is left alone |
-| a defaults profile's `overrides:` | that profile's entry for the package (with a matcher, only the entry active for the build's architecture) |
-| another recipe's `- pkg = version` requires | that line of that recipe |
-
-Anything else (a tag that does not spell the version, an override with another
-version) is reported for a hand edit and not written. Only the YAML header is
-edited; the build script is not. Unless `--no-check`, the new tarball URLs are
-tried (HTTP HEAD), a git source's new tag is looked up (`git ls-remote`), and a
-`PythonPipRecipe` version is looked up on PyPI; a missing one is reported, and
-the trial build would stop there. The exit status is 1 when a package was not
-written (left for a hand edit, or not in the build).
-
-`overlay.yaml` records the session, the build, and for each file its origin
-repository (name, remote URL without credentials, path, base commit and blob)
-and the edits. New or changed patches go into the overlay's `patches/`, where a
-recipe read from the overlay finds them before its repository's `patches/`.
-Running `bits upgrade` again on the same overlay adds to it, editing its copies
-(a package upgraded again keeps the version it was built with as `from`).
-
-**The trial.** `bits build --recipe-overlay DIR` (or `BITS_RECIPE_OVERLAY=DIR`)
-searches `DIR` first, for recipes and profiles alike. A file read from the
-overlay keeps its origin: it is treated as if read from the repository whose
-file it shadows. A package's hash covers its recipe and its dependencies, not
-where the recipe was found, so only the edited packages and the packages that
-depend on them get new hashes; an edited profile override changes the
-overridden package, not the defaults package. The build reads the stores and
-writes to none (a `::rw` store is used read-only, with a warning), and its
-manifest records the overlay: its packages can not be published, certified,
-signed nor uploaded later, and `--write-checksums` is ignored. Iterating is
-editing the overlay and building again; dropping a package is removing its
-file. `BITS_RECIPE_OVERLAY` is read by `bits build` and `bits status` only.
-
-**Copy-back.** `bits upgrade --apply DIR --target BRANCH` creates, per origin
-repository and target, a branch `upgrade/<session>` (`upgrade/<session>-<target>`
-with several targets) from the target's head in a worktree under
-`WORKDIR/UPGRADE/<session>/`, merges each file three-way against the base it
-was copied from (`git merge-file`), so changes made on the target meanwhile are
-kept, and commits each file with a neutral message (`curl 8.21.0`). The base
-commit must be in the repository (pushed): without it nothing would tell the
-overlay's edits from changes on the target, and that repository is refused. A
-conflict stops that repository with the file merged, with markers, and
-uncommitted in the worktree for a hand merge. Files in the overlay that
-`overlay.yaml` does not list (a recipe added by hand) are reported and not
-copied. The exit status is 1 on any of these. Without `--push` nothing leaves
-the machine. Merged onto an unchanged target, the recipes give the trial's
-hashes.
 
 ---
 
@@ -4599,8 +4504,6 @@ The manifest records every input and output that could affect reproducibility:
 | `status` | `"in_progress"` → `"complete"` or `"failed"` |
 | `system_packages` | Packages taken from the system instead of built (schema v4) |
 | `cvmfs_templates` | The build's CVMFS path templates, used by `bits cvmfs publish` to place every package (optional) |
-| `raw_architecture` | The architecture before the defaults' qualifiers were appended (optional; `bits upgrade` resolves the build again with it) |
-| `recipe_overlay` | A trial build's [recipe overlay](#bits-upgrade): `{dir, session, files: {path: sha256}}`; its packages carry `recipe_overlay: true` and are never published, certified nor uploaded (optional) |
 
 **Providers** (one entry per repository-provider package)
 

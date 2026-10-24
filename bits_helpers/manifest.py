@@ -56,14 +56,10 @@ fields as additive and key off ``schema_version``.
       "failure_reason":    str,         # only present when status == "failed"
       "requested_packages": [str],      # packages passed on the command line
       "architecture":      str,
-      "raw_architecture":  str,         # the same before the defaults' append_arch
       "defaults":          [str],
       "config_dir":        str,         # absolute path to the .bits checkout
       "config_commit":     str,         # BITS_DIST_HASH of the config repo
       "system_packages":   [str],       # taken from the system, not built (v4+)
-      "recipe_overlay":    {"dir": str, "session": str, "files": {path: sha256}},
-                                        # a trial build's recipe overlay (bits build
-                                        # --recipe-overlay); its packages say "recipe_overlay": true
       "system_package_info": {name: {"version": str, "references": [str]}},
                                         # their versions, when their checks said (v4+)
       "cvmfs_templates":   {str: str},  # this build's CVMFS layout (optional);
@@ -387,7 +383,6 @@ class BuildManifest:
         config_commit: str,
         target: str = "",
         cvmfs_templates: dict = None,
-        raw_architecture: str = "",
     ):
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self._work_dir = work_dir
@@ -433,8 +428,6 @@ class BuildManifest:
         }
         if cvmfs_templates:
             self._data["cvmfs_templates"] = dict(cvmfs_templates)
-        if raw_architecture:          # before the defaults' append_arch (bits upgrade)
-            self._data["raw_architecture"] = raw_architecture
         self._save()
         self._write_pending()
         debug("manifest: initialised at %s", self._path)
@@ -476,13 +469,6 @@ class BuildManifest:
         self._write_pending()
 
     # ── Package recording ─────────────────────────────────────────────────────
-
-    def set_recipe_overlay(self, directory, session, files) -> None:
-        """Record the recipe overlay this (trial) build used, and its files."""
-        with self._lock:
-            self._data["recipe_overlay"] = {"dir": directory, "session": session, "files": dict(files)}
-            self._save()
-        self._write_pending()
 
     def set_system_packages(self, names, edges=None, info=None) -> None:
         """Record the packages taken from the system (not built) and, per built
@@ -594,7 +580,6 @@ class BuildManifest:
                 + list(self._sys_edges.get(spec.get("package"), ((), ()))[1])),
             **({"references": _refs} if _refs else {}),
             **({"pinned_by": spec["pinned_by"]} if spec.get("pinned_by") else {}),
-            **({"recipe_overlay": True} if self._data.get("recipe_overlay") else {}),
             "source":                 _no_userinfo(spec.get("source") or ""),
             "tag":                    str(spec.get("tag") or ""),
             # built_by identifies the host that actually compiled this hash.

@@ -11,7 +11,6 @@ import re
 import time
 from collections import OrderedDict
 
-from bits_helpers import recipe_overlay
 from bits_helpers.build_epoch import BUILD_EPOCH
 from bits_helpers.log import debug
 from bits_helpers.utilities import Hasher
@@ -277,7 +276,7 @@ def storeHashes(package, specs, considerRelocation):
   if "patches" in spec:
     for patch in spec["patches"]:
       h_all(patch)
-      with open(recipe_overlay.patch_file(spec, patch)) as ref:
+      with open(os.path.join(spec["pkgdir"], "patches", patch)) as ref:
         patch_content = "".join(ref.readlines())
         h_all(patch_content)
   # A declared non-default patch strip level changes how a patch is applied

@@ -167,10 +167,6 @@ def doMain(args, parser):
     from bits_helpers.checksums_cmd import doChecksums
     sys.exit(doChecksums(args, parser))
 
-  if args.action == "upgrade":
-    from bits_helpers.upgrade_cmd import doUpgrade
-    doUpgrade(args, parser)
-
   if args.action == "sbom":
     from bits_helpers.sbom import doSbom
     sys.exit(doSbom(args, parser))

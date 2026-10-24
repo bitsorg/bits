@@ -15,7 +15,6 @@ from os.path import exists
 
 from bits_helpers.log import banner, debug, dieOnError, info
 from bits_helpers.recipe import getRecipeReader, parseRecipe
-from bits_helpers import recipe_overlay
 from bits_helpers.paths import getConfigPaths, resolveDefaultsFilename
 from bits_helpers.utilities import asList
 
@@ -219,10 +218,7 @@ def _read_defaults_chain(configDir, defaults, error, architecture):
   search = []
   group = [x for x in defaults if x != "release"][:1] or defaults[:1]
   group = [resolveDefaultsFilename(x, configDir, failOnError=False) for x in group]
-  # A profile in a recipe overlay belongs to the repository whose profile it shadows.
-  def _home(f):
-    return recipe_overlay.home(f, getConfigPaths(configDir))
-  for d in [_home(f) for f in group if f and exists(f)] + getConfigPaths(configDir):
+  for d in [os.path.dirname(f) for f in group if f and exists(f)] + getConfigPaths(configDir):
     if os.path.abspath(d) not in search:
       search.append(os.path.abspath(d))
   layout_rank = {}             # layout key -> most specific rank that set it
@@ -254,7 +250,7 @@ def _read_defaults_chain(configDir, defaults, error, architecture):
       # The build checks _missing_defaults once the search path is complete.
       missing_defaults.append(xdefaults)
     else:
-      defaults_dirs[xdefaults] = _home(xDefaults)
+      defaults_dirs[xdefaults] = os.path.dirname(os.path.abspath(xDefaults))
     if xDefaults is not None and exists(xDefaults):
       err, xMeta, xBody = parseRecipe(getRecipeReader(xDefaults))
       if xBody.strip() != "":

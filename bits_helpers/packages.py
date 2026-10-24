@@ -12,7 +12,6 @@ import re
 from collections import OrderedDict
 from shlex import quote
 
-from bits_helpers import recipe_overlay
 from bits_helpers.checksum_store import load_for_spec, merge_into_spec
 from bits_helpers.log import banner, debug, dieOnError, warning
 from bits_helpers.matchers import (_collect_version_pins, _matcher_active,
@@ -262,8 +261,6 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     dieOnError(spec["package"].lower() != pkg_filename,
                "{}.sh has different package field: {}".format(p, spec["package"]))
     spec["pkgdir"] = pkgdir
-    if recipe_overlay.inside(filename):
-      spec["recipe_overlay"] = True   # a trial edit (bits build --recipe-overlay): see recipe_overlay
     # The recipe's own git identity: a legacy single-SHA checksum pin is only
     # valid for it (see the checksum-store merge below).
     _as_written = (spec.get("tag", spec.get("version")), spec.get("version"), spec.get("source"))
@@ -273,8 +270,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # the first thing to consult when a recipe resolves to an unexpected (e.g.
     # stale) version: if the commit here predates an upstream change, the source
     # checkout was out of date.
-    spec["recipe_source"] = recipeSourceLabel(pkgdir, provider_dirs) + (
-      " (overlay)" if spec.get("recipe_overlay") else "")
+    spec["recipe_source"] = recipeSourceLabel(pkgdir, provider_dirs)
     recipe_sources[spec["package"]] = spec["recipe_source"]
     debug("Recipe '%s' resolved from %s  (dir: %s)",
           spec["package"], spec["recipe_source"], pkgdir)

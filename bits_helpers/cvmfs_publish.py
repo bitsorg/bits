@@ -1692,10 +1692,6 @@ def main(argv=None):
 
     with open(a.manifest) as fh:
         _man = json.load(fh)
-    from bits_helpers import recipe_overlay
-    refused = recipe_overlay.refuse(_man, "publish it")
-    if refused:
-        ap.error(refused)
     pkgs = _man.get("packages") or []
     # The publishing build's layout places the whole closure (reused packages
     # included); a manifest without it falls back to each package's .meta.json.

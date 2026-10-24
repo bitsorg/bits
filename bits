@@ -47,7 +47,6 @@ Building:
   init [PACKAGE]          check out PACKAGE to develop it here
   use [SECTION] ARGS      save options for the commands run in this directory
   checksums               check (--write: record) a repository's checksums
-  upgrade                 new versions as a recipe overlay, and back (--apply)
   stats                   the resource report of a monitored build
   brew                    a Homebrew Brewfile from the recipes (macOS)
   clean                   remove temporary build trees and unused versions
@@ -726,7 +725,7 @@ fi
 for arg in "$@"
 do
   case $arg in
-    architecture|brew|build|certify|checksums|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|upgrade|verify|version|--debug|-d)
+    architecture|brew|build|certify|checksums|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|verify|version|--debug|-d)
         # (the same list in the unknown-command check below)
         # bitsBuild creates the work directory when a command runs (not for
         # --help, version or architecture).
@@ -815,7 +814,7 @@ case "$ACTION" in
   help) printHelp; exit 0 ;;
   "") [[ -z "$_HELP" ]] || { printHelp; exit 0; }
       usageError "no command given"; exit 1 ;;
-  architecture|brew|build|certify|checksums|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|upgrade|verify|version|store|use|cvmfs|cvmfs-stage|cvmfs-publish|store-stats|preload|overlay|lcg-view)
+  architecture|brew|build|certify|checksums|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|verify|version|store|use|cvmfs|cvmfs-stage|cvmfs-publish|store-stats|preload|overlay|lcg-view)
       usageError "$ACTION takes its options after it: bits $ACTION [OPTIONS]"; exit 1 ;;
   *)  usageError "unknown command: $ACTION"; exit 1 ;;
 esac
