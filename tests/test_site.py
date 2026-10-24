@@ -78,7 +78,7 @@ class ShippedTest(unittest.TestCase):
     self.assertEqual(site.get("containers.tag"), "latest")
     self.assertEqual(site.get("store.operations"), "https://s3.cern.ch/lcgapp-bits-testing")
     self.assertEqual(site.read_store("slc9_x86-64"), "https://s3.cern.ch/swift/v1/alibuild-repo")
-    self.assertEqual(site.read_store("x86_64-el9"), "")
+    self.assertEqual(site.read_store("x86_64-el9"), "https://s3.cern.ch/lcgapp-bits-testing")
     self.assertEqual(site.get("providers.url"), "https://github.com/bitsorg/bits-providers")
     self.assertEqual(site.get("sbom.namespace"), "https://bits.cern.ch/sbom")
 

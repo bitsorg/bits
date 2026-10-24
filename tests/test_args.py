@@ -66,7 +66,11 @@ CORRECT_BEHAVIOR = [
   ((), "build --force-unknown-architecture zlib --remote-store rsync://test.local/::rw", [("noSystem", None), ("remoteStore", "rsync://test.local/"), ("writeStore", "rsync://test.local/")]),
   ((), "build --force-unknown-architecture zlib --no-remote-store --remote-store rsync://test.local/", [("noSystem", None), ("remoteStore", "")]),
   ((), "build zlib --architecture slc7_x86-64"                                         , [("noSystem", None), ("preferSystem", False), ("remoteStore", "https://s3.cern.ch/swift/v1/alibuild-repo")]),
-  ((), "build zlib --architecture ubuntu1804_x86-64"                                   , [("noSystem", None), ("preferSystem", False), ("remoteStore", "")]),
+  ((), "build zlib --architecture ubuntu1804_x86-64"                                   , [("noSystem", None), ("preferSystem", False), ("remoteStore", "https://s3.cern.ch/swift/v1/lcgapp-bits-testing")]),
+  # A write store alone is also the read store (build.py): no site store.read then,
+  # but an architecture's own read store stays.
+  ((), "build zlib --architecture ubuntu1804_x86-64 --write-store b3://mine"            , [("remoteStore", ""), ("writeStore", "b3://mine")]),
+  ((), "build zlib --architecture slc7_x86-64 --write-store b3://mine"                  , [("remoteStore", "https://s3.cern.ch/swift/v1/alibuild-repo"), ("writeStore", "b3://mine")]),
   ((), "status zlib --write-store b3://bits-write"                                      , [("action", "status"), ("writeStore", "b3://bits-write")]),
   ((), "build zlib -a slc7_x86-64"                                                     , [("docker", False), ("dockerImage", None), ("docker_extra_args", ["--network=host", _MOCK_CPUSET_ARG])]),
   ((), "build zlib -a slc7_x86-64 --docker-image registry.cern.ch/alisw/some-builder"  , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/some-builder")]),
@@ -96,6 +100,17 @@ GETSTATUSOUTPUT_MOCKS = {
 }
 
 class ArgsTestCase(unittest.TestCase):
+  @mock.patch.dict(os.environ, {"BITS_BRANDING": "aliBuild"})
+  @mock.patch("bits_helpers.args._defaults_docker", return_value=None)
+  @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")
+  @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
+  @mock.patch("bits_helpers.args._docker_memory_args", return_value=[])
+  @mock.patch("bits_helpers.args._is_rootless_podman", return_value=False)
+  def test_alibuild_has_no_site_wide_read_store(self, *_):
+    for arch, store in (("ubuntu1804_x86-64", ""), ("slc7_x86-64", "https://s3.cern.ch/swift/v1/alibuild-repo")):
+      with patch.object(sys, "argv", ["alibuild", "build", "zlib", "--architecture", arch]):
+        self.assertEqual(doParseArgs()[0].remoteStore, store)
+
   @mock.patch.dict(os.environ, {"BITS_DOCKER_REGISTRY": "", "BITS_LEGACY_REGISTRY": "", "BITS_DOCKER_TAG": ""})
   @mock.patch("bits_helpers.args._defaults_docker", return_value=None)
   @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m

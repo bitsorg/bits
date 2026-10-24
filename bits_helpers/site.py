@@ -112,15 +112,16 @@ def origin(key):
   return _config()[1].get(key)
 
 
-def read_store(architecture):
+def read_store(architecture, fallback=True):
   """The read store for *architecture* when none is given: store.read_by_arch
-  (matched by distribution and machine), else store.read, else ""."""
+  (matched by distribution and machine), else store.read (unless not
+  *fallback*), else ""."""
   from bits_helpers.arch import normalise_arch_key
   key = normalise_arch_key(architecture)
   for arch, url in (get("store.read_by_arch") or {}).items():
     if url and normalise_arch_key(str(arch)) == key:
       return str(url)
-  return str(get("store.read") or "")
+  return str(get("store.read") or "") if fallback else ""
 
 
 def main(argv):

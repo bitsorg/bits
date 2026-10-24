@@ -211,6 +211,13 @@ def plan_rows(build_order, specs, states, need, unuploadable=(), source=None):
   return rows
 
 
+def _unsigned_reason():
+  from bits_helpers.build import _try_import_trust
+  if _try_import_trust() is None:
+    return "their signatures cannot be checked without the Python package cryptography"
+  return "no verified signed manifest vouches for them"
+
+
 def print_plan(rows, store_checked, title="Dry run: build plan (nothing built)"):
   """Print the per-package plan and a one-line summary."""
   src = any(len(r) > 4 and r[4] for r in rows)
@@ -233,8 +240,14 @@ def print_plan(rows, store_checked, title="Dry run: build plan (nothing built)")
       len(rows) - reused - count(NOT_NEEDED))
   if count(NOT_NEEDED):
     summary += ", %d not needed" % count(NOT_NEEDED)
+  if count(REMOTE_UNSIGNED):
+    n = count(REMOTE_UNSIGNED)
+    summary += "; %d to build %s in the remote store but not reused: %s" % (
+        n, "is" if n == 1 else "are", _unsigned_reason())
   if store_checked is False:
     summary += "; remote store not checked (rsync stores cannot be listed)"
+  elif store_checked is None:
+    summary += "; no remote store used"
   banner("%s\n%s\n\n%s", title, "\n".join(lines), summary)
 
 

@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 
-from bits_helpers.doctor import (PASS, FAIL, WARN, SKIP, _check_compiler,
+from bits_helpers.doctor import (PASS, FAIL, WARN, SKIP, _check_compiler, check_read_store,
                                  _check_disk_space, _check_host_tool, _check_store)
 
 # (import name, pip name). yaml/requests/jinja2 are imported at startup, so bits
@@ -241,6 +241,8 @@ def run_setup_checks(args):
       checks.append((label, *check_s3_store(url, args, label)))
     elif url.startswith("s3://"):
       checks.append((label, *check_s3cmd_store(url)))
+    elif label.startswith("read store"):
+      checks.append((label, *check_read_store(url, args)))
     else:
       checks.append((label, *_check_store(url, getattr(args, "insecure", False))))
   if not stores:

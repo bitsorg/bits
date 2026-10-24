@@ -349,6 +349,15 @@ def _check_disk_space(work_dir: str, min_free_gib: float = 10.0) -> Tuple[str, s
         return WARN, "cannot determine disk usage for %s: %s" % (work_dir, exc)
 
 
+def check_read_store(url: str, args) -> Tuple[str, str]:
+    """_check_store of a read store; a site default that cannot be reached is a
+    WARN: a build without --remote-store then goes on without it."""
+    status, detail = _check_store(url, getattr(args, "insecure", False))
+    if status == FAIL and url and not getattr(args, "remoteStoreExplicit", True):
+        return WARN, detail + " (the site's default read store; builds go on without it)"
+    return status, detail
+
+
 def _check_store(url: str, insecure: bool = False) -> Tuple[str, str]:
     """Check remote-store reachability.
 
@@ -688,7 +697,8 @@ def _run_runner_checks(args) -> List[CheckResult]:
     writes = [w for w in store_urls(getattr(args, "writeStore", "")) if w not in reads]
     for url, label in [(u, "remote store") for u in reads or [""]] + \
                       [(u, "write store") for u in writes]:
-        store_status, store_detail = _check_store(url.rstrip("/"), insecure)
+        store_status, store_detail = (check_read_store(url.rstrip("/"), args) if label == "remote store"
+                                      else _check_store(url.rstrip("/"), insecure))
         checks.append((label + (" " + url if len(reads) + len(writes) > 1 else ""),
                        store_status, store_detail))
 

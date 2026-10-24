@@ -312,6 +312,13 @@ class TestCheckDiskSpace(unittest.TestCase):
 # ── _check_store ───────────────────────────────────────────────────────────────
 
 class TestCheckStore(unittest.TestCase):
+    def test_an_unreachable_site_default_read_store_is_a_warning(self):
+        from types import SimpleNamespace
+        from bits_helpers import doctor
+        with patch.object(doctor, "_check_store", return_value=(FAIL, "cannot reach store x")):
+            self.assertEqual(doctor.check_read_store("https://x", SimpleNamespace(remoteStoreExplicit=False))[0], WARN)
+            self.assertEqual(doctor.check_read_store("https://x", SimpleNamespace(remoteStoreExplicit=True))[0], FAIL)
+
     def test_skip_empty_url(self):
         status, detail = _check_store("")
         self.assertEqual(status, SKIP)

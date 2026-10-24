@@ -131,10 +131,17 @@ class PrintPlanTest(unittest.TestCase):
       plan.print_plan(rows, store_checked=True)
     text = b.call_args[0][0] % b.call_args[0][1:]
     self.assertIn("2 reused (1 installed, 0 local tarball, 1 from remote store), 2 to build", text)
+    self.assertIn("1 to build is in the remote store but not reused: no verified signed manifest", text)
     self.assertNotIn("not checked", text)
     with patch("bits_helpers.plan.banner") as b:
       plan.print_plan(rows, store_checked=False)
     self.assertIn("remote store not checked", b.call_args[0][0] % b.call_args[0][1:])
+    with patch("bits_helpers.plan.banner") as b, \
+         patch("bits_helpers.build._try_import_trust", return_value=None):
+      plan.print_plan(rows, store_checked=None)
+    text = b.call_args[0][0] % b.call_args[0][1:]
+    self.assertIn("no remote store used", text)
+    self.assertIn("cannot be checked without the Python package cryptography", text)
 
 
 class StoreListableTest(unittest.TestCase):
@@ -241,7 +248,7 @@ class NeededTest(unittest.TestCase):
     self.assertIn("4 reused (0 installed, 0 local tarball, 4 from remote store), 0 to build,"
                   " 2 not needed", text)
     with patch("bits_helpers.plan.banner") as b:
-      plan.print_plan(list(rows.values()), store_checked=None)   # no store: nothing to say
+      plan.print_plan(list(rows.values()), store_checked=None)
     self.assertNotIn("not checked", b.call_args[0][0] % b.call_args[0][1:])
 
 

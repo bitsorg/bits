@@ -515,7 +515,8 @@ def add_doctor_arguments(subparsers, ctx):
   ~/.s3cfg; b3:// remotes require AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
   environment variables. Without --remote-store, the site configuration's
   store.read_by_arch / store.read (at CERN: ALICE's public alibuild-repo for its
-  architectures) or the community's system: remote_store is used.
+  architectures, else lcgapp-bits-testing) or the community's system: remote_store
+  is used.
   """)
   doctor_remote.add_argument("--no-remote-store", action="store_true",
                             help="Disable the use of the remote store, even if it is enabled by default.")
@@ -1687,7 +1688,8 @@ def add_build_arguments(subparsers, ctx):
   ~/.s3cfg; b3:// remotes require AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
   environment variables. Without --remote-store, the site configuration's
   store.read_by_arch / store.read (at CERN: ALICE's public alibuild-repo for its
-  architectures) or the community's system: remote_store is used. To archive to
+  architectures, else lcgapp-bits-testing; store.read not with --write-store
+  alone) or the community's system: remote_store is used. To archive to
   and reuse from your own bucket, use a b3://<bucket> store (append ::rw to
   --remote-store, or add --write-store) and set the connection via the --s3-*
   options / env vars below; a non-CERN endpoint (AWS, MinIO, Ceph) is supported
@@ -2490,7 +2492,10 @@ def finaliseArgs(args, parser):
     if args.no_remote_store:
       args.remoteStore = ""
     elif not args.remoteStore and not args.preferSystem:
-      args.remoteStore = site.read_store(args.architecture)
+      # store.read is the default only when no write store is given (a write
+      # store alone is also the read store) and not for aliBuild.
+      args.remoteStore = site.read_store(args.architecture, fallback=not (
+          args.writeStore or _alibuild_mode))
 
     if args.remoteStore.endswith("::rw") and args.writeStore:
       parser.error("cannot specify ::rw and --write-store at the same time")
