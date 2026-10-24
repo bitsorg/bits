@@ -1381,6 +1381,40 @@ def add_checksums_arguments(subparsers, ctx):
   return cp
 
 
+def add_upgrade_arguments(subparsers, ctx):
+  """`bits upgrade` — set new package versions in the recipes, in place."""
+  up = subparsers.add_parser(
+      "upgrade",
+      help="set new versions of packages in the recipes, in place",
+      description=(
+          "Resolve PACKAGE as bits build would, find the file that sets each chosen "
+          "package's version (its recipe, the defaults profile whose overrides pin it, "
+          "or the recipe whose requires pin it) and set the new version, and a tag "
+          "that spells it. A file of a repository provider's cached checkout is first "
+          "copied, with its patches, into CONFIGDIR. New tarball URLs, git tags and "
+          "PyPI versions are checked. Exit status 1 when a package is left for a hand edit."),
+  )
+  up.add_argument("pkgname", nargs="+", metavar="PACKAGE", help="The package(s) the build builds.")
+  up.add_argument("--to", dest="to", action="append", default=[], metavar="PACKAGE=VERSION",
+                  help="A package and its new version (repeatable).")
+  up.add_argument("--plan", metavar="FILE", default=None,
+                  help="An upgrade plan exported as CSV from the console's Plan view.")
+  up.add_argument("--wave", dest="waves", type=int, action="append", default=[], metavar="N",
+                  help="A wave of the plan of a release line to take (repeatable).")
+  up.add_argument("--line", metavar="LINE", default=None,
+                  help="The release line to take from a converged plan.")
+  ctx.defaults(up, help="Defaults profile(s), as for the build; use :: to combine. Default: %(default)s.")
+  ctx.architecture(up, help="Architecture, as for the build. Default: %(default)s.")
+  ctx.config_dir(up, help="The recipe directory, as for the build; copies go there. Default: %(default)s.")
+  ctx.work_dir(up, help="Work directory, as for the build. Default: %(default)s.")
+  up.add_argument("--set", dest="variables", action="append", default=[], metavar="NAME=VALUE",
+                  help="As for the build (e.g. release=LCG_110) (repeatable).")
+  ctx.search_path(up)
+  up.add_argument("--no-check", dest="no_check", action="store_true", default=False,
+                  help="Do not check the new sources (URLs, git tags, PyPI).")
+  return up
+
+
 def add_build_arguments(subparsers, ctx):
   """`bits build` — build a package."""
   build_parser = subparsers.add_parser("build", help="build a package",
@@ -1939,6 +1973,7 @@ def doParseArgs():
   verify_parser = add_verify_arguments(subparsers, ctx)
   add_sbom_arguments(subparsers, ctx)
   add_checksums_arguments(subparsers, ctx)
+  add_upgrade_arguments(subparsers, ctx)
   stats_parser = add_stats_arguments(subparsers, ctx)
 
   import_parser = add_import_arguments(subparsers, ctx)
@@ -2288,7 +2323,7 @@ def finaliseArgs(args, parser):
 
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
-  if args.action in ["version", "architecture", "verify", "stats", "sbom", "checksums"]:
+  if args.action in ["version", "architecture", "verify", "stats", "sbom", "checksums", "upgrade"]:
     return args
 
   # Minimal finalisation for cvmfs-path: only the defaults profile is loaded

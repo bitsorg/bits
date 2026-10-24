@@ -515,6 +515,7 @@ but are not enforced by CI.
 | `bits_helpers/cvmfs_inspect.py` | `bits cvmfs` group — `platforms`/`show`/`summary`; dispatches `stage`/`publish` |
 | `bits_helpers/cvmfs_publish.py` | `bits cvmfs publish` — place a build's packages, release view and merged view on CVMFS |
 | `bits_helpers/modulefile_env.py` | What a release's bits modulefiles set, read without Tcl, for the merged view's `setup.sh` |
+| `bits_helpers/upgrade_cmd.py` | `bits upgrade`: new package versions set in the recipes |
 | `bits_helpers/plan.py` | The build plan (`bits build`, `--dry-run`): per-package reuse and what is not needed |
 | `bits_helpers/brew.py` | `bits brew` — macOS Brewfile from the recipes |
 | `bits_helpers/overlay/lcg.py` | `bits overlay lcg` — LCG release view over a built closure |
@@ -983,7 +984,7 @@ A command's own options come after it (`bits build -a ARCH PKG`, not `bits -a AR
 | Group | Commands |
 |-------|----------|
 | Using software (the module commands) | [`q`, `query`, `list`, `avail`](#bits-query--list--avail), [`enter`](#bits-enter), [`setenv`](#bits-setenv), [`load`, `printenv`](#bits-load--printenv), [`unload`](#bits-unload), [`modulecmd`](#bits-modulecmd), [`shell-helper`](#bits-shell-helper) |
-| Building | [`build`](#bits-build), [`status`](#bits-status), [`deps`](#bits-deps), [`doctor`](#bits-doctor), [`init`](#bits-init), `use` (in [bits init](#bits-init)), [`checksums`](#bits-checksums), [`stats`](#bits-stats), [`brew`](#bits-brew), [`clean`](#bits-clean), [`prune`](#bits-prune), [`architecture`, `version`](#bits-version--architecture) |
+| Building | [`build`](#bits-build), [`status`](#bits-status), [`deps`](#bits-deps), [`doctor`](#bits-doctor), [`init`](#bits-init), `use` (in [bits init](#bits-init)), [`checksums`](#bits-checksums), [`upgrade`](#bits-upgrade), [`stats`](#bits-stats), [`brew`](#bits-brew), [`clean`](#bits-clean), [`prune`](#bits-prune), [`architecture`, `version`](#bits-version--architecture) |
 | CVMFS | [`cvmfs`](#bits-store--bits-cvmfs-admin--ci-groups), [`publish`](#bits-publish), [`cvmfs-path`](#bits-cvmfs-path), [`import`](#bits-import), [`overlay`](#bits-overlay-lcg), `preload` (`bits preload --help`) |
 | Trust and compliance | [`certify`, `sign`](#bits-certify--bits-sign), [`verify`](#bits-verify), [`sbom`](#bits-sbom), [`compliance`](#bits-compliance) |
 | Binary store | [`store`](#bits-store--bits-cvmfs-admin--ci-groups) |
@@ -1563,6 +1564,49 @@ checksum uses another algorithm. A disagreeing entry is never overwritten;
 new ones are added to their section, keeping the file's comments.
 A profile override that cannot be resolved is reported as `failed`, as the
 build would stop there too. Exit status 1 on any `MISMATCH` or `failed`.
+
+---
+
+### bits upgrade
+
+Set new versions of packages in the recipes, in place, to build and fix them
+from there.
+
+```bash
+bits upgrade PACKAGE ... [--defaults D] [-a ARCH] [-c DIR] [-w WORKDIR] [--set NAME=VALUE]
+             (--to PKG=VER ... | --plan plan.csv (--wave N ... | --line LINE)) [--no-check]
+bits -n upgrade ...          # report what it would change, write nothing
+```
+
+`PACKAGE`, `--defaults`, `-a`, `-c`, `-w`, `--set` and `--search-path` are the
+build's: the packages are resolved as `bits build` resolves them (as `bits
+status` does). The new versions come from `--to` (repeatable), or from a plan
+exported as CSV from the console's Plan view (Vulnerabilities): a release
+line's plan with the waves to take (`--wave`, repeatable), or the converged plan
+with the release line to take (`--line`).
+
+For each package, the file that sets its version is edited:
+
+| The version comes from | Edited |
+|---|---|
+| the recipe | its `version:`, and its `tag:` when the tag spells the version (`v1.2.3`, `curl-8_18_0`); a tag built from `%(version)s` is left alone |
+| a defaults profile's `overrides:` | that profile's entry for the package (with a matcher, only the entry active for the architecture) |
+| another recipe's `- pkg = version` requires | that line of that recipe |
+
+Only the YAML header is edited, keeping its layout and comments. A recipe of a
+repository provider's cached checkout (`WORKDIR/REPOS/`) is not edited there:
+it is copied, with the patches and the checksum file it uses, into the recipe
+directory `-c`, which the build searches first; a copy never replaces a file
+there. A defaults profile in such a checkout is left for a hand edit: check that
+repository out and build with it. Anything else (a tag that does not spell
+the version, an override of another version, a package not in the build) is
+reported for a hand edit, and the exit status is 1. Unless `--no-check`, the
+new tarball URLs are tried (HTTP HEAD), a git source's new tag is looked up (`git
+ls-remote`) and a `PythonPipRecipe` version on PyPI: a missing one is reported,
+since the build would stop there.
+
+Then build, fix what is left (recipe bodies, patches), and commit the edited and
+copied files to a branch of the repositories they belong to.
 
 ---
 
