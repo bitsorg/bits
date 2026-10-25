@@ -179,6 +179,20 @@ class ListingsTest(unittest.TestCase):
     self.assertEqual(len(calls), 5)
 
 
+  def test_packages_already_here_are_not_listed(self):
+    tmp = tempfile.TemporaryDirectory()
+    self.addCleanup(tmp.cleanup)
+    work = tmp.name
+    d = os.path.join(work, "TARS", ARCH, "store", RH[:2], RH)
+    os.makedirs(d)
+    open(os.path.join(d, "zlib-1.3-1.%s.tar.gz" % ARCH), "w").close()
+    specs = {"zlib": _spec(), "curl": _spec(package="curl", remote_hashes=["cc" + "0" * 38])}
+    args = SimpleNamespace(defaults=["release"], architecture=ARCH)
+    with patch("bits_helpers.build.storeHook"), patch("bits_helpers.hashing.storeHashes"):
+      keys = plan._foreseen(["zlib", "curl"], specs, args, "slc9_x86-64", work, False)
+    self.assertEqual(keys, [(ARCH, "cc" + "0" * 38)])
+
+
 class StoreListableTest(unittest.TestCase):
   def test_listing_backends(self):
     from bits_helpers.sync import RemoteSync, NoRemoteSync

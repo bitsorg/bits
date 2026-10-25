@@ -81,6 +81,25 @@ def _installed(spec, work_dir, eff, rev, h):
     return False
 
 
+def _local(spec, eff, work_dir, write_store):
+  """(INSTALLED or LOCAL_TARBALL, hash, revision) of a tarball of *spec* in the
+  local store, or None."""
+  forced = spec.get("force_revision") if "force_revision" in spec else None
+  if forced is not None:
+    remote, local = [spec["remote_revision_hash"]], []
+  else:
+    # With a write store the build never reuses a localN revision.
+    remote, local = list(spec["remote_hashes"]), [] if write_store else list(spec["local_hashes"])
+  for hashes, is_local in ((remote, False), (local, True)):
+    for h in hashes:
+      rev = pick_revision(glob(os.path.join(work_dir, resolve_store_path(eff, h), "*.tar.gz")),
+                          spec, eff, local=is_local, forced=forced)
+      if rev is not None:
+        state = INSTALLED if _installed(spec, work_dir, eff, rev, h) else LOCAL_TARBALL
+        return state, h, rev
+  return None
+
+
 def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
              overlay=None):
   """Return (state, hash, revision) for *spec*, mirroring build_one_package.
@@ -95,20 +114,10 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
   if overlay is not None and overlay(spec):
     return OVERLAY, spec["remote_revision_hash"], ""
   forced = spec.get("force_revision") if "force_revision" in spec else None
-  if forced is not None:
-    remote = [spec["remote_revision_hash"]]
-    local = []
-  else:
-    remote = list(spec["remote_hashes"])
-    # With a write store the build never reuses a localN revision.
-    local = [] if write_store else list(spec["local_hashes"])
-  for hashes, is_local in ((remote, False), (local, True)):
-    for h in hashes:
-      rev = pick_revision(glob(os.path.join(work_dir, resolve_store_path(eff, h), "*.tar.gz")),
-                          spec, eff, local=is_local, forced=forced)
-      if rev is not None:
-        state = INSTALLED if _installed(spec, work_dir, eff, rev, h) else LOCAL_TARBALL
-        return state, h, rev
+  remote = [spec["remote_revision_hash"]] if forced is not None else list(spec["remote_hashes"])
+  here = _local(spec, eff, work_dir, write_store)
+  if here:
+    return here
   # A remote tarball the signed manifest does not vouch for is discarded by
   # the build, which then builds as if the store had none (the hash-policy
   # fallback below included).
@@ -299,9 +308,10 @@ class _Listings:
     progress.end("done")
 
 
-def _foreseen(build_order, specs, args, raw_architecture):
+def _foreseen(build_order, specs, args, raw_architecture, work_dir, write_store):
   """The (architecture, hash) pairs the plan will list, assuming every package
-  comes from the store (the usual case): computed on a copy of *specs*."""
+  comes from the store (the usual case), but not those already here: computed
+  on a copy of *specs*."""
   from bits_helpers.arch import SHARED_ARCH
   from bits_helpers.build import storeHook
   from bits_helpers.hashing import storeHashes
@@ -315,6 +325,8 @@ def _foreseen(build_order, specs, args, raw_architecture):
     if spec.get("is_devel_pkg") or is_virtual_package(spec):
       continue
     eff = effective_arch(spec, args.architecture)
+    if _local(spec, eff, work_dir, write_store):
+      continue
     hashes = [spec["remote_revision_hash"]] if "force_revision" in spec else spec["remote_hashes"]
     keys += [(eff, h) for h in hashes]
   return keys
@@ -338,7 +350,7 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
   if can_list:
     lister = _Listings(sync_helper)
     try:
-      lister.prefetch(_foreseen(build_order, specs, args, raw_architecture))
+      lister.prefetch(_foreseen(build_order, specs, args, raw_architecture, work_dir, write_store))
     except Exception as exc:     # the plan then lists one package at a time
       debug("cannot list the store ahead: %s", exc)
   states, unuploadable = {}, set()
