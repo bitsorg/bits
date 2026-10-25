@@ -1612,14 +1612,17 @@ new tarball URLs are tried (HTTP HEAD), a git source's new tag is looked up (`gi
 ls-remote`) and a `PythonPipRecipe` version on PyPI: a missing one is reported,
 since the build would stop there, and the exit status is 1.
 
-When none of a recipe's new tarballs exists, the version is built from a git tag
-instead, if one is found: in the recipe's own `source:`, else in the GitHub
-projects PyPI names for its `pkg:pypi` references, else in a GitHub search by
-the package's name (reported as a guess to check; `$GITHUB_TOKEN` raises the
-search's rate limit). The tag is looked for as `1.2.3`, `v1.2.3`, `name-1.2.3`,
-`name_1_2_3` and similar. The recipe then gets `source:` and `tag:` (as
-`v%(version)s` when it spells the version), and its `sources:` and `patches:`
-are commented out, under a line saying why. A git checkout has no generated
+When none of a recipe's new tarballs exists, the version is taken from upstream
+instead: from the recipe's own `source:`, else the GitHub projects PyPI names for
+its `pkg:pypi` references, else a GitHub search by the package's name (reported
+as a guess to check; `$GITHUB_TOKEN` raises GitHub's rate limits). The first of
+these repositories with the version wins. Its release tarball comes first: a file
+of the GitHub release of the version's tag, or GNOME's download site for
+`gitlab.gnome.org`; it replaces the recipe's one `sources:` entry, patches kept.
+Otherwise its git tag (the recipe's `tag:` spelling, else `1.2.3`, `v1.2.3`,
+`name-1.2.3`, `name_1_2_3` and similar): the recipe gets `source:` and `tag:`
+(as `v%(version)s` when it spells the version), and its `sources:` and
+`patches:` are commented out, under a line saying why. A git checkout has no generated
 `configure` (release tarballs ship it), so an autotools recipe also gets
 `autoreconf -fi` (when `configure` is missing) first in its `Configure()`, or
 in a `Configure()` added for `AutoToolsRecipe`'s default; a recipe that runs a

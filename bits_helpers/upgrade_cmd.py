@@ -276,6 +276,14 @@ def _github(url):
     return "https://github.com/%s/%s" % m.groups() if m and m.group(1) != "sponsors" else None
 
 
+def _github_headers():
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    return headers
+
+
 def _repos(meta, package):
     own = str(meta.get("source") or "")
     if own and "%(" not in own:
@@ -287,12 +295,8 @@ def _repos(meta, package):
         if isinstance(about, dict):
             urls = list((about.get("project_urls") or {}).values()) + [about.get("home_page")]
             yield from ((g, False) for g in map(_github, urls) if g)
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        headers["Authorization"] = "Bearer " + token
     found = _get_json("https://api.github.com/search/repositories?" + urllib.parse.urlencode(
-        {"q": "%s in:name" % package, "sort": "stars", "per_page": 5}), headers) or {}
+        {"q": "%s in:name" % package, "sort": "stars", "per_page": 5}), _github_headers()) or {}
     items = [i for i in found.get("items") or [] if isinstance(i, dict)
              and isinstance(i.get("html_url"), str) and isinstance(i.get("name"), str)]
     items.sort(key=lambda i: i["name"].lower() != package.lower())     # same name first
@@ -320,8 +324,11 @@ def _tags(repo):
             if "refs/tags/" in ln} if out.returncode == 0 else set()
 
 
-def find_tag(tags, package, version):
-    """The tag of *tags* for *version* of *package*, in a usual spelling, or None."""
+def find_tag(tags, package, version, spelt=None):
+    """The tag of *tags* for *version* of *package*: *spelt* (the recipe's), else
+    one in a usual spelling; None."""
+    if spelt in tags:
+        return spelt
     forms = (version, version.replace(".", "_"), version.replace(".", "-"))
     prefixes = ["", "v", "release-", "rel-"] + [n + sep for n in dict.fromkeys(
         (package, package.lower())) for sep in ("-", "_", "-v")]
@@ -401,14 +408,88 @@ def generate_configure(text):
     return "".join(lines), "made"
 
 
-def git_instead(spec, text, version):
-    """(text, repository, tag, guessed) of the recipe built from a git tag of
-    *version*, or None when no repository has one."""
+_TARBALL = re.compile(r"\.(tar\.gz|tgz|tar\.xz|tar\.bz2)$")
+
+
+def _release_assets(repo, tag):
+    """The download URLs of the files of *repo*'s GitHub release *tag* ([] if none)."""
+    m = _GITHUB.match(repo)
+    if not m:
+        return []
+    found = _get_json("https://api.github.com/repos/%s/%s/releases/tags/%s" % (
+        m.group(1), m.group(2), urllib.parse.quote(tag, safe="")), _github_headers()) or {}
+    return [a["browser_download_url"] for a in found.get("assets") or []
+            if isinstance(a, dict) and isinstance(a.get("browser_download_url"), str)]
+
+
+def release_tarball(repo, tag, version, package=""):
+    """The URL of *version*'s upstream release tarball: a GitHub release asset of
+    *tag* named after *package* or the repository, or GNOME's download site for
+    gitlab.gnome.org; None when there is none."""
+    m = re.match(r"^https?://gitlab\.gnome\.org/GNOME/([\w.-]+?)(?:\.git)?/?$", repo)
+    if m:
+        url = "https://download.gnome.org/sources/%s/%s/%s-%s.tar.xz" % (
+            m.group(1), ".".join(version.split(".")[:2]), m.group(1), version)
+        return url if _url_exists(url)[0] else None
+    source = re.compile(r"^(.*?)[-_]?v?%s(-stable|[-.]src|-source)?$" % re.escape(version))
+    named = {"", package.lower(), repo.rstrip("/").rsplit("/", 1)[-1].lower()}
+    names = [u for u in (_release_assets(repo, tag) if tag else []) if _TARBALL.search(u)
+             for m in [source.match(_TARBALL.sub("", os.path.basename(u)))] if m and m.group(1).lower() in named]
+    order = (".tar.gz", ".tgz", ".tar.xz", ".tar.bz2")      # not binaries nor docs, by their names
+    return min(names, key=lambda u: (next(i for i, e in enumerate(order) if u.endswith(e)),
+                                     len(os.path.basename(u))), default=None)
+
+
+def _templated(url, version):
+    """*url* with *version* as %(version)s where it names the release: in its
+    file name and its GitHub release directory, as a whole version."""
+    whole = re.compile(r"(?:^|(?<=[-_/v]))%s(?!\.?[0-9])" % re.escape(version))
+    head, _, name = url.rpartition("/")
+    pre, sep, tag = head.rpartition("/releases/download/")
+    if sep:
+        head = pre + sep + whole.sub("%(version)s", tag)
+    return head + "/" + whole.sub("%(version)s", name)
+
+
+def to_tarball(text, url, version):
+    """*text* with its one ``sources:`` entry set to *url* (with %(version)s), or
+    None when it has another number of entries, or a gated one."""
+    lines = text.splitlines(keepends=True)
+    end = _header_end(lines)
+    at = next((i for i in range(end) if re.match(r"^sources:\s*(#.*)?$", lines[i])), None)
+    if at is None:
+        return None
+    items = []
+    for j in range(at + 1, end):
+        if not _content(lines[j]):
+            continue
+        if lines[j][:1] not in (" ", "\t", "-"):
+            break
+        items.append(j)
+    if len(items) != 1:
+        return None
+    m = re.match(r"^(\s*-\s*)([\"']?)(.*?)\2\s*(#.*)?$", lines[items[0]].rstrip("\n"))
+    if not m or m.group(3).startswith("("):
+        return None
+    lines[items[0]] = "%s%s\n" % (m.group(1), _templated(url, version))
+    lines.insert(at, "# bits upgrade: no tarball of %s in the usual place, upstream's instead\n" % version)
+    return "".join(lines)
+
+
+def upstream_instead(spec, text, version):
+    """(kind, text, repository, tag or URL, guessed) of the recipe taking *version*
+    from upstream, kind "tarball" (a release tarball) or "git" (the tag), for the
+    first repository that has either; None when none has."""
     meta = _header(text)
+    spelt = str(meta.get("tag") or "").replace("%(version)s", version)
     for repo, guessed in candidate_repos(meta, spec["package"]):
-        tag = find_tag(_tags(repo), spec["package"], version)
+        tag = find_tag(_tags(repo), spec["package"], version, spelt)
+        url = release_tarball(repo, tag, version, spec["package"])
+        new = url and to_tarball(text, url, version)
+        if new:
+            return "tarball", new, repo, url, guessed
         if tag:
-            return to_git(text, repo, tag, version), repo, tag, guessed
+            return "git", to_git(text, repo, tag, version), repo, tag, guessed
     return None
 
 
@@ -635,10 +716,17 @@ def doUpgrade(args, parser):
             checks = check_sources(spec, text, version, resolve)
             missing = [c for c in checks if c["ok"] is False]
             tarballs = [c["ok"] for c in checks if c.get("tarball")]
-            git = tarballs and not any(tarballs) and git_instead(spec, text, version)
-            if git:                       # no tarball of the version at all: a git tag
-                text, repo, tag, guessed = git
+            up = tarballs and not any(tarballs) and upstream_instead(spec, text, version)
+            if up:                        # no tarball of the version: upstream's, else a git tag
+                kind, text, repo, where, guessed = up
                 missing = [c for c in missing if not c.get("tarball")]
+            if up and kind == "tarball":
+                edits.append(("sources", "tarball", where))
+                if guessed:
+                    row["detail"] += "; %s was found by a GitHub search: check it" % repo
+                    row["check"] = True
+            elif up:
+                tag = where
                 edits.append(("source", "tarballs", "%s %s" % (repo, tag)))
                 row["detail"] += "; sources:%s commented out" % (
                     " and patches:" if _header(texts[target]).get("patches") else "")
@@ -652,7 +740,7 @@ def doUpgrade(args, parser):
                     row["detail"] += "; %s was found by a GitHub search: check it" % repo
                     row["check"] = True
             elif tarballs and not any(tarballs):
-                row["detail"] += "; no git repository found with a tag of %s" % version
+                row["detail"] += "; no upstream tarball or git tag of %s found" % version
             row["missing"] = missing
         path, texts[target] = target, text
         if not dry:

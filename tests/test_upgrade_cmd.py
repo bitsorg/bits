@@ -188,6 +188,7 @@ class GitInsteadTest(unittest.TestCase):
     self.assertEqual(up.find_tag(tags, "curl", "8.18.0"), "curl-8_18_0")
     self.assertEqual(up.find_tag(tags, "Boost", "1.86.0"), "boost-1.86.0")
     self.assertIsNone(up.find_tag(tags, "x", "3.0"))
+    self.assertEqual(up.find_tag({"R_2_9_0"}, "expat", "2.9.0", "R_2_9_0"), "R_2_9_0")   # the recipe's
 
   def test_sources_and_patches_commented_out(self):
     text = up.to_git(self.RECIPE, "https://github.com/fmtlib/fmt", "v12.2.0", "12.2.0")
@@ -247,18 +248,58 @@ class GitInsteadTest(unittest.TestCase):
       yield "https://github.com/a/fmt", True             # the same one again
       yield "https://github.com/fmtlib/fmt", True
     tags = {"https://github.com/fmtlib/fmt": {"12.2.0"}}
-    orig = up._repos, up._tags
+    orig = up._repos, up._tags, up._release_assets
     up._repos = repos
     up._tags = lambda r: tried.append(r) or tags.get(r, set())
+    up._release_assets = lambda repo, tag: []                           # no release files
     try:
-      got = up.git_instead({"package": "fmt"}, self.RECIPE.replace("sources:", "source: https://x/fmt\nsources:"),
-                           "12.2.0")
-      self.assertEqual(got[1:], ("https://github.com/fmtlib/fmt", "12.2.0", True))
+      got = up.upstream_instead({"package": "fmt"},
+                                self.RECIPE.replace("sources:", "source: https://x/fmt\nsources:"), "12.2.0")
+      self.assertEqual((got[0],) + got[2:], ("git", "https://github.com/fmtlib/fmt", "12.2.0", True))
       self.assertEqual(tried, ["https://x/fmt", "https://github.com/a/fmt.git",
                                "https://github.com/fmtlib/fmt"])
-      self.assertIsNone(up.git_instead({"package": "fmt"}, self.RECIPE, "9.9"))
+      self.assertIsNone(up.upstream_instead({"package": "fmt"}, self.RECIPE, "9.9"))
     finally:
-      up._repos, up._tags = orig
+      up._repos, up._tags, up._release_assets = orig
+
+  def test_an_upstream_release_tarball_first(self):
+    rel = "https://github.com/libexpat/libexpat/releases/download/R_2_9_0/"
+    assets = [rel + "expat-2.9.0.tar.xz.asc", rel + "expat-2.9.0.tar.xz", rel + "expat-2.9.0.tar.gz",
+              rel + "expat-win32bin-2.9.0.zip"]
+    orig = up._repos, up._tags, up._release_assets, up._url_exists
+    up._repos = lambda meta, package: iter([("https://github.com/libexpat/libexpat", False)])
+    up._tags = lambda r: {"R_2_9_0"}
+    up._release_assets = lambda repo, tag: assets if tag == "R_2_9_0" else []
+    up._url_exists = lambda url: (True, "HTTP 200")
+    try:
+      recipe = ('package: expat\nversion: "2.9.0"\ntag: "R_2_9_0"\nsources:\n'
+                '  - https://lcgpackages.example/%(name)s-%(version)s.tar.gz\npatches:\n  - x.patch\n---\n')
+      kind, text, repo, url, guessed = up.upstream_instead({"package": "expat"}, recipe, "2.9.0")
+      self.assertEqual((kind, url), ("tarball", rel + "expat-2.9.0.tar.gz"))
+      self.assertIn("# bits upgrade: no tarball of 2.9.0 in the usual place, upstream's instead\nsources:\n"
+                    "  - https://github.com/libexpat/libexpat/releases/download/R_2_9_0/expat-%(version)s.tar.gz\n"
+                    "patches:\n  - x.patch\n", text)
+      two = recipe.replace("sources:\n", "sources:\n  - https://other/data.tgz\n")
+      self.assertIsNone(up.to_tarball(two, url, "2.9.0"))                  # left to git
+      self.assertEqual(up.upstream_instead({"package": "expat"}, two, "2.9.0")[0], "git")
+      cm = "https://github.com/Kitware/CMake/releases/download/v3.30.0/"
+      assets[:] = [cm + "cmake-3.30.0-linux-aarch64.tar.gz", cm + "cmake-3.30.0-docs.tar.gz",
+                   cm + "cmake-3.30.0.tar.gz", cm + "cmake-3.30.0.1.tar.gz"]
+      self.assertEqual(up.release_tarball("https://github.com/x/y", "R_2_9_0", "3.30.0", "CMake"),
+                       cm + "cmake-3.30.0.tar.gz")                      # not a binary nor docs
+      lv = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.0/"
+      assets[:] = [lv + "lld-18.1.0.src.tar.xz", lv + "llvm-18.1.0.src.tar.xz", lv + "llvm-project-18.1.0.src.tar.xz"]
+      self.assertEqual(up.release_tarball("https://github.com/llvm/llvm-project", "R_2_9_0", "18.1.0", "llvm"),
+                       lv + "llvm-18.1.0.src.tar.xz")
+      ev = "https://github.com/libevent/libevent/releases/download/release-2.1.12-stable/"
+      self.assertEqual(up._templated(ev + "libevent-2.1.12-stable.tar.gz", "2.1.12"),
+                       ev.replace("2.1.12", "%(version)s") + "libevent-%(version)s-stable.tar.gz")
+      self.assertEqual(up._templated("https://github.com/foo/lib1/releases/download/v1/lib1-1.tar.gz", "1"),
+                       "https://github.com/foo/lib1/releases/download/v%(version)s/lib1-%(version)s.tar.gz")
+      self.assertEqual(up.release_tarball("https://gitlab.gnome.org/GNOME/glib", None, "2.88.1"),
+                       "https://download.gnome.org/sources/glib/2.88/glib-2.88.1.tar.xz")
+    finally:
+      up._repos, up._tags, up._release_assets, up._url_exists = orig
 
 
 RECIPES = {
