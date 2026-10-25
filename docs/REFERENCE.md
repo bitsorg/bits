@@ -1619,8 +1619,12 @@ the package's name (reported as a guess to check; `$GITHUB_TOKEN` raises the
 search's rate limit). The tag is looked for as `1.2.3`, `v1.2.3`, `name-1.2.3`,
 `name_1_2_3` and similar. The recipe then gets `source:` and `tag:` (as
 `v%(version)s` when it spells the version), and its `sources:` and `patches:`
-are commented out, under a line saying why. A repository found by the search
-is reported to check, and the exit status is 1.
+are commented out, under a line saying why. A git checkout has no generated
+`configure` (release tarballs ship it), so an autotools recipe also gets
+`autoreconf -fi` (when `configure` is missing) first in its `Configure()`, or
+in a `Configure()` added for `AutoToolsRecipe`'s default; a recipe that runs a
+configure otherwise is reported to check. So is a repository found by the
+search, and the exit status is then 1.
 
 Then build, fix what is left (recipe bodies, patches), and commit the edited and
 copied files to a branch of the repositories they belong to.

@@ -210,6 +210,34 @@ class GitInsteadTest(unittest.TestCase):
                     "https://x/old", "fmt_12_2_0", "12.2.0")
     self.assertIn('source: https://x/old\ntag: "fmt_12_2_0"\n', own)
 
+  def test_configure_generated_for_autotools(self):
+    gen = up.generate_configure
+    head = "package: a\nversion: 1\n---\n#!/bin/bash -e\n. $(bits-include AutoToolsRecipe)\n"
+    own = head + "function Configure() {\n  if x; then\n    y\n  fi\n  CFLAGS=-O2 \\\n    ./configure\n}\n"
+    text, made = gen(own)
+    self.assertEqual(made, "made")
+    self.assertIn("function Configure() {\n  [ -e configure ] || [ ! -e configure.ac ] || autoreconf -fi", text)
+    self.assertEqual(gen(text), (text, None))                            # once only
+    brace = head + "Configure()\n{\n  ./configure\n}\n"
+    self.assertIn("Configure()\n{\n  [ -e configure ]", gen(brace)[0])
+    text, made = gen(head)                                               # the default Configure
+    self.assertEqual(made, "made")
+    self.assertTrue(text.endswith('  [ -f autogen.sh ] && ./autogen.sh\n  ./configure --prefix="$INSTALLROOT"\n}\n'))
+    two = head + "if a; then\n  Configure() {\n    ./configure\n  }\nelse\n  function Configure {\n    ./configure\n  }\nfi\n"
+    self.assertEqual(gen(two)[0].count("autoreconf"), 2)
+    cm = "package: a\nversion: 1\n---\n. $(bits-include CMakeRecipe)\ncp $SOURCEDIR/configure.h.in x\n"
+    self.assertEqual(gen(cm), (cm, None))
+    for odd in (head + "Configure() { ./configure; }\n",                  # one line
+                head + "function Configure { ./configure --x; }\n",
+                "package: a\nversion: 1\n---\ncd b\n../configure --prefix=$INSTALLROOT\nmake\n"):
+      self.assertEqual(gen(odd), (odd, "check"))
+    for none in ("package: a\nversion: 1\n---\n. $(bits-include CMakeRecipe)\n# not ./configure\n",
+                 "package: a\nversion: 1\n"):
+      self.assertEqual(gen(none), (none, None))
+    for t in (gen(own)[0], gen(head)[0], gen(brace)[0]):
+      r = subprocess.run(["bash", "-n"], input=t.split("---\n", 1)[1], text=True, capture_output=True)
+      self.assertEqual(r.returncode, 0, r.stderr)
+
   def test_the_first_repository_with_the_tag(self):
     tried = []
     def repos(meta, package):

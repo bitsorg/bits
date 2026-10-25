@@ -364,6 +364,43 @@ def to_git(text, repo, tag, version):
     return "".join(lines)
 
 
+AUTORECONF = ("[ -e configure ] || [ ! -e configure.ac ] || autoreconf -fi"
+              "   # a git checkout has no generated configure")
+
+
+def generate_configure(text):
+    """(text, "made"|"check"|None): an autotools recipe made to generate
+    ``configure``, which a git checkout lacks (release tarballs ship it), with
+    ``autoreconf -fi`` first in its Configure(), or in a Configure() added for
+    AutoToolsRecipe's default; "check" when it runs a configure some other way."""
+    lines = text.splitlines(keepends=True)
+    start = _header_end(lines) + 1
+    code = [ln for ln in lines[start:] if _content(ln)]
+    runs = any(re.search(r"/configure([\s;\"')]|$)", ln) for ln in code)
+    if any("autoreconf" in ln for ln in code) or not (runs or any("AutoToolsRecipe" in ln for ln in code)):
+        return text, None
+    defs = [i for i in range(start, len(lines))
+            if re.match(r"^\s*(function\s+Configure\b|Configure\s*\()", lines[i])]
+    at = []
+    for i in defs:
+        m = re.match(r"^(\s*)(function\s+)?Configure\s*(\(\s*\))?\s*(\{)?\s*(#.*)?$", lines[i])
+        brace = i if m and m.group(4) else i + 1
+        if not m or brace >= len(lines) or not (m.group(4) or lines[brace].strip() == "{"):
+            return text, "check"              # a Configure() written otherwise
+        at.append((brace, m.group(1)))
+    for brace, indent in reversed(at):         # every definition (one per platform, say)
+        lines.insert(brace + 1, indent + "  " + AUTORECONF + "\n")
+    if at:
+        return "".join(lines), "made"
+    if not any("AutoToolsRecipe" in ln for ln in code):
+        return text, "check"
+    body = "".join(lines[start:])
+    lines.append(("\n" if body and not body.endswith("\n") else "") +
+                 "\nfunction Configure() {\n  %s\n  [ -f autogen.sh ] && ./autogen.sh\n"
+                 "  ./configure --prefix=\"$INSTALLROOT\"\n}\n" % AUTORECONF)
+    return "".join(lines), "made"
+
+
 def git_instead(spec, text, version):
     """(text, repository, tag, guessed) of the recipe built from a git tag of
     *version*, or None when no repository has one."""
@@ -605,6 +642,12 @@ def doUpgrade(args, parser):
                 edits.append(("source", "tarballs", "%s %s" % (repo, tag)))
                 row["detail"] += "; sources:%s commented out" % (
                     " and patches:" if _header(texts[target]).get("patches") else "")
+                text, made = generate_configure(text)
+                if made == "made":
+                    row["detail"] += "; configure generated (autoreconf -fi)"
+                elif made == "check":
+                    row["detail"] += "; a git checkout has no configure: check how it is made"
+                    row["check"] = True
                 if guessed:
                     row["detail"] += "; %s was found by a GitHub search: check it" % repo
                     row["check"] = True
