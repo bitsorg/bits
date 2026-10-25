@@ -1392,16 +1392,21 @@ def add_upgrade_arguments(subparsers, ctx):
           "package's version (its recipe, the defaults profile whose overrides pin it, "
           "or the recipe whose requires pin it) and set the new version, and a tag "
           "that spells it. A file of a repository provider's cached checkout is first "
-          "copied, with its patches, into CONFIGDIR. New tarball URLs, git tags and "
-          "PyPI versions are checked. Exit status 1 when a package is left for a hand edit."),
+          "copied, with its patches, into CONFIGDIR. The versions come from a plan exported "
+          "as CSV from bits-console (by default the newest upgrade-plan-*.csv in the current "
+          "directory) and --to. New tarball URLs, git tags and PyPI versions are checked; a "
+          "version with no tarball is built from a git tag instead when one is found. Exit "
+          "status 1 when a package is left for a hand edit or to check."),
   )
-  up.add_argument("pkgname", nargs="+", metavar="PACKAGE", help="The package(s) the build builds.")
+  up.add_argument("pkgname", nargs="+", metavar="PACKAGE",
+                  help="The package(s) the build builds; a .csv file among them is the plan (as --plan).")
   up.add_argument("--to", dest="to", action="append", default=[], metavar="PACKAGE=VERSION",
                   help="A package and its new version (repeatable).")
   up.add_argument("--plan", metavar="FILE", default=None,
-                  help="An upgrade plan exported as CSV from the console's Plan view.")
+                  help=("An upgrade plan exported as CSV from the console's Plan view (default: the "
+                        "newest upgrade-plan-*.csv in the current directory, unless only --to is given)."))
   up.add_argument("--wave", dest="waves", type=int, action="append", default=[], metavar="N",
-                  help="A wave of the plan of a release line to take (repeatable).")
+                  help="A wave of a release line's plan to take (repeatable; default: every wave).")
   up.add_argument("--line", metavar="LINE", default=None,
                   help="The release line to take from a converged plan.")
   ctx.defaults(up, help="Defaults profile(s), as for the build; use :: to combine. Default: %(default)s.")
@@ -2040,6 +2045,12 @@ def doParseArgs():
     return 2
   rest.sort(key=optionOrder)
   sys.argv = [prog] + rest
+  if "upgrade" in sys.argv[1:4]:        # its plan.csv may follow the options: put it first
+    k = sys.argv.index("upgrade") + 1
+    tail = sys.argv[k:]
+    first = [i for i, t in enumerate(tail)
+             if t.lower().endswith(".csv") and (i == 0 or tail[i - 1] != "--plan")]
+    sys.argv[k:] = [tail[i] for i in first] + [t for i, t in enumerate(tail) if i not in first]
 
   # For "bits init" config mode: record which flags were explicit on the CLI so
   # that doInitConfig() can write only the settings the user actually specified.

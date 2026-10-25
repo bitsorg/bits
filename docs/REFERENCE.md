@@ -1573,17 +1573,24 @@ Set new versions of packages in the recipes, in place, to build and fix them
 from there.
 
 ```bash
-bits upgrade PACKAGE ... [--defaults D] [-a ARCH] [-c DIR] [-w WORKDIR] [--set NAME=VALUE]
-             (--to PKG=VER ... | --plan plan.csv (--wave N ... | --line LINE)) [--no-check]
+bits upgrade PACKAGE ... [plan.csv] [--defaults D] [-a ARCH] [-c DIR] [-w WORKDIR]
+             [--set NAME=VALUE] [--wave N ... | --line LINE] [--to PKG=VER ...] [--no-check]
 bits -n upgrade ...          # report what it would change, write nothing
+
+bits upgrade LCG plan.csv --wave 0 --wave 1 -a x86_64-el9-gcc14-dbg
 ```
 
 `PACKAGE`, `--defaults`, `-a`, `-c`, `-w`, `--set` and `--search-path` are the
 build's: the packages are resolved as `bits build` resolves them (as `bits
-status` does). The new versions come from `--to` (repeatable), or from a plan
-exported as CSV from the console's Plan view (Vulnerabilities): a release
-line's plan with the waves to take (`--wave`, repeatable), or the converged plan
-with the release line to take (`--line`).
+status` does). The new versions come from a plan exported as CSV from the
+console's Plan view (Vulnerabilities, made from the SBOM scans of the builds):
+the `.csv` file given after the packages (or with `--plan`), by default the
+newest `upgrade-plan-*.csv` in the current directory.
+From a release line's plan, every wave is taken, each package at its target
+version, or only the waves given with `--wave` (repeatable; 0 known exploited,
+1 within the major version, 2 major upgrades); from the converged plan, the
+release line given with `--line`. `--to` (repeatable) adds or overrides
+versions; given alone, no plan is read.
 
 For each package, the file that sets its version is edited:
 
@@ -1603,7 +1610,17 @@ the version, an override of another version, a package not in the build) is
 reported for a hand edit, and the exit status is 1. Unless `--no-check`, the
 new tarball URLs are tried (HTTP HEAD), a git source's new tag is looked up (`git
 ls-remote`) and a `PythonPipRecipe` version on PyPI: a missing one is reported,
-since the build would stop there.
+since the build would stop there, and the exit status is 1.
+
+When none of a recipe's new tarballs exists, the version is built from a git tag
+instead, if one is found: in the recipe's own `source:`, else in the GitHub
+projects PyPI names for its `pkg:pypi` references, else in a GitHub search by
+the package's name (reported as a guess to check; `$GITHUB_TOKEN` raises the
+search's rate limit). The tag is looked for as `1.2.3`, `v1.2.3`, `name-1.2.3`,
+`name_1_2_3` and similar. The recipe then gets `source:` and `tag:` (as
+`v%(version)s` when it spells the version), and its `sources:` and `patches:`
+are commented out, under a line saying why. A repository found by the search
+is reported to check, and the exit status is 1.
 
 Then build, fix what is left (recipe bodies, patches), and commit the edited and
 copied files to a branch of the repositories they belong to.

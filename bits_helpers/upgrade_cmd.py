@@ -2,19 +2,25 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``bits upgrade``: set new versions of packages in the recipes, in place.
 
-    bits upgrade PACKAGE... [--defaults D] [-a ARCH] [-c DIR]
-                 (--to PKG=VER ... | --plan plan.csv --wave N ... [--line LINE])
+    bits upgrade PACKAGE... [plan.csv] [--defaults D] [-a ARCH] [-c DIR]
+                 [--wave N ...] [--line LINE] [--to PKG=VER ...]
 
 resolves PACKAGE as ``bits build`` would (``bits status``), finds for each
 package the file that sets its version (its recipe, the defaults profile whose
 ``overrides:`` pin it, or the recipe whose requires pin it) and edits its
 ``version:`` (and a ``tag:`` that spells it). A file read from a repository
 provider's checkout (a cache under the work directory) is first copied, with its
-patches, into the recipe directory -c, which is searched first. Then build,
-fix what is left, and commit the files to a branch of their repositories.
+patches, into the recipe directory -c, which is searched first. The versions
+come from a plan exported as CSV from bits-console (by default the newest
+upgrade-plan-*.csv in the current directory) and --to. A new version with no
+tarball is taken from a git tag instead.
+Then build, fix what is left, and commit the files to a branch of their
+repositories.
 """
 
 import csv
+import http.client
+import json
 import os
 import re
 import shutil
@@ -236,7 +242,7 @@ def check_sources(spec, recipe_text, version, resolve):
             out.append({"what": "source %s" % src, "ok": None, "detail": "not checked"})
             continue
         ok, detail = _url_exists(url)
-        out.append({"what": url, "ok": ok, "detail": detail})
+        out.append({"what": url, "ok": ok, "detail": detail, "tarball": True})
     if meta.get("source") and not sources:
         if not new["tag"] or "%(" in new["tag"]:
             out.append({"what": "tag of %s" % meta["source"], "ok": None, "detail": "not checked"})
@@ -251,13 +257,151 @@ def check_sources(spec, recipe_text, version, resolve):
     return out
 
 
+# ── a git tag for a version without a tarball ────────────────────────────────
+
+_GITHUB = re.compile(r"^https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?(?:[/#?].*)?$")
+
+
+def _get_json(url, headers=None):
+    req = urllib.request.Request(url, headers=dict(headers or {}, **{"User-Agent": "bits"}))
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:
+            return json.load(r)
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
+        return None
+
+
+def _github(url):
+    m = _GITHUB.match(str(url or "").strip())
+    return "https://github.com/%s/%s" % m.groups() if m and m.group(1) != "sponsors" else None
+
+
+def _repos(meta, package):
+    own = str(meta.get("source") or "")
+    if own and "%(" not in own:
+        yield own, False
+    for ref in meta.get("references") or []:
+        m = re.match(r"^pkg:pypi/([^@?#\s]+)", str(ref))
+        about = (_get_json("https://pypi.org/pypi/%s/json" % urllib.parse.quote(m.group(1))) or {}
+                 ).get("info") if m else None
+        if isinstance(about, dict):
+            urls = list((about.get("project_urls") or {}).values()) + [about.get("home_page")]
+            yield from ((g, False) for g in map(_github, urls) if g)
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    found = _get_json("https://api.github.com/search/repositories?" + urllib.parse.urlencode(
+        {"q": "%s in:name" % package, "sort": "stars", "per_page": 5}), headers) or {}
+    items = [i for i in found.get("items") or [] if isinstance(i, dict)
+             and isinstance(i.get("html_url"), str) and isinstance(i.get("name"), str)]
+    items.sort(key=lambda i: i["name"].lower() != package.lower())     # same name first
+    yield from ((i["html_url"], True) for i in items)
+
+
+def candidate_repos(meta, package):
+    """(repository, guessed), lazily: the recipe's own git source, the GitHub projects
+    PyPI names for its pkg:pypi references, then a GitHub search by name (a guess)."""
+    seen = set()
+    for repo, guessed in _repos(meta, package):
+        key = re.sub(r"\.git$", "", repo.rstrip("/").lower())
+        if key not in seen:
+            seen.add(key)
+            yield repo, guessed
+
+
+def _tags(repo):
+    try:
+        out = subprocess.run(["git", "ls-remote", "--tags", repo], capture_output=True, text=True,
+                             timeout=60, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {ln.split("refs/tags/", 1)[1].replace("^{}", "") for ln in out.stdout.splitlines()
+            if "refs/tags/" in ln} if out.returncode == 0 else set()
+
+
+def find_tag(tags, package, version):
+    """The tag of *tags* for *version* of *package*, in a usual spelling, or None."""
+    forms = (version, version.replace(".", "_"), version.replace(".", "-"))
+    prefixes = ["", "v", "release-", "rel-"] + [n + sep for n in dict.fromkeys(
+        (package, package.lower())) for sep in ("-", "_", "-v")]
+    return next((p + f for f in forms for p in prefixes if p + f in tags), None)
+
+
+def to_git(text, repo, tag, version):
+    """*text* with ``source: repo``, ``tag:`` (built from %(version)s when it can
+    be), and its ``sources:`` and ``patches:`` commented out."""
+    if tag.count(version) == 1:
+        tag = tag.replace(version, "%(version)s")
+    lines = text.splitlines(keepends=True)
+    end, i, noted = _header_end(lines), 0, False
+    while i < end:
+        if re.match(r"^(sources|patches):", lines[i]):
+            j = i + 1
+            while j < end:
+                k = next((k for k in range(j, end) if _content(lines[k])), end)
+                if k == end or lines[k][:1] not in (" ", "\t", "-"):
+                    break                  # blank lines and comments up to the next key stay
+                j = k + 1
+            block = ["# " + ln for ln in lines[i:j]]
+            if not noted:
+                block.insert(0, "# bits upgrade: no tarball of %s, built from the git tag\n" % version)
+                noted = True
+            lines[i:j] = block
+            end += len(block) - (j - i)
+            i += len(block)
+            continue
+        i += 1
+    for key, value, quote in (("source", repo, ""), ("tag", tag, '"')):
+        at = next((k for k in range(end) if re.match(r"^%s:" % key, lines[k])), None)
+        if at is not None:
+            lines[at] = _set(lines[at], key, value, quote)
+        else:
+            anchor = ("source", "version") if key == "tag" else ("version",)
+            after = next((k for a in anchor for k in range(end) if re.match(r"^%s:" % a, lines[k])), -1)
+            lines.insert(after + 1, "%s: %s%s%s\n" % (key, quote, value, quote))
+            end += 1
+    return "".join(lines)
+
+
+def git_instead(spec, text, version):
+    """(text, repository, tag, guessed) of the recipe built from a git tag of
+    *version*, or None when no repository has one."""
+    meta = _header(text)
+    for repo, guessed in candidate_repos(meta, spec["package"]):
+        tag = find_tag(_tags(repo), spec["package"], version)
+        if tag:
+            return to_git(text, repo, tag, version), repo, tag, guessed
+    return None
 
 
 # ── what to upgrade ──────────────────────────────────────────────────────────
 
+PLAN_GLOB = "upgrade-plan-*.csv"     # the name bits-console gives its CSV exports
+
+
+def newest_plan(directory="."):
+    """The newest CSV export of bits-console's plan in *directory*, or None."""
+    import glob
+    found = glob.glob(os.path.join(directory, PLAN_GLOB))
+    return max(found, key=os.path.getmtime) if found else None
+
+
+def split_plan(args, parser):
+    """A ``.csv`` among the PACKAGE arguments is the plan (as --plan)."""
+    plans = [p for p in args.pkgname if p.lower().endswith(".csv")]
+    args.pkgname = [p for p in args.pkgname if p not in plans]
+    if len(plans) + bool(args.plan) > 1:
+        parser.error("give one plan")
+    if not args.pkgname:
+        parser.error("give the package(s) the build builds, e.g. bits upgrade LCG plan.csv")
+    args.plan = args.plan or (plans[0] if plans else None)
+
+
 def wanted(args, parser):
-    """{package: version} from --to, or from the console's CSV export of a plan:
-    per release line (wave, package, from, to, ...) the chosen --wave rows, or
+    """{package: version} from --to, and from the console's CSV export of a plan
+    (--plan, else the newest in the current directory): per release line (wave,
+    package, from, to, ...) the rows of the --wave(s), every wave by default, or
     converged (package, version, ..., line, ..., action) --line's "upgrade" rows."""
     out = {}
     for item in args.to or []:
@@ -265,10 +409,13 @@ def wanted(args, parser):
         if not sep or not name.strip() or not version.strip():
             parser.error("--to takes PACKAGE=VERSION, not %r" % item)
         out[name.strip()] = version.strip()
+    if out and not (args.plan or args.waves or args.line):
+        return out                        # only --to
+    args.plan = args.plan or newest_plan()
     if not args.plan:
-        if not out:
-            parser.error("give --to PACKAGE=VERSION, or --plan with --wave (or --line)")
-        return out
+        parser.error("no plan: export it as CSV from bits-console's Plan view into this directory "
+                     "(%s), give --plan FILE, or --to PACKAGE=VERSION" % PLAN_GLOB)
+    info("Plan: %s", args.plan)
     try:
         with open(args.plan, newline="", encoding="utf-8-sig") as f:
             rows = [r for r in csv.DictReader(f) if None not in r.values()]
@@ -277,10 +424,8 @@ def wanted(args, parser):
     head = set(rows[0]) if rows else set()
     plan = {}
     if {"wave", "package", "to"} <= head:
-        if not args.waves:
-            parser.error("choose the plan's waves: --wave 0 --wave 1")
         for r in rows:                     # waves in order: a later one's target wins
-            if r["wave"].isdigit() and int(r["wave"]) in args.waves and r["to"]:
+            if r["wave"].isdigit() and (not args.waves or int(r["wave"]) in args.waves) and r["to"]:
                 plan[r["package"]] = r["to"]
     elif {"package", "version", "line", "action"} <= head:
         lines = sorted({r["line"] for r in rows})
@@ -379,6 +524,7 @@ def _origin(path, provider_dirs):
 
 
 def doUpgrade(args, parser):
+    split_plan(args, parser)
     want = wanted(args, parser)
     from bits_helpers.matchers import _matcher_active
     from bits_helpers.paths import resolveDefaultsFilename
@@ -448,14 +594,29 @@ def doUpgrade(args, parser):
         except NeedsHand as e:
             row.update(status="edit by hand", detail=str(e))
             continue
+        if not args.no_check and not pin:
+            checks = check_sources(spec, text, version, resolve)
+            missing = [c for c in checks if c["ok"] is False]
+            tarballs = [c["ok"] for c in checks if c.get("tarball")]
+            git = tarballs and not any(tarballs) and git_instead(spec, text, version)
+            if git:                       # no tarball of the version at all: a git tag
+                text, repo, tag, guessed = git
+                missing = [c for c in missing if not c.get("tarball")]
+                edits.append(("source", "tarballs", "%s %s" % (repo, tag)))
+                row["detail"] += "; sources:%s commented out" % (
+                    " and patches:" if _header(texts[target]).get("patches") else "")
+                if guessed:
+                    row["detail"] += "; %s was found by a GitHub search: check it" % repo
+                    row["check"] = True
+            elif tarballs and not any(tarballs):
+                row["detail"] += "; no git repository found with a tag of %s" % version
+            row["missing"] = missing
         path, texts[target] = target, text
         if not dry:
             with open(path, "w") as f:
                 f.write(text)
         row.update(status="edited", file=os.path.relpath(path),
                    edits=", ".join("%s %s -> %s" % e for e in edits))
-        if not args.no_check and not pin:
-            row["missing"] = [c for c in check_sources(spec, text, version, resolve) if c["ok"] is False]
     banner("Upgrade%s" % (" (dry run: nothing written)" if dry else ""))
     for row in rows:
         info("%-24s %-14s -> %-14s %s%s", row["package"], row.get("from", "?"), row["to"], row["status"],
@@ -466,6 +627,9 @@ def doUpgrade(args, parser):
         for c in row.get("missing") or []:
             warning("  %s: %s (the build will stop there)", c["what"], c["detail"])
     left = [row["package"] for row in rows if row["status"] in ("edit by hand", "not in the build")]
+    check = [row["package"] for row in rows if row.get("missing") or row.get("check")]
     if left:
         warning("Not edited: %s", ", ".join(left))
-    sys.exit(1 if left else 0)
+    if check:
+        warning("Edited, to check: %s", ", ".join(check))
+    sys.exit(1 if left or check else 0)

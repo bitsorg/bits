@@ -135,8 +135,8 @@ class WantedTest(unittest.TestCase):
     self.assertEqual(up.wanted(self._args(plan=per_line, waves=[0]), self._parser()), {"go": "1.21.3"})
     self.assertEqual(up.wanted(self._args(plan=per_line, waves=[0, 1]), self._parser()),
                      {"go": "1.21.3", "curl": "8.6.0"})
-    with self.assertRaises(SystemExit):
-      up.wanted(self._args(plan=per_line), self._parser())          # no wave chosen
+    self.assertEqual(up.wanted(self._args(plan=per_line), self._parser()),    # every wave
+                     {"go": "1.21.3", "curl": "8.6.0"})
     conv = self._plan("package,version,community,line,platform,from,action,major,pinned_by,own_target,kev,risk\r\n"
                       "curl,8.7.0,lcg,release_gcc15,x86_64-el9,8.1.0,upgrade,,,8.6.0,,9\r\n"
                       "java,21,lcg,release_gcc15,x86_64-el9,17,pinned,,defaults:dev4,21,,2\r\n"
@@ -147,10 +147,90 @@ class WantedTest(unittest.TestCase):
     self.assertEqual(up.wanted(self._args(to=["go=1.26.9"]), self._parser()), {"go": "1.26.9"})
     bom = self._plan("\ufeffwave,package,from,to\r\n0,go,1,2\r\n0,short\r\n")
     self.assertEqual(up.wanted(self._args(plan=bom, waves=[0]), self._parser()), {"go": "2"})
-    for bad in (self._args(), self._args(to=["go"]), self._args(plan=self._plan("a,b\r\n1,2\r\n")),
+    for bad in (self._args(to=["go"]), self._args(plan=self._plan("a,b\r\n1,2\r\n")),
                 self._args(plan=per_line, waves=[7])):
       with self.assertRaises(SystemExit):
         up.wanted(bad, self._parser())
+
+  def test_a_plan_among_the_packages(self):
+    args = argparse.Namespace(pkgname=["LCG", "plan.csv"], plan=None)
+    up.split_plan(args, self._parser())
+    self.assertEqual((args.pkgname, args.plan), (["LCG"], "plan.csv"))
+    for bad in (["LCG", "a.csv", "b.csv"], ["plan.csv"]):
+      with self.assertRaises(SystemExit):
+        up.split_plan(argparse.Namespace(pkgname=bad, plan=None), self._parser())
+
+  def test_the_newest_plan_in_the_current_directory(self):
+    d = tempfile.mkdtemp()
+    self.addCleanup(shutil.rmtree, d, True)
+    cwd = os.getcwd()
+    os.chdir(d)
+    self.addCleanup(os.chdir, cwd)
+    with self.assertRaises(SystemExit):
+      up.wanted(self._args(), self._parser())                       # no plan here
+    for name, text, when in (("upgrade-plan-LCG_109.csv", "wave,package,from,to\r\n0,go,1,2\r\n", 1),
+                             ("upgrade-plan-LCG_110.csv", "wave,package,from,to\r\n1,curl,1,3\r\n", 2)):
+      with open(name, "w") as f:
+        f.write(text)
+      os.utime(name, (when, when))
+    self.assertEqual(up.wanted(self._args(), self._parser()), {"curl": "3"})
+    self.assertEqual(up.wanted(self._args(to=["go=4"]), self._parser()), {"go": "4"})   # --to alone
+
+
+class GitInsteadTest(unittest.TestCase):
+  RECIPE = ('package: fmt\nversion: "12.1.0"\ntag: "%(version)s"\nsources:\n'
+            '  - https://lcgpackages.example/fmt-%(version)s.tar.gz\npatches:\n  - fmt-fix.patch\n'
+            'requires:\n  - CMake\n---\n#!/bin/bash\n')
+
+  def test_tag_spellings(self):
+    tags = {"v2.0.1", "curl-8_18_0", "boost-1.86.0", "1.0"}
+    self.assertEqual(up.find_tag(tags, "x", "2.0.1"), "v2.0.1")
+    self.assertEqual(up.find_tag(tags, "curl", "8.18.0"), "curl-8_18_0")
+    self.assertEqual(up.find_tag(tags, "Boost", "1.86.0"), "boost-1.86.0")
+    self.assertIsNone(up.find_tag(tags, "x", "3.0"))
+
+  def test_sources_and_patches_commented_out(self):
+    text = up.to_git(self.RECIPE, "https://github.com/fmtlib/fmt", "v12.2.0", "12.2.0")
+    self.assertEqual(text.split("---")[0],
+                     'package: fmt\nversion: "12.1.0"\nsource: https://github.com/fmtlib/fmt\n'
+                     'tag: "v%(version)s"\n# bits upgrade: no tarball of 12.2.0, built from the git tag\n'
+                     '# sources:\n#   - https://lcgpackages.example/fmt-%(version)s.tar.gz\n'
+                     '# patches:\n#   - fmt-fix.patch\nrequires:\n  - CMake\n')
+    import yaml
+    meta = yaml.safe_load(text.split("---")[0])
+    self.assertNotIn("sources", meta)
+    self.assertEqual(meta["tag"], "v%(version)s")
+    gaps = up.to_git("package: a\nversion: 1\nsources:\n  - a\n\n# b too\n  - b\n\n# deps\nrequires:\n"
+                     "  - c\n---\n", "https://x/a", "2", "2")
+    self.assertEqual(yaml.safe_load(gaps.split("---")[0]),
+                     {"package": "a", "version": 1, "source": "https://x/a", "tag": "%(version)s",
+                      "requires": ["c"]})
+    self.assertIn("\n# deps\nrequires:", gaps)
+    own = up.to_git(self.RECIPE.replace("tag: \"%(version)s\"\n", "source: https://x/old\n"),
+                    "https://x/old", "fmt_12_2_0", "12.2.0")
+    self.assertIn('source: https://x/old\ntag: "fmt_12_2_0"\n', own)
+
+  def test_the_first_repository_with_the_tag(self):
+    tried = []
+    def repos(meta, package):
+      if meta.get("source"):
+        yield meta["source"], False
+      yield "https://github.com/a/fmt.git", True
+      yield "https://github.com/a/fmt", True             # the same one again
+      yield "https://github.com/fmtlib/fmt", True
+    tags = {"https://github.com/fmtlib/fmt": {"12.2.0"}}
+    orig = up._repos, up._tags
+    up._repos = repos
+    up._tags = lambda r: tried.append(r) or tags.get(r, set())
+    try:
+      got = up.git_instead({"package": "fmt"}, self.RECIPE.replace("sources:", "source: https://x/fmt\nsources:"),
+                           "12.2.0")
+      self.assertEqual(got[1:], ("https://github.com/fmtlib/fmt", "12.2.0", True))
+      self.assertEqual(tried, ["https://x/fmt", "https://github.com/a/fmt.git",
+                               "https://github.com/fmtlib/fmt"])
+      self.assertIsNone(up.git_instead({"package": "fmt"}, self.RECIPE, "9.9"))
+    finally:
+      up._repos, up._tags = orig
 
 
 RECIPES = {
@@ -228,6 +308,14 @@ class InPlaceTest(unittest.TestCase):
       self.assertIn('  zlib:\n    version: "1.3.2"\n', f.read())             # the override pins it
     self.assertEqual(self._versions(), {"defaults-release": "v1", "zlib": "1.3.2", "curl": "8.21.0",
                                         "app": "1.0", "other": "2.0"})
+
+  def test_a_plan_csv_after_the_packages(self):
+    with open(os.path.join(self.tmp, "plan.csv"), "w") as f:
+      f.write("wave,package,from,to\r\n0,curl,8.18.0,8.21.0\r\n2,other,2.0,3.0\r\n")
+    out = self._upgrade("--wave", "0", "plan.csv")                    # after the options too
+    self.assertIn("Plan: plan.csv", out)
+    self.assertEqual(self._versions()["curl"], "8.21.0")
+    self.assertEqual(self._versions()["other"], "2.0")                # wave 2 not taken
 
   def test_two_edits_of_one_copied_recipe(self):
     with open(os.path.join(self.cache, "curl.sh")) as f:
