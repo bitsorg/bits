@@ -1738,7 +1738,8 @@ from there.
 
 ```bash
 bits upgrade PACKAGE ... [plan.csv] [--defaults D] [-a ARCH] [-c DIR] [-w WORKDIR]
-             [--set NAME=VALUE] [--wave N ... | --line LINE] [--to PKG=VER ...] [--no-check]
+             [--set NAME=VALUE] [--wave N ... | --line LINE] [--to PKG=VER ...]
+             [--hold PKG ...] [--no-check]
 bits upgrade -n ...          # report what it would change, write nothing
 
 bits upgrade LCG plan.csv --wave 0 --wave 1 -a x86_64-el9-gcc14-dbg
@@ -1755,6 +1756,13 @@ version, or only the waves given with `--wave` (repeatable; 0 known exploited,
 1 within the major version, 2 major upgrades); from the converged plan, the
 release line given with `--line`. `--to` (repeatable) adds or overrides
 versions; given alone, no plan is read.
+
+`--hold PKG` (repeatable) keeps a package in its release series, its first two
+version numbers (Python 3.13.x, for frameworks built for one Python): a version
+beyond it is replaced by the newest release in the series (from PyPI for a
+`PythonPipRecipe`, else from its git source's tags), and the package is reported
+as held, with the version asked for; with no newer release in the series it is
+left as it is.
 
 For each package, the file that sets its version is edited:
 

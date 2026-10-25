@@ -177,6 +177,24 @@ class WantedTest(unittest.TestCase):
     self.assertEqual(up.wanted(self._args(to=["go=4"]), self._parser()), {"go": "4"})   # --to alone
 
 
+class HoldTest(unittest.TestCase):
+  def test_the_newest_in_the_series(self):
+    vs = ["3.13.11", "3.13.12", "3.13.9", "3.14.0", "3.13.13rc1", "3.12.20"]
+    self.assertEqual(up.held_version(vs, "3.13.11"), "3.13.12")
+    self.assertIsNone(up.held_version(vs, "3.13.12"))
+    self.assertTrue(up.same_series("3.13.11", "3.13.2") and not up.same_series("3.13.11", "3.14.0"))
+    self.assertEqual(up.held_version(["6.40.04", "6.42.00"], "v6.40.02"), "v6.40.04")   # ROOT's spelling
+    self.assertEqual(up._pypi_name('package: pywt\n---\nPYPI_NAME="PyWavelets"\n', {}, "pywt"), "PyWavelets")
+    orig = up._tags
+    up._tags = lambda repo: {"v3.13.12", "v3.14.0", "v3.13.13rc1", "curl-8_18_0", "release-2.1.12-stable",
+                             "v6-40-04"}
+    try:
+      self.assertEqual(sorted(up._release_versions({"package": "Python", "source": "https://x/cpython"})),
+                       ["2.1.12", "3.13.12", "3.14.0", "6.40.04", "8.18.0"])
+    finally:
+      up._tags = orig
+
+
 class GitInsteadTest(unittest.TestCase):
   RECIPE = ('package: fmt\nversion: "12.1.0"\ntag: "%(version)s"\nsources:\n'
             '  - https://lcgpackages.example/fmt-%(version)s.tar.gz\npatches:\n  - fmt-fix.patch\n'
@@ -408,6 +426,11 @@ class InPlaceTest(unittest.TestCase):
     with open(os.path.join(self.cfg, "curl.sh")) as f:
       self.assertEqual(f.read(), "mine\n")
     self.assertFalse(os.path.exists(os.path.join(self.cfg, "patches")))
+
+  def test_held_in_its_series(self):
+    out = self._upgrade("--to", "curl=9.0.0", "--hold", "curl")     # no release reachable here
+    self.assertIn("held in 8.18.x: 9.0.0 asked for; no newer release in the series", out)
+    self.assertFalse(os.path.exists(os.path.join(self.cfg, "curl.sh")))
 
   def test_left_for_a_hand_edit(self):
     out = self._upgrade("--to", "nope=1", "--to", "zlib=1.3.2", code=1)

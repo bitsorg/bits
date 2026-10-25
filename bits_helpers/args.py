@@ -1442,6 +1442,10 @@ def add_upgrade_arguments(subparsers, ctx):
   up.add_argument("--set", dest="variables", action="append", default=[], metavar="NAME=VALUE",
                   help="As for the build (e.g. release=LCG_110) (repeatable).")
   ctx.search_path(up)
+  up.add_argument("--hold", action="append", default=[], metavar="PACKAGE",
+                  help=("Keep PACKAGE in its release series (e.g. Python 3.13.x): a version beyond "
+                        "it is replaced by the newest release in the series, looked up on PyPI or in its "
+                        "git tags even with --no-check (repeatable)."))
   up.add_argument("--no-check", dest="no_check", action="store_true", default=False,
                   help="Do not check the new sources (URLs, git tags, PyPI).")
   return up

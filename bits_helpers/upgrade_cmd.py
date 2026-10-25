@@ -3,7 +3,7 @@
 """``bits upgrade``: set new versions of packages in the recipes, in place.
 
     bits upgrade PACKAGE... [plan.csv] [--defaults D] [-a ARCH] [-c DIR]
-                 [--wave N ...] [--line LINE] [--to PKG=VER ...]
+                 [--wave N ...] [--line LINE] [--to PKG=VER ...] [--hold PKG ...]
 
 resolves PACKAGE as ``bits build`` would (``bits status``), finds for each
 package the file that sets its version (its recipe, the defaults profile whose
@@ -220,6 +220,14 @@ def _header(text):
     return meta if isinstance(meta, dict) else {}
 
 
+def _pypi_name(text, meta, package):
+    """The PyPI project of a PythonPipRecipe: PYPI_NAME as its body sets it (or
+    its header's variables), else the package."""
+    from bits_helpers.manifest import _PYPI_NAME
+    m = _PYPI_NAME.search(text.split("\n---\n", 1)[-1])
+    return (m.group(1) if m else None) or (meta.get("variables") or {}).get("PYPI_NAME") or package
+
+
 def check_sources(spec, recipe_text, version, resolve):
     """[{what, ok, detail}] of the sources of the recipe *recipe_text* (of *spec*)
     at *version*: each tarball URL (HEAD), a git source's tag, a PythonPipRecipe's
@@ -250,7 +258,7 @@ def check_sources(spec, recipe_text, version, resolve):
             ok, detail = _git_tag_exists(str(meta["source"]), new["tag"])
             out.append({"what": "%s %s" % (meta["source"], new["tag"]), "ok": ok, "detail": detail})
     if "PythonPipRecipe" in recipe_text:
-        name = (meta.get("variables") or {}).get("PYPI_NAME") or spec["package"]
+        name = _pypi_name(recipe_text, meta, spec["package"])
         ok, detail = _url_exists("https://pypi.org/pypi/%s/%s/json" % (
             urllib.parse.quote(str(name)), urllib.parse.quote(version)))
         out.append({"what": "PyPI %s %s" % (name, version), "ok": ok, "detail": detail})
@@ -493,6 +501,49 @@ def upstream_instead(spec, text, version):
     return None
 
 
+# ── held packages: within their release series ──────────────────────────────
+
+def _numbers(version):
+    """A plain release version as numbers ((3, 13, 11); v6.40.02: (6, 40, 2)),
+    None for others (rc, dev, ...)."""
+    v = version[1:] if version[:1] in "vV" else version
+    return tuple(int(x) for x in v.split(".")) if re.match(r"^\d+(\.\d+)*$", v) else None
+
+
+def same_series(old, new):
+    """Do versions *old* and *new* share their first two numbers (3.13.x)?"""
+    a, b = _numbers(old), _numbers(new)
+    return a is not None and b is not None and a[:2] == b[:2]
+
+
+def _release_versions(spec):
+    """The versions *spec*'s upstream released: PyPI's for a PythonPipRecipe,
+    else those its git source's tags spell (v3.13.12, curl-8_18_0, ...)."""
+    if "PythonPipRecipe" in str(spec.get("recipe") or ""):
+        name = _pypi_name(str(spec.get("recipe") or ""), spec, spec["package"])
+        about = _get_json("https://pypi.org/pypi/%s/json" % urllib.parse.quote(str(name))) or {}
+        return [str(v) for v in about.get("releases") or {}]
+    source = str(spec.get("source") or "")
+    if not source or "%(" in source:
+        return []
+    out = []
+    for tag in _tags(source):
+        m = (re.match(r"^[vV]?(\d+(?:[._-]\d+)+)(?:-stable)?$", tag)
+             or re.match(r"^[A-Za-z][\w.]*?[-_]v?(\d+(?:[._-]\d+)+)(?:-stable)?$", tag))
+        if m:
+            out.append(re.sub(r"[_-]", ".", m.group(1)))
+    return out
+
+
+def held_version(versions, current):
+    """The newest release of *versions* in *current*'s series (its first two
+    numbers) newer than *current*, spelt as *current* is (a leading v), or None."""
+    now = _numbers(current)
+    ok = [v for v in versions if _numbers(v) and same_series(current, v) and _numbers(v) > now]
+    best = max(ok, key=_numbers, default=None)
+    return best and (current[0] + best.lstrip("vV") if current[:1] in "vV" else best.lstrip("vV"))
+
+
 # ── what to upgrade ──────────────────────────────────────────────────────────
 
 PLAN_GLOB = "upgrade-plan-*.csv"     # the name bits-console gives its CSV exports
@@ -662,6 +713,9 @@ def doUpgrade(args, parser):
     for name, version in want.items():
         if seen.setdefault(name.lower(), version) != version:
             parser.error("%s is given two versions" % name)
+    holds = {h.lower() for h in getattr(args, "hold", None) or []}
+    for h in sorted(holds - {n.lower() for n in want}):
+        warning("--hold %s: not among the packages to upgrade", h)
     rows, copies, texts = [], {}, {}       # cached file -> its copy; file -> its text now
     for name, version in sorted(want.items(), key=lambda kv: kv[0].lower()):
         spec = specs.get(name.lower())
@@ -674,6 +728,14 @@ def doUpgrade(args, parser):
         if old == version:
             row.update(status="unchanged")
             continue
+        held = ""
+        if name.lower() in holds and not same_series(old, version):
+            newest = held_version(_release_versions(spec), old)
+            held = "held in %s.x: %s asked for" % (".".join(old.split(".")[:2]), version)
+            if not newest:
+                row.update(status="held", detail=held + "; no newer release in the series")
+                continue
+            version = row["to"] = newest
         pin = spec.get("pinned_by") or ""
         try:
             if pin.startswith("defaults:"):
@@ -710,7 +772,7 @@ def doUpgrade(args, parser):
             else:
                 row["detail"] = "in %s" % where
         except NeedsHand as e:
-            row.update(status="edit by hand", detail=str(e))
+            row.update(status="edit by hand", detail="%s%s" % (held + "; " if held else "", e))
             continue
         if not args.no_check and not pin:
             checks = check_sources(spec, text, version, resolve)
@@ -748,6 +810,9 @@ def doUpgrade(args, parser):
                 f.write(text)
         row.update(status="edited", file=os.path.relpath(path),
                    edits=", ".join("%s %s -> %s" % e for e in edits))
+        if held:
+            row["detail"] = "%s, the newest in the series instead: check which findings it fixes; %s" % (
+                held, row["detail"])
     banner("Upgrade%s" % (" (dry run: nothing written)" if dry else ""))
     for row in rows:
         info("%-24s %-14s -> %-14s %s%s", row["package"], row.get("from", "?"), row["to"], row["status"],
