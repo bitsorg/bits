@@ -664,6 +664,17 @@ class ApiTest(_DB):
                          [("b-1", [0])])                       # CVE-A is known exploited
         self.assertEqual([c["name"] for c in plan["converged"]], ["libxml2"])
         self.assertEqual(self._get("bob", "/ops/sbom/plan").json(), {"releases": [], "converged": []})
+        (lic,) = self._get("alice", "/ops/sbom/licences").json()["releases"]
+        self.assertEqual((lic["build_id"], lic["open"]), ("b-1", {"conflict": 0, "unknown": 4}))
+        lic = self._get("alice", "/ops/sbom/licences/b-1").json()
+        self.assertEqual(sorted({f["kind"] for f in lic["findings"]}), ["unknown"])
+        self.assertEqual(self._get("bob", "/ops/sbom/licences").json(), {"releases": []})
+        self.assertEqual(self._get("bob", "/ops/sbom/licences/b-1").status_code, 404)
+        self.assertEqual([r["build_id"] for r in self._get("alice", "/ops/sbom/dependencies").json()["releases"]],
+                         ["b-1"])
+        dep = self._get("alice", "/ops/sbom/dependencies/b-1").json()
+        self.assertEqual((dep["top"], dep["previous"]), (["ROOT", "numpy"], None))
+        self.assertEqual(self._get("bob", "/ops/sbom/dependencies/b-1").status_code, 404)
         found = self._get("alice", "/ops/sbom/vulnerabilities/CVE-A").json()["builds"]
         self.assertEqual(sorted((r["name"], r["suppressed"]) for r in found),
                          [("libxml2", None), ("zlib1g", rid)])

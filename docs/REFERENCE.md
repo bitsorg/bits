@@ -1516,6 +1516,26 @@ a higher one already built and scanned clean; a line whose version is pinned
 (`bits:pinned_by` in its SBOM: a defaults `overrides:` entry or another
 package's `name = version` requires) is an exception.
 
+`GET /ops/sbom/licences?community=` lists the release lines with their open
+licence findings, and `GET /ops/sbom/licences/{build}` analyses a line's newest
+build, from the licences its SBOM gives (the recipes' `license:`, as SPDX
+expressions). Its findings are licence conflicts along runtime dependency paths
+(GPL-2.0-only with GPL-3.0, AGPL or Apache-2.0; GPL-3.0 or AGPL with
+GPL-2.0-only), each with its paths, and packages with no licence, a
+`LicenseRef-` or a name that is no SPDX id. Build-only
+dependencies, standalone build tools listed in `requires:` (CMake, autotools,
+...) and packages from the host form no combined work and are not followed. An
+admin accepts a finding as a triage rule on `licence:conflict` or
+`licence:unknown`. It also lists the GPL and AGPL code each package the release
+asks for uses at run time, and the packages whose binaries are not
+redistributed. `GET /ops/sbom/dependencies?community=` gives the release lines
+and the packages their newest builds have in several versions, and
+`GET /ops/sbom/dependencies/{build}` a line's newest build: the packages most
+others depend on (how many rebuild when one changes, how many use it at run
+time), those needed only to build, those nothing needs, and what changed since
+the line's previous build (packages added, removed, in another version, under
+another licence).
+
 ---
 
 ### bits checksums

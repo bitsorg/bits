@@ -68,13 +68,13 @@ def _major(v):
 
 def release_lines(conn, communities=None):
     """The newest indexed build of each release line of *communities* (None: all)."""
-    from .sbom_scan import INDEX_VERSION, _in
+    from .sbom_scan import FINDINGS_INDEX, _in
     q = ("SELECT b.build_id, b.community, MAX(b.pipeline_id) AS pipeline_id, p.package,"
          " p.version, p.platform, MAX(b.published_at) AS published_at, s.scanned_ms,"
          " s.components, s.identified"
          " FROM builds b JOIN sbom_scans s ON s.build_id = b.build_id"
          " LEFT JOIN pipelines p ON p.id = b.pipeline_id WHERE s.index_version >= ?")
-    args = [INDEX_VERSION]
+    args = [FINDINGS_INDEX]
     if communities is not None:
         if not communities:
             return []

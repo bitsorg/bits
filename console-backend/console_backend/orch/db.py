@@ -494,6 +494,14 @@ MIGRATIONS = [
         "ALTER TABLE sbom_packages ADD COLUMN pinned_by TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE sbom_packages ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'",
     ],
+    # 16: what the licence and dependency analysis needs (sbom_licences.py): each
+    # package's licence and redistribution, its runtime links, whether it is shipped.
+    [
+        "ALTER TABLE sbom_packages ADD COLUMN license TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE sbom_packages ADD COLUMN redistributable TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE sbom_packages ADD COLUMN runtime_on TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE sbom_packages ADD COLUMN top INTEGER NOT NULL DEFAULT 0",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

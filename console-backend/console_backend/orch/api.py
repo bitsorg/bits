@@ -80,8 +80,8 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, kinds, outside, phases, reconcile, sbom_plan, sbom_scan, shadow, trace,
-               vuln_triage)
+               failures, kinds, outside, phases, reconcile, sbom_licences, sbom_plan, sbom_scan,
+               shadow, trace, vuln_triage)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -629,6 +629,52 @@ async def sbom_upgrade_plan(request: Request, community: str = ""):
     data = await _caller(request)
     mine = await _communities(data, community)
     out = await run_in_threadpool(_read, sbom_plan.plan, communities=mine)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/sbom/licences")
+async def sbom_licence_lines(request: Request, community: str = ""):
+    """The release lines of the caller's communities, with their open licence
+    findings by kind (sbom_licences)."""
+    data = await _caller(request)
+    mine = await _communities(data, community)
+    out = await run_in_threadpool(_read, sbom_licences.licence_lines, communities=mine)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/sbom/licences/{build_id}")
+async def sbom_licence_report(build_id: str, request: Request, community: str = ""):
+    """The licence analysis of a release line's newest build: licence classes,
+    findings with their paths, copyleft reach, packages not redistributed."""
+    data = await _caller(request)
+    mine = await _communities(data, community)
+    out = await run_in_threadpool(_read, sbom_licences.licence_report, build_id,
+                                  communities=mine)
+    if out is None:
+        raise HTTPException(404, "not the newest build of a release line of your communities")
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/sbom/dependencies")
+async def sbom_dependency_lines(request: Request, community: str = ""):
+    """The release lines of the caller's communities, and the packages their
+    newest builds have in several versions."""
+    data = await _caller(request)
+    mine = await _communities(data, community)
+    out = await run_in_threadpool(_read, sbom_licences.dependency_lines, communities=mine)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/sbom/dependencies/{build_id}")
+async def sbom_dependency_report(build_id: str, request: Request, community: str = ""):
+    """The dependency analysis of a release line's newest build, with what
+    changed since the line's previous build."""
+    data = await _caller(request)
+    mine = await _communities(data, community)
+    out = await run_in_threadpool(_read, sbom_licences.dependency_report, build_id,
+                                  communities=mine)
+    if out is None:
+        raise HTTPException(404, "not the newest build of a release line of your communities")
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
