@@ -1507,9 +1507,9 @@ Both are events. The findings a rule covers are left out of the effective counts
 of `/ops/sbom/scans`, and `GET /ops/builds/{pipeline}/sbom?vulnerabilities=1`
 serves the SBOM with its findings and the rules as CycloneDX `analysis` (VEX).
 So are, with no rule, the findings of components the stack does not ship
-(`not_shipped`, counted apart): host tools (`bits:sbom = tool`) and system
-packages outside the runtime closure of what the release asks for (only
-`build_requires`, or only a host tool, reach them); the served SBOM marks them
+(`not_shipped`, counted apart): host tools (`bits:sbom = tool`), what only host
+tools use at run time, and system packages outside the runtime closure of what
+the release asks for (only `build_requires` reach them); the served SBOM marks them
 `not_affected` with `bits:not_shipped`, and the upgrade plans skip them.
 
 `GET /ops/sbom/plan?community=` plans upgrades from them. For each release line

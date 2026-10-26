@@ -157,6 +157,7 @@ def analysis(rule):
 
 
 NOT_SHIPPED = {"tool": "a host tool, run but not shipped with the stack (sbom: tool)",
+               "tool-only": "used only by host tools, not shipped with the stack",
                "build-only": "a system package only the build needs, not shipped with the stack"}
 
 

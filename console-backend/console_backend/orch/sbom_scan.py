@@ -21,8 +21,8 @@ scanner can identify at all (a CPE, or a purl of an ecosystem it knows): a build
 with none is not scannable, and its zero findings say nothing. The findings the
 admins' triage covers (vuln_triage) are left out of the effective counts, as are
 those of components not shipped with the stack (not_shipped): host tools (a
-recipe's `sbom: tool`) and system packages nothing the release asks for uses at
-run time. Each
+recipe's `sbom: tool`), what only they use, and system packages nothing the
+release asks for uses at run time. Each
 package's licence, redistribution, runtime links and whether the release asks
 for it (top) are kept for the licence analysis (sbom_licences)."""
 
@@ -44,7 +44,7 @@ RETRY_MS = 3600 * 1000             # a failed scan is tried again after this
 TIMEOUT_S = (5, 60)                # connect, read: the scanner gives up at 45 s
 SEVERITIES = ("critical", "high", "medium", "low", "other")
 SBOM = "sbom.cdx.json"
-INDEX_VERSION = 4                  # a good scan older than this indexes its build again
+INDEX_VERSION = 5                  # a good scan older than this indexes its build again
 FINDINGS_INDEX = 2                 # the index the findings and the plans need
 # purl types grype matches (pkg:generic and pkg:github it cannot)
 MATCHED_PURLS = {"apk", "cargo", "cocoapods", "composer", "conan", "deb", "gem", "golang",
@@ -147,28 +147,36 @@ def _licence(c):
     return " AND ".join(out)
 
 
-def _shipped(comps, deps, tops):
-    """The refs the release ships: the runtime closure of its *tops*, host tools
-    (bits:sbom = tool) neither shipped nor followed; None without tops (older SBOMs)."""
-    if not tops:
-        return None
-    tool = {str(c["bom-ref"]) for c in comps if _props(c).get("bits:sbom") == "tool"}
-    seen, todo = set(), [t for t in tops if t not in tool]
+def _closure(deps, starts, skip=frozenset()):
+    seen, todo = set(), [t for t in starts if t not in skip]
     while todo:
         ref = todo.pop()
         if ref not in seen:
             seen.add(ref)
-            todo += [d for d in deps.get(ref, []) if d not in tool]
+            todo += [d for d in deps.get(ref, []) if d not in skip]
     return seen
+
+
+def _shipped(comps, deps, tops):
+    """(shipped, used by tools only) refs: the runtime closure of the release's
+    *tops* without host tools (bits:sbom = tool), and what only through them;
+    None without tops (older SBOMs)."""
+    if not tops:
+        return None
+    tool = {str(c["bom-ref"]) for c in comps if _props(c).get("bits:sbom") == "tool"}
+    shipped = _closure(deps, tops, tool)
+    return shipped, _closure(deps, tops) - shipped - tool
 
 
 def _not_shipped(props, ref, shipped):
     """Why a component is not shipped with the stack ('' if it is)."""
     if props.get("bits:sbom") == "tool":
         return "tool"
-    if props.get("bits:provided_by") == "system" and shipped is not None and ref not in shipped:
-        return "build-only"
-    return ""
+    if shipped is None or ref in shipped[0]:
+        return ""
+    if ref in shipped[1]:
+        return "tool-only"
+    return "build-only" if props.get("bits:provided_by") == "system" else ""
 
 
 def index(doc, vulns):

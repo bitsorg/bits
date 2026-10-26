@@ -338,12 +338,14 @@ class SbomIndexTest(Fixture):
         doc["components"] += [
             component("perf@1", "perf", "6.1", cpe="cpe:2.3:a:linux:perf:6.1:*:*:*:*:*:*:*", bits_sbom="tool"),
             component("elfutils@system", "elfutils", "0.190", bits_provided_by="system"),
-            component("ssl@system", "openssl", "3.0", bits_provided_by="system")]
+            component("ssl@system", "openssl", "3.0", bits_provided_by="system"),
+            component("bpf@1", "libbpf", "1.5", cpe="cpe:2.3:a:libbpf:libbpf:1.5:*:*:*:*:*:*:*")]
         doc["components"][1]["properties"].append({"name": "bits:build_requires", "value": "openssl"})
         doc["dependencies"][0]["dependsOn"].append("perf@1")             # asked for, still a tool
-        doc["dependencies"].append({"ref": "perf@1", "dependsOn": ["elfutils@system"]})
+        doc["dependencies"].append({"ref": "perf@1", "dependsOn": ["elfutils@system", "bpf@1", "libxml2@1"]})
         vulns = VULNS + [{"id": "CVE-P", "ratings": [{"severity": "critical"}],
-                          "affects": [{"ref": r} for r in ("perf@1", "elfutils@system", "ssl@system")]}]
+                          "affects": [{"ref": r} for r in ("perf@1", "elfutils@system", "ssl@system",
+                                                           "bpf@1")]}]
         self.objects["MANIFESTS/b-3/sbom.cdx.json"] = json.dumps(dict(doc, name="b-3")).encode()
         self.conn.execute("UPDATE sbom_scans SET index_version = 0 WHERE build_id = 'b-3'")
         self.conn.commit()
@@ -351,17 +353,19 @@ class SbomIndexTest(Fixture):
         why = {r["ref"]: r["not_shipped"] for r in self.conn.execute(
             "SELECT ref, not_shipped FROM sbom_packages WHERE build_id = 'b-3'")}
         self.assertEqual({r: w for r, w in why.items() if w},
-                         {"perf@1": "tool", "elfutils@system": "build-only", "ssl@system": "build-only"})
+                         {"perf@1": "tool", "elfutils@system": "tool-only", "bpf@1": "tool-only",
+                          "ssl@system": "build-only"})                # not libxml2: ROOT uses it too
         row = {r["build_id"]: r for r in sbom_scan.listing(self.conn)}["b-3"]
         self.assertEqual((row["effective"]["critical"], row["effective"]["high"], row["not_shipped"]),
-                         (0, 2, 3))                               # zlib, used at run time, stays
+                         (0, 2, 4))                               # zlib, used at run time, stays
         (perf,) = sbom_scan.packages(self.conn, "perf")
         self.assertEqual((perf["not_shipped"], perf["findings"][0]["id"]), ("tool", "CVE-P"))
         out = vuln_triage.annotate(vulns, {}, vuln_triage.Rules([]), "atlas", why)
         self.assertEqual([(v["bom-ref"] if "bom-ref" in v else v["id"], [a["ref"] for a in v["affects"]],
                            v.get("analysis", {}).get("state")) for v in out if v["id"] == "CVE-P"],
-                         [("CVE-P-build-only", ["elfutils@system", "ssl@system"], "not_affected"),
-                          ("CVE-P-tool", ["perf@1"], "not_affected")])
+                         [("CVE-P-build-only", ["ssl@system"], "not_affected"),
+                          ("CVE-P-tool", ["perf@1"], "not_affected"),
+                          ("CVE-P-tool-only", ["elfutils@system", "bpf@1"], "not_affected")])
 
     def test_without_a_release_root_only_tools_are_left_out(self):
         doc = dict(SBOM, metadata={}, components=SBOM["components"] + [

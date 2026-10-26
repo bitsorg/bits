@@ -134,7 +134,7 @@ def plan_release(conn, rel, rules):
         p = packages.get(f["ref"])
         if p is None:
             continue
-        if p["not_shipped"]:                       # a host tool, a build-only system package
+        if p["not_shipped"]:                       # a host tool, what only tools use, build-only
             p["unshipped"] += 1
             continue
         if rules.rule(community, f["vuln_id"], p["name"], p["version"], p["alias"]):

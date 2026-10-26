@@ -503,7 +503,7 @@ MIGRATIONS = [
         "ALTER TABLE sbom_packages ADD COLUMN top INTEGER NOT NULL DEFAULT 0",
     ],
     # 17: a component not shipped with the stack, left out of the vulnerability
-    # counts and plans (sbom_scan.index): 'tool' (recipe sbom: tool), 'build-only'.
+    # counts and plans (sbom_scan.index): 'tool' (sbom: tool), 'tool-only', 'build-only'.
     [
         "ALTER TABLE sbom_packages ADD COLUMN not_shipped TEXT NOT NULL DEFAULT ''",
     ],
