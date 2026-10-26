@@ -412,8 +412,8 @@ class TestSmallerPoints(unittest.TestCase):
     def test_prefetch_follows_the_plan(self):
         from bits_helpers import build, plan
         states = {"a": plan.INSTALLED, "b": plan.LOCAL_TARBALL, "c": plan.REMOTE,
-                  "d": plan.BUILD, "e": plan.DEVEL}
-        self.assertEqual(build.prefetch_wanted(list("abcdef"), states),
+                  "d": plan.BUILD, "e": plan.DEVEL, "g": plan.SYMLINK}
+        self.assertEqual(build.prefetch_wanted(list("abcdefg"), states),
                          [("c", False), ("d", True), ("e", True), ("f", True)])
         self.assertEqual(build.prefetch_wanted(["a"], {}), [("a", True)])  # no plan
         spec = {"package": "p", "version": "1", "is_devel_pkg": True, "hash": "ab12",

@@ -251,10 +251,11 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
 
 def prefetch_wanted(build_order, states):
   """[(package, with its sources)] worth prefetching, from the plan *states*: an
-  installed package needs neither tarball nor sources, one from the store no
-  sources. Without a plan, everything."""
+  installed or linked package needs neither tarball nor sources, one from the
+  store no sources. Without a plan, everything."""
   return [(p, states.get(p) != _plan.REMOTE) for p in build_order
-          if states.get(p) not in (_plan.INSTALLED, _plan.LOCAL_TARBALL, _plan.OVERLAY)]
+          if states.get(p) not in (_plan.INSTALLED, _plan.LOCAL_TARBALL, _plan.OVERLAY,
+                                   _plan.SYMLINK)]
 
 
 def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None,
