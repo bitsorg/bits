@@ -123,6 +123,8 @@ def job_summary(jobs):
         runner = j.get("runner") or {}
         if runner.get("description"):
             d["runner"] = runner["description"]
+        if runner.get("id"):
+            d["runner_id"] = runner["id"]                # descriptions may be empty or shared
         out.append(d)
     return out
 

@@ -97,7 +97,7 @@ pipeline would build it twice, and certify nothing). A host's runner is the one
 with its unique tag (`bits-host-<name>`), whatever its description; a host no
 runner carries the tag of is logged once. GitLab refusing a pipeline (its job limit) leaves the build in its place;
 refusing one build five times refuses it. `GET /ops/queue` lists the waiting
-builds and the hosts, `POST /ops/queue/{id}/cancel` takes one out before it
+builds, the hosts and the pause (GitLab refusing pipelines: why, until when), `POST /ops/queue/{id}/cancel` takes one out before it
 starts. A Retry of a pipeline restarts it at once, outside the queue. With
 `certify_groups` the answer carries a passkey challenge over the builds that
 certify (by digest of ref, name and variables); `POST /ops/queue/approve

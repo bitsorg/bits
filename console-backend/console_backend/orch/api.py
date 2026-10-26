@@ -985,7 +985,8 @@ async def approve_queued(request: Request):
 @router.get("/ops/queue")
 async def list_queue(request: Request, community: str = "", limit: int = 200):
     """Queued builds of the communities the caller administers (all, for an
-    overall admin), and the build hosts as the worker last saw them."""
+    overall admin), the build hosts as the worker last saw them, and why no
+    build starts for now (paused: GitLab refusing pipelines), if so."""
     data = await _caller(request)
     _queue_on()
     mine = await _scope(data)
@@ -996,7 +997,7 @@ async def list_queue(request: Request, community: str = "", limit: int = 200):
     def read():
         with _open() as conn:
             return {"entries": build_queue.listing(conn, communities=mine, limit=limit),
-                    "hosts": build_queue.host_status(conn)}
+                    "hosts": build_queue.host_status(conn), "paused": build_queue.paused(conn)}
     return JSONResponse(await run_in_threadpool(read), headers={"Cache-Control": "no-store"})
 
 

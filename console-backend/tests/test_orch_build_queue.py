@@ -33,9 +33,9 @@ def _build(tag="bits-build-x86_64", pkg="ROOT", **more):
 class FakeForge:
     def __init__(self):
         self.started, self.next_id, self.fail, self.deleted = [], 100, None, []
-        self.runners = [{"description": d, "status": "online", "paused": False, "tags": t}
-                        for d, t in (("bits.cern.ch", ["self-hosted", "bits-host-bits"]),
-                                     ("pc-runner", ["bits-host-pc"]), ("arm", ["bits-host-arm"]))]
+        self.runners = [{"id": i, "description": d, "status": "online", "paused": False, "tags": t}
+                        for i, d, t in ((1, "bits.cern.ch", ["self-hosted", "bits-host-bits"]),
+                                        (2, "pc-runner", ["bits-host-pc"]), (3, "", ["bits-host-arm"]))]
 
     def list_runners(self, tag=""):
         if isinstance(self.runners, Exception):
@@ -145,7 +145,7 @@ class QueueTest(_Queue):
         from console_backend import forge_ops
         self._pipeline(1, tag="bits-build-x86_64",
                        jobs=[{"status": "running", "runner": "bits.cern.ch"}])   # bits' runner
-        self._pipeline(2, tag="bits-host-pc")
+        self._pipeline(2, jobs=[{"status": "running", "runner_id": 2}])   # pc's, by its id alone
         self._queue(_build())
         self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 0)
         self.forge.runners = forge_ops.ForgeError(403, "forbidden")     # the last names stay
@@ -153,6 +153,7 @@ class QueueTest(_Queue):
         self._pipeline(1, outcome="success")
         self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 1)
         self.assertEqual(self._states()[0][1:3], ("dispatched", "bits"))
+        self.assertTrue([h["busy"] for h in bq.host_status(self.conn)][1])     # pc
 
     def test_a_host_whose_runner_is_offline_is_not_free(self):
         from console_backend import forge_ops
@@ -205,6 +206,7 @@ class QueueTest(_Queue):
             bq.dispatch(self.conn, self.forge, self.hosts)
         self.assertEqual([(s[1], s[2]) for s in self._states()], [("queued", ""), ("queued", "")])
         self.assertEqual(bq.get(self.conn, a)["attempts"], 0)
+        self.assertIn("allowed number of jobs", bq.paused(self.conn)["why"])
         # Paused: nothing is tried for a while.
         with self.assertRaises(bq.Stop):
             bq.dispatch(self.conn, self.forge, self.hosts)
@@ -361,6 +363,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(v["BITS_CERTIFIER"], "alice")
         listed = self._get("alice", "/ops/queue").json()
         self.assertEqual([(e["id"], e["ahead"]) for e in listed["entries"]], [(eid, 0)])
+        self.assertIsNone(listed["paused"])
         self.assertEqual(self._get("bob", "/ops/queue").json()["entries"], [])
         self.assertEqual(self._post("bob", "/ops/queue/%d/cancel" % eid, {}).status_code, 403)
         self.assertEqual(self._post("carol", "/ops/queue/%d/cancel" % eid, {}).status_code, 200)

@@ -152,6 +152,13 @@ def host_status(conn):
     return json.loads(r["value"]) if r else []
 
 
+def paused(conn):
+    """{until (ms), why} while GitLab's refusal keeps every build waiting, else None."""
+    r = conn.execute("SELECT value FROM kv WHERE key = 'queue.pause'").fetchone()
+    pause = json.loads(r["value"]) if r else {}
+    return pause if pause.get("until", 0) > db.now_ms() else None
+
+
 # --- the hosts ----------------------------------------------------------------
 
 def parse_hosts(text):
@@ -188,7 +195,7 @@ def hosts(reader, path, ref="main"):
 
 def _occupancy(conn, hs, named):
     """(names of busy hosts, {arch: running pipelines not on a runner yet});
-    *named* maps a runner's description to its host."""
+    *named* maps a runner's id and description to its host."""
     now, busy, waiting = db.now_ms(), set(), {}
     for r in conn.execute(
             "SELECT q.host FROM build_queue q LEFT JOIN pipelines p ON p.id = q.pipeline_id"
@@ -203,8 +210,8 @@ def _occupancy(conn, hs, named):
             " AND id NOT IN (SELECT pipeline_id FROM build_queue WHERE pipeline_id IS NOT NULL)"):
         try:
             tag = str(json.loads(r["variables"] or "{}").get("BITS_RUNNER_TAG") or "")
-            runners = {j.get("runner") for j in json.loads(r["jobs"] or "[]")
-                       if j.get("runner") and j.get("status") not in _JOB_DONE}
+            runners = {j.get("runner_id") or str(j.get("runner") or "").strip()
+                       for j in json.loads(r["jobs"] or "[]") if j.get("status") not in _JOB_DONE}
         except (ValueError, AttributeError):
             continue
         on = {named[x] for x in runners if x in named}
@@ -296,7 +303,7 @@ def dropped(jobs):
     """Did GitLab drop the pipeline of *jobs* before any runner took one of them
     (stuck pending: no runner it could give them to)?"""
     return (any(j.get("failure_reason") in _STUCK for j in jobs)
-            and not any(j.get("runner") or j.get("started_at") for j in jobs))
+            and not any(j.get("runner") or j.get("runner_id") or j.get("started_at") for j in jobs))
 
 
 def unstick(conn):
@@ -318,21 +325,23 @@ def unstick(conn):
 
 def runner_hosts(forge, hs):
     """({hosts a runner with their unique tag serves, online and not paused},
-    {runner description: host}) from GitLab; None when it cannot tell (then
-    every host counts as online)."""
+    {runner id, and description: host}) from GitLab; None when it cannot tell
+    (then every host counts as online)."""
     from .. import forge_ops
-    online, named = set(), {}
+    online, named, shared = set(), {}, set()
     try:
         for h in hs:
             for x in forge.list_runners(h["tag"]) or []:
                 if not isinstance(x, dict):
                     continue
-                d = str(x.get("description") or "")
-                if named.get(d, h["name"]) != h["name"] and d not in _warned:
-                    _warned.add(d)
-                    log.warning("runner %r serves hosts %s and %s: give it one bits-host- tag",
-                                d, named[d], h["name"])
-                named[d] = h["name"]
+                rid, d = x.get("id"), str(x.get("description") or "").strip()
+                if named.get(rid, h["name"]) != h["name"] and rid not in _warned:
+                    _warned.add(rid)
+                    log.warning("runner %s serves hosts %s and %s: give it one bits-host- tag",
+                                rid, named[rid], h["name"])
+                if d and named.get(d, h["name"]) != h["name"]:
+                    shared.add(d)                    # a description of several hosts: no use
+                named.update({k: h["name"] for k in (rid, d) if k})
                 if x.get("paused") or x.get("active") is False:
                     continue
                 if (x.get("status") or ("online" if x.get("online") else "")) == "online":
@@ -340,6 +349,8 @@ def runner_hosts(forge, hs):
     except (forge_ops.ForgeError, ValueError) as e:
         log.warning("cannot list the runners (%s): hosts are taken as online", e)
         return None
+    for d in shared:
+        named.pop(d, None)
     _named.clear()
     _named.update(named)
     for h in hs:
@@ -349,7 +360,7 @@ def runner_hosts(forge, hs):
     return online, named
 
 
-_warned, _named = set(), {}            # the last runner descriptions GitLab gave
+_warned, _named = set(), {}            # the last runner ids and descriptions GitLab gave
 
 
 def _start(conn, forge, r, host, then):
