@@ -76,6 +76,29 @@ class DeploymentSelectionTest(unittest.TestCase):
         self.assertEqual(output, str(local))
         self.assertEqual((source / "etc/profile.d/init.sh").read_bytes(), original)
 
+    def test_manifest_records_the_linked_deployment(self):
+        from bits_helpers.manifest import BuildManifest
+        source = self.deploy()
+        self.work.mkdir()
+        manifest = BuildManifest(str(self.work), ["data-example"], self.arch, ["release"],
+                                 str(self.work), "abc")
+        args = Namespace(defaults=["release"], architecture=self.arch, docker=False,
+                         symlinkPackagesFrom=str(self.root), manifest=manifest)
+        spec = dict(self.spec)
+        ctx = _BuildLoopCtx(
+            args=args, cfg=BuildConfig.from_args(args), specs={spec["package"]: spec},
+            workDir=str(self.work), syncHelper=None, scheduler=None,
+            mainPackage=spec["package"], raw_architecture=self.arch, develPackageBranch="",
+            defaultsMeta={}, buildTargets="", packages=[], prefetch_executor=None,
+            cmake_prefix_env=False, specs_for_checksum_phase=[], monitoredDirs={})
+        with patch("bits_helpers.build.storeHook"), patch("bits_helpers.build.storeHashes"), \
+             patch("bits_helpers.build.log_current_package"):
+            build_one_package(spec["package"], ctx)
+        entry, = manifest.packages()
+        self.assertEqual(entry["outcome"], "already_installed")
+        self.assertEqual(entry["symlinked_from"], str(source))
+        self.assertEqual(entry["symlink_policy"], "strict")
+
     def test_matching_local_install_is_kept(self):
         from bits_helpers.plan import classify, INSTALLED
         from bits_helpers.reuse_symlinks import select_symlink_package

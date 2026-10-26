@@ -2206,6 +2206,7 @@ def build_one_package(p, ctx):
       spec["hash"] = _linked["hash"]
       spec["reuse_symlinked"] = True
       spec["symlink_source"] = _linked["source"]
+      spec["symlink_policy"] = cfg.symlink_policy
       spec["cachedTarball"] = ""
       spec.setdefault("deps_hash", "")
       info("Symlink: %s from %s (%s policy) -> %s", p, _linked["source"],

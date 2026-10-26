@@ -102,6 +102,8 @@ fields as additive and key off ``schema_version``.
                                                   # set its version; only when pinned
       "sbom":                   "tool",           # a host tool, never shipped; only when so
       "built_by":               str | None,       # user@host that compiled this hash; null unless built_from_source
+      "symlinked_from":         str,              # already_installed by --symlink-packages-from: the
+      "symlink_policy":         str,              # deployed package linked, and the policy; only then
       "completed_at":           ISO-8601
     }
 
@@ -599,6 +601,10 @@ class BuildManifest:
             # Why a package was built here rather than reused (additive).
             **({"rebuilt_because": spec["reuse_note"]}
                if outcome == "built_from_source" and spec.get("reuse_note") else {}),
+            # Linked from a deployment (--symlink-packages-from), not installed here.
+            **({"symlinked_from": spec.get("symlink_source") or "",
+                "symlink_policy": spec.get("symlink_policy") or "strict"}
+               if spec.get("reuse_symlinked") else {}),
         }
         with self._lock:
             self._data["packages"].append(entry)
