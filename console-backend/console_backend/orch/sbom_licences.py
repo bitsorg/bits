@@ -52,6 +52,7 @@ BUILD_TOOLS = {n.lower() for n in (
     "pkg_config", "pkgconfig", "gettext", "gperf", "bison", "flex", "swig", "ccache",
     "patchelf", "GCC-Toolchain", "Clang", "bits-recipe-tools", "yacc-like", "doxygen")}
 TOP_N = 50
+LICENCE_INDEX = 3                   # sbom_scan's index this analysis needs (licences, links, top)
 
 
 def finding_id(kind):
@@ -344,12 +345,11 @@ def _lines(conn, communities):
     """The newest build of each release line (sbom_plan), with whether it is
     indexed for this analysis."""
     from .sbom_plan import release_lines
-    from .sbom_scan import INDEX_VERSION
     lines = release_lines(conn, communities)
     for r in lines:
         v = conn.execute("SELECT index_version FROM sbom_scans WHERE build_id = ?",
                          (r["build_id"],)).fetchone()
-        r["indexed"] = bool(v and v["index_version"] >= INDEX_VERSION)
+        r["indexed"] = bool(v and v["index_version"] >= LICENCE_INDEX)
     return lines
 
 

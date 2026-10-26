@@ -518,8 +518,9 @@ async def _published_sbom(pipeline, name, build):
 
 async def _with_findings(data, pipeline, bid, body):
     """The CycloneDX *body* with its last good scan's findings (none published with
-    it) and their triage, marked with bits:community and bits:scanned (that scan's
-    database, or empty), if the caller administers the build's community; else None."""
+    it), their triage and those of components not shipped, marked with
+    bits:community and bits:scanned (that scan's database, or empty), if the
+    caller administers the build's community; else None."""
     mine = await _scope(data)
 
     def read(conn):
@@ -539,9 +540,12 @@ async def _with_findings(data, pipeline, bid, body):
         doc.pop("vulnerabilities", None)
         if vulns is not None:
             comps = doc.get("components") if isinstance(doc.get("components"), list) else []
+            unshipped = {r["ref"]: r["not_shipped"] for r in conn.execute(
+                "SELECT ref, not_shipped FROM sbom_packages WHERE build_id = ? AND not_shipped != ''",
+                (bid,))}
             doc["vulnerabilities"] = vuln_triage.annotate(
                 vulns, {c.get("bom-ref"): c for c in comps if isinstance(c, dict)},
-                vuln_triage.Rules.load(conn, {community}), community)
+                vuln_triage.Rules.load(conn, {community}), community, unshipped)
         if not isinstance(doc.get("metadata"), dict):
             doc["metadata"] = {}
         props = doc["metadata"].get("properties")

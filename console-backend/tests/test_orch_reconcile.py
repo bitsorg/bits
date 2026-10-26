@@ -691,6 +691,12 @@ class ApiTest(_DB):
             self.assertIn({"name": "bits:community", "value": "testbed"}, doc["metadata"]["properties"])
             self.assertIn({"name": "bits:scanned", "value": "d"}, doc["metadata"]["properties"])
             self.assertNotIn("vulnerabilities", self._get("dave", "/ops/builds/1/sbom").json())
+            self.conn.execute("UPDATE sbom_packages SET not_shipped = 'tool' WHERE ref = 'libxml2@1'")
+            self.conn.commit()
+            doc = self._get("alice", "/ops/builds/1/sbom?vulnerabilities=1").json()
+            self.assertEqual([(v["id"], v["analysis"]["state"], v["properties"]) for v in doc["vulnerabilities"]
+                              if v["id"] == "CVE-B"],
+                             [("CVE-B", "not_affected", [{"name": "bits:not_shipped", "value": "tool"}])])
             s3.objects["MANIFESTS/b-1/sbom.cdx.json"] = json.dumps(dict(SBOM, vulnerabilities=[{"id": "FORGED"}])).encode()
             os.unlink(sbom_scan._path(main.settings.orch_scans_dir, "b-1"))
             doc = self._get("alice", "/ops/builds/1/sbom?vulnerabilities=1").json()

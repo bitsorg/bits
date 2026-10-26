@@ -156,17 +156,25 @@ def analysis(rule):
     return out
 
 
-def annotate(vulns, components, rules, community):
+NOT_SHIPPED = {"tool": "a host tool, run but not shipped with the stack (sbom: tool)",
+               "build-only": "a system package only the build needs, not shipped with the stack"}
+
+
+def annotate(vulns, components, rules, community, not_shipped=None):
     """CycloneDX *vulns* with the rules of *community*: a vulnerability's affected
     components a rule covers move to a copy of it with that rule's analysis (and
-    bits:triage:* properties). *components* maps a bom-ref to its component."""
-    out = []
+    bits:triage:* properties); those *not_shipped* ({ref: why}) to one marked
+    not_affected (bits:not_shipped). *components* maps a bom-ref to its component."""
+    out, not_shipped = [], not_shipped or {}
     for v in vulns or []:
         if not isinstance(v, dict):
             continue
         groups = {}
         for a in v.get("affects") or []:
             ref = a.get("ref") if isinstance(a, dict) else None
+            if isinstance(ref, str) and not_shipped.get(ref):
+                groups.setdefault(("not_shipped", not_shipped[ref]), (None, []))[1].append(a)
+                continue
             c = components.get(ref) if isinstance(ref, str) else None
             c = c if isinstance(c, dict) else {}
             props = c.get("properties")
@@ -178,10 +186,16 @@ def annotate(vulns, components, rules, community):
         if list(groups) == [None] or not groups:
             out.append(v)
             continue
-        for rid, (r, affects) in sorted(groups.items(), key=lambda g: g[0] or 0):
+        for key, (r, affects) in sorted(groups.items(), key=lambda g: (
+                isinstance(g[0], tuple), g[0] if isinstance(g[0], tuple) else g[0] or 0)):
             entry = dict(v, affects=affects)
-            if r is not None:
-                entry["bom-ref"] = "%s-triage-%d" % (v.get("bom-ref") or v.get("id"), rid)
+            if isinstance(key, tuple):
+                entry["bom-ref"] = "%s-%s" % (v.get("bom-ref") or v.get("id"), key[1])
+                entry["analysis"] = {"state": "not_affected",
+                                     "detail": NOT_SHIPPED.get(key[1], "not shipped with the stack")}
+                entry["properties"] = [{"name": "bits:not_shipped", "value": key[1]}]
+            elif r is not None:
+                entry["bom-ref"] = "%s-triage-%d" % (v.get("bom-ref") or v.get("id"), key)
                 entry["analysis"] = analysis(r)
                 entry["properties"] = [{"name": "bits:triage:" + k, "value": str(r[k])} for k in (
                     "id", "package", "version", "author", "created_ms", "expires_ms") if r[k]]

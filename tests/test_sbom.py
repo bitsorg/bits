@@ -93,6 +93,23 @@ class TestComponents(unittest.TestCase):
         plain = {c["name"]: c for c in sbom.to_cyclonedx(_manifest())["components"]}["zlib"]
         self.assertNotIn("version", plain)                     # its check said nothing
 
+    def test_a_host_tool_is_marked(self):
+        m = _manifest()
+        m["system_package_info"] = {"zlib": {"version": "", "references": [], "sbom": "tool"}}
+        m["packages"][3]["sbom"] = "tool"
+        comps = {c["name"]: c for c in sbom.to_cyclonedx(m)["components"]}
+        for name in ("zlib", "ROOT"):
+            self.assertIn({"name": "bits:sbom", "value": "tool"}, comps[name]["properties"], name)
+        self.assertNotIn("bits:sbom", [p["name"] for p in comps["CMake"]["properties"]])
+
+    def test_a_requested_system_package_is_a_root(self):
+        m = _manifest()
+        m["requested_packages"] = ["kkmcee", "zlib"]
+        doc = sbom.to_cyclonedx(m)
+        root = doc["metadata"]["component"]["bom-ref"]
+        (deps,) = [d["dependsOn"] for d in doc["dependencies"] if d["ref"] == root]
+        self.assertIn("zlib@system", deps)
+
     def test_a_pinned_version_says_who_pinned_it(self):
         m = _manifest()
         m["packages"][3]["pinned_by"] = "defaults:lhcb"

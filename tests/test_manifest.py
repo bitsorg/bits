@@ -416,13 +416,17 @@ class TestAddPackage(unittest.TestCase):
         m = _make_manifest(self.tmp)
         m.set_system_packages({"zlib", "OpenSSL"}, {"ROOT": (["zlib"], ["OpenSSL"])},
                               {"zlib": {"version": "1.2.11", "references": []},
-                               "OpenSSL": {"version": "", "references": []}})
+                               "OpenSSL": {"version": "", "references": []},
+                               "perf": {"version": "", "references": [], "sbom": "tool"}})
         spec = dict(self.spec, package="ROOT", runtime_requires=["Python"],
-                    untracked_requires=["xrootd"], build_requires=["CMake"])
+                    untracked_requires=["xrootd"], build_requires=["CMake"], sbom="Tool")
         m.add_package(spec, "already_installed")
         data = self._load(m)
         self.assertEqual(data["system_packages"], ["OpenSSL", "zlib"])
-        self.assertEqual(data["system_package_info"], {"zlib": {"version": "1.2.11", "references": []}})
+        self.assertEqual(data["system_package_info"],          # a host tool kept, version or not
+                         {"zlib": {"version": "1.2.11", "references": []},
+                          "perf": {"version": "", "references": [], "sbom": "tool"}})
+        self.assertEqual(data["packages"][0]["sbom"], "tool")
         pkg = data["packages"][0]
         self.assertEqual(pkg["requires"], ["Python", "xrootd", "zlib"])
         self.assertEqual(pkg["build_requires"], ["CMake", "OpenSSL"])

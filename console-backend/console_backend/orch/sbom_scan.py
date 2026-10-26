@@ -19,7 +19,10 @@ A good scan also indexes the SBOM: its components (sbom_packages: which builds
 contain a package), what matched (sbom_findings), and how many components a
 scanner can identify at all (a CPE, or a purl of an ecosystem it knows): a build
 with none is not scannable, and its zero findings say nothing. The findings the
-admins' triage covers (vuln_triage) are left out of the effective counts. Each
+admins' triage covers (vuln_triage) are left out of the effective counts, as are
+those of components not shipped with the stack (not_shipped): host tools (a
+recipe's `sbom: tool`) and system packages nothing the release asks for uses at
+run time. Each
 package's licence, redistribution, runtime links and whether the release asks
 for it (top) are kept for the licence analysis (sbom_licences)."""
 
@@ -41,7 +44,7 @@ RETRY_MS = 3600 * 1000             # a failed scan is tried again after this
 TIMEOUT_S = (5, 60)                # connect, read: the scanner gives up at 45 s
 SEVERITIES = ("critical", "high", "medium", "low", "other")
 SBOM = "sbom.cdx.json"
-INDEX_VERSION = 3                  # a good scan older than this indexes its build again
+INDEX_VERSION = 4                  # a good scan older than this indexes its build again
 FINDINGS_INDEX = 2                 # the index the findings and the plans need
 # purl types grype matches (pkg:generic and pkg:github it cannot)
 MATCHED_PURLS = {"apk", "cargo", "cocoapods", "composer", "conan", "deb", "gem", "golang",
@@ -144,6 +147,30 @@ def _licence(c):
     return " AND ".join(out)
 
 
+def _shipped(comps, deps, tops):
+    """The refs the release ships: the runtime closure of its *tops*, host tools
+    (bits:sbom = tool) neither shipped nor followed; None without tops (older SBOMs)."""
+    if not tops:
+        return None
+    tool = {str(c["bom-ref"]) for c in comps if _props(c).get("bits:sbom") == "tool"}
+    seen, todo = set(), [t for t in tops if t not in tool]
+    while todo:
+        ref = todo.pop()
+        if ref not in seen:
+            seen.add(ref)
+            todo += [d for d in deps.get(ref, []) if d not in tool]
+    return seen
+
+
+def _not_shipped(props, ref, shipped):
+    """Why a component is not shipped with the stack ('' if it is)."""
+    if props.get("bits:sbom") == "tool":
+        return "tool"
+    if props.get("bits:provided_by") == "system" and shipped is not None and ref not in shipped:
+        return "build-only"
+    return ""
+
+
 def index(doc, vulns):
     """(components, identified, sbom_packages rows, sbom_findings rows) of the
     CycloneDX document *doc* and its scan's *vulns*, without the build id."""
@@ -161,6 +188,7 @@ def index(doc, vulns):
     meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
     root = meta.get("component") if isinstance(meta.get("component"), dict) else {}
     tops = set(deps.get(str(root.get("bom-ref")), [])) if root.get("bom-ref") else set()
+    shipped = _shipped(comps, deps, tops)
     for c in comps:
         props, ref = _props(c), str(c["bom-ref"])
         purl = str(c.get("purl") or "")
@@ -179,7 +207,8 @@ def index(doc, vulns):
                          int(props.get("bits:provided_by") == "system"),
                          str(props.get("bits:pinned_by") or ""), json.dumps(on),
                          _licence(c), str(props.get("bits:redistributable") or ""),
-                         json.dumps(sorted(set(deps.get(ref, [])) - {ref})), int(ref in tops)))
+                         json.dumps(sorted(set(deps.get(ref, [])) - {ref})), int(ref in tops),
+                         _not_shipped(props, ref, shipped)))
     refs = {p[0] for p in packages}
     findings = {}
     for v in _list(vulns):
@@ -259,7 +288,8 @@ def _scanned(conn, directory, bid, sha, db_built, summary, vulns, doc):
             conn.execute("DELETE FROM sbom_packages WHERE build_id = ?", (bid,))
             conn.executemany("INSERT OR IGNORE INTO sbom_packages (build_id, ref, name, alias,"
                              " version, purl, cpe, system, pinned_by, depends_on, license,"
-                             " redistributable, runtime_on, top) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                             " redistributable, runtime_on, top, not_shipped)"
+                             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                              [(bid, *p) for p in packages])
         if not (indexed and old["sbom_sha256"] == sha and old["vulns_sha256"] == vsha):
             conn.execute("DELETE FROM sbom_findings WHERE build_id = ?", (bid,))
@@ -330,13 +360,14 @@ def _in(column, values):
 
 def _findings(conn, community, rules):
     """Findings of the builds of *community* ({build id: its community}) as dicts,
-    each with the triage rule covering it (None if none), its package and version."""
+    each with the triage rule covering it (None if none), its package, version and
+    why it is not shipped ('' if it is)."""
     if not community:
         return []
     cond, vals = _in("f.build_id", community)
     rows = conn.execute(
-        "SELECT f.build_id, f.vuln_id, f.ref, f.severity, p.name, p.alias, p.version"
-        " FROM sbom_findings f JOIN sbom_packages p ON p.build_id = f.build_id AND p.ref = f.ref"
+        "SELECT f.build_id, f.vuln_id, f.ref, f.severity, p.name, p.alias, p.version,"
+        " p.not_shipped FROM sbom_findings f JOIN sbom_packages p ON p.build_id = f.build_id AND p.ref = f.ref"
         " WHERE " + cond, vals).fetchall()
     out = []
     for r in rows:
@@ -352,7 +383,8 @@ def listing(conn, communities=None, flagged=False, limit=200, now=None):
     or not scannable): counts, when, against which database, the pipelines that
     published them and their package; how many components a scanner could
     identify, and the counts without the findings the triage covers (`effective`,
-    once indexed), by which they are ordered."""
+    once indexed), by which they are ordered, nor those of components not shipped
+    (`not_shipped`: how many)."""
     q = ("SELECT s.build_id, s.db_built, s.scanned_ms, s.critical, s.high, s.medium, s.low,"
          " s.other, s.packages, s.vulnerabilities, s.error, s.components, s.identified,"
          " s.index_version, MAX(b.pipeline_id) AS pipeline_id,"
@@ -377,10 +409,12 @@ def listing(conn, communities=None, flagged=False, limit=200, now=None):
     indexed = {r["build_id"] for r in rows if r["index_version"] >= FINDINGS_INDEX}
     rules = vuln_triage.Rules.load(conn, {r["community"] for r in rows}, now=now)
     effective = {b: dict.fromkeys(SEVERITIES, 0) for b in indexed}
-    suppressed = dict.fromkeys(indexed, 0)
+    suppressed, not_shipped = dict.fromkeys(indexed, 0), dict.fromkeys(indexed, 0)
     for f in _findings(conn, {r["build_id"]: r["community"] for r in rows
                               if r["build_id"] in indexed}, rules):
-        if f["rule"]:
+        if f["not_shipped"]:
+            not_shipped[f["build_id"]] += 1
+        elif f["rule"]:
             suppressed[f["build_id"]] += 1
         else:
             effective[f["build_id"]][f["severity"]] += 1
@@ -388,6 +422,7 @@ def listing(conn, communities=None, flagged=False, limit=200, now=None):
         indexed_now = r.pop("index_version") >= FINDINGS_INDEX
         r["effective"] = effective.get(r["build_id"]) if indexed_now else None
         r["suppressed"] = suppressed.get(r["build_id"], 0)
+        r["not_shipped"] = not_shipped.get(r["build_id"], 0)
     if flagged:
         rows = [r for r in rows if any(_open(r)) or _blind(r)]
     return sorted(rows, key=lambda r: [-n for n in _open(r)[:4]] + [-r["scanned_ms"]])
@@ -432,8 +467,8 @@ def packages(conn, name, version="", communities=None, limit=500, now=None):
         args += vals
     rows = [dict(r) for r in conn.execute(
         "SELECT p.build_id, p.ref, p.name, p.alias, p.version AS component_version, p.purl, p.cpe,"
-        " p.system, b.community, MAX(b.pipeline_id) AS pipeline_id, pl.package, pl.version,"
-        " pl.platform, MAX(b.published_at) AS published_at, s.scanned_ms"
+        " p.system, p.not_shipped, b.community, MAX(b.pipeline_id) AS pipeline_id, pl.package,"
+        " pl.version, pl.platform, MAX(b.published_at) AS published_at, s.scanned_ms"
         " FROM sbom_packages p JOIN builds b ON b.build_id = p.build_id"
         " JOIN sbom_scans s ON s.build_id = p.build_id"
         " LEFT JOIN pipelines pl ON pl.id = b.pipeline_id WHERE " + " AND ".join(where) +
@@ -480,8 +515,8 @@ def affected(conn, vuln_id, communities=None, limit=500, now=None):
     rows = [dict(r) for r in conn.execute(
         "SELECT f.build_id, f.vuln_id, f.ref, f.severity, p.name, p.alias,"
         " p.version AS component_version,"
-        " p.system, b.community, MAX(b.pipeline_id) AS pipeline_id, pl.package, pl.version,"
-        " pl.platform, MAX(b.published_at) AS published_at"
+        " p.system, p.not_shipped, b.community, MAX(b.pipeline_id) AS pipeline_id, pl.package,"
+        " pl.version, pl.platform, MAX(b.published_at) AS published_at"
         " FROM sbom_findings f JOIN sbom_packages p ON p.build_id = f.build_id AND p.ref = f.ref"
         " JOIN builds b ON b.build_id = f.build_id LEFT JOIN pipelines pl ON pl.id = b.pipeline_id"
         " WHERE " + " AND ".join(where) +

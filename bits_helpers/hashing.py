@@ -36,6 +36,8 @@ _HASH_EXCLUDED_META_KEYS = frozenset({
     # references: CPEs and purls naming the package for vulnerability scanners
     # (written into the SBOM); they never affect the build.
     "references",
+    # sbom: tool marks a host tool, run but never shipped: scans leave it out.
+    "sbom",
 })
 
 # Source-selection keys are ALSO dropped from the recipe TEXT hash — not because

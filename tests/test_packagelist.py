@@ -91,6 +91,7 @@ RECIPES = {
     "CONFIG_DIR/sys-marked.sh": dedent("""\
     package: sys-marked
     version: "1"
+    sbom: tool
     prefer_system: '.*'
     prefer_system_check: |
         echo "found it, see 3.1 notes"; echo 'bits_system_version: 7.4.0'
@@ -260,6 +261,7 @@ class ReplacementTestCase(unittest.TestCase):
         self.assertEqual(info["sys-libxml2"], {"version": "2.9.13",
                          "references": ["cpe:2.3:a:xmlsoft:libxml2:2.9.13:*:*:*:*:*:*:*"]})
         self.assertEqual(info["sys-marked"]["version"], "7.4.0")
+        self.assertEqual(info["sys-marked"]["sbom"], "tool")                   # sbom: tool
         self.assertEqual(info["disable"], {"version": "", "references": []})   # it said nothing
 
     def test_the_package_manager_is_asked_first(self):
@@ -280,7 +282,7 @@ class ReplacementTestCase(unittest.TestCase):
         self._package_managers(dpkg="hi deb sys-marked - 1:7.4.0-2 - amd64 marked@1:7.4.0-2")
         info = {}
         getPackageListWithDefaults(["sys-marked"], system_info=info)
-        self.assertEqual(info["sys-marked"]["version"], "1:7.4.0-2")
+        self.assertEqual((info["sys-marked"]["version"], info["sys-marked"]["sbom"]), ("1:7.4.0-2", "tool"))
         self.assertRegex(info["sys-marked"]["references"][0],
                          r"^pkg:deb/[^/]+/sys-marked@1:7\.4\.0-2\?arch=amd64(&distro=[^&]+)?&upstream=marked$")
 

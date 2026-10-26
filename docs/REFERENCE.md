@@ -1469,7 +1469,11 @@ untracked `requires` become dependency edges (CycloneDX `dependencies`, SPDX
 `DEPENDS_ON`); `build_requires` become a `bits:build_requires` property in
 CycloneDX and `BUILD_DEPENDENCY_OF` in SPDX. Packages taken from
 the system (`system_packages`) appear as components marked
-`bits:provided_by = system`. Older (v3) manifests have no dependency edges:
+`bits:provided_by = system`. A recipe with `sbom: tool` (hash-excluded) is a host
+tool, run by the stack but never shipped with it (perf, git): its component is
+marked `bits:sbom = tool`, and bits-console's scans leave it out of the
+vulnerability counts and upgrade plans, as they do a system package only
+`build_requires` reach. Older (v3) manifests have no dependency edges:
 their SBOM lists components only. A recipe `license:` that is not a valid SPDX
 expression is kept verbatim (a licence name in CycloneDX, a declared
 `LicenseRef-bits-…` in SPDX), so both files stay valid. URLs lose any credentials, and a local (non-URL) source
@@ -1502,6 +1506,11 @@ and an optional expiry in days; revoked with `POST /ops/sbom/triage/{id}/revoke`
 Both are events. The findings a rule covers are left out of the effective counts
 of `/ops/sbom/scans`, and `GET /ops/builds/{pipeline}/sbom?vulnerabilities=1`
 serves the SBOM with its findings and the rules as CycloneDX `analysis` (VEX).
+So are, with no rule, the findings of components the stack does not ship
+(`not_shipped`, counted apart): host tools (`bits:sbom = tool`) and system
+packages outside the runtime closure of what the release asks for (only
+`build_requires`, or only a host tool, reach them); the served SBOM marks them
+`not_affected` with `bits:not_shipped`, and the upgrade plans skip them.
 
 `GET /ops/sbom/plan?community=` plans upgrades from them. For each release line
 (a community's release on one platform, from its newest scanned build), each

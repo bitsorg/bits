@@ -5,8 +5,9 @@ which version and in which order, to remove the most security risk.
 
 A release line is a community's build of one release name on one platform; its
 plan is made from its newest indexed build. For each package with open findings
-(not covered by the triage), the target is the smallest stable version newer than
-the current one that the scanner names as fixing each of them. The packages fall
+(not covered by the triage; a component the stack does not ship has none), the
+target is the smallest stable version newer than the current one that the
+scanner names as fixing each of them. The packages fall
 into waves, each meant as one set of version bumps and one rebuild, so the
 release stays consistent after each: 0 known exploited (CISA KEV), 1 upgrades
 within the major version, 2 major upgrades; packages taken from the host system
@@ -128,10 +129,13 @@ def plan_release(conn, rel, rules):
             on = [d for d in json.loads(r["depends_on"]) if isinstance(d, str)]
         except (TypeError, ValueError):
             on = []
-        packages[r["ref"]] = dict(r, depends_on=on, findings=[], triaged=0)
+        packages[r["ref"]] = dict(r, depends_on=on, findings=[], triaged=0, unshipped=0)
     for f in conn.execute("SELECT * FROM sbom_findings WHERE build_id = ?", (bid,)):
         p = packages.get(f["ref"])
         if p is None:
+            continue
+        if p["not_shipped"]:                       # a host tool, a build-only system package
+            p["unshipped"] += 1
             continue
         if rules.rule(community, f["vuln_id"], p["name"], p["version"], p["alias"]):
             p["triaged"] += 1
@@ -187,7 +191,8 @@ def plan_release(conn, rel, rules):
                 host=sorted(host, key=lambda e: -e["risk_removed"]),
                 unfixed=sorted(unfixed, key=lambda e: -e["risk_left"]),
                 findings=sum(len(p["findings"]) for p in packages.values()),
-                triaged=sum(p["triaged"] for p in packages.values()))
+                triaged=sum(p["triaged"] for p in packages.values()),
+                not_shipped=sum(p["unshipped"] for p in packages.values()))
 
 
 def converge(conn, plans):
@@ -200,7 +205,8 @@ def converge(conn, plans):
         entries = {e["ref"]: e for w in pl["waves"] for e in w["packages"]}
         pl["_open"] = {e["ref"] for e in pl["unfixed"]} | set(entries)
         for r in conn.execute("SELECT ref, name, alias, version, system, pinned_by FROM sbom_packages"
-                              " WHERE build_id = ? AND system = 0", (pl["build_id"],)):
+                              " WHERE build_id = ? AND system = 0 AND not_shipped = ''",
+                              (pl["build_id"],)):
             seen.setdefault((r["alias"] or r["name"]).lower(), []).append((pl, dict(r), entries.get(r["ref"])))
     out = []
     for key, uses in seen.items():

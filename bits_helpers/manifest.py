@@ -60,7 +60,7 @@ fields as additive and key off ``schema_version``.
       "config_dir":        str,         # absolute path to the .bits checkout
       "config_commit":     str,         # BITS_DIST_HASH of the config repo
       "system_packages":   [str],       # taken from the system, not built (v4+)
-      "system_package_info": {name: {"version": str, "references": [str]}},
+      "system_package_info": {name: {"version": str, "references": [str], "sbom": "tool"?}},
                                         # their versions, when their checks said (v4+)
       "cvmfs_templates":   {str: str},  # this build's CVMFS layout (optional);
                                         # bits cvmfs publish uses it for all packages
@@ -100,6 +100,7 @@ fields as additive and key off ``schema_version``.
       "references":             [str],            # CPEs / purls naming it for scanners; only when any
       "pinned_by":              str,              # "defaults:<profile>" or "requires:<package>" that
                                                   # set its version; only when pinned
+      "sbom":                   "tool",           # a host tool, never shipped; only when so
       "built_by":               str | None,       # user@host that compiled this hash; null unless built_from_source
       "completed_at":           ISO-8601
     }
@@ -353,6 +354,11 @@ def _patch_entries(spec: dict) -> list:
     return result
 
 
+def sbom_tool(spec):
+    """Is *spec* a host tool (recipe ``sbom: tool``): run, never shipped with the stack?"""
+    return str(spec.get("sbom") or "").strip().lower() == "tool"
+
+
 # ── BuildManifest ─────────────────────────────────────────────────────────────
 
 class BuildManifest:
@@ -477,7 +483,7 @@ class BuildManifest:
         *info* gives the versions (and CPEs/purls) known for them."""
         with self._lock:
             self._data["system_packages"] = sorted(names or ())
-            known = {n: i for n, i in (info or {}).items() if i.get("version")}
+            known = {n: i for n, i in (info or {}).items() if i.get("version") or i.get("sbom")}
             if known:
                 self._data["system_package_info"] = known
             self._sys_edges = dict(edges or {})
@@ -580,6 +586,8 @@ class BuildManifest:
                 + list(self._sys_edges.get(spec.get("package"), ((), ()))[1])),
             **({"references": _refs} if _refs else {}),
             **({"pinned_by": spec["pinned_by"]} if spec.get("pinned_by") else {}),
+            # A host tool (recipe `sbom: tool`): run, never shipped; scans leave it out.
+            **({"sbom": "tool"} if sbom_tool(spec) else {}),
             "source":                 _no_userinfo(spec.get("source") or ""),
             "tag":                    str(spec.get("tag") or ""),
             # built_by identifies the host that actually compiled this hash.

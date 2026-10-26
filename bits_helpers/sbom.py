@@ -247,7 +247,8 @@ def components(manifest):
                     info = system_info.get(d) or {}
                     system[d] = {"name": d, "key": "", "system": True,
                                  "entry": {"package": d, "version": info.get("version") or "",
-                                           "references": info.get("references") or []},
+                                           "references": info.get("references") or [],
+                                           "sbom": info.get("sbom") or ""},
                                  "ref": unique("%s@system" % d), "deps": [], "build_deps": []}
     for d in sorted(system):
         by_name[d] = [system[d]]
@@ -262,7 +263,7 @@ def components(manifest):
 
 def _roots(manifest, comps):
     wanted = set(manifest.get("requested_packages") or [])
-    roots = [c["ref"] for c in comps if c["name"] in wanted and not c["system"]]
+    roots = [c["ref"] for c in comps if c["name"] in wanted]      # a system one too: the release needs it
     return roots or [c["ref"] for c in comps if not c["system"]][-1:]
 
 
@@ -299,6 +300,8 @@ def _props(c):
     e = c["entry"]
     if c["system"]:
         props = [{"name": "bits:provided_by", "value": "system"}]
+        if e.get("sbom") == "tool":                 # a host tool, not shipped
+            props.append({"name": "bits:sbom", "value": "tool"})
         if _name(c) != c["name"]:
             props.append({"name": "bits:package", "value": c["name"]})
         return props + [{"name": "syft:cpe23", "value": x} for x in _references(e, "cpe:2.3:")[1:]]
@@ -306,7 +309,8 @@ def _props(c):
            ("bits:effective_architecture", e.get("effective_architecture")),
            ("bits:pkg_family", e.get("pkg_family")), ("bits:outcome", e.get("outcome")),
            ("bits:redistributable", e.get("redistributable")), ("bits:commit", _commit(e)),
-           ("bits:pinned_by", e.get("pinned_by"))]
+           ("bits:pinned_by", e.get("pinned_by")),
+           ("bits:sbom", "tool" if e.get("sbom") == "tool" else None)]
     # Further CPEs under the property name syft and grype read them from.
     out += [("syft:cpe23", x) for x in _references(e, "cpe:2.3:")[1:]]
     out += [("bits:build_requires", d) for d in e.get("build_requires") or []]

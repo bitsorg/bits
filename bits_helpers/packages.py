@@ -14,6 +14,7 @@ from shlex import quote
 
 from bits_helpers.checksum_store import load_for_spec, merge_into_spec
 from bits_helpers.log import banner, debug, dieOnError, warning
+from bits_helpers.manifest import sbom_tool
 from bits_helpers.matchers import (_collect_version_pins, _matcher_active,
                                    disabledByArchitectureDefaults,
                                    filterByArchitectureDefaults, filterPatches)
@@ -141,10 +142,12 @@ def _record_system(info, taken, query):
     if spec["package"] in found:
       version, purl = found[spec["package"]]
       info[spec["package"]] = {"version": version, "references": [purl]}
-      continue
-    version = system_version(output)
-    info[spec["package"]] = {"version": version,
-                             "references": _references(dict(spec, version=version)) if version else []}
+    else:
+      version = system_version(output)
+      info[spec["package"]] = {"version": version,
+                               "references": _references(dict(spec, version=version)) if version else []}
+    if sbom_tool(spec):                   # a host tool: the SBOM says so, scans leave it out
+      info[spec["package"]]["sbom"] = "tool"
 
 
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,

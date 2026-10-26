@@ -80,6 +80,16 @@ class PlanTest(unittest.TestCase):
         self.assertEqual([x["wave"] for x in pl["waves"]], [1])
         self.assertEqual(pl["triaged"], 2)
 
+    def test_what_the_stack_does_not_ship_is_not_planned(self):
+        comps = [comp("app", "1", "zlib"), comp("perf", "6.1", sbom="tool"),
+                 comp("zlib", "1:1.2-3", provided_by="system"), comp("ssl", "3.0", provided_by="system")]
+        self.build("r-aaaaaaaaaaaa", "lcg", comps, [
+            vuln("CVE-P", "high", {"perf": ["6.2"], "ssl": ["3.1"]}, risk=9),
+            vuln("CVE-Z", "low", {"zlib": ["1:1.2-4"]}, risk=1)])
+        (pl,) = sbom_plan.plan(self.conn)["releases"]
+        self.assertEqual((pl["waves"], [h["name"] for h in pl["host"]]), ([], ["zlib"]))
+        self.assertEqual((pl["findings"], pl["not_shipped"]), (1, 2))
+
     def test_the_newest_build_of_a_line_counts_and_lines_are_per_platform(self):
         self.lcg()
         self.lcg(bid="release_gcc15_opt-bbbbbbbbbbbb", curl="8.6.0")
