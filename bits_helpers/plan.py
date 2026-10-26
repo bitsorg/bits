@@ -427,7 +427,11 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
     except Exception as exc:     # the plan then lists one package at a time
       debug("cannot list the store ahead: %s", exc)
   from bits_helpers.reuse_symlinks import select_symlink_package
-  symlink = lambda spec: select_symlink_package(spec, cfg, args.architecture)   # noqa: E731
+  sym_trusted = (trusted_index_fn()
+                 if getattr(cfg, "symlink_packages_from", None) and cfg.require_signed_reuse
+                 else None)
+  symlink = lambda spec: select_symlink_package(   # noqa: E731
+      spec, cfg, args.architecture, trusted=sym_trusted)
   states, unuploadable = {}, set()
   for p in build_order:
     spec = specs[p]

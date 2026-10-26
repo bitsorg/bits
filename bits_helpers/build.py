@@ -2178,7 +2178,11 @@ def build_one_package(p, ctx):
   from bits_helpers.reuse_symlinks import (
       select_symlink_package, matching_local_install, stage_reused_package)
   try:
-    _linked = select_symlink_package(spec, cfg, args.architecture)
+    _linked = select_symlink_package(
+        spec, cfg, args.architecture,
+        trusted=(trusted_reuse_index(args, workDir)
+                 if getattr(cfg, "symlink_packages_from", None) and cfg.require_signed_reuse
+                 else None))
     if _linked:
       _existing = matching_local_install(spec, _linked, workDir, args.architecture)
       if _existing:

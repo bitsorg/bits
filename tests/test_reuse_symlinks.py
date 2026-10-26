@@ -220,6 +220,57 @@ class DeploymentSelectionTest(unittest.TestCase):
                         {"package": "defaults-release"}):
             self.assertIsNone(select_symlink_package(dict(self.spec, **changes), cfg, self.arch))
 
+    def test_strict_selection_needs_a_certified_hash(self):
+        from types import SimpleNamespace
+        from bits_helpers import plan
+        from bits_helpers.reuse_symlinks import select_symlink_package
+        from bits_helpers.sync import NoRemoteSync
+        self.deploy()
+        certified = {("share", "expected"): "sha256"}
+        cfg = SimpleNamespace(symlink_packages_from=str(self.root), symlink_policy="strict",
+                              build_local=[], require_signed_reuse=True)
+        self.assertIsNone(select_symlink_package(self.spec, cfg, self.arch, trusted={}))
+        self.assertIsNotNone(select_symlink_package(self.spec, cfg, self.arch, trusted=certified))
+        relaxed = SimpleNamespace(vars(cfg), symlink_policy="relaxed")
+        self.assertIsNotNone(select_symlink_package(self.spec, relaxed, self.arch, trusted={}))
+        # The plan asks for the signed index and classifies as the build does.
+        args = SimpleNamespace(defaults=["release"], architecture=self.arch)
+        for trusted, state in (({}, plan.BUILD), (certified, plan.SYMLINK)):
+            spec = dict(self.spec)
+            with patch("bits_helpers.build.storeHook"), patch("bits_helpers.hashing.storeHashes"), \
+                 patch.object(plan, "_overlay_predicate", lambda cfg: None):
+                states, _, _ = plan.plan([spec["package"]], {spec["package"]: spec}, args,
+                                         str(self.work), NoRemoteSync(), self.arch, cfg,
+                                         lambda: trusted)
+            self.assertEqual(states[spec["package"]], state)
+
+    def test_build_selects_with_the_signed_index(self):
+        class Selected(Exception):
+            pass
+        seen = []
+
+        def select(spec, cfg, architecture, trusted=None):
+            seen.append(trusted)
+            raise Selected()
+        for signed in (True, False):
+            args = Namespace(defaults=["release"], architecture=self.arch, docker=False,
+                             symlinkPackagesFrom=str(self.root), manifest=None,
+                             requireSignedReuse=signed)
+            spec = dict(self.spec)
+            ctx = _BuildLoopCtx(
+                args=args, cfg=BuildConfig.from_args(args), specs={spec["package"]: spec},
+                workDir=str(self.work), syncHelper=None, scheduler=None,
+                mainPackage=spec["package"], raw_architecture=self.arch, develPackageBranch="",
+                defaultsMeta={}, buildTargets="", packages=[], prefetch_executor=None,
+                cmake_prefix_env=False, specs_for_checksum_phase=[], monitoredDirs={})
+            with patch("bits_helpers.build.storeHook"), patch("bits_helpers.build.storeHashes"), \
+                 patch("bits_helpers.build.log_current_package"), \
+                 patch("bits_helpers.build.trusted_reuse_index", return_value={"k": "v"}), \
+                 patch("bits_helpers.reuse_symlinks.select_symlink_package", select), \
+                 self.assertRaises(Selected):
+                build_one_package(spec["package"], ctx)
+        self.assertEqual(seen, [{"k": "v"}, None])
+
 
 class ReuseSymlinksTest(unittest.TestCase):
     def setUp(self):

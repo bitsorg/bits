@@ -74,8 +74,10 @@ def find_symlink_package(spec, deployment_root, architecture, policy="strict"):
     return None
 
 
-def select_symlink_package(spec, cfg, architecture):
-    """The same eligibility and lookup for builds and read-only plans."""
+def select_symlink_package(spec, cfg, architecture, trusted=None):
+    """The same eligibility and lookup for builds and read-only plans. With
+    *trusted* (the signed index, when signed reuse is on), a strict match must
+    also be certified there: .build-hash alone is only the deployment's claim."""
     root = getattr(cfg, "symlink_packages_from", None)
     if not root:
         return None
@@ -85,7 +87,13 @@ def select_symlink_package(spec, cfg, architecture):
     if (spec.get("is_devel_pkg") or is_virtual_package(spec)
             or spec["package"].startswith("defaults-") or spec["package"] in build_local):
         return None
-    return find_symlink_package(spec, root, architecture, cfg.symlink_policy)
+    match = find_symlink_package(spec, root, architecture, cfg.symlink_policy)
+    if (match and trusted is not None and cfg.symlink_policy == "strict"
+            and (effective_arch(spec, architecture), match["hash"]) not in trusted):
+        debug("Symlink candidate %s skipped: %s@%s is not certified by the signed manifest",
+              match["source"], spec["package"], match["hash"])
+        return None
+    return match
 
 
 def matching_local_install(spec, match, work_dir, architecture):
