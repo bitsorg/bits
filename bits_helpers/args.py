@@ -1790,7 +1790,8 @@ def add_build_arguments(subparsers, ctx):
   build_remote.add_argument("--symlink-policy", dest="symlinkPolicy",
                             choices=["strict", "relaxed"], default="strict",
                             help=("Package symlink selection: strict (default) requires .build-hash "
-                                  "to match a computed package hash; relaxed matches the architecture, "
+                                  "to match a computed package hash (with signed reuse, a certified one); "
+                                  "relaxed matches the architecture, "
                                   "family and version path without checking the hash. "
                                   "Independent of --reuse-policy."))
   build_remote.add_argument("--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",

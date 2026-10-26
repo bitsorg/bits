@@ -1047,7 +1047,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--reuse-policy {strict,relaxed}` | How a `--reuse-from` component is matched. `strict` (default): only on an exact content-hash match; the result is publishable. `relaxed`: any deployed build of the **same version** (revision and hash may differ), for fast local development on top of e.g. an LCG release, so only the top of the stack is built. Relaxed builds have *loose* provenance and cannot be published: combining them with `--write-store` is refused. Falls back to the defaults `reuse_policy:` value. |
 | `--build-local PKG[,PKG…]` | Packages to always build locally even when they could be reused (e.g. one you need patched), instead of taking them from `--reuse-from`. |
 | `--symlink-packages-from ROOT` | Link matching installed packages into the local work directory with private relocated initialization files. ROOT contains `ROOT/<architecture>/[family/]<package>/<version[-revision]>`; shared packages are found under `ROOT/share`, and a family-free layout is supported. No modulefiles are required. An existing local installation with the same build hash is kept as is. Selection skips development packages, virtual packages and `--build-local` entries. Unmatched packages proceed through normal store/build handling. The source installation must remain accessible. |
-| `--symlink-policy {strict,relaxed}` | Independent of `--reuse-policy`. `strict` (default) requires `.build-hash` to match the computed remote package hash. `relaxed` matches the architecture, family and version path without requiring a matching hash. Explicit `force_revision` values, including an empty revision, are respected. Otherwise the expected directory label is preferred, followed by sorted versions of the same package version. Relaxed builds have loose provenance and cannot use `--write-store`. |
+| `--symlink-policy {strict,relaxed}` | Independent of `--reuse-policy`. `strict` (default) requires `.build-hash` to match the computed remote package hash and, with signed reuse on, the signed manifest to certify that hash. `relaxed` matches the architecture, family and version path without requiring a matching hash. Explicit `force_revision` values, including an empty revision, are respected. Otherwise the expected directory label is preferred, followed by sorted versions of the same package version. Relaxed builds have loose provenance and cannot use `--write-store`. |
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [The `architecture:` template](#architecture-string-and-the-architecture-template)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `--day DAY` | Value of the `{day}` nightly CVMFS path slot (e.g. `Fri`). Default: the UTC weekday, filled in only when a template uses `{day}`; `''` collapses the slot. Layout only — never hashed. See [bits store / bits cvmfs](#bits-store--bits-cvmfs-admin--ci-groups). |
@@ -1422,7 +1422,7 @@ this matters when some dependencies are absent from the deployment root.
 | `--no-remote-store` | off | Disable any remote store, even a configured default. |
 | `--check-store` | off | Probe the remote store to detect tarballs not mirrored locally. Adds a network round-trip per uncached package. |
 | `--symlink-packages-from ROOT` | off | Report packages that `bits build` would link from `ROOT`. Uses the same architecture, family, version and hash selection. |
-| `--symlink-policy {strict,relaxed}` | `strict` | Strict requires the deployed `.build-hash` to match the computed remote hash; relaxed matches the package path. |
+| `--symlink-policy {strict,relaxed}` | `strict` | Strict requires the deployed `.build-hash` to match the computed remote hash; relaxed matches the package path. The signed manifest is not checked here. |
 | `--build-local PKG[,PKG...]` | _(none)_ | Exclude these packages from symlink selection. |
 | `--json` | off | Emit a machine-readable JSON report. |
 | `--docker`, `--docker-image IMAGE`, `--docker-extra-args ARGS` | off | As for `bits build --docker`: the system packages are checked in the image, and `own_hash` packages (the toolchain) hash its container fingerprint. Use the build's image to get the hashes of a `--docker` build; without it, every package is built. |
@@ -4225,12 +4225,24 @@ Exact dependency roots retain their local family and effective architecture;
 reference work-directory prefixes recorded by the reused packages are also
 mapped to the local work directory. This runs before `.bits-relocate` is collected
 and before packing, so later relocation can rewrite the resulting local paths.
-Relocation uses CMS's `find`/`xargs`/`grep`/`perl` pattern: it substitutes each
+Relocation uses CMS's `find`/`grep`/`perl` pattern: it substitutes each
 literal prefix globally, without restricting matches to path boundaries or
 special config extensions. It skips symlinks and binary files. Rewriting a leaked `BUILD/...` path does not
 provide the missing build directory; such references still need a recipe fix.
 `--reuse-from` continues to select packages through deployed modulefiles and
 source their initialization files directly; it does not create local package links.
+
+**Which to use.** `--reuse-from` builds on a release published with modulefiles
+(an LCG or Key4hep stack on CVMFS): its packages are used in place, and what is
+built on them refers to `/cvmfs/...` and is meant for the same repository.
+`--symlink-packages-from` takes a package tree without modulefiles (a CMS `sw`
+area, another work directory): each package it finds gets a local stage, so the
+packages built on it refer to the work directory and are packed and relocated
+like any other. A package neither option finds comes from the store or is built.
+With signed reuse on (the default), strict symlinking takes only packages whose
+hash the signed manifest certifies, as for store tarballs. The build manifest
+records a symlinked package as `already_installed`, with `symlinked_from` and
+`symlink_policy`.
 
 **Policy.** `--reuse-policy strict` (default) reuses a component only on an exact
 content-hash match, so the build stays reproducible and publishable.
