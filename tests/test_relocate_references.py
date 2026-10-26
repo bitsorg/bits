@@ -89,6 +89,22 @@ class ReferenceRelocationTest(unittest.TestCase):
                          '/local/arch/other/lib '
                          '/local/arch-old/lib\n')
 
+    def test_bsd_grep_and_xargs_options_are_not_used(self):
+        # BSD grep reads -Z as "decompress", BSD xargs may lack -r: shims refuse both.
+        shims = self.root / "bin"
+        shims.mkdir()
+        for tool, refused in (("grep", "Z"), ("xargs", "r")):
+            real = shutil.which(tool)
+            (shims / tool).write_text(
+                '#!/bin/bash\nfor a in "$@"; do case "$a" in --*) ;; -*%s*) exit 9 ;; esac; done\n'
+                'exec %s "$@"\n' % (refused, real))
+            (shims / tool).chmod(0o755)
+        (self.stage / "yoda.pc").write_text("-L/ref/sw/lib\n")
+        env = dict(os.environ, PATH="%s:%s" % (shims, os.environ["PATH"]))
+        subprocess.run(["bash", str(RELOCATE), str(self.stage),
+                        serialize_relocation_table({"/ref/sw": "/local/sw"})], check=True, env=env)
+        self.assertEqual((self.stage / "yoda.pc").read_text(), "-L/local/sw/lib\n")
+
     @unittest.skipUnless(shutil.which("perl") and shutil.which("grep"), "CMS reference commands required")
     def test_matches_cms_relocate_reference_shell_macro(self):
         fixtures = {
