@@ -358,6 +358,25 @@ def preapprove_queued(conn, entry):
     return cur.lastrowid
 
 
+def release_preapproval(conn, pipeline_id):
+    """Within the caller's transaction: the pre-approval a queued build's
+    pipeline took, when GitLab dropped that pipeline unstarted, is revoked (a
+    retry of it certifies nothing) and its run given back to the batch's
+    approval, for the build's next start. Returns whether there was one."""
+    r = _active(conn, "preapproval", str(pipeline_id))
+    if r is None:
+        return False
+    source = json.loads(r["binding"] or "{}").get("approval")
+    conn.execute("UPDATE approvals SET revoked_ms = ?, revoked_by = 'worker' WHERE id = ?",
+                 (db.now_ms(), r["id"]))
+    if source:
+        conn.execute("UPDATE approvals SET runs_left = runs_left + 1 WHERE id = ?", (int(source),))
+    events.append(conn, "approval.released", "approval:%d" % r["id"], events.WORKER,
+                  {"approval": r["id"], "build_id": str(pipeline_id), "from": source},
+                  cause="pipeline:%d" % int(pipeline_id))
+    return True
+
+
 def revoke(conn, approval_id, by):
     """Revoke an approval, and the pre-approvals a queued batch's gave; False
     when it is unknown or already revoked."""

@@ -33,6 +33,13 @@ def _build(tag="bits-build-x86_64", pkg="ROOT", **more):
 class FakeForge:
     def __init__(self):
         self.started, self.next_id, self.fail, self.deleted = [], 100, None, []
+        self.runners = [{"description": d, "status": "online", "paused": False}
+                        for d in ("bits", "pc-runner", "arm")]
+
+    def list_runners(self):
+        if isinstance(self.runners, Exception):
+            raise self.runners
+        return self.runners
 
     def delete_pipeline(self, pid):
         self.deleted.append(pid)
@@ -130,6 +137,34 @@ class QueueTest(_Queue):
         self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 0)
         self._pipeline(1, outcome="canceled")
         self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 1)
+
+    def test_a_host_whose_runner_is_offline_is_not_free(self):
+        from console_backend import forge_ops
+        self.forge.runners[1]["status"] = "offline"                     # pc's runner
+        a, b = self._queue(_build(pkg="A"), _build(pkg="B"))
+        c, = self._queue(_build("bits-host-pc", pkg="C"))
+        self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 1)
+        self.assertEqual([s[1:3] for s in self._states()],
+                         [("dispatched", "bits"), ("queued", ""), ("queued", "")])
+        self.assertEqual([(h["name"], h["offline"]) for h in bq.host_status(self.conn)],
+                         [("bits", False), ("pc", True), ("arm", False)])
+        self.forge.runners[1].update(status="online", paused=True)       # paused: not free either
+        self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 0)
+        self.forge.runners = forge_ops.ForgeError(403, "forbidden")     # cannot tell: as before
+        self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 1)
+        self.assertEqual(self._states()[1][1:3], ("dispatched", "pc"))
+
+    def test_a_build_gitlab_dropped_unstarted_is_queued_again(self):
+        a, b = self._queue(_build("bits-host-bits", pkg="A"), _build("bits-host-pc", pkg="B"))
+        bq.dispatch(self.conn, self.forge, self.hosts)
+        stuck = [{"name": "build", "status": "failed", "failure_reason": "stuck_or_timeout_failure"},
+                 {"name": "publish", "status": "skipped"}]
+        self._pipeline(101, "failed", jobs=stuck)
+        self._pipeline(102, "failed", jobs=[{"status": "failed", "failure_reason": "script_failure",
+                                             "runner": "pc-runner", "started_at": "t"}])
+        self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 1)   # A again, on bits
+        self.assertEqual(self._states(), [(a, "dispatched", "bits", 103), (b, "dispatched", "pc", 102)])
+        self.assertTrue(bq.dropped(stuck) and not bq.dropped([dict(stuck[0], runner="bits")]))
 
     def test_builds_no_host_can_take_are_refused(self):
         a, b, c = self._queue(_build("bits-host-gone"), _build("bits-build-aarch64"),
@@ -244,6 +279,19 @@ class BatchApprovalTest(_Queue):
         self._pipeline(101, "success")
         bq.dispatch(self.conn, self.forge, self.hosts, then)       # C on bits
         self.assertIsNotNone(replay.preapproval_at(self.conn, 103, db.now_ms()))
+        self.assertEqual(approvals.get(self.conn, aid)["runs_left"], 0)
+
+    def test_a_dropped_build_gives_its_run_back(self):
+        a, = self._queue(_build("bits-host-bits", pkg="A", CERTIFY="true"))
+        aid = self._grant([a])
+        then = approvals.preapprove_queued
+        bq.dispatch(self.conn, self.forge, self.hosts, then)
+        self.assertEqual(approvals.get(self.conn, aid)["runs_left"], 0)
+        self._pipeline(101, "failed", jobs=[{"status": "failed",
+                                             "failure_reason": "stuck_or_timeout_failure"}])
+        bq.dispatch(self.conn, self.forge, self.hosts, then)       # again, as 102
+        self.assertIsNone(replay.preapproval_at(self.conn, 101, db.now_ms()))   # a retry certifies not
+        self.assertIsNotNone(replay.preapproval_at(self.conn, 102, db.now_ms()))
         self.assertEqual(approvals.get(self.conn, aid)["runs_left"], 0)
 
     def test_a_revoked_batch_preapproves_nothing_more(self):

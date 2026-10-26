@@ -87,7 +87,14 @@ nor shares a host. The hosts are the build project's `config/build-hosts.yaml`
 a host (`BITS_RUNNER_TAG=bits-host-<name>`) waits for it; one routed by
 architecture (`bits-build-<arch>`) takes the first free host of that arch and is
 pinned to it. A host is busy while a build pipeline runs on it, the queue's or
-not. GitLab refusing a pipeline (its job limit) leaves the build in its place;
+not, and takes nothing while GitLab does not see its runner online (switched off,
+asleep, paused: `GET /projects/:id/runners`, which needs the worker's token to be
+a Maintainer's; without it every host counts as online): its builds wait in the
+queue, as long as it takes, not in GitLab, which drops a job no runner can take
+within hours. A build GitLab drops all the same before any runner took it is
+queued again, its pre-approval given back to the batch (a retry of the dropped
+pipeline would build it twice, and certify nothing). A host whose runner GitLab
+does not list at all is logged once: set its `runner:`. GitLab refusing a pipeline (its job limit) leaves the build in its place;
 refusing one build five times refuses it. `GET /ops/queue` lists the waiting
 builds and the hosts, `POST /ops/queue/{id}/cancel` takes one out before it
 starts. A Retry of a pipeline restarts it at once, outside the queue. With

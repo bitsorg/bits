@@ -12,7 +12,10 @@ Each pass (`dispatch`) starts, oldest first, every build that has a free host,
 pinned to that host. A host is busy while a build pipeline runs on it: one the
 queue started there, one pinned to it, or one with a job its runner took. A
 running pipeline routed by architecture and not on a runner yet will take a
-host of that architecture, so it holds one.
+host of that architecture, so it holds one. A host whose runner GitLab does not
+see online (switched off, asleep, paused) is not free: its builds wait here,
+not in GitLab, which drops a job no runner can take. One GitLab dropped all
+the same (stuck, no job started) is queued again.
 
 States: queued -> dispatching -> dispatched; queued -> canceled | refused. A
 build being started carries BITS_QUEUE_ENTRY, a token new for each attempt, so
@@ -41,6 +44,7 @@ PAUSE_MS = 5 * 60 * 1000           # GitLab refusing pipelines: none started for
 HOSTS_TTL_S = 300
 MAX_BUILDS = 64                    # in one request (the console's matrix cap)
 _JOB_DONE = {"success", "failed", "canceled", "skipped", "manual"}
+_STUCK = {"stuck_or_timeout_failure", "no_matching_runner"}   # GitLab dropped it, unstarted
 
 
 class Stop(Exception):
@@ -143,7 +147,7 @@ def listing(conn, communities=None, limit=200):
 
 
 def host_status(conn):
-    """The hosts as the last pass saw them: [{name, arch, busy}]."""
+    """The hosts as the last pass saw them: [{name, arch, busy, offline}]."""
     r = conn.execute("SELECT value FROM kv WHERE key = 'queue.hosts'").fetchone()
     return json.loads(r["value"]) if r else []
 
@@ -235,14 +239,18 @@ def _pause(conn, why):
                      (json.dumps({"until": db.now_ms() + PAUSE_MS, "why": why}),))
 
 
-def _requeue(conn, r, reason, count=True):
-    """Back in its place, or refused after MAX_ATTEMPTS refusals."""
+def _requeue(conn, r, reason, count=True, state="dispatching", then=None):
+    """Back in its place, or refused after MAX_ATTEMPTS refusals; *then(conn)*
+    runs in the same transaction."""
     refused = count and r["attempts"] >= MAX_ATTEMPTS
     with db.transaction(conn):
+        if then is not None:
+            then(conn)
         conn.execute("UPDATE build_queue SET state = ?, reason = ?, host = '', attempts = ?,"
-                     " updated_ms = ? WHERE id = ? AND state = 'dispatching'",
+                     " pipeline_id = NULL, updated_ms = ? WHERE id = ? AND state = ?",
                      ("refused" if refused else "queued", reason[:500],
-                      r["attempts"] if count else max(0, r["attempts"] - 1), db.now_ms(), r["id"]))
+                      r["attempts"] if count else max(0, r["attempts"] - 1), db.now_ms(), r["id"],
+                      state))
         events.append(conn, "queue.refused" if refused else "queue.requeued", "queue:%s" % r["batch"],
                       events.WORKER, {"entry": r["id"], "reason": reason[:500]})
 
@@ -283,6 +291,64 @@ def recover(conn, then=None):
             _dispatched(conn, r["id"], p["id"], then)
         elif db.now_ms() - r["updated_ms"] > RECOVER_MS:
             _requeue(conn, r, "not started: no pipeline of it was seen", count=False)
+
+
+def dropped(jobs):
+    """Did GitLab drop the pipeline of *jobs* before any runner took one of them
+    (stuck pending: no runner it could give them to)?"""
+    return (any(j.get("failure_reason") in _STUCK for j in jobs)
+            and not any(j.get("runner") or j.get("started_at") for j in jobs))
+
+
+def unstick(conn):
+    """The builds GitLab dropped unstarted (a host's runner went away after the
+    build was started there): queued again, refused after MAX_ATTEMPTS."""
+    for r in conn.execute(
+            "SELECT q.*, p.jobs AS p_jobs FROM build_queue q JOIN pipelines p ON p.id = q.pipeline_id"
+            " WHERE q.state = 'dispatched' AND p.outcome = 'failed'").fetchall():
+        try:
+            jobs = [j for j in json.loads(r["p_jobs"] or "[]") if isinstance(j, dict)]
+        except ValueError:
+            continue
+        if dropped(jobs):
+            from . import approvals
+            _requeue(conn, r, "GitLab dropped pipeline %d on %s: no runner took it"
+                     % (r["pipeline_id"], r["host"] or "?"), state="dispatched",
+                     then=lambda c, pid=r["pipeline_id"]: approvals.release_preapproval(c, pid))
+
+
+def online_runners(forge):
+    """The descriptions of the build project's runners GitLab sees online and not
+    paused; None when it cannot tell (then every host counts as online)."""
+    from .. import forge_ops
+    try:
+        found = forge.list_runners()
+    except (forge_ops.ForgeError, ValueError) as e:
+        log.warning("cannot list the runners (%s): hosts are taken as online", e)
+        return None
+    out, _listed["now"] = set(), set()
+    for x in found or []:
+        if not isinstance(x, dict):
+            continue
+        _listed["now"].add(str(x.get("description") or ""))
+        if x.get("paused") or x.get("active") is False:
+            continue
+        if (x.get("status") or ("online" if x.get("online") else "")) == "online":
+            out.add(str(x.get("description") or ""))
+    return out
+
+
+_listed, _warned = {"now": set()}, set()
+
+
+def _unknown_runners(hs):
+    """Warn, once each, of hosts whose runner GitLab does not list at all (a
+    `runner:` missing from build-hosts.yaml?): they never count as online."""
+    for h in hs:
+        if h["runner"] not in _listed["now"] and h["name"] not in _warned:
+            _warned.add(h["name"])
+            log.warning("build host %s: no runner described %r among the project's runners;"
+                        " set its runner: in build-hosts.yaml", h["name"], h["runner"])
 
 
 def _start(conn, forge, r, host, then):
@@ -326,8 +392,9 @@ def _start(conn, forge, r, host, then):
 
 
 def dispatch(conn, forge, hs, then=None):
-    """Start every waiting build that has a free host. Returns how many."""
+    """Start every waiting build that has a free host, its runner online. Returns how many."""
     recover(conn, then)
+    unstick(conn)
     r = conn.execute("SELECT value FROM kv WHERE key = 'queue.pause'").fetchone()
     pause = json.loads(r["value"]) if r else {}
     if pause.get("until", 0) > db.now_ms():
@@ -337,21 +404,26 @@ def dispatch(conn, forge, hs, then=None):
             raise RuntimeError("builds are queued but there are no build hosts (build-hosts.yaml)")
         return 0
     busy, waiting = _occupancy(conn, hs)
-    snapshot = [{"name": h["name"], "arch": h["arch"], "busy": h["name"] in busy} for h in hs]
+    online = online_runners(forge)
+    offline = {h["name"] for h in hs if online is not None and h["runner"] not in online}
+    if online is not None:
+        _unknown_runners(hs)
+    snapshot = [{"name": h["name"], "arch": h["arch"], "busy": h["name"] in busy,
+                 "offline": h["name"] in offline} for h in hs]
     with db.transaction(conn):
         conn.execute("INSERT INTO kv (key, value) VALUES ('queue.hosts', ?) ON CONFLICT(key)"
                      " DO UPDATE SET value = excluded.value", (json.dumps(snapshot),))
     by_tag = {h["tag"]: h for h in hs}
 
     def free(arch):
-        return [h for h in hs if h["arch"] == arch and h["name"] not in busy]
+        return [h for h in hs if h["arch"] == arch and h["name"] not in busy | offline]
     n = 0
     for r in conn.execute("SELECT * FROM build_queue WHERE state = 'queued' ORDER BY id").fetchall():
         if r["target"].startswith(HOST_TAG):
             if r["target"] not in by_tag:
                 _refuse(conn, r, "%s is not a build host (build-hosts.yaml)" % r["target"])
                 continue
-            pick = by_tag[r["target"]] if by_tag[r["target"]]["name"] not in busy else None
+            pick = by_tag[r["target"]] if by_tag[r["target"]]["name"] not in busy | offline else None
             arch = pick["arch"] if pick else ""
         else:
             arch = r["target"][len(ARCH_TAG):]
