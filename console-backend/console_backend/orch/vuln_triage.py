@@ -4,7 +4,9 @@
 
 A rule of a community says a vulnerability does not matter there, for one
 version of a package, for every version of it, or for every package (package
-and version empty): not_affected (with a CycloneDX justification),
+and version empty); or that no vulnerability of a package does (vuln_id ANY:
+one taken out of the analysis, a host tool say; licence findings stay):
+not_affected (with a CycloneDX justification),
 false_positive, or will_not_fix (an accepted risk). It has a reason, an author
 and, optionally, an expiry; it is revoked rather than deleted. A finding a rule
 covers is suppressed: left out of the effective counts, and served in the SBOM
@@ -22,6 +24,7 @@ JUSTIFICATIONS = ("code_not_present", "code_not_reachable", "requires_configurat
                   "protected_by_mitigating_control")
 MAX_DAYS = 730
 _VULN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{1,63}$")
+ANY = "*"                          # every vulnerability of the rule's package
 _DAY_MS = 86400 * 1000
 
 
@@ -43,8 +46,8 @@ def add(conn, community, vuln_id, state, reason, by, package="", version="",
     """Add a rule; returns its id. Raises Invalid."""
     community = _text(community, "community", 128, True).lower()
     vuln_id = str(vuln_id or "").strip()
-    if not _VULN.match(vuln_id):
-        raise Invalid("vuln_id: a vulnerability id such as CVE-2024-1234")
+    if not (_VULN.match(vuln_id) or vuln_id == ANY):
+        raise Invalid("vuln_id: a vulnerability id such as CVE-2024-1234, or * for all")
     if state not in STATES:
         raise Invalid("state is one of: %s" % ", ".join(STATES))
     justification = str(justification or "").strip()
@@ -56,6 +59,8 @@ def add(conn, community, vuln_id, state, reason, by, package="", version="",
     version = _text(version, "version", 128)
     if version and not package:
         raise Invalid("a version needs its package")
+    if vuln_id == ANY and not package:
+        raise Invalid("every vulnerability (*) needs a package")
     reason = _text(reason, "reason", 2000, True)
     now = db.now_ms() if now is None else now
     expires = None
@@ -119,7 +124,7 @@ def listing(conn, communities=None, revoked=False, now=None, limit=500):
 
 
 def _covers(rule, vuln_id, names, version):
-    return (rule["vuln_id"].lower() == vuln_id.lower()
+    return (rule["vuln_id"].lower() in (vuln_id.lower(), ANY)
             and (not rule["package"] or rule["package"].lower() in names)
             and (not rule["version"] or rule["version"] == version))
 
@@ -139,10 +144,13 @@ class Rules:
         return cls(listing(conn, communities, now=now, limit=1000000))
 
     def rule(self, community, vuln_id, name, version, alias=""):
-        """The rule covering the finding, or None."""
-        names = {n.lower() for n in (name, alias) if n}
-        return next((r for r in self._by.get((community, str(vuln_id).lower()), ())
-                     if _covers(r, vuln_id, names, version)), None)
+        """The rule covering the finding, or None: one for this vulnerability
+        first, else one for every vulnerability of the package (not a licence's)."""
+        names, vid = {n.lower() for n in (name, alias) if n}, str(vuln_id).lower()
+        rules = list(self._by.get((community, vid), ()))
+        if not vid.startswith("licence:"):
+            rules += self._by.get((community, ANY), ())
+        return next((r for r in rules if _covers(r, str(vuln_id), names, version)), None)
 
 
 def analysis(rule):
@@ -199,6 +207,7 @@ def annotate(vulns, components, rules, community, not_shipped=None):
                 entry["bom-ref"] = "%s-triage-%d" % (v.get("bom-ref") or v.get("id"), key)
                 entry["analysis"] = analysis(r)
                 entry["properties"] = [{"name": "bits:triage:" + k, "value": str(r[k])} for k in (
-                    "id", "package", "version", "author", "created_ms", "expires_ms") if r[k]]
+                    "id", "vuln_id", "package", "version", "author", "created_ms", "expires_ms")
+                    if r[k]]
             out.append(entry)
     return out

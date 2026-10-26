@@ -39,12 +39,31 @@ class TriageTest(unittest.TestCase):
         for kw in ({"vuln": "x"}, {"vuln": "CVE 1"}, {"state": "fixed"}, {"state": "not_affected"},
                    {"state": "not_affected", "justification": "because"}, {"version": "1.0"},
                    {"reason": " "}, {"days": 0.5}, {"days": 1000}, {"days": "x"},
-                   {"package": "a\nb"}, {"community": ""}):
+                   {"package": "a\nb"}, {"community": ""}, {"vuln": "*"}):          # *: a package
             with self.assertRaises(vuln_triage.Invalid, msg=kw):
                 self.add(**kw)
         self.assertEqual(vuln_triage.listing(self.conn, revoked=True), [])
         rid = self.add(state="not_affected", justification="code_not_reachable")
         self.assertEqual(vuln_triage.get(self.conn, rid)["justification"], "code_not_reachable")
+
+    def test_a_package_taken_out_of_the_analysis(self):
+        cve = self.add(package="perf", reason="this one checked")
+        anything = self.add(vuln="*", package="perf", reason="a host tool, not shipped")
+        rules = vuln_triage.Rules.load(self.conn)
+        rule = lambda vid, name: (rules.rule("atlas", vid, name, "6.1") or {}).get("id")
+        self.assertEqual((rule("CVE-2024-1", "perf"), rule("CVE-2099-9", "perf")), (cve, anything))
+        self.assertIsNone(rule("CVE-2099-9", "zlib"))
+        self.assertIsNone(rule("licence:unknown", "perf"))                  # licences stay
+        self.assertIsNone(rules.rule("lhcb", "CVE-2099-9", "perf", "6.1"))  # its community only
+        (v,) = vuln_triage.annotate([{"id": "CVE-2099-9", "affects": [{"ref": "p"}]}],
+                                    {"p": {"name": "perf", "version": "6.1"}}, rules, "atlas")
+        self.assertIn({"name": "bits:triage:vuln_id", "value": "*"}, v["properties"])
+        old = self.add(vuln="*", package="perf", version="5.0", reason="old perf")
+        every = self.add(vuln="CVE-2099-9", reason="every package")
+        rules = vuln_triage.Rules.load(self.conn)
+        self.assertEqual(rules.rule("atlas", "CVE-2099-9", "perf", "6.1")["id"], every)  # its own first
+        self.assertEqual(rules.rule("atlas", "CVE-2099-8", "perf", "5.0")["id"], old)    # the version's
+        self.assertEqual(rules.rule("atlas", "CVE-2099-8", "perf", "6.1")["id"], anything)
 
     def test_the_most_specific_rule_covers_a_finding_until_it_expires(self):
         everything = self.add()

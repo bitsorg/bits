@@ -1501,7 +1501,9 @@ package (by its SBOM name or its bits name; `2.9` or `2.9.x` covers 2.9.13, not
 vulnerability was found in. They triage findings (`POST /ops/sbom/triage`): a
 vulnerability is `not_affected` (with a CycloneDX justification), a
 `false_positive` or `will_not_fix` (an accepted risk) in their community, for
-one version of a package, every version of it or every package, with a reason
+one version of a package, every version of it or every package, or for every
+vulnerability of a package, now and later (`vuln_id` `*`: one taken out of the
+analysis, such as a host tool; its licence findings stay), with a reason
 and an optional expiry in days; revoked with `POST /ops/sbom/triage/{id}/revoke`.
 Both are events. The findings a rule covers are left out of the effective counts
 of `/ops/sbom/scans`, and `GET /ops/builds/{pipeline}/sbom?vulnerabilities=1`

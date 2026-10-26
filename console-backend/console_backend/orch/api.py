@@ -27,7 +27,8 @@
     GET  /ops/sbom/plan?community=     upgrade plans: per release line, and converged
                                        across those of the caller's communities
     GET  /ops/sbom/triage?community=&revoked=   the triage rules (VEX) of the communities
-    POST /ops/sbom/triage              {community, vuln_id, package?, version?, state,
+    POST /ops/sbom/triage              {community, vuln_id (* with a package: all of
+                                       its), package?, version?, state,
                                        justification?, reason, days?}: by its admins
     POST /ops/sbom/triage/{id}/revoke  by an admin of its community
     GET  /ops/trace?repo=&path=&build_id=   who built and approved a CVMFS path (bits trace)
