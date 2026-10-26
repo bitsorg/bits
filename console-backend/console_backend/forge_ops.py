@@ -198,10 +198,10 @@ class GitLabForge:
                 break
         return out
 
-    def list_runners(self):
-        """The runners the project can use, with their status (online, offline,
-        stale, never_contacted) and whether they are paused."""
-        return self._get_all("/runners")
+    def list_runners(self, tag=""):
+        """The runners the project can use (those with *tag*, if given), with their
+        status (online, offline, stale, never_contacted) and whether they are paused."""
+        return self._get_all("/runners" + ("?tag_list=%s" % quote(tag, safe="") if tag else ""))
 
     def list_pipelines(self, updated_after, page=1, per_page=100):
         """One page of the project's pipelines updated after *updated_after*

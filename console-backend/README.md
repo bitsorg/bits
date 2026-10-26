@@ -93,8 +93,9 @@ a Maintainer's; without it every host counts as online): its builds wait in the
 queue, as long as it takes, not in GitLab, which drops a job no runner can take
 within hours. A build GitLab drops all the same before any runner took it is
 queued again, its pre-approval given back to the batch (a retry of the dropped
-pipeline would build it twice, and certify nothing). A host whose runner GitLab
-does not list at all is logged once: set its `runner:`. GitLab refusing a pipeline (its job limit) leaves the build in its place;
+pipeline would build it twice, and certify nothing). A host's runner is the one
+with its unique tag (`bits-host-<name>`), whatever its description; a host no
+runner carries the tag of is logged once. GitLab refusing a pipeline (its job limit) leaves the build in its place;
 refusing one build five times refuses it. `GET /ops/queue` lists the waiting
 builds and the hosts, `POST /ops/queue/{id}/cancel` takes one out before it
 starts. A Retry of a pipeline restarts it at once, outside the queue. With

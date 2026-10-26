@@ -7,7 +7,7 @@ Pages pipeline), and never share a host.
 
 A build names its host (BITS_RUNNER_TAG bits-host-<name>) or an architecture
 (bits-build-<arch>). The hosts are the build project's config/build-hosts.yaml
-(name, tag, arch; runner: the GitLab runner's description, else the name).
+(name, tag, arch); a host's runner is the one with its unique tag.
 Each pass (`dispatch`) starts, oldest first, every build that has a free host,
 pinned to that host. A host is busy while a build pipeline runs on it: one the
 queue started there, one pinned to it, or one with a job its runner took. A
@@ -155,7 +155,7 @@ def host_status(conn):
 # --- the hosts ----------------------------------------------------------------
 
 def parse_hosts(text):
-    """[{name, tag, arch, runner}] of build-hosts.yaml; an entry without an
+    """[{name, tag, arch}] of build-hosts.yaml; an entry without an
     arch takes only builds pinned to it."""
     import yaml
     doc = yaml.safe_load(text or "") or {}
@@ -167,8 +167,7 @@ def parse_hosts(text):
         if not name or not tag.startswith(HOST_TAG):
             log.warning("build host %r: needs a name and a %s<name> tag", h, HOST_TAG)
             continue
-        out.append({"name": name, "tag": tag, "arch": str(h.get("arch") or "").strip(),
-                    "runner": str(h.get("runner") or name).strip()})
+        out.append({"name": name, "tag": tag, "arch": str(h.get("arch") or "").strip()})
     return out
 
 
@@ -187,8 +186,9 @@ def hosts(reader, path, ref="main"):
     return found
 
 
-def _occupancy(conn, hs):
-    """(names of busy hosts, {arch: running pipelines not on a runner yet})."""
+def _occupancy(conn, hs, named):
+    """(names of busy hosts, {arch: running pipelines not on a runner yet});
+    *named* maps a runner's description to its host."""
     now, busy, waiting = db.now_ms(), set(), {}
     for r in conn.execute(
             "SELECT q.host FROM build_queue q LEFT JOIN pipelines p ON p.id = q.pipeline_id"
@@ -198,7 +198,6 @@ def _occupancy(conn, hs):
             (now - UNRECORDED_MS,)):
         busy.add(r["host"])
     by_tag = {h["tag"]: h["name"] for h in hs}
-    by_runner = {h["runner"]: h["name"] for h in hs}
     for r in conn.execute(
             "SELECT variables, jobs FROM pipelines WHERE is_build = 1 AND outcome = 'running'"
             " AND id NOT IN (SELECT pipeline_id FROM build_queue WHERE pipeline_id IS NOT NULL)"):
@@ -208,7 +207,7 @@ def _occupancy(conn, hs):
                        if j.get("runner") and j.get("status") not in _JOB_DONE}
         except (ValueError, AttributeError):
             continue
-        on = {by_runner[x] for x in runners if x in by_runner}
+        on = {named[x] for x in runners if x in named}
         if on:
             busy |= on
         elif tag in by_tag:
@@ -317,38 +316,40 @@ def unstick(conn):
                      then=lambda c, pid=r["pipeline_id"]: approvals.release_preapproval(c, pid))
 
 
-def online_runners(forge):
-    """The descriptions of the build project's runners GitLab sees online and not
-    paused; None when it cannot tell (then every host counts as online)."""
+def runner_hosts(forge, hs):
+    """({hosts a runner with their unique tag serves, online and not paused},
+    {runner description: host}) from GitLab; None when it cannot tell (then
+    every host counts as online)."""
     from .. import forge_ops
+    online, named = set(), {}
     try:
-        found = forge.list_runners()
+        for h in hs:
+            for x in forge.list_runners(h["tag"]) or []:
+                if not isinstance(x, dict):
+                    continue
+                d = str(x.get("description") or "")
+                if named.get(d, h["name"]) != h["name"] and d not in _warned:
+                    _warned.add(d)
+                    log.warning("runner %r serves hosts %s and %s: give it one bits-host- tag",
+                                d, named[d], h["name"])
+                named[d] = h["name"]
+                if x.get("paused") or x.get("active") is False:
+                    continue
+                if (x.get("status") or ("online" if x.get("online") else "")) == "online":
+                    online.add(h["name"])
     except (forge_ops.ForgeError, ValueError) as e:
         log.warning("cannot list the runners (%s): hosts are taken as online", e)
         return None
-    out, _listed["now"] = set(), set()
-    for x in found or []:
-        if not isinstance(x, dict):
-            continue
-        _listed["now"].add(str(x.get("description") or ""))
-        if x.get("paused") or x.get("active") is False:
-            continue
-        if (x.get("status") or ("online" if x.get("online") else "")) == "online":
-            out.add(str(x.get("description") or ""))
-    return out
-
-
-_listed, _warned = {"now": set()}, set()
-
-
-def _unknown_runners(hs):
-    """Warn, once each, of hosts whose runner GitLab does not list at all (a
-    `runner:` missing from build-hosts.yaml?): they never count as online."""
+    _named.clear()
+    _named.update(named)
     for h in hs:
-        if h["runner"] not in _listed["now"] and h["name"] not in _warned:
+        if h["name"] not in named.values() and h["name"] not in _warned:
             _warned.add(h["name"])
-            log.warning("build host %s: no runner described %r among the project's runners;"
-                        " set its runner: in build-hosts.yaml", h["name"], h["runner"])
+            log.warning("build host %s: no runner of the project has its tag %s", h["name"], h["tag"])
+    return online, named
+
+
+_warned, _named = set(), {}            # the last runner descriptions GitLab gave
 
 
 def _start(conn, forge, r, host, then):
@@ -403,11 +404,10 @@ def dispatch(conn, forge, hs, then=None):
         if conn.execute("SELECT 1 FROM build_queue WHERE state = 'queued' LIMIT 1").fetchone():
             raise RuntimeError("builds are queued but there are no build hosts (build-hosts.yaml)")
         return 0
-    busy, waiting = _occupancy(conn, hs)
-    online = online_runners(forge)
-    offline = {h["name"] for h in hs if online is not None and h["runner"] not in online}
-    if online is not None:
-        _unknown_runners(hs)
+    seen = runner_hosts(forge, hs)
+    online, named = seen or (None, {**{h["name"]: h["name"] for h in hs}, **_named})
+    busy, waiting = _occupancy(conn, hs, named)
+    offline = {h["name"] for h in hs if online is not None and h["name"] not in online}
     snapshot = [{"name": h["name"], "arch": h["arch"], "busy": h["name"] in busy,
                  "offline": h["name"] in offline} for h in hs]
     with db.transaction(conn):
