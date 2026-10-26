@@ -16,7 +16,7 @@ from collections import OrderedDict
 
 from bits_helpers.utilities import resolve_tag, resolve_store_path
 from bits_helpers.recipe import parseRecipe
-from bits_helpers.build import doBuild, build_one_package, _BuildLoopCtx
+from bits_helpers.build import doBuild, build_one_package, _BuildLoopCtx, enter_target
 from bits_helpers import plan
 from bits_helpers.hashing import storeHashes
 from bits_helpers.initdotsh import generate_initdotsh
@@ -924,6 +924,17 @@ class PlannedReuseBuiltAfterAllTest(unittest.TestCase):
                 result, spec = self._run(work_dir, skipped, order, planned=planned)
                 self.assertIsInstance(result, self.StopAtBuildScript)
                 self.assertEqual((order, spec["cachedTarball"]), ([], ""))
+
+
+class EnterTargetTest(unittest.TestCase):
+    def test_built_version(self):
+        spec = {"package": "Athena", "version": "25.0.71", "revision": "1"}
+        self.assertEqual(enter_target("Athena", spec, "release_atlas_gcc15_dbg"),
+                         "Athena/25.0.71-1")
+
+    def test_no_spec_falls_back_to_latest(self):
+        self.assertEqual(enter_target("Athena", None, "release_atlas_gcc15_dbg"),
+                         "Athena/latest-release_atlas_gcc15_dbg")
 
 
 if __name__ == '__main__':
