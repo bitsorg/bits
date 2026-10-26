@@ -3116,9 +3116,17 @@ def build_one_package(p, ctx):
 
 
 def enter_target(package, spec, build_family):
+  """The module to enter: the version just built, else the family's latest alias."""
   if spec is not None:
     return "%s/%s" % (package, ver_rev(spec))
   return "%s/latest-%s" % (package, build_family)
+
+
+def latest_alias_note(package, spec, build_family):
+  """A note naming the family's latest alias, when the hint names the version built."""
+  if spec is None or not build_family:
+    return ""
+  return "\n\n(%s/latest-%s enters the newest build of this family.)" % (package, build_family)
 
 
 def providers_and_defaults(args, packages, workDir, defaultsReader, _cli_disable,
@@ -4470,6 +4478,7 @@ def doBuild(args, parser):
              f"{_install_root_line}\n"
              "You can use this package by loading the environment:"
              f"\n\n  bits {_arch_flag}enter {enter_target(mainPackage, _main_spec, mainBuildFamily)}"
+             f"{latest_alias_note(mainPackage, _main_spec, mainBuildFamily)}"
              f"{_arch_note}{_container_note}",
              )
   else:

@@ -3206,7 +3206,8 @@ Packages that declare `architecture: share` (see [§19](#19-architecture-indepen
 The module frontend (`bits enter`/`q`/`load`) auto-detects only the **raw**
 architecture, so when a build was qualified you must point it at the combined
 string. After a successful qualified build the success banner prints the exact
-command, e.g. `bits -a slc7_x86-64-dev-gcc13 enter MyPackage/latest-…`, and
+command, e.g. `bits -a slc7_x86-64-dev-gcc13 enter MyPackage/1.2.3-1` (the version
+just built; `MyPackage/latest-<build family>` enters the family's newest), and
 suggests `export BITS_ARCHITECTURE=slc7_x86-64-dev-gcc13` to make it the default
 for the session. As a convenience, when `-a` is not given and the detected raw
 architecture has no install tree under the work dir, the frontend uses the sole

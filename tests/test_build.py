@@ -16,7 +16,8 @@ from collections import OrderedDict
 
 from bits_helpers.utilities import resolve_tag, resolve_store_path
 from bits_helpers.recipe import parseRecipe
-from bits_helpers.build import doBuild, build_one_package, _BuildLoopCtx, enter_target
+from bits_helpers.build import (doBuild, build_one_package, _BuildLoopCtx, enter_target,
+                                latest_alias_note)
 from bits_helpers import plan
 from bits_helpers.hashing import storeHashes
 from bits_helpers.initdotsh import generate_initdotsh
@@ -935,6 +936,13 @@ class EnterTargetTest(unittest.TestCase):
     def test_no_spec_falls_back_to_latest(self):
         self.assertEqual(enter_target("Athena", None, "release_atlas_gcc15_dbg"),
                          "Athena/latest-release_atlas_gcc15_dbg")
+
+    def test_the_latest_alias_is_mentioned_with_the_version(self):
+        spec = {"package": "Athena", "version": "25.0.71", "revision": "1"}
+        self.assertIn("Athena/latest-release_atlas_gcc15_dbg enters the newest build",
+                      latest_alias_note("Athena", spec, "release_atlas_gcc15_dbg"))
+        self.assertEqual(latest_alias_note("Athena", None, "release_atlas_gcc15_dbg"), "")
+        self.assertEqual(latest_alias_note("Athena", spec, ""), "")      # no family: no alias
 
 
 if __name__ == '__main__':
