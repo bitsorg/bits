@@ -20,6 +20,24 @@ from bits_helpers.build import build_one_package
 from bits_helpers.build_config import BuildConfig
 from bits_helpers.initdotsh import generate_initdotsh
 from bits_helpers.reuse_symlinks import stage_reused_package, find_symlink_package
+from bits_helpers.reuse_symlinks import stage_hook_scripts
+
+# What cms.bits' hooks/scram-project does (CMS REFERENCE_PACKAGE_POST).
+SCRAM_HOOK = """\
+private() {
+  [ -L "$1" ] || return 0
+  rm "$1"
+  cp -RH "$SOURCE_ROOT/$1" "$1"
+  chmod -R u+w "$1"
+}
+if [ -d "$SOURCE_ROOT/etc/scram.d" ]; then private etc/scram.d; fi
+if [ -d "$SOURCE_ROOT/tools/selected" ]; then private tools; fi
+if [ -d "$SOURCE_ROOT/.SCRAM" ]; then
+  private .SCRAM
+  private config
+  config/SCRAM/projectAreaRename.pl "$REFERENCE_ROOT" "$WORK_DIR" "$ARCHITECTURE" "$PKG_ROOT"
+fi
+"""
 
 
 class DeploymentSelectionTest(unittest.TestCase):
@@ -98,6 +116,27 @@ class DeploymentSelectionTest(unittest.TestCase):
         self.assertEqual(entry["outcome"], "already_installed")
         self.assertEqual(entry["symlinked_from"], str(source))
         self.assertEqual(entry["symlink_policy"], "strict")
+
+    def test_build_runs_the_recipe_stage_hooks(self):
+        self.deploy()
+        hooks = Path(self.tmp.name) / "cms.bits/hooks"
+        hooks.mkdir(parents=True)
+        (hooks / "mark").write_text('echo "$PKGNAME" > "$PKG_ROOT/hooked"\n')
+        args = Namespace(defaults=["release"], architecture=self.arch, docker=False,
+                         symlinkPackagesFrom=str(self.root), manifest=None,
+                         configDir=str(hooks.parent))
+        spec = dict(self.spec, hook={"SYMLINK_STAGE": "mark"})
+        ctx = _BuildLoopCtx(
+            args=args, cfg=BuildConfig.from_args(args), specs={spec["package"]: spec},
+            workDir=str(self.work), syncHelper=None, scheduler=None,
+            mainPackage=spec["package"], raw_architecture=self.arch, develPackageBranch="",
+            defaultsMeta={}, buildTargets="", packages=[], prefetch_executor=None,
+            cmake_prefix_env=False, specs_for_checksum_phase=[], monitoredDirs={})
+        with patch("bits_helpers.build.storeHook"), patch("bits_helpers.build.storeHashes"), \
+             patch("bits_helpers.build.log_current_package"), patch.dict(os.environ, {"BITS_PATH": ""}):
+            build_one_package(spec["package"], ctx)
+        local = self.work / "share/cms/data-example/V00-03-00"
+        self.assertEqual((local / "hooked").read_text(), "data-example\n")
 
     def test_matching_local_install_is_kept(self):
         from bits_helpers.plan import classify, INSTALLED
@@ -507,6 +546,34 @@ class ReuseSymlinksTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incompatible existing content"):
             self.stage()
 
+    def scram_hook(self):
+        """A recipe repository's SYMLINK_STAGE hook doing what CMS does for SCRAM."""
+        hooks = self.root / "cms.bits/hooks"
+        hooks.mkdir(parents=True, exist_ok=True)
+        (hooks / "scram-project").write_text(SCRAM_HOOK)
+        spec = dict(self.spec, hook={"SYMLINK_STAGE": "scram-project"})
+        with patch.dict(os.environ, {"BITS_PATH": ""}):
+            return stage_hook_scripts(spec, self.root / "cms.bits")
+
+    def test_stage_hooks_are_found_as_build_hooks_are(self):
+        self.assertEqual(stage_hook_scripts(self.spec, "/nowhere"), [])
+        self.assertEqual(self.scram_hook(), [str(self.root / "cms.bits/hooks/scram-project")])
+        with patch.dict(os.environ, {"BITS_PATH": "other"}):
+            with self.assertRaisesRegex(ValueError, "missing is in no hooks/ of other, cms"):
+                stage_hook_scripts(dict(self.spec, hook={"SYMLINK_STAGE": "missing"}),
+                                   self.root / "cms.bits")
+
+    def test_stage_hook_is_not_part_of_the_hash(self):
+        from bits_helpers.hashing import storeHashes
+        hashes = []
+        for hook in ({}, {"SYMLINK_STAGE": "scram-project"}, {"POST_INSTALL": "x"}):
+            specs = {"p": dict(package="p", version="1", recipe="", requires=[],
+                               is_devel_pkg=False, commit_hash="0", hook=hook)}
+            storeHashes("p", specs, False)
+            hashes.append(specs["p"]["remote_revision_hash"])
+        self.assertEqual(hashes[0], hashes[1])
+        self.assertNotEqual(hashes[0], hashes[2])
+
     def test_cms_copy_exceptions_and_reference_relocation(self):
         copies = ["etc/profile.d/init.csh", "etc/profile.d/extra.sh",
                   "etc/scram.d/tool.xml", "tools/selected/tool.xml", "tools/other"]
@@ -518,7 +585,13 @@ class ReuseSymlinksTest(unittest.TestCase):
             path.chmod(0o444)
         # rsync -a keeps links inside copied directories as links.
         (self.source / "etc/profile.d/link").symlink_to(self.source / "etc/other/file")
-        local = self.stage()
+        # bits itself copies only etc/profile.d; the rest is the hook's.
+        plain = self.stage()
+        self.assertTrue((plain / "etc/scram.d").is_symlink())
+        self.assertTrue((plain / "tools").is_symlink())
+        self.assertFalse((plain / "etc/profile.d/extra.sh").is_symlink())
+        shutil.rmtree(plain)
+        local = self.stage(stage_hooks=self.scram_hook())
         for name in copies:
             self.assertFalse((local / name).is_symlink())
             self.assertEqual((local / name).read_text(), str(local) + "/lib\n")
@@ -527,6 +600,7 @@ class ReuseSymlinksTest(unittest.TestCase):
         self.assertTrue((local / "etc/other").is_symlink())
         self.assertTrue((local / "config").is_symlink())
         self.assertTrue((local / "etc/profile.d/link").is_symlink())
+        self.assertEqual(Path(self.stage(stage_hooks=self.scram_hook())), local)
 
     def test_scram_project_rename_runs_before_text_replacement(self):
         (self.source / ".SCRAM").mkdir()
@@ -538,7 +612,7 @@ class ReuseSymlinksTest(unittest.TestCase):
                           'printf "%s\\n" "$1" "$2" "$3" "$4" > "$4/rename-args"\n'
                           'cat "$4/.SCRAM/Environment" > "$4/before-rewrite"\n')
         script.chmod(0o555)
-        local = self.stage()
+        local = self.stage(stage_hooks=self.scram_hook())
         self.assertFalse((local / ".SCRAM").is_symlink())
         self.assertFalse((local / "config").is_symlink())
         self.assertEqual((local / "before-rewrite").read_text(),
@@ -547,6 +621,38 @@ class ReuseSymlinksTest(unittest.TestCase):
                          str(self.base) + "/payload\n")
         self.assertFalse((self.source / "rename-args").exists())
         self.assertIn(str(local), (local / "rename-args").read_text())
+
+    def test_scram_hook_copies_a_linked_directory_not_the_link(self):
+        real = self.source / "tools-1"
+        (real / "selected").mkdir(parents=True)
+        (real / "selected/tool.xml").write_text(str(self.source) + "/lib\n")
+        (self.source / "tools").symlink_to("tools-1")
+        local = self.stage(stage_hooks=self.scram_hook())
+        self.assertFalse((local / "tools").is_symlink())
+        self.assertEqual((local / "tools/selected/tool.xml").read_text(), str(local) + "/lib\n")
+        self.assertEqual((real / "selected/tool.xml").read_text(), str(self.source) + "/lib\n")
+
+    def test_interrupted_hook_stage_is_made_again(self):
+        hooks = self.scram_hook()
+        local = self.stage(stage_hooks=hooks)
+        marker = local / ".bits-reuse-symlinks.json"
+        # As left by a process killed in a hook: unfinished, deployed init.sh.
+        marker.write_text(json.dumps(dict(json.loads(marker.read_text()), complete=False)))
+        (local / "etc/profile.d/init.sh").write_text(self.original)
+        self.assertEqual(self.stage(stage_hooks=hooks), local)
+        self.assertNotIn("complete", json.loads(marker.read_text()))
+        self.assertNotEqual((local / "etc/profile.d/init.sh").read_text(), self.original)
+        # Someone else's content there is still refused.
+        (local / "etc/profile.d/init.sh").write_text(self.original)
+        with self.assertRaisesRegex(ValueError, "incompatible existing content"):
+            self.stage(stage_hooks=hooks)
+
+    def test_failed_stage_hook_leaves_no_stage(self):
+        hook = self.root / "fail"
+        hook.write_text("exit 3\n")
+        with self.assertRaisesRegex(ValueError, "stage hook .* failed for gcc"):
+            self.stage(stage_hooks=[str(hook)])
+        self.assertFalse(os.path.lexists(self.work / self.arch / "external/gcc/14-hash"))
 
     def test_module_overlay_does_not_stage_local_symlinks(self):
         spec = dict(self.spec)

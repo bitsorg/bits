@@ -290,6 +290,8 @@ def storeHashes(package, specs, considerRelocation):
   
   if not package.startswith("defaults-"):
     for hook_name in sorted(spec.get("hook", {})):
+      if hook_name == "SYMLINK_STAGE":   # runs on reuse only: no part of the build
+        continue
       h_all("hook:" + hook_name + "=" + str(spec["hook"][hook_name]))
     for hook_name in sorted(spec.get("hook_params", {})):
       h_all("hook_params:" + hook_name + "=" + str(spec["hook_params"][hook_name]))

@@ -21,6 +21,29 @@ from bits_helpers.utilities import pkg_to_shell_id
 from bits_helpers.utilities import is_virtual_package
 
 
+SYMLINK_STAGE_HOOK = "SYMLINK_STAGE"   # hooks run on a staged package; not in its hash
+
+
+def stage_hook_scripts(spec, config_dir):
+    """The scripts of *spec*'s ``hook: {SYMLINK_STAGE: name[,name]}``, found as
+    the build finds its hooks: hooks/<name> in the recipe repositories."""
+    hooks = spec.get("hook") if isinstance(spec.get("hook"), dict) else {}
+    names = [n for n in str(hooks.get(SYMLINK_STAGE_HOOK) or "").replace(" ", "").split(",") if n]
+    if not names:
+        return []
+    config_dir = os.path.abspath(config_dir or ".")
+    repos = [d for d in os.environ.get("BITS_PATH", "").split(",") if d]
+    repos.append(re.sub(r"\.bits$", "", os.path.basename(config_dir)))
+    scripts = []
+    for name in names:
+        found = [p for p in (os.path.join(os.path.dirname(config_dir), r + ".bits", "hooks", name)
+                             for r in repos) if os.path.isfile(p)]
+        if not found:
+            raise ValueError("symlink stage hook %s is in no hooks/ of %s" % (name, ", ".join(repos)))
+        scripts.append(found[0])
+    return scripts
+
+
 def find_symlink_package(spec, deployment_root, architecture, policy="strict"):
     """Find a package in ROOT/<effective-arch>/[family/]package/version[-revision].
 
@@ -193,12 +216,13 @@ def _incompatible_entry(existing, staged, source, relative=Path()):
         return existing
 
 
-def _install_stage(staged, destination, source):
-    """Install a prepared package, preserving a rollback copy if it exists."""
+def _install_stage(staged, destination, source, replace=False):
+    """Install a prepared package, preserving a rollback copy if it exists;
+    *replace* an existing one without comparing it."""
     if not os.path.lexists(destination):
         staged.rename(destination)
         return None
-    conflict = _incompatible_entry(destination, staged, source)
+    conflict = None if replace else _incompatible_entry(destination, staged, source)
     if conflict is not None:
         raise ValueError("--symlink-packages-from found incompatible existing content at %s "
                          "(first conflict: %s)" % (destination, conflict))
@@ -219,7 +243,7 @@ def _install_stage(staged, destination, source):
 
 
 def stage_reused_package(spec, install_base, work_dir, architecture,
-                         *, source_path, runtime_work_dir=None):
+                         *, source_path, runtime_work_dir=None, stage_hooks=()):
     """Stage a selected package under work_dir without writing to its source.
 
     Directories containing private files are real directories; the other entries
@@ -295,9 +319,12 @@ def stage_reused_package(spec, install_base, work_dir, architecture,
     # Keep an already completed stage as-is. Earlier bits versions used the
     # package's effective arch ("share") in this wrapper; refresh only that
     # exact generated script, leaving modified private files untouched.
+    unfinished = False      # a stage of ours whose hooks were interrupted
     if os.path.lexists(destination):
         if not destination.is_symlink() and (destination / marker).is_file():
             previous = json.loads((destination / marker).read_text())
+            unfinished = (previous.get("complete") is False
+                          and previous.get("source") == identity["source"])
             local_init = destination / "etc/profile.d/init.sh"
             private = all((not (destination / "etc").is_symlink(),
                            not local_init.parent.is_symlink(),
@@ -318,21 +345,15 @@ def stage_reused_package(spec, install_base, work_dir, architecture,
     destination.parent.mkdir(parents=True, exist_ok=True)
     staged = Path(tempfile.mkdtemp(prefix=".reuse-", dir=str(destination.parent)))
     try:
-        scram_project = (source / ".SCRAM").is_dir()
         for entry in source.iterdir():
             target = staged / entry.name
-            if entry.name == "etc" and (entry / "profile.d").exists():
+            if entry.name == "etc" and (entry / "profile.d/init.sh").exists():
                 target.mkdir()
                 for child in entry.iterdir():
-                    copy = child.name == "scram.d" or (
-                        child.name == "profile.d" and (child / "init.sh").exists())
-                    if copy:
+                    if child.name == "profile.d":
                         shutil.copytree(child, target / child.name, symlinks=True)
                     else:
                         (target / child.name).symlink_to(child)
-            elif any((entry.name == "tools" and (entry / "selected").is_dir(),
-                      scram_project and entry.name in (".SCRAM", "config"))):
-                shutil.copytree(entry, target, symlinks=True)
             elif entry.name != marker:
                 target.symlink_to(entry)
 
@@ -346,42 +367,45 @@ def stage_reused_package(spec, install_base, work_dir, architecture,
                     writable.append(str(path))
         for start in range(0, len(writable), 128):
             _run_checked(["chmod", "+w"] + writable[start:start + 128])
-        # Preserve bits' WORK_DIR/BITS_ARCH_PREFIX setup in its local init.sh.
-        # Relocate other copied profile/SCRAM/tool files with the same rule.
 
-        def write_init(root):
-            path = root / "etc/profile.d/init.sh"
-            if path.is_symlink():
-                path.unlink()
-            path.write_text(init)
+        def finish(root):
+            _relocate_references(root, replacements)
+            init_path = root / "etc/profile.d/init.sh"
+            if init_path.is_symlink():
+                init_path.unlink()
+            init_path.write_text(init)
+            (root / marker).write_text(json.dumps(identity, sort_keys=True) + "\n")
 
-        if scram_project:
-            for name in (".SCRAM", "config"):
-                _run_checked(["chmod", "-R", "+w", str(staged / name)])
-            # Run at the final package location, as REFERENCE_PACKAGE_POST does.
-            backup = _install_stage(staged, destination, source)
-            refroot = base.parent if base.name == arch else base
-            try:
-                _run_checked([str(destination / "config/SCRAM/projectAreaRename.pl"),
-                              str(refroot), str(runtime), architecture, str(destination)])
-                # CMS performs the text substitution after projectAreaRename.
-                _relocate_references(destination, replacements)
-                write_init(destination)
-                (destination / marker).write_text(json.dumps(identity, sort_keys=True) + "\n")
-            except BaseException:
-                if destination.exists() and not destination.is_symlink():
-                    shutil.rmtree(destination)
-                if backup is not None:
-                    (backup / "package").rename(destination)
-                    shutil.rmtree(backup)
-                raise
+        if not stage_hooks:
+            finish(staged)
+            backup = _install_stage(staged, destination, source, replace=unfinished)
             if backup is not None:
                 shutil.rmtree(backup)
             return str(destination)
-        _relocate_references(staged, replacements)
-        write_init(staged)
-        (staged / marker).write_text(json.dumps(identity, sort_keys=True) + "\n")
-        backup = _install_stage(staged, destination, source)
+        # Hooks run at the final location, as CMS REFERENCE_PACKAGE_POST does,
+        # before the copied text files are relocated. Marked unfinished till then.
+        (staged / marker).write_text(json.dumps(dict(identity, complete=False)) + "\n")
+        backup = _install_stage(staged, destination, source, replace=unfinished)
+        try:
+            env = dict(os.environ, PKG_ROOT=str(destination), SOURCE_ROOT=str(source),
+                       REFERENCE_ROOT=str(base.parent if base.name == arch else base),
+                       WORK_DIR=str(runtime), ARCHITECTURE=architecture,
+                       PKGNAME=package, PKGVERSION=spec["version"])
+            for hook in stage_hooks:
+                try:
+                    subprocess.run(["bash", "-e", str(hook)], cwd=str(destination), env=env,
+                                   check=True)
+                except subprocess.CalledProcessError as exc:
+                    raise ValueError("Symlink stage hook %s failed for %s"
+                                     % (hook, package)) from exc
+            finish(destination)
+        except BaseException:
+            if destination.exists() and not destination.is_symlink():
+                shutil.rmtree(destination)
+            if backup is not None:
+                (backup / "package").rename(destination)
+                shutil.rmtree(backup)
+            raise
         if backup is not None:
             shutil.rmtree(backup)
     finally:

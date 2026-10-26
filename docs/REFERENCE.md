@@ -4190,12 +4190,22 @@ packages to build locally anyway (e.g. one you need patched).
 Use `--symlink-packages-from ROOT` to stage each selected dependency at
 `<work-dir>/<effective-arch>/<family>/<package>/<version-revision>`. Payload
 entries such as `bin`, `lib`, and `include` link to the deployed package.
-Following CMS `REFERENCE_PACKAGE_POST`, bits copies all of `etc/profile.d`
-when it contains `init.sh`, `etc/scram.d`, and `tools` when `tools/selected`
-exists. For SCRAM projects it also copies `.SCRAM` and `config`, makes them
-writable, and runs `config/SCRAM/projectAreaRename.pl` before replacing
-reference paths. Copied regular files are made writable; symlinks inside copied
-directories remain symlinks. `init.sh` retains bits' local architecture setup. Builds
+bits copies `etc/profile.d`, which holds `init.sh`; copied regular files are
+made writable, and symlinks inside copied directories remain symlinks.
+Anything else a package needs as its own copy is the recipe repository's
+business: a `SYMLINK_STAGE` hook (`hook: {SYMLINK_STAGE: name[,name]}` in the
+recipe or the defaults, the script in `hooks/<name>` as for the other hooks)
+runs with `bash -e` in the staged package, at its final place, before its
+reference paths are replaced. It gets `PKG_ROOT` (the stage), `SOURCE_ROOT`
+(the deployed package), `REFERENCE_ROOT`, `WORK_DIR`, `ARCHITECTURE`,
+`PKGNAME` and `PKGVERSION`. Entries in the stage are links into the
+deployment: a hook replaces a link with a copy before it changes it. For CMS,
+cms.bits' hook copies `etc/scram.d`, `tools` (with `tools/selected`), and for
+SCRAM projects `.SCRAM` and `config`, then runs
+`config/SCRAM/projectAreaRename.pl`, as `REFERENCE_PACKAGE_POST` does. The
+hook is not part of the package hash: it shapes no build. A stage is made once,
+so a changed hook applies to new stages (remove a stage to make it again); one
+left unfinished by an interrupted hook is made again. `init.sh` retains bits' local architecture setup. Builds
 source this local copy, so environment-derived dependency paths are inside the
 work directory and can be rewritten by the consumer's normal relocation step.
 The deployment is never modified. Existing local installations are not

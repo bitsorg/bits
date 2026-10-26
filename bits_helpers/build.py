@@ -2176,7 +2176,7 @@ def build_one_package(p, ctx):
   # Resolve the effective architecture (including share) before looking up
   # the package, and retain the selected revision even when it is empty.
   from bits_helpers.reuse_symlinks import (
-      select_symlink_package, matching_local_install, stage_reused_package)
+      select_symlink_package, matching_local_install, stage_reused_package, stage_hook_scripts)
   try:
     _linked = select_symlink_package(
         spec, cfg, args.architecture,
@@ -2201,7 +2201,8 @@ def build_one_package(p, ctx):
                          (workDir if args.containerUseWorkDir else "/container/bits/sw"))
       _local_reuse = stage_reused_package(
           spec, _linked["install_base"], workDir, args.architecture,
-          runtime_work_dir=_runtime_work, source_path=_linked["source"])
+          runtime_work_dir=_runtime_work, source_path=_linked["source"],
+          stage_hooks=stage_hook_scripts(spec, getattr(args, "configDir", "")))
       spec["revision"] = _linked["revision"]
       spec["hash"] = _linked["hash"]
       spec["reuse_symlinked"] = True
