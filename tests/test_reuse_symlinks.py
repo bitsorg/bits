@@ -244,6 +244,30 @@ class DeploymentSelectionTest(unittest.TestCase):
                                          lambda: trusted)
             self.assertEqual(states[spec["package"]], state)
 
+    def test_plan_does_not_list_symlinked_packages_in_the_store(self):
+        from types import SimpleNamespace
+        from bits_helpers import plan
+        from bits_helpers.sync import RemoteSync
+        self.deploy()
+        listed = []
+
+        class Store(RemoteSync):
+            remoteStore = "b3://store"
+
+            def list_store_tarballs(self, arch, pkg_hash):
+                listed.append(pkg_hash)
+                return []
+        cfg = SimpleNamespace(symlink_packages_from=str(self.root), symlink_policy="strict",
+                              build_local=[], require_signed_reuse=False)
+        args = SimpleNamespace(defaults=["release"], architecture=self.arch)
+        spec = dict(self.spec)
+        with patch("bits_helpers.build.storeHook"), patch("bits_helpers.hashing.storeHashes"), \
+             patch.object(plan, "_overlay_predicate", lambda cfg: None):
+            states, _, _ = plan.plan([spec["package"]], {spec["package"]: spec}, args,
+                                     str(self.work), Store(), self.arch, cfg, None)
+        self.assertEqual(states[spec["package"]], plan.SYMLINK)
+        self.assertEqual(listed, [])
+
     def test_build_selects_with_the_signed_index(self):
         class Selected(Exception):
             pass

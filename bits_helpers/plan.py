@@ -364,7 +364,7 @@ class _Assumed:
 
 
 def _foreseen(build_order, specs, args, raw_architecture, work_dir, write_store, known=None,
-              trusted=None, overlay=None):
+              trusted=None, overlay=None, symlink=None):
   """The (architecture, hash) pairs the plan will list, but not those of
   packages already here: computed on a copy of *specs*, each package classified
   as the plan will, from the *known* listings ({(arch, hash): names}) and, for
@@ -382,10 +382,10 @@ def _foreseen(build_order, specs, args, raw_architecture, work_dir, write_store,
       raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH))
     store.spec = spec
     state, spec["hash"], spec["revision"] = classify(
-      spec, args.architecture, work_dir, store, True, write_store, signed, overlay)
+      spec, args.architecture, work_dir, store, True, write_store, signed, overlay, symlink)
     if state == DEVEL:
       write_store = False   # as the plan (and the build) do from here on
-    if state in (DEVEL, OVERLAY, INSTALLED, LOCAL_TARBALL) or is_virtual_package(spec):
+    if state in (DEVEL, OVERLAY, SYMLINK, INSTALLED, LOCAL_TARBALL) or is_virtual_package(spec):
       continue
     eff = effective_arch(spec, args.architecture)
     hashes = [spec["remote_revision_hash"]] if "force_revision" in spec else spec["remote_hashes"]
@@ -410,6 +410,12 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
   can_list = None if isinstance(sync_helper, NoRemoteSync) else store_can_list(sync_helper)
   trusted = trusted_index_fn() if (cfg.require_signed_reuse and can_list) else None
   overlay = _overlay_predicate(cfg)
+  from bits_helpers.reuse_symlinks import select_symlink_package
+  sym_trusted = (trusted_index_fn()
+                 if getattr(cfg, "symlink_packages_from", None) and cfg.require_signed_reuse
+                 else None)
+  symlink = lambda spec: select_symlink_package(   # noqa: E731
+      spec, cfg, args.architecture, trusted=sym_trusted)
   lister, kept = sync_helper, None
   if can_list:
     from bits_helpers.store_cache import StoreCache, store_id
@@ -421,17 +427,12 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
       what = "Checking the remote store"
       for _ in range(MAX_ROUNDS):
         if not lister.prefetch(_foreseen(build_order, specs, args, raw_architecture, work_dir,
-                                         write_store, lister.cache, trusted, overlay), what):
+                                         write_store, lister.cache, trusted, overlay, symlink),
+                             what):
           break
         what = "Checking the remote store for the hashes that changed"
     except Exception as exc:     # the plan then lists one package at a time
       debug("cannot list the store ahead: %s", exc)
-  from bits_helpers.reuse_symlinks import select_symlink_package
-  sym_trusted = (trusted_index_fn()
-                 if getattr(cfg, "symlink_packages_from", None) and cfg.require_signed_reuse
-                 else None)
-  symlink = lambda spec: select_symlink_package(   # noqa: E731
-      spec, cfg, args.architecture, trusted=sym_trusted)
   states, unuploadable = {}, set()
   for p in build_order:
     spec = specs[p]
