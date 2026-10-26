@@ -13,8 +13,10 @@ Each pass:
               outcome is decided from its CI jobs, as the console does: bits'
               own progress status can hold a pipeline "running" after every job
               finished, or fail it long after its jobs succeeded.
-4. index    - a finished pipeline's builds are read from the S3 build index
-              (BUILDS/by-pipeline/<pipeline>/<build_id>.json) and their BOMs.
+4. index    - a pipeline's builds are read from the S3 build index
+              (BUILDS/by-pipeline/<pipeline>/<build_id>.json) and their BOMs,
+              once there: a build's index is written after all its tarballs
+              and BOMs are in the store, while the job goes on to CVMFS.
 
 Each change is an event: pipeline.seen, pipeline.success|failed|canceled|running
 (running again: a retry), build.published.
@@ -407,18 +409,17 @@ def _index_one(conn, s3, bucket, r):
 
 
 def index(conn, store):
-    """Record the builds of finished pipelines from the S3 build index. Returns
-    how many builds were recorded. *store* is (s3, bucket) or None."""
+    """Record the builds of pipelines from the S3 build index, running ones
+    too. Returns how many builds were recorded. *store* is (s3, bucket) or None."""
     if store is None:
         return 0
     s3, bucket = store
     now = db.now_ms()
-    # Indexed when it finishes (indexed_ms reset to 0), when a hint points at it,
-    # and, while it has no builds yet, every INDEX_RETRY_MS until INDEX_GIVE_UP_MS
-    # after it finished: the build index is written before the job ends, so a
-    # miss is a slow store or a build that published nothing.
+    # Indexed when it starts or finishes (indexed_ms reset to 0), when a hint
+    # points at it, and, while it has no builds yet, every INDEX_RETRY_MS while it
+    # runs and until INDEX_GIVE_UP_MS after it finished (checked_ms).
     rows = conn.execute(
-        "SELECT * FROM pipelines p WHERE is_build = 1 AND outcome != 'running' AND"
+        "SELECT * FROM pipelines p WHERE is_build = 1 AND"
         " (indexed_ms = 0 OR (indexed_ms <= ? AND checked_ms >= ? AND NOT EXISTS"
         " (SELECT 1 FROM builds b WHERE b.pipeline_id = p.id))) ORDER BY indexed_ms, id"
         " LIMIT ?", (now - INDEX_RETRY_MS, now - INDEX_GIVE_UP_MS, MAX_PER_STEP)).fetchall()

@@ -320,6 +320,20 @@ class ReconcileTest(_DB):
         self._pass((s3, "bkt"))
         self.assertEqual(len(reconcile.list_builds(self.conn, pipelines=[2])[0]["builds"]), 1)
 
+    def test_a_running_pipelines_builds_are_recorded_once_in_the_store(self):
+        self.gl.add(3, status="running", jobs=[_job(30, "build", "running")])
+        s3 = FakeS3({})
+        self._pass((s3, "bkt"))                                          # nothing there yet
+        self.assertEqual(self._row(3)["outcome"], "running")
+        s3.objects.update({k: json.dumps(v).encode() for k, v in {
+            "BUILDS/by-pipeline/3/b.json": {"build_id": "b", "keys": ["M/b.json"]},
+            "M/b.json": _bom("el9", build_id="b")}.items()})
+        reconcile.add_hint(self.conn, 3, "published")                   # after the BOM step
+        self._pass((s3, "bkt"))
+        self.assertEqual([b["build_id"] for b in reconcile.list_builds(self.conn, pipelines=[3])[0]["builds"]],
+                         ["b"])
+        self.assertEqual(self._row(3)["outcome"], "running")
+
     def test_a_hint_fetches_a_pipeline_older_than_the_window(self):
         self.gl.add(7, status="success", updated="2020-01-01T00:00:00Z",
                     jobs=[_job(70, "build", "success")])
@@ -535,6 +549,26 @@ class ApiTest(_DB):
 
     def _get(self, user, path):
         return self.client.get(path, headers={"Authorization": "Bearer %s" % user})
+
+    def test_certifications_are_those_of_ones_communities(self):
+        now = 1
+        self.conn.execute("INSERT INTO actions (kind, params, idempotency_key, subject, community,"
+                          " state, requested_by_kind, requested_by_id, attempts, error, created_ms,"
+                          " updated_ms) VALUES ('certify', '{}', 'k', 'certify:2:b3', 'other',"
+                          " 'approved', 'worker', 'w', 2, 'OSError: down', 1, 1)")
+        for pid, bid, arch, state, reason in ((1, "b1", "*", "signing", "store down"),
+                                              (2, "b3", "*", "signing", ""),
+                                              (2, "b2", "*", "signed", ""), (0, "cli", "*", "signed", "")):
+            self.conn.execute("INSERT INTO certify_runs (pipeline_id, build_id, arch, state, reason,"
+                              " created_ms, updated_ms) VALUES (?,?,?,?,?,?,?)",
+                              (pid, bid, arch, state, reason, now, now))
+        self.conn.commit()
+        got = lambda u: [(r["build_id"], r["reason"]) for r in self._get(u, "/ops/certify").json()["certify"]]
+        self.assertEqual(got("alice"), [("b1", "")])                      # no raw reasons
+        self.assertEqual(got("carol"), [("cli", ""), ("b2", ""),
+                                        ("b3", "retried (attempt 2): OSError: down"), ("b1", "store down")])
+        self.assertEqual(got("dave"), [])
+        self.assertIs(self._get("alice", "/ops/certify").json()["owns_set"], False)
 
     def test_builds_are_those_of_ones_communities(self):
         ids = lambda u, q="": [b["pipeline"] for b in self._get(u, "/ops/builds" + q).json()["builds"]]

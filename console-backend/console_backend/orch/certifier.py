@@ -11,8 +11,9 @@ does not read (CANARY/common-manifest-<arch>.json and .sig), and canary.py
 compares it with the bits-manifests CI's certification of the same build.
 
   * Trigger (`trigger`, a step of the worker's loop): a build recorded after
-    certification was turned on, of a pipeline that succeeded with
-    CERTIFY=true, certified into bits-manifests (the community's
+    certification was turned on (its build index in the store: its tarballs and
+    BOMs are), of a pipeline running or succeeded with CERTIFY=true (one still
+    publishing to CVMFS need not wait for that), certified into bits-manifests (the community's
     certify_manifests_remote). Its console pre-approval in force now approves
     a `certify` action, which the worker requests already approved
     (actions.request_preapproved): nobody approves a certification in the
@@ -191,9 +192,11 @@ def trigger(conn, settings, console):
     base = ("SELECT b.pipeline_id, b.build_id, b.recorded_ms, c.state AS decided, p.*"
             " FROM builds b JOIN pipelines p ON p.id = b.pipeline_id LEFT JOIN certify_runs c ON"
             " c.pipeline_id = b.pipeline_id AND c.build_id = b.build_id AND c.arch = '*'"
-            " WHERE p.outcome = 'success' AND b.recorded_ms >= ? AND ")
-    rows = conn.execute(base + "c.state IS NULL ORDER BY b.recorded_ms LIMIT ?",
-                        (since, PER_PASS)).fetchall()
+            " WHERE b.recorded_ms >= ? AND ")
+    # A new one while its pipeline runs (publishing to CVMFS) or succeeded; one
+    # waiting goes on waiting, and is refused in the end, whatever the pipeline did.
+    rows = conn.execute(base + "p.outcome IN ('running', 'success') AND c.state IS NULL"
+                        " ORDER BY b.recorded_ms LIMIT ?", (since, PER_PASS)).fetchall()
     rows += conn.execute(
         base + "c.state = 'waiting' AND (b.recorded_ms < ? OR EXISTS (SELECT 1 FROM approvals a"
         " WHERE a.kind = 'preapproval' AND a.via = 'console' AND a.subject ="
@@ -1328,16 +1331,43 @@ def for_builds(conn, keys):
     return out
 
 
-def listing(conn, pipeline=None, limit=100):
-    q, args = ("SELECT id, pipeline_id, build_id, arch, state, reason, approval_id, approver,"
-               " set_version, set_commit, in_set, boms, sha256, key_id, signed_ms, written_ms,"
-               " created_ms, updated_ms FROM certify_runs"), []
+def listing(conn, pipeline=None, limit=100, communities=None):
+    """The certify runs, newest first: of *pipeline*, of the pipelines of
+    *communities* (None: every run, CLI builds' and withdrawals' too)."""
+    q, where, args = ("SELECT c.id, c.pipeline_id, c.build_id, c.arch, c.state, c.reason,"
+                      " c.approval_id, c.approver, c.set_version, c.set_commit, c.in_set, c.boms,"
+                      " c.sha256, c.key_id, c.signed_ms, c.written_ms, c.created_ms, c.updated_ms"
+                      " FROM certify_runs c"), [], []
+    if communities is not None:
+        if not communities:
+            return []
+        q += " JOIN pipelines p ON p.id = c.pipeline_id"
+        where.append("lower(p.community) IN (%s)" % ",".join("?" * len(communities)))
+        args += sorted(communities)
     if pipeline is not None:
-        q += " WHERE pipeline_id = ?"
+        where.append("c.pipeline_id = ?")
         args.append(int(pipeline))
-    q += " ORDER BY id DESC LIMIT ?"
+    if where:
+        q += " WHERE " + " AND ".join(where)
+    q += " ORDER BY c.id DESC LIMIT ?"
     args.append(max(1, min(int(limit), 500)))
     return [dict(r, boms=json.loads(r["boms"] or "[]")) for r in conn.execute(q, args)]
+
+
+def with_retries(conn, rows):
+    """*rows* (listing's), a build still signing with why its action is retried,
+    if it is (the error is raw text: for overall admins)."""
+    out = []
+    for r in rows:
+        if r["arch"] == "*" and r["state"] == "signing" and not r["reason"]:
+            subject = "certify:%s:%s" % ("cli" if r["pipeline_id"] == NO_PIPELINE
+                                         else r["pipeline_id"], r["build_id"])
+            a = conn.execute("SELECT attempts, error FROM actions WHERE kind = ? AND subject = ?"
+                             " ORDER BY id DESC LIMIT 1", (KIND, subject)).fetchone()
+            if a and a["error"]:
+                r = dict(r, reason="retried (attempt %d): %s" % (a["attempts"], a["error"][:300]))
+        out.append(r)
+    return out
 
 
 # --- the thread ----------------------------------------------------------------------

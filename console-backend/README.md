@@ -67,7 +67,9 @@ S3 rather than what jobs report: it lists the build project's pipelines updated
 since the last pass (`BITS_ORCH_LOOKBACK_DAYS`, default 7, on an empty
 database), reads a new pipeline's variables once, decides each build pipeline's
 outcome from its CI jobs (bits' progress status can hold a pipeline "running" or
-fail it late), and reads a finished pipeline's builds from the S3 build index in
+fail it late), and reads a pipeline's builds from the S3 build index (written
+once a build's tarballs and BOMs are in the store, while the job may still be
+publishing to CVMFS) in
 `BITS_ORCH_STORE` (`b3://<bucket>`). GitLab is read with `BITS_FORGE_READ_TOKEN`
 (read_api) when set. `GET /ops/builds` and `GET /ops/builds/{pipeline}` serve
 what it recorded, for the communities the caller administers. A build job may
@@ -199,7 +201,9 @@ to certify from is a sign run too (`refused`, `missing`). It signs nothing.
 
 **Worker certification** (`orch/certifier.py`, M8a on; on with `BITS_ORCH_CERTIFY=1`):
 the worker certifies each new build that asked for it (`CERTIFY=true`) itself,
-minutes after it. Only the build's console pre-approval approves it: the
+as soon as the build is in the store (its pipeline running or succeeded), not
+after its CVMFS publish; a certification stands if that publish fails later,
+since the store content it vouches for is unchanged. Only the build's console pre-approval approves it: the
 worker requests a `certify` action already approved by it, and nobody can
 approve one in the console. It runs on a thread of its own: the build's BOMs
 from the store, the certified set at its latest version as the baseline, bits'
@@ -209,8 +213,10 @@ bytes are kept before they are signed, so a rerun signs the same bytes again;
 signatures are verified, and written through the store writer
 (`BITS_STORE_WRITER_AGENT_SOCKET`, a security-proxy instance only the worker
 reaches), at most `BITS_ORCH_CERTIFY_DAILY_SIGNS` a day. Manifests are valid
-`BITS_ORCH_CERTIFY_VALID_DAYS` (30). `GET /ops/certify`, and `certify` in
-`/ops/certifications/summary`.
+`BITS_ORCH_CERTIFY_VALID_DAYS` (30). `GET /ops/certify` (overall admins: with
+the reasons, and why a build still signing is retried; community admins: their
+pipelines' builds) and `/ops/certifications/summary` say whether the worker owns
+the certified set (`owns_set`).
 
 **The canary** (`orch/canary.py`, M8a until M8b): the worker writes its
 manifests under `CANARY/` (`BITS_ORCH_CANARY_PREFIX`; production reads

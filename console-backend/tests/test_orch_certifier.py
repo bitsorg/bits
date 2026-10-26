@@ -107,6 +107,28 @@ class CertifierTest(CertifierBase):
                          ("done", "alice", "worker"))
         self.assertIn("certify.signed", self.kinds())
 
+    def test_a_build_in_the_store_is_certified_while_its_pipeline_runs(self):
+        self.conn.execute("UPDATE pipelines SET outcome = 'running'")    # publishing to CVMFS
+        self.approve()
+        self.assertEqual(self.certify(), 1)
+        self.assertEqual(self.rows()["*"]["state"], "signed")
+        self.conn.execute("DELETE FROM certify_runs")
+        self.conn.execute("DELETE FROM actions")
+        for outcome in ("failed", "canceled"):                          # not taken up then
+            self.conn.execute("UPDATE pipelines SET outcome = ?", (outcome,))
+            certifier.trigger(self.conn, self.settings, self.console)
+            self.assertEqual(self.rows(), {})
+
+    def test_a_waiting_build_is_refused_in_the_end_whatever_its_pipeline_did(self):
+        self.conn.execute("UPDATE pipelines SET outcome = 'running'")
+        certifier.trigger(self.conn, self.settings, self.console)
+        self.assertEqual(self.rows()["*"]["state"], "waiting")
+        self.conn.execute("UPDATE pipelines SET outcome = 'failed'")     # its CVMFS publish
+        self.conn.execute("UPDATE builds SET recorded_ms = recorded_ms - 2 * 86400000")
+        self.conn.execute("UPDATE kv SET value = '0' WHERE key = 'certify.since'")
+        certifier.trigger(self.conn, self.settings, self.console)
+        self.assertEqual(self.rows()["*"]["state"], "refused")
+
     def test_nobody_approves_a_certification_in_the_console(self):
         with self.assertRaises(actions.ActionError):
             actions.request(self.conn, certifier.KIND, {"pipeline": "7", "build_id": "b2"},

@@ -137,6 +137,14 @@ class SbomScanTest(Fixture):
         self.assertEqual(self._scans()["b-1"]["error"], "")
         self.assertEqual(len(self._events()), 3)               # the same counts again: no event
 
+    def test_a_build_just_recorded_waits_for_its_sbom(self):
+        now = db.now_ms()
+        self.conn.execute("INSERT INTO builds (pipeline_id, build_id, community, recorded_ms)"
+                          " VALUES (1, 'b-new', 'atlas', ?)", (now,))
+        self.conn.commit()
+        self.assertNotIn("b-new", sbom_scan.due(self.conn, "d", now, limit=10))
+        self.assertIn("b-new", sbom_scan.due(self.conn, "d", now + sbom_scan.SETTLE_MS, limit=10))
+
     def test_a_missing_sbom_is_kept_and_retried_later(self):
         del self.objects["MANIFESTS/b-3/sbom.cdx.json"]
         self._step(Scanner())

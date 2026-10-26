@@ -43,7 +43,8 @@
     GET  /ops/certifications/summary?days=   sign runs by state, from the git tree,
                                        from the certified set and the worker's own
                                        certification (the M4, M5 and M8a gates)
-    GET  /ops/certify?pipeline=&limit=  the worker's certifications (M8a)
+    GET  /ops/certify?pipeline=&limit=  the worker's certifications (M8a), whether it
+                                       owns the set (overall and community admins)
     GET  /ops/outside                  the outside audit copy: its head, any alarm
     GET  /ops/certified?group=&arch=&build=&removed=&limit=   the certified set (the groups
                                        the caller administers), its version and summary
@@ -301,21 +302,29 @@ async def certifications_summary(request: Request, days: float = 14):
             "from_set": await run_in_threadpool(_read, shadow.summary, since, "set"),
             "replay": await run_in_threadpool(_read, shadow.summary, since, "replay"),
             "certify": await run_in_threadpool(_read, certifier.summary, since),
-            "canary": await run_in_threadpool(_read, canary.summary, since)}
+            "canary": await run_in_threadpool(_read, canary.summary, since),
+            "owns_set": bool(_m().settings.orch_owns_set)}
 
 
 @router.get("/ops/certify")
 async def list_certify(request: Request, pipeline: str = "", limit: int = 100):
-    """The worker's certifications (M8a), newest first, without their bytes;
-    until M8b with the canary's comparison (overall admins)."""
-    await _overall(request)
+    """The worker's certifications (M8a), newest first, without their bytes, and
+    whether it owns the certified set (M8b): an overall admin's with the reasons
+    and, until M8b, the canary's comparison; a community admin's of their
+    communities' pipelines, without the reasons (raw error text, at times)."""
+    data = await _caller(request)
+    mine = await _scope(data)
     if pipeline and not pipeline.isdigit():
         raise HTTPException(400, "pipeline must be an id")
 
     def read(conn):
-        return canary.annotate(conn, certifier.listing(conn, int(pipeline) if pipeline else None,
-                                                       limit))
-    return {"certify": await run_in_threadpool(_read, read)}
+        rows = certifier.listing(conn, int(pipeline) if pipeline else None, limit,
+                                 communities=mine)
+        if mine is not None:
+            return [dict(r, reason="") for r in rows]
+        return canary.annotate(conn, certifier.with_retries(conn, rows))
+    return {"certify": await run_in_threadpool(_read, read),
+            "owns_set": bool(_m().settings.orch_owns_set)}
 
 
 @router.get("/ops/certified")

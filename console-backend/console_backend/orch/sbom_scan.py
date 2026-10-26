@@ -41,6 +41,7 @@ log = logging.getLogger("bits_orchestrator.sbom_scan")
 PER_PASS = 3                       # builds scanned in one worker pass, at most
 BUDGET_S = 20                      # no new scan once a pass has spent this long
 RETRY_MS = 3600 * 1000             # a failed scan is tried again after this
+SETTLE_MS = 10 * 60 * 1000         # a new build's SBOM follows its build index
 TIMEOUT_S = (5, 60)                # connect, read: the scanner gives up at 45 s
 SEVERITIES = ("critical", "high", "medium", "low", "other")
 SBOM = "sbom.cdx.json"
@@ -235,9 +236,10 @@ def index(doc, vulns):
 
 
 def due(conn, db_built, now, limit=None):
-    """Build ids to scan, newest first: never scanned, last good scan with an
-    older database, older than the build's newest publication or not indexed
-    (INDEX_VERSION), or failed more than RETRY_MS ago."""
+    """Build ids to scan, newest first: never scanned (recorded SETTLE_MS ago:
+    a running pipeline's build is recorded before its SBOM is uploaded), last good
+    scan with an older database, older than the build's newest publication or not
+    indexed (INDEX_VERSION), or failed more than RETRY_MS ago."""
     rows = conn.execute(
         "SELECT b.build_id, MAX(b.recorded_ms) AS seen, s.db_built, s.error, s.scanned_ms,"
         " s.index_version"
@@ -246,7 +248,8 @@ def due(conn, db_built, now, limit=None):
     out, limit = [], limit or PER_PASS
     for r in rows:
         if r["scanned_ms"] is None:
-            out.append(r["build_id"])
+            if now - (r["seen"] or 0) >= SETTLE_MS:
+                out.append(r["build_id"])
         elif r["error"]:
             if now - r["scanned_ms"] > RETRY_MS:
                 out.append(r["build_id"])
