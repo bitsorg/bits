@@ -31,6 +31,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 - **[Improvement]** `bits cvmfs publish`: with a packages and a modules template, modulefiles are no longer a commit each: the package carries its modulefile, and one job at the end links `<modules dir>/<pkg>/<ver-rev>` to it for every package that lacks one (about a quarter of a large publish).
 - **[Improvement]** The tarball's sha256 is computed while it is packed (a `<tarball>.sha256` sidecar), so the build manifest and the store upload no longer read the tarball again; a legacy store object over 5 GB is now stamped with its sha256 (multipart copy) instead of being re-hashed on every publish.
 - **[Improvement]** Faster build manifests (SBOMs): the tarball's sha256 is computed while it is packed (a `<tarball>.sha256` sidecar), so the manifest and the store upload do not read it again; a store object stamped with its sha256 by a server-side managed copy, which also works above 5 GB, so large legacy objects are no longer re-hashed on every publish.
+- **[Improvement]** `bits build` shows each package as `[n/total] name@version` and its stages as they happen (fetching sources, with where they come from; configuring; compiling; installing), in parallel builds too; `--debug` output and compiler percentages are kept (from #134, by Juan Miguel Carceller, @jmcarcell).
 
 # 0.6 — 2026-10-04
 
