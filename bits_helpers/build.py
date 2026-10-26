@@ -3107,6 +3107,10 @@ def build_one_package(p, ctx):
     scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
 
 
+def enter_target(package, spec, build_family):
+  if spec is not None:
+    return "%s/%s" % (package, ver_rev(spec))
+  return "%s/latest-%s" % (package, build_family)
 
 
 def providers_and_defaults(args, packages, workDir, defaultsReader, _cli_disable,
@@ -4457,7 +4461,7 @@ def doBuild(args, parser):
              f"\n\n  {abspath(join(args.workDir, args.architecture))}\n"
              f"{_install_root_line}\n"
              "You can use this package by loading the environment:"
-             f"\n\n  bits {_arch_flag}enter {mainPackage}/latest-{mainBuildFamily}"
+             f"\n\n  bits {_arch_flag}enter {enter_target(mainPackage, _main_spec, mainBuildFamily)}"
              f"{_arch_note}{_container_note}",
              )
   else:
