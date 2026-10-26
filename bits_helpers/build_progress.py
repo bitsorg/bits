@@ -1,6 +1,18 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Human-readable package and stage progress, independent of CI reporting."""
+"""Human-readable package and stage progress, independent of CI reporting.
+
+Packages are numbered along the selected plan (reused ones included,
+defaults-release not), after selections such as --only-deps; parallel builds
+report out of that order. A serial build on a terminal shows a spinner with the
+compiler's percentages; parallel builds print labeled lines, no spinners.
+
+The build script delimits its phases with `bits:stage:<name>` lines (STAGES).
+Within a recipe, stages come from Bash's trace of the commands it runs
+(_command_stage), never from text that mentions make or install, nor from the
+traced echo of a marker. A custom tool can print bits:stage:configure, compile or
+install itself. Post-install hooks, packaging and relocation share "Installing".
+"""
 
 import logging
 import os.path
