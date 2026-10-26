@@ -274,62 +274,117 @@ def print_plan(rows, store_checked, title="Dry run: build plan (nothing built)")
 
 class _Listings:
   """The store listings of a plan, made in parallel up front: in front of
-  *helper*'s list_store_tarballs, one HTTP request per (architecture, hash)."""
+  *helper*'s list_store_tarballs, one HTTP request per (architecture, hash).
+  With a *kept* StoreCache and the *trusted* (signed) index, a certified
+  tarball found in an earlier run is not asked for again: the store's garbage
+  collection keeps what a signed manifest lists."""
 
-  def __init__(self, helper):
-    self.helper, self.cache = helper, {}
+  def __init__(self, helper, kept=None, trusted=None):
+    self.helper, self.cache, self.kept, self.trusted = helper, {}, kept, trusted
+    self.failed = set()                # not asked for again ahead, only when needed
+
+  def _from_kept(self, key):
+    if self.kept is None or self.trusted is None or key not in self.trusted:
+      return None
+    return self.kept.get(*key)
+
+  def _found(self, key, names):
+    self.cache[key] = names
+    if self.kept is not None and self.trusted is not None and key in self.trusted:
+      self.kept.put(key[0], key[1], names)
 
   def list_store_tarballs(self, arch, pkg_hash):
     key = (arch, pkg_hash)
     if key not in self.cache:          # a hash the speculation did not foresee
-      self.cache[key] = self.helper.list_store_tarballs(arch, pkg_hash)
+      names = self._from_kept(key)
+      if names is None:
+        names = self.helper.list_store_tarballs(arch, pkg_hash)
+        self._found(key, names)
+      self.cache[key] = names
     return self.cache[key]
 
-  def prefetch(self, keys):
-    keys = [k for k in dict.fromkeys(keys) if k not in self.cache]
+  def prefetch(self, keys, what="Checking the remote store"):
+    """List *keys* not known yet, in parallel; returns how many were asked for."""
+    keys = [k for k in dict.fromkeys(keys) if k not in self.cache and k not in self.failed]
+    for k in keys:
+      names = self._from_kept(k)
+      if names is not None:
+        self.cache[k] = names
+    known = len(keys)
+    keys = [k for k in keys if k not in self.cache]
+    known -= len(keys)
     if not keys:
-      return
-    progress = ProgressPrint("Checking the remote store")
+      return 0
+    progress = ProgressPrint(what)
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=LIST_WORKERS)
     futures = {pool.submit(self.helper.list_store_tarballs, *k): k for k in keys}
     try:
       for i, f in enumerate(concurrent.futures.as_completed(futures)):
         progress("[%d/%d] packages", i + 1, len(keys))
         try:
-          self.cache[futures[f]] = f.result()
+          self._found(futures[f], f.result())
         except Exception as exc:   # listed again, one by one, when needed
           debug("store listing failed for %s: %s", futures[f], exc)
+          self.failed.add(futures[f])
     except BaseException:          # Ctrl-C: drop what has not started
       for f in futures:
         f.cancel()
       pool.shutdown(wait=False)
       raise
     pool.shutdown()
-    progress.end("done")
+    progress.end("done%s" % (", %d known from earlier runs" % known if known else ""))
+    return len(keys)
 
 
-def _foreseen(build_order, specs, args, raw_architecture, work_dir, write_store):
-  """The (architecture, hash) pairs the plan will list, assuming every package
-  comes from the store (the usual case), but not those already here: computed
-  on a copy of *specs*."""
+class _Assumed:
+  """The store as the speculation sees it: the *known* listings, and a tarball
+  (signed) under every hash not listed yet: the usual case."""
+
+  def __init__(self, known, trusted):
+    self.known, self.trusted, self.spec = known, trusted, None
+
+  def list_store_tarballs(self, arch, pkg_hash):
+    if (arch, pkg_hash) in self.known:
+      return self.known[(arch, pkg_hash)]
+    rev = self.spec.get("force_revision", "1")      # "" forced: a revision-less name
+    return ["%s-%s%s.%s.tar.gz" % (self.spec["package"], self.spec["version"],
+                                   "-" + rev if rev else "", arch)]
+
+  def __contains__(self, key):      # as the trusted index
+    return key not in self.known or (self.trusted is not None and key in self.trusted)
+
+
+def _foreseen(build_order, specs, args, raw_architecture, work_dir, write_store, known=None,
+              trusted=None, overlay=None):
+  """The (architecture, hash) pairs the plan will list, but not those of
+  packages already here: computed on a copy of *specs*, each package classified
+  as the plan will, from the *known* listings ({(arch, hash): names}) and, for
+  hashes not listed yet, assuming the store has them, signed."""
   from bits_helpers.arch import SHARED_ARCH
   from bits_helpers.build import storeHook
   from bits_helpers.hashing import storeHashes
+  store = _Assumed(known or {}, trusted)
+  signed = store if trusted is not None else None
   trial, keys = copy.deepcopy(specs), []
   for p in build_order:
     spec = trial[p]
     storeHook(p, trial, args.defaults[0])
     storeHashes(p, trial, considerRelocation=(
       raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH))
-    spec["hash"] = spec["local_revision_hash" if spec.get("is_devel_pkg") else "remote_revision_hash"]
-    if spec.get("is_devel_pkg") or is_virtual_package(spec):
+    store.spec = spec
+    state, spec["hash"], spec["revision"] = classify(
+      spec, args.architecture, work_dir, store, True, write_store, signed, overlay)
+    if state == DEVEL:
+      write_store = False   # as the plan (and the build) do from here on
+    if state in (DEVEL, OVERLAY, INSTALLED, LOCAL_TARBALL) or is_virtual_package(spec):
       continue
     eff = effective_arch(spec, args.architecture)
-    if _local(spec, eff, work_dir, write_store):
-      continue
     hashes = [spec["remote_revision_hash"]] if "force_revision" in spec else spec["remote_hashes"]
     keys += [(eff, h) for h in hashes]
   return keys
+
+
+MAX_ROUNDS = 4          # listings made again for hashes the earlier ones changed
 
 
 def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
@@ -346,11 +401,20 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
   can_list = None if isinstance(sync_helper, NoRemoteSync) else store_can_list(sync_helper)
   trusted = trusted_index_fn() if (cfg.require_signed_reuse and can_list) else None
   overlay = _overlay_predicate(cfg)
-  lister = sync_helper
+  lister, kept = sync_helper, None
   if can_list:
-    lister = _Listings(sync_helper)
+    from bits_helpers.store_cache import StoreCache, store_id
+    kept = StoreCache(work_dir, store_id(sync_helper))
+    lister = _Listings(sync_helper, kept, trusted)
     try:
-      lister.prefetch(_foreseen(build_order, specs, args, raw_architecture, work_dir, write_store))
+      # A package not in the store is built with its local hash, which changes
+      # the hashes of all that need it: listed in the next round, not one by one.
+      what = "Checking the remote store"
+      for _ in range(MAX_ROUNDS):
+        if not lister.prefetch(_foreseen(build_order, specs, args, raw_architecture, work_dir,
+                                         write_store, lister.cache, trusted, overlay), what):
+          break
+        what = "Checking the remote store for the hashes that changed"
     except Exception as exc:     # the plan then lists one package at a time
       debug("cannot list the store ahead: %s", exc)
   states, unuploadable = {}, set()
@@ -369,6 +433,8 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
       write_store = False   # the build disables uploads from here on (build.py)
     if state in (BUILD, REMOTE_UNSIGNED) and write_store and not binary_redistributable(spec):
       unuploadable.add(p)
+  if kept is not None:
+    kept.save()
   return states, unuploadable, can_list
 
 

@@ -2775,6 +2775,14 @@ def build_one_package(p, ctx):
   if ctx.skipped and not spec["cachedTarball"] and ctx.planned.get(p) in _plan.REUSED:
     _want = _plan.needed(ctx.full_order, specs, ctx.planned, [p], build_targets={p})
     _back = [d for d in ctx.full_order if d in ctx.skipped and d in _want]
+  if ctx.planned.get(p) == _plan.REMOTE and not spec["cachedTarball"]:
+    try:                     # not in the store after all: asked for again next time
+      from bits_helpers.store_cache import StoreCache, store_id
+      _kept = StoreCache(workDir, store_id(syncHelper))
+      _kept.forget(effective_arch(spec, args.architecture), spec.get("remote_hashes") or ())
+      _kept.save()
+    except Exception as exc:          # pylint: disable=broad-except
+      debug("could not update the store cache: %s", exc)
   if _back:
     warning("%s is built after all: fetching or building first what it needs to build: %s",
             p, ", ".join(_back))
