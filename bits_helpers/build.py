@@ -39,7 +39,7 @@ from bits_helpers.sync import remote_from_url
 from bits_helpers.build_config import BuildConfig
 from bits_helpers import plan as _plan
 from bits_helpers import fetch_cache
-from bits_helpers.build_progress import BuildProgress, package_label, set_package_progress
+from bits_helpers.build_progress import BuildProgress, package_info, package_label, set_package_progress
 from dataclasses import dataclass, field
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 try:
@@ -1863,15 +1863,15 @@ def doFinalSync(spec, specs, args, syncHelper):
     # "no redistribution" clause covers the binary form. The package is still
     # built and usable locally; it just never leaves this host.
     if getattr(syncHelper, "writeStore", ""):
-      info("%s@%s [NOT uploaded — redistributable: %s]",
-           spec["package"], spec["version"], spec.get("redistributable"))
+      package_info("%s: not uploaded (redistributable: %s)", package_label(spec),
+                   spec.get("redistributable"))
   elif not spec["revision"].startswith("local") and not is_virtual_package(spec):
     syncHelper.upload_symlinks_and_tarball(spec)
     # Log (info level) that a freshly built tarball was pushed to the write store.
     # Reused packages (cachedTarball) are already there and were marked
     # "[from store]" at build time, so they are skipped here.
     if getattr(syncHelper, "writeStore", "") and not spec.get("cachedTarball"):
-      info("%s@%s [uploaded]", spec["package"], spec["version"])
+      package_info("%s: uploaded", package_label(spec))
     # Record the tarball's SHA-256 in the local integrity ledger so that
     # future recalls from the store can be verified against it.
     # Only active when --store-integrity is set (or store_integrity = true
@@ -2192,7 +2192,8 @@ def build_one_package(p, ctx):
         spec["hash"] = _linked["hash"]
         spec["cachedTarball"] = ""
         spec.setdefault("deps_hash", "")
-        info("Already installed: %s at %s (%s)", p, _existing, _linked["hash"][:12])
+        package_info("%s: Already installed at %s (%s)", package_label(spec), _existing,
+                     _linked["hash"][:12])
         if getattr(args, "manifest", None) is not None:
           args.manifest.add_package(spec, "already_installed",
                                     effective_architecture=effective_arch(spec, args.architecture))
@@ -2212,8 +2213,8 @@ def build_one_package(p, ctx):
       spec["symlink_policy"] = cfg.symlink_policy
       spec["cachedTarball"] = ""
       spec.setdefault("deps_hash", "")
-      info("Symlink: %s from %s (%s policy) -> %s", p, _linked["source"],
-           cfg.symlink_policy, _local_reuse)
+      package_info("%s: Linked from %s (%s policy) to %s", package_label(spec),
+                   _linked["source"], cfg.symlink_policy, _local_reuse)
       if getattr(args, "manifest", None) is not None:
         args.manifest.add_package(spec, "already_installed",
                                   effective_architecture=effective_arch(spec, args.architecture))
@@ -2251,7 +2252,7 @@ def build_one_package(p, ctx):
         spec["hash"] = spec.get("remote_revision_hash") or spec.get("hash", "")
         spec["cachedTarball"] = ""
         spec.setdefault("deps_hash", "")
-        info("%s: Reusing CVMFS overlay module %s (not built)", package_label(spec), _mid)
+        package_info("%s: Reusing CVMFS overlay module %s (not built)", package_label(spec), _mid)
         if getattr(args, "manifest", None) is not None:
           args.manifest.add_package(spec, "already_installed",
                                     effective_architecture=effective_arch(spec, args.architecture))
@@ -2545,7 +2546,7 @@ def build_one_package(p, ctx):
       workDir, effective_arch(spec, args.architecture), spec)
     if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"] \
        and os.path.isdir(devel_install_dir):
-      info("%s: Development package does not need rebuild", package_label(spec))
+      package_info("%s: Development package does not need rebuild", package_label(spec))
       return
     if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"]:
       debug("Devel package %s source unchanged but install dir %s is missing "
@@ -2665,7 +2666,7 @@ def build_one_package(p, ctx):
           # otherwise-complete package, unlike a freshly built one in doFinalSync.
           try:
             syncHelper.upload_symlinks_and_tarball(spec)
-            info("%s@%s [uploaded from local cache]", spec["package"], spec["version"])
+            package_info("%s: uploaded from local cache", package_label(spec))
           except Exception as exc:
             warning("%s@%s store sync failed: %s", spec["package"], spec["version"], exc)
         else:

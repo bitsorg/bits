@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 from bits_helpers.log import dieOnError, debug, error, info, warning, ProgressPrint
-from bits_helpers.build_progress import package_label
+from bits_helpers.build_progress import package_info, package_label
 from bits_helpers.download import download
 from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash, asList
 from bits_helpers.checksum import parse_entry, check_file as check_file_checksum
@@ -766,7 +766,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
   scm = spec["scm"]
 
   def report_source(location):
-    info("%s: Fetching sources from %s", package_label(spec), location)
+    package_info("%s: Fetching sources from %s", package_label(spec), location)
 
   def scm_exec(command, directory=".", check=True):
     """Run the given SCM command, simulating a shell exit code."""
@@ -868,7 +868,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     # There are no sources (neither tarball URLs nor a git repo), so just
     # create an empty SOURCEDIR.  Also handles a spec whose source key is
     # present in the JSON but an empty string.
-    info("%s: No sources to fetch", package_label(spec))
+    package_info("%s: No sources to fetch", package_label(spec))
     os.makedirs(source_dir, exist_ok=True)
   elif spec["is_devel_pkg"]:
     report_source("local directory " + spec["source"])

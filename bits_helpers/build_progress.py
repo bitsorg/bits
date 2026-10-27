@@ -118,6 +118,14 @@ def set_package_progress(specs, packages):
         specs[package]["_build_progress"] = (index, len(planned))
 
 
+STEP = "==> "      # every package line starts so, with a spinner or without
+
+
+def package_info(fmt, *args):
+    """A package's progress line, aligned with the stage lines."""
+    info(STEP + fmt, *args)
+
+
 def package_label(spec, version=None):
     label = "{}@{}".format(spec["package"], spec["version"] if version is None else version)
     if "_build_progress" in spec:
@@ -149,7 +157,7 @@ class BuildProgress:
             self.display = ProgressPrint(message)
             self.display("%s", "")
         else:
-            self.emit(message)
+            self.emit(STEP + message)
 
     def __call__(self, text, *args):
         line = text % args if args else text
@@ -171,4 +179,4 @@ class BuildProgress:
             self.display.end("failed" if error else "done", error)
             self.display = None
         else:
-            self.emit("{}: {}".format(self.label, "failed" if error else "done"))
+            self.emit("{}{}: {}".format(STEP, self.label, "failed" if error else "done"))

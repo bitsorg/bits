@@ -116,7 +116,7 @@ class ProgressPrint:
     self.erase()
     if msg:
       sys.stderr.write(": {}{}\033[m".format("\033[31m" if error else "\033[32m", msg))
-    sys.stderr.write("\n")
+    sys.stderr.write("\033[K\n")      # no spaces left from the spinner
     sys.stderr.flush()
 
 

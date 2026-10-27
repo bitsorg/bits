@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from bits_helpers import build
-from bits_helpers.build_progress import BuildProgress, package_label, set_package_progress
+from bits_helpers.build_progress import BuildProgress, package_info, package_label, set_package_progress
 from bits_helpers.cmd import execute
 from bits_helpers.download import download
 from bits_helpers.workarea import checkout_sources
@@ -38,13 +38,13 @@ class BuildProgressTest(unittest.TestCase):
         self.assertEqual(execute(command, printer=progress), 0)
         progress.end()
         self.assertEqual(messages, [
-            "[3/16] Python@3.13.11: Building",
-            "[3/16] Python@3.13.11: Preparing build environment",
-            "[3/16] Python@3.13.11: Running build recipe",
-            "[3/16] Python@3.13.11: Configuring",
-            "[3/16] Python@3.13.11: Compiling",
-            "[3/16] Python@3.13.11: Installing",
-            "[3/16] Python@3.13.11: done",
+            "==> [3/16] Python@3.13.11: Building",
+            "==> [3/16] Python@3.13.11: Preparing build environment",
+            "==> [3/16] Python@3.13.11: Running build recipe",
+            "==> [3/16] Python@3.13.11: Configuring",
+            "==> [3/16] Python@3.13.11: Compiling",
+            "==> [3/16] Python@3.13.11: Installing",
+            "==> [3/16] Python@3.13.11: done",
         ])
 
     @patch("bits_helpers.log.logger.isEnabledFor", return_value=False)
@@ -63,6 +63,8 @@ class BuildProgressTest(unittest.TestCase):
         self.assertIn("Running build recipe", output.getvalue())
         self.assertIn("50%", output.getvalue())
         self.assertIn("Installing", output.getvalue())
+        # the line ends cleared: no spaces left where the spinner was
+        self.assertIn(": \033[32mdone\033[m\033[K\n", output.getvalue())
 
     @patch("bits_helpers.build_progress.sys.stdout.isatty", return_value=True)
     def test_parallel_output_is_labeled_and_does_not_use_spinners(self, _tty):
@@ -78,7 +80,7 @@ class BuildProgressTest(unittest.TestCase):
             list(pool.map(report, range(1, 9)))
         self.assertEqual(len(messages), 24)
         for i in range(1, 9):
-            self.assertEqual(len([m for m in messages if m.startswith("[{}/8]".format(i))]), 3)
+            self.assertEqual(len([m for m in messages if m.startswith("==> [{}/8]".format(i))]), 3)
         self.assertFalse(any("\033" in m for m in messages))
 
     @patch("bits_helpers.build_progress.logger.isEnabledFor", return_value=True)
@@ -93,7 +95,7 @@ class BuildProgressTest(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         self.assertEqual(debug.call_count, 3)
         progress("%s", "bits:stage:package")
-        self.assertEqual(messages[-1], "A@1: Installing")
+        self.assertEqual(messages[-1], "==> A@1: Installing")
 
     @patch("bits_helpers.build_progress.sys.stdout.isatty", return_value=False)
     def test_failure_is_visible_even_without_subprocess_output(self, _tty):
@@ -101,7 +103,7 @@ class BuildProgressTest(unittest.TestCase):
         progress = BuildProgress("[2/3] A@1", "Compiling", emit=messages.append)
         self.assertEqual(execute(["/bin/bash", "-c", "exit 7"], printer=progress), 7)
         progress.end(error=True)
-        self.assertEqual(messages, ["[2/3] A@1: Compiling", "[2/3] A@1: failed"])
+        self.assertEqual(messages, ["==> [2/3] A@1: Compiling", "==> [2/3] A@1: failed"])
 
     @patch("bits_helpers.build_progress.sys.stdout.isatty", return_value=False)
     def test_run_build_reports_cached_archive_and_store_sync(self, _tty):
@@ -123,10 +125,10 @@ class BuildProgressTest(unittest.TestCase):
                                   "/cache/A.tar.gz", "/specs/A", "/sw", helper)
         sync.assert_called_once()
         self.assertEqual(messages, [
-            "[2/3] A@1: Unpacking [from store]",
-            "[2/3] A@1: Unpacking cached archive",
-            "[2/3] A@1: Syncing package to store",
-            "[2/3] A@1: done",
+            "==> [2/3] A@1: Unpacking [from store]",
+            "==> [2/3] A@1: Unpacking cached archive",
+            "==> [2/3] A@1: Syncing package to store",
+            "==> [2/3] A@1: done",
         ])
 
     def test_common_build_commands_report_their_stage(self):
@@ -171,7 +173,7 @@ class BuildProgressTest(unittest.TestCase):
                      "+ ninja -n install", "+ make -C install", "+ echo 'unterminated"):
             progress(line)
         # -C install names a directory; it is still a compile command.
-        self.assertEqual(messages, ["A@1: Building", "A@1: Running build recipe", "A@1: Compiling"])
+        self.assertEqual(messages, ["==> A@1: Building", "==> A@1: Running build recipe", "==> A@1: Compiling"])
         progress("bits:stage:post-install")
         progress("+ cmake ..")
         self.assertEqual(progress.stage, "Installing")
@@ -182,7 +184,15 @@ class BuildProgressTest(unittest.TestCase):
         self.assertEqual(execute(["/bin/bash", "-ex", "-c",
                                  "echo bits:stage:configure; echo bits:stage:compile; "
                                  "echo bits:stage:install"], printer=progress), 0)
-        self.assertEqual(messages, ["A@1: Building", "A@1: Configuring", "A@1: Compiling", "A@1: Installing"])
+        self.assertEqual(messages, ["==> A@1: Building", "==> A@1: Configuring", "==> A@1: Compiling",
+                                    "==> A@1: Installing"])
+
+
+class PackageLineTest(unittest.TestCase):
+    def test_package_lines_align_with_the_stage_lines(self):
+        with patch("bits_helpers.build_progress.info") as log:
+            package_info("%s: Fetching sources from %s", "[3/16] demo@1", "a.tar.gz")
+        log.assert_called_once_with("==> %s: Fetching sources from %s", "[3/16] demo@1", "a.tar.gz")
 
 
 class SourceProgressTest(unittest.TestCase):
@@ -222,7 +232,7 @@ class SourceProgressTest(unittest.TestCase):
                 "_build_progress": (3, 16)}
         with tempfile.TemporaryDirectory() as tmp, \
              patch("bits_helpers.workarea.logged_scm"), \
-             patch("bits_helpers.workarea.info") as log:
+             patch("bits_helpers.workarea.package_info") as log:
             checkout_sources(spec, tmp, tmp, False)
         log.assert_called_once_with("%s: Fetching sources from %s", "[3/16] demo@1",
                                     "https://example.com/demo.git (ref: v1)")
@@ -238,7 +248,7 @@ class SourceProgressTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp, \
              patch("bits_helpers.workarea.download", side_effect=fetch), \
-             patch("bits_helpers.workarea.info") as log:
+             patch("bits_helpers.workarea.package_info") as log:
             checkout_sources(spec, tmp, tmp, False, architecture="slc7_x86-64")
         log.assert_called_once_with("%s: Fetching sources from %s", "[3/16] demo@1",
                                     "https://example.com/demo-1.tar.gz")
