@@ -149,7 +149,8 @@ class ArgsTestCase(unittest.TestCase):
   def test_status_docker_as_build(self, mock_commands, *_):
     """bits status takes the container options as bits build does."""
     mock_commands.getstatusoutput.side_effect = lambda x : GETSTATUSOUTPUT_MOCKS[x]
-    with patch.object(sys, "argv", ["bits", "status", "--docker-image", "img:1", "zlib"]):
+    with patch.object(sys, "argv", ["bits", "status", "--docker-image", "img:1", "-a", "slc9_x86-64",
+                                    "zlib"]):
       args, _ = doParseArgs()
     self.assertTrue(args.docker)
     self.assertEqual(args.dockerImage, "img:1")
