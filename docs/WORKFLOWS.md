@@ -181,7 +181,7 @@ The **Builds** tab in bits-console shows a live pipeline list with log streaming
 
 The following is relevant to teams setting up or maintaining build runners, not to developers triggering builds through the UI.
 
-Clicking **Build → Production** queues a GitLab CI pipeline that runs `bits build --docker` on a registered runner, with the workDir bind-mounted at the community's `cvmfs_prefix` path inside the container so binaries compile with their final deployment paths already embedded. The resulting tarballs are then ingested into CVMFS via one of two paths depending on the community's `publish_pipeline` setting:
+Clicking **Build → Production** queues the build; with the orchestrator's build queue on, it waits there (not in GitLab) for a free build host, and then starts a GitLab CI pipeline pinned to that host. The pipeline runs `bits build --docker` on a registered runner, with the workDir bind-mounted at the community's `cvmfs_prefix` path inside the container so binaries compile with their final deployment paths already embedded. The resulting tarballs are then ingested into CVMFS via one of two paths depending on the community's `publish_pipeline` setting:
 
 - **cvmfs-prepub path** (`publish_pipeline: .gitlab/cvmfs-prepub-publish.yml`): the build host POSTs a tar directly to the `cvmfs-prepub` REST API, which handles CAS ingestion and the CVMFS gateway transaction. No dedicated ingest runners are required.
 - **Legacy spool path** (`publish_pipeline: .gitlab/cvmfs-publish.yml`): tarballs are spooled to a staging area, a CVMFS transaction is opened on the stratum-0, and `cvmfs_server publish` is run on a dedicated publisher runner. This path is retained for communities that have not yet migrated to cvmfs-prepub.

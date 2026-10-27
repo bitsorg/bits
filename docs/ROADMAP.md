@@ -196,6 +196,33 @@ O(10⁴) users, plus any project deploying software via CVMFS.
   `--remote-store` (`--store` deprecated), `--parallel` (`--builders` alias);
   `--makeflow` / `--pipeline` and usage analytics removed.
 
+### Delivered since 0.6 (2026-10-04)
+
+- **bits-orchestrator** (console-backend): builds reconciled from GitLab and the
+  store, failures deduplicated into issues, a hash-chained audit log with an
+  outside copy, a build queue across build hosts, and certification by the
+  worker itself, which now owns the certified set and writes the signed,
+  numbered manifests (bits-manifests is its mirror).
+- **Supply-chain analysis**: SBOMs carry CPEs and purls scanners can match and
+  the versions of system packages; every published build is scanned, findings
+  are triaged by community admins, and upgrade plans, licence and dependency
+  analyses come from the scans. `bits upgrade` applies a plan to the recipes.
+- **Build plan before every build**: build-only dependencies of reused packages
+  are neither fetched nor built, the store is listed in parallel and certified
+  listings are remembered; a reuse summary says why each package was built.
+- **Stores**: several read and write stores, each bucket with its own
+  credentials; offline builds; `fetch_cache` for a recipe's own downloads.
+- **Trust**: manifests fetched afresh (ETag), entries per architecture and hash,
+  anti-rollback by manifest sequence.
+- **Environment commands without Python or a work directory**, from CVMFS
+  (`bits --community NAME setenv …`), replacing `bitsenv`; complete release
+  views sourced through their `setup.sh`.
+- **`--symlink-packages-from`**: packages of a deployed tree without
+  modulefiles linked into the work directory (CMS), with a recipe-repository
+  hook for what needs a private copy.
+- **macOS build sandbox**, site configuration in `site.d/NN-<name>.yaml`, and
+  `bits trace` for who built, published and approved a file on CVMFS.
+
 ---
 
 ### Near term — within 6 months

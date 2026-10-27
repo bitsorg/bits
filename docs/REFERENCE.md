@@ -246,13 +246,23 @@ Reuse from the remote archive (tier 3) is controlled by these `bits build` optio
   `~/.config/bits/keys`).
 - `--require-signed-reuse` (the default) — fail closed: a tarball fetched from
   the remote store is reused only when a trusted signed manifest lists its hash
-  **and** its sha256 matches. Unlisted → discard and rebuild; sha256 mismatch → fatal (tampering).
-  Local build-node and CVMFS artifacts are unaffected.
+  **and** its sha256 matches. Unlisted or sha256 mismatch → discard and rebuild,
+  with a warning. Local build-node and CVMFS artifacts are unaffected.
   Maximal reuse is the default: with no `--trust-manifest`, a build trusts
-  every signed manifest present in the store (content hashes do not include the
-  architecture, so a hash vouched for by any trusted manifest counts, whichever
-  platform or community certified it); signature and expiry are the only checks. Scope it
-  with `--trust-groups`, or turn verification off with `--no-require-signed-reuse`.
+  every signed manifest present in the store, under `system: trust_manifest_prefix`
+  (default `MANIFESTS/common-manifest`; several prefixes, comma-separated, are
+  tried in order, and for each architecture the first that has a manifest is
+  used). An entry names an architecture and a hash, as the store keys its
+  objects; an object two verified manifests certify with different sha256 is
+  trusted by neither. Scope it with `--trust-groups`, or turn verification off
+  with `--no-require-signed-reuse`.
+  Every build fetches the manifests afresh (an unchanged one is revalidated with
+  its ETag, not downloaded again) and verifies and parses the same bytes; a
+  manifest that cannot be fetched trusts nothing. Besides signature and expiry,
+  a numbered manifest (`sequence`, as the orchestrator writes them) is checked
+  against the highest number this node has verified for its issuer and
+  architecture (`~/.bits/trust-sequence.json`, or `$BITS_TRUST_SEQUENCE_STATE`):
+  an older one put back is refused.
 - `--trust-groups G1,G2,…` — scope reuse by group. The signed common manifest may
   tag each entry with a `group`; with `--trust-groups` a consumer trusts only
   those groups plus the always-trusted `common` base (untagged entries count as
@@ -293,8 +303,9 @@ If the approval is refused or times out, no MR is opened.
 Once bits-orchestrator owns the store's certified set, it puts
 `MANIFESTS/orchestrator.json` in the store and bits changes accordingly:
 `bits certify` stops after step 2 (the orchestrator certifies the build from its
-pre-approval, so no token, manifests repo or MR is needed); `bits sign` refuses
-the store; `bits store rm --stale-boms --manifests-dir` and `bits compliance
+pre-approval, as soon as the build is in the store, so no token, manifests repo
+or MR is needed); `bits sign` refuses the store, as it does one whose marker
+cannot be read; `bits store rm --stale-boms --manifests-dir` and `bits compliance
 --enforce` request decertify actions from bits-console (`--console`, your
 GitLab token) instead of removing BOM files or re-signing with `--key`; and
 `bits store rm` never deletes the orchestrator's signed manifests, nor its marker
@@ -3003,6 +3014,8 @@ A **defaults profile** is a special recipe file named `defaults-<name>.sh` that 
 
 The active profile is selected with `--defaults PROFILE`. If the flag is omitted, bits uses `release`, loading `defaults-release.sh`. Any other selection is layered on top of `release`: `--defaults dev` behaves like `release::dev` (a missing `defaults-release.sh` is skipped).
 
+A chain that qualifies the architecture (a compiler profile's `append_arch`) but names no build type gets `opt` when the repository has `defaults-opt.sh`: `--defaults key4hep::gcc15` builds as `key4hep::gcc15::opt`, so the same binaries always land under one architecture (`…-gcc15-opt`) and match its certified tarballs. The implied `opt` is placed before any trailing overlay and is not held against a recipe's `valid_defaults`.
+
 `defaults-release.sh` occupies a privileged position: every package in the build graph automatically depends on a pseudo-package named `defaults-release`, which is fulfilled by whatever profile(s) are loaded. This is the mechanism that injects the global `env:` block into every package's `init.sh`.
 
 
@@ -3871,7 +3884,7 @@ The `b3://` store holds only the content-addressed tarballs, plus a small revisi
 Building with `--write-store` uploads each package **as it is built**. To push a
 store you already built (nothing re-uploads on a cached rebuild), use
 `bits publish` — it reads the build manifest and uploads each package's content
-tarball.
+tarball, checking 8 packages at a time (`BITS_PUBLISH_JOBS`).
 
 ```bash
 # credentials from the environment or ~/.bits/s3keys (see above)
@@ -4699,6 +4712,11 @@ bits build ROOT
 ls -la $WORK_DIR/MANIFESTS/bits-manifest-latest.json
 ```
 
+At the end, the build prints a reuse summary from the manifest: how many
+packages were already installed, taken from the store and built, and the built
+ones by name with the reason (`rebuilt_because`). With build-host metrics on,
+the counts are pushed there too.
+
 ### What is recorded
 
 The manifest records every input and output that could affect reproducibility:
@@ -4742,6 +4760,9 @@ The manifest records every input and output that could affect reproducibility:
 | `source_checksums` | List of `{url, checksum}` entries from the recipe's `sources:` list; `checksum` is `null` when none was declared |
 | `built_by` | `user@host` that compiled this hash; `null` unless `outcome` is `"built_from_source"` (recalled artifacts carry their builder in another build's manifest) |
 | `completed_at` | ISO-8601 UTC timestamp of package completion |
+| `rebuilt_because` | Why a package built here was not reused (e.g. `store tarball not certified`); only when known |
+| `references`, `pinned_by`, `sbom` | The recipe's CPEs and purls for scanners, the profile or package that pinned its version, and `tool` for a host tool; only when set |
+| `symlinked_from`, `symlink_policy` | The deployed package an `already_installed` package was linked from (`--symlink-packages-from`), and the policy; only then |
 | `pkg_family` | Install family sub-directory (empty if none) |
 | `effective_architecture` | `share` for noarch packages, the neutral arch for `own_hash` packages, else the build arch |
 | `patches`, `variables` | Recipe patches with their checksums, and the resolved recipe variables (schema v3) |

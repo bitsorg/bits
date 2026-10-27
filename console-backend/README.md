@@ -226,14 +226,83 @@ build (`match`, `mismatch`, or `rebased` when the set was at another commit;
 `/ops/certifications/summary` and on the rows of `GET /ops/certify`. M8b
 deletes it.
 
+**The worker owns the certified set** (M8b, `BITS_ORCH_OWNS_SET=1`; unset it
+to go back to M8a): the set is no longer read from bits-manifests but kept by
+the worker, which writes the production manifests (`BITS_ORCH_MANIFEST_PREFIX`,
+default `MANIFESTS/common-manifest`) and is the only signer; the backend's
+`/sign` routes are gone. Each architecture's manifests are numbered
+(`sequence`, after the one in the store, which is never overwritten by a lower
+number), so build nodes refuse an older one put back. `orch/mirror.py` commits
+every version of the set to bits-manifests (`BITS_FORGE_MIRROR_TOKEN`, or the
+credentials proxy's `gitlab-mirror` route), and `MANIFESTS/orchestrator.json`
+in the store tells bits clients that the worker owns the set (`bits certify`
+then stops after the pre-approval and `bits sign` refuses the store). A
+community admin takes builds out of the set with `decertify` (the requesting
+group's BOMs of a build, every architecture or one; other groups that certify
+it are named in the result) and `decertify-package` (each of a group's BOMs
+replaced by itself without the package; `bits compliance --enforce` asks for
+these). The worker then requests `withdraw` itself: an architecture's manifest
+re-signed with fewer entries, never more. A decision and its architectures are one
+transaction; a certification overtaken by a withdrawal is made again; a
+half-written manifest is repaired on the next pass (written in full: recorded;
+a withdrawal's: its signature put back; a certification's: the previous
+manifest back and a re-sign from the set). Every signature is an event, and the
+daily limit counts them. With an outside copy (`BITS_ORCH_AUDIT_URL`), the
+worker signs only while it is in step (checked within
+`BITS_ORCH_SIGN_OUTSIDE_MINUTES`, 10); `python -m
+console_backend.orch.outside recover --by <you> --mirror <bits-manifests checkout>`, with
+the worker stopped, brings a restored database up to the outside copy's events.
+
+**The CVMFS status document** (`orch/cvmfs_status.py`, with
+`BITS_ORCH_CVMFS_STATUS=1`): the worker writes the console's `cvmfs-status.json`
+(the build project's generic package registry), one record per CVMFS publish of
+a successful pipeline, as the per-build CI job did. It is the only writer.
+
+**SBOM scans** (`orch/sbom_scan.py`, with `BITS_ORCH_SCANNER_URL`, the
+bits-services sbom-scanner): each published build's `sbom.cdx.json` is matched
+with grype, again whenever the scanner's vulnerability database is newer than
+that of the build's last good scan, and when a newer pipeline publishes the
+build. The counts by severity are kept in the database, the vulnerabilities
+beside it (`sbom-scans/`, rebuilt by scanning again). A scan also indexes the
+SBOM: which builds contain a package, what matched, and how many components a
+scanner can identify (a CPE, or a purl of an ecosystem it knows). Findings of
+components the stack does not ship (host tools, what only they use, system
+packages only the build needs) are left out of the counts. `GET
+/ops/builds/{pipeline}/sbom?format=cyclonedx|spdx` serves a build's SBOM as
+published to any signed-in user, with its findings only for the admins of its
+community; `GET /ops/sbom/scans`, `/ops/sbom/packages?name=`, `/ops/sbom/names`
+and `/ops/sbom/vulnerabilities/{id}` serve the admins' communities.
+
+**Triage** (`orch/vuln_triage.py`): a community admin's rule says a
+vulnerability does not matter there, for one version of a package, every
+version, every package, or every vulnerability of a package (`vuln_id` `*`):
+`not_affected` (with a CycloneDX justification), `false_positive` or
+`will_not_fix`, with a reason and an optional expiry. Covered findings leave the
+effective counts and are served in the SBOM with the rule as their `analysis`.
+`GET|POST /ops/sbom/triage`, `POST /ops/sbom/triage/{id}/revoke`; adding and
+revoking are events.
+
+**Upgrade plans and licences** (`orch/sbom_plan.py`, `orch/sbom_licences.py`),
+from the scans' index, per release line (a community's build of one release on
+one platform, its newest build): `GET /ops/sbom/plan` gives the versions that
+fix the open findings in waves (known exploited, within the major version,
+major; system packages apart), ordered by the risk removed per package rebuilt,
+and one version per package converged across lines, with pinned versions as
+exceptions. `GET /ops/sbom/licences[/{build_id}]` gives licence conflicts along
+runtime paths and unknown licences (accepted as triage rules on
+`licence:<kind>`), copyleft reach and restricted packages;
+`/ops/sbom/dependencies[/{build_id}]` the most depended-on, build-only and
+unneeded packages, and what changed since the line's previous build.
+
 **Credentials** (`credproxy.py`, M6): with `BITS_CRED_PROXY_AGENT_SOCKET`, the
 backend and the worker hold no GitLab token or store key. They call GitLab and
 the store through the credentials proxy (bits-services `credentials-proxy`, a
 second security-proxy instance), sending its gate token where the real token
 went (`PRIVATE-TOKEN`, or the S3 access key); the proxy adds the real one on the
-way out. Routes: `gitlab-ops`, `gitlab-read`, `gitlab-groups`, `s3`. Without
+way out. Routes: `gitlab-ops`, `gitlab-read`, `gitlab-groups`, `gitlab-mirror`, `s3`. Without
 the socket, `BITS_FORGE_OPS_TOKEN`, `BITS_FORGE_READ_TOKEN`,
-`BITS_ADMIN_RESOLVE_TOKEN` and the S3 keys are used as before.
+`BITS_ADMIN_RESOLVE_TOKEN` and the S3 keys are used as before. `BITS_ORCH_STORE_ANONYMOUS=1` reads a public
+store with unsigned requests (at `BITS_ORCH_S3_ENDPOINT`, https).
 
 **The outside copy** (`orch/outside.py`, M4): with `BITS_ORCH_AUDIT_URL` and
 `BITS_ORCH_AUDIT_TOKEN`, the worker sends the event log to the audit-log service
