@@ -232,7 +232,36 @@ Global settings come from environment variables:
 
 `$BITS_COMMUNITY` is set **uppercase** (`ALICE`, `LHCB`, …). Bits lowercases it internally when resolving the community recipe repository from bits-providers (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`). Normally you do not need it: check out the community repository and run bits inside it.
 
-Settings follow the precedence `CLI flag > bits use profile > environment variable > built-in default`; the exception is `$BITS_PATH`, which, when set, overrides `--search-path`. For the full list of environment variables, see [REFERENCE.md §20](REFERENCE.md#20-environment-variables) and [REFERENCE.md — bits init](REFERENCE.md#bits-init).
+### Where defaults come from
+
+A setting is taken from the first of these that gives it:
+
+1. the command line;
+2. the `bits use` profile (inserted before your own options, so those still win);
+3. the environment (`$BITS_WORK_DIR`, `$BITS_S3_STORE`, `$BITS_CONSOLE_URL`, …);
+4. the community's defaults: the `system:` block of the recipe repository's `defaults-*.sh` (its `remote_store`, `certify_group`, `console_url`, …), which is publish policy and part of no package hash;
+5. the **site configuration**: `NN-<name>.yaml` files describing an installation (its stores, container images, console, providers repository, SBOM namespace and a few paths);
+6. bits' own site-neutral `00-bits.yaml`.
+
+The exception is `$BITS_PATH`, which, when set, overrides `--search-path`.
+
+The CERN stores, images and console URL, formerly built into bits, are in the site file `10-CERN.yaml`, shipped with bits next to `00-bits.yaml`. Files are read from bits' own `site.d/`, then `/etc/bits/site.d/` (a host or runner), `~/.config/bits/site.d/` and `$BITS_SITE_DIR`; a file replaces an earlier one of the same name, then all of them are merged by file name (not directory), the last winning. So:
+
+- **At CERN** there is nothing to do.
+- **Elsewhere**, an empty `10-CERN.yaml` in `/etc/bits/site.d/` switches CERN's values off, and a file of your own sets yours:
+
+  ```yaml
+  # /etc/bits/site.d/10-mylab.yaml
+  store:
+    read: b3://mylab-bits
+    operations: b3://mylab-bits
+    s3_endpoint: https://s3.mylab.example.org
+  console:
+    backend_url: https://bits.mylab.example.org
+  ```
+- **A runner or a person** can override single keys in a later file (`50-…` for a host, `90-…` for yourself).
+
+`bits doctor` lists the files in effect and the store, container and providers values they give. The keys are in [REFERENCE.md — Site configuration](REFERENCE.md#site-configuration); for every environment variable, see [REFERENCE.md §20](REFERENCE.md#20-environment-variables) and [REFERENCE.md — bits init](REFERENCE.md#bits-init).
 
 ---
 

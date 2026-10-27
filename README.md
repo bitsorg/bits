@@ -147,6 +147,13 @@ internally when resolving the community recipe repository from bits-providers
 (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`). Normally you
 do not need it: check out the community repository and run bits inside it.
 
+Installation-wide defaults (stores, container images, the console) come from
+**site configuration** files, `site.d/NN-<name>.yaml`. bits ships CERN's as
+`10-CERN.yaml`; elsewhere, mask it with an empty `/etc/bits/site.d/10-CERN.yaml`
+and add your own. The command line, the `bits use` profile, the environment and the
+community's `system:` defaults all come first
+([where defaults come from](docs/USERGUIDE.md#where-defaults-come-from)).
+
 [Configuration details](docs/USERGUIDE.md#4-configuration)
 
 ---

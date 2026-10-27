@@ -316,7 +316,9 @@ removes the marker, once the worker no longer owns the set (it would write it
 again): `bits store rm --raw MANIFESTS/orchestrator.json --force`.
 
 `--group`, `--manifests-remote`, `--ref` and `--console` default from the active
-defaults' `system:` block, so a configured community just runs `bits certify`:
+defaults' `system:` block (`--console` after `$BITS_CONSOLE_URL`), and `--console`
+last from the site configuration's `console.backend_url` (`https://bits.cern.ch`
+at CERN), so a configured community just runs `bits certify`:
 
 ```yaml
 system:
@@ -1792,7 +1794,7 @@ bits compliance --enforce [--dry-run] [--key PEM]     # admin
 | `PACKAGE ...` | _(none)_ | Group mode: audit exactly the resolved dependency closure of these roots (e.g. the group's meta-packages), discovering recipe repositories as `bits build` does (config dir, defaults profile, repository providers). |
 | `-c DIR`, `--search-path NAMES`, `-a ARCH`, `--defaults PROFILE`, `--disable PACKAGE` | as `bits build` | Group mode: how the closure is resolved. |
 | `--recipes DIR` | `.` | Without `PACKAGE`: recipe repository to audit (a directory of `*.sh` recipes). |
-| `--remote-store URL` | `https://s3.cern.ch/lcgapp-bits-testing` | S3 store to audit against the recipe flags (`https`, `b3://`, `s3://`). `$BITS_S3_STORE` changes the default. `--store` is the deprecated spelling. |
+| `--remote-store URL` | the site's `store.operations` (CERN: `lcgapp-bits-testing`) | S3 store to audit against the recipe flags (`https`, `b3://`, `s3://`). `$BITS_S3_STORE` changes the default. `--store` is the deprecated spelling. |
 | `--no-store-check` | off | Audit the recipes only. |
 | `--enforce` | off | ADMIN: purge non-compliant packages from the store (see below). |
 | `--dry-run` | off | With `--enforce`: print every action, touch nothing. |
@@ -3521,7 +3523,7 @@ The content-addressed store path (`TARS/<arch>/store/<h2>/<hash>/`) is unaffecte
 
 ### Site configuration
 
-The defaults and assumptions an installation may change (stores, container images, the providers repository, the SBOM namespace and a few paths) are in YAML files named `NN-<name>.yaml`, read from these directories in order:
+The defaults and assumptions an installation may change (stores, container images, the console, the providers repository, the SBOM namespace and a few paths) are in YAML files named `NN-<name>.yaml`; CERN's values, formerly built into bits, are in its `10-CERN.yaml`. The files are read from these directories in order:
 
 1. `bits_helpers/site.d/` in bits: `00-bits.yaml` (site-neutral) and `10-CERN.yaml` (CERN);
 2. `/etc/bits/site.d/` (a host, a runner);
@@ -3539,8 +3541,10 @@ A file in a later directory replaces the one of the same name, so an empty `10-C
 | `containers.registry`, `containers.tag`, `containers.legacy_image` | The default `--docker` image; see [§22](#22-docker-support). |
 | `providers.url` | The always-on providers repository (after `$BITS_PROVIDERS`). |
 | `sbom.namespace` | SPDX document namespace base. |
-| `console.backend_url` | The console backend `bits trace` asks (after `--backend`, `$BITS_BACKEND_URL`). |
+| `console.backend_url` | The console backend: what `bits trace` asks (after `--backend`, `$BITS_BACKEND_URL`), and the console `bits certify` asks for approvals (after `--console`, `$BITS_CONSOLE_URL`, `system: console_url`) and `bits compliance --enforce` for decertifications (after `--console`, `$BITS_CONSOLE_URL`). |
 | `paths.work_dir`, `paths.gitlab_token_file`, `paths.s3_keys_file` | Defaults after `$BITS_WORK_DIR`, the token and S3 key file variables. |
+
+Outside CERN, mask CERN's file and give your own, e.g. an empty `/etc/bits/site.d/10-CERN.yaml` and a `/etc/bits/site.d/10-mylab.yaml` with your stores and console. The order in which a value is looked for, from the command line down to these files, is in [USERGUIDE — Where defaults come from](USERGUIDE.md#where-defaults-come-from).
 
 ```yaml
 # /etc/bits/site.d/50-runner.yaml: this runner reads and writes its own bucket
@@ -3762,7 +3766,7 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 | `BITS_CATALOG_LISTING` | _(unset)_ | `1`: list trees on CVMFS (module and install trees) from their serving catalog (the `bitsModules` helper) before walking the directory (see [bits query](#bits-query--list--avail)). |
 | `BITS_REUSE_FROM` | _(unset)_ | Default of `--reuse-from` for `bits build` (e.g. `cvmfs`); the bits entry point on CVMFS sets it for a community. Any `--reuse-from`, from the command line or a `bits use` profile, wins, and an empty one turns reuse off. When the recipes declare no CVMFS layout, or the modules tree it names does not exist, the default is skipped with a warning instead of stopping the build; an explicit `--reuse-policy` wins over its `::relaxed`/`::strict` suffix. |
 | `REMOTE_STORE`, `WRITE_STORE` | _(unset)_ | Read and write store URLs when no flag is given; `BITS_REMOTE_STORE`/`BITS_WRITE_STORE` override them (see [§21](#21-remote-binary-store-backends)). |
-| `BITS_S3_STORE` | `https://s3.cern.ch/lcgapp-bits-testing` | Default store for `bits publish`, `certify`, `sign`, `bits store` and `compliance`. |
+| `BITS_S3_STORE` | the site's `store.operations` | Default store for `bits publish`, `certify`, `sign`, `bits store` and `compliance`. |
 | `BITS_AWS_KEYS_FILE` | `~/.bits/s3keys` | Private file with S3 credentials, used when they are not in the environment. |
 | `BITS_STRICT_STORE_INTEGRITY` | _(unset)_ | `1` makes a recalled tarball with no integrity-ledger entry fatal (with `--store-integrity`). |
 
@@ -3914,7 +3918,8 @@ without contacting S3 — handy to check the package set and target before pushi
 endpoint and path-style addressing are derived), or `b3://<bucket>` / `s3://<bucket>`.
 It is the canonical store flag across `publish`, `certify`, `sign`, `prune --retain`,
 `bits store` (`gc`/`stats`/`upload`) and `compliance`; the old `--store` spelling still works but is deprecated.
-The default is `$BITS_S3_STORE` if set, else `https://s3.cern.ch/lcgapp-bits-testing`.
+The default is `$BITS_S3_STORE` if set, else the site's `store.operations` (at CERN
+`https://s3.cern.ch/lcgapp-bits-testing`, i.e. `b3://lcgapp-bits-testing`).
 A bulk publish also uploads a trimmed copy of the manifest (one per architecture)
 under `MANIFESTS/`, but only if every package uploaded; `bits certify` and
 `bits sign` turn it into the signed manifest that consumers trust. Packages whose
