@@ -278,6 +278,18 @@ class ReplacementTestCase(unittest.TestCase):
                 ["sys-libxml2", "sys-libxml2-libs", "libsys-libxml2", "disable", "disable-libs",
                  "libdisable"] * 2))
 
+    def test_the_query_works_without_os_release(self):
+        # macOS has no /etc/os-release; "." of a missing file would end sh's script.
+        from bits_helpers.cmd import getstatusoutput
+        from bits_helpers.packages import _system_query, distro_packages
+        self._package_managers(
+            rpm="rpm libxml2 (none) 2.9.13 6.el9_4 x86_64 libxml2-2.9.13-6.el9_4.src.rpm")
+        script = _system_query([{"package": "sys-libxml2"}]).replace(
+            "/etc/os-release", os.path.join(tempfile.mkdtemp(), "no-os-release"))
+        err, out = getstatusoutput(script)
+        self.assertEqual(err, 0, out)
+        self.assertEqual(distro_packages(out)["sys-libxml2"][0], "2.9.13-6.el9_4")
+
     def test_dpkg_is_asked_too_and_held_packages_count(self):
         self._package_managers(dpkg="hi deb sys-marked - 1:7.4.0-2 - amd64 marked@1:7.4.0-2")
         info = {}

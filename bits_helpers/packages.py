@@ -63,7 +63,8 @@ q() {
   done
 }
 """
-_OS_QUERY = """. /etc/os-release 2>/dev/null && echo "os $ID $VERSION_ID"
+# A missing file to "." would end the whole sh script (POSIX): none on macOS.
+_OS_QUERY = """[ -r /etc/os-release ] && . /etc/os-release && echo "os $ID $VERSION_ID"
 true
 """
 _FOUND = re.compile(r"(rpm|deb) (\S+) (\S+) (\S+) (\S+) (\S+)(?: (\S+))?")
