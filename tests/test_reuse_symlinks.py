@@ -362,7 +362,7 @@ class ReuseSymlinksTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()   # macOS: /var is /private/var
         self.base = self.root / "deployment" / "Packages"
         self.work = self.root / "local"
         self.arch = "el9_amd64_gcc14"

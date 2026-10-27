@@ -23,7 +23,7 @@ class ReferenceRelocationTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()   # macOS: /var is /private/var
         self.stage = self.root / "stage"
         self.stage.mkdir()
 
