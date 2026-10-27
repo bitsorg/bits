@@ -17,6 +17,8 @@ Each pass:
               (BUILDS/by-pipeline/<pipeline>/<build_id>.json) and their BOMs,
               once there: a build's index is written after all its tarballs
               and BOMs are in the store, while the job goes on to CVMFS.
+5. index_cli - a build made with the CLI is recorded once the worker certified
+              it, under pipeline 0 (CLI_PIPELINE), so it is scanned like the others.
 
 Each change is an event: pipeline.seen, pipeline.success|failed|canceled|running
 (running again: a retry), build.published.
@@ -47,6 +49,7 @@ INDEX_GIVE_UP_MS = 6 * 3600 * 1000
 STALE_AFTER = datetime.timedelta(days=3)   # a build job times out after 24 h
 HINT_MAX_AGE_MS = 24 * 3600 * 1000
 MAX_PER_STEP = 50                  # pipelines settled or indexed per pass
+CLI_PIPELINE = 0                   # the builds made with the CLI (db migration 18)
 
 
 def _iso(dt):
@@ -406,6 +409,49 @@ def _index_one(conn, s3, bucket, r):
                           {"pipeline": r["id"], "build_id": build_id,
                            "community": r["community"], "arches": arches, "packages": n})
     return len(new)
+
+
+def index_cli(conn, store):
+    """Record the builds made with the CLI that the worker certified, as
+    pipeline CLI_PIPELINE's (again when certified again): their BOMs those it
+    signed, their community the pre-approval's group (a community with another
+    certify_group has its CLI builds apart). Returns how many were recorded."""
+    if store is None:
+        return 0
+    s3, bucket = store
+    rows = conn.execute(
+        "SELECT c.build_id, c.approval_id, c.updated_ms, a.groups FROM certify_runs c"
+        " JOIN approvals a ON a.id = c.approval_id LEFT JOIN builds b ON"
+        " b.pipeline_id = c.pipeline_id AND b.build_id = c.build_id"
+        " WHERE c.pipeline_id = ? AND c.arch = '*' AND c.state = 'signed'"
+        " AND (b.build_id IS NULL OR b.recorded_ms < c.updated_ms)"
+        " ORDER BY c.updated_ms LIMIT ?", (CLI_PIPELINE, MAX_PER_STEP)).fetchall()
+    n = 0
+    for r in rows:
+        keys = sorted({k for (b,) in conn.execute(
+            "SELECT boms FROM certify_runs WHERE pipeline_id = ? AND build_id = ? AND arch != '*'"
+            " AND state = 'signed' AND approval_id = ?", (CLI_PIPELINE, r["build_id"], r["approval_id"]))
+            for k, _sha in json.loads(b or "[]")})
+        arches, packages, top, published = _bom_facts(s3, bucket, keys)
+        # A BOM not read now is tried again on the next pass, for INDEX_GIVE_UP_MS.
+        if len(arches) < len(keys) and db.now_ms() - r["updated_ms"] < INDEX_GIVE_UP_MS:
+            continue
+        community = str((json.loads(r["groups"] or "[]") or [""])[0]).lower()
+        with db.transaction(conn):
+            conn.execute("INSERT INTO builds (pipeline_id, build_id, community, arches,"
+                         " bom_keys, top_level, packages, published_at, recorded_ms)"
+                         " VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(pipeline_id, build_id) DO UPDATE"
+                         " SET community = excluded.community, arches = excluded.arches,"
+                         " bom_keys = excluded.bom_keys, top_level = excluded.top_level,"
+                         " packages = excluded.packages, published_at = excluded.published_at,"
+                         " recorded_ms = excluded.recorded_ms",
+                         (CLI_PIPELINE, r["build_id"], community, json.dumps(arches),
+                          json.dumps(keys), json.dumps(top), packages, published, db.now_ms()))
+            events.append(conn, "build.published", "build:%s" % r["build_id"], events.WORKER,
+                          {"pipeline": CLI_PIPELINE, "build_id": r["build_id"],
+                           "community": community, "arches": arches, "packages": packages})
+        n += 1
+    return n
 
 
 def index(conn, store):

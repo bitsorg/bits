@@ -507,6 +507,12 @@ MIGRATIONS = [
     [
         "ALTER TABLE sbom_packages ADD COLUMN not_shipped TEXT NOT NULL DEFAULT ''",
     ],
+    # 18: pipeline 0, of the builds made with the CLI (reconcile.index_cli): no
+    # build pipeline and never 'success', so no pipeline step takes it for one.
+    [
+        "INSERT OR IGNORE INTO pipelines (id, is_build, name, outcome, first_seen_ms)"
+        " VALUES (0, 0, 'built with the CLI', 'canceled', 0)",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

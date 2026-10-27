@@ -99,8 +99,9 @@ class TraceTest(unittest.TestCase):
         self._approve(16131386, "bob")
         self._pipeline(15000000, community="lhcb", certifier="carol")
         with db.transaction(self.conn):
-            self.conn.execute("INSERT INTO builds (pipeline_id, build_id, recorded_ms)"
-                              " VALUES (15000000, 'release_gcc15_opt-c193e4dbe60c', 1)")
+            for pid in (15000000, 0):            # 0: the same build certified from the CLI
+                self.conn.execute("INSERT INTO builds (pipeline_id, build_id, recorded_ms)"
+                                  " VALUES (?, 'release_gcc15_opt-c193e4dbe60c', 1)", (pid,))
         out = trace.lookup(self.conn, "bits.cern.ch", "/atlas/Packages/ROOT/6-1/lib/libCore.so",
                            build_id="release_gcc15_opt-c193e4dbe60c", visible={"atlas"})
         self.assertEqual(out["published_path"], "atlas/Packages/ROOT/6-1")

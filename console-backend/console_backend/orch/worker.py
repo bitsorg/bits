@@ -5,7 +5,7 @@
 Each pass runs the steps in order. A step reads the database and the outside
 world, then writes what it decided; a step that fails is logged, recorded as an
 event when its error changes, and tried again on the next pass. The steps:
-running due actions, then hints, discover, settle and index (reconcile.py: what
+running due actions, then hints, discover, settle, index and index_cli (reconcile.py: what
 is true of builds, from GitLab and S3; with BITS_ORCH_QUEUE, after settle, dispatch
 starts queued builds on free hosts, build_queue.py), with BITS_ORCH_CVMFS_STATUS the console's
 CVMFS status document (cvmfs_status.py), then collect and backfill (failures.py:
@@ -55,6 +55,7 @@ class Worker:
                                                     settings.orch_lookback_days)),
             ("settle", lambda: reconcile.settle(self.conn, self.deps.reader())),
             ("index", lambda: reconcile.index(self.conn, self.deps.store())),
+            ("index_cli", lambda: reconcile.index_cli(self.conn, self.deps.store())),
             ("collect", lambda: failures.collect(self.conn, self.deps.reader())),
             ("backfill", lambda: failures.backfill(self.conn, self.deps.reader(),
                                                    settings.orch_backfill_days,

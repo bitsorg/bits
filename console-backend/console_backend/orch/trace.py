@@ -184,7 +184,7 @@ def lookup(conn, repo, path, build_id="", visible=None):
     built = []
     if build_id:
         for b in conn.execute("SELECT pipeline_id FROM builds WHERE build_id = ?"
-                              " ORDER BY pipeline_id", (build_id,)):
+                              " AND pipeline_id != 0 ORDER BY pipeline_id", (build_id,)):
             built.append(shown(b["pipeline_id"]))
     return {"repo": repo, "path": "/".join(parts), "published_path": published,
             "publishes": [publish(r) for r in rows],

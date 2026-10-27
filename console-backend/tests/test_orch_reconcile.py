@@ -14,7 +14,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from console_backend import ci_auth, config, forge_ops, main
-from console_backend.orch import db, events, kinds, reconcile, worker
+from console_backend.orch import certifier, db, events, kinds, reconcile, sbom_scan, worker
 
 # The pipelines' day: yesterday, so they stay inside the lookback window and
 # short of being stale whenever the tests run.
@@ -202,7 +202,7 @@ class ReconcileTest(_DB):
         self.assertEqual(self.gl.calls[0][1], DAY + "T09:55:00Z")   # 5 minutes back
 
     def _count(self):
-        return self.conn.execute("SELECT count(*) FROM pipelines").fetchone()[0]
+        return self.conn.execute("SELECT count(*) FROM pipelines WHERE id != 0").fetchone()[0]
 
     def test_many_pages_continue_on_the_next_pass(self):
         for i in range(1, 251):
@@ -479,11 +479,89 @@ class ReconcileTest(_DB):
         self.assertEqual([e["kind"] for e in detail["events"]], ["pipeline.seen", "pipeline.failed"])
 
 
+class CliBuildTest(_DB):
+    """A build made with the CLI is recorded once the worker certified it."""
+
+    def _certified(self, bid, star, archs, group="LCG", at=None):
+        at = db.now_ms() if at is None else at
+        aid = self.conn.execute(
+            "INSERT INTO approvals (kind, subject, groups, approver, via, created_ms, expires_ms)"
+            " VALUES ('preapproval', ?, ?, 'buncic', 'cli', 0, ?)",
+            (bid, json.dumps([group]), at + 86400000)).lastrowid
+        for arch, state, key in [("*", star, None)] + archs:
+            self.conn.execute(
+                "INSERT INTO certify_runs (pipeline_id, build_id, arch, state, approval_id, boms,"
+                " created_ms, updated_ms) VALUES (0, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT"
+                " (pipeline_id, build_id, arch) DO UPDATE SET state = excluded.state,"
+                " approval_id = excluded.approval_id, boms = excluded.boms,"
+                " updated_ms = excluded.updated_ms",
+                (bid, arch, state, aid, json.dumps([[key, "s"]] if key else []), at, at))
+        self.conn.commit()
+
+    def test_a_certified_cli_build_is_recorded_and_scanned(self):
+        self._certified("cli-1", "signed", [("el9-opt", "signed", "M/cli-1/r.el9-opt.json"),
+                                            ("el9", "signed", "M/cli-1/r.el9.json")])
+        self._certified("cli-2", "refused", [("el9-opt", "signed", "M/cli-2/r.el9-opt.json")])
+        self._certified("cli-3", "signing", [("el9-opt", "signed", "M/cli-3/r.el9-opt.json")])
+        s3 = FakeS3({"M/cli-1/r.el9-opt.json": _bom("el9-opt", 3, "cli-1"),
+                     "M/cli-1/r.el9.json": _bom("el9", 1, "cli-1")})
+        self.assertEqual(reconcile.index_cli(self.conn, (s3, "bkt")), 1)
+        self.assertEqual(reconcile.index_cli(self.conn, (s3, "bkt")), 0)     # once
+        b = self.conn.execute("SELECT * FROM builds").fetchall()
+        self.assertEqual([(r["pipeline_id"], r["build_id"], r["community"], r["packages"])
+                          for r in b], [(0, "cli-1", "lcg", 4)])
+        self.assertEqual(json.loads(b[0]["arches"]), ["el9", "el9-opt"])
+        self.assertIn("build.published", self._kinds())
+        with patch.object(sbom_scan, "SETTLE_MS", 0):
+            self.assertEqual(sbom_scan.due(self.conn, "db", db.now_ms() + 1), ["cli-1"])
+        sbom_scan._failed(self.conn, "cli-1", "boom")          # its scan is listed
+        self.assertEqual([(r["build_id"], r["community"]) for r in sbom_scan.listing(self.conn, {"lcg"})],
+                         [("cli-1", "lcg")])
+        # Not a pipeline: neither listed as one nor taken for a certifiable build.
+        self.assertEqual(reconcile.list_builds(self.conn), [])
+        self.conn.execute("INSERT INTO kv (key, value) VALUES ('certify.since', '0')")
+        self.conn.commit()
+        on = config.Settings(env={"BITS_ORCH_CERTIFY": "1"})
+        self.assertEqual(certifier.trigger(self.conn, on, self.gl), 0)
+        self.assertEqual(self.conn.execute("SELECT state FROM certify_runs WHERE build_id = 'cli-1'"
+                                           " AND arch = '*'").fetchone()[0], "signed")
+
+
+    def test_certified_again_it_is_recorded_from_that_approval(self):
+        # Refused with el9 already signed, then approved again: el9 of the old run is not this one's.
+        self._certified("cli-1", "refused", [("el9", "signed", "M/old.el9.json")], at=1)
+        self._certified("cli-1", "signed", [("el9-opt", "signed", "M/new.el9-opt.json")], at=2)
+        s3 = FakeS3({"M/old.el9.json": _bom("el9", 5, "cli-1"),
+                     "M/new.el9-opt.json": _bom("el9-opt", 3, "cli-1")})
+        self.assertEqual(reconcile.index_cli(self.conn, (s3, "bkt")), 1)
+        row = lambda: self.conn.execute("SELECT * FROM builds WHERE build_id = 'cli-1'").fetchone()
+        self.assertEqual((json.loads(row()["bom_keys"]), row()["packages"]), (["M/new.el9-opt.json"], 3))
+        # Published and certified again later: recorded anew, so scanned again.
+        s3.objects["M/again.el9-opt.json"] = json.dumps(_bom("el9-opt", 4, "cli-1")).encode()
+        self._certified("cli-1", "signed", [("el9-opt", "signed", "M/again.el9-opt.json")],
+                        at=db.now_ms() + 1000)
+        with patch.object(db, "now_ms", return_value=db.now_ms() + 2000):
+            self.assertEqual(reconcile.index_cli(self.conn, (s3, "bkt")), 1)
+        self.assertEqual(row()["packages"], 4)
+
+    def test_a_bom_not_read_is_tried_again(self):
+        self._certified("cli-1", "signed", [("el9-opt", "signed", "M/cli-1.json")])
+        s3 = FakeS3({})
+        with self.assertLogs("bits_orchestrator", "WARNING"):
+            self.assertEqual(reconcile.index_cli(self.conn, (s3, "bkt")), 0)
+        s3.objects["M/cli-1.json"] = json.dumps(_bom("el9-opt", 2, "cli-1")).encode()
+        self.assertEqual(reconcile.index_cli(self.conn, (s3, "bkt")), 1)
+        with patch.object(reconcile, "INDEX_GIVE_UP_MS", -1):   # and once given up, without it
+            self._certified("cli-2", "signed", [("el9-opt", "signed", "M/gone.json")])
+            with self.assertLogs("bits_orchestrator", "WARNING"):
+                self.assertEqual(reconcile.index_cli(self.conn, (s3, "bkt")), 1)
+
+
 class WorkerStepsTest(_DB):
     def test_the_worker_runs_reconcile_before_actions(self):
         w = worker.Worker(self.conn, config.Settings(env={}))
         self.assertEqual([n for n, _ in w.steps], ["actions", "hints", "discover", "settle", "index",
-                                                    "collect", "backfill", "phases", "trace", "ship", "backup"])
+                                                    "index_cli", "collect", "backfill", "phases", "trace", "ship", "backup"])
         w.deps.reader = lambda: self.gl
         w.deps.store = lambda: None
         self.gl.add(1)
