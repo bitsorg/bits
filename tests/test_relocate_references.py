@@ -124,7 +124,8 @@ class ReferenceRelocationTest(unittest.TestCase):
         subprocess.run(["bash", "-e", "-c",
                         'find "$1" -type f | xargs --no-run-if-empty grep -Il "/ref/sw" '
                         '| xargs -n1 --no-run-if-empty perl -p -i -e '
-                        "'s|\\Q/ref/sw\\E|/local/sw|g;'", "cms", str(oracle)], check=True)
+                        "'s|\\Q/ref/sw\\E|/local/sw|g;'", "cms", str(oracle)], check=True,
+                       env=dict(os.environ, LC_ALL="C"))
         relocate_references(self.stage, {"/ref/sw": "/local/sw"})
         for name in fixtures:
             self.assertEqual((self.stage / name).read_bytes(), (oracle / name).read_bytes())

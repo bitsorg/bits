@@ -22,8 +22,9 @@ while IFS=$'\t' read -r source destination; do
   fi
   [[ "$source" == "$destination" ]] && continue
 
-  # --null, not -Z (decompress in BSD grep); no xargs -r (GNU only).
-  find "$root" -type f -exec grep -Il --null -- "$source" {} + \
+  # --null, not -Z (decompress in BSD grep); no xargs -r (GNU only). LC_ALL=C: only
+  # a NUL byte makes a file binary, whatever the locale and grep.
+  find "$root" -type f -exec env LC_ALL=C grep -Il --null -- "$source" {} + \
     | while IFS= read -r -d '' file; do
         BITS_REFERENCE_SOURCE="$source" BITS_REFERENCE_DESTINATION="$destination" \
           perl -p -i -e 's/\Q$ENV{BITS_REFERENCE_SOURCE}\E/$ENV{BITS_REFERENCE_DESTINATION}/g' \
