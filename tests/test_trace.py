@@ -62,6 +62,7 @@ class TraceTest(unittest.TestCase):
                 pass
         srv = HTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         info = trace.query("http://127.0.0.1:%d/" % srv.server_port, "tok", "r", "a/b", "release_x")
         self.assertEqual(seen["auth"], "Bearer tok")
@@ -90,6 +91,7 @@ class TraceTest(unittest.TestCase):
                 pass
         srv = HTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         with self.assertRaises(SystemExit) as cm:
             trace.query("http://127.0.0.1:%d" % srv.server_port, "tok", "r", "a", "")

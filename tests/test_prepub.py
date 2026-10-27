@@ -170,6 +170,7 @@ class TestSubmitJob(unittest.TestCase):
 
     def tearDown(self):
         self.server.shutdown()
+        self.server.server_close()
 
     def _make_tar(self, content=b"fake payload"):
         fd, path = tempfile.mkstemp(suffix=".tar.gz")
@@ -278,6 +279,7 @@ class TestSubmitJob(unittest.TestCase):
         finally:
             os.unlink(tar)
             reject_server.shutdown()
+            reject_server.server_close()
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +296,7 @@ class TestPollJob(unittest.TestCase):
             self.assertEqual(result, "published")
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_raises_on_failed(self):
         server, url = _start_fake_prepub(state="failed")
@@ -303,6 +306,7 @@ class TestPollJob(unittest.TestCase):
                 poll_job(url, "", "test-job-id-123", poll_interval=1, timeout=10)
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_raises_on_aborted(self):
         server, url = _start_fake_prepub(state="aborted")
@@ -312,6 +316,7 @@ class TestPollJob(unittest.TestCase):
                 poll_job(url, "", "test-job-id-123", poll_interval=1, timeout=10)
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_raises_on_timeout(self):
         """When the job never reaches a terminal state, poll_job must time out."""
@@ -323,6 +328,7 @@ class TestPollJob(unittest.TestCase):
                 poll_job(url, "", "test-job-id-123", poll_interval=1, timeout=1)
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_transitions_from_intermediate_to_published(self):
         """Simulate uploading → published across two polls."""
@@ -340,6 +346,7 @@ class TestPollJob(unittest.TestCase):
         result = poll_job(url, "", "test-job-id-123", poll_interval=0, timeout=5)
         self.assertEqual(result, "published")
         server.shutdown()
+        server.server_close()
 
 
 if __name__ == "__main__":
@@ -411,6 +418,7 @@ class TestSignedURI(unittest.TestCase):
                 os.unlink(tar)
         finally:
             server.shutdown()
+            server.server_close()
 
 
 class TestSignedRequestsAreNotReplayed(unittest.TestCase):
@@ -475,6 +483,7 @@ class TestSignedRequestsAreNotReplayed(unittest.TestCase):
         finally:
             os.unlink(tar)
             server.shutdown()
+            server.server_close()
 
 
 class MultipartFileTest(unittest.TestCase):

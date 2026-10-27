@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for reachability GC of the shared store (bits_helpers/gc.py)."""
 
+from pathlib import Path
 import os
 import shutil
 import tempfile
@@ -201,7 +202,7 @@ class TestLocalizeManifest(unittest.TestCase):
         with patch("bits_helpers.download._http_get", side_effect=serve):
             local = gc._localize_manifest(url, self.tmp)
         self.assertEqual(local, old)
-        self.assertEqual((open(local).read(), open(local + ".sig").read()), ("new", "new-sig"))
+        self.assertEqual((Path(local).read_text(), Path(local + ".sig").read_text()), ("new", "new-sig"))
         self.assertEqual([n for n in os.listdir(os.path.dirname(local)) if ".part" in n], [])
 
     def test_a_failed_fetch_never_falls_back_to_the_cached_copy(self):
@@ -218,7 +219,7 @@ class TestLocalizeManifest(unittest.TestCase):
                            side_effect=self._serve(files)):
                     with self.assertRaises(OSError):
                         gc._localize_manifest(url, self.tmp)
-                self.assertNotEqual(open(old + ".sig").read(), "new-sig")
+                self.assertNotEqual(Path(old + ".sig").read_text(), "new-sig")
 
     def test_two_stores_one_name(self):
         from unittest.mock import patch
@@ -227,7 +228,7 @@ class TestLocalizeManifest(unittest.TestCase):
         serve = self._serve({a: "A", a + ".sig": "a", b: "B", b + ".sig": "b"})
         with patch("bits_helpers.download._http_get", side_effect=serve):
             pa, pb = gc._localize_manifest(a, self.tmp), gc._localize_manifest(b, self.tmp)
-        self.assertEqual((open(pa).read(), open(pb).read()), ("A", "B"))
+        self.assertEqual((Path(pa).read_text(), Path(pb).read_text()), ("A", "B"))
 
     def test_fetched_once_per_run(self):
         from unittest.mock import patch
@@ -255,7 +256,7 @@ class TestLocalizeManifest(unittest.TestCase):
         d = os.path.join(self.tmp, "MANIFESTS", "trust")
         os.makedirs(d)
         for n in ("common-manifest-x86_64-el9.json", "common-manifest-x86_64-el9.json.sig"):
-            open(os.path.join(d, n), "w").write("{}")
+            Path(os.path.join(d, n)).write_text("{}")
         with patch("bits_helpers.download._http_get", side_effect=self._serve({})), \
              patch("bits_helpers.trust.trusted_index",
                    side_effect=AssertionError("the cached copy was verified")):
@@ -329,19 +330,19 @@ class TestLocalizeManifest(unittest.TestCase):
         sent.clear()
         self.assertEqual(run(), local)
         self.assertEqual([s[2] for s in sent], [304, 304])
-        self.assertEqual(open(local).read(), "v1")
+        self.assertEqual(Path(local).read_text(), "v1")
         files[url] = "v2"                                        # re-signed in the store
         files[url + ".sig"] = "s2"
         sent.clear()
         run()
         self.assertEqual([s[2] for s in sent], [200, 200])
-        self.assertEqual((open(local).read(), open(local + ".sig").read()), ("v2", "s2"))
+        self.assertEqual((Path(local).read_text(), Path(local + ".sig").read_text()), ("v2", "s2"))
         with open(local, "w") as fh:                             # tampered with on disk
             fh.write("evil")
         sent.clear()
         run()
         self.assertEqual(sent[0][1:], (None, 200))               # no ETag sent: fetched in full
-        self.assertEqual(open(local).read(), "v2")
+        self.assertEqual(Path(local).read_text(), "v2")
 
 if __name__ == "__main__":
     unittest.main()

@@ -74,6 +74,7 @@ def query(backend, token, repo, path, build_id, cafile=None, timeout=30):
         with opener.open(req, timeout=timeout) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
+        e.close()
         hint = {401: "the backend did not accept the GitLab token",
                 404: "this backend has no /ops/trace (an older bits-console backend?)"}
         sys.exit("bits trace: %s: HTTP %s%s" % (backend, e.code,

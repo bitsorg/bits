@@ -353,7 +353,8 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None,
 
 def readHashFile(fn):
   try:
-    return open(fn).read().strip("\n")
+    with open(fn) as f:
+      return f.read().strip("\n")
   except OSError:
     return "0"
 

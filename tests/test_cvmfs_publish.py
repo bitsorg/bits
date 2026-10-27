@@ -6,6 +6,7 @@ These cover the bits that were hand-written bash in cvmfs-prepub-publish.yml and
 carry hard-won fixes (template expansion, the reused-artefact re-root, the
 INSTALLROOT symlink relativiser, sanitize). The stage/submit/pipeline parts need
 a build host and are proven separately via the remote-runner."""
+from pathlib import Path
 import os
 import shutil
 import tempfile
@@ -266,7 +267,7 @@ class TestOrderBiggestFirst(unittest.TestCase):
                 fh.write(b"x" * sz)
         for p, body in (("big", ""), ("small", "not-a-number\n")):   # blank + garbage
             d = os.path.join(work, ".packages", "el9", p); os.makedirs(d, exist_ok=True)
-            open(os.path.join(d, "1.0-1"), "w").write(body)
+            Path(os.path.join(d, "1.0-1")).write_text(body)
         self.addCleanup(os.environ.pop, "BITS_WORK_DIR", None)
         os.environ["BITS_WORK_DIR"] = work
         specs = [{"package": p, "version": "1.0", "revision": "1"} for p in ("small", "big")]
@@ -1175,7 +1176,7 @@ class TestPackagesAndReleaseView(unittest.TestCase):
                   "share/root"):
             self.assertFalse(os.path.islink(os.path.join(staging, d)), d)
         cp.write_view_setup(staging, "/cvmfs/r/" + vp)   # still finds what it looks for
-        setup = open(os.path.join(staging, "setup.sh")).read()
+        setup = Path(os.path.join(staging, "setup.sh")).read_text()
         self.assertIn("lib/python3.12/site-packages", setup)
         self.assertIn("lib/pkgconfig", setup)
 
@@ -1190,8 +1191,8 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         cp.merged_view(ctx, [self.SPEC], staging, vp)
         self.assertFalse(os.path.islink(os.path.join(staging, "share", "man")))
         cp.write_view_setup(staging, "/cvmfs/r/" + vp)
-        self.assertIn('/share/man:$MANPATH"', open(os.path.join(staging, "setup.sh")).read())
-        csh = open(os.path.join(staging, "setup.csh")).read()
+        self.assertIn('/share/man:$MANPATH"', Path(os.path.join(staging, "setup.sh")).read_text())
+        csh = Path(os.path.join(staging, "setup.csh")).read_text()
         self.assertIn('if ($?MANPATH) then\n  setenv MANPATH', csh)
         if shutil.which("tcsh"):    # unset MANPATH must not break sourcing it
             import subprocess
@@ -1292,7 +1293,7 @@ class TestPackagesAndReleaseView(unittest.TestCase):
             out = subprocess.run(["dash", "-c", '. "%s/setup.sh" 2>/dev/null; echo "$BITS_VIEW"' % d],
                                  capture_output=True, text=True).stdout.strip()
             self.assertIn(out, ("/cvmfs/r/g/views/X/a", ""))
-        self.assertIn('set _v = "/cvmfs/r/g/views/X/a"', open(os.path.join(d, "setup.csh")).read())
+        self.assertIn('set _v = "/cvmfs/r/g/views/X/a"', Path(os.path.join(d, "setup.csh")).read_text())
         if shutil.which("tcsh"):
             out = subprocess.run(["tcsh", "-f", "-c", 'source "%s/setup.csh"; echo $BITS_VIEW' % d],
                                  capture_output=True, text=True).stdout.strip()
@@ -1313,7 +1314,7 @@ class TestPackagesAndReleaseView(unittest.TestCase):
                                   'echo "${MANPATH-<unset>}"' % (before, d)],
                                  capture_output=True, text=True).stdout.strip()
             self.assertEqual(out, want)
-        self.assertIn("if ($?MANPATH)", open(os.path.join(d, "setup.csh")).read())
+        self.assertIn("if ($?MANPATH)", Path(os.path.join(d, "setup.csh")).read_text())
 
     def test_merged_view_published_once(self):
         import tarfile
@@ -1605,7 +1606,7 @@ setenv ZLIB_ROOT $PKG_ROOT
             pkgs + "/ROOT/6.36-2", pkgs + "/zlib/1.3-1",
             pkgs + "/ROOT/6.36-2/etc/plugins",   # not in the view: the package's
             view, "unset"])
-        csh = open(os.path.join(view, "setup.csh")).read()
+        csh = Path(os.path.join(view, "setup.csh")).read_text()
         self.assertIn('set _b = "/cvmfs/r/g/el9-gcc15-opt"', csh)
         self.assertIn('setenv ROOTSYS "$_b/ROOT/6.36-2"', csh)
 
@@ -1736,7 +1737,7 @@ class TestSubmitIngest(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         import bits_helpers.prepub as pp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"hello-tar-bytes")
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"hello-tar-bytes")
         want = hashlib.sha256(b"hello-tar-bytes").hexdigest()
         cap = {}
 
@@ -1776,7 +1777,7 @@ class TestSubmitIngest(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         import bits_helpers.prepub as pp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"z")
         cap = {}
 
         class Resp:
@@ -1805,7 +1806,7 @@ class TestSubmitIngest(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         import bits_helpers.prepub as pp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"z")
         cap = {}
 
         class Resp:
@@ -1862,7 +1863,7 @@ class TestSubmitIngest(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         import bits_helpers.prepub as pp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z" * size)
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"z" * size)
         cp._HEALTH.pop(url, None)
         with mock.patch.object(pp, "_make_session", lambda *a, **k: sess), \
              mock.patch.object(pp, "_signed_uri", lambda u: u), \
@@ -1884,7 +1885,7 @@ class TestSubmitIngest(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         import bits_helpers.prepub as pp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"z")
         sess, _ = self._sess()
         cap = {}
         orig_post = sess.post
@@ -1923,7 +1924,7 @@ class TestSubmitIngest(unittest.TestCase):
             for kw, want in (({"identity_path": "p", "identity_hash": "H", "replace": True}, "true"),
                              ({"identity_path": "p", "replace": True}, None),
                              ({"identity_path": "p", "identity_hash": "H"}, None)):
-                open(tarf, "wb").write(b"z")
+                Path(tarf).write_bytes(b"z")
                 cp.submit_ingest("http://id", "t", "r", "p", tarf, **kw)
                 self.assertEqual(cap["signed"].get("replace"), want, kw)
                 self.assertEqual(cap["files"].get("replace"), want and (None, want), kw)
@@ -1953,7 +1954,7 @@ class TestSubmitIngest(unittest.TestCase):
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"z")
         got = []
         def fake_submit(*a, **k):
             got.append((k.get("identity_path"), k.get("identity_hash"), k.get("replace"))); return "J"
@@ -2006,7 +2007,7 @@ class TestSubmitIngest(unittest.TestCase):
 class TestPublishTar(unittest.TestCase):
     def _tar(self):
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        p = os.path.join(t, "x.tar"); open(p, "wb").write(b"x"); return p
+        p = os.path.join(t, "x.tar"); Path(p).write_bytes(b"x"); return p
 
     def test_ingest_posts_tar_and_skips_stage(self):
         from unittest import mock
@@ -2073,7 +2074,7 @@ class TestIngestConcurrencyGate(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
         m = os.path.join(t, "man.json")
-        json.dump({"packages": [{"package": "a", "version": "1.0"}]}, open(m, "w"))
+        Path(m).write_text(json.dumps({"packages": [{"package": "a", "version": "1.0"}]}))
         with mock.patch.object(cp, "publish_one", lambda s, c: []):
             rc = cp.main(["--manifest", m, "--repo", "r", "--tars-root", t,
                           "--arch", "el9", "--publish-path", "ingest", "--workers", "4"])
@@ -2104,8 +2105,8 @@ class TestPublishOverlayTars(unittest.TestCase):
         try:
             d = tempfile.mkdtemp()
             self.addCleanup(shutil.rmtree, d, True)
-            t1 = os.path.join(d, "a.tar"); open(t1, "w").write("x")
-            t2 = os.path.join(d, "b.tar"); open(t2, "w").write("y")
+            t1 = os.path.join(d, "a.tar"); Path(t1).write_text("x")
+            t2 = os.path.join(d, "b.tar"); Path(t2).write_text("y")
             jids = P.publish_overlay_tars(
                 {"job_id_base": "base", "tmp_dir": d}, [t1, t2])
             self.assertEqual(jids, ["job-a.tar", "job-b.tar"])

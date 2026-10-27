@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the certification core (bits_helpers/certify.py)."""
 
+from pathlib import Path
 import json
 import os
 import shutil
@@ -394,7 +395,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         out = os.path.join(self.tmp, "out", "common.json")
         certify.certify([m], self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa",
                         approval_check=lambda common: ["alice", "bob"])
-        doc = json.load(open(out))
+        doc = json.loads(Path(out).read_text())
         self.assertEqual(doc["certified_by"], ["alice", "bob"])
         self.assertIn("certified_at", doc)
         kid, _ = trust.trusted_index(out)          # signature still valid
@@ -425,7 +426,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         with patch.object(forge, "gitlab_identify", return_value="alice"):
             certify.doSign(args, _P())
         per_arch = certify._arch_stem(out, "slc7_x86-64")
-        self.assertEqual(json.load(open(per_arch))["certified_by"], ["alice"])
+        self.assertEqual(json.loads(Path(per_arch).read_text())["certified_by"], ["alice"])
 
     def test_identity_token_rejects_unauthorised_user(self):
         from bits_helpers import forge
@@ -464,7 +465,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
 
         certify.doSign(args, _P())
         per_arch = certify._arch_stem(out, "slc7_x86-64")
-        self.assertEqual(json.load(open(per_arch))["certified_by"], ["alice"])
+        self.assertEqual(json.loads(Path(per_arch).read_text())["certified_by"], ["alice"])
 
     def test_certifier_username_rejected_when_not_admin(self):
         admins = os.path.join(self.tmp, "ADMINS")
@@ -520,7 +521,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         out = os.path.join(self.tmp, "out", "common.json")
         out_path, _ = certify.certify([m], self.key_pem, out,
                                       probe=lambda a, h, t=None: store.get((a, h)))
-        data = json.load(open(out_path))
+        data = json.loads(Path(out_path).read_text())
         data["packages"][0]["tarball_sha256"] = "sha256:evil"
         with open(out_path, "w") as fh:
             json.dump(data, fh, indent=1, sort_keys=True)
@@ -554,7 +555,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         out = os.path.join(self.tmp, "out", "common.json")
         certify.certify([_manifest("b1", pkgs)], self.key_pem, out,
                         probe=lambda a, h, t=None: store.get((a, h)))
-        tampered = json.load(open(out))
+        tampered = json.loads(Path(out).read_text())
         tampered["packages"][0]["hash"] = "hevil"
         real = trust.verify_bytes
 
@@ -777,7 +778,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
                         self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa",
                         valid_days=30, source_commit="cafe1234")
-        doc = json.load(open(out))
+        doc = json.loads(Path(out).read_text())
         self.assertEqual(doc["source_commit"], "cafe1234")
         self.assertIn("expires", doc)
         # Fresh now -> trusted.
@@ -794,7 +795,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         out = os.path.join(self.tmp, "out", "common.json")
         certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
                         self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa")
-        self.assertNotIn("expires", json.load(open(out)))
+        self.assertNotIn("expires", json.loads(Path(out).read_text()))
         import datetime
         far = datetime.datetime(2999, 1, 1, tzinfo=datetime.timezone.utc)
         kid, index = trust.trusted_index(out, now=far)   # still trusted
@@ -805,7 +806,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
                         self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa",
                         default_group="lcg")
-        entry = json.load(open(out))["packages"][0]
+        entry = json.loads(Path(out).read_text())["packages"][0]
         self.assertEqual(entry["group"], "lcg")
         # Consumer in a different group won't trust it (not base).
         _, ship_idx = trust.trusted_index(out, accept_groups=["ship"])

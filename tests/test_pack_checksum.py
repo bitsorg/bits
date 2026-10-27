@@ -1,6 +1,7 @@
 """The tarball checksum written while packing (build_template.sh) and read back
 by the manifest and the store upload (checksum.tarball_checksum)."""
 
+from pathlib import Path
 import hashlib
 import os
 import shutil
@@ -14,7 +15,7 @@ from bits_helpers.checksum import checksum_file, tarball_checksum
 
 def _pack_block():
     """build_template.sh's packing branch, as bash (the template is %-formatted)."""
-    src = open(os.path.join(os.path.dirname(bits_helpers.__file__), "build_template.sh")).read()
+    src = Path(os.path.join(os.path.dirname(bits_helpers.__file__), "build_template.sh")).read_text()
     start = src.index('elif [ -z "$CACHED_TARBALL" ]; then')
     end = src.index('\nfi\nwait "$rsync_pid"', start)
     return "if false; then :\n" + src[start:end].replace("%%", "%") + "\nfi\n"

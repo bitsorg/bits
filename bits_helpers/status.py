@@ -67,7 +67,8 @@ from bits_helpers.workarea import updateReferenceRepoSpec
 def _readHashFile(fn: str) -> str:
     """Read a .build-hash sentinel file; return "0" if absent."""
     try:
-        return open(fn).read().strip("\n")
+        with open(fn) as f:
+            return f.read().strip("\n")
     except OSError:
         return "0"
 

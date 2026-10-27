@@ -3,6 +3,7 @@
 
 """Tests for bits_helpers.checksum_store."""
 
+from pathlib import Path
 import os
 import sys
 import tempfile
@@ -456,7 +457,7 @@ class TestCommitsAndProfileRepos(unittest.TestCase):
         path = write_checksum_file(self.recipes, "ROOT", store)
         parsed = parse_checksum_file(path)
         self.assertEqual(parsed["commits"], {"v6-40-00": GOOD_SHA1, "1.10": GOOD_SHA256})
-        self.assertIn('"1.10"', open(path).read())   # quoted: not the float 1.1
+        self.assertIn('"1.10"', Path(path).read_text())   # quoted: not the float 1.1
 
     def test_invalid_commit_rejected(self):
         self._file(self.recipes, "commits:\n  v1: nothex\n")
@@ -547,7 +548,7 @@ class TestUpdateKeepsLayout(unittest.TestCase):
         from bits_helpers.checksum_store import update_checksum_file
         _write(os.path.join(self.repo, "checksums", "p.checksum"), text)
         path, _ = update_checksum_file(self.repo, "p", new)
-        return open(path).read(), parse_checksum_file(path)
+        return Path(path).read_text(), parse_checksum_file(path)
 
     def test_comments_survive_and_entries_land_in_their_section(self):
         text, parsed = self._update("""\

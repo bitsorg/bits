@@ -529,7 +529,8 @@ def _wipe_source_if_patchset_changed(spec, source_dir):
   current = _patchset_fingerprint(spec, os.path.join(spec["pkgdir"], "patches"))
   if os.path.exists(patched):
     try:
-      recorded = json.loads(open(patched).read()).get("patchset")
+      with open(patched) as f:
+        recorded = json.loads(f.read()).get("patchset")
     except Exception:
       recorded = None   # legacy empty sentinel, or unreadable → treat as changed
     if recorded == current:
@@ -693,7 +694,8 @@ def _extract_source_archives(source_dir, expected_names=None):
   # re-extract with the correct depth.
   if os.path.exists(sentinel):
     try:
-      recorded = json.loads(open(sentinel).read())
+      with open(sentinel) as f:
+        recorded = json.loads(f.read())
       recorded_strips = recorded.get("strips", {})
     except (OSError, ValueError, KeyError):
       recorded_strips = {}

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bits cvmfs publish: paths to dependencies become their own CVMFS paths."""
+from pathlib import Path
 import json
 import os
 import shutil
@@ -171,7 +172,7 @@ class TestRelocateDependencies(unittest.TestCase):
             for f in fns:
                 p = os.path.join(dp, f)
                 if not os.path.islink(p) and f != "zlib.txt":   # 1.0-10: not a dependency
-                    text = open(p, errors="replace").read()
+                    text = Path(p).read_text(errors="replace")
                     self.assertNotIn(W + "/", text, p)
                     self.assertNotIn(OWN + "/" + A, text, p)
         self.assertIn("-L/cvmfs/r/atlas/%s/Packages/ROOT/6.36-1/lib %s/lib/libz.la" % (A, OWN),

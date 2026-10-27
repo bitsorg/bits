@@ -7,6 +7,7 @@ All tests mock external calls (podman, sandbox-exec, /proc, /.dockerenv) so
 they run on any platform without requiring podman to be installed.
 """
 
+from pathlib import Path
 import os
 import sys
 import types
@@ -591,7 +592,7 @@ class PackageWritePathsTests(unittest.TestCase):
         write = sandbox.package_write_paths(ENV, "/sw", "/sw")
         path = make_sbpl_profile(False, "/sw", write=write, path=os.path.join(d, "sandbox.sb"),
                                  replay="sandbox-exec -f sandbox.sb /bin/bash -e -x build.sh")
-        content = open(path).read()
+        content = Path(path).read_text()
         self.assertTrue(content.startswith("; Written by bits"))
         self.assertIn('(allow file-write* (subpath "/sw/INSTALLROOT/ab12cd"))', content)
         self.assertNotIn('(subpath "/sw")', content)
@@ -621,7 +622,7 @@ class PackageWritePathsTests(unittest.TestCase):
         cmd = wrap_build_command(LOCAL_CMD, _spec(), opts, workdir="/sw", pkg_env=ENV,
                                  build_workdir="/sw", script_dir=d)
         self.assertIn(os.path.join(d, "sandbox.sb"), cmd)
-        self.assertIn('(subpath "/extra")', open(os.path.join(d, "sandbox.sb")).read())
+        self.assertIn('(subpath "/extra")', Path(os.path.join(d, "sandbox.sb")).read_text())
         self.assertIn("grep 'Operation not permitted'", sandbox.failure_hint(cmd))
         self.assertEqual(sandbox.failure_hint(LOCAL_CMD), "")
 

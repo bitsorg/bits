@@ -9,6 +9,7 @@ Covers:
 * ``checkout_sources()`` with ``parallel_sources > 1`` (concurrent source downloads)
 """
 
+from pathlib import Path
 import os
 import re
 import shutil
@@ -580,7 +581,7 @@ class WriteFailureSummaryTest(unittest.TestCase):
         # sharing one work area do not clobber each other
         self.assertEqual(os.path.dirname(path),
                          os.path.join(self.dir, "LOGS", "el9_x86-64"))
-        text = open(path).read()
+        text = Path(path).read_text()
         self.assertIn("FAILED: motif@2.3.8", text)
         self.assertIn("err: boom", text)                       # excerpt included
         self.assertIn("1 package(s) failed", text)
@@ -589,7 +590,7 @@ class WriteFailureSummaryTest(unittest.TestCase):
         self.assertNotIn("motif", text.split("Skipped")[1])    # not double-counted
         # the combined full error log is also written
         self.assertTrue(full and os.path.exists(full))
-        self.assertIn("build:motif", open(full).read())
+        self.assertIn("build:motif", Path(full).read_text())
 
     def test_banner_lists_each_failed_package_log(self):
         from bits_helpers.build import report_failure_summary

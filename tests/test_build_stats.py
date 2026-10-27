@@ -6,6 +6,7 @@ Tests for bits_helpers/build_stats.py — the self-tuning resource-stats loop
 that feeds the --builders scheduler's ResourceManager.
 """
 
+from pathlib import Path
 import json
 import os
 import tempfile
@@ -60,7 +61,7 @@ class TestBuildStats(unittest.TestCase):
         ])
         path = bs.aggregate_and_write(self.dir, {"root": sd})
         self.assertEqual(path, bs.default_stats_path(self.dir))
-        stats = json.load(open(path))
+        stats = json.loads(Path(path).read_text())
         pkg = stats["packages"]["build"]["root"]
         self.assertEqual(pkg["rss"], 3_000_000_000)
         self.assertEqual(pkg["cpu"], 2800)
@@ -81,7 +82,7 @@ class TestBuildStats(unittest.TestCase):
         sd_ok = _write_trace(self.dir, "ok", [{"rss": 10, "cpu": 50, "time": 5}])
         path = bs.aggregate_and_write(
             self.dir, {"ok": sd_ok, "gone": os.path.join(self.dir, "SPECS", "gone")})
-        stats = json.load(open(path))
+        stats = json.loads(Path(path).read_text())
         self.assertIn("ok", stats["packages"]["build"])
         self.assertNotIn("gone", stats["packages"]["build"])
 
@@ -90,13 +91,13 @@ class TestBuildStats(unittest.TestCase):
         bs.aggregate_and_write(self.dir, {"root": sd})
         # corrupt the machine totals as if copied from another node
         path = bs.default_stats_path(self.dir)
-        data = json.load(open(path))
+        data = json.loads(Path(path).read_text())
         data["resources"] = {"cpu": -1, "rss": -1}
-        json.dump(data, open(path, "w"))
+        Path(path).write_text(json.dumps(data))
         # autoload must re-stamp with sane current-machine values
         ap = bs.autoload_stats_path(self.dir)
         self.assertEqual(ap, path)
-        restamped = json.load(open(ap))
+        restamped = json.loads(Path(ap).read_text())
         self.assertGreater(restamped["resources"]["cpu"], 0)
 
     def test_autoload_missing_returns_none(self):
@@ -127,7 +128,7 @@ class TestBuildStats(unittest.TestCase):
         sd = _write_trace(self.dir, "root", [{"rss": 2_000_000, "cpu": 200, "time": 60}])
         bs.aggregate_and_write(self.dir, {"root": sd})
         path = bs.autoload_stats_path(self.dir)
-        rm = ResourceManager(json.load(open(path)), _FakeScheduler())
+        rm = ResourceManager(json.loads(Path(path).read_text()), _FakeScheduler())
         # a package present in the stats and a brand-new one (uses defaults)
         admitted = rm.allocResourcesForExternals(
             ["build:root", "build:brandnew"], count=4)
@@ -194,7 +195,7 @@ class TestTuningReport(unittest.TestCase):
         rep = bs.tuning_report({"root": sd}, wall_seconds=100, builders=2,
                                jobs=8, oversubscribe=1.0)
         bs.aggregate_and_write(self.dir, {"root": sd}, tuning=rep)
-        stats = json.load(open(bs.default_stats_path(self.dir)))
+        stats = json.loads(Path(bs.default_stats_path(self.dir)).read_text())
         self.assertEqual(stats["tuning"], rep)
         self.assertIn("recommendation", stats["tuning"])
 
