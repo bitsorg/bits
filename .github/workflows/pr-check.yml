@@ -114,7 +114,8 @@ jobs:
           # conflicts with the one in o2-full-deps [O2-5580]
           brew uninstall --ignore-dependencies --force pkg-config@0.29.2 
           brew install modules alisw/system-deps/o2-full-deps sapling
-          python3 -m pip install --upgrade tox tox-gh-actions coverage
+          # tox -e darwin names its env: tox-gh-actions would only warn.
+          python3 -m pip install --upgrade tox coverage
 
       - name: Run tests
         run: tox -e darwin
