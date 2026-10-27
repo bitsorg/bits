@@ -55,12 +55,16 @@ def _get(url):
 def _print_qr(url):
     try:
         import qrcode
-        qr = qrcode.QRCode(border=1)
-        qr.add_data(url)
-        qr.make()
-        qr.print_ascii(invert=True)
-    except Exception:
-        pass   # qrcode optional; the URL below is always printed
+    except ImportError:
+        print("(no QR code: the Python module qrcode is not installed — pip install qrcode)")
+    else:
+        try:
+            qr = qrcode.QRCode(border=1)
+            qr.add_data(url)
+            qr.make()
+            qr.print_ascii(invert=True)
+        except Exception:
+            pass   # the URL below is always printed
     print("\nApprove on your phone: %s\n" % url)
 
 

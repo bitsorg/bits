@@ -4,6 +4,7 @@
 
 from pathlib import Path
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -138,6 +139,16 @@ class TestPreapproveViaConsole(unittest.TestCase):
                                                 ["lcg"], self.BOMS)
         sign_console._check_console_url("http://localhost:8080", False)   # local is fine
         sign_console._check_console_url("http://tb:8080", True)           # explicit override
+
+
+class TestPrintQr(unittest.TestCase):
+    def test_says_why_there_is_no_qr_code(self):
+        with patch.dict("sys.modules", {"qrcode": None}), \
+             patch("sys.stdout", new_callable=io.StringIO) as out:
+            sign_console._print_qr("https://bits.example/approve?approve=r1")
+        self.assertIn("module qrcode is not installed", out.getvalue())
+        self.assertIn("Approve on your phone: https://bits.example/approve?approve=r1", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
