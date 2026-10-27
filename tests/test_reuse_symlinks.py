@@ -293,7 +293,7 @@ class DeploymentSelectionTest(unittest.TestCase):
                               build_local=[], require_signed_reuse=True)
         self.assertIsNone(select_symlink_package(self.spec, cfg, self.arch, trusted={}))
         self.assertIsNotNone(select_symlink_package(self.spec, cfg, self.arch, trusted=certified))
-        relaxed = SimpleNamespace(vars(cfg), symlink_policy="relaxed")
+        relaxed = SimpleNamespace(**dict(vars(cfg), symlink_policy="relaxed"))
         self.assertIsNotNone(select_symlink_package(self.spec, relaxed, self.arch, trusted={}))
         # The plan asks for the signed index and classifies as the build does.
         args = SimpleNamespace(defaults=["release"], architecture=self.arch)
