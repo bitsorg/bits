@@ -98,9 +98,11 @@ def describe(marker):
 
 
 def console_url(explicit=None, system=None):
-    """bits-console's URL: *explicit* (--console), $BITS_CONSOLE_URL, then the
-    defaults' ``system: console_url:``."""
-    return explicit or os.environ.get("BITS_CONSOLE_URL") or (system or {}).get("console_url")
+    """bits-console's URL: *explicit* (--console), $BITS_CONSOLE_URL, the
+    defaults' ``system: console_url:``, then the site's ``console.backend_url``."""
+    from bits_helpers import site
+    return (explicit or os.environ.get("BITS_CONSOLE_URL") or (system or {}).get("console_url")
+            or site.get("console.backend_url"))
 
 
 class Console:

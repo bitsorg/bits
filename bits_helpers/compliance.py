@@ -439,7 +439,8 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
         return 1
     if marker and console is None and not dry_run:
         error("--enforce: %s certifies this store: decertifying the restricted packages needs "
-              "the bits-console URL (--console, $BITS_CONSOLE_URL) and a GitLab token",
+              "the bits-console URL (--console, $BITS_CONSOLE_URL, the site's console.backend_url) "
+              "and a GitLab token",
               orchestrated.describe(marker))
         return 1
     groups = []

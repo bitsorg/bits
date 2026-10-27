@@ -423,6 +423,7 @@ class TestPublishFromManifest(unittest.TestCase):
              patch.object(publish, "_submit_certification_mr") as sub, \
              patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"), \
              patch("bits_helpers.sign_console.preapprove_via_console") as pre, \
+             patch("bits_helpers.site.get", return_value=None), \
              patch.dict("os.environ", {"BITS_CONSOLE_URL": ""}):
             with self.assertRaises(_Parser._Err):          # no group / manifests repo
                 publish.doCertify(self._certify_args(console="https://c"), _Parser())
@@ -431,6 +432,15 @@ class TestPublishFromManifest(unittest.TestCase):
                                                      manifestsRemote="ssh://h/g/p.git"), _Parser())
         pre.assert_not_called()
         sub.assert_not_called()
+
+    def test_the_console_url_defaults_to_the_site_s(self):
+        from bits_helpers import orchestrated
+        with patch.dict("os.environ", {"BITS_CONSOLE_URL": ""}):
+            self.assertEqual(orchestrated.console_url(), "https://bits.cern.ch")   # 10-CERN.yaml
+            self.assertEqual(orchestrated.console_url(system={"console_url": "https://c"}),
+                             "https://c")
+            with patch("bits_helpers.site.get", return_value=None):
+                self.assertIsNone(orchestrated.console_url())
 
     def test_certify_dry_run_touches_nothing(self):
         with patch.object(publish, "_publish_from_manifest", return_value=None), \

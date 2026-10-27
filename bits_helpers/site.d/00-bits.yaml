@@ -10,7 +10,7 @@ containers:
   tag: latest
   legacy_image:         # with BITS_LEGACY_REGISTRY, or without a registry; {distro} is filled in
 console:
-  backend_url:          # the console backend (bits trace)
+  backend_url:          # the console backend (bits trace, certify, compliance --enforce)
 providers:
   url: https://github.com/bitsorg/bits-providers
 sbom:

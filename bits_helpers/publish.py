@@ -674,7 +674,8 @@ def _preapprove_build(args, parser, build_id, bom, system, for_mr=True):
     console = orchestrated.console_url(getattr(args, "console", None), system)
     if not console:
         parser.error("certify: the passkey approval needs the bits-console URL — --console, "
-                     "$BITS_CONSOLE_URL or `system: console_url:` (or --approval none)")
+                     "$BITS_CONSOLE_URL, `system: console_url:` or a site configuration's "
+                     "console.backend_url (or --approval none)")
     preapprove_via_console(console, build_id, [args.certifyGroup], [d for _a, d in bom],
                            cafile=getattr(args, "consoleCafile", None),
                            insecure=getattr(args, "consoleInsecure", False))

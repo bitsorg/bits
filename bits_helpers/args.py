@@ -1141,7 +1141,8 @@ def add_certify_arguments(subparsers, ctx):
                  help=("passkey (default): wait for a passkey approval via bits-console before the MR. "
                        "none: open the MR only — for builds approved elsewhere (a console build; needs --certifier)."))
   p.add_argument("--console", dest="console", metavar="URL", default=None,
-                 help="bits-console URL for the approval (default: $BITS_CONSOLE_URL, then `system: console_url:`).")
+                 help=("bits-console URL for the approval (default: $BITS_CONSOLE_URL, `system: console_url:`, "
+                       "then the site's console.backend_url)."))
   p.add_argument("--console-cafile", dest="consoleCafile", metavar="PEM", default=None,
                  help="CA bundle for the console when it is not in this host's trust store (e.g. the CERN CA).")
   p.add_argument("--console-insecure", dest="consoleInsecure", action="store_true", default=False,
@@ -1317,7 +1318,8 @@ def add_compliance_arguments(subparsers, ctx):
                                        "Refused for a store whose manifests bits-orchestrator signs."))
   compliance_parser.add_argument("--console", dest="console", metavar="URL", default=None,
                                  help=("With --enforce, in a store bits-orchestrator certifies: the bits-console "
-                                       "to request the decertify actions from (default: $BITS_CONSOLE_URL)."))
+                                       "to request the decertify actions from (default: $BITS_CONSOLE_URL, then the "
+                                       "site's console.backend_url)."))
   compliance_parser.add_argument("--console-cafile", dest="consoleCafile", metavar="PEM", default=None,
                                  help="CA bundle for the console when it is not in this host's trust store.")
   compliance_parser.add_argument("--console-insecure", dest="consoleInsecure", action="store_true",
