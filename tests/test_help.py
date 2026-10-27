@@ -5,6 +5,7 @@
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -26,7 +27,10 @@ class HelpTest(unittest.TestCase):
     cls.tmp = tempfile.mkdtemp()
     stubs = os.path.join(cls.tmp, "stubs")
     os.makedirs(stubs)
-    os.symlink(sys.executable, os.path.join(stubs, "python3"))
+    # A wrapper, not a link: run by a link's path, a venv's Python does not find its venv.
+    with open(os.path.join(stubs, "python3"), "w") as f:
+      f.write('#!/bin/sh\nexec %s "$@"\n' % shlex.quote(sys.executable))
+    os.chmod(os.path.join(stubs, "python3"), 0o755)
     cls.env = {"HOME": cls.tmp, "PATH": stubs + ":/usr/bin:/bin"}
 
   @classmethod
