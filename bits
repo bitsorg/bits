@@ -1030,7 +1030,8 @@ if [[ -n "$_tree" ]]; then
   # bits q: the other build type of this arch, if published, is only noted.
   if [[ -z "$CVMFS_SLOT" && ( "$ACTION" == q || "$ACTION" == query ) && -n "$CVMFS_ARCH" ]]; then
     _b=${CVMFS_ARCH%-opt}; _b=${_b%-dbg}; _o=$_b-dbg; [[ "$CVMFS_ARCH" != *-dbg ]] || _o=$_b-opt
-    [[ ! -d "${_tree//"{arch}"/"$_o"}" ]] ||
+    _od=${_tree//"{arch}"/"$_o"}   # not inside "...": bash 3.2 keeps the quotes
+    [[ ! -d "$_od" ]] ||
       printf "${EY}NOTE: also published: %s (bits -a %s %s)${EZ}\n" "$_o" "$_o" "$ACTION" >&2
   fi
   # Retired modulefiles, as alienv --archive finds them: Modules/archive beside
@@ -1044,7 +1045,7 @@ if [[ -n "$_tree" ]]; then
     CVMFS_ARCHIVES+=("$_a")
   done
 fi
-unset _a _d _r _p _s _tree _layout
+unset _a _b _d _o _od _r _p _s _tree _layout
 IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
 # -q (which unsets VERBOSE) silences environment-modules' "Loading <pkg>" /
 # "Loading requirement:" progress lines so setenv/printenv/load/enter output can
