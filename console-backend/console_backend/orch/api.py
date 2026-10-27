@@ -23,6 +23,8 @@
     GET  /ops/sbom/packages?name=&version=&community=&limit=   the scanned builds that
                                        contain a package (2.9 covers 2.9.x), with findings
     GET  /ops/sbom/names?community=    the package names in them
+    GET  /ops/sbom/history?community=&days=   each release's open findings and risk
+                                       over time, and when its builds came out
     GET  /ops/sbom/vulnerabilities/{id}?community=&limit=   the builds it was found in
     GET  /ops/sbom/plan?community=     upgrade plans: per release line, and converged
                                        across those of the caller's communities
@@ -82,8 +84,8 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, kinds, outside, phases, reconcile, sbom_licences, sbom_plan, sbom_scan,
-               shadow, trace, vuln_triage)
+               failures, kinds, outside, phases, reconcile, sbom_history, sbom_licences, sbom_plan,
+               sbom_scan, shadow, trace, vuln_triage)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -624,6 +626,17 @@ async def sbom_names(request: Request, community: str = ""):
     mine = await _communities(data, community)
     out = await run_in_threadpool(_read, sbom_scan.names, communities=mine)
     return JSONResponse({"names": out}, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/sbom/history")
+async def sbom_risk_history(request: Request, community: str = "", days: int = 90):
+    """Each release's open findings and risk over the last *days* (0: all), of
+    the caller's communities: the Vulnerabilities page's chart."""
+    data = await _caller(request)
+    mine = await _communities(data, community)
+    out = await run_in_threadpool(_read, sbom_history.history, communities=mine,
+                                  days=max(0, min(int(days), 3660)))
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/ops/sbom/vulnerabilities/{vuln_id}")

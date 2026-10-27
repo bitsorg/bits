@@ -273,6 +273,13 @@ published to any signed-in user, with its findings only for the admins of its
 community; `GET /ops/sbom/scans`, `/ops/sbom/packages?name=`, `/ops/sbom/names`
 and `/ops/sbom/vulnerabilities/{id}` serve the admins' communities.
 
+**Risk over time** (`orch/sbom_history.py`): once a day the worker records each
+release's open findings by severity and their risk (grype's), from its newest
+scanned build; a release is a community's top-level package, whose compiler and
+build-type variants share their sources. A day with a build but no record
+(before the first record) gets that build's counts as they are when recorded. `GET /ops/sbom/history?community=&days=`
+serves it with today's point computed afresh (the Vulnerabilities page's chart).
+
 **Triage** (`orch/vuln_triage.py`): a community admin's rule says a
 vulnerability does not matter there, for one version of a package, every
 version, every package, or every vulnerability of a package (`vuln_id` `*`):

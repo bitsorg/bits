@@ -571,7 +571,7 @@ class WorkerStepsTest(_DB):
     def test_the_scan_step_follows_trace_when_a_scanner_is_set(self):
         w = worker.Worker(self.conn, config.Settings(env={"BITS_ORCH_SCANNER_URL": "http://s:8080"}))
         names = [n for n, _ in w.steps]
-        self.assertEqual(names[names.index("trace") + 1], "scan")
+        self.assertEqual(names[names.index("trace") + 1:names.index("trace") + 3], ["scan", "history"])
 
     def test_the_cvmfs_status_step_follows_index_when_asked_for(self):
         w = worker.Worker(self.conn, config.Settings(env={"BITS_ORCH_CVMFS_STATUS": "1"}))
@@ -720,6 +720,22 @@ class ApiTest(_DB):
             raise OSError("credentials proxy unavailable")
         with patch.object(api, "_store", down):
             self.assertEqual(self._get("dave", "/ops/builds/1/sbom?build=b-1").status_code, 503)
+
+    def test_risk_history_is_that_of_ones_communities(self):
+        from console_backend.orch import sbom_scan
+        for pid, bid in ((1, "b-1"), (2, "b-2")):
+            self.conn.execute(
+                "INSERT INTO builds (pipeline_id, build_id, community, recorded_ms) VALUES"
+                " (?, ?, (SELECT community FROM pipelines WHERE id = ?), 0)", (pid, bid, pid))
+            self.conn.execute("INSERT INTO sbom_scans (build_id, db_built, scanned_ms, index_version)"
+                              " VALUES (?, 'd', 1, ?)", (bid, sbom_scan.INDEX_VERSION))
+        self.conn.commit()
+        got = lambda u, q="": [r["community"] for r in self._get(u, "/ops/sbom/history" + q).json()["releases"]]
+        self.assertEqual(got("alice"), ["testbed"])
+        self.assertEqual(got("carol"), ["other", "testbed"])
+        self.assertEqual(got("carol", "?community=other&days=0"), ["other"])
+        self.assertEqual(got("dave"), [])
+        self.assertEqual(self.client.get("/ops/sbom/history").status_code, 401)
 
     def test_scans_are_those_of_ones_communities_and_their_findings_their_admins(self):
         from console_backend.orch import api, sbom_scan

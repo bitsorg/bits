@@ -513,6 +513,24 @@ MIGRATIONS = [
         "INSERT OR IGNORE INTO pipelines (id, is_build, name, outcome, first_seen_ms)"
         " VALUES (0, 0, 'built with the CLI', 'canceled', 0)",
     ],
+    # 19: each release's open findings and risk (risks: by severity), once a day
+    # (sbom_history.py): the Vulnerabilities page's risk over time.
+    [
+        """CREATE TABLE sbom_history (
+            day       TEXT NOT NULL,
+            community TEXT NOT NULL,
+            top       TEXT NOT NULL,
+            build_id  TEXT NOT NULL,
+            critical  INTEGER NOT NULL DEFAULT 0,
+            high      INTEGER NOT NULL DEFAULT 0,
+            medium    INTEGER NOT NULL DEFAULT 0,
+            low       INTEGER NOT NULL DEFAULT 0,
+            other     INTEGER NOT NULL DEFAULT 0,
+            risk      REAL NOT NULL DEFAULT 0,
+            risks     TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (day, community, top)
+        )""",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

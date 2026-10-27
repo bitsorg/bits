@@ -377,7 +377,7 @@ def _findings(conn, community, rules):
         return []
     cond, vals = _in("f.build_id", community)
     rows = conn.execute(
-        "SELECT f.build_id, f.vuln_id, f.ref, f.severity, p.name, p.alias, p.version,"
+        "SELECT f.build_id, f.vuln_id, f.ref, f.severity, f.risk, p.name, p.alias, p.version,"
         " p.not_shipped FROM sbom_findings f JOIN sbom_packages p ON p.build_id = f.build_id AND p.ref = f.ref"
         " WHERE " + cond, vals).fetchall()
     out = []

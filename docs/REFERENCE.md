@@ -1562,6 +1562,11 @@ first (the console's Vulnerabilities page). A package is checked only through
 its purl or CPE (the recipe field `references`, or the distribution's package for
 one taken from the system); each scan counts the components a scanner can
 identify, and a build with none is not scannable: its zero findings say nothing.
+`GET /ops/sbom/history?community=&days=` gives each release's open findings by
+severity and their risk over time: a release is a community's top-level package
+(its compiler and build-type variants share their sources), recorded once a day
+from its newest scanned build (earlier builds at their publish days, with their
+counts when recorded).
 
 A scan also indexes the SBOM, for the admins of the build's community:
 `GET /ops/sbom/packages?name=&version=` lists the scanned builds that contain a
