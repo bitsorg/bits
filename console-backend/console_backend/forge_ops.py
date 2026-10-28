@@ -189,6 +189,15 @@ class GitLabForge:
                                    "protected": False, "masked": False})
             raise
 
+    def ci_variable(self, key):
+        """A project CI/CD variable's value, or None when it is not set."""
+        try:
+            return str((self._get("/variables/%s" % self._seg(key)) or {}).get("value") or "")
+        except ForgeError as e:
+            if e.status == 404:
+                return None
+            raise
+
     def _get_all(self, path, per_page=100, max_pages=50):
         """Every page of a list endpoint (GitLab pages by `page`/`per_page`)."""
         sep = "&" if "?" in path else "?"

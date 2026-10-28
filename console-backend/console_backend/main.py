@@ -451,6 +451,27 @@ async def ops_admin_ci_var(request: Request):
     return {"status": "set"}
 
 
+@app.get("/ops/admin/ci-var")
+async def ops_admin_ci_var_read(request: Request, key: str = ""):
+    """An allowlisted variable's value (null: not set), for any admin."""
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    overall, groups = authz.admin_groups(data["user"], _resolved_policy(data["token"]))
+    if not overall and not groups:
+        raise HTTPException(403, "%s is not an admin" % data["user"])
+    if key not in _OPS_ADMIN_VARS:
+        raise HTTPException(400, "variable %r is not allowed" % key)
+    forge = forge_ops.GitLabForge.from_settings(settings)
+    if forge is None:
+        raise HTTPException(503, "ops backend not configured")
+    try:
+        value = await run_in_threadpool(forge.ci_variable, key)
+    except forge_ops.ForgeError as e:
+        raise HTTPException(502, "forge: %s" % e.message)
+    return {"key": key, "value": value}
+
+
 @app.post("/ops/admin/refresh")
 async def ops_admin_refresh(request: Request):
     """Trigger the builder-image refresh pipeline (REFRESH_IMAGES_JOB), optionally
