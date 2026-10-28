@@ -11,6 +11,7 @@ containers:
   legacy_image:         # with BITS_LEGACY_REGISTRY, or without a registry; {distro} is filled in
 console:
   backend_url:          # the console backend (bits trace, certify, compliance --enforce)
+  time_zone: UTC        # the instance's, for every community: nightly schedules, times shown
 providers:
   url: https://github.com/bitsorg/bits-providers
 sbom:

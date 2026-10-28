@@ -263,6 +263,12 @@ def grant_standing(conn, schedule, sha256, groups, approver, runs, days, asserti
     return cur.lastrowid
 
 
+def standing_in_force(conn, schedule, sha256):
+    """The active standing approval of this schedule content (public), or None."""
+    r = _active(conn, "standing", standing_subject(schedule, sha256))
+    return public(r) if r is not None else None
+
+
 def use_standing(conn, schedule, sha256, groups, run):
     """Take one run of the active standing approval for this schedule content,
     covering *groups*. Returns the approval row (before the run was taken), or

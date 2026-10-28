@@ -3547,6 +3547,7 @@ A file in a later directory replaces the one of the same name, so an empty `10-C
 | `providers.url` | The always-on providers repository (after `$BITS_PROVIDERS`). |
 | `sbom.namespace` | SPDX document namespace base. |
 | `console.backend_url` | The console backend: what `bits trace` asks (after `--backend`, `$BITS_BACKEND_URL`), and the console `bits certify` asks for approvals (after `--console`, `$BITS_CONSOLE_URL`, `system: console_url`) and `bits compliance --enforce` for decertifications (after `--console`, `$BITS_CONSOLE_URL`). |
+| `console.time_zone` | The bits instance's time zone, for every community it serves: the time of its nightly schedules, and the times the console and the app show (`UTC`; at CERN `Europe/Zurich`). |
 | `paths.work_dir`, `paths.gitlab_token_file`, `paths.s3_keys_file` | Defaults after `$BITS_WORK_DIR`, the token and S3 key file variables. |
 
 Outside CERN, mask CERN's file and give your own, e.g. an empty `/etc/bits/site.d/10-CERN.yaml` and a `/etc/bits/site.d/10-mylab.yaml` with your stores and console. The order in which a value is looked for, from the command line down to these files, is in [USERGUIDE — Where defaults come from](USERGUIDE.md#where-defaults-come-from).

@@ -21,3 +21,4 @@ sbom:
   namespace: https://bits.cern.ch/sbom
 console:
   backend_url: https://bits.cern.ch
+  time_zone: Europe/Zurich

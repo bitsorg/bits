@@ -62,6 +62,13 @@
     GET  /ops/queue?community=&limit=  queued builds and those started in the last day
                                        (as /ops/builds), with the build hosts for admins
     POST /ops/queue/{id}/cancel        take a build that has not started out of the queue
+    GET  /ops/schedules?community=     the nightly schedules (any signed-in user, of the
+                                       community named; the approval in force: admins)
+    POST /ops/schedules                {community, name, package, platforms[], days, time,
+                                       ...}: by an admin of the community (schedules.check)
+    PUT  /ops/schedules/{id}           the same fields and the revision it changes
+    DELETE /ops/schedules/{id}
+    POST /ops/schedules/{id}/pause, /resume
     POST /approvals/standing/request   {schedule, sha256, groups[], runs, days}: a passkey
                                        challenge bound to them
     POST /approvals/standing/approve   {request_id, assertion}
@@ -79,6 +86,7 @@ import json
 import logging
 import re
 import secrets
+import sqlite3
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -87,7 +95,7 @@ from starlette.concurrency import run_in_threadpool
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
                failures, kinds, outside, phases, reconcile, sbom_history, sbom_licences, sbom_plan,
-               sbom_scan, shadow, trace, vuln_triage)
+               sbom_scan, schedules, shadow, trace, vuln_triage)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -1076,6 +1084,136 @@ _SCHEDULE_RE = re.compile(r"communities/[A-Za-z0-9._-]+/pipelines/[A-Za-z0-9._-]
 def _admin_of_all(data, groups):
     resolved = _policy(data)
     return all(authz.is_admin_for(data["user"], g, resolved) for g in groups)
+
+
+# --- nightly schedules ------------------------------------------------------------
+
+def _schedule_out(conn, s, admin, tz, now):
+    """A schedule as the API shows it: its next run, and for admins the approval in force."""
+    out = {k: v for k, v in s.items() if k != "deleted_ms"}
+    out["next_run_ms"] = schedules.next_run_ms(s, now, tz) if s["enabled"] else None
+    if admin and s["certify"]:
+        out["approval"] = approvals.standing_in_force(conn, "schedule:%d" % s["id"],
+                                                      s["content_sha256"])
+    return out
+
+
+def _tz():
+    try:
+        return schedules.time_zone()
+    except schedules.Invalid as e:
+        raise HTTPException(503, str(e))
+
+
+@router.get("/ops/schedules")
+async def list_schedules(request: Request, community: str = ""):
+    """The schedules (see _reads), with their next run in the instance's time zone."""
+    data = await _caller(request)
+    mine, admin = _reads(await _scope(data), community)
+    tz = _tz()
+
+    def read():
+        with _open() as conn:
+            now = db.now_ms()
+            return [_schedule_out(conn, s, admin, tz, now) for s in schedules.listing(conn, mine)]
+    return JSONResponse({"time_zone": tz.key, "schedules": await run_in_threadpool(read)},
+                        headers={"Cache-Control": "no-store"})
+
+
+async def _schedule_admin(data, sid):
+    """The schedule *sid*, or 404; 403 unless the caller administers its community."""
+    s = await run_in_threadpool(_read, schedules.get, sid)
+    if s is None:
+        raise HTTPException(404, "no such schedule")
+    if not await run_in_threadpool(_may_act, data, s["community"]):
+        raise HTTPException(403, "not an admin of community %r" % s["community"])
+    return s
+
+
+async def _schedule_write(fn, *args):
+    """*fn(conn, *args)*'s schedule as the API shows it (None: there is none);
+    a delete's True or False as it is."""
+    tz = _tz()
+
+    def write():
+        with _open() as conn:
+            s = fn(conn, *args)
+            return s if s is None or isinstance(s, bool) else \
+                _schedule_out(conn, s, True, tz, db.now_ms())
+    try:
+        return await run_in_threadpool(write)
+    except schedules.Invalid as e:
+        raise HTTPException(400, str(e))
+    except schedules.Conflict as e:
+        raise HTTPException(409, str(e))
+    except sqlite3.IntegrityError:                 # the same name, by a change just before
+        raise HTTPException(409, "the community has a schedule of that name already")
+
+
+async def _certify_groups(data, s):
+    """403 unless the caller administers every group the schedule certifies for."""
+    if s["certify"] and not await run_in_threadpool(_admin_of_all, data, s["certify_groups"]):
+        raise HTTPException(403, "not an admin of every group it certifies for: %s"
+                            % ", ".join(s["certify_groups"]))
+
+
+@router.post("/ops/schedules")
+async def create_schedule(request: Request):
+    data = await _caller(request)
+    p = await _body(request)
+    community = str(p.get("community") or "").strip().lower()
+    if not community or not await run_in_threadpool(_may_act, data, community):
+        raise HTTPException(403, "not an admin of community %r" % community)
+    try:
+        s = schedules.check(p, str(p.get("community")))      # its directory name as given
+    except schedules.Invalid as e:
+        raise HTTPException(400, str(e))
+    await _certify_groups(data, s)
+    out = await _schedule_write(schedules.create, s, data["user"])
+    audit.record("schedule_created", user=data["user"], community=community, schedule=out["id"])
+    return out
+
+
+@router.put("/ops/schedules/{sid}")
+async def update_schedule(sid: int, request: Request):
+    data = await _caller(request)
+    old = await _schedule_admin(data, sid)
+    p = await _body(request)
+    try:
+        s = schedules.check(p, old["community"])
+    except schedules.Invalid as e:
+        raise HTTPException(400, str(e))
+    await _certify_groups(data, s)
+    out = await _schedule_write(schedules.update, sid, s, data["user"], p.get("revision"))
+    if out is None:
+        raise HTTPException(404, "no such schedule")
+    audit.record("schedule_updated", user=data["user"], community=old["community"], schedule=sid)
+    return out
+
+
+@router.delete("/ops/schedules/{sid}")
+async def delete_schedule(sid: int, request: Request):
+    data = await _caller(request)
+    old = await _schedule_admin(data, sid)
+    if not await _schedule_write(schedules.delete, sid, data["user"]):
+        raise HTTPException(404, "no such schedule")
+    audit.record("schedule_deleted", user=data["user"], community=old["community"], schedule=sid)
+    return {"deleted": sid}
+
+
+@router.post("/ops/schedules/{sid}/{what}")
+async def pause_schedule(sid: int, what: str, request: Request):
+    if what not in ("pause", "resume"):
+        raise HTTPException(404, "not found")
+    data = await _caller(request)
+    old = await _schedule_admin(data, sid)
+    out = await _schedule_write(schedules.set_enabled, sid, what == "resume", data["user"])
+    if out is None:
+        raise HTTPException(404, "no such schedule")
+    if out["enabled"] != old["enabled"]:
+            audit.record("schedule_" + ("resumed" if what == "resume" else "paused"), user=data["user"],
+                     community=old["community"], schedule=sid)
+    return out
 
 
 @router.post("/approvals/standing/request")
