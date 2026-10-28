@@ -79,7 +79,7 @@ class VariablesTest(unittest.TestCase):
         self.assertEqual((v["CERTIFY"], v["BITS_CERTIFIER"]), ("true", "alice"))
 
 
-class StepTest(unittest.TestCase):
+class _Nights(unittest.TestCase):
     def setUp(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
@@ -105,6 +105,9 @@ class StepTest(unittest.TestCase):
         return [(r["night"], r["platform"], r["attempt"], r["state"], r["reason"]) for r in self.conn.execute(
             "SELECT * FROM schedule_runs ORDER BY night, platform, attempt")]
 
+
+
+class StepTest(_Nights):
     def test_a_schedule_fires_once_at_its_time(self):
         s = self._schedule(_ms(2026, 10, 27, 12, 0))
         self.assertEqual(nl.step(self.conn, self.reader, "main", UTC, now=_ms(2026, 10, 28, 1, 59)), 0)
@@ -112,9 +115,10 @@ class StepTest(unittest.TestCase):
         self.assertEqual(nl.step(self.conn, self.reader, "main", UTC, now=_ms(2026, 10, 28, 2, 5)), 0)
         self.assertEqual(self._runs(), [("2026-10-28", "aarch64-el9", 1, "queued", ""),
                                         ("2026-10-28", "x86_64-el9", 1, "queued", "")])
-        q = [(r["requested_by"], r["batch"], r["community"], _vars(json.loads(r["variables"]))["PLATFORM"])
+        q = [(r["requested_by"], r["batch"].rsplit(":", 1)[0], r["community"],
+              _vars(json.loads(r["variables"]))["PLATFORM"])
              for r in self.conn.execute("SELECT * FROM build_queue ORDER BY id")]
-        self.assertEqual(q, [("schedule:%d" % s["id"], "schedule:%d:2026-10-28:1" % s["id"], "lcg", p)
+        self.assertEqual(q, [("schedule:%d" % s["id"], "schedule:%d:2026-10-28" % s["id"], "lcg", p)
                              for p in ("aarch64-el9", "x86_64-el9")])
         self.assertIn(("communities/LCG/ui-config.yaml", "main"), self.reader.read)
 
@@ -216,6 +220,92 @@ class StepTest(unittest.TestCase):
         self.assertEqual({r["reason"] for r in self.conn.execute(
             "SELECT reason FROM schedule_runs WHERE schedule_id = ? AND night = '2026-10-30'", (s["id"],))},
             {"built, not certified: no standing approval"})
+
+
+class ResultsTest(_Nights):
+    def _pipeline(self, pid, outcome):
+        with db.transaction(self.conn):
+            self.conn.execute("INSERT OR REPLACE INTO pipelines (id, is_build, outcome, variables, jobs,"
+                              " first_seen_ms) VALUES (?, 1, ?, '{}', '[]', 0)", (pid, outcome))
+
+    def _start(self, entry, pid):
+        with db.transaction(self.conn):
+            self.conn.execute("UPDATE build_queue SET state = 'dispatched', pipeline_id = ? WHERE id = ?",
+                              (pid, entry))
+
+    def _fired(self):
+        s = self._schedule(_ms(2026, 10, 27, 12, 0))
+        nl.step(self.conn, self.reader, "main", UTC, now=_ms(2026, 10, 28, 2, 1))
+        return s, [r["queue_entry"] for r in self.conn.execute(
+            "SELECT queue_entry FROM schedule_runs ORDER BY platform")]      # aarch64, x86_64
+
+    def test_a_run_follows_its_pipeline(self):
+        s, (arm, x86) = self._fired()
+        self._start(arm, 500)
+        nl.results(self.conn, now=_ms(2026, 10, 28, 3, 0))
+        self.assertEqual([r[3] for r in self._runs()], ["queued", "queued"])       # not recorded yet
+        self._pipeline(500, "running")
+        nl.results(self.conn, now=_ms(2026, 10, 28, 3, 0))
+        self.assertEqual([r[3] for r in self._runs()], ["running", "queued"])
+        self._pipeline(500, "failed")
+        with db.transaction(self.conn):
+            self.conn.execute("INSERT INTO issues (fingerprint, package, title, excerpt, first_seen, last_seen,"
+                              " created_ms) VALUES ('f', 'tiff', 't', 'e', '', '', 0)")
+            self.conn.execute("INSERT INTO failures (job_id, pipeline_id, package, job_name, excerpt, source,"
+                              " fingerprint, issue_id, recorded_ms) VALUES (1, 500, 'tiff', 'build', 'e', 'log',"
+                              " 'f', 1, 0)")
+        nl.results(self.conn, now=_ms(2026, 10, 28, 4, 0))
+        r = self.conn.execute("SELECT * FROM schedule_runs WHERE queue_entry = ?", (arm,)).fetchone()
+        self.assertEqual((r["state"], r["failed_at"], r["pipeline_id"]), ("failed", "tiff (build)", 500))
+        self._pipeline(500, "success")                                            # retried in GitLab
+        with db.transaction(self.conn):
+            self.conn.execute("INSERT INTO builds (pipeline_id, build_id, community, recorded_ms)"
+                              " VALUES (500, 'b-1', 'lcg', 0)")
+        nl.results(self.conn, now=_ms(2026, 10, 28, 6, 0))
+        r = self.conn.execute("SELECT * FROM schedule_runs WHERE queue_entry = ?", (arm,)).fetchone()
+        self.assertEqual((r["state"], r["build_id"], r["failed_at"]), ("passed", "b-1", ""))
+        self.assertEqual(bq.get(self.conn, x86)["state"], "queued")
+        nl.results(self.conn, now=_ms(2026, 10, 28, 15, 0))                       # 13 h without a host
+        self.assertEqual(bq.get(self.conn, x86)["state"], "canceled")
+        self.assertEqual(self._runs()[1][3:], ("not_run", "no free build host for 12 hours"))
+        ev = self.conn.execute("SELECT kind, payload FROM events ORDER BY seq DESC LIMIT 1").fetchone()
+        self.assertEqual((ev["kind"], json.loads(ev["payload"])["entry"]), ("queue.canceled", x86))
+
+    def test_a_canceled_build_is_not_run_and_frees_its_platform(self):
+        s, (arm, x86) = self._fired()
+        bq.cancel(self.conn, arm, "alice")
+        nl.results(self.conn, now=_ms(2026, 10, 28, 3, 0))
+        self.assertEqual(self._runs()[0][3], "not_run")
+        nl.step(self.conn, self.reader, "main", UTC, now=_ms(2026, 10, 29, 2, 1))
+        self.assertEqual([r[1::2] for r in self._runs()[2:]], [("aarch64-el9", "queued"), ("x86_64-el9", "skipped")])
+
+    def test_run_now_and_the_matrix(self):
+        s, (arm, x86) = self._fired()
+        self._start(arm, 500)
+        self._pipeline(500, "failed")
+        nl.results(self.conn, now=_ms(2026, 10, 28, 3, 0))
+        with self.assertRaises(sch.Invalid):
+            with db.transaction(self.conn):
+                nl.run_now(self.conn, s["id"], ["sparc"], nl.config(self.reader, "LCG", "main"), "main", UTC,
+                           "alice", now=_ms(2026, 10, 28, 9, 0))
+        with db.transaction(self.conn):                                           # Run again: the failed one
+            got = nl.run_now(self.conn, s["id"], ["aarch64-el9"], nl.config(self.reader, "LCG", "main"), "main",
+                             UTC, "alice", now=_ms(2026, 10, 28, 9, 0))
+        self.assertEqual(got, {"aarch64-el9": "queued"})
+        with db.transaction(self.conn):                                           # still waiting: nothing
+            got = nl.run_now(self.conn, s["id"], [], nl.config(self.reader, "LCG", "main"), "main",
+                             UTC, "alice", now=_ms(2026, 10, 28, 9, 5))
+        self.assertEqual(got, {"aarch64-el9": "skipped", "x86_64-el9": "skipped"})
+        with self.assertRaises(sch.Invalid):
+            with db.transaction(self.conn):
+                nl.run_now(self.conn, s["id"], ["aarch64-el9"] * 2, {}, "main", UTC, "alice")
+        m = nl.matrix(self.conn, {"lcg"}, 3, UTC, now=_ms(2026, 10, 28, 9, 0))
+        self.assertEqual(m["nights"], ["2026-10-26", "2026-10-27", "2026-10-28"])
+        (row,) = m["rows"]
+        self.assertEqual({p: (c["2026-10-28"]["state"], c["2026-10-28"]["attempt"]) for p, c in row["cells"].items()},
+                         {"aarch64-el9": ("queued", 2), "x86_64-el9": ("queued", 1)})
+        self.assertEqual(row["failed"]["2026-10-28"], 0)                         # its latest attempt
+        self.assertEqual(nl.matrix(self.conn, set(), 3, UTC)["rows"], [])
 
 
 if __name__ == "__main__":

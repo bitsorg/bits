@@ -312,7 +312,15 @@ schedule's builds certify as the approver of its standing approval in force (its
 pipeline's pre-approval takes one run when it starts); without one they build and
 certify nothing ("built, not certified: no standing approval").
 `/approvals/standing/request` takes `schedule:<id>` with the schedule's
-`content_sha256` and `certify_groups` as they are now.
+`content_sha256` and `certify_groups` as they are now. The `nightly_results` step
+keeps each run up to date from its queued build and pipeline: `running`, `passed`,
+`failed` (where: the failed job's package and job), `not_run` (canceled, refused,
+or no free build host 12 hours after it fired: then taken out of the queue); a
+failed run's pipeline is looked at again for 3 days (a retry in GitLab).
+`GET /ops/nightlies?community=&nights=` is the matrix (a row per schedule, a cell
+per platform and night, its latest attempt; to whom `/ops/builds` shows builds);
+`POST /ops/schedules/{id}/run {platforms?}`, by its community's admins, is Run now
+(every platform) or Run again (some), today's night, each platform's next attempt.
 
 **Triage** (`orch/vuln_triage.py`): a community admin's rule says a
 vulnerability does not matter there, for one version of a package, every

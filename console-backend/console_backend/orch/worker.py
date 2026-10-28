@@ -87,6 +87,9 @@ class Worker:
             self.steps.insert(at, ("dispatch", self._dispatch))
             # The nightly schedules that are due queue their builds, for this dispatch.
             self.steps.insert(at, ("schedules", self._schedules))
+            # What became of their runs, once pipelines and failures are recorded.
+            at = [n for n, _ in self.steps].index("collect") + 1
+            self.steps.insert(at, ("nightly_results", lambda: nightlies.results(self.conn)))
         if settings.orch_scanner_url:
             # The published builds' SBOMs against the scanner's vulnerability database.
             at = [n for n, _ in self.steps].index("trace") + 1

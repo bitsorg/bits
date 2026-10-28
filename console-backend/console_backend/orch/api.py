@@ -69,6 +69,9 @@
     PUT  /ops/schedules/{id}           the same fields and the revision it changes
     DELETE /ops/schedules/{id}
     POST /ops/schedules/{id}/pause, /resume
+    POST /ops/schedules/{id}/run       {platforms?[]}: Run now (all) or Run again (some),
+                                       today's night, each platform's next attempt
+    GET  /ops/nightlies?community=&nights=   the nightly matrix (as /ops/builds)
     POST /approvals/standing/request   {schedule, sha256, groups[], runs, days}: a passkey
                                        challenge bound to them
     POST /approvals/standing/approve   {request_id, assertion}
@@ -95,7 +98,7 @@ from starlette.concurrency import run_in_threadpool
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
                failures, kinds, outside, phases, reconcile, sbom_history, sbom_licences, sbom_plan,
-               sbom_scan, schedules, shadow, trace, vuln_triage)
+               nightlies, sbom_scan, schedules, shadow, trace, vuln_triage)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -1200,6 +1203,52 @@ async def delete_schedule(sid: int, request: Request):
         raise HTTPException(404, "no such schedule")
     audit.record("schedule_deleted", user=data["user"], community=old["community"], schedule=sid)
     return {"deleted": sid}
+
+
+@router.post("/ops/schedules/{sid}/run")
+async def run_schedule(sid: int, request: Request):
+    """Run now, by an admin of its community: the builds take the queue's turn."""
+    data = await _caller(request)
+    old = await _schedule_admin(data, sid)
+    p = await _body(request)
+    plats = p.get("platforms") or []
+    if not isinstance(plats, list) or not all(isinstance(x, str) for x in plats):
+        raise HTTPException(400, "platforms: a list of the schedule's platforms")
+    _queue_on()
+    tz, m = _tz(), _m()
+    refs = m.settings.forge_refs
+    ref = "main" if "main" in refs else sorted(refs)[0]
+    try:
+        cfg = await run_in_threadpool(lambda: nightlies.config(kinds.Deps(m.settings).reader(),
+                                                               old["community_dir"], ref))
+    except nightlies.Unbuildable as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:
+        raise HTTPException(503, "the console's configuration cannot be read: %s" % e)
+
+    def write():
+        with _open() as conn:
+            with db.transaction(conn):
+                return nightlies.run_now(conn, sid, plats, cfg, ref, tz, data["user"])
+    try:
+        states = await run_in_threadpool(write)
+    except schedules.Invalid as e:
+        raise HTTPException(400, str(e))
+    if states is None:
+        raise HTTPException(404, "no such schedule")
+    audit.record("schedule_run", user=data["user"], community=old["community"], schedule=sid,
+                 platforms=sorted(states))
+    return {"runs": states}
+
+
+@router.get("/ops/nightlies")
+async def nightly_matrix(request: Request, community: str = "", nights: int = 7):
+    """The nightly matrix (see _reads): a row per schedule, a cell per platform and night."""
+    data = await _caller(request)
+    mine, _ = _reads(await _scope(data), community)
+    tz = _tz()
+    out = await run_in_threadpool(_read, nightlies.matrix, mine, max(1, min(int(nights), 31)), tz)
+    return JSONResponse(dict(out, time_zone=tz.key), headers={"Cache-Control": "no-store"})
 
 
 @router.post("/ops/schedules/{sid}/{what}")

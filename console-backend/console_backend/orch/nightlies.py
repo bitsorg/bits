@@ -13,9 +13,11 @@ A certifying schedule's builds certify under its standing approval in force
 (schedule:<id>@<content_sha256>); without one they build and certify nothing.
 """
 
+import datetime as dt
 import json
 import logging
 import re
+import secrets
 
 import yaml
 
@@ -138,8 +140,8 @@ def config(reader, community_dir, ref):
 
 # --- runs --------------------------------------------------------------------------
 
-def _run(conn, s, night, platform, attempt, state, reason="", entry=None):
-    now = db.now_ms()
+def _run(conn, s, night, platform, attempt, state, reason="", entry=None, now=None):
+    now = now or db.now_ms()
     conn.execute("INSERT INTO schedule_runs (schedule_id, night, platform, attempt, state,"
                  " content_sha256, queue_entry, reason, created_ms, updated_ms)"
                  " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -165,12 +167,15 @@ def _certifier(conn, s, n):
     a = approvals.standing_in_force(conn, subject(s["id"]), s["content_sha256"])
     if not a or not set(s["certify_groups"]) <= set(a["groups"]):
         return None, "built, not certified: no standing approval"
-    if a["runs_left"] < n:                      # each build's pre-approval takes a run
+    # Each build's pre-approval takes a run when it starts: those still waiting count.
+    waiting = conn.execute("SELECT COUNT(*) AS n FROM build_queue WHERE requested_by = ? AND certify = 1"
+                           " AND state IN ('queued', 'dispatching')", (subject(s["id"]),)).fetchone()["n"]
+    if a["runs_left"] - waiting < n:
         return None, "built, not certified: the standing approval has %d runs left" % a["runs_left"]
     return a["approver"], ""
 
 
-def fire_night(conn, s, night, platforms, cfg, ref, why):
+def fire_night(conn, s, night, platforms, cfg, ref, why, now=None):
     """Within the caller's transaction: queue *night*'s builds of *platforms*
     (a platform still waiting or building skips it, one that cannot be built is
     not run). Returns the runs' states."""
@@ -178,13 +183,14 @@ def fire_night(conn, s, night, platforms, cfg, ref, why):
     for p in platforms:
         attempt = _attempt(conn, s["id"], night, p)
         if _still_open(conn, s["id"], p):
-            _run(conn, s, night, p, attempt, "skipped", "the previous night still runs")
+            if why == "scheduled":                 # Run now records nothing: its run still goes on
+                _run(conn, s, night, p, attempt, "skipped", "the previous night still runs", now=now)
             states[p] = "skipped"
             continue
         try:
             resolve_platform(p, cfg["platforms"], cfg["community"])
         except Unbuildable as e:
-            _run(conn, s, night, p, attempt, "not_run", str(e))
+            _run(conn, s, night, p, attempt, "not_run", str(e), now=now)
             states[p] = "not_run"
             continue
         go.append((p, attempt))
@@ -193,21 +199,38 @@ def fire_night(conn, s, night, platforms, cfg, ref, why):
         builds = [("%s%s (%s)" % (s["package"], " " + s["version"] if s["version"] else "", p),
                    variables(s, p, cfg, certifier)) for p, _a in go]
         batch, ids = build_queue.add_in(conn, s["community"], subject(s["id"]), ref, builds,
-                                        events.WORKER, batch="%s:%s:%d" % (subject(s["id"]), night,
-                                                                           go[0][1]))
+                                        events.WORKER, batch="%s:%s:%s" % (subject(s["id"]), night,
+                                                                           secrets.token_hex(4)))
         for (p, attempt), entry in zip(go, ids):
-            _run(conn, s, night, p, attempt, "queued", note, entry)
+            _run(conn, s, night, p, attempt, "queued", note, entry, now=now)
             states[p] = "queued"
     events.append(conn, "schedule.fired", subject(s["id"]), events.WORKER,
                   {"night": night, "why": why, "runs": states, "certifier": certifier})
     return states
 
 
-def _not_run(conn, s, night, reason):
+def _not_run(conn, s, night, reason, now=None):
     for p in s["platforms"]:
-        _run(conn, s, night, p, _attempt(conn, s["id"], night, p), "not_run", reason)
+        _run(conn, s, night, p, _attempt(conn, s["id"], night, p), "not_run", reason, now=now)
     events.append(conn, "schedule.not_run", subject(s["id"]), events.WORKER,
                   {"night": night, "reason": reason})
+
+
+def run_now(conn, sid, platforms, cfg, ref, tz, user, now=None):
+    """Within the caller's transaction: Run now (all platforms) or Run again (some):
+    today's night, each platform's next attempt. The states, or None when the
+    schedule is not there."""
+    s = schedules.get(conn, sid)
+    if s is None:
+        return None
+    now = now or db.now_ms()
+    night = dt.datetime.fromtimestamp(now / 1000, tz).date().isoformat()
+    unknown = set(platforms or []) - set(s["platforms"])
+    if len(set(platforms or [])) != len(platforms or []):
+        raise schedules.Invalid("platforms: each once")
+    if unknown:
+        raise schedules.Invalid("platforms: not the schedule's: %s" % ", ".join(sorted(unknown)))
+    return fire_night(conn, s, night, platforms or s["platforms"], cfg, ref, "run now by %s" % user, now)
 
 
 def due(conn, now, tz):
@@ -246,17 +269,107 @@ def step(conn, reader, ref, tz, now=None):
                     or fresh["content_sha256"] != s["content_sha256"]:
                 continue                                    # changed meanwhile: the next pass
             for n, _ms in occ[-15:-1]:                    # the last two weeks' at most
-                _not_run(conn, s, n, "the orchestrator was not running")
+                _not_run(conn, s, n, "the orchestrator was not running", now)
             if late:
                 _not_run(conn, s, night, "not fired in time: the orchestrator was not running,"
-                                         " or the console's configuration could not be read")
+                                         " or the console's configuration could not be read", now)
             elif isinstance(cfg, Unbuildable):
-                _not_run(conn, s, night, str(cfg))
+                _not_run(conn, s, night, str(cfg), now)
             else:
-                fire_night(conn, s, night, s["platforms"], cfg, ref, "scheduled")
+                fire_night(conn, s, night, s["platforms"], cfg, ref, "scheduled", now)
                 fired += 1
             conn.execute("UPDATE schedules SET last_fired_ms = ? WHERE id = ?", (now, s["id"]))
     if unread:
         raise RuntimeError("the console's configuration could not be read for schedules %s"
                            % ", ".join(map(str, unread)))
     return fired
+
+
+# --- what became of them -----------------------------------------------------
+
+NO_HOST_MS = 12 * 3600 * 1000      # still waiting for a host this long after it fired: not run
+RETRIED_MS = 3 * 86400 * 1000      # a failed run's pipeline looked at again (retried in GitLab)
+
+
+def _outcome(conn, pid):
+    """(state, build_id, failed_at) of a run's pipeline, or None while not recorded."""
+    p = conn.execute("SELECT outcome FROM pipelines WHERE id = ? AND is_build = 1", (pid,)).fetchone()
+    if p is None:
+        return None
+    b = conn.execute("SELECT build_id FROM builds WHERE pipeline_id = ? ORDER BY build_id LIMIT 1",
+                     (pid,)).fetchone()
+    f = conn.execute("SELECT package, job_name FROM failures WHERE pipeline_id = ? ORDER BY id LIMIT 1",
+                     (pid,)).fetchone()
+    state = {"running": "running", "success": "passed", "failed": "failed",
+             "canceled": "not_run"}.get(p["outcome"], "running")
+    where = "%s (%s)" % (f["package"], f["job_name"]) if f and state == "failed" else ""
+    return state, b["build_id"] if b else "", where
+
+
+def results(conn, now=None):
+    """The worker step: each open run (and a recently failed one) from its queued
+    build and its pipeline; one waiting NO_HOST_MS is taken out of the queue."""
+    now = now or db.now_ms()
+    rows = conn.execute(
+        "SELECT r.*, q.state AS q_state, q.reason AS q_reason, q.pipeline_id AS q_pipeline"
+        " FROM schedule_runs r LEFT JOIN build_queue q ON q.id = r.queue_entry"
+        " WHERE r.state IN ('queued', 'running') OR (r.state = 'failed' AND r.created_ms > ?)",
+        (now - RETRIED_MS,)).fetchall()
+    for r in rows:
+        new = dict(state=r["state"], reason=r["reason"], pipeline_id=r["pipeline_id"],
+                   build_id=r["build_id"], failed_at=r["failed_at"])
+        cancel = False
+        if r["q_state"] is None:
+            new.update(state="not_run", reason="its queued build is gone")
+        elif r["q_state"] == "canceled":
+            new.update(state="not_run", reason=r["q_reason"] or "canceled")
+        elif r["q_state"] == "refused":
+            new.update(state="not_run", reason=r["q_reason"] or "refused by the queue")
+        elif r["q_state"] == "queued" and now - r["created_ms"] > NO_HOST_MS:
+            new.update(state="not_run", reason="no free build host for 12 hours")
+            cancel = True
+        elif r["q_pipeline"] is not None:
+            got = _outcome(conn, r["q_pipeline"])
+            if got is not None:
+                new.update(state=got[0], build_id=got[1], failed_at=got[2], pipeline_id=r["q_pipeline"],
+                           reason=r["reason"] if got[0] != "not_run" else "the pipeline was canceled")
+        if new == {k: r[k] for k in new}:
+            continue
+        with db.transaction(conn):
+            if cancel:
+                if conn.execute("UPDATE build_queue SET state = 'canceled', reason = ?, updated_ms = ?"
+                                " WHERE id = ? AND state = 'queued'",
+                                (new["reason"], now, r["queue_entry"])).rowcount != 1:
+                    continue                                # it started meanwhile
+                q = build_queue.get(conn, r["queue_entry"])
+                events.append(conn, "queue.canceled", "queue:%s" % q["batch"], events.WORKER,
+                              {"entry": q["id"], "reason": new["reason"]})
+            conn.execute("UPDATE schedule_runs SET state = ?, reason = ?, pipeline_id = ?, build_id = ?,"
+                         " failed_at = ?, updated_ms = ? WHERE id = ?",
+                         (new["state"], new["reason"][:500], new["pipeline_id"], new["build_id"],
+                          new["failed_at"], now, r["id"]))
+
+
+# --- the matrix --------------------------------------------------------------------
+
+def matrix(conn, communities, nights, tz, now=None):
+    """The nightly matrix of *communities* (lowercase; None = all) over the last
+    *nights* nights: one row per schedule, a cell per platform and night, its
+    latest attempt."""
+    now = now or db.now_ms()
+    today = dt.datetime.fromtimestamp(now / 1000, tz).date()
+    days = [(today - dt.timedelta(days=i)).isoformat() for i in range(nights - 1, -1, -1)]
+    rows = []
+    for s in schedules.listing(conn, communities):
+        cells = {}
+        for r in conn.execute(
+                "SELECT * FROM schedule_runs WHERE schedule_id = ? AND night >= ? ORDER BY attempt",
+                (s["id"], days[0])):
+            cells.setdefault(r["platform"], {})[r["night"]] = {
+                k: r[k] for k in ("state", "attempt", "reason", "failed_at", "pipeline_id", "build_id")}
+        rows.append({"schedule": {k: s[k] for k in ("id", "name", "package", "version", "defaults",
+                                                    "platforms", "enabled", "time", "days")},
+                     "cells": cells,
+                     "failed": {n: sum(1 for p in cells.values() if p.get(n, {}).get("state") == "failed")
+                                for n in days}})
+    return {"nights": days, "rows": rows}

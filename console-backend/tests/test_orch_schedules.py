@@ -147,6 +147,17 @@ class ApiTest(unittest.TestCase):
                                                             "Access-Control-Request-Method": "PUT"})
         self.assertIn("PUT", r.headers["Access-Control-Allow-Methods"])
 
+    def test_the_matrix_for_anyone_and_run_now_for_admins(self):
+        s = self._do("POST", "alice", "/ops/schedules", dict(_p(), community="LCG")).json()
+        m = self._do("GET", "dave", "/ops/nightlies?community=lcg&nights=3").json()
+        self.assertEqual((len(m["nights"]), [r["schedule"]["id"] for r in m["rows"]], m["time_zone"]),
+                         (3, [s["id"]], "Europe/Zurich"))
+        self.assertEqual(self._do("GET", "dave", "/ops/nightlies").json()["rows"], [])
+        u = "/ops/schedules/%d/run" % s["id"]
+        self.assertEqual(self._do("POST", "bob", u, {}).status_code, 403)
+        self.assertEqual(self._do("POST", "alice", u, {}).status_code, 503)      # the queue is off
+        self.assertEqual(self._do("POST", "alice", u, {"platforms": "x"}).status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()
