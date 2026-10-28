@@ -49,11 +49,13 @@ build hash so that upgrading a provider triggers a rebuild of all packages
 sourced from it.
 """
 
+import fcntl
 import glob
 import os
 import re
 import shutil
 from collections import OrderedDict
+from contextlib import contextmanager
 from os.path import join, exists, abspath
 from typing import Optional
 
@@ -369,53 +371,75 @@ def clone_or_update_provider(
 
     checkout_dir = join(cache_root, short_hash)
 
-    # ── 3. Cache-hit check ───────────────────────────────────────────────
-    # The marker file is written only after a successful checkout.  If it
-    # exists for the hash we just resolved from the (freshly-updated) mirror,
-    # the provider is up-to-date and we can reuse the cached directory.
-    marker = join(checkout_dir, ".bits_provider_ok")
-    if exists(marker):
-        debug("Provider '%s' is up-to-date (cache hit @ %s)", package, short_hash)
+    # ── 3./4. Cache hit, else clone + checkout, one bits at a time ──────────
+    # Under the lock a checkout without its marker is a failed or killed earlier
+    # attempt (the cache root is this provider's own), so it is redone.
+    with _cache_lock(cache_root, package):
+        marker = join(checkout_dir, ".bits_provider_ok")
+        if exists(marker):
+            debug("Provider '%s' is up-to-date (cache hit @ %s)", package, short_hash)
+            symlink(short_hash, join(cache_root, "latest"))
+            return checkout_dir, commit_hash
+
+        banner("Fetching repository provider '%s' @ %s", package, tag)
+        if exists(checkout_dir):
+            info("Removing an unfinished checkout of provider '%s' at %s", package, checkout_dir)
+        shutil.rmtree(checkout_dir, ignore_errors=True)
+
+        err, out = scm.exec(
+            scm.cloneSourceCmd(source, checkout_dir, mirror_dir, usePartialClone=True),
+            directory=".", check=False,
+        )
+        dieOnError(err,
+                   "Failed to clone repository provider '%s' from %s:\n%s"
+                   % (package, source, out))
+
+        err, out = scm.exec(
+            scm.checkoutCmd(tag), directory=checkout_dir, check=False,
+        )
+        dieOnError(err,
+                   "Failed to check out tag '%s' for provider '%s':\n%s"
+                   % (tag, package, out))
+
+        # Ensure the checkout directory exists (the actual git clone creates it,
+        # but tests or edge-cases may not – makedirs is idempotent).
+        os.makedirs(checkout_dir, exist_ok=True)
+
+        # Write the completion marker so subsequent runs get a cache hit
+        with open(marker, "w") as fh:
+            fh.write(commit_hash + "\n")
+
         symlink(short_hash, join(cache_root, "latest"))
+        info("Provider '%s' ready at %s", package, checkout_dir)
         return checkout_dir, commit_hash
 
-    # ── 4. Clone + checkout ──────────────────────────────────────────────
-    banner("Fetching repository provider '%s' @ %s", package, tag)
-    # Safety: refuse to clone over an existing git repository — this would
-    # destroy a different provider's checkout if two packages ever resolved to
-    # the same (or an empty) hash subdirectory.
-    dieOnError(exists(join(checkout_dir, ".git")),
-               "checkout_dir '%s' already contains a .git repository; refusing "
-               "to clone provider '%s' over it to prevent clobbering an existing "
-               "checkout." % (checkout_dir, package))
-    shutil.rmtree(checkout_dir, ignore_errors=True)
 
-    err, out = scm.exec(
-        scm.cloneSourceCmd(source, checkout_dir, mirror_dir, usePartialClone=True),
-        directory=".", check=False,
-    )
-    dieOnError(err,
-               "Failed to clone repository provider '%s' from %s:\n%s"
-               % (package, source, out))
-
-    err, out = scm.exec(
-        scm.checkoutCmd(tag), directory=checkout_dir, check=False,
-    )
-    dieOnError(err,
-               "Failed to check out tag '%s' for provider '%s':\n%s"
-               % (tag, package, out))
-
-    # Ensure the checkout directory exists (the actual git clone creates it,
-    # but tests or edge-cases may not – makedirs is idempotent).
-    os.makedirs(checkout_dir, exist_ok=True)
-
-    # Write the completion marker so subsequent runs get a cache hit
-    with open(marker, "w") as fh:
-        fh.write(commit_hash + "\n")
-
-    symlink(short_hash, join(cache_root, "latest"))
-    info("Provider '%s' ready at %s", package, checkout_dir)
-    return checkout_dir, commit_hash
+@contextmanager
+def _cache_lock(cache_root: str, package: str):
+    """Hold *cache_root*'s lock: another bits checking this provider out is waited
+    for. Where there is no lock to be had (permissions, NFS) it goes on without."""
+    path, fd = join(cache_root, ".lock"), None
+    for flags in (os.O_RDWR | os.O_CREAT, os.O_RDONLY):   # another user's lock file
+        try:
+            fd = os.open(path, flags, 0o666)
+            break
+        except OSError:
+            continue
+    try:
+        if fd is None:
+            raise OSError("cannot open it")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            info("Waiting for another bits checking out provider '%s'", package)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as e:
+        warning("Provider '%s': cannot lock %s (%s); going on without it", package, path, e)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)   # releases the lock
 
 
 # ── Always-on provider loading ───────────────────────────────────────────────

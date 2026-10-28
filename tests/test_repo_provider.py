@@ -337,6 +337,62 @@ class TestCloneOrUpdateProvider(unittest.TestCase):
         self.assertEqual(got, "deadbeef1234")
         self.assertTrue(self._cloned(scm))
 
+    # ── an unfinished checkout, and another bits fetching the provider ───────
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_unfinished_checkout_is_redone(self, MockGit, mock_logged_scm, mock_update_ref):
+        commit = "abcdef1234567890"
+        scm = self._mock_scm(commit)
+        MockGit.return_value = scm
+        spec = self._spec()
+        stale = os.path.join(_provider_cache_root(self.work_dir, spec["package"]), commit[:10])
+        os.makedirs(os.path.join(stale, ".git"))       # cloned, never checked out
+        checkout_dir, _ = clone_or_update_provider(
+            spec, self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertEqual(checkout_dir, stale)
+        self.assertTrue(self._cloned(scm))
+        self.assertFalse(os.path.exists(os.path.join(stale, ".git")))   # removed before the clone
+        self.assertTrue(os.path.exists(os.path.join(stale, ".bits_provider_ok")))
+
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_waits_for_another_bits_fetching_it(self, MockGit, mock_logged_scm, mock_update_ref):
+        import fcntl
+        import threading
+        scm = self._mock_scm()
+        MockGit.return_value = scm
+        spec = self._spec()
+        root = _provider_cache_root(self.work_dir, spec["package"])
+        os.makedirs(root)
+        holder = open(os.path.join(root, ".lock"), "a")
+        fcntl.flock(holder, fcntl.LOCK_EX)              # the other bits
+        t = threading.Thread(target=clone_or_update_provider, daemon=True,
+                             args=(spec, self.work_dir, self.ref_dir, False))
+        try:
+            t.start()
+            t.join(0.5)
+            self.assertTrue(t.is_alive())
+            self.assertFalse(self._cloned(scm))
+        finally:
+            holder.close()                              # the other bits is done
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(self._cloned(scm))
+
+    @patch("bits_helpers.repo_provider.warning")
+    @patch("bits_helpers.repo_provider.fcntl.flock", side_effect=OSError(37, "No locks available"))
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_no_lock_goes_on_without(self, MockGit, mock_logged_scm, _ref, _flock, warn):
+        scm = self._mock_scm()
+        MockGit.return_value = scm
+        clone_or_update_provider(self._spec(), self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertTrue(self._cloned(scm))
+        self.assertIn("going on without it", warn.call_args[0][0])
+
     @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
     @patch("bits_helpers.repo_provider.logged_scm")
     @patch("bits_helpers.repo_provider.Git")

@@ -66,6 +66,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 - **[Fix]** The `Python` recipe itself gets the `python_*` variables (its body still expanded softly); non-string recipe variables no longer crash (a float warns: quote versions such as `"3.10"`); `relocate-me.sh` no longer rewrites an install base that contains the build directory twice (from #125).
 - **[Improvement]** Faster build manifests (SBOMs): the tarball's sha256 is computed while it is packed (a `<tarball>.sha256` sidecar), so the manifest and the store upload do not read it again; a store object stamped with its sha256 by a server-side managed copy, which also works above 5 GB, so large legacy objects are no longer re-hashed on every publish.
 - **[Fix]** A provider's tag that names no branch, tag or commit stops the build with that (`Repository provider 'stacks.bits': no branch or tag 'LCG_110b' in …`); a tag newer than the local mirror is looked up upstream.
+- **[Fix]** One bits at a time checks out a provider into the work area (others wait), and a checkout left unfinished by a failed or killed run is redone instead of stopping every later build.
 
 ## SBOM
 - **[Feature]** Recipe `references:` (`cpe:2.3:` CPEs and `pkg:` purls, hash-excluded) for vulnerability scanners; `PythonPipRecipe` packages get `pkg:pypi` automatically; further CPEs as `syft:cpe23`; component versions are the upstream ones (the revision is `bits:revision`).
