@@ -124,8 +124,13 @@ action of no community: `host.pause` and `host.resume` set `paused` on the
 runners tagged `bits-host-<name>` the build project uses, not the instance's
 shared ones (`PUT /runners/:id`, as the ops token's Maintainer; a group's runner
 is paused for the whole group), and `host.refresh` starts the builder-image refresh
-pipeline pinned to the host (`REFRESH_IMAGES_JOB`). Such a pipeline starts when
-the host's runner takes it: not while it is paused.
+pipeline pinned to the host (`REFRESH_IMAGES_JOB`). `host.prune {host,
+min_free_gb}` starts bits-console's `prune-host` job there (`HOST_PRUNE_JOB`,
+`BITS_PRUNE_MIN_FREE_GB`): `bits prune --disk-pressure-only`, architecture by
+architecture, until sw has that much free. Such a pipeline starts when the
+host's runner takes it: not while it is paused. The app asks for the free space
+saved for the host (`PUT /ops/hosts/{host}/prune-target {min_free_gb}`, overall
+admins; 200 GiB when none is; `GET /ops/hosts/prune-targets`, admins).
 
 **Phases** (`orch/phases.py`): for each build pipeline finished in the last week,
 what its build job spent its time on, for the console's timeline: queued (from

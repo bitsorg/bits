@@ -62,6 +62,9 @@
     GET  /ops/queue?community=&limit=  queued builds and those started in the last day
                                        (as /ops/builds), with the build hosts for admins
     POST /ops/queue/{id}/cancel        take a build that has not started out of the queue
+    GET  /ops/hosts/prune-targets?community=   the free space (GiB) each build host is
+                                       pruned to, and the default (admins, see _reads)
+    PUT  /ops/hosts/{host}/prune-target   {min_free_gb}: by an overall admin
     GET  /ops/schedules?community=     the nightly schedules (any signed-in user, of the
                                        community named; the approval in force: admins)
     POST /ops/schedules                {community, name, package, platforms[], days, time,
@@ -97,7 +100,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, kinds, outside, phases, reconcile, sbom_history, sbom_licences, sbom_plan,
+               failures, hosts, kinds, outside, phases, reconcile, sbom_history, sbom_licences, sbom_plan,
                nightlies, sbom_scan, schedules, shadow, trace, vuln_triage)
 
 log = logging.getLogger("bits_orchestrator.api")
@@ -1075,6 +1078,40 @@ async def cancel_queued(entry_id: int, request: Request):
         raise HTTPException(409, "build %d is no longer waiting" % entry_id)
     audit.record("queue_canceled", user=data["user"], entry=entry_id, principal="human")
     return {"status": "canceled", "entry": entry_id}
+
+
+# --- build hosts ----------------------------------------------------------------
+
+def _targets_out(targets):
+    return {"default": hosts.PRUNE_TARGET_GB, "hosts": targets}
+
+
+@router.get("/ops/hosts/prune-targets")
+async def host_prune_targets(request: Request, community: str = ""):
+    """The free space each build host is pruned to: for admins (see _reads)."""
+    data = await _caller(request)
+    _, admin = _reads(await _scope(data), community)
+    if not admin:
+        raise HTTPException(403, "%s is not an admin" % data["user"])
+    return _targets_out(await run_in_threadpool(_read, hosts.prune_targets))
+
+
+@router.put("/ops/hosts/{host}/prune-target")
+async def set_host_prune_target(host: str, request: Request):
+    """{min_free_gb}: what host.prune is asked for on *host*, by an overall admin."""
+    data = await _overall(request)
+    gb = (await _body(request)).get("min_free_gb")
+
+    def write():
+        with _open() as conn:
+            return hosts.set_prune_target(conn, host, gb, events.Actor("person", data["user"]))
+    try:
+        targets = await run_in_threadpool(write)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    audit.record("ops_host_prune_target", user=data["user"], host=host, min_free_gb=gb,
+                 principal="human")
+    return _targets_out(targets)
 
 
 _standing_pending = session.CliSignStore(ttl_seconds=300, max_entries=64)

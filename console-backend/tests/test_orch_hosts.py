@@ -11,7 +11,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from console_backend import config, forge_ops, main
-from console_backend.orch import actions, db, events, kinds
+from console_backend.orch import actions, db, events, hosts, kinds
 
 CAROL = events.Actor("person", "carol")
 
@@ -86,6 +86,32 @@ class HostActionsTest(_DB):
         self.assertEqual(self.forge.calls, [("pipeline", "main", {
             "REFRESH_IMAGES_JOB": "true", "BITS_RUNNER_TAG": "bits-host-a"})])
 
+    def test_prune_is_a_pipeline_pinned_to_the_host_with_its_target(self):
+        row, _ = actions.request(self.conn, "host.prune", {"host": "a", "min_free_gb": 250},
+                                 CAROL, "", True)
+        actions.run_due(self.conn, self.deps, lambda a, c: True)
+        self.assertEqual(actions.get(self.conn, row["id"])["state"], "done")
+        self.assertEqual(self.forge.calls, [("pipeline", "main", {
+            "HOST_PRUNE_JOB": "true", "BITS_PRUNE_MIN_FREE_GB": "250",
+            "BITS_RUNNER_TAG": "bits-host-a"})])
+        for bad in ({"host": "a"}, {"host": "a", "min_free_gb": 0},
+                    {"host": "a", "min_free_gb": "200"}, {"host": "a", "min_free_gb": True},
+                    {"host": "a", "min_free_gb": 100001}):
+            with self.assertRaises(actions.ActionError, msg=bad):
+                actions.request(self.conn, "host.prune", bad, CAROL, "", True)
+
+    def test_prune_targets_are_saved_per_host_as_events(self):
+        self.assertEqual(hosts.prune_targets(self.conn), {})
+        hosts.set_prune_target(self.conn, "a", 300, CAROL)
+        self.assertEqual(hosts.set_prune_target(self.conn, "b", 150, CAROL), {"a": 300, "b": 150})
+        self.assertEqual(hosts.set_prune_target(self.conn, "a", 400, CAROL), {"a": 400, "b": 150})
+        got = [(e["kind"], e["subject"], e["payload"]) for e in events.since(self.conn)]
+        self.assertEqual(got[-1], ("host.prune_target_set", "host:a", {"host": "a", "min_free_gb": 400}))
+        for host, gb in (("a b", 200), ("a", 0), ("a", 2.5), ("a", "200"), ("a", None), ("a", True)):
+            with self.assertRaises(ValueError, msg=(host, gb)):
+                hosts.set_prune_target(self.conn, host, gb, CAROL)
+        self.assertEqual(len(events.since(self.conn)), 3)
+
     def test_gitlab_down_is_retried_a_refusal_fails(self):
         self.forge.fail = forge_ops.ForgeError(502, "bad gateway")
         self.assertEqual(self._run("host.pause")["state"], "approved")     # again later
@@ -150,6 +176,22 @@ class HostApiTest(_DB):
                          (201, "host:a", ""))
         self.assertEqual(self._post("carol", {"kind": "host.pause",
                                               "params": {"host": "a b"}}).status_code, 400)
+
+    def test_prune_targets_are_read_by_admins_and_set_by_overall_admins(self):
+        h = lambda u: {"Authorization": "Bearer " + u}
+        url = "/ops/hosts/prune-targets"
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.assertEqual(self.client.get(url + "?community=other", headers=h("alice")).status_code, 403)
+        self.assertEqual(self.client.get(url, headers=h("dave")).status_code, 403)
+        self.assertEqual(self.client.get(url + "?community=testbed", headers=h("alice")).json(),
+                         {"default": 200, "hosts": {}})
+        put = lambda u, body, host="a": self.client.put("/ops/hosts/%s/prune-target" % host,
+                                                         headers=h(u), json=body)
+        self.assertEqual(put("alice", {"min_free_gb": 300}).status_code, 403)
+        self.assertEqual(put("carol", {"min_free_gb": 0}).status_code, 400)
+        self.assertEqual(put("carol", {"min_free_gb": 300}, host="a%20b").status_code, 400)
+        self.assertEqual(put("carol", {"min_free_gb": 300}).json(), {"default": 200, "hosts": {"a": 300}})
+        self.assertEqual(self.client.get(url, headers=h("alice")).json()["hosts"], {"a": 300})
 
 
 if __name__ == "__main__":
