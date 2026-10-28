@@ -67,7 +67,8 @@
     GET  /ops/hosts/prune-targets?community=   the free space (GiB) each build host is
                                        pruned to, and the default (admins, see _reads)
     PUT  /ops/hosts/{host}/prune-target   {min_free_gb}: by an overall admin
-    GET  /ops/schedules?community=     the nightly schedules (any signed-in user, of the
+    GET  /ops/schedules?community=     the nightly schedules (and the heads of the branches
+                                       they follow, `watching`) (any signed-in user, of the
                                        community named; the approval in force: admins)
     POST /ops/schedules                {community, name, package, platforms[], days, time,
                                        ...}: by an admin of the community (schedules.check)
@@ -104,7 +105,7 @@ from starlette.concurrency import run_in_threadpool
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
                failures, hosts, kinds, outside, phases, reconcile, sbom_history, sbom_licences, sbom_plan,
-               nightlies, sbom_scan, schedules, shadow, trace, vuln_triage)
+               nightlies, sbom_scan, schedules, shadow, trace, vuln_triage, watches)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -1160,6 +1161,8 @@ def _schedule_out(conn, s, admin, tz, now):
     """A schedule as the API shows it: its next run, and for admins the approval in force."""
     out = {k: v for k, v in s.items() if k != "deleted_ms"}
     out["next_run_ms"] = schedules.next_run_ms(s, now, tz) if s["enabled"] else None
+    if s["watch"]:
+        out["watching"] = watches.heads(conn, s["id"])
     if admin and s["certify"]:
         out["approval"] = approvals.standing_in_force(conn, "schedule:%d" % s["id"],
                                                       s["content_sha256"])

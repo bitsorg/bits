@@ -39,6 +39,7 @@ MAX_PLATFORMS = 32
 MAX_VARIANTS = 16
 MAX_CELLS = 64                     # platforms x variants: the builds of one night
 MAX_CHAIN = 160                    # a variant::defaults, leaving room for a community's overlay
+MAX_WATCHES = 8
 EVERY_DAY = 0b1111111              # bit 0 Monday ... bit 6 Sunday
 
 
@@ -77,6 +78,11 @@ def _text(p, key, pattern, what):
     return v.strip()
 
 
+def _port_ok(url):
+    m = re.match(r"https://[^/:]+:([0-9]+)/", url)
+    return not m or 1 <= int(m.group(1)) <= 65535
+
+
 def check(p, community):
     """The stored fields of a schedule from the request *p*, or Invalid."""
     if not isinstance(p, dict):
@@ -94,6 +100,13 @@ def check(p, community):
         if not _REPO.fullmatch(r):
             raise Invalid("extra_repos: %r is not https://host/path[@branch]" % r)
     s["extra_repos"] = ";".join(repos)
+    watch = [w for w in _text(p, "watch", _REPOS, "url@branch;...").split(";") if w]
+    for w in watch:
+        if not _REPO.fullmatch(w) or "@" not in w.split("/", 3)[-1] or not _port_ok(w):
+            raise Invalid("watch: %r is not https://host/path@branch" % w)
+    if len(watch) > MAX_WATCHES or len(set(watch)) != len(watch):
+        raise Invalid("watch: up to %d different branches" % MAX_WATCHES)
+    s["watch"] = ";".join(sorted(watch))
     sv = p.get("set") or {}
     if not isinstance(sv, dict) or len(sv) > 32 or not all(
             isinstance(k, str) and _SET_KEY.fullmatch(k) and isinstance(v, str) and _SET_VALUE.fullmatch(v)
@@ -144,10 +157,10 @@ _CONTENT = ("community", "package", "version", "defaults", "extra_repos", "set",
 
 
 def content_sha256(s):
-    """What is built and where it goes, not when (days, time) or whether (enabled).
-    Variants count only when there are some: a schedule without keeps its hash."""
+    """What is built and where it goes, not when (days, time, the watch list) or
+    whether (enabled). Variants count only when set: a schedule without keeps its hash."""
     content = {k: s[k] for k in _CONTENT}
-    if s.get("variants"):
+    if s.get("variants"):                       # only when set: older schedules keep their hash
         content["variants"] = s["variants"]
     text = json.dumps(content, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()
@@ -156,6 +169,11 @@ def content_sha256(s):
 def cells(s):
     """[(platform, variant)] of a night: every platform x every variant ('' when none)."""
     return [(p, v) for p in s["platforms"] for v in (s.get("variants") or [""])]
+
+
+def watches(s):
+    """[(repo, branch)] the schedule follows: its watch list, url@branch."""
+    return [tuple(w.rsplit("@", 1)) for w in s.get("watch", "").split(";") if w]
 
 
 def cell_key(platform, variant):
@@ -234,12 +252,12 @@ def _public(s):
 def _store(conn, s, sid=None):
     cols = ("community", "community_dir", "name", "package", "version", "defaults", "extra_repos", "set_vars",
             "platforms", "rebuild", "debug", "jobs", "extra_build_args", "days", "time", "certify",
-            "cvmfs", "certify_groups", "enabled", "variants", "content_sha256")
+            "cvmfs", "certify_groups", "enabled", "variants", "watch", "content_sha256")
     vals = (s["community"], s["community_dir"], s["name"], s["package"], s["version"], s["defaults"], s["extra_repos"],
             json.dumps(s["set"]), json.dumps(s["platforms"]), int(s["rebuild"]), int(s["debug"]),
             s["jobs"], s["extra_build_args"], s["days"], s["time"], int(s["certify"]),
             int(s["cvmfs"]), json.dumps(s["certify_groups"]), int(s["enabled"]),
-            json.dumps(s["variants"]), content_sha256(s))
+            json.dumps(s["variants"]), s["watch"], content_sha256(s))
     return cols, vals
 
 

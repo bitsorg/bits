@@ -167,13 +167,13 @@ def config(reader, community_dir, ref):
 
 # --- runs --------------------------------------------------------------------------
 
-def _run(conn, s, night, cell, attempt, state, reason="", entry=None, now=None):
+def _run(conn, s, night, cell, attempt, state, reason="", entry=None, now=None, fired_by="time", commits=""):
     now = now or db.now_ms()
     conn.execute("INSERT INTO schedule_runs (schedule_id, night, platform, variant, attempt, state,"
-                 " content_sha256, queue_entry, reason, created_ms, updated_ms)"
-                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 " content_sha256, queue_entry, reason, created_ms, updated_ms, fired_by, commits)"
+                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                  (s["id"], night, cell[0], cell[1], attempt, state, s["content_sha256"], entry,
-                  reason[:500], now, now))
+                  reason[:500], now, now, fired_by, commits))
 
 
 def _attempt(conn, sid, night, cell):
@@ -182,9 +182,11 @@ def _attempt(conn, sid, night, cell):
     return (r["a"] or 0) + 1
 
 
-def _still_open(conn, sid, cell):
+def _still_open(conn, sid, cell, commit):
+    # Nightlies and commit runs do not hold each other: neither is lost to the other.
     return conn.execute("SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND platform = ? AND variant = ?"
-                        " AND state IN ('queued', 'running') LIMIT 1", (sid,) + tuple(cell)).fetchone()
+                        " AND state IN ('queued', 'running') AND (fired_by = 'commit') = ? LIMIT 1",
+                        (sid,) + tuple(cell) + (int(commit),)).fetchone()
 
 
 def _certifier(conn, s, n):
@@ -202,23 +204,29 @@ def _certifier(conn, s, n):
     return a["approver"], ""
 
 
-def fire_night(conn, s, night, cells, cfg, ref, why, now=None):
+def fire_night(conn, s, night, cells, cfg, ref, why, now=None, fired_by="time", commits=""):
     """Within the caller's transaction: queue *night*'s builds of *cells*
     [(platform, variant)] (a cell still waiting or building skips it, one that
-    cannot be built is not run). Returns the runs' states by cell_key."""
+    cannot be built is not run). *fired_by*: time, manual or commit; a commit
+    run (*commits*: the heads when it fired, JSON) certifies and publishes nothing.
+    Returns the runs' states by cell_key."""
+    if fired_by == "commit":
+        s = dict(s, certify=False, cvmfs=False)
+    run = lambda c, attempt, state, reason="", entry=None: _run(  # noqa: E731
+        conn, s, night, c, attempt, state, reason, entry, now, fired_by, commits)
     go, states = [], {}
     for c in cells:
         key, attempt = schedules.cell_key(*c), _attempt(conn, s["id"], night, c)
-        if _still_open(conn, s["id"], c):
+        if _still_open(conn, s["id"], c, fired_by == "commit"):
             if why == "scheduled":                 # Run now records nothing: its run still goes on
-                _run(conn, s, night, c, attempt, "skipped", "the previous night still runs", now=now)
+                run(c, attempt, "skipped", "the previous night still runs")
             states[key] = "skipped"
             continue
         try:
             resolve_platform(c[0], cfg["platforms"], cfg["community"])
             defaults_chain(s, cfg["community"], c[1])
         except Unbuildable as e:
-            _run(conn, s, night, c, attempt, "not_run", str(e), now=now)
+            run(c, attempt, "not_run", str(e))
             states[key] = "not_run"
             continue
         go.append((c, attempt))
@@ -230,10 +238,12 @@ def fire_night(conn, s, night, cells, cfg, ref, why, now=None):
                                         events.WORKER, batch="%s:%s:%s" % (subject(s["id"]), night,
                                                                            secrets.token_hex(4)))
         for (c, attempt), entry in zip(go, ids):
-            _run(conn, s, night, c, attempt, "queued", note, entry, now=now)
+            run(c, attempt, "queued", note or ("a commit build: not certified, not published"
+                                               if fired_by == "commit" else ""), entry)
             states[schedules.cell_key(*c)] = "queued"
     events.append(conn, "schedule.fired", subject(s["id"]), events.WORKER,
-                  {"night": night, "why": why, "runs": states, "certifier": certifier})
+                  {"night": night, "why": why, "runs": states, "certifier": certifier,
+                   "fired_by": fired_by, "commits": json.loads(commits) if commits else None})
     return states
 
 
@@ -262,7 +272,7 @@ def run_now(conn, sid, platforms, cfg, ref, tz, user, now=None, cells=None):
             raise schedules.Invalid("%s: not the schedule's: %s" % (what, ", ".join(sorted(unknown))))
     chosen = [c for k, c in every.items() if (not platforms and not cells) or c[0] in (platforms or [])
               or k in (cells or [])]
-    return fire_night(conn, s, night, chosen, cfg, ref, "run now by %s" % user, now)
+    return fire_night(conn, s, night, chosen, cfg, ref, "run now by %s" % user, now, fired_by="manual")
 
 
 def due(conn, now, tz):
@@ -384,10 +394,33 @@ def results(conn, now=None):
 
 # --- the matrix --------------------------------------------------------------------
 
+COMMIT_ROWS = 10                   # a schedule's latest commit runs in the matrix,
+COMMIT_DAYS = 30                   # of these days
+
+
+def _commit_rows(conn, sid, now):
+    """The schedule's latest commit runs (of COMMIT_DAYS), newest first: one per
+    fire, [{commits (the heads when it fired), fired_ms, cells}]."""
+    since = now - COMMIT_DAYS * 86400 * 1000
+    nth = conn.execute("SELECT created_ms FROM (SELECT DISTINCT created_ms FROM schedule_runs WHERE"
+                       " schedule_id = ? AND fired_by = 'commit' AND created_ms >= ? ORDER BY created_ms"
+                       " DESC LIMIT 1 OFFSET ?)", (sid, since, COMMIT_ROWS - 1)).fetchone()
+    out = {}
+    for r in conn.execute("SELECT * FROM schedule_runs WHERE schedule_id = ? AND fired_by = 'commit'"
+                          " AND created_ms >= ? ORDER BY created_ms, attempt",
+                          (sid, max(since, nth["created_ms"] if nth else 0))):
+        row = out.setdefault((r["created_ms"], r["commits"]), {"commits": json.loads(r["commits"] or "{}"),
+                                                               "fired_ms": r["created_ms"], "cells": {}})
+        row["cells"][schedules.cell_key(r["platform"], r["variant"])] = {
+            k: r[k] for k in ("state", "attempt", "reason", "failed_at", "pipeline_id", "build_id")}
+    return sorted(out.values(), key=lambda x: -x["fired_ms"])
+
+
 def matrix(conn, communities, nights, tz, now=None):
     """The nightly matrix of *communities* (lowercase; None = all) over the last
     *nights* nights: one row per schedule, a cell per platform and night, its
-    latest attempt."""
+    latest attempt of a night (a time or manual run); and its latest commit runs,
+    each with the heads when it fired and a run per cell."""
     now = now or db.now_ms()
     today = dt.datetime.fromtimestamp(now / 1000, tz).date()
     days = [(today - dt.timedelta(days=i)).isoformat() for i in range(nights - 1, -1, -1)]
@@ -395,8 +428,8 @@ def matrix(conn, communities, nights, tz, now=None):
     for s in schedules.listing(conn, communities):
         cells = {}
         for r in conn.execute(
-                "SELECT * FROM schedule_runs WHERE schedule_id = ? AND night >= ? ORDER BY attempt",
-                (s["id"], days[0])):
+                "SELECT * FROM schedule_runs WHERE schedule_id = ? AND night >= ? AND fired_by != 'commit'"
+                " ORDER BY attempt", (s["id"], days[0])):
             cells.setdefault(schedules.cell_key(r["platform"], r["variant"]), {})[r["night"]] = {
                 k: r[k] for k in ("state", "attempt", "reason", "failed_at", "pipeline_id", "build_id")}
         rows.append({"schedule": dict({k: s[k] for k in ("id", "name", "package", "version", "defaults",
@@ -404,6 +437,7 @@ def matrix(conn, communities, nights, tz, now=None):
                                       cells=[{"key": schedules.cell_key(*c), "platform": c[0], "variant": c[1]}
                                              for c in schedules.cells(s)]),
                      "cells": cells,
+                     "commits": _commit_rows(conn, s["id"], now),
                      "failed": {n: sum(1 for p in cells.values() if p.get(n, {}).get("state") == "failed")
                                 for n in days}})
     return {"nights": days, "rows": rows}

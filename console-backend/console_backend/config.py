@@ -121,6 +121,8 @@ class Settings:
         # /ops/actions and /ops/events endpoints answer 503.
         self.orch_db = e.get("BITS_ORCH_DB", "")
         self.orch_interval = float(e.get("BITS_ORCH_INTERVAL", "30") or "30")
+        # How often (s) the worker reads the heads of the branches schedules follow (30 at least).
+        self.orch_watch_s = max(30.0, float(e.get("BITS_ORCH_WATCH_S", "120") or "120"))
         # Read-only (read_api) GitLab token the worker reads pipelines, jobs and
         # job logs with; falls back to the ops token when unset.
         self.forge_read_token = e.get("BITS_FORGE_READ_TOKEN", "")

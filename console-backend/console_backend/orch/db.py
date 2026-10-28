@@ -623,6 +623,24 @@ MIGRATIONS = [
         "CREATE INDEX schedule_runs_entry ON schedule_runs (queue_entry)",
         "CREATE INDEX schedule_runs_state ON schedule_runs (state, created_ms)",
     ],
+    # 23: commit CI (ADR bits 0009): the branches a schedule follows (watch), their
+    # heads as last read and as last built, and what fired a run.
+    [
+        "ALTER TABLE schedules ADD COLUMN watch TEXT NOT NULL DEFAULT ''",
+        """CREATE TABLE schedule_watches (
+            schedule_id  INTEGER NOT NULL REFERENCES schedules(id),
+            repo         TEXT NOT NULL,
+            branch       TEXT NOT NULL,
+            sha          TEXT NOT NULL DEFAULT '',
+            built_sha    TEXT NOT NULL DEFAULT '',
+            changed_ms   INTEGER NOT NULL,
+            moved_ms     INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (schedule_id, repo, branch)
+        )""",
+        "ALTER TABLE schedule_runs ADD COLUMN fired_by TEXT NOT NULL DEFAULT 'time'",
+        "ALTER TABLE schedule_runs ADD COLUMN commits TEXT NOT NULL DEFAULT ''",
+        "CREATE INDEX schedule_runs_fired ON schedule_runs (schedule_id, fired_by, created_ms)",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

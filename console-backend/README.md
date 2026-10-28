@@ -350,6 +350,22 @@ or no free build host 12 hours after it fired: then taken out of the queue); a
 failed run's pipeline is looked at again for 3 days (a retry in GitLab).
 `GET /ops/nightlies?community=&nights=` is the matrix (a row per schedule, with its
 cells; a cell per platform (and variant) and night, its latest attempt; to whom `/ops/builds` shows builds);
+**Commit CI** (`orch/watches.py`, ADR bits 0009; migration 23): a schedule may
+follow branches (`watch`, `url@branch;…`, at most 8; not in its content hash: it
+says when, not what). Every `BITS_ORCH_WATCH_S` (120 s, at least 30) the worker's
+`watches` step reads each branch's head with git's protocol v2 over HTTPS
+(`ls-refs` on `<url>[.git]/git-upload-pack`: no git binary, no API quota; public
+repositories on public addresses, no redirects, no credentials, 64 KiB and 15 s
+at most an answer). A branch first seen, or seen again after it was gone, is not
+built. Once a head has moved and every moved head has held still for 5 minutes
+(or the first has waited 30), and none of the schedule's commit runs is queued or
+running, it fires a commit run of every cell (`fired_by` `commit`, `commits` the
+heads when it fired, JSON; each build reads its branches when it starts): nothing
+is cancelled, and commits seen meanwhile are built together. Nightlies and commit
+runs do not hold each other. A commit run certifies nothing and publishes nothing
+to CVMFS. `GET /ops/schedules` shows the heads as `watching`; the matrix keeps
+commit runs out of the nightly cells and gives a schedule's latest 10 fires (of 30
+days) as `commits` rows.
 `POST /ops/schedules/{id}/run {platforms?, cells?}`, by its community's admins, is
 Run now (every cell) or Run again (the cells of some platforms, or some cells by
 their matrix name, `<platform> <variant>`), today's night, each cell's next attempt.

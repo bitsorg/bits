@@ -40,6 +40,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 - **[Improvement]** A build's phases name the build host it was pinned to (`phases.host`), not its runner's description, so the timeline's rows are the hosts.
 - **[Fix]** A nightly build's defaults are its schedule's with the community's `defaults_overlay` (without it a Testbed nightly would publish to production's repository), sent as `DEFAULTS` too (the build job resolved its CVMFS target with `release`), and it carries its night's weekday as `--day`, so a nightly layout's `{day}` is the night's even when the queue starts it after midnight UTC. A schedule's extra arguments may not give `--defaults`.
 - **[Feature]** A schedule's variants (ADR bits 0009; database migration 22): defaults chains put before its own, so one schedule's night builds platforms × variants, each cell a run of the matrix; Run again takes cells.
+- **[Feature]** Commit CI (ADR bits 0009; database migration 23): a schedule may follow branches (`watch`); the worker reads their heads (git protocol v2 over HTTPS, every `BITS_ORCH_WATCH_S`) and, once a moved head has held still for 5 minutes (30 at most) and none of the schedule's commit runs is still going, builds every cell of the newest heads, neither certified nor published; the matrix shows them as commit rows.
 - **[Feature]** `GET /ops/worker`: the worker's last pass and which of its steps fail since when, for admins (the errors: overall admins).
 
 ## Signed reuse, trust and certification
