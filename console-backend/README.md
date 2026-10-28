@@ -119,6 +119,14 @@ certification needs. Without a passkey the builds are queued all the same
 (`approval_error` says why). Revoking the batch's approval revokes the
 pre-approvals it gave.
 
+**Build hosts** (`orch/hosts.py`): an overall admin acts on a host as an
+action of no community: `host.pause` and `host.resume` set `paused` on the
+runners tagged `bits-host-<name>` the build project uses, not the instance's
+shared ones (`PUT /runners/:id`, as the ops token's Maintainer; a group's runner
+is paused for the whole group), and `host.refresh` starts the builder-image refresh
+pipeline pinned to the host (`REFRESH_IMAGES_JOB`). Such a pipeline starts when
+the host's runner takes it: not while it is paused.
+
 **Phases** (`orch/phases.py`): for each build pipeline finished in the last week,
 what its build job spent its time on, for the console's timeline: queued (from
 the build queue's request, else the pipeline's creation), setup, build, and per

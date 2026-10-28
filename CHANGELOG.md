@@ -33,6 +33,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 - **[Feature]** Nightly schedules in the orchestrator (ADR bits 0007; database migration 20): `GET/POST /ops/schedules`, `PUT/DELETE /ops/schedules/{id}`, `/pause`, `/resume`, in the instance's time zone (site `console.time_zone`).
 - **[Feature]** The worker fires the nightly schedules into the build queue (its `schedules` step, with the queue on): one build per platform, the GitLab fan-out's variables, missed nights within 6 hours, a platform still running skipping a night, a night that cannot be built as configured not run, certification under the schedule's standing approval (`schedule:<id>@<content_sha256>`).
 - **[Feature]** What became of each night: the `nightly_results` step follows each run's build to `running`, `passed`, `failed` (and where) or `not_run` (taken out of the queue after 12 hours without a host); `GET /ops/nightlies` is the nightly matrix, `POST /ops/schedules/{id}/run` Run now or Run again.
+- **[Feature]** An overall admin pauses and resumes a build host's runners in GitLab and refreshes its builder images, as actions (`host.pause`, `host.resume`, `host.refresh`).
 
 ## Signed reuse, trust and certification
 - **[Fix]** Trust manifests are fetched afresh by every build (a cached copy was never refreshed), revalidated with their ETag, and verified and parsed from the same bytes; a failed fetch trusts nothing from that manifest instead of an older copy.

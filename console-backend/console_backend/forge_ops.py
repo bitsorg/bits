@@ -123,10 +123,11 @@ class GitLabForge:
             raise ForgeError(r.status_code, "GET %s -> %s" % (path, r.status_code))
         return r.json()
 
-    def _json(self, method, path, body):
+    def _json(self, method, path, body, project=True):
         """A request carrying a JSON body (repo file create/update/delete)."""
+        base = "%s/projects/%s" % (self._api, self._project) if project else self._api
         try:
-            r = requests.request(method, "%s/projects/%s%s" % (self._api, self._project, path),
+            r = requests.request(method, base + path,
                                  headers={"PRIVATE-TOKEN": self._token,
                                           "Content-Type": "application/json"},
                                  json=body, timeout=self._timeout)
@@ -208,6 +209,12 @@ class GitLabForge:
         """One runner's details, its tags (tag_list) among them: GitLab shows them to
         a Maintainer of a project the runner serves."""
         return self._get("/runners/%d" % int(runner_id), project=False)
+
+    def set_runner_paused(self, runner_id, paused):
+        """Pause or resume a runner: a paused one takes no job (needs Maintainer
+        of a project the runner serves, as its tags do)."""
+        return self._json("PUT", "/runners/%d" % int(runner_id), {"paused": bool(paused)},
+                          project=False)
 
     def list_pipelines(self, updated_after, page=1, per_page=100):
         """One page of the project's pipelines updated after *updated_after*

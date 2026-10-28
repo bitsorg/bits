@@ -181,3 +181,4 @@ actions.register(actions.Kind(
 
 # Registered by its module (M8a): approved by a build's pre-approval only.
 from . import certifier  # noqa: E402,F401
+from . import hosts  # noqa: E402,F401

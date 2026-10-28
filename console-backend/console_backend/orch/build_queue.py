@@ -183,7 +183,7 @@ def hosts(forge):
     found = {}
     try:
         for x in forge.list_runners() or []:
-            if not isinstance(x, dict) or _shared(x):
+            if not isinstance(x, dict) or shared_runner(x):
                 continue
             try:
                 d = forge.runner(x["id"])
@@ -211,7 +211,7 @@ def hosts(forge):
     return out
 
 
-def _shared(runner):
+def shared_runner(runner):
     """An instance runner, shared by every project: never a build host."""
     return bool(runner.get("is_shared")) or runner.get("runner_type") == "instance_type"
 
@@ -383,7 +383,7 @@ def runner_hosts(forge, hs):
     try:
         for h in hs:
             for x in forge.list_runners(h["tag"]) or []:
-                if not isinstance(x, dict) or _shared(x):
+                if not isinstance(x, dict) or shared_runner(x):
                     continue
                 rid, d = x.get("id"), str(x.get("description") or "").strip()
                 if named.get(rid, h["name"]) != h["name"] and rid not in _warned:
