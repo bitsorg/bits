@@ -653,8 +653,9 @@ class ApiTest(_DB):
         self.assertEqual(ids("alice"), [1])
         self.assertEqual(ids("bob"), [2])
         self.assertEqual(ids("carol"), [2, 1])
-        self.assertEqual(ids("dave"), [])
-        self.assertEqual(ids("alice", "?community=other"), [])
+        self.assertEqual(ids("dave"), [])                          # no community named
+        self.assertEqual(ids("dave", "?community=testbed"), [1])   # any signed-in user reads one
+        self.assertEqual(ids("alice", "?community=other"), [2])
         self.assertEqual(ids("carol", "?community=OTHER"), [2])
         self.assertEqual(ids("carol", "?pipelines=1,99"), [1])
         self.assertEqual(self._get("alice", "/ops/builds?pipelines=x").status_code, 400)
@@ -665,7 +666,26 @@ class ApiTest(_DB):
         r = self._get("alice", "/ops/builds/1")
         self.assertEqual((r.status_code, r.json()["package"]), (200, "ROOT"))
         self.assertEqual([e["kind"] for e in r.json()["events"]], ["pipeline.seen"])
-        self.assertEqual(self._get("bob", "/ops/builds/1").status_code, 404)
+        self.assertIn("variables", r.json())
+        r = self._get("bob", "/ops/builds/1")                     # not its admin: read-only
+        self.assertEqual((r.status_code, r.json()["package"]), (200, "ROOT"))
+        self.assertNotIn("events", r.json())
+        self.assertNotIn("variables", r.json())
+        self.assertIn("jobs", r.json())
+        with db.transaction(self.conn):
+            self.conn.execute("INSERT INTO builds (pipeline_id, build_id, community, arches, bom_keys,"
+                              " top_level, packages, published_at, recorded_ms) VALUES"
+                              " (1, 'b1', 'testbed', '[]', '[]', '[]', 0, '', 0)")
+            self.conn.execute("INSERT INTO certify_runs (pipeline_id, build_id, arch, state, reason,"
+                              " approver, created_ms, updated_ms) VALUES (1, 'b1', '*', 'signed', '',"
+                              " 'alice', 1, 1)")
+        cert = lambda u, q: self._get(u, q).json()
+        self.assertEqual(cert("alice", "/ops/builds/1")["builds"][0]["certify"]["approver"], "alice")
+        for u, q in (("bob", "/ops/builds/1"), ("dave", "/ops/builds?community=TESTBED")):
+            b = cert(u, q)
+            b = (b["builds"][0] if "pipeline" in b else b["builds"][0]["builds"][0])
+            self.assertEqual(b["certify"]["state"], "signed")
+            self.assertNotIn("approver", b["certify"])
         self.assertEqual(self._get("carol", "/ops/builds/77").status_code, 404)
 
     def test_trace_names_the_publishing_pipeline_to_its_community(self):

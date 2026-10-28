@@ -365,6 +365,14 @@ class ApiTest(unittest.TestCase):
         self.assertEqual([(e["id"], e["ahead"]) for e in listed["entries"]], [(eid, 0)])
         self.assertIsNone(listed["paused"])
         self.assertEqual(self._get("bob", "/ops/queue").json()["entries"], [])
+        with db.transaction(self.conn):                 # the hosts, for admins only
+            self.conn.execute("INSERT INTO kv (key, value) VALUES ('queue.hosts', '[{\"name\": \"h1\"}]')")
+        self.assertEqual(self._get("alice", "/ops/queue").json()["hosts"], [{"name": "h1"}])
+        read = self._get("dave", "/ops/queue?community=lcg").json()  # any signed-in user
+        self.assertEqual(([e["id"] for e in read["entries"]], read["hosts"]), ([eid], []))
+        self.assertNotIn("requested_by", read["entries"][0])
+        self.assertEqual(listed["entries"][0]["requested_by"], "alice")
+        self.assertEqual(self._get("dave", "/ops/queue").json()["entries"], [])
         self.assertEqual(self._post("bob", "/ops/queue/%d/cancel" % eid, {}).status_code, 403)
         self.assertEqual(self._post("carol", "/ops/queue/%d/cancel" % eid, {}).status_code, 200)
         self.assertEqual(self._post("alice", "/ops/queue/%d/cancel" % eid, {}).status_code, 409)

@@ -72,7 +72,9 @@ once a build's tarballs and BOMs are in the store, while the job may still be
 publishing to CVMFS) in
 `BITS_ORCH_STORE` (`b3://<bucket>`). GitLab is read with `BITS_FORGE_READ_TOKEN`
 (read_api) when set. `GET /ops/builds` and `GET /ops/builds/{pipeline}` serve
-what it recorded, for the communities the caller administers. A build job may
+what it recorded: to admins for their communities, and to any signed-in user,
+read-only, for the community named (`?community=`; without who approved a
+certification, a build without its variables and events). A build job may
 send a hint (`POST /ops/ci/published|failed {pipeline}`) with a CI ID token for
 the audience `BITS_ORCH_CI_AUDIENCE` (default `bits-orchestrator`), from the
 build project on a protected ref; the worker then looks at that pipeline on
@@ -99,7 +101,8 @@ pipeline would build it twice, and certify nothing). A host's runner is the one
 with its unique tag (`bits-host-<name>`), whatever its description; a host no
 runner carries the tag of is logged once. GitLab refusing a pipeline (its job limit) leaves the build in its place;
 refusing one build five times refuses it. `GET /ops/queue` lists the waiting
-builds, the hosts and the pause (GitLab refusing pipelines: why, until when), `POST /ops/queue/{id}/cancel` takes one out before it
+builds (to whom `/ops/builds` shows them; who queued them, to admins), the hosts
+(to admins) and the pause (GitLab refusing pipelines: why, until when), `POST /ops/queue/{id}/cancel` takes one out before it
 starts. A Retry of a pipeline restarts it at once, outside the queue. With
 `certify_groups` the answer carries a passkey challenge over the builds that
 certify (by digest of ref, name and variables); `POST /ops/queue/approve
@@ -141,7 +144,8 @@ over the excerpt and `reason:<failure_reason>`) names its cause and suggested
 action. Four signatures are seeded once. `BITS_ORCH_BACKFILL_DAYS` (default 0)
 reads that many days of older failed pipelines from GitLab, a page per pass,
 once. `GET /ops/issues`, `/ops/issues/{id}`, `/ops/failures` and
-`/ops/signatures` serve the record, limited to the caller's communities (an
+`/ops/signatures` serve the record, limited to the caller's communities
+(`/ops/failures` also to any signed-in user for the community named; an
 issue seen in several shows a community admin only their own occurrences,
 counts and excerpt). A pipeline whose logs cannot be read is tried again every
 10 minutes for a day.

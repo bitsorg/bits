@@ -439,6 +439,8 @@ class ApiTest(_DB):
         got = self._get("bob", "/ops/failures").json()["failures"]
         self.assertEqual([f["pipeline"] for f in got], [2])
         self.assertNotIn("hunter2", got[0]["excerpt"])
+        read = lambda q: [f["pipeline"] for f in self._get("dave", "/ops/failures" + q).json()["failures"]]
+        self.assertEqual((read(""), read("?community=atlas")), ([], [2]))   # any signed-in user
         self.assertEqual([f["pipeline"] for f in self._get("carol", "/ops/failures?pipeline=3")
                           .json()["failures"]], [3])
         sigs = self._get("dave", "/ops/signatures").json()["signatures"]

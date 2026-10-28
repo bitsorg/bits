@@ -11,8 +11,9 @@
     GET  /ops/events?after=&limit=&wait=   the event log (overall admins), long-polled
     GET  /ops/builds?community=&outcome=&pipelines=&limit=
                                        build pipelines and their builds (and phases:
-                                       what each job spent its time on)
-    GET  /ops/builds/{pipeline}        one, with its jobs, variables and events
+                                       what each job spent its time on); any signed-in
+                                       user, of the community named (_reads)
+    GET  /ops/builds/{pipeline}        one, with its jobs (variables and events: admins)
     GET  /ops/builds/{pipeline}/sbom?format=&build=&vulnerabilities=   the SBOM a build
                                        published (CycloneDX or SPDX): any signed-in user;
                                        with vulnerabilities=1 (CycloneDX, the admins of its
@@ -39,6 +40,7 @@
     GET  /ops/issues?community=&package=&limit=   deduplicated failures, last seen first
     GET  /ops/issues/{id}              one, with its occurrences
     GET  /ops/failures?pipeline=&community=&limit=   failed jobs' records, with excerpts
+                                       (any signed-in user, as /ops/builds)
     GET  /ops/signatures               the reviewed patterns that name a cause
     GET  /ops/certifications?state=&limit=   bits-manifests certifications and their
                                        sign runs: the worker's shadow comparison
@@ -57,8 +59,8 @@
                                        over the builds that certify
     POST /ops/queue/approve            {request_id, assertion}: the batch's approval, each
                                        certifying build's pre-approval when it starts
-    GET  /ops/queue?community=&limit=  queued builds and those started in the last day,
-                                       with the build hosts
+    GET  /ops/queue?community=&limit=  queued builds and those started in the last day
+                                       (as /ops/builds), with the build hosts for admins
     POST /ops/queue/{id}/cancel        take a build that has not started out of the queue
     POST /approvals/standing/request   {schedule, sha256, groups[], runs, days}: a passkey
                                        challenge bound to them
@@ -368,12 +370,22 @@ async def _scope(data):
     return None if overall else {g.lower() for g in groups}
 
 
-def _with_certify(conn, rows, reasons=False):
+def _reads(mine, community):
+    """What a read of builds, failures or the queue covers, and whether as an admin.
+    Admins read their communities (*mine*; None = all), narrowed to *community*;
+    any signed-in user reads the *community* named, read-only, and none without one."""
+    c = community.strip().lower()
+    if not c:
+        return mine, mine is None or bool(mine)
+    return {c}, mine is None or c in mine
+
+
+def _with_certify(conn, rows, reasons=False, approver=True):
     """Each build of *rows* (reconcile's pipelines) with the worker's
     certification of it, when it considered the build: its decision and, per
     architecture, what it signed and (until M8b) how that compared with the CI.
-    The reasons (raw error text, at times) only with *reasons* (overall admins).
-    A failure here leaves the rows without it."""
+    The reasons (raw error text, at times) only with *reasons* (overall admins),
+    who approved it only with *approver* (admins). A failure leaves the rows without it."""
     try:
         cert = certifier.for_builds(conn, {(r["pipeline"], b["build_id"])
                                            for r in rows for b in r.get("builds") or ()})
@@ -391,6 +403,8 @@ def _with_certify(conn, rows, reasons=False):
                         a.pop("reason", None)
                 if not reasons:
                     c.pop("reason", None)
+                if not approver:
+                    c.pop("approver", None)
                 b["certify"] = c
     return rows
 
@@ -407,17 +421,13 @@ def _with_phases(conn, rows):
 @router.get("/ops/builds")
 async def list_builds(request: Request, community: str = "", outcome: str = "",
                       pipelines: str = "", limit: int = 50):
-    """Build pipelines newest first, with the builds they published: those of the
-    communities the caller administers (all, for an overall admin). *pipelines*
-    is a comma-separated list of ids (the console asks for the rows it shows)."""
+    """Build pipelines newest first, with the builds they published (see _reads).
+    *pipelines* is a comma-separated list of ids (the console asks for the rows
+    it shows)."""
     data = await _caller(request)
     mine = await _scope(data)
     overall = mine is None
-    if community:
-        c = community.strip().lower()
-        if mine is not None and c not in mine:
-            return {"builds": []}
-        mine = {c}
+    mine, admin = _reads(mine, community)
     if outcome and outcome not in ("running", "success", "failed", "canceled"):
         raise HTTPException(400, "unknown outcome")
     ids = None
@@ -431,22 +441,28 @@ async def list_builds(request: Request, community: str = "", outcome: str = "",
         with _open() as conn:
             return _with_phases(conn, _with_certify(conn, reconcile.list_builds(
                 conn, communities=mine, outcome=outcome or None, pipelines=ids, limit=limit),
-                reasons=overall))
+                reasons=overall, approver=admin))
     return JSONResponse({"builds": await run_in_threadpool(read)},
                         headers={"Cache-Control": "no-store"})
 
 
 @router.get("/ops/builds/{pipeline}")
 async def get_build(pipeline: int, request: Request):
+    """Any signed-in user; its variables, events and approver for its community's admins."""
     data = await _caller(request)
     mine = await _scope(data)
 
     def read():
         with _open() as conn:
             b = reconcile.get_build(conn, pipeline)
-            if b is None or (mine is not None and b["community"] not in mine):
+            if b is None:
                 return None
-            return _with_phases(conn, _with_certify(conn, [b], reasons=mine is None))[0]
+            admin = mine is None or str(b["community"]).lower() in mine
+            if not admin:
+                b.pop("variables", None)
+                b.pop("events", None)
+            return _with_phases(conn, _with_certify(conn, [b], reasons=mine is None,
+                                                    approver=admin))[0]
     b = await run_in_threadpool(read)
     if b is None:
         raise HTTPException(404, "no such build")
@@ -857,8 +873,9 @@ async def get_issue(issue_id: int, request: Request):
 @router.get("/ops/failures")
 async def list_failures(request: Request, pipeline: int = 0, community: str = "",
                         limit: int = 100):
+    """Failed jobs' records (see _reads)."""
     data = await _caller(request)
-    mine = await _communities(data, community)
+    mine, _ = _reads(await _scope(data), community)
     out = await run_in_threadpool(_read, failures.list_failures, communities=mine,
                                   pipeline=pipeline or None, limit=limit)
     return JSONResponse({"failures": out}, headers={"Cache-Control": "no-store"})
@@ -1007,20 +1024,21 @@ async def approve_queued(request: Request):
 
 @router.get("/ops/queue")
 async def list_queue(request: Request, community: str = "", limit: int = 200):
-    """Queued builds of the communities the caller administers (all, for an
-    overall admin), the build hosts as the worker last saw them, and why no
-    build starts for now (paused: GitLab refusing pipelines), if so."""
+    """Queued builds (see _reads), why no build starts for now (paused: GitLab
+    refusing pipelines), if so, and for admins the build hosts as the worker
+    last saw them."""
     data = await _caller(request)
     _queue_on()
-    mine = await _scope(data)
-    if community:
-        c = community.strip().lower()
-        mine = {c} if mine is None or c in mine else set()
+    mine, admin = _reads(await _scope(data), community)
 
     def read():
         with _open() as conn:
-            return {"entries": build_queue.listing(conn, communities=mine, limit=limit),
-                    "hosts": build_queue.host_status(conn), "paused": build_queue.paused(conn)}
+            entries = build_queue.listing(conn, communities=mine, limit=limit)
+            if not admin:                  # who queued it: not in GitLab yet
+                entries = [{k: v for k, v in e.items() if k != "requested_by"} for e in entries]
+            return {"entries": entries,
+                    "hosts": build_queue.host_status(conn) if admin else [],
+                    "paused": build_queue.paused(conn)}
     return JSONResponse(await run_in_threadpool(read), headers={"Cache-Control": "no-store"})
 
 
