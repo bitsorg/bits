@@ -11,6 +11,11 @@ timeline: [kind, start_ms, end_ms] segments.
   gateway  per package, the commit (gateway ingest and catalogs)
   publish  the publish step, when prepub recorded no measurements for it
 
+A failed job's `failed_in` says where it stopped, from the marks of the steps
+it passed (build_ok, publish_start, finish_start): in the build, after it
+(certification, the BOMs to the store), in the publish, or after the publish
+step (finish); '' when it did not fail or its marks were not kept.
+
 The CI job writes bits-phases.txt ("<mark> <epoch seconds>" lines) and keeps
 prepub's measurement records (measurements-<pipeline>.json) as artifacts; a
 record covers [ts - total_s, ts], of which the last commit_s is the gateway's.
@@ -127,6 +132,18 @@ def segments(requested_ms, job, phase_marks, records):
                   key=lambda s: (s[1], s[2]))
 
 
+def failed_in(job, phase_marks):
+    """Where a failed build job stopped, from its marks (see the module docstring)."""
+    m = phase_marks or {}
+    if job.get("status") != "failed" or not m:
+        return ""
+    if "build_ok" not in m:              # build_end is written whatever the build's outcome
+        return "build"
+    if "finish_start" not in m:
+        return "publish" if "publish_start" in m else "certify"
+    return "finish"
+
+
 def _artifact(reader, job_id, name):
     from .. import forge_ops
     try:
@@ -164,13 +181,16 @@ def step(conn, reader):
         except ValueError:
             records = []
         requested = r["queued_ms"] or _ms(r["created_at"])
-        segs = segments(requested, job, marks(text), records)
+        m = marks(text)
+        segs = segments(requested, job, m, records)
         with db.transaction(conn):
             conn.execute("INSERT INTO pipeline_phases (pipeline_id, job_id, host, segments,"
-                         " recorded_ms) VALUES (?, ?, ?, ?, ?) ON CONFLICT(pipeline_id) DO UPDATE"
-                         " SET job_id = excluded.job_id, host = excluded.host,"
-                         " segments = excluded.segments, recorded_ms = excluded.recorded_ms",
-                         (r["id"], job["id"], str(job.get("runner") or ""), json.dumps(segs), now))
+                         " failed_in, recorded_ms) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(pipeline_id)"
+                         " DO UPDATE SET job_id = excluded.job_id, host = excluded.host,"
+                         " segments = excluded.segments, failed_in = excluded.failed_in,"
+                         " recorded_ms = excluded.recorded_ms",
+                         (r["id"], job["id"], str(job.get("runner") or ""), json.dumps(segs),
+                          failed_in(job, m), now))
         n += 1
         if n >= PER_PASS:
             break
@@ -178,11 +198,11 @@ def step(conn, reader):
 
 
 def for_pipelines(conn, ids):
-    """{pipeline: {host, segments}} of those recorded."""
+    """{pipeline: {host, segments, failed_in}} of those recorded."""
     ids = sorted({int(i) for i in ids})
     if not ids:
         return {}
     rows = conn.execute("SELECT * FROM pipeline_phases WHERE pipeline_id IN (%s)"
                         % ",".join("?" * len(ids)), ids).fetchall()
-    return {r["pipeline_id"]: {"host": r["host"], "segments": json.loads(r["segments"])}
-            for r in rows}
+    return {r["pipeline_id"]: {"host": r["host"], "segments": json.loads(r["segments"]),
+                               "failed_in": r["failed_in"]} for r in rows}

@@ -586,6 +586,11 @@ MIGRATIONS = [
         "CREATE INDEX schedule_runs_entry ON schedule_runs (queue_entry)",
         "CREATE INDEX schedule_runs_state ON schedule_runs (state, created_ms)",
     ],
+    # 21: where a failed build job stopped (phases.failed_in), for the app's
+    # Publishing: '' when it did not fail or that is not known.
+    [
+        "ALTER TABLE pipeline_phases ADD COLUMN failed_in TEXT NOT NULL DEFAULT ''",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

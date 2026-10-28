@@ -141,7 +141,12 @@ the build queue's request, else the pipeline's creation), setup, build, and per
 package prepub's work and the gateway's commit. They come from the job's
 `bits-phases.txt` and prepub's measurement records (`measurements-<pipeline>.json`),
 both kept as job artifacts, else from the job's own times; a retried pipeline is
-looked at again. `GET /ops/builds` returns them as `phases: {host, segments}`.
+looked at again. A failed job's `failed_in` says where it stopped, from the
+marks of the steps it passed (`build_ok`, `publish_start`, `finish_start`):
+`build`, `certify` (after the build, before the publish), `publish`, `finish`
+(after the publish step), or `''` (not known). Without the `build_ok` mark (an
+older bits-console) every failure reads `build`. `GET /ops/builds` returns them
+as `phases: {host, segments, failed_in}`.
 
 **Trace** (`orch/trace.py`, with `BITS_ORCH_PREPUB_URLS`, the prepub nodes,
 comma-separated): which build published each CVMFS path, read from every prepub's

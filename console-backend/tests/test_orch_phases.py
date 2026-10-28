@@ -71,6 +71,21 @@ class SegmentsTest(unittest.TestCase):
                           ["prepub", ms(890), ms(990)],
                           ["build", ms(1000), ms(1000)]])
 
+    def test_where_a_failed_job_stopped(self):
+        failed = dict(_job(), status="failed")
+        m = lambda *marks: {k: T0 for k in marks}
+        self.assertEqual(phases.failed_in(failed, {}), "")                  # marks not kept
+        self.assertEqual(phases.failed_in(failed, m("build_start")), "build")
+        self.assertEqual(phases.failed_in(failed, m("build_start", "build_end")), "build")
+        self.assertEqual(phases.failed_in(failed, m("build_start", "build_end", "build_ok")), "certify")
+        self.assertEqual(phases.failed_in(failed, m("build_end", "build_ok", "publish_start")), "publish")
+        # the publish's own end is written before its finalize, which can fail
+        self.assertEqual(phases.failed_in(failed, m("build_ok", "publish_start", "publish_end")), "publish")
+        self.assertEqual(phases.failed_in(failed, m("build_ok", "publish_start", "publish_end",
+                                                     "finish_start")), "finish")
+        self.assertEqual(phases.failed_in(failed, m("build_ok", "finish_start")), "finish")  # no publish
+        self.assertEqual(phases.failed_in(_job(), m("build_start")), "")      # it passed
+
     def test_the_latest_build_attempt(self):
         jobs = [_job(5), _job(9), _job(11, stage="test"), dict(_job(12), started_at=None)]
         self.assertEqual(phases.build_job(jobs)["id"], 9)
@@ -108,6 +123,17 @@ class StepTest(unittest.TestCase):
         self._pipeline(100, [_job(7), _job(13, start=T0 + 2000, end=T0 + 3000)])
         self.assertEqual(phases.step(self.conn, FakeReader()), 1)  # retried: again, job 13
         self.assertEqual(phases.for_pipelines(self.conn, [100])[100]["segments"][-1][0], "build")
+
+    def test_a_failed_publish_is_recorded_and_served(self):
+        self._pipeline(100, [dict(_job(7), status="failed")], outcome="failed")
+        reader = FakeReader({(7, phases.PHASES_FILE): b"build_start %d\nbuild_end %d\nbuild_ok %d\npublish_start %d\n"
+                             % (T0 + 100, T0 + 500, T0 + 500, T0 + 600)})
+        phases.step(self.conn, reader)
+        self.assertEqual(phases.for_pipelines(self.conn, [100])[100]["failed_in"], "publish")
+        self._pipeline(100, [dict(_job(7), status="failed"), _job(13, start=T0 + 2000, end=T0 + 3000)],
+                       outcome="success")
+        phases.step(self.conn, FakeReader({(13, phases.PHASES_FILE): b"build_start %d\n" % (T0 + 2100)}))
+        self.assertEqual(phases.for_pipelines(self.conn, [100])[100]["failed_in"], "")   # retried: passed
 
     def test_the_queues_request_time_and_gitlab_failing(self):
         self._pipeline(100, [_job(7)])
