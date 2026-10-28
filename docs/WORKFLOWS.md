@@ -220,10 +220,11 @@ last build still runs skips the night; a build that finds no free host for 12
 hours is not run. **▶ Run now** builds every cell not still running, as
 today's night; **Pause**, **Edit** and **✕** (delete) do what they say.
 
-Each night's results are in the nightly matrix, the phone app's **Nightlies**
-tab: a row per slot, a cell per platform, variant and night (queued, running,
-passed, failed and where, or not run and why). A slot's page there has **Run
-again** for the failed cells of its last night.
+Each night's results are in the nightly matrix, on the console's **Nightlies**
+page (14 nights; a build opens its log) and the phone app's **Nightlies** tab
+(7): a row per slot, a cell per platform, variant and night (queued, running,
+passed, failed and where, or not run and why). A slot's page in the app has
+**Run again** for the failed cells of its last night.
 
 ### Step 5 — Build on each push (CI)
 
@@ -255,8 +256,10 @@ those of its extra recipe repositories that name a branch.
   pipeline, which finds everything built.
 
 The Schedules tab shows each followed branch's head, marked *new: builds soon*
-until it is built; the app's page of the slot lists its commit builds, with
-their heads and a cell per platform and variant; the console has no matrix.
+until it is built. CI builds have a matrix of their own, apart from the
+nightlies: the console's **CI builds** page shows each such slot's latest 10, a
+column per build with the heads when it fired and a row per cell, and the phone
+app's **CI** tab the same, its latest 7.
 
 **For operators:** slots need the orchestrator's build queue
 (`BITS_ORCH_QUEUE=1`). The instance's time zone is the site setting
