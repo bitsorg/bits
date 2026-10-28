@@ -6,7 +6,9 @@ per platform, and their runs (schedule_runs), one per platform and night.
 A schedule fires when its time has come since it last fired: one build per
 platform goes to the build queue, with the variables the GitLab fan-out sends
 (scripts/lib-pipeline-dispatch.sh in bits-console), resolved from the console's
-config/platforms.yaml and the community's ui-config.yaml. A night missed while
+config/platforms.yaml and the community's ui-config.yaml: its defaults with the
+community's defaults_overlay, as DEFAULTS too, and the night's --day, so a
+nightly layout is resolved as it was built. A night missed while
 the worker was down fires on its return within GRACE_MS; older ones are not
 run. A platform whose previous night still waits or builds skips this one.
 A certifying schedule's builds certify under its standing approval in force
@@ -70,9 +72,26 @@ def resolve_platform(platform, defaults, community_cfg):
     return img, install_dir, arch, "aarch64" if "aarch64" in platform else "x86_64"
 
 
-def build_args(s, platform_arch, image, max_jobs):
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")     # bits' {day}
+
+
+def defaults_chain(s, community_cfg):
+    """The schedule's defaults with the community's defaults_overlay last, as the
+    console's Build dialog sends them (Testbed's points the publish at its repo)."""
+    overlay = str(community_cfg.get("defaults_overlay") or "").strip()
+    parts = [p for p in s["defaults"].split("::") if p and p != overlay]
+    chain = "::".join(parts + ([overlay] if overlay else []))
+    if not schedules.DEFAULTS_RE.fullmatch(chain):
+        raise Unbuildable("the community's defaults_overlay %r is not a defaults name" % overlay)
+    return chain
+
+
+def build_args(s, platform_arch, image, max_jobs, day="", defaults=None):
     """BITS_BUILD_ARGS, in lib-pipeline-dispatch.sh's order, with the schedule's
-    `set` variables before its extra arguments."""
+    `set` variables before its extra arguments; *day* (its night's) fills a
+    nightly layout's {day}, whenever the queue starts the build; *defaults*: the
+    chain (defaults_chain), else the schedule's."""
+    defaults = s["defaults"] if defaults is None else defaults
     a = []
     if s["rebuild"]:
         a += ["--force-rebuild", s["package"]]
@@ -87,8 +106,10 @@ def build_args(s, platform_arch, image, max_jobs):
     a += ["--sandbox", "off"]
     if s["debug"]:
         a.append("--debug")
-    if s["defaults"]:
-        a += ["--defaults", s["defaults"]]
+    if defaults:
+        a += ["--defaults", defaults]
+    if day:
+        a += ["--day", day]
     for k, v in s["set"].items():
         a += ["--set", "%s=%s" % (k, v)]
     if s["extra_build_args"]:
@@ -96,14 +117,17 @@ def build_args(s, platform_arch, image, max_jobs):
     return " ".join(a)
 
 
-def variables(s, platform, cfg, certifier):
-    """The queued build of *platform*: [{key, value}]. *cfg*: config(); *certifier*:
-    who certifies (the standing approval's approver), or None."""
+def variables(s, platform, cfg, certifier, night=""):
+    """The queued build of *platform* on *night* (ISO date): [{key, value}]. *cfg*:
+    config(); *certifier*: who certifies (the standing approval's approver), or
+    None. DEFAULTS too: the build job resolves its CVMFS target with it."""
     img, install_dir, arch, runner = resolve_platform(platform, cfg["platforms"], cfg["community"])
+    day = WEEKDAYS[dt.date.fromisoformat(night).weekday()] if night else ""
+    chain = defaults_chain(s, cfg["community"])
     v = [("PACKAGE", s["package"]), ("PLATFORM", platform), ("RUNNER_ARCH", runner),
          ("BITS_RUNNER_TAG", build_queue.ARCH_TAG + runner), ("COMMUNITY", s["community_dir"]),
-         ("CVMFS_INSTALL_DIR", install_dir), ("BITS_BUILD_ARGS", build_args(s, arch, img, cfg["max_jobs"])),
-         ("VERSION", s["version"]), ("BITS_EXTRA_REPOS", s["extra_repos"]),
+         ("CVMFS_INSTALL_DIR", install_dir), ("BITS_BUILD_ARGS", build_args(s, arch, img, cfg["max_jobs"], day, chain)),
+         ("DEFAULTS", chain), ("VERSION", s["version"]), ("BITS_EXTRA_REPOS", s["extra_repos"]),
          ("PUBLISH_CVMFS", "true" if s["cvmfs"] else ""),
          ("CERTIFY", "true" if certifier else ""), ("BITS_CERTIFIER", certifier or ""),
          ("NIGHTLY_SUFFIX", SUFFIX)]
@@ -189,6 +213,7 @@ def fire_night(conn, s, night, platforms, cfg, ref, why, now=None):
             continue
         try:
             resolve_platform(p, cfg["platforms"], cfg["community"])
+            defaults_chain(s, cfg["community"])
         except Unbuildable as e:
             _run(conn, s, night, p, attempt, "not_run", str(e), now=now)
             states[p] = "not_run"
@@ -197,7 +222,7 @@ def fire_night(conn, s, night, platforms, cfg, ref, why, now=None):
     certifier, note = _certifier(conn, s, len(go))
     if go:
         builds = [("%s%s (%s)" % (s["package"], " " + s["version"] if s["version"] else "", p),
-                   variables(s, p, cfg, certifier)) for p, _a in go]
+                   variables(s, p, cfg, certifier, night)) for p, _a in go]
         batch, ids = build_queue.add_in(conn, s["community"], subject(s["id"]), ref, builds,
                                         events.WORKER, batch="%s:%s:%s" % (subject(s["id"]), night,
                                                                            secrets.token_hex(4)))

@@ -38,6 +38,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 - **[Feature]** Where a failed build job stopped (`phases.failed_in` in `GET /ops/builds`: `build`, `certify`, `publish`, `finish`; database migration 21), from the `build_ok` and `finish_start` marks bits-console's build job writes, so a failed publish is told from a failed build.
 - **[Feature]** `GET /ops/admin/ci-var?key=BITS_DESIRED_REF`: the bits version the runners are set to, for any admin.
 - **[Improvement]** A build's phases name the build host it was pinned to (`phases.host`), not its runner's description, so the timeline's rows are the hosts.
+- **[Fix]** A nightly build's defaults are its schedule's with the community's `defaults_overlay` (without it a Testbed nightly would publish to production's repository), sent as `DEFAULTS` too (the build job resolved its CVMFS target with `release`), and it carries its night's weekday as `--day`, so a nightly layout's `{day}` is the night's even when the queue starts it after midnight UTC. A schedule's extra arguments may not give `--defaults`.
 - **[Feature]** `GET /ops/worker`: the worker's last pass and which of its steps fail since when, for admins (the errors: overall admins).
 
 ## Signed reuse, trust and certification

@@ -65,18 +65,31 @@ class VariablesTest(unittest.TestCase):
             nl.resolve_platform("x", [], {"platforms": ["x|img with space"]})
         self.assertEqual(nl.resolve_platform("osx", [{"name": "osx"}], {}), ("", "osx", "osx", "x86_64"))
 
-    def test_a_nights_build_is_what_the_gitlab_fan_out_sends(self):
-        v = _vars(nl.variables(self.s, "x86_64-el9", self.cfg, None))
+    def test_a_nights_build_is_what_the_gitlab_fan_out_sends_with_its_defaults_and_day(self):
+        v = _vars(nl.variables(self.s, "x86_64-el9", self.cfg, None, "2026-10-29"))
         self.assertEqual(v, {
             "PACKAGE": "ROOT", "PLATFORM": "x86_64-el9", "RUNNER_ARCH": "x86_64",
             "BITS_RUNNER_TAG": "bits-build-x86_64", "COMMUNITY": "LCG", "CVMFS_INSTALL_DIR": "el9-x86_64",
             "BITS_BUILD_ARGS": "--force-rebuild ROOT --architecture el9-lcg --docker --docker-image"
                                " registry/lcg-el9 -j 8 --docker-extra-args=--cpus=16 --sandbox off"
-                               " --defaults release::gcc15 --set release=LCG_110b --keep-going --fetch-repos",
-            "VERSION": "v6-36", "BITS_EXTRA_REPOS": "https://github.com/bitsorg/lcg.bits.git@LCG_110b",
+                               " --defaults release::gcc15 --day Thu --set release=LCG_110b"
+                               " --keep-going --fetch-repos",
+            "DEFAULTS": "release::gcc15", "VERSION": "v6-36", "BITS_EXTRA_REPOS": "https://github.com/bitsorg/lcg.bits.git@LCG_110b",
             "PUBLISH_CVMFS": "true", "NIGHTLY_SUFFIX": " [nightly]"})
         v = _vars(nl.variables(self.s, "x86_64-el9", self.cfg, "alice"))
         self.assertEqual((v["CERTIFY"], v["BITS_CERTIFIER"]), ("true", "alice"))
+        self.assertNotIn("--day", v["BITS_BUILD_ARGS"])
+
+    def test_the_communitys_defaults_overlay_comes_last_as_in_the_console(self):
+        cfg = dict(self.cfg, community=dict(self.cfg["community"], defaults_overlay="testbed"))
+        v = _vars(nl.variables(self.s, "x86_64-el9", cfg, None, "2026-10-29"))
+        self.assertEqual(v["DEFAULTS"], "release::gcc15::testbed")
+        self.assertIn("--defaults release::gcc15::testbed --day Thu", v["BITS_BUILD_ARGS"])
+        s = dict(self.s, defaults="testbed::gcc15")
+        self.assertEqual(nl.defaults_chain(s, cfg["community"]), "gcc15::testbed")
+        self.assertEqual(nl.defaults_chain(dict(self.s, defaults=""), cfg["community"]), "testbed")
+        with self.assertRaises(nl.Unbuildable):
+            nl.defaults_chain(self.s, {"defaults_overlay": "a b"})
 
 
 class _Nights(unittest.TestCase):
@@ -121,6 +134,16 @@ class StepTest(_Nights):
         self.assertEqual(q, [("schedule:%d" % s["id"], "schedule:%d:2026-10-28" % s["id"], "lcg", p)
                              for p in ("aarch64-el9", "x86_64-el9")])
         self.assertIn(("communities/LCG/ui-config.yaml", "main"), self.reader.read)
+
+    def test_a_nights_day_is_its_local_date_not_utcs(self):
+        from zoneinfo import ZoneInfo
+        self._schedule(_ms(2026, 10, 28, 12, 0), platforms=["x86_64-el9"], time="00:30",
+                       defaults="gcc15::opt::dev3")
+        nl.step(self.conn, self.reader, "main", ZoneInfo("Europe/Zurich"), now=_ms(2026, 10, 28, 23, 31))
+        v = _vars(json.loads(self.conn.execute("SELECT variables FROM build_queue").fetchone()[0]))
+        self.assertEqual(self._runs()[0][0], "2026-10-29")              # Wed 23:31 UTC, Thu in Zurich
+        self.assertIn("--defaults gcc15::opt::dev3 --day Thu", v["BITS_BUILD_ARGS"])
+        self.assertEqual(v["DEFAULTS"], "gcc15::opt::dev3")
 
     def test_a_missed_night_fires_within_the_grace_and_older_ones_are_not_run(self):
         self._schedule(_ms(2026, 10, 25, 12, 0), platforms=["x86_64-el9"])

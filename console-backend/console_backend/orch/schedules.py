@@ -24,7 +24,7 @@ _RE = lambda p: re.compile(p, re.ASCII)
 _NAME = _RE(r"[A-Za-z0-9][A-Za-z0-9 ._+()-]{0,99}")
 _PKG = _RE(r"[A-Za-z0-9._+-]{1,100}")
 _VERSION = _RE(r"[A-Za-z0-9._+-]{0,100}")
-_DEFAULTS = _RE(r"[A-Za-z0-9._:+-]{0,200}")
+DEFAULTS_RE = _RE(r"[A-Za-z0-9._:+-]{0,200}")
 _PLATFORM = _RE(r"[A-Za-z0-9._-]{1,64}")
 _REPO = _RE(r"https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/-]+(@[A-Za-z0-9._/][A-Za-z0-9._/-]*)?")
 _REPOS = _RE(r"[^\s]{0,2000}")
@@ -84,7 +84,7 @@ def check(p, community):
     s["name"] = _text(p, "name", _NAME, "1-100 letters, digits, spaces and ._+()-")
     s["package"] = _text(p, "package", _PKG, "a package name")
     s["version"] = _text(p, "version", _VERSION, "a version, or empty for the recipe's")
-    s["defaults"] = _text(p, "defaults", _DEFAULTS, "a defaults chain (a::b), or empty")
+    s["defaults"] = _text(p, "defaults", DEFAULTS_RE, "a defaults chain (a::b), or empty")
     repos = [r for r in _text(p, "extra_repos", _REPOS, "url@branch;...").split(";") if r]
     for r in repos:
         if not _REPO.fullmatch(r):
@@ -107,6 +107,8 @@ def check(p, community):
         raise Invalid("jobs: 0 (the build host's) to 256")
     s["jobs"] = jobs
     s["extra_build_args"] = _text(p, "extra_build_args", _ARGS, "bits build arguments without quotes")
+    if re.search(r"(^|\s)--defaults(=|\s|$)", s["extra_build_args"]):
+        raise Invalid("extra_build_args: give the defaults in defaults (the build job resolves its CVMFS target with them)")
     days = p.get("days", EVERY_DAY)
     if isinstance(days, bool) or not isinstance(days, int) or not 0 < days <= EVERY_DAY:
         raise Invalid("days: a weekday mask, 1 (Monday) to 127 (every day)")

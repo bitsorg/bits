@@ -327,7 +327,13 @@ With the build queue on, the worker's `schedules` step (`orch/nightlies.py`) fir
 each schedule whose time has come since it last fired: one queued build per
 platform, with the variables the GitLab fan-out sends, resolved from the
 console's `config/platforms.yaml`, `config/monitoring.yaml` and the community's
-`ui-config.yaml`, and one `schedule_runs` row each. A night missed while the
+`ui-config.yaml`, and one `schedule_runs` row each. Its defaults are the
+schedule's with the community's `defaults_overlay` last, as the console's Build
+dialog sends them, and go as `DEFAULTS` too, with which the build job resolves its
+CVMFS target; `--defaults` in the extra arguments is refused. Its night's weekday
+goes as `--day` (the local date of the scheduled time; for Run now, today's), so a
+nightly layout's `{day}` is the night's whenever the queue starts it; it wins over
+a `day:` in the defaults. A night missed while the
 worker was down fires on its return within 6 hours, older ones are `not_run`; a
 platform whose previous night still waits or builds `skipped`. A certifying
 schedule's builds certify as the approver of its standing approval in force (its
