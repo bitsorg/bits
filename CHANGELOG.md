@@ -37,6 +37,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 - **[Feature]** An overall admin prunes a build host's sw until it has the free space asked for, as the action `host.prune` (bits-console's `prune-host` job on that host); the app asks for the one saved for the host (`PUT /ops/hosts/{host}/prune-target`, 200 GiB unless set).
 - **[Feature]** Where a failed build job stopped (`phases.failed_in` in `GET /ops/builds`: `build`, `certify`, `publish`, `finish`; database migration 21), from the `build_ok` and `finish_start` marks bits-console's build job writes, so a failed publish is told from a failed build.
 - **[Feature]** `GET /ops/admin/ci-var?key=BITS_DESIRED_REF`: the bits version the runners are set to, for any admin.
+- **[Improvement]** A build's phases name the build host it was pinned to (`phases.host`), not its runner's description, so the timeline's rows are the hosts.
 - **[Feature]** `GET /ops/worker`: the worker's last pass and which of its steps fail since when, for admins (the errors: overall admins).
 
 ## Signed reuse, trust and certification

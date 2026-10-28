@@ -124,6 +124,20 @@ class StepTest(unittest.TestCase):
         self.assertEqual(phases.step(self.conn, FakeReader()), 1)  # retried: again, job 13
         self.assertEqual(phases.for_pipelines(self.conn, [100])[100]["segments"][-1][0], "build")
 
+    def test_the_host_is_the_build_host_it_was_pinned_to(self):
+        self._pipeline(100, [_job(7)])
+        self._pipeline(101, [_job(8)])
+        self._pipeline(102, [_job(9)])
+        with db.transaction(self.conn):
+            for pid, v in ((100, {"BITS_RUNNER_TAG": "bits-host-gjuan-desktop"}),
+                           (101, {"BITS_RUNNER_TAG": "bits-build-x86_64"}), (102, {"BITS_RUNNER_TAG": "bits-host-"})):
+                self.conn.execute("UPDATE pipelines SET variables = ? WHERE id = ?", (json.dumps(v), pid))
+        phases.step(self.conn, FakeReader())
+        got = phases.for_pipelines(self.conn, [100, 101, 102])
+        self.assertEqual([got[p]["host"] for p in (100, 101, 102)],
+                         ["gjuan-desktop", "pcphsft204", "pcphsft204"])     # else the runner's description
+        self.assertEqual(phases.host({"runner": "r"}, "not json"), "r")
+
     def test_a_failed_publish_is_recorded_and_served(self):
         self._pipeline(100, [dict(_job(7), status="failed")], outcome="failed")
         reader = FakeReader({(7, phases.PHASES_FILE): b"build_start %d\nbuild_end %d\nbuild_ok %d\npublish_start %d\n"

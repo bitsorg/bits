@@ -146,7 +146,8 @@ marks of the steps it passed (`build_ok`, `publish_start`, `finish_start`):
 `build`, `certify` (after the build, before the publish), `publish`, `finish`
 (after the publish step), or `''` (not known). Without the `build_ok` mark (an
 older bits-console) every failure reads `build`. `GET /ops/builds` returns them
-as `phases: {host, segments, failed_in}`.
+as `phases: {host, segments, failed_in}`; `host` is the build host a pinned
+build ran on (`BITS_RUNNER_TAG=bits-host-<name>`), else its runner's description.
 
 **Trace** (`orch/trace.py`, with `BITS_ORCH_PREPUB_URLS`, the prepub nodes,
 comma-separated): which build published each CVMFS path, read from every prepub's

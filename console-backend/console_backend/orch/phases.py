@@ -30,7 +30,7 @@ import logging
 import math
 import re
 
-from . import db
+from . import build_queue, db
 
 log = logging.getLogger("bits_orchestrator.phases")
 
@@ -144,6 +144,18 @@ def failed_in(job, phase_marks):
     return "finish"
 
 
+def host(job, variables):
+    """The build host it ran on: the one it was pinned to (bits-host-<name>, as
+    the queue pins its builds), else its runner's description."""
+    try:
+        tag = str(json.loads(variables or "{}").get("BITS_RUNNER_TAG") or "")
+    except (ValueError, AttributeError):
+        tag = ""
+    if tag.startswith(build_queue.HOST_TAG) and tag != build_queue.HOST_TAG:
+        return tag[len(build_queue.HOST_TAG):]
+    return str(job.get("runner") or "")
+
+
 def _artifact(reader, job_id, name):
     from .. import forge_ops
     try:
@@ -161,7 +173,7 @@ def step(conn, reader):
     none, or whose build job was retried since. Returns how many."""
     now = db.now_ms()
     rows = conn.execute(
-        "SELECT p.id, p.jobs, p.created_at, f.job_id AS done_job, (SELECT MIN(q.created_ms)"
+        "SELECT p.id, p.jobs, p.variables, p.created_at, f.job_id AS done_job, (SELECT MIN(q.created_ms)"
         " FROM build_queue q WHERE q.pipeline_id = p.id) AS queued_ms"
         " FROM pipelines p LEFT JOIN pipeline_phases f ON f.pipeline_id = p.id"
         " WHERE p.is_build = 1 AND p.outcome != 'running' AND p.first_seen_ms > ?"
@@ -189,7 +201,7 @@ def step(conn, reader):
                          " DO UPDATE SET job_id = excluded.job_id, host = excluded.host,"
                          " segments = excluded.segments, failed_in = excluded.failed_in,"
                          " recorded_ms = excluded.recorded_ms",
-                         (r["id"], job["id"], str(job.get("runner") or ""), json.dumps(segs),
+                         (r["id"], job["id"], host(job, r["variables"]), json.dumps(segs),
                           failed_in(job, m), now))
         n += 1
         if n >= PER_PASS:
