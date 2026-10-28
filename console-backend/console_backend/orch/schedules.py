@@ -4,7 +4,8 @@
 which platforms, on which weekdays at what time of the bits instance's time zone.
 
 A schedule (a row of the nightly matrix) builds one package at one version, with
-one defaults chain and recipe repositories, on several platforms. Its content
+one defaults chain and recipe repositories, on several platforms, and each of
+its variants (ADR bits 0009: defaults chains put before its own). Its content
 hash covers what is built and where it goes, not when: a standing approval is
 bound to it (approvals.standing_subject("schedule:<id>", sha256)), so moving a
 nightly to another time keeps its approval and adding a platform needs a new one.
@@ -35,6 +36,9 @@ _GROUP = _RE(r"[a-z0-9._-]{1,64}")
 _DIR = _RE(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _TIME = _RE(r"([01][0-9]|2[0-3]):[0-5][0-9]")
 MAX_PLATFORMS = 32
+MAX_VARIANTS = 16
+MAX_CELLS = 64                     # platforms x variants: the builds of one night
+MAX_CHAIN = 160                    # a variant::defaults, leaving room for a community's overlay
 EVERY_DAY = 0b1111111              # bit 0 Monday ... bit 6 Sunday
 
 
@@ -101,6 +105,17 @@ def check(p, community):
             isinstance(x, str) and _PLATFORM.fullmatch(x) for x in plats) or len(set(plats)) != len(plats):
         raise Invalid("platforms: 1 to %d different platform names" % MAX_PLATFORMS)
     s["platforms"] = sorted(plats)
+    var = p.get("variants") or []
+    if not isinstance(var, list) or not all(isinstance(v, str) and DEFAULTS_RE.fullmatch(v) for v in var):
+        raise Invalid("variants: defaults chains (a::b)")
+    var = ["::".join(x for x in v.split("::") if x) for v in var]          # "a::" is "a"
+    if len(var) > MAX_VARIANTS or not all(var) or len(set(var)) != len(var):
+        raise Invalid("variants: up to %d different defaults chains (a::b)" % MAX_VARIANTS)
+    if any(len(v) + 2 + len(s["defaults"]) > MAX_CHAIN for v in var):
+        raise Invalid("variants: a variant and the defaults together over %d characters" % MAX_CHAIN)
+    s["variants"] = sorted(var)
+    if len(plats) * max(1, len(var)) > MAX_CELLS:
+        raise Invalid("platforms x variants: at most %d builds a night" % MAX_CELLS)
     s["rebuild"], s["debug"] = _flag(p, "rebuild"), _flag(p, "debug")
     jobs = p.get("jobs", 0)
     if isinstance(jobs, bool) or not isinstance(jobs, int) or not 0 <= jobs <= 256:
@@ -129,9 +144,23 @@ _CONTENT = ("community", "package", "version", "defaults", "extra_repos", "set",
 
 
 def content_sha256(s):
-    """What is built and where it goes, not when (days, time) or whether (enabled)."""
-    text = json.dumps({k: s[k] for k in _CONTENT}, sort_keys=True, separators=(",", ":"))
+    """What is built and where it goes, not when (days, time) or whether (enabled).
+    Variants count only when there are some: a schedule without keeps its hash."""
+    content = {k: s[k] for k in _CONTENT}
+    if s.get("variants"):
+        content["variants"] = s["variants"]
+    text = json.dumps(content, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def cells(s):
+    """[(platform, variant)] of a night: every platform x every variant ('' when none)."""
+    return [(p, v) for p in s["platforms"] for v in (s.get("variants") or [""])]
+
+
+def cell_key(platform, variant):
+    """A cell's name in the matrix: its platform, and its variant if it has one."""
+    return "%s %s" % (platform, variant) if variant else platform
 
 
 # --- when it runs ---------------------------------------------------------------
@@ -174,7 +203,7 @@ def next_run_ms(s, now_ms, tz):
 
 def _row(r):
     d = dict(r)
-    for k in ("set", "platforms", "certify_groups"):
+    for k in ("set", "platforms", "certify_groups", "variants"):
         d[k] = json.loads(d.pop("set_vars") if k == "set" else d[k])
     for k in ("rebuild", "debug", "certify", "cvmfs", "enabled"):
         d[k] = bool(d[k])
@@ -205,12 +234,12 @@ def _public(s):
 def _store(conn, s, sid=None):
     cols = ("community", "community_dir", "name", "package", "version", "defaults", "extra_repos", "set_vars",
             "platforms", "rebuild", "debug", "jobs", "extra_build_args", "days", "time", "certify",
-            "cvmfs", "certify_groups", "enabled", "content_sha256")
+            "cvmfs", "certify_groups", "enabled", "variants", "content_sha256")
     vals = (s["community"], s["community_dir"], s["name"], s["package"], s["version"], s["defaults"], s["extra_repos"],
             json.dumps(s["set"]), json.dumps(s["platforms"]), int(s["rebuild"]), int(s["debug"]),
             s["jobs"], s["extra_build_args"], s["days"], s["time"], int(s["certify"]),
             int(s["cvmfs"]), json.dumps(s["certify_groups"]), int(s["enabled"]),
-            content_sha256(s))
+            json.dumps(s["variants"]), content_sha256(s))
     return cols, vals
 
 

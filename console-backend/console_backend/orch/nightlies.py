@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The nights of the schedules (ADR bits 0007): firing them, one queued build
-per platform, and their runs (schedule_runs), one per platform and night.
+"""The nights of the schedules (ADR bits 0007, 0009): firing them, one queued
+build per cell (platform, variant), and their runs (schedule_runs), one per cell
+and night.
 
 A schedule fires when its time has come since it last fired: one build per
 platform goes to the build queue, with the variables the GitLab fan-out sends
@@ -75,14 +76,16 @@ def resolve_platform(platform, defaults, community_cfg):
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")     # bits' {day}
 
 
-def defaults_chain(s, community_cfg):
-    """The schedule's defaults with the community's defaults_overlay last, as the
-    console's Build dialog sends them (Testbed's points the publish at its repo)."""
+def defaults_chain(s, community_cfg, variant=""):
+    """A cell's defaults: its *variant*, then the schedule's, with the community's
+    defaults_overlay last, as the console's Build dialog sends them (Testbed's
+    points the publish at its repo)."""
     overlay = str(community_cfg.get("defaults_overlay") or "").strip()
-    parts = [p for p in s["defaults"].split("::") if p and p != overlay]
+    parts = [p for p in (variant + "::" + s["defaults"]).split("::") if p and p != overlay]
     chain = "::".join(parts + ([overlay] if overlay else []))
     if not schedules.DEFAULTS_RE.fullmatch(chain):
-        raise Unbuildable("the community's defaults_overlay %r is not a defaults name" % overlay)
+        raise Unbuildable("the defaults %r (with the community's defaults_overlay %r) are not a defaults"
+                          " chain of at most 200 characters" % (chain, overlay))
     return chain
 
 
@@ -117,13 +120,13 @@ def build_args(s, platform_arch, image, max_jobs, day="", defaults=None):
     return " ".join(a)
 
 
-def variables(s, platform, cfg, certifier, night=""):
+def variables(s, platform, cfg, certifier, night="", variant=""):
     """The queued build of *platform* on *night* (ISO date): [{key, value}]. *cfg*:
     config(); *certifier*: who certifies (the standing approval's approver), or
     None. DEFAULTS too: the build job resolves its CVMFS target with it."""
     img, install_dir, arch, runner = resolve_platform(platform, cfg["platforms"], cfg["community"])
     day = WEEKDAYS[dt.date.fromisoformat(night).weekday()] if night else ""
-    chain = defaults_chain(s, cfg["community"])
+    chain = defaults_chain(s, cfg["community"], variant)
     v = [("PACKAGE", s["package"]), ("PLATFORM", platform), ("RUNNER_ARCH", runner),
          ("BITS_RUNNER_TAG", build_queue.ARCH_TAG + runner), ("COMMUNITY", s["community_dir"]),
          ("CVMFS_INSTALL_DIR", install_dir), ("BITS_BUILD_ARGS", build_args(s, arch, img, cfg["max_jobs"], day, chain)),
@@ -164,24 +167,24 @@ def config(reader, community_dir, ref):
 
 # --- runs --------------------------------------------------------------------------
 
-def _run(conn, s, night, platform, attempt, state, reason="", entry=None, now=None):
+def _run(conn, s, night, cell, attempt, state, reason="", entry=None, now=None):
     now = now or db.now_ms()
-    conn.execute("INSERT INTO schedule_runs (schedule_id, night, platform, attempt, state,"
+    conn.execute("INSERT INTO schedule_runs (schedule_id, night, platform, variant, attempt, state,"
                  " content_sha256, queue_entry, reason, created_ms, updated_ms)"
-                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                 (s["id"], night, platform, attempt, state, s["content_sha256"], entry,
+                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (s["id"], night, cell[0], cell[1], attempt, state, s["content_sha256"], entry,
                   reason[:500], now, now))
 
 
-def _attempt(conn, sid, night, platform):
+def _attempt(conn, sid, night, cell):
     r = conn.execute("SELECT MAX(attempt) AS a FROM schedule_runs WHERE schedule_id = ? AND"
-                     " night = ? AND platform = ?", (sid, night, platform)).fetchone()
+                     " night = ? AND platform = ? AND variant = ?", (sid, night) + tuple(cell)).fetchone()
     return (r["a"] or 0) + 1
 
 
-def _still_open(conn, sid, platform):
-    return conn.execute("SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND platform = ?"
-                        " AND state IN ('queued', 'running') LIMIT 1", (sid, platform)).fetchone()
+def _still_open(conn, sid, cell):
+    return conn.execute("SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND platform = ? AND variant = ?"
+                        " AND state IN ('queued', 'running') LIMIT 1", (sid,) + tuple(cell)).fetchone()
 
 
 def _certifier(conn, s, n):
@@ -199,63 +202,67 @@ def _certifier(conn, s, n):
     return a["approver"], ""
 
 
-def fire_night(conn, s, night, platforms, cfg, ref, why, now=None):
-    """Within the caller's transaction: queue *night*'s builds of *platforms*
-    (a platform still waiting or building skips it, one that cannot be built is
-    not run). Returns the runs' states."""
+def fire_night(conn, s, night, cells, cfg, ref, why, now=None):
+    """Within the caller's transaction: queue *night*'s builds of *cells*
+    [(platform, variant)] (a cell still waiting or building skips it, one that
+    cannot be built is not run). Returns the runs' states by cell_key."""
     go, states = [], {}
-    for p in platforms:
-        attempt = _attempt(conn, s["id"], night, p)
-        if _still_open(conn, s["id"], p):
+    for c in cells:
+        key, attempt = schedules.cell_key(*c), _attempt(conn, s["id"], night, c)
+        if _still_open(conn, s["id"], c):
             if why == "scheduled":                 # Run now records nothing: its run still goes on
-                _run(conn, s, night, p, attempt, "skipped", "the previous night still runs", now=now)
-            states[p] = "skipped"
+                _run(conn, s, night, c, attempt, "skipped", "the previous night still runs", now=now)
+            states[key] = "skipped"
             continue
         try:
-            resolve_platform(p, cfg["platforms"], cfg["community"])
-            defaults_chain(s, cfg["community"])
+            resolve_platform(c[0], cfg["platforms"], cfg["community"])
+            defaults_chain(s, cfg["community"], c[1])
         except Unbuildable as e:
-            _run(conn, s, night, p, attempt, "not_run", str(e), now=now)
-            states[p] = "not_run"
+            _run(conn, s, night, c, attempt, "not_run", str(e), now=now)
+            states[key] = "not_run"
             continue
-        go.append((p, attempt))
+        go.append((c, attempt))
     certifier, note = _certifier(conn, s, len(go))
     if go:
-        builds = [("%s%s (%s)" % (s["package"], " " + s["version"] if s["version"] else "", p),
-                   variables(s, p, cfg, certifier, night)) for p, _a in go]
+        builds = [("%s%s (%s)" % (s["package"], " " + s["version"] if s["version"] else "", ", ".join(filter(None, c))),
+                   variables(s, c[0], cfg, certifier, night, c[1])) for c, _a in go]
         batch, ids = build_queue.add_in(conn, s["community"], subject(s["id"]), ref, builds,
                                         events.WORKER, batch="%s:%s:%s" % (subject(s["id"]), night,
                                                                            secrets.token_hex(4)))
-        for (p, attempt), entry in zip(go, ids):
-            _run(conn, s, night, p, attempt, "queued", note, entry, now=now)
-            states[p] = "queued"
+        for (c, attempt), entry in zip(go, ids):
+            _run(conn, s, night, c, attempt, "queued", note, entry, now=now)
+            states[schedules.cell_key(*c)] = "queued"
     events.append(conn, "schedule.fired", subject(s["id"]), events.WORKER,
                   {"night": night, "why": why, "runs": states, "certifier": certifier})
     return states
 
 
 def _not_run(conn, s, night, reason, now=None):
-    for p in s["platforms"]:
-        _run(conn, s, night, p, _attempt(conn, s["id"], night, p), "not_run", reason, now=now)
+    for c in schedules.cells(s):
+        _run(conn, s, night, c, _attempt(conn, s["id"], night, c), "not_run", reason, now=now)
     events.append(conn, "schedule.not_run", subject(s["id"]), events.WORKER,
                   {"night": night, "reason": reason})
 
 
-def run_now(conn, sid, platforms, cfg, ref, tz, user, now=None):
-    """Within the caller's transaction: Run now (all platforms) or Run again (some):
-    today's night, each platform's next attempt. The states, or None when the
-    schedule is not there."""
+def run_now(conn, sid, platforms, cfg, ref, tz, user, now=None, cells=None):
+    """Within the caller's transaction: Run now (every cell) or Run again (the
+    cells of some *platforms*, or some *cells* by cell_key): today's night, each
+    cell's next attempt. The states, or None when the schedule is not there."""
     s = schedules.get(conn, sid)
     if s is None:
         return None
     now = now or db.now_ms()
     night = dt.datetime.fromtimestamp(now / 1000, tz).date().isoformat()
-    unknown = set(platforms or []) - set(s["platforms"])
-    if len(set(platforms or [])) != len(platforms or []):
-        raise schedules.Invalid("platforms: each once")
-    if unknown:
-        raise schedules.Invalid("platforms: not the schedule's: %s" % ", ".join(sorted(unknown)))
-    return fire_night(conn, s, night, platforms or s["platforms"], cfg, ref, "run now by %s" % user, now)
+    every = {schedules.cell_key(*c): c for c in schedules.cells(s)}
+    for what, asked, known in (("platforms", platforms or [], s["platforms"]), ("cells", cells or [], every)):
+        if len(set(asked)) != len(asked):
+            raise schedules.Invalid("%s: each once" % what)
+        unknown = set(asked) - set(known)
+        if unknown:
+            raise schedules.Invalid("%s: not the schedule's: %s" % (what, ", ".join(sorted(unknown))))
+    chosen = [c for k, c in every.items() if (not platforms and not cells) or c[0] in (platforms or [])
+              or k in (cells or [])]
+    return fire_night(conn, s, night, chosen, cfg, ref, "run now by %s" % user, now)
 
 
 def due(conn, now, tz):
@@ -301,7 +308,7 @@ def step(conn, reader, ref, tz, now=None):
             elif isinstance(cfg, Unbuildable):
                 _not_run(conn, s, night, str(cfg), now)
             else:
-                fire_night(conn, s, night, s["platforms"], cfg, ref, "scheduled", now)
+                fire_night(conn, s, night, schedules.cells(s), cfg, ref, "scheduled", now)
                 fired += 1
             conn.execute("UPDATE schedules SET last_fired_ms = ? WHERE id = ?", (now, s["id"]))
     if unread:
@@ -390,10 +397,12 @@ def matrix(conn, communities, nights, tz, now=None):
         for r in conn.execute(
                 "SELECT * FROM schedule_runs WHERE schedule_id = ? AND night >= ? ORDER BY attempt",
                 (s["id"], days[0])):
-            cells.setdefault(r["platform"], {})[r["night"]] = {
+            cells.setdefault(schedules.cell_key(r["platform"], r["variant"]), {})[r["night"]] = {
                 k: r[k] for k in ("state", "attempt", "reason", "failed_at", "pipeline_id", "build_id")}
-        rows.append({"schedule": {k: s[k] for k in ("id", "name", "package", "version", "defaults",
-                                                    "platforms", "enabled", "time", "days")},
+        rows.append({"schedule": dict({k: s[k] for k in ("id", "name", "package", "version", "defaults",
+                                                         "platforms", "variants", "enabled", "time", "days")},
+                                      cells=[{"key": schedules.cell_key(*c), "platform": c[0], "variant": c[1]}
+                                             for c in schedules.cells(s)]),
                      "cells": cells,
                      "failed": {n: sum(1 for p in cells.values() if p.get(n, {}).get("state") == "failed")
                                 for n in days}})

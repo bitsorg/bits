@@ -88,8 +88,9 @@ class VariablesTest(unittest.TestCase):
         s = dict(self.s, defaults="testbed::gcc15")
         self.assertEqual(nl.defaults_chain(s, cfg["community"]), "gcc15::testbed")
         self.assertEqual(nl.defaults_chain(dict(self.s, defaults=""), cfg["community"]), "testbed")
-        with self.assertRaises(nl.Unbuildable):
+        with self.assertRaises(nl.Unbuildable) as e:
             nl.defaults_chain(self.s, {"defaults_overlay": "a b"})
+        self.assertIn("release::gcc15::a b", str(e.exception))
 
 
 class _Nights(unittest.TestCase):
@@ -330,6 +331,45 @@ class ResultsTest(_Nights):
         self.assertEqual(row["failed"]["2026-10-28"], 0)                         # its latest attempt
         self.assertEqual(nl.matrix(self.conn, set(), 3, UTC)["rows"], [])
 
+
+
+class VariantsTest(_Nights):
+    def test_a_night_builds_every_cell_with_its_variant_first(self):
+        s = self._schedule(_ms(2026, 10, 27, 12, 0), platforms=["x86_64-el9", "aarch64-el9"], defaults="dev3",
+                           variants=["gcc15::opt", "clang::opt"])
+        nl.step(self.conn, self.reader, "main", UTC, now=_ms(2026, 10, 28, 2, 1))
+        runs = [(r["platform"], r["variant"], r["state"]) for r in self.conn.execute(
+            "SELECT * FROM schedule_runs ORDER BY platform, variant")]
+        self.assertEqual(runs, [(p, v, "queued") for p in ("aarch64-el9", "x86_64-el9")
+                                for v in ("clang::opt", "gcc15::opt")])
+        q = {(_vars(json.loads(r["variables"]))["PLATFORM"], r["name"], _vars(json.loads(r["variables"]))["DEFAULTS"])
+             for r in self.conn.execute("SELECT * FROM build_queue")}
+        self.assertIn(("x86_64-el9", "ROOT (x86_64-el9, gcc15::opt)", "gcc15::opt::dev3"), q)
+        self.assertEqual(len(q), 4)
+        m = nl.matrix(self.conn, {"lcg"}, 1, UTC, now=_ms(2026, 10, 28, 9, 0))
+        (row,) = m["rows"]
+        self.assertEqual([c["key"] for c in row["schedule"]["cells"]],
+                         ["aarch64-el9 clang::opt", "aarch64-el9 gcc15::opt", "x86_64-el9 clang::opt",
+                          "x86_64-el9 gcc15::opt"])
+        self.assertEqual(row["cells"]["x86_64-el9 gcc15::opt"]["2026-10-28"]["state"], "queued")
+        # the next night: each cell still waits, each is skipped on its own
+        nl.step(self.conn, self.reader, "main", UTC, now=_ms(2026, 10, 29, 2, 1))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM schedule_runs WHERE state = 'skipped'").fetchone()[0], 4)
+
+    def test_run_again_takes_cells_or_platforms(self):
+        s = self._schedule(_ms(2026, 10, 27, 12, 0), platforms=["x86_64-el9"], variants=["gcc15::opt", "clang::opt"])
+        cfg = nl.config(self.reader, "LCG", "main")
+        with db.transaction(self.conn):
+            got = nl.run_now(self.conn, s["id"], [], cfg, "main", UTC, "alice", now=_ms(2026, 10, 28, 9, 0),
+                             cells=["x86_64-el9 clang::opt"])
+        self.assertEqual(got, {"x86_64-el9 clang::opt": "queued"})
+        for bad in ({"cells": ["x86_64-el9"]}, {"cells": ["x86_64-el9 clang::opt"] * 2}):
+            with self.assertRaises(sch.Invalid, msg=bad):
+                with db.transaction(self.conn):
+                    nl.run_now(self.conn, s["id"], [], cfg, "main", UTC, "alice", **bad)
+        with db.transaction(self.conn):
+            got = nl.run_now(self.conn, s["id"], ["x86_64-el9"], cfg, "main", UTC, "alice", now=_ms(2026, 10, 28, 9, 5))
+        self.assertEqual(got, {"x86_64-el9 clang::opt": "skipped", "x86_64-el9 gcc15::opt": "queued"})
 
 if __name__ == "__main__":
     unittest.main()

@@ -591,6 +591,38 @@ MIGRATIONS = [
     [
         "ALTER TABLE pipeline_phases ADD COLUMN failed_in TEXT NOT NULL DEFAULT ''",
     ],
+    # 22: a schedule's variants (ADR bits 0009), defaults chains put before its
+    # own: its matrix is platforms x variants, a run one cell of a night.
+    # schedule_runs gets the variant in its key, so it is made again.
+    [
+        "ALTER TABLE schedules ADD COLUMN variants TEXT NOT NULL DEFAULT '[]'",
+        """CREATE TABLE schedule_runs_22 (
+            id             INTEGER PRIMARY KEY,
+            schedule_id    INTEGER NOT NULL REFERENCES schedules(id),
+            night          TEXT NOT NULL,
+            platform       TEXT NOT NULL,
+            variant        TEXT NOT NULL DEFAULT '',
+            attempt        INTEGER NOT NULL DEFAULT 1,
+            state          TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            queue_entry    INTEGER,
+            pipeline_id    INTEGER,
+            build_id       TEXT NOT NULL DEFAULT '',
+            failed_at      TEXT NOT NULL DEFAULT '',
+            reason         TEXT NOT NULL DEFAULT '',
+            created_ms     INTEGER NOT NULL,
+            updated_ms     INTEGER NOT NULL,
+            UNIQUE (schedule_id, night, platform, variant, attempt)
+        )""",
+        "INSERT INTO schedule_runs_22 ({0}) SELECT {0} FROM schedule_runs".format(
+            "id, schedule_id, night, platform, attempt, state, content_sha256, queue_entry,"
+            " pipeline_id, build_id, failed_at, reason, created_ms, updated_ms"),
+        "DROP TABLE schedule_runs",
+        "ALTER TABLE schedule_runs_22 RENAME TO schedule_runs",
+        "CREATE INDEX schedule_runs_night ON schedule_runs (night)",
+        "CREATE INDEX schedule_runs_entry ON schedule_runs (queue_entry)",
+        "CREATE INDEX schedule_runs_state ON schedule_runs (state, created_ms)",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

@@ -48,6 +48,60 @@ class CheckTest(unittest.TestCase):
             with self.assertRaises(sch.Invalid, msg=bad):
                 sch.check(_p(**bad), "lcg")
 
+    def test_variants_are_defaults_chains_and_count_in_the_hash_only_when_there(self):
+        s = sch.check(_p(variants=["gcc15::opt", "clang::opt"]), "lcg")
+        self.assertEqual((s["variants"], sch.cells(s)[:2]),
+                         (["clang::opt", "gcc15::opt"], [("aarch64-el9", "clang::opt"), ("aarch64-el9", "gcc15::opt")]))
+        plain = sch.check(_p(), "lcg")
+        self.assertEqual(plain["variants"], [])
+        self.assertEqual(sch.cells(plain), [("aarch64-el9", ""), ("x86_64-el9", "")])
+        h = sch.content_sha256(plain)
+        import hashlib                                          # the hash schedules had before variants
+        before = hashlib.sha256(json.dumps({k: plain[k] for k in sch._CONTENT}, sort_keys=True,
+                                           separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual(h, before)
+        self.assertNotEqual(h, sch.content_sha256(s))
+        self.assertEqual(sch.check(_p(variants=["gcc15::", "::clang"]), "lcg")["variants"], ["clang", "gcc15"])
+        for bad in (["a b"], [""], ["x", "x"], "gcc15", ["v%d" % i for i in range(17)], ["::"], ["a", "a::"],
+                    ["v" * 150]):
+            with self.assertRaises(sch.Invalid, msg=bad):
+                sch.check(_p(variants=bad), "lcg")
+        with self.assertRaises(sch.Invalid):                       # 32 platforms x 3 variants: too many builds
+            sch.check(_p(platforms=["p%d" % i for i in range(32)], variants=["a", "b", "c"]), "lcg")
+        self.assertEqual((sch.cell_key("x86_64-el9", ""), sch.cell_key("x86_64-el9", "gcc15::opt")),
+                         ("x86_64-el9", "x86_64-el9 gcc15::opt"))
+
+    def test_migration_22_keeps_the_runs_and_lets_variants_share_a_night(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        conn = db.connect(os.path.join(d, "old.db"))
+        self.addCleanup(conn.close)
+        for n in range(21):                                        # a database of migration 21
+            with db.transaction(conn):
+                for stmt in db.MIGRATIONS[n]:
+                    conn.execute(stmt)
+                conn.execute("PRAGMA user_version=%d" % (n + 1))
+        with db.transaction(conn):
+            conn.execute("INSERT INTO schedules (community, community_dir, name, package, version, defaults,"
+                         " extra_repos, set_vars, platforms, rebuild, debug, jobs, extra_build_args, days, time,"
+                         " certify, cvmfs, certify_groups, enabled, content_sha256, revision, last_fired_ms,"
+                         " created_by, created_ms, updated_by, updated_ms) VALUES ('lcg', 'LCG', 'n', 'ROOT', '',"
+                         " '', '', '{}', '[\"x86_64-el9\"]', 0, 0, 0, '', 127, '02:00', 0, 0, '[\"lcg\"]', 1,"
+                         " 'h', 1, 0, 'a', 0, 'a', 0)")
+            conn.execute("INSERT INTO schedule_runs (schedule_id, night, platform, attempt, state, content_sha256,"
+                         " created_ms, updated_ms) VALUES (1, '2026-10-28', 'x86_64-el9', 1, 'passed', 'h', 0, 0)")
+        db.migrate(conn)
+        r = conn.execute("SELECT * FROM schedule_runs").fetchone()
+        self.assertEqual((r["platform"], r["variant"], r["state"]), ("x86_64-el9", "", "passed"))
+        self.assertEqual(sch.get(conn, 1)["variants"], [])
+        with db.transaction(conn):
+            conn.execute("INSERT INTO schedule_runs (schedule_id, night, platform, variant, attempt, state,"
+                         " content_sha256, created_ms, updated_ms) VALUES (1, '2026-10-28', 'x86_64-el9', 'gcc15', 1,"
+                         " 'queued', 'h', 0, 0)")
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'"
+                                            " AND tbl_name = 'schedule_runs'")}
+        self.assertTrue({"schedule_runs_night", "schedule_runs_entry", "schedule_runs_state"} <= names)
+
     def test_the_content_hash_leaves_out_when_and_whether(self):
         h = sch.content_sha256(sch.check(_p(), "lcg"))
         self.assertEqual(h, sch.content_sha256(sch.check(_p(time="03:30", days=1, enabled=False), "lcg")))
@@ -158,6 +212,14 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self._do("POST", "bob", u, {}).status_code, 403)
         self.assertEqual(self._do("POST", "alice", u, {}).status_code, 503)      # the queue is off
         self.assertEqual(self._do("POST", "alice", u, {"platforms": "x"}).status_code, 400)
+        self.assertEqual(self._do("POST", "alice", u, {"cells": [1]}).status_code, 400)
+        v = self._do("POST", "alice", "/ops/schedules", dict(_p(name="dev3", variants=["gcc15::opt"]),
+                                                             community="LCG")).json()
+        self.assertEqual(v["variants"], ["gcc15::opt"])
+        row = [r for r in self._do("GET", "dave", "/ops/nightlies?community=lcg").json()["rows"]
+               if r["schedule"]["id"] == v["id"]][0]
+        self.assertEqual([c["key"] for c in row["schedule"]["cells"]],
+                         ["aarch64-el9 gcc15::opt", "x86_64-el9 gcc15::opt"])
 
 
 if __name__ == "__main__":

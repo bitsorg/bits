@@ -315,11 +315,14 @@ serves it with today's point computed afresh (the Vulnerabilities page's chart).
 **Nightly schedules** (`orch/schedules.py`, ADR bits 0007): a schedule builds
 one package at one version, with one defaults chain and recipe repositories, on
 several platforms, on given weekdays at a time of the bits instance's time zone
-(site `console.time_zone`; UTC, at CERN Europe/Zurich). A time skipped in spring
+(site `console.time_zone`; UTC, at CERN Europe/Zurich). Its `variants` (ADR bits
+0009) are defaults chains put before its own: a night builds every cell of
+platforms × variants (`gcc15::opt` with `dev3` builds `gcc15::opt::dev3`), at
+most 64, and a run is one cell's (`schedule_runs.variant`; migration 22). A time skipped in spring
 runs at the first minute after it, one repeated in autumn once. Its
 `content_sha256` covers what is built and where it goes, not when or whether, so
 a standing approval bound to `schedule:<id>@<sha256>` outlives a new time but not
-a new platform. `GET /ops/schedules?community=` lists them, with their next run,
+a new platform or variant (a schedule without variants keeps the hash it had). `GET /ops/schedules?community=` lists them, with their next run,
 to any signed-in user (the approval in force to admins); a community's admins
 create, change (`PUT` with the `revision` it changes; 409 when another change came
 first), pause, resume and delete them, each change an event with before and after.
@@ -345,10 +348,11 @@ keeps each run up to date from its queued build and pipeline: `running`, `passed
 `failed` (where: the failed job's package and job), `not_run` (canceled, refused,
 or no free build host 12 hours after it fired: then taken out of the queue); a
 failed run's pipeline is looked at again for 3 days (a retry in GitLab).
-`GET /ops/nightlies?community=&nights=` is the matrix (a row per schedule, a cell
-per platform and night, its latest attempt; to whom `/ops/builds` shows builds);
-`POST /ops/schedules/{id}/run {platforms?}`, by its community's admins, is Run now
-(every platform) or Run again (some), today's night, each platform's next attempt.
+`GET /ops/nightlies?community=&nights=` is the matrix (a row per schedule, with its
+cells; a cell per platform (and variant) and night, its latest attempt; to whom `/ops/builds` shows builds);
+`POST /ops/schedules/{id}/run {platforms?, cells?}`, by its community's admins, is
+Run now (every cell) or Run again (the cells of some platforms, or some cells by
+their matrix name, `<platform> <variant>`), today's night, each cell's next attempt.
 
 **Triage** (`orch/vuln_triage.py`): a community admin's rule says a
 vulnerability does not matter there, for one version of a package, every

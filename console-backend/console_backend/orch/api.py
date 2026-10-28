@@ -74,8 +74,8 @@
     PUT  /ops/schedules/{id}           the same fields and the revision it changes
     DELETE /ops/schedules/{id}
     POST /ops/schedules/{id}/pause, /resume
-    POST /ops/schedules/{id}/run       {platforms?[]}: Run now (all) or Run again (some),
-                                       today's night, each platform's next attempt
+    POST /ops/schedules/{id}/run       {platforms?[], cells?[]}: Run now (all) or Run again
+                                       (some), today's night, each cell's next attempt
     GET  /ops/nightlies?community=&nights=   the nightly matrix (as /ops/builds)
     POST /approvals/standing/request   {schedule, sha256, groups[], runs, days}: a passkey
                                        challenge bound to them
@@ -1275,9 +1275,9 @@ async def run_schedule(sid: int, request: Request):
     data = await _caller(request)
     old = await _schedule_admin(data, sid)
     p = await _body(request)
-    plats = p.get("platforms") or []
-    if not isinstance(plats, list) or not all(isinstance(x, str) for x in plats):
-        raise HTTPException(400, "platforms: a list of the schedule's platforms")
+    plats, cells = p.get("platforms") or [], p.get("cells") or []
+    if not all(isinstance(x, list) and all(isinstance(y, str) for y in x) for x in (plats, cells)):
+        raise HTTPException(400, "platforms, cells: lists of the schedule's platforms and cells")
     _queue_on()
     tz, m = _tz(), _m()
     refs = m.settings.forge_refs
@@ -1293,7 +1293,7 @@ async def run_schedule(sid: int, request: Request):
     def write():
         with _open() as conn:
             with db.transaction(conn):
-                return nightlies.run_now(conn, sid, plats, cfg, ref, tz, data["user"])
+                return nightlies.run_now(conn, sid, plats, cfg, ref, tz, data["user"], cells=cells)
     try:
         states = await run_in_threadpool(write)
     except schedules.Invalid as e:
@@ -1301,7 +1301,7 @@ async def run_schedule(sid: int, request: Request):
     if states is None:
         raise HTTPException(404, "no such schedule")
     audit.record("schedule_run", user=data["user"], community=old["community"], schedule=sid,
-                 platforms=sorted(states))
+                 cells=sorted(states))
     return {"runs": states}
 
 
