@@ -3,6 +3,12 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+## Scheduled builds and CI on push
+How to set them up: WORKFLOWS, Phase 4, steps 4 and 5. They need the orchestrator's build queue (`BITS_ORCH_QUEUE=1`).
+- **[Feature]** Nightly slots, made on the console's Schedules tab (**+ New slot**, or **Save as pipeline** in the Build dialog): a package with its defaults chain, variables and repositories, built on each of its platforms × variants on given days at a given time, with one passkey approval for 30 nights of certified builds. The defaults decide where the builds go; a nightly layout's `{day}` is the night's weekday.
+- **[Feature]** CI on push: a slot's **Build on each commit to** lists the branches it follows (public https repositories, 8 at most). The orchestrator reads their heads every 2 minutes and, once a burst of pushes has settled (5 minutes, 30 at most), builds every cell as a nightly would, to the store only: never certified nor published.
+- **[Feature]** Results: the nightly matrix in the phone app's Nightlies tab, with Run now and Run again of the failed cells; a slot's CI builds are listed with the heads they fired on.
+
 ## Configuration
 - **[Change]** Site configuration: the defaults bits had built in (stores, container images, the console, the providers repository, the SBOM namespace, paths) are now in `NN-<name>.yaml` files: `00-bits.yaml` (site-neutral) and `10-CERN.yaml` (CERN), shipped with bits, then `/etc/bits/site.d`, `~/.config/bits/site.d` and `$BITS_SITE_DIR`, merged in name order. A setting is taken from the command line, the `bits use` profile, the environment, the community's `system:` defaults, then these files. At CERN nothing changes; **elsewhere, an empty `/etc/bits/site.d/10-CERN.yaml` turns CERN's values off** and a file of your own sets yours. `bits doctor` shows the files in effect (USERGUIDE "Where defaults come from").
 - **[Improvement]** `bits certify` and `bits compliance --enforce` take the console URL from the site configuration's `console.backend_url` too, so at CERN they need no `--console`.
