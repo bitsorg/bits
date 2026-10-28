@@ -6,14 +6,15 @@ counts against the project's limit of jobs in active pipelines (and blocks the
 Pages pipeline), and never share a host.
 
 A build names its host (BITS_RUNNER_TAG bits-host-<name>) or an architecture
-(bits-build-<arch>). The hosts are the build project's config/build-hosts.yaml
-(name, tag, arch); a host's runner is the one with its unique tag.
+(bits-build-<arch>). The hosts are the build project's runners in GitLab: one
+tagged bits-host-<name> is host <name>, of the architecture of its
+bits-build-<arch> tag; a runner of no architecture takes only builds pinned to it.
 Each pass (`dispatch`) starts, oldest first, every build that has a free host,
 pinned to that host. A host is busy while a build pipeline runs on it: one the
 queue started there, one pinned to it, or one with a job its runner took. A
 running pipeline routed by architecture and not on a runner yet will take a
 host of that architecture, so it holds one. A host whose runner GitLab does not
-see online (switched off, asleep, paused) is not free: its builds wait here,
+see online (switched off, asleep) or that is paused there is not free: its builds wait here,
 not in GitLab, which drops a job no runner can take. One GitLab dropped all
 the same (stuck, no job started) is queued again.
 
@@ -42,6 +43,7 @@ UNRECORDED_MS = 24 * 3600 * 1000   # a started pipeline never recorded holds its
 RECENT_MS = 24 * 3600 * 1000       # finished entries the listing shows
 PAUSE_MS = 5 * 60 * 1000           # GitLab refusing pipelines: none started for this long
 HOSTS_TTL_S = 300
+HOST_GONE_MS = 3600 * 1000         # a build's host or arch not in GitLab this long: refused
 MAX_BUILDS = 64                    # in one request (the console's matrix cap)
 _JOB_DONE = {"success", "failed", "canceled", "skipped", "manual"}
 _STUCK = {"stuck_or_timeout_failure", "no_matching_runner"}   # GitLab dropped it, unstarted
@@ -147,7 +149,7 @@ def listing(conn, communities=None, limit=200):
 
 
 def host_status(conn):
-    """The hosts as the last pass saw them: [{name, arch, busy, offline}]."""
+    """The hosts as the last pass saw them: [{name, arch, busy, offline, paused}]."""
     r = conn.execute("SELECT value FROM kv WHERE key = 'queue.hosts'").fetchone()
     return json.loads(r["value"]) if r else []
 
@@ -161,36 +163,64 @@ def paused(conn):
 
 # --- the hosts ----------------------------------------------------------------
 
-def parse_hosts(text):
-    """[{name, tag, arch}] of build-hosts.yaml; an entry without an
-    arch takes only builds pinned to it."""
-    import yaml
-    doc = yaml.safe_load(text or "") or {}
-    out = []
-    for h in (doc.get("hosts") or []) if isinstance(doc, dict) else []:
-        if not isinstance(h, dict):
-            continue
-        name, tag = str(h.get("name") or "").strip(), str(h.get("tag") or "").strip()
-        if not name or not tag.startswith(HOST_TAG):
-            log.warning("build host %r: needs a name and a %s<name> tag", h, HOST_TAG)
-            continue
-        out.append({"name": name, "tag": tag, "arch": str(h.get("arch") or "").strip()})
-    return out
-
-
 _hosts_cache = {}
 
 
-def hosts(reader, path, ref="main"):
-    """The build hosts, read from the build project at most every HOSTS_TTL_S."""
-    now = time.monotonic()
-    hit = _hosts_cache.get((path, ref))
+def hosts(forge):
+    """The build hosts, [{name, tag, arch}] by name: the project's own runners
+    (not the instance's shared ones) tagged bits-host-<name>, read at most every
+    HOSTS_TTL_S (a runner's tags are only in its details; one the token may not
+    see is left out). None when GitLab cannot tell."""
+    from .. import forge_ops
+    now, hit = time.monotonic(), _hosts_cache.get("hosts")
     if hit and now - hit[0] < HOSTS_TTL_S:
         return hit[1]
-    raw = reader.file_raw(path, ref) or b""
-    found = parse_hosts(raw.decode() if isinstance(raw, bytes) else raw)
-    _hosts_cache[(path, ref)] = (now, found)
-    return found
+    found = {}
+    try:
+        for x in forge.list_runners() or []:
+            if not isinstance(x, dict) or _shared(x):
+                continue
+            try:
+                d = forge.runner(x["id"])
+            except forge_ops.ForgeError as e:
+                if e.status in (0, 429) or e.status >= 500:
+                    raise
+                _warn_once(("runner", x["id"]), "runner %s: its tags cannot be read (%s): left out",
+                           x["id"], e)
+                continue
+            tags = [str(t) for t in ((d if isinstance(d, dict) else {}).get("tag_list") or [])]
+            arch = sorted(t[len(ARCH_TAG):] for t in tags if t.startswith(ARCH_TAG) and t != ARCH_TAG)
+            for t in tags:
+                if t.startswith(HOST_TAG) and t != HOST_TAG:
+                    h = found.setdefault(t, {"name": t[len(HOST_TAG):], "tag": t, "arch": ""})
+                    h["arch"] = h["arch"] or (arch[0] if arch else "")
+                    every = sorted(set(arch) | {h["arch"]} - {""})
+                    if len(every) > 1:
+                        _warn_once(("arch", t), "build host %s: its runners have the architectures"
+                                   " %s; it takes %s", h["name"], ", ".join(every), h["arch"])
+    except (forge_ops.ForgeError, ValueError, KeyError, TypeError) as e:
+        log.warning("cannot list the build hosts from GitLab's runners (%s)", e)
+        return None
+    out = sorted(found.values(), key=lambda h: h["name"])
+    _hosts_cache["hosts"] = (now, out)
+    return out
+
+
+def _shared(runner):
+    """An instance runner, shared by every project: never a build host."""
+    return bool(runner.get("is_shared")) or runner.get("runner_type") == "instance_type"
+
+
+def _warn_once(key, msg, *args):
+    if key not in _warned:
+        _warned.add(key)
+        log.warning(msg, *args)
+
+
+def last_hosts(conn):
+    """The hosts as GitLab last gave them, for a pass that cannot read it."""
+    return [{"name": h["name"], "tag": HOST_TAG + h["name"], "arch": h.get("arch") or ""}
+            for h in host_status(conn) if h.get("name")]
 
 
 def _occupancy(conn, hs, named):
@@ -269,6 +299,22 @@ def _refuse(conn, r, reason):
                       {"entry": r["id"], "reason": reason[:500]})
 
 
+_missing = {}                      # entry id -> when its host or arch was first missing (ms)
+
+
+def _wait_or_refuse(conn, r, why):
+    """Its host or architecture is not among GitLab's runners: a runner being
+    registered again or retagged comes back, so it waits HOST_GONE_MS first."""
+    first = _missing.setdefault(r["id"], db.now_ms())
+    if db.now_ms() - first > HOST_GONE_MS:
+        _missing.pop(r["id"], None)
+        _refuse(conn, r, why)
+    elif r["reason"] != why:
+        with db.transaction(conn):
+            conn.execute("UPDATE build_queue SET reason = ?, updated_ms = ? WHERE id = ?"
+                         " AND state = 'queued'", (why[:500], db.now_ms(), r["id"]))
+
+
 def _dispatched(conn, entry_id, pipeline_id, then=None):
     """The build started as *pipeline_id*: its request is amended with it.
     *then(conn, row)* runs in the same transaction (the worker's: a certifying
@@ -325,14 +371,14 @@ def unstick(conn):
 
 def runner_hosts(forge, hs):
     """({hosts a runner with their unique tag serves, online and not paused},
-    {runner id, and description: host}) from GitLab; None when it cannot tell
-    (then every host counts as online)."""
+    {runner id, and description: host}, {hosts all of whose runners are paused})
+    from GitLab; None when it cannot tell (then every host counts as online)."""
     from .. import forge_ops
-    online, named, shared = set(), {}, set()
+    online, named, shared, paused, running = set(), {}, set(), set(), set()
     try:
         for h in hs:
             for x in forge.list_runners(h["tag"]) or []:
-                if not isinstance(x, dict):
+                if not isinstance(x, dict) or _shared(x):
                     continue
                 rid, d = x.get("id"), str(x.get("description") or "").strip()
                 if named.get(rid, h["name"]) != h["name"] and rid not in _warned:
@@ -343,7 +389,9 @@ def runner_hosts(forge, hs):
                     shared.add(d)                    # a description of several hosts: no use
                 named.update({k: h["name"] for k in (rid, d) if k})
                 if x.get("paused") or x.get("active") is False:
+                    paused.add(h["name"])
                     continue
+                running.add(h["name"])
                 if (x.get("status") or ("online" if x.get("online") else "")) == "online":
                     online.add(h["name"])
     except (forge_ops.ForgeError, ValueError) as e:
@@ -351,13 +399,14 @@ def runner_hosts(forge, hs):
         return None
     for d in shared:
         named.pop(d, None)
+    paused -= running
     _named.clear()
     _named.update(named)
     for h in hs:
         if h["name"] not in named.values() and h["name"] not in _warned:
             _warned.add(h["name"])
             log.warning("build host %s: no runner of the project has its tag %s", h["name"], h["tag"])
-    return online, named
+    return online, named, paused
 
 
 _warned, _named = set(), {}            # the last runner ids and descriptions GitLab gave
@@ -412,15 +461,20 @@ def dispatch(conn, forge, hs, then=None):
     if pause.get("until", 0) > db.now_ms():
         raise Stop(pause["why"])           # the same text: one event for the pause
     if not hs:
+        with db.transaction(conn):        # none now: not the ones of an earlier pass
+            conn.execute("INSERT INTO kv (key, value) VALUES ('queue.hosts', '[]') ON CONFLICT(key)"
+                         " DO UPDATE SET value = excluded.value")
         if conn.execute("SELECT 1 FROM build_queue WHERE state = 'queued' LIMIT 1").fetchone():
-            raise RuntimeError("builds are queued but there are no build hosts (build-hosts.yaml)")
+            raise RuntimeError("builds are queued but there are no build hosts"
+                               " (no runner of the project is tagged %s<name>)" % HOST_TAG)
         return 0
     seen = runner_hosts(forge, hs)
-    online, named = seen or (None, {**{h["name"]: h["name"] for h in hs}, **_named})
+    online, named, paused = seen or (None, {**{h["name"]: h["name"] for h in hs}, **_named}, set())
     busy, waiting = _occupancy(conn, hs, named)
     offline = {h["name"] for h in hs if online is not None and h["name"] not in online}
     snapshot = [{"name": h["name"], "arch": h["arch"], "busy": h["name"] in busy,
-                 "offline": h["name"] in offline} for h in hs]
+                 "offline": h["name"] in offline - paused, "paused": h["name"] in paused}
+                for h in hs]
     with db.transaction(conn):
         conn.execute("INSERT INTO kv (key, value) VALUES ('queue.hosts', ?) ON CONFLICT(key)"
                      " DO UPDATE SET value = excluded.value", (json.dumps(snapshot),))
@@ -432,15 +486,19 @@ def dispatch(conn, forge, hs, then=None):
     for r in conn.execute("SELECT * FROM build_queue WHERE state = 'queued' ORDER BY id").fetchall():
         if r["target"].startswith(HOST_TAG):
             if r["target"] not in by_tag:
-                _refuse(conn, r, "%s is not a build host (build-hosts.yaml)" % r["target"])
+                _wait_or_refuse(conn, r, "%s is not a build host (no runner of the project has"
+                                " the tag)" % r["target"])
                 continue
+            _missing.pop(r["id"], None)
             pick = by_tag[r["target"]] if by_tag[r["target"]]["name"] not in busy | offline else None
             arch = pick["arch"] if pick else ""
         else:
             arch = r["target"][len(ARCH_TAG):]
             if not any(h["arch"] == arch for h in hs):
-                _refuse(conn, r, "no build host of architecture %s (build-hosts.yaml)" % arch)
+                _wait_or_refuse(conn, r, "no build host of architecture %s (a runner tagged %s%s"
+                                " and %s<name>)" % (arch, ARCH_TAG, arch, HOST_TAG))
                 continue
+            _missing.pop(r["id"], None)
             pick = (free(arch) or [None])[0]
         # A pipeline routed to this architecture and not on a runner yet will
         # take one of its free hosts: those stay free for it.

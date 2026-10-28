@@ -112,9 +112,10 @@ class GitLabForge:
         except Exception:
             return {}
 
-    def _get(self, path):
+    def _get(self, path, project=True):
+        base = "%s/projects/%s" % (self._api, self._project) if project else self._api
         try:
-            r = requests.get("%s/projects/%s%s" % (self._api, self._project, path),
+            r = requests.get(base + path,
                              headers={"PRIVATE-TOKEN": self._token}, timeout=self._timeout)
         except requests.RequestException as e:
             raise ForgeError(0, str(e)[:200])
@@ -202,6 +203,11 @@ class GitLabForge:
         """The runners the project can use (those with *tag*, if given), with their
         status (online, offline, stale, never_contacted) and whether they are paused."""
         return self._get_all("/runners" + ("?tag_list=%s" % quote(tag, safe="") if tag else ""))
+
+    def runner(self, runner_id):
+        """One runner's details, its tags (tag_list) among them: GitLab shows them to
+        a Maintainer of a project the runner serves."""
+        return self._get("/runners/%d" % int(runner_id), project=False)
 
     def list_pipelines(self, updated_after, page=1, per_page=100):
         """One page of the project's pipelines updated after *updated_after*

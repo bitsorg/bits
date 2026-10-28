@@ -85,9 +85,15 @@ console queues its builds (`POST /ops/queue {community, ref?, builds[]}`, each
 checked as `/ops/build` checks one) instead of starting them, and the worker
 starts them, oldest first, at most one per build host, so a long build never
 waits in GitLab (where its pending jobs count against the project's job limit)
-nor shares a host. The hosts are the build project's `config/build-hosts.yaml`
-(`BITS_ORCH_BUILD_HOSTS`): `name`, `tag` (`bits-host-<name>`), `arch`, and
-`runner` when the GitLab runner's description is not the name. A build pinned to
+nor shares a host. The hosts are the build project's runners in GitLab (its own
+and its groups', not the instance's shared ones): one tagged `bits-host-<name>` is
+host `<name>`, of the architecture of its `bits-build-<arch>` tag (none: it takes
+only builds pinned to it). Their tags are read from each runner's details
+(`GET /runners/:id`) every 5 minutes, which the ops token must be allowed to see
+(a Maintainer of the project, or of the group for a group runner); a runner it
+cannot see is left out and logged. While GitLab cannot be read, the hosts it last
+gave are kept. A build whose host or architecture is not among them waits an hour
+(a runner registered again comes back), then is refused. A build pinned to
 a host (`BITS_RUNNER_TAG=bits-host-<name>`) waits for it; one routed by
 architecture (`bits-build-<arch>`) takes the first free host of that arch and is
 pinned to it. A host is busy while a build pipeline runs on it, the queue's or

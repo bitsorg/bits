@@ -16,12 +16,9 @@ from console_backend.orch import approvals, build_queue as bq, db, replay
 
 import test_preapprove as tp
 
-HOSTS = """
-hosts:
-  - {name: bits, tag: bits-host-bits, arch: x86_64}
-  - {name: pc, tag: bits-host-pc, arch: x86_64}
-  - {name: arm, tag: bits-host-arm}
-"""
+HOSTS = [{"name": "arm", "tag": "bits-host-arm", "arch": ""},
+         {"name": "bits", "tag": "bits-host-bits", "arch": "x86_64"},
+         {"name": "pc", "tag": "bits-host-pc", "arch": "x86_64"}]
 
 
 def _build(tag="bits-build-x86_64", pkg="ROOT", **more):
@@ -33,14 +30,23 @@ def _build(tag="bits-build-x86_64", pkg="ROOT", **more):
 class FakeForge:
     def __init__(self):
         self.started, self.next_id, self.fail, self.deleted = [], 100, None, []
-        self.runners = [{"id": i, "description": d, "status": "online", "paused": False, "tags": t}
-                        for i, d, t in ((1, "bits.cern.ch", ["self-hosted", "bits-host-bits"]),
-                                        (2, "pc-runner", ["bits-host-pc"]), (3, "", ["bits-host-arm"]))]
+        self.runners = [{"id": i, "description": d, "status": "online", "paused": False, "tags": t,
+                         "runner_type": "project_type", "is_shared": False}
+                        for i, d, t in ((1, "bits.cern.ch", ["self-hosted", "bits-host-bits",
+                                                              "bits-build-x86_64"]),
+                                        (2, "pc-runner", ["bits-host-pc", "bits-build-x86_64"]),
+                                        (3, "", ["bits-host-arm"]))]
+        self.details = 0
 
     def list_runners(self, tag=""):
         if isinstance(self.runners, Exception):
             raise self.runners
-        return [r for r in self.runners if not tag or tag in r["tags"]]   # its own description
+        return [{k: v for k, v in r.items() if k != "tags"}     # GitLab's list has no tags
+                for r in self.runners if not tag or tag in r["tags"]]
+
+    def runner(self, rid):
+        self.details += 1
+        return {"id": rid, "tag_list": next(r["tags"] for r in self.runners if r["id"] == rid)}
 
     def delete_pipeline(self, pid):
         self.deleted.append(pid)
@@ -63,9 +69,11 @@ class _Queue(unittest.TestCase):
         self.conn = db.connect(os.path.join(d, "orch.db"))
         self.addCleanup(self.conn.close)
         db.migrate(self.conn)
-        self.hosts = bq.parse_hosts(HOSTS)
+        self.hosts = [dict(h) for h in HOSTS]
         self.forge = FakeForge()
         bq._named.clear()
+        bq._hosts_cache.clear()
+        bq._missing.clear()
 
     def _queue(self, *builds):
         return bq.add(self.conn, "lcg", "alice", "main", list(builds))[1]
@@ -90,12 +98,40 @@ class _Queue(unittest.TestCase):
 
 
 class QueueTest(_Queue):
-    def test_the_hosts_file(self):
-        self.assertEqual([(h["name"], h["arch"], h["tag"]) for h in self.hosts],
-                         [("bits", "x86_64", "bits-host-bits"), ("pc", "x86_64", "bits-host-pc"),
-                          ("arm", "", "bits-host-arm")])
-        self.assertEqual(bq.parse_hosts("hosts:\n  - {name: x, tag: other}\n"), [])
-        self.assertEqual(bq.parse_hosts(""), [])
+    def test_the_hosts_are_the_projects_runners_in_gitlab(self):
+        from console_backend import forge_ops
+        f = self.forge
+        f.runners += [{"id": 4, "description": "", "status": "online", "paused": False,
+                       "tags": ["bits-host-shared"], "runner_type": "instance_type", "is_shared": True},
+                      {"id": 5, "description": "", "status": "online", "paused": False,
+                       "tags": ["bits-host-", "docker"], "runner_type": "group_type", "is_shared": False}]
+        self.assertEqual(bq.hosts(f), HOSTS)                  # no shared runner, no bare tag
+        self.assertEqual(f.details, 4)
+        self.assertEqual(bq.hosts(f), HOSTS)                  # read again only after HOSTS_TTL_S
+        self.assertEqual(f.details, 4)
+        bq._hosts_cache.clear()
+        runner = f.runner
+        f.runner = lambda rid: (_ for _ in ()).throw(forge_ops.ForgeError(403, "x")) if rid == 2 \
+            else runner(rid)
+        self.assertEqual([h["name"] for h in bq.hosts(f)], ["arm", "bits"])   # one it may not see
+        bq._hosts_cache.clear()
+        f.runner = lambda rid: (_ for _ in ()).throw(forge_ops.ForgeError(502, "x"))
+        self.assertIsNone(bq.hosts(f))                        # GitLab down: cannot tell
+        bq.dispatch(self.conn, FakeForge(), self.hosts)
+        self.assertEqual(bq.last_hosts(self.conn), HOSTS)     # what the worker then takes
+        bq.dispatch(self.conn, FakeForge(), [])               # none now: none shown or kept
+        self.assertEqual(bq.last_hosts(self.conn), [])
+
+    def test_a_host_whose_runners_disagree_takes_one_arch_and_says_so(self):
+        self.forge.runners.append({"id": 6, "description": "", "status": "online", "paused": False,
+                                   "tags": ["bits-host-pc", "bits-build-aarch64"],
+                                   "runner_type": "project_type", "is_shared": False})
+        bq._warned.clear()
+        with self.assertLogs("bits_orchestrator.queue", "WARNING") as logs:
+            pc = [h for h in bq.hosts(self.forge) if h["name"] == "pc"][0]
+        self.assertEqual(pc["arch"], "x86_64")
+        self.assertIn("build host pc: its runners have the architectures aarch64, x86_64; it takes x86_64",
+                      "\n".join(logs.output))
 
     def test_one_build_per_host_oldest_first(self):
         a, b, c = self._queue(_build(pkg="A"), _build(pkg="B"), _build(pkg="C"))
@@ -112,7 +148,7 @@ class QueueTest(_Queue):
         self._pipeline(102, "failed")                       # pc is free
         self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 1)
         self.assertEqual(self._states()[2], (c, "dispatched", "pc", 103))
-        self.assertEqual([h["busy"] for h in bq.host_status(self.conn)], [True, False, False])
+        self.assertEqual([h["busy"] for h in bq.host_status(self.conn)], [False, True, False])
 
     def test_a_pinned_build_waits_for_its_host_only(self):
         a, b = self._queue(_build("bits-host-bits", pkg="A"), _build("bits-host-bits", pkg="B"))
@@ -153,7 +189,7 @@ class QueueTest(_Queue):
         self._pipeline(1, outcome="success")
         self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 1)
         self.assertEqual(self._states()[0][1:3], ("dispatched", "bits"))
-        self.assertTrue([h["busy"] for h in bq.host_status(self.conn)][1])     # pc
+        self.assertTrue([h["busy"] for h in bq.host_status(self.conn)][2])     # pc
 
     def test_a_host_whose_runner_is_offline_is_not_free(self):
         from console_backend import forge_ops
@@ -164,9 +200,11 @@ class QueueTest(_Queue):
         self.assertEqual([s[1:3] for s in self._states()],
                          [("dispatched", "bits"), ("queued", ""), ("queued", "")])
         self.assertEqual([(h["name"], h["offline"]) for h in bq.host_status(self.conn)],
-                         [("bits", False), ("pc", True), ("arm", False)])   # bits.cern.ch: by its tag
+                         [("arm", False), ("bits", False), ("pc", True)])   # bits.cern.ch: by its tag
         self.forge.runners[1].update(status="online", paused=True)       # paused: not free either
         self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 0)
+        self.assertEqual([(h["name"], h["offline"], h["paused"]) for h in bq.host_status(self.conn)],
+                         [("arm", False, False), ("bits", False, False), ("pc", False, True)])
         self.forge.runners = forge_ops.ForgeError(403, "forbidden")     # cannot tell: as before
         self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 1)
         self.assertEqual(self._states()[1][1:3], ("dispatched", "pc"))
@@ -183,9 +221,17 @@ class QueueTest(_Queue):
         self.assertEqual(self._states(), [(a, "dispatched", "bits", 103), (b, "dispatched", "pc", 102)])
         self.assertTrue(bq.dropped(stuck) and not bq.dropped([dict(stuck[0], runner="bits")]))
 
-    def test_builds_no_host_can_take_are_refused(self):
+    def test_builds_no_host_can_take_wait_then_are_refused(self):
         a, b, c = self._queue(_build("bits-host-gone"), _build("bits-build-aarch64"),
                               _build("bits-host-arm"))
+        with db.transaction(self.conn):                     # long queued: no matter
+            self.conn.execute("UPDATE build_queue SET created_ms = created_ms - ?", (3 * bq.HOST_GONE_MS,))
+        bq.dispatch(self.conn, self.forge, self.hosts)       # a runner may be coming back
+        self.assertEqual([s[1] for s in self._states()], ["queued", "queued", "dispatched"])
+        self.assertIn("bits-host-gone is not a build host", bq.get(self.conn, a)["reason"])
+        bq.dispatch(self.conn, self.forge, self.hosts)       # waiting for a host is not missing one
+        for k in bq._missing:
+            bq._missing[k] -= bq.HOST_GONE_MS + 1            # an hour since they went missing
         bq.dispatch(self.conn, self.forge, self.hosts)
         self.assertEqual([s[1] for s in self._states()], ["refused", "refused", "dispatched"])
         with self.assertRaises(ValueError):

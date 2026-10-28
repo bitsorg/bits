@@ -109,10 +109,13 @@ class Worker:
         cvmfs_status.step(self.conn, forge, store)
 
     def _dispatch(self):
-        hs = build_queue.hosts(self.deps.reader(), self.settings.orch_build_hosts)
+        forge = self.deps.forge()
+        hs = build_queue.hosts(forge)
+        if hs is None:                    # GitLab cannot tell: the hosts it last gave
+            hs = build_queue.last_hosts(self.conn)
         try:
             # A certifying build's batch approval becomes its pipeline's pre-approval.
-            build_queue.dispatch(self.conn, self.deps.forge(), hs, approvals.preapprove_queued)
+            build_queue.dispatch(self.conn, forge, hs, approvals.preapprove_queued)
         except build_queue.Stop as e:
             raise RuntimeError("builds wait: %s" % e)
 

@@ -179,6 +179,9 @@ class CredProxyTest(_Proxy):
             f._file_exists("communities/lcg/pipelines/a.json", "main")
             direct = forge_ops.GitLabForge("https://gl/api/v4", "t", "buncic/bits-manifests")
             direct.commit("abc")
+            direct.runner(7)
+        self.assertEqual(seen[-1], "https://gl/api/v4/runners/7")    # not under the project
+        seen.pop()
         self.assertEqual(seen, [
             "http://credentials-proxy:4711/api/v4/projects/buncic%252Fbits-manifests/pipelines"
             "?ref=main&scope=finished&order_by=id&sort=desc&per_page=50",
