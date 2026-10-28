@@ -51,6 +51,7 @@ sourced from it.
 
 import glob
 import os
+import re
 import shutil
 from collections import OrderedDict
 from os.path import join, exists, abspath
@@ -69,6 +70,9 @@ MAX_PROVIDER_ITERATIONS = 20
 
 # Sub-directory under the work dir where provider checkouts are cached
 REPOS_CACHE_SUBDIR = "REPOS"
+
+# A provider tag that is a commit itself: 7 to 64 hex digits (SHA-1 or SHA-256).
+_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 # Reserved package name for the BITS_PROVIDERS / bits.rc synthesised provider
 BITS_PROVIDERS_PACKAGE = "bits-providers"
@@ -321,22 +325,25 @@ def clone_or_update_provider(
     mirror_dir = mirror_spec.get("reference")
 
     # ── 2. Resolve tag → commit hash ────────────────────────────────────
-    repo_for_ls = mirror_dir or source
-    try:
-        refs_out = logged_scm(
-            scm, package, reference_sources,
-            scm.listRefsCmd(repo_for_ls),
-            ".", prompt=False, logOutput=False,
-        )
-        scm_refs = scm.parseRefs(refs_out)
-    except SystemExit:
-        scm_refs = {}
+    def _resolve(repo):
+        try:
+            refs = scm.parseRefs(logged_scm(scm, package, reference_sources,
+                                            scm.listRefsCmd(repo), ".",
+                                            prompt=False, logOutput=False))
+        except SystemExit:
+            refs = {}
+        return refs, (refs.get("refs/tags/" + tag) or refs.get("refs/heads/" + tag)
+                      or refs.get(tag))
 
-    commit_hash = (
-        scm_refs.get("refs/tags/" + tag)
-        or scm_refs.get("refs/heads/" + tag)
-        or tag  # fall-back: tag is already a raw commit hash
-    )
+    scm_refs, found = _resolve(mirror_dir or source)
+    if not found and mirror_dir and tag != "HEAD" and not _COMMIT_RE.match(tag):
+        scm_refs, found = _resolve(source)      # the mirror may predate the tag
+    commit_hash = found or tag  # fall-back: tag is already a raw commit hash
+    # A name that is no branch, tag or commit would only fail later, at checkout.
+    dieOnError(commit_hash == tag and tag != "HEAD" and not _COMMIT_RE.match(tag),
+               "Repository provider '%s': %s '%s' in %s." % (
+                   package, "no branch or tag" if scm_refs else
+                   "cannot list the branches and tags to find", tag, source))
     short_hash = commit_hash[:10] if len(commit_hash) > 10 else commit_hash
     # Safety: an empty hash would collapse checkout_dir to cache_root itself,
     # causing shutil.rmtree to wipe the entire package cache on the next step.
