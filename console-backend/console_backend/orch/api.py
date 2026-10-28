@@ -1078,7 +1078,8 @@ _standing_pending = session.CliSignStore(ttl_seconds=300, max_entries=64)
 _queue_pending = session.CliSignStore(ttl_seconds=300, max_entries=64)
 _GROUP_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
-_SCHEDULE_RE = re.compile(r"communities/[A-Za-z0-9._-]+/pipelines/[A-Za-z0-9._-]+\.json")
+_SCHEDULE_RE = re.compile(r"communities/[A-Za-z0-9._-]+/pipelines/[A-Za-z0-9._-]+\.json"
+                          r"|schedule:[1-9][0-9]{0,8}")
 
 
 def _admin_of_all(data, groups):
@@ -1250,6 +1251,12 @@ async def standing_request(request: Request):
                      principal="human")
         raise HTTPException(403, "%s is not an admin for all of: %s"
                             % (data["user"], ", ".join(groups)))
+    if schedule.startswith("schedule:"):
+        # A nightly schedule: as it is now, for the groups it certifies, by its community's admin.
+        s = await _schedule_admin(data, int(schedule.split(":")[1]))
+        if not s["certify"] or sha != s["content_sha256"] or groups != s["certify_groups"]:
+            raise HTTPException(409, "the schedule does not certify, or no longer has this content"
+                                     " (sha256) or these groups: reload it")
     creds = m.credstore.get(data["user"])
     if not creds:
         raise HTTPException(400, "no passkey enrolled; enrol first")

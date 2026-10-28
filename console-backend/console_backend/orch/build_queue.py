@@ -85,21 +85,26 @@ def check_target(variables):
 def add(conn, community, user, ref, builds):
     """Queue *builds* ([(name, variables)], checked by the API) for *user*.
     Returns (batch, [ids])."""
+    with db.transaction(conn):
+        return add_in(conn, community, user, ref, builds, events.Actor("person", user))
+
+
+def add_in(conn, community, requested_by, ref, builds, actor, batch=None):
+    """add, within the caller's transaction, by *actor* (a schedule: the worker)."""
     if not 0 < len(builds) <= MAX_BUILDS:
         raise ValueError("1 to %d builds in one request" % MAX_BUILDS)
-    batch, now, ids = secrets.token_hex(8), db.now_ms(), []
-    with db.transaction(conn):
-        for name, variables in builds:
-            cur = conn.execute(
-                "INSERT INTO build_queue (batch, community, requested_by, ref, name, variables,"
-                " digest, target, certify, state, created_ms, updated_ms)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
-                (batch, community, user, ref, name or "", json.dumps(variables),
-                 digest(ref, name, variables), check_target(variables),
-                 int(certifies(variables)), now, now))
-            ids.append(cur.lastrowid)
-        events.append(conn, "queue.requested", "queue:%s" % batch, events.Actor("person", user),
-                      {"batch": batch, "community": community, "entries": ids})
+    batch, now, ids = batch or secrets.token_hex(8), db.now_ms(), []
+    for name, variables in builds:
+        cur = conn.execute(
+            "INSERT INTO build_queue (batch, community, requested_by, ref, name, variables,"
+            " digest, target, certify, state, created_ms, updated_ms)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+            (batch, community, requested_by, ref, name or "", json.dumps(variables),
+             digest(ref, name, variables), check_target(variables),
+             int(certifies(variables)), now, now))
+        ids.append(cur.lastrowid)
+    events.append(conn, "queue.requested", "queue:%s" % batch, actor,
+                  {"batch": batch, "community": community, "entries": ids})
     return batch, ids
 
 

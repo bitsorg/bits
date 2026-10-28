@@ -301,6 +301,18 @@ a new platform. `GET /ops/schedules?community=` lists them, with their next run,
 to any signed-in user (the approval in force to admins); a community's admins
 create, change (`PUT` with the `revision` it changes; 409 when another change came
 first), pause, resume and delete them, each change an event with before and after.
+With the build queue on, the worker's `schedules` step (`orch/nightlies.py`) fires
+each schedule whose time has come since it last fired: one queued build per
+platform, with the variables the GitLab fan-out sends, resolved from the
+console's `config/platforms.yaml`, `config/monitoring.yaml` and the community's
+`ui-config.yaml`, and one `schedule_runs` row each. A night missed while the
+worker was down fires on its return within 6 hours, older ones are `not_run`; a
+platform whose previous night still waits or builds `skipped`. A certifying
+schedule's builds certify as the approver of its standing approval in force (its
+pipeline's pre-approval takes one run when it starts); without one they build and
+certify nothing ("built, not certified: no standing approval").
+`/approvals/standing/request` takes `schedule:<id>` with the schedule's
+`content_sha256` and `certify_groups` as they are now.
 
 **Triage** (`orch/vuln_triage.py`): a community admin's rule says a
 vulnerability does not matter there, for one version of a package, every

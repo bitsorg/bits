@@ -30,8 +30,8 @@ import time
 
 from .. import config
 from . import (actions, approvals, authority, build_queue, certifier, cvmfs_status, db, events,
-               failures, kinds, mirror, outside, phases, reconcile, sbom_history, sbom_scan, shadow,
-               trace)
+               failures, kinds, mirror, nightlies, outside, phases, reconcile, sbom_history,
+               sbom_scan, schedules, shadow, trace)
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -85,6 +85,8 @@ class Worker:
             # Queued builds start on free hosts, once the running ones are settled.
             at = [n for n, _ in self.steps].index("settle") + 1
             self.steps.insert(at, ("dispatch", self._dispatch))
+            # The nightly schedules that are due queue their builds, for this dispatch.
+            self.steps.insert(at, ("schedules", self._schedules))
         if settings.orch_scanner_url:
             # The published builds' SBOMs against the scanner's vulnerability database.
             at = [n for n, _ in self.steps].index("trace") + 1
@@ -118,6 +120,11 @@ class Worker:
             build_queue.dispatch(self.conn, forge, hs, approvals.preapprove_queued)
         except build_queue.Stop as e:
             raise RuntimeError("builds wait: %s" % e)
+
+    def _schedules(self):
+        refs = self.settings.forge_refs
+        nightlies.step(self.conn, self.deps.reader(), "main" if "main" in refs else sorted(refs)[0],
+                       schedules.time_zone())
 
     def _mirror(self):
         from .. import forge_ops

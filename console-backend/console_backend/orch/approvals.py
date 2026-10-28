@@ -328,18 +328,34 @@ def grant_queue(conn, batch, community, groups, digests, approver, assertion, no
     return cur.lastrowid, [r["pipeline_id"] for r in started if preapprove_queued(conn, r)]
 
 
+def _approval_of(conn, entry):
+    """The standing approval a queued build certifies under: its batch's (the build
+    among its digests), or a nightly's, its schedule's at the content it fired with."""
+    if str(entry["requested_by"]).startswith("schedule:"):
+        run = conn.execute("SELECT content_sha256 FROM schedule_runs WHERE queue_entry = ?",
+                           (entry["id"],)).fetchone()
+        r = run and _active(conn, "standing", standing_subject(entry["requested_by"],
+                                                               run["content_sha256"]))
+        # The pipeline names its certifier when it is queued: that approver's approval only.
+        named = {v.get("key"): v.get("value") for v in json.loads(entry["variables"])
+                 if isinstance(v, dict)}.get("BITS_CERTIFIER")
+        return r if r is not None and r["approver"] == named else None
+    r = _active(conn, "standing", queue_subject(entry["batch"]))
+    return r if r is not None and entry["digest"] in json.loads(r["binding"]).get("digests", []) \
+        else None
+
+
 def preapprove_queued(conn, entry):
     """Within the caller's transaction: a queued build that certifies, started
-    as entry["pipeline_id"], takes one run of its batch's approval in force,
-    which becomes the console pre-approval of that pipeline (the batch's
+    as entry["pipeline_id"], takes one run of its approval in force (_approval_of),
+    which becomes the console pre-approval of that pipeline (the approval's
     assertion and challenge, the build in its binding). Returns the
     pre-approval's id, or None (no approval, not this build, already done)."""
     pid = entry["pipeline_id"]
     if not entry["certify"] or pid is None:
         return None
-    r = _active(conn, "standing", queue_subject(entry["batch"]))
-    if r is None or entry["digest"] not in json.loads(r["binding"]).get("digests", []) \
-            or _active(conn, "preapproval", str(pid)) is not None:
+    r = _approval_of(conn, entry)
+    if r is None or _active(conn, "preapproval", str(pid)) is not None:
         return None
     if conn.execute("UPDATE approvals SET runs_left = runs_left - 1 WHERE id = ? AND runs_left > 0",
                     (r["id"],)).rowcount != 1:
