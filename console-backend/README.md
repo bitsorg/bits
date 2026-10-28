@@ -61,6 +61,9 @@ attempts), and runs one action at a time per subject.
 
 Everything that happens is an **event** (`GET /ops/events?after=&wait=`, overall
 admins): an append-only log whose hash chain is the audit trail.
+`GET /ops/worker` tells admins when the worker last passed (its heartbeat file)
+and which of its steps fail since when, from those events; the errors only to
+overall admins.
 
 Each pass first **reconciles** builds (`orch/reconcile.py`), trusting GitLab and
 S3 rather than what jobs report: it lists the build project's pipelines updated

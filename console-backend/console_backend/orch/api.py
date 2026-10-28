@@ -62,6 +62,8 @@
     GET  /ops/queue?community=&limit=  queued builds and those started in the last day
                                        (as /ops/builds), with the build hosts for admins
     POST /ops/queue/{id}/cancel        take a build that has not started out of the queue
+    GET  /ops/worker?community=        the worker's last pass and its failing steps (admins,
+                                       see _reads; their errors: overall admins)
     GET  /ops/hosts/prune-targets?community=   the free space (GiB) each build host is
                                        pruned to, and the default (admins, see _reads)
     PUT  /ops/hosts/{host}/prune-target   {min_free_gb}: by an overall admin
@@ -90,6 +92,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import sqlite3
@@ -1078,6 +1081,30 @@ async def cancel_queued(entry_id: int, request: Request):
         raise HTTPException(409, "build %d is no longer waiting" % entry_id)
     audit.record("queue_canceled", user=data["user"], entry=entry_id, principal="human")
     return {"status": "canceled", "entry": entry_id}
+
+
+# --- the worker -----------------------------------------------------------------
+
+@router.get("/ops/worker")
+async def worker_state(request: Request, community: str = ""):
+    """When the worker last passed and which of its steps fail since when: for
+    admins (see _reads), the errors for overall admins."""
+    data = await _caller(request)
+    mine = await _scope(data)
+    _, admin = _reads(mine, community)
+    if not admin:
+        raise HTTPException(403, "%s is not an admin" % data["user"])
+    failing = await run_in_threadpool(_read, events.failing_steps)
+    try:
+        beat = int(os.path.getmtime(_m().settings.orch_db + ".heartbeat") * 1000)
+    except OSError:
+        beat = None
+    return JSONResponse({
+        "last_pass_ms": beat, "interval_s": _m().settings.orch_interval,
+        "failing": [dict({"step": k, "since_ms": v["since_ms"]},
+                         **({"error": v["error"]} if mine is None else {}))
+                    for k, v in sorted(failing.items())]},
+        headers={"Cache-Control": "no-store"})
 
 
 # --- build hosts ----------------------------------------------------------------

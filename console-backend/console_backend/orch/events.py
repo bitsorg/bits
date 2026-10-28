@@ -91,6 +91,25 @@ def since(conn, after=0, limit=200, subject=None):
     return [_public(r) for r in rows]
 
 
+def failing_steps(conn):
+    """{step: {error, since_ms}} of the worker's steps failing now, from its
+    step_failed and step_recovered events since it last started."""
+    r = conn.execute("SELECT MAX(seq) FROM events WHERE subject = 'worker'"
+                     " AND kind = 'worker.started'").fetchone()
+    out = {}
+    for e in conn.execute("SELECT kind, ts_ms, payload FROM events WHERE subject = 'worker'"
+                          " AND seq > ? AND kind IN ('worker.step_failed', 'worker.step_recovered')"
+                          " ORDER BY seq", (r[0] or 0,)):
+        p = json.loads(e["payload"])
+        step = str(p.get("step") or "")
+        if e["kind"] == "worker.step_recovered":
+            out.pop(step, None)
+        else:          # a new error text of a step already failing keeps its start
+            out[step] = {"error": p.get("error") or "", "since_ms": out.get(step, {}).get(
+                "since_ms", e["ts_ms"])}
+    return out
+
+
 def verify(conn):
     """Walk the chain. Returns (count, None) when intact, or (count, seq) with the
     first event whose link or hash does not hold."""
