@@ -4,6 +4,7 @@
 
 ## Table of Contents
 1. [Introduction](#1-introduction)
+   - [How bits works](#how-bits-works)
 2. [Installation & Prerequisites](#2-installation--prerequisites)
 3. [Quick Start](#3-quick-start)
 4. [Configuration](#4-configuration)
@@ -20,6 +21,71 @@
 > **Acknowledgement.** Bits is a fork of [aliBuild](https://github.com/alisw/alibuild), originally created by the ALICE collaboration at CERN. The recipe format, dependency-resolution model, content-addressable build hashing, remote binary store, and Docker build support all originate from aliBuild. Bits extends aliBuild with the repository provider mechanism, package families, shared packages, extended parallel builds and other features described in this document.
 
 Bits is **not** a traditional package manager like `apt` or `conda`. Instead it automates fetching sources, resolving dependencies, building, and installing software in a controlled, reproducible environment. Each package is described by a *recipe* — a plain-text file with a YAML metadata header and a Bash build script — stored in a version-controlled recipe repository.
+
+### How bits works
+
+What happens when you run `bits build ROOT` in a community's recipe repository, in
+one page. The rest of this guide gives the details.
+
+**Recipes.** Each package is described by a recipe, `<package>.sh`: a short YAML header
+(version, where the source comes from, which packages it needs) and a Bash script that
+builds and installs it.
+
+**Recipe repositories.** Recipes live in git repositories named `<name>.bits`. You work
+in your community's repository: `stacks.bits` for the LCG stack, `alice.bits`,
+`atlas.bits`, `cms.bits`, `key4hep.bits`, `lhcb.bits` or `ship.bits`. It holds the
+community's settings and a few recipes of its own, and names the shared recipe
+repositories it builds on (`lcg.bits`, with about 1,100 LCG recipes; `alidist` for
+ALICE). bits finds those in its registry, [bits-providers](https://github.com/bitsorg/bits-providers),
+and clones them itself, at the branch your community asks for:
+
+```
+key4hep.bits ─┐
+atlas.bits   ─┤
+lhcb.bits    ─┼─▶ stacks.bits ─▶ lcg.bits        alice.bits ─▶ alidist
+ship.bits    ─┘   (settings)     (recipes)        (settings)    (recipes)
+```
+
+**Settings: defaults profiles.** How a build is made, its compiler, build type and
+where it is published, comes from `defaults-<name>.sh` files, chained with `::`:
+`--defaults gcc15::opt` is GCC 15, optimised (`release`, the base, is always first). A
+few values are set with `--set`, e.g. `--set release=LCG_110`, the LCG release. Record
+the options once per checkout with `bits use build …`.
+
+**Platform.** Every build is for one platform, the CPU and operating system
+(`x86_64-el9`). The settings add the compiler and build type, giving the architecture
+`x86_64-el9-gcc15-opt`, which names the directory everything is installed in,
+`sw/<architecture>/`.
+
+**Hashes and reuse.** bits gives every package a hash computed from its recipe, its
+sources, the hashes of the packages it needs and the build settings. A package whose
+hash was built before is taken, not rebuilt: from your `sw/`, from a binary store, or,
+when asked (`--reuse-from`), from what is already published on CVMFS. Change one recipe
+and only that package and what depends on it are rebuilt. A binary from a store is
+used only when a signed list of builds (a manifest) vouches for it. The community's CI
+fills the store, so a build on the CI's platform, in its container, reuses it.
+
+**Containers.** On Linux, `--docker` runs every build in the platform's builder image,
+which has the compilers, build tools and system libraries (ALICE uses its own images,
+see [Platforms](#platforms)). Without it, bits builds with what the machine has
+installed ([§2](#2-installation--prerequisites)).
+
+**The work directory.** `sw/` holds the sources (`SOURCES/`), the recipe repositories
+bits cloned (`REPOS/`), the build areas (`BUILD/`, removed after a successful build),
+the installations (`sw/<architecture>/<package>/<version>-<revision>/`) and a tarball of
+each (`TARS/`, what stores share).
+
+**Using what was built.** Each package gets an Environment Modules file. `bits enter
+ROOT/latest` opens a shell with ROOT and everything it needs set up; `bits q` lists
+what is there ([§6](#6-managing-environments)).
+
+**Publishing.** Communities publish to CVMFS (`/cvmfs/bits.cern.ch/<community>`) from
+their CI, run from the bits-console web interface: the same `bits build`, then a
+publish, and a certification that signs what was built so that others reuse it.
+Nightly builds and builds on each push are set up there too ([WORKFLOWS](WORKFLOWS.md)).
+
+To start: prepare the machine ([§2](#2-installation--prerequisites)), then follow the
+[Quick Start](#3-quick-start).
 
 Key capabilities at a glance:
 
