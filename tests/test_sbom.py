@@ -79,6 +79,55 @@ class TestComponents(unittest.TestCase):
         self.assertEqual(sbom._download(cmake), "https://cmake.org/files/cmake-3.30.6.tar.gz")
 
 
+    def test_a_system_package_with_a_version_is_identified(self):
+        m = _manifest()
+        m["system_package_info"] = {"zlib": {"version": "1.2.11", "references": [
+            "cpe:2.3:a:zlib:zlib:1.2.11:*:*:*:*:*:*:*", "cpe:2.3:a:gnu:zlib:1.2.11:*:*:*:*:*:*:*"]}}
+        zlib = {c["name"]: c for c in sbom.to_cyclonedx(m)["components"]}["zlib"]
+        self.assertEqual((zlib["version"], zlib["purl"], zlib["cpe"]),
+                         ("1.2.11", "pkg:generic/zlib@1.2.11", "cpe:2.3:a:zlib:zlib:1.2.11:*:*:*:*:*:*:*"))
+        self.assertIn({"name": "syft:cpe23", "value": "cpe:2.3:a:gnu:zlib:1.2.11:*:*:*:*:*:*:*"},
+                      zlib["properties"])
+        spdx = {p["name"]: p for p in sbom.to_spdx(m)["packages"]}["zlib"]
+        self.assertEqual(spdx["versionInfo"], "1.2.11")
+        plain = {c["name"]: c for c in sbom.to_cyclonedx(_manifest())["components"]}["zlib"]
+        self.assertNotIn("version", plain)                     # its check said nothing
+
+    def test_a_host_tool_is_marked(self):
+        m = _manifest()
+        m["system_package_info"] = {"zlib": {"version": "", "references": [], "sbom": "tool"}}
+        m["packages"][3]["sbom"] = "tool"
+        comps = {c["name"]: c for c in sbom.to_cyclonedx(m)["components"]}
+        for name in ("zlib", "ROOT"):
+            self.assertIn({"name": "bits:sbom", "value": "tool"}, comps[name]["properties"], name)
+        self.assertNotIn("bits:sbom", [p["name"] for p in comps["CMake"]["properties"]])
+
+    def test_a_requested_system_package_is_a_root(self):
+        m = _manifest()
+        m["requested_packages"] = ["kkmcee", "zlib"]
+        doc = sbom.to_cyclonedx(m)
+        root = doc["metadata"]["component"]["bom-ref"]
+        (deps,) = [d["dependsOn"] for d in doc["dependencies"] if d["ref"] == root]
+        self.assertIn("zlib@system", deps)
+
+    def test_a_pinned_version_says_who_pinned_it(self):
+        m = _manifest()
+        m["packages"][3]["pinned_by"] = "defaults:lhcb"
+        root = {c["name"]: c for c in sbom.to_cyclonedx(m)["components"]}["ROOT"]
+        self.assertIn({"name": "bits:pinned_by", "value": "defaults:lhcb"}, root["properties"])
+
+    def test_a_system_package_found_by_the_package_manager_goes_by_its_name(self):
+        m = _manifest()
+        purl = "pkg:deb/ubuntu/zlib1g@1:1.3.dfsg-3.1?arch=amd64&distro=ubuntu-24.04&upstream=zlib"
+        m["system_package_info"] = {"zlib": {"version": "1:1.3.dfsg-3.1", "references": [purl]}}
+        (zlib,) = [c for c in sbom.to_cyclonedx(m)["components"] if c["bom-ref"].startswith("zlib@")]
+        self.assertEqual((zlib["name"], zlib["version"], zlib["purl"]), ("zlib1g", "1:1.3.dfsg-3.1", purl))
+        self.assertIn({"name": "bits:package", "value": "zlib"}, zlib["properties"])
+        self.assertNotIn("cpe", zlib)
+        spdx = {p["name"]: p for p in sbom.to_spdx(m)["packages"]}["zlib1g"]
+        self.assertEqual(spdx["externalRefs"], [{"referenceCategory": "PACKAGE-MANAGER",
+                                                 "referenceType": "purl", "referenceLocator": purl}])
+
     def test_missing_dependencies_that_are_not_system_are_dropped(self):
         m = _manifest()
         m["system_packages"] = []            # e.g. a failed build: zlib never recorded
@@ -169,7 +218,8 @@ class TestCycloneDX(unittest.TestCase):
         self.assertEqual(bom["metadata"]["timestamp"], "2026-09-30T07:18:18Z")
         comps = {c["name"]: c for c in bom["components"]}
         root = comps["ROOT"]
-        self.assertEqual(root["version"], "v6-40-02-5")
+        self.assertEqual(root["version"], "v6-40-02")           # upstream, as scanners compare
+        self.assertIn({"name": "bits:revision", "value": "5"}, root["properties"])
         self.assertEqual(root["hashes"], [{"alg": "SHA-256", "content": "3" * 64}])
         self.assertEqual(root["licenses"], [{"expression": "LGPL-2.1-or-later"}])
         props = {(p["name"], p["value"]) for p in root["properties"]}
@@ -192,6 +242,49 @@ class TestCycloneDX(unittest.TestCase):
         m["packages"][3]["hash"] = "x" * 40            # other content, other serial
         self.assertNotEqual(json.loads(a)["serialNumber"],
                             json.loads(sbom.render(m, "cyclonedx", "rel-1"))["serialNumber"])
+
+
+def _with_references():
+    m = _manifest()
+    m["packages"][3]["references"] = ["cpe:2.3:a:cern:root:6.40.02:*:*:*:*:*:*:*",
+                                      "cpe:2.3:a:root-project:root:6.40.02:*:*:*:*:*:*:*"]
+    m["packages"][2]["references"] = ["pkg:pypi/cmake@3.30.6"]
+    m["packages"][4]["references"] = ["cpe:2.3:a:kkmcee:kkmcee:5.01.00\\+cpu:*:*:*:*:*:*:*"]
+    return m
+
+
+class TestScannerIdentity(unittest.TestCase):
+    """A recipe's references (CPEs, purls) name the package for vulnerability
+    scanners; without them a package keeps its pkg:github / pkg:generic purl."""
+
+    def _refs(self, refs):
+        m = _manifest()
+        m["packages"][3]["references"] = refs                  # ROOT
+        return m
+
+    def test_cyclonedx_carries_the_first_cpe_and_the_recipes_purl(self):
+        m = self._refs(["cpe:2.3:a:cern:root:6.40.02:*:*:*:*:*:*:*", "pkg:generic/root@6.40.02",
+                        "cpe:2.3:a:root-project:root:6.40.02:*:*:*:*:*:*:*"])
+        root = {c["name"]: c for c in sbom.to_cyclonedx(m)["components"]}["ROOT"]
+        self.assertEqual(root["cpe"], "cpe:2.3:a:cern:root:6.40.02:*:*:*:*:*:*:*")
+        self.assertEqual(root["purl"], "pkg:generic/root@6.40.02")
+        self.assertIn({"name": "syft:cpe23", "value": "cpe:2.3:a:root-project:root:6.40.02:*:*:*:*:*:*:*"},
+                      root["properties"])
+
+    def test_without_references_nothing_changes(self):
+        root = {c["name"]: c for c in sbom.to_cyclonedx(_manifest())["components"]}["ROOT"]
+        self.assertNotIn("cpe", root)
+        self.assertTrue(root["purl"].startswith("pkg:github/root-project/root@"))
+
+    def test_spdx_lists_every_cpe_as_a_security_reference(self):
+        m = self._refs(["cpe:2.3:a:cern:root:6.40.02:*:*:*:*:*:*:*",
+                        "cpe:2.3:a:root-project:root:6.40.02:*:*:*:*:*:*:*"])
+        pk = {p["name"]: p for p in sbom.to_spdx(m)["packages"]}
+        self.assertEqual([r["referenceLocator"] for r in pk["ROOT"]["externalRefs"]
+                          if r["referenceType"] == "cpe23Type"],
+                         ["cpe:2.3:a:cern:root:6.40.02:*:*:*:*:*:*:*",
+                          "cpe:2.3:a:root-project:root:6.40.02:*:*:*:*:*:*:*"])
+        self.assertEqual(pk["ROOT"]["versionInfo"], "v6-40-02")
 
 
 class TestSPDX(unittest.TestCase):
@@ -272,7 +365,7 @@ class TestSchemaValidation(unittest.TestCase):
             from cyclonedx.validation.json import JsonStrictValidator
         except ImportError:
             self.skipTest("cyclonedx-python-lib not installed")
-        for m in (_manifest(), _odd_manifest()):
+        for m in (_manifest(), _odd_manifest(), _with_references()):
             err = JsonStrictValidator(SchemaVersion.V1_6).validate_str(
                 sbom.render(m, "cyclonedx", "rel-1"))
             self.assertIsNone(err, err)
@@ -285,7 +378,7 @@ class TestSchemaValidation(unittest.TestCase):
             self.skipTest("spdx-tools not installed")
         d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, True)
         path = os.path.join(d, "sbom.spdx.json")
-        for m in (_manifest(), _odd_manifest()):
+        for m in (_manifest(), _odd_manifest(), _with_references()):
             with open(path, "w") as fh:
                 fh.write(sbom.render(m, "spdx", "rel-1"))
             self.assertEqual(validate_full_spdx_document(parse_file(path)), [])

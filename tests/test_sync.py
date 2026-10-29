@@ -574,5 +574,36 @@ class DualRemoteSyncTestCase(unittest.TestCase):
         self.assertEqual(dual.writer.writeStore, "")
 
 
+class UnreachableStoreTestCase(unittest.TestCase):
+    """An offline laptop: the store does not answer."""
+
+    def test_a_failed_listing_is_an_empty_one(self):
+        with patch("bits_helpers.sync.symlink"), patch("os.makedirs"), \
+             patch("os.listdir", return_value=[]):
+            syncer = sync.HttpRemoteSync("https://store.invalid", ARCHITECTURE, "/sw", False)
+            with patch.object(syncer, "getRetry", return_value=None):
+                syncer.fetch_symlinks(GOOD_SPEC)                  # no TypeError
+            listing = [{"name": "zlib-v1.3.1-1.%s.tar.gz" % ARCHITECTURE}, "junk"]
+            with patch.object(syncer, "getRetry", side_effect=[None, listing, None]):
+                syncer.fetch_symlinks(GOOD_SPEC)                  # a link that fails to fetch
+            sync.symlink.assert_not_called()
+
+    def test_unreachable_is_one_quick_try(self):
+        import requests
+        syncer = sync.HttpRemoteSync("https://store.invalid", ARCHITECTURE, "/sw", False)
+        with patch("requests.head", side_effect=requests.ConnectionError("down")) as head, \
+             patch("bits_helpers.sync.time.sleep"):
+            self.assertEqual(sync.store_unreachable(syncer), "ConnectionError")
+            self.assertEqual(head.call_count, 2)
+            self.assertEqual(head.call_args.kwargs["timeout"][0], 5)
+        for answer in (MagicMock(status_code=403), requests.exceptions.SSLError("private CA"),
+                       requests.exceptions.ReadTimeout("slow")):
+            with patch("requests.head", side_effect=[answer]):
+                self.assertEqual(sync.store_unreachable(syncer), "")   # something answers
+        self.assertEqual(sync.store_unreachable(sync.NoRemoteSync()), "")
+        dual = sync.DualRemoteSync(syncer, sync.NoRemoteSync())
+        self.assertEqual(dual.probe_url(), "https://store.invalid")
+
+
 if __name__ == '__main__':
     unittest.main()

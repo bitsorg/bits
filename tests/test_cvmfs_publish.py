@@ -6,6 +6,7 @@ These cover the bits that were hand-written bash in cvmfs-prepub-publish.yml and
 carry hard-won fixes (template expansion, the reused-artefact re-root, the
 INSTALLROOT symlink relativiser, sanitize). The stage/submit/pipeline parts need
 a build host and are proven separately via the remote-runner."""
+from pathlib import Path
 import os
 import shutil
 import tempfile
@@ -266,7 +267,7 @@ class TestOrderBiggestFirst(unittest.TestCase):
                 fh.write(b"x" * sz)
         for p, body in (("big", ""), ("small", "not-a-number\n")):   # blank + garbage
             d = os.path.join(work, ".packages", "el9", p); os.makedirs(d, exist_ok=True)
-            open(os.path.join(d, "1.0-1"), "w").write(body)
+            Path(os.path.join(d, "1.0-1")).write_text(body)
         self.addCleanup(os.environ.pop, "BITS_WORK_DIR", None)
         os.environ["BITS_WORK_DIR"] = work
         specs = [{"package": p, "version": "1.0", "revision": "1"} for p in ("small", "big")]
@@ -740,13 +741,14 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         self.assertEqual(os.path.normpath(os.path.join(
             "g/releases/LCG_110/ROOT/6.36", link.linkname)), "g/el9-gcc15-opt/ROOT/6.36-2")
 
-    def _main(self, fake, extra=(), templates=None, base_state={"exists": True}):
+    def _main(self, fake, extra=(), templates=None, base_state={"exists": True}, manifest=None):
         import io, contextlib
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
         m = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-        json.dump({"cvmfs_templates": templates or self.TM, "architecture": "el9-gcc15-opt",
-                   "packages": [self.SPEC, dict(self.SPEC, package="six", hash="h2")]}, m)
+        json.dump(dict({"cvmfs_templates": templates or self.TM, "architecture": "el9-gcc15-opt",
+                        "packages": [self.SPEC, dict(self.SPEC, package="six", hash="h2")]},
+                       **(manifest or {})), m)
         m.close(); self.addCleanup(os.unlink, m.name)
         sent = []
         out, err = io.StringIO(), io.StringIO()
@@ -925,6 +927,30 @@ class TestPackagesAndReleaseView(unittest.TestCase):
             self.assertEqual((rc, sent), (0, []), why)
             self.assertIn("no release: ", err)
             self.assertIn(why, err)
+
+    def test_no_release_for_a_toolchain_build(self):
+        """The toolchain (own_hash) lives outside the build arch: a build of it
+        alone makes no release links and no merged view, and does not fail."""
+        fake = lambda s, c: [("J", "x(pkg)")]
+        tm = dict(self.TM, views="{prefix}/views/{release}/{arch}")
+        gcc = dict(self.SPEC, package="GCC-Toolchain", effective_architecture="el9-gcc15")
+        rc, sent, _, err = self._main(fake, ["--release-view"], templates=tm, manifest={
+            "packages": [gcc], "requested_packages": ["GCC-Toolchain"]})
+        self.assertEqual((rc, sent), (0, []))
+        self.assertIn("no release: its top-level packages (GCC-Toolchain) live outside "
+                      "el9-gcc15-opt", err)
+        # A noarch top level is a release of the build arch.
+        six = dict(self.SPEC, package="six", effective_architecture="share")
+        rc, sent, _, err = self._main(fake, ["--release-view"], manifest={
+            "packages": [six], "requested_packages": ["six"]}, base_state={"exists": False})
+        self.assertNotIn("no release", err)
+        # With a top-level package of the build arch the release is made.
+        rc, sent, _, err = self._main(fake, ["--release-view"], manifest={
+            "packages": [gcc, self.SPEC], "requested_packages": ["ROOT", "GCC-Toolchain"]},
+            base_state={"exists": False})
+        self.assertEqual(rc, 0)
+        self.assertNotIn("no release", err)
+        self.assertTrue(any("release-view@" in lbl for _p, lbl, _h in sent))
 
     def test_view_without_release_links(self):
         """The merged view links into the packages, so a group with a views
@@ -1150,7 +1176,7 @@ class TestPackagesAndReleaseView(unittest.TestCase):
                   "share/root"):
             self.assertFalse(os.path.islink(os.path.join(staging, d)), d)
         cp.write_view_setup(staging, "/cvmfs/r/" + vp)   # still finds what it looks for
-        setup = open(os.path.join(staging, "setup.sh")).read()
+        setup = Path(os.path.join(staging, "setup.sh")).read_text()
         self.assertIn("lib/python3.12/site-packages", setup)
         self.assertIn("lib/pkgconfig", setup)
 
@@ -1165,8 +1191,8 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         cp.merged_view(ctx, [self.SPEC], staging, vp)
         self.assertFalse(os.path.islink(os.path.join(staging, "share", "man")))
         cp.write_view_setup(staging, "/cvmfs/r/" + vp)
-        self.assertIn('/share/man:$MANPATH"', open(os.path.join(staging, "setup.sh")).read())
-        csh = open(os.path.join(staging, "setup.csh")).read()
+        self.assertIn('/share/man:$MANPATH"', Path(os.path.join(staging, "setup.sh")).read_text())
+        csh = Path(os.path.join(staging, "setup.csh")).read_text()
         self.assertIn('if ($?MANPATH) then\n  setenv MANPATH', csh)
         if shutil.which("tcsh"):    # unset MANPATH must not break sourcing it
             import subprocess
@@ -1267,7 +1293,7 @@ class TestPackagesAndReleaseView(unittest.TestCase):
             out = subprocess.run(["dash", "-c", '. "%s/setup.sh" 2>/dev/null; echo "$BITS_VIEW"' % d],
                                  capture_output=True, text=True).stdout.strip()
             self.assertIn(out, ("/cvmfs/r/g/views/X/a", ""))
-        self.assertIn('set _v = "/cvmfs/r/g/views/X/a"', open(os.path.join(d, "setup.csh")).read())
+        self.assertIn('set _v = "/cvmfs/r/g/views/X/a"', Path(os.path.join(d, "setup.csh")).read_text())
         if shutil.which("tcsh"):
             out = subprocess.run(["tcsh", "-f", "-c", 'source "%s/setup.csh"; echo $BITS_VIEW' % d],
                                  capture_output=True, text=True).stdout.strip()
@@ -1288,7 +1314,7 @@ class TestPackagesAndReleaseView(unittest.TestCase):
                                   'echo "${MANPATH-<unset>}"' % (before, d)],
                                  capture_output=True, text=True).stdout.strip()
             self.assertEqual(out, want)
-        self.assertIn("if ($?MANPATH)", open(os.path.join(d, "setup.csh")).read())
+        self.assertIn("if ($?MANPATH)", Path(os.path.join(d, "setup.csh")).read_text())
 
     def test_merged_view_published_once(self):
         import tarfile
@@ -1513,6 +1539,193 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         self.assertEqual(sent, [("g/el9-gcc15-opt/Modules/BASE", "BASE@g/el9-gcc15-opt/Modules(modules)", "ingest")])
 
 
+    ROOT_MF = """#%Module1.0
+set version @@PKGREVISION@h1@@
+if ![ is-loaded "zlib/1.3-1" ] { module load zlib/1.3-1 }
+set PKG_ROOT $::env(BASEDIR)/ROOT/6.36-$version
+if {[file isdirectory $PKG_ROOT/bin]} { prepend-path PATH $PKG_ROOT/bin }
+prepend-path CMAKE_PREFIX_PATH $PKG_ROOT
+setenv ROOTSYS $PKG_ROOT
+prepend-path ROOT_PLUGIN_PATH $PKG_ROOT/etc/plugins
+setenv BITS_VIEW 1
+"""
+    ZLIB_MF = """#%Module1.0
+set PKG_ROOT $::env(BASEDIR)/zlib/1.3-1
+if {[file isdirectory $PKG_ROOT/lib]} { prepend-path LD_LIBRARY_PATH $PKG_ROOT/lib }
+setenv ZLIB_ROOT $PKG_ROOT
+"""
+
+    def _release(self, ctx):
+        """zlib and ROOT, whose modulefile loads zlib; ROOT's tarball still has
+        the revision placeholder, as bits packs it."""
+        zlib = dict(self.SPEC, package="zlib", version="1.3", revision="1", hash="z")
+        root = dict(self.SPEC)
+        self._tarball(ctx, zlib, ["lib/libz.so", "etc/modulefiles/zlib"])
+        self._tarball(ctx, root, ["bin/root", "etc/plugins/p", "etc/modulefiles/ROOT"])
+        for spec, text in ((zlib, self.ZLIB_MF), (root, self.ROOT_MF)):
+            self._retar(ctx, spec, "etc/modulefiles/" + spec["package"], text)
+        return [zlib, root]
+
+    def _retar(self, ctx, spec, rel, text):
+        """Put *text* into *rel* of the package's tarball."""
+        import subprocess
+        tar = cp_tar_path(spec, ctx)
+        src = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, src, True)
+        subprocess.run(["tar", "-xzf", tar, "-C", src], check=True)
+        top = os.path.join(src, spec["effective_architecture"], spec["package"],
+                           spec["version"] + "-" + spec["revision"])
+        with open(os.path.join(top, rel), "w") as fh:
+            fh.write(text)
+        subprocess.run(["tar", "-czf", tar, "-C", src, spec["effective_architecture"]],
+                       check=True)
+
+    def test_view_setup_sets_what_the_modules_set(self):
+        import subprocess
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm)
+        specs = self._release(ctx)
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        env, problems = cp.view_environment(ctx, specs, vp, ["ROOT"])
+        self.assertEqual(problems, [])
+        # The published tree: the view and the packages beside it.
+        repo = os.path.realpath(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, repo, True)
+        view = os.path.join(repo, vp)
+        cp.merged_view(ctx, specs, view, vp)
+        for spec in specs:
+            os.makedirs(os.path.join(repo, cp.package_path(spec, ctx), "bin"))
+        cp.write_view_setup(view, "/cvmfs/r/" + vp, env)
+        out = subprocess.run(["bash", "-c", 'cd / && PATH=/usr/bin:/bin; unset LD_LIBRARY_PATH '
+                              'CMAKE_PREFIX_PATH ROOT_PLUGIN_PATH; . "%s/setup.sh" && '
+                              'echo "$PATH|$LD_LIBRARY_PATH|$CMAKE_PREFIX_PATH|$ROOTSYS|'
+                              '$ZLIB_ROOT|$ROOT_PLUGIN_PATH|${BITS_VIEW}|${_b-unset}"' % view],
+                             capture_output=True, text=True).stdout.strip()
+        pkgs = os.path.join(repo, "g/el9-gcc15-opt")
+        self.assertEqual(out.split("|"), [
+            view + "/bin:/usr/bin:/bin", view + "/lib", view,
+            pkgs + "/ROOT/6.36-2", pkgs + "/zlib/1.3-1",
+            pkgs + "/ROOT/6.36-2/etc/plugins",   # not in the view: the package's
+            view, "unset"])
+        csh = Path(os.path.join(view, "setup.csh")).read_text()
+        self.assertIn('set _b = "/cvmfs/r/g/el9-gcc15-opt"', csh)
+        self.assertIn('setenv ROOTSYS "$_b/ROOT/6.36-2"', csh)
+
+    def test_view_setup_guards_follow_links_as_the_file_system(self):
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm)
+        zlib, root = self._release(ctx)
+        self._tarball(ctx, root, ["bin/root", "lib/pkgconfig/root.pc", "etc/modulefiles/ROOT"],
+                      links=[("lib64", "lib"), ("data", "/opt/data")])
+        guard = "if {[file isdirectory $PKG_ROOT/%s]} { prepend-path %s $PKG_ROOT/%s }\n"
+        self._retar(ctx, root, "etc/modulefiles/ROOT", self.ROOT_MF +
+                    guard % ("lib64/pkgconfig", "PKG_CONFIG_PATH", "lib64/pkgconfig"))
+        env, problems = cp.view_environment(ctx, [zlib, root], "g/views/LCG_110/el9-gcc15-opt",
+                                            ["ROOT"])
+        self.assertEqual(problems, [])
+        self.assertIn("@V@/lib64/pkgconfig", env["paths"]["PKG_CONFIG_PATH"])
+        # Below a link out of the package: modulecmd follows it, the listing cannot.
+        self._retar(ctx, root, "etc/modulefiles/ROOT", self.ROOT_MF +
+                    guard % ("data/x", "DATA_PATH", "data/x"))
+        _env, problems = cp.view_environment(ctx, [zlib, root], "g/views/LCG_110/el9-gcc15-opt",
+                                             ["ROOT"])
+        self.assertEqual(problems, ["ROOT: data is a link out of the package"])
+
+    def test_view_setup_problems_instead_of_failing(self):
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm)
+        zlib, root = self._release(ctx)
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        # A guarded directory that is a link out of the package: modulecmd
+        # follows it, the listing cannot.
+        self._tarball(ctx, root, ["bin/root", "etc/modulefiles/ROOT"],
+                      links=[("lib64", "/opt/elsewhere/lib")])
+        self._retar(ctx, root, "etc/modulefiles/ROOT", self.ROOT_MF +
+                    "if {[file isdirectory $PKG_ROOT/lib64]} { prepend-path LD_LIBRARY_PATH $PKG_ROOT/lib64 }\n")
+        _env, problems = cp.view_environment(ctx, [zlib, root], vp, ["ROOT"])
+        self.assertEqual(problems, ["ROOT: lib64 is a link out of the package"])
+        # A package whose tarball is not there: a problem, not a failed view.
+        os.unlink(cp_tar_path(zlib, ctx))
+        _env, problems = cp.view_environment(ctx, [zlib, root], vp, ["ROOT"])
+        self.assertTrue(problems[0].startswith("zlib: cannot read its modulefile: "), problems)
+
+    def test_view_records_whether_setup_sets_what_the_modules_set(self):
+        import tarfile
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm, publish_path="ingest")
+        specs = self._release(ctx)
+        metas, pointers, lines = [], [], []
+
+        def pub(c, p, t, lbl, **k):
+            with tarfile.open(t) as tf:
+                if lbl.startswith("view-pointer@"):
+                    pointers.append((p, {m.name: m.linkname for m in tf if m.issym()}))
+                else:
+                    names = tf.getnames()
+                    metas.append((json.load(tf.extractfile("./.meta.json"))["setup"],
+                                  [n for n in names if ".setup-complete" in n]))
+            return "J"
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+             mock.patch.object(cp, "_publish_tar", pub):
+            self.assertEqual(cp._publish_merged_view(ctx, specs, lines.extend, ["ROOT"]), 0)
+            self._retar(ctx, specs[0], "etc/modulefiles/zlib", self.ZLIB_MF + "puts hi\n")
+            self.assertEqual(cp._publish_merged_view(ctx, specs, lines.extend, ["ROOT"]), 0)
+        self.assertEqual(metas[0], ({"modules": True, "problems": []},
+                                    ["./.setup-complete.ROOT.6.36-2"]))
+        self.assertEqual(metas[1][0]["modules"], False)
+        self.assertIn("zlib: unknown command: puts hi", metas[1][0]["problems"])
+        self.assertEqual(metas[1][1], [])
+        # Only the complete view gets a pointer from its top-level module, to
+        # that module's own marker: a view made for another one leaves it dangling.
+        self.assertEqual(pointers, [("g/el9-gcc15-opt/Modules", {
+            "ROOT/.6.36-2.view":
+                "../../../views/LCG_110/el9-gcc15-opt/.setup-complete.ROOT.6.36-2"})])
+        self.assertEqual(lines, ["PUBLISHED J merged-view@g/views/LCG_110/el9-gcc15-opt",
+                                 "PUBLISHED J view-pointer@g/el9-gcc15-opt/Modules",
+                                 "PUBLISHED J merged-view@g/views/LCG_110/el9-gcc15-opt"])
+
+    def test_view_pointer_is_added_once_also_to_an_unchanged_view(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm, publish_path="ingest")
+        specs = self._release(ctx)
+        sent, fps = [], {}
+
+        def pub(c, p, t, lbl, identity_hash=None, **k):
+            sent.append(lbl)
+            fps[p] = identity_hash
+            return "J"
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+             mock.patch.object(cp, "_publish_tar", pub):
+            cp._publish_merged_view(ctx, specs, [].extend, ["ROOT"])
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        for pointer_there in (False, True):
+            sent.clear()
+            state = lambda c, p: ({"exists": True, "hash": fps[vp]} if p == vp else
+                                  {"exists": pointer_there})
+            with mock.patch.object(cp, "published_state", state), \
+                 mock.patch.object(cp, "_publish_tar", pub):
+                self.assertEqual(cp._publish_merged_view(ctx, specs, [].extend, ["ROOT"]), 0)
+            self.assertEqual(sent, [] if pointer_there else
+                             ["view-pointer@g/el9-gcc15-opt/Modules"])
+
+    def test_no_view_pointer_for_several_top_level_modules(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm, publish_path="ingest")
+        specs = self._release(ctx)
+        sent = []
+        # setup.sh would set what both set, more than either one alone does.
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+             mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, **k: sent.append(lbl)):
+            self.assertEqual(cp._publish_merged_view(ctx, specs, [].extend, ["ROOT", "zlib"]), 0)
+        self.assertEqual(sent, ["merged-view@g/views/LCG_110/el9-gcc15-opt"])
+
 def _boom(*a, **k):
     raise AssertionError("must not be called")
 
@@ -1524,7 +1737,7 @@ class TestSubmitIngest(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         import bits_helpers.prepub as pp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"hello-tar-bytes")
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"hello-tar-bytes")
         want = hashlib.sha256(b"hello-tar-bytes").hexdigest()
         cap = {}
 
@@ -1533,8 +1746,8 @@ class TestSubmitIngest(unittest.TestCase):
             def json(self): return {"job_id": "JID-1"}
 
         class Sess:
-            def post(self, url, files=None, headers=None, timeout=None):
-                cap["files"] = files; return Resp()
+            def post(self, url, data=None, headers=None, timeout=None):
+                cap["files"] = data.fields; return Resp()
 
         def fake_auth(token, method, uri, fields=None, body_hash=None,
                       bearer_auth=False, no_verify_tls=False):
@@ -1564,7 +1777,7 @@ class TestSubmitIngest(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         import bits_helpers.prepub as pp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"z")
         cap = {}
 
         class Resp:
@@ -1572,8 +1785,8 @@ class TestSubmitIngest(unittest.TestCase):
             def json(self): return {"job_id": "J"}
 
         class Sess:
-            def post(self, url, files=None, headers=None, timeout=None):
-                cap["files"] = files; return Resp()
+            def post(self, url, data=None, headers=None, timeout=None):
+                cap["files"] = data.fields; return Resp()
 
         def fake_auth(token, method, uri, fields=None, body_hash=None,
                       bearer_auth=False, no_verify_tls=False):
@@ -1593,7 +1806,7 @@ class TestSubmitIngest(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         import bits_helpers.prepub as pp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"z")
         cap = {}
 
         class Resp:
@@ -1601,8 +1814,8 @@ class TestSubmitIngest(unittest.TestCase):
             def json(self): return {"job_id": "J"}
 
         class Sess:
-            def post(self, url, files=None, headers=None, timeout=None):
-                cap["files"] = files; return Resp()
+            def post(self, url, data=None, headers=None, timeout=None):
+                cap["files"] = data.fields; return Resp()
 
         def fake_auth(token, method, uri, fields=None, body_hash=None,
                       bearer_auth=False, no_verify_tls=False):
@@ -1638,7 +1851,7 @@ class TestSubmitIngest(unittest.TestCase):
 
         class Sess:
             def get(self, url, timeout=None): return Health()
-            def post(self, url, files=None, headers=None, timeout=None):
+            def post(self, url, data=None, headers=None, timeout=None):
                 posted.append(url)
                 if post_exc:
                     raise post_exc
@@ -1650,7 +1863,7 @@ class TestSubmitIngest(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         import bits_helpers.prepub as pp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z" * size)
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"z" * size)
         cp._HEALTH.pop(url, None)
         with mock.patch.object(pp, "_make_session", lambda *a, **k: sess), \
              mock.patch.object(pp, "_signed_uri", lambda u: u), \
@@ -1672,12 +1885,12 @@ class TestSubmitIngest(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         import bits_helpers.prepub as pp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"z")
         sess, _ = self._sess()
         cap = {}
         orig_post = sess.post
-        def post(url, files=None, headers=None, timeout=None):
-            cap["files"] = files; return orig_post(url, files, headers, timeout)
+        def post(url, data=None, headers=None, timeout=None):
+            cap["files"] = data.fields; return orig_post(url, data, headers, timeout)
         sess.post = post
         def fake_auth(token, method, uri, fields=None, **kw):
             cap["signed"] = fields; return {}
@@ -1700,8 +1913,8 @@ class TestSubmitIngest(unittest.TestCase):
         sess, _ = self._sess()
         cap = {}
         orig_post = sess.post
-        def post(url, files=None, headers=None, timeout=None):
-            cap["files"] = files; return orig_post(url, files, headers, timeout)
+        def post(url, data=None, headers=None, timeout=None):
+            cap["files"] = data.fields; return orig_post(url, data, headers, timeout)
         sess.post = post
         def fake_auth(token, method, uri, fields=None, **kw):
             cap["signed"] = fields; return {}
@@ -1711,7 +1924,7 @@ class TestSubmitIngest(unittest.TestCase):
             for kw, want in (({"identity_path": "p", "identity_hash": "H", "replace": True}, "true"),
                              ({"identity_path": "p", "replace": True}, None),
                              ({"identity_path": "p", "identity_hash": "H"}, None)):
-                open(tarf, "wb").write(b"z")
+                Path(tarf).write_bytes(b"z")
                 cp.submit_ingest("http://id", "t", "r", "p", tarf, **kw)
                 self.assertEqual(cap["signed"].get("replace"), want, kw)
                 self.assertEqual(cap["files"].get("replace"), want and (None, want), kw)
@@ -1741,7 +1954,7 @@ class TestSubmitIngest(unittest.TestCase):
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"z")
         got = []
         def fake_submit(*a, **k):
             got.append((k.get("identity_path"), k.get("identity_hash"), k.get("replace"))); return "J"
@@ -1794,7 +2007,7 @@ class TestSubmitIngest(unittest.TestCase):
 class TestPublishTar(unittest.TestCase):
     def _tar(self):
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
-        p = os.path.join(t, "x.tar"); open(p, "wb").write(b"x"); return p
+        p = os.path.join(t, "x.tar"); Path(p).write_bytes(b"x"); return p
 
     def test_ingest_posts_tar_and_skips_stage(self):
         from unittest import mock
@@ -1861,7 +2074,7 @@ class TestIngestConcurrencyGate(unittest.TestCase):
         import bits_helpers.cvmfs_publish as cp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
         m = os.path.join(t, "man.json")
-        json.dump({"packages": [{"package": "a", "version": "1.0"}]}, open(m, "w"))
+        Path(m).write_text(json.dumps({"packages": [{"package": "a", "version": "1.0"}]}))
         with mock.patch.object(cp, "publish_one", lambda s, c: []):
             rc = cp.main(["--manifest", m, "--repo", "r", "--tars-root", t,
                           "--arch", "el9", "--publish-path", "ingest", "--workers", "4"])
@@ -1892,8 +2105,8 @@ class TestPublishOverlayTars(unittest.TestCase):
         try:
             d = tempfile.mkdtemp()
             self.addCleanup(shutil.rmtree, d, True)
-            t1 = os.path.join(d, "a.tar"); open(t1, "w").write("x")
-            t2 = os.path.join(d, "b.tar"); open(t2, "w").write("y")
+            t1 = os.path.join(d, "a.tar"); Path(t1).write_text("x")
+            t2 = os.path.join(d, "b.tar"); Path(t2).write_text("y")
             jids = P.publish_overlay_tars(
                 {"job_id_base": "base", "tmp_dir": d}, [t1, t2])
             self.assertEqual(jids, ["job-a.tar", "job-b.tar"])

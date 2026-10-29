@@ -60,6 +60,8 @@ fields as additive and key off ``schema_version``.
       "config_dir":        str,         # absolute path to the .bits checkout
       "config_commit":     str,         # BITS_DIST_HASH of the config repo
       "system_packages":   [str],       # taken from the system, not built (v4+)
+      "system_package_info": {name: {"version": str, "references": [str], "sbom": "tool"?}},
+                                        # their versions, when their checks said (v4+)
       "cvmfs_templates":   {str: str},  # this build's CVMFS layout (optional);
                                         # bits cvmfs publish uses it for all packages
       "providers":         [ProviderEntry],
@@ -84,6 +86,8 @@ fields as additive and key off ``schema_version``.
       "hash":                   str,              # content-addressable build hash
       "commit_hash":            str,              # source commit hash (or "0")
       "outcome":                "already_installed" | "from_store" | "built_from_source",
+      "rebuilt_because":        str,              # built_from_source only, when known:
+                                                  # why no tarball was reused
       "tarball":                str | null,       # tarball filename
       "tarball_sha256":         str | null,       # sha256:<hex> of the tarball, if present
       "source_checksums":       [SourceEntry],    # per-source archive integrity anchors
@@ -93,7 +97,13 @@ fields as additive and key off ``schema_version``.
       "build_requires":         [str],            # direct build-only dependencies (v4+)
       "source":                 str,              # git repository URL, "" if none (v4+)
       "tag":                    str,              # git tag/branch built, "" if none (v4+)
+      "references":             [str],            # CPEs / purls naming it for scanners; only when any
+      "pinned_by":              str,              # "defaults:<profile>" or "requires:<package>" that
+                                                  # set its version; only when pinned
+      "sbom":                   "tool",           # a host tool, never shipped; only when so
       "built_by":               str | None,       # user@host that compiled this hash; null unless built_from_source
+      "symlinked_from":         str,              # already_installed by --symlink-packages-from: the
+      "symlink_policy":         str,              # deployed package linked, and the policy; only then
       "completed_at":           ISO-8601
     }
 
@@ -276,6 +286,57 @@ def _dep_names(names) -> list:
     return out
 
 
+_PYPI_NAME = re.compile(r"""^\s*(?:export\s+)?PYPI_NAME=["']?([A-Za-z0-9._-]+)["']?\s*(?:#.*)?$""", re.M)
+_PIP_RECIPE = re.compile(r"^[^#\n]*bits-include\s+PythonPipRecipe\b", re.M)
+_CPE_FIELDS = re.compile(r"(?<!\\):")
+
+
+def _cpe(ref, fill):
+    """*ref* (``cpe:2.3:…``, short forms padded with ``*``) with its %(…)s filled
+    in, escaped as CPE 2.3 requires; None unless it has the 13 fields. A version
+    loses a leading ``v`` (v6.40.02): NVD versions never carry one."""
+    for k, v in fill.items():
+        if k in ("%(version)s", "%(tag)s"):
+            v = re.sub(r"^v(?=\d)", "", v)
+        ref = ref.replace(k, re.sub(r"([^A-Za-z0-9._-])", r"\\\1", v))
+    n = len(_CPE_FIELDS.split(ref))
+    return ref + ":*" * (13 - n) if 5 <= n <= 13 else None
+
+
+def _references(spec: dict) -> list:
+    """The recipe's `references:` (``cpe:2.3:…`` and ``pkg:…`` strings, with
+    %(version)s, %(name)s and %(tag)s filled in). A PythonPipRecipe that names
+    no purl gets ``pkg:pypi/<PYPI_NAME or package>@<version>``."""
+    from urllib.parse import quote
+    name, version = str(spec.get("package") or ""), str(spec.get("version") or "")
+    fill = {"%(version)s": version, "%(name)s": name, "%(package)s": name,
+            "%(tag)s": str(spec.get("tag") or "")}
+    raw = spec.get("references") or []
+    out = []
+    for r in [raw] if isinstance(raw, str) else raw:
+        if not isinstance(r, str) or not r.strip():
+            continue
+        r = r.strip()
+        if r.startswith("cpe:2.3:"):
+            ref = _cpe(r, fill)
+        elif r.startswith("pkg:"):
+            ref = r
+            for k, v in fill.items():
+                ref = ref.replace(k, quote(v, safe=".-_~"))
+        else:
+            ref = None
+        if ref is None:
+            warning("%s: ignoring reference %r: not a cpe:2.3: CPE nor a pkg: purl", name, r)
+        elif ref not in out:
+            out.append(ref)
+    body = str(spec.get("recipe") or "")
+    if version and not any(r.startswith("pkg:") for r in out) and _PIP_RECIPE.search(body):
+        m = _PYPI_NAME.search(body)
+        pypi = (m.group(1) if m else name).lower().replace("_", "-")
+        out.append("pkg:pypi/%s@%s" % (quote(pypi, safe=".-"), quote(version, safe=".-_~")))
+    return out
+
+
 def _patch_entries(spec: dict) -> list:
     """Return ``[{name, checksum}]`` for each patch the recipe applied.
 
@@ -293,6 +354,11 @@ def _patch_entries(spec: dict) -> list:
             continue
         result.append({"name": name, "checksum": checks.get(name)})
     return result
+
+
+def sbom_tool(spec):
+    """Is *spec* a host tool (recipe ``sbom: tool``): run, never shipped with the stack?"""
+    return str(spec.get("sbom") or "").strip().lower() == "tool"
 
 
 # ── BuildManifest ─────────────────────────────────────────────────────────────
@@ -412,12 +478,16 @@ class BuildManifest:
 
     # ── Package recording ─────────────────────────────────────────────────────
 
-    def set_system_packages(self, names, edges=None) -> None:
+    def set_system_packages(self, names, edges=None, info=None) -> None:
         """Record the packages taken from the system (not built) and, per built
         package, its (runtime, build) dependencies among them: the build drops
-        those from the specs' requires, so the SBOM graph needs them here."""
+        those from the specs' requires, so the SBOM graph needs them here.
+        *info* gives the versions (and CPEs/purls) known for them."""
         with self._lock:
             self._data["system_packages"] = sorted(names or ())
+            known = {n: i for n, i in (info or {}).items() if i.get("version") or i.get("sbom")}
+            if known:
+                self._data["system_package_info"] = known
             self._sys_edges = dict(edges or {})
 
     def add_package(
@@ -448,6 +518,7 @@ class BuildManifest:
         """
         from bits_helpers.sync import redistributable_forms
         _forms = redistributable_forms(spec.get("redistributable"))
+        _refs = _references(spec)
         entry = {
             "package":                spec.get("package", ""),
             "version":                spec.get("version", ""),
@@ -515,6 +586,10 @@ class BuildManifest:
             "build_requires":         _dep_names(
                 list(spec.get("build_requires") or [])
                 + list(self._sys_edges.get(spec.get("package"), ((), ()))[1])),
+            **({"references": _refs} if _refs else {}),
+            **({"pinned_by": spec["pinned_by"]} if spec.get("pinned_by") else {}),
+            # A host tool (recipe `sbom: tool`): run, never shipped; scans leave it out.
+            **({"sbom": "tool"} if sbom_tool(spec) else {}),
             "source":                 _no_userinfo(spec.get("source") or ""),
             "tag":                    str(spec.get("tag") or ""),
             # built_by identifies the host that actually compiled this hash.
@@ -523,6 +598,13 @@ class BuildManifest:
             # build's manifest, so leave it null rather than claim it.
             "built_by":               _builder_id() if outcome == "built_from_source" else None,
             "completed_at":           _now_iso(),
+            # Why a package was built here rather than reused (additive).
+            **({"rebuilt_because": spec["reuse_note"]}
+               if outcome == "built_from_source" and spec.get("reuse_note") else {}),
+            # Linked from a deployment (--symlink-packages-from), not installed here.
+            **({"symlinked_from": spec.get("symlink_source") or "",
+                "symlink_policy": spec.get("symlink_policy") or "strict"}
+               if spec.get("reuse_symlinked") else {}),
         }
         with self._lock:
             self._data["packages"].append(entry)
@@ -532,6 +614,11 @@ class BuildManifest:
         debug("manifest: %s recorded as %s", spec.get("package", "?"), outcome)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def packages(self) -> list:
+        """The package entries recorded so far (copies)."""
+        with self._lock:
+            return [dict(e) for e in self._data["packages"]]
 
     def complete(self) -> None:
         """Mark the manifest as successfully completed and write a final save."""

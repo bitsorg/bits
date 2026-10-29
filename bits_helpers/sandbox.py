@@ -103,6 +103,47 @@ def sandbox_exec_available() -> bool:
     return sys.platform == "darwin" and shutil.which("sandbox-exec") is not None
 
 
+_REFUSAL: dict = {}
+
+
+def sandbox_exec_refusal() -> Optional[str]:
+    """Why ``sandbox-exec`` cannot run here, or None. It is tried once: a
+    process already in a seatbelt sandbox (another tool's, or a bits build's)
+    cannot start a second one, and would otherwise fail in every recipe."""
+    if "r" not in _REFUSAL:
+        try:
+            rc = subprocess.run(["sandbox-exec", "-p", "(version 1)(allow default)",
+                                 "/usr/bin/true"], capture_output=True, timeout=30).returncode
+            _REFUSAL["r"] = None if rc == 0 else (
+                "sandbox-exec cannot start a sandbox here: this process is already in "
+                "one (seatbelt sandboxes do not nest)")
+        except Exception as exc:              # pylint: disable=broad-except
+            _REFUSAL["r"] = "sandbox-exec cannot run: %s" % exc
+    return _REFUSAL["r"]
+
+
+_TRUE = ("1", "on", "yes", "true")
+
+
+def default_mode(env_value, defaults_value, docker_active: bool) -> str:
+    """The sandbox mode when --sandbox is not given: ``sandbox-exec`` for a macOS
+    build outside Docker when $BITS_SANDBOX, else the defaults' ``sandbox:``,
+    says on; ``off`` otherwise. $BITS_SANDBOX=0 turns it off whatever the
+    defaults say."""
+    value = env_value if env_value not in (None, "") else defaults_value
+    on = value is True or str(value).strip().lower() in _TRUE
+    if not (on and sys.platform == "darwin" and not docker_active):
+        return "off"
+    # Asked for by default, not on the command line: where it cannot run, the
+    # build goes on unsandboxed, as with --sandbox=auto.
+    refusal = None if sandbox_exec_available() else "sandbox-exec is not installed"
+    refusal = refusal or sandbox_exec_refusal()
+    if refusal:
+        warning("BITS_SANDBOX / defaults sandbox: %s; sandboxing disabled.", refusal)
+        return "off"
+    return "sandbox-exec"
+
+
 _PODMAN_IN_IMAGE_CACHE: dict = {}
 
 
@@ -164,6 +205,9 @@ def resolve_sandbox_mode(requested: str, docker_active: bool, image=None) -> str
             raise ValueError(
                 "--sandbox=sandbox-exec is only supported on macOS"
             )
+        refusal = sandbox_exec_refusal()
+        if refusal:
+            raise ValueError("%s; build with --sandbox=off (or BITS_SANDBOX=0)" % refusal)
         return "sandbox-exec"
 
     # --- auto ---
@@ -183,7 +227,13 @@ def resolve_sandbox_mode(requested: str, docker_active: bool, image=None) -> str
 
     # Local build (no outer Docker)
     if sys.platform == "darwin":
-        return "sandbox-exec" if sandbox_exec_available() else "off"
+        if not sandbox_exec_available():
+            return "off"
+        refusal = sandbox_exec_refusal()
+        if refusal:
+            warning("sandbox=auto: %s; sandboxing disabled.", refusal)
+            return "off"
+        return "sandbox-exec"
 
     # Linux, no outer Docker: do NOT use — or even probe — podman here.  Recipe
     # sandboxing with podman is only meaningful when a container image is
@@ -241,52 +291,145 @@ _SBPL_TEMPLATE = """\
 """
 
 
-def make_sbpl_profile(allow_network: bool, builddir: str) -> str:
-    """Write a temporary SBPL sandbox profile and return its path.
+def _both(path: str, literal: bool = False) -> list:
+    """*path* and its symlink-resolved form: SBPL matches resolved paths (e.g.
+    /private/var for /var), so a rule must name the canonical one too. For a
+    *literal* (a symlink the build replaces, like ``latest``) only its directory
+    is resolved: the link's target is another version's, not this build's."""
+    if literal:
+        real = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+    else:
+        real = os.path.realpath(path)
+    return [path] if real == path else [path, real]
 
-    The caller is responsible for deleting the file when done.  The profile
-    denies everything by default, then allows process execution, file access
-    within *builddir* and system temp directories, and optionally network
-    access.
 
-    :param allow_network: when True, ``(allow network*)`` is added
-    :param builddir: absolute host path of the bits work directory;
-                     the recipe is allowed to write anywhere beneath it
+def package_write_paths(env: dict, workdir: str, build_workdir: str,
+                        extra=()) -> tuple:
+    """What one package's build may write, as ``(subpaths, literals, dirs)``:
+    the trees that are its own (its BUILD, INSTALLROOT, TMP, store tarball,
+    tarball links, installation and source directories), the symlinks it
+    points at itself (``latest``), and the directories it may create on the
+    way to them. Nothing else in the work dir: not another package's files.
+
+    *env* is the package's build environment (``PKGHASH``, ``PKGNAME``, …, as
+    build_template.sh gets it); *extra* are --sandbox-allow-write paths.
     """
-    # Allow writes under the build dir AND its symlink-resolved real path.
-    # SBPL subpath matching resolves symlinks, so if the work dir lives under a
-    # symlinked prefix (e.g. /var -> /private/var) only the canonical path
-    # actually matches; include both so either form works.
-    builddirs = [builddir]
-    real = os.path.realpath(builddir)
-    if real != builddir:
-        builddirs.append(real)
+    h, name = env["PKGHASH"], env["PKGNAME"]
+    arch = env["EFFECTIVE_ARCHITECTURE"]
+    verrev = env["PKGVERSION"] + ("-" + env["PKGREVISION"] if env.get("PKGREVISION") else "")
+    family = env.get("PKGFAMILY") or ""
+    pkgpath = os.path.join(arch, family, name, verrev) if family else \
+        os.path.join(arch, name, verrev)
+    w, b = workdir, build_workdir
+    subpaths = [
+        os.path.join(b, "BUILD", h),
+        os.path.join(w, "INSTALLROOT", h),
+        os.path.join(w, "TMP", h),
+        os.path.join(w, "TARS", arch, "store", h[:2], h),
+        os.path.join(w, "TARS", arch, name),
+        os.path.join(w, pkgpath),
+        os.path.join(w, "SOURCES", name, env["PKGVERSION"], env.get("COMMIT_HASH") or "0"),
+    ]
+    if env.get("BITS_FETCH_CACHE"):          # relative to the work dir
+        subpaths.append(os.path.join(w, env["BITS_FETCH_CACHE"]))
+    literals = [os.path.join(b, "BUILD", name + "-latest"),
+                os.path.join(w, os.path.dirname(pkgpath), "latest")]
+    if env.get("DEVEL_PREFIX"):
+        literals.append(os.path.join(b, "BUILD", "%s-latest-%s" % (name, env["DEVEL_PREFIX"])))
+    if env.get("BUILD_FAMILY"):
+        literals.append(os.path.join(w, os.path.dirname(pkgpath),
+                                     "latest-" + env["BUILD_FAMILY"]))
+    # Shared caches a compiler or a package manager writes to, and the module
+    # files a package's post-relocate.sh may write outside its own tree.
+    caches = [env.get("CCACHE_DIR") or os.environ.get("CCACHE_DIR") or "",
+              os.path.join(os.path.expanduser("~"), "Library", "Caches"),
+              env.get("MODULES_STAGING") or os.environ.get("MODULES_STAGING") or "",
+              os.path.join(w, "MODULES")]
+    subpaths += [c for c in caches if c] + [os.path.abspath(e) for e in extra]
+    # Directories that may have to be created (mkdir -p) on the way to them.
+    dirs = set()
+    for top in {w, b}:
+        dirs.add(top)
+        for d in ("BUILD", "SOURCES", "TARS", "SPECS", "INSTALLROOT", "TMP"):
+            dirs.add(os.path.join(top, d))
+        for p in subpaths + literals:
+            rel = os.path.relpath(p, top)
+            if rel.startswith(".."):
+                continue
+            parent = os.path.dirname(p)
+            while parent != top and parent.startswith(top + os.sep):
+                dirs.add(parent)
+                parent = os.path.dirname(parent)
+    return subpaths, literals, sorted(dirs)
 
-    # FIX: SBPL string literals are delimited by double-quotes, so a '"' in a
-    # builddir would escape the literal and allow injection of arbitrary SBPL
-    # rules (e.g. lifting the write restriction to cover /etc).  Reject early.
-    for d in builddirs:
-        if '"' in d:
-            raise ValueError(
-                f"workdir path contains '\"' which cannot be safely embedded in an "
-                f"SBPL sandbox profile: {d!r}. Use a path without double-quote "
-                f"characters."
-            )
-    builddir_rules = "\n".join(
-        '(allow file-write* (subpath "%s"))' % d for d in builddirs
-    )
 
+def _sbpl_quote(path: str) -> str:
+    # SBPL string literals are delimited by double-quotes: a '"' in a path would
+    # end the literal and let the rest inject rules (e.g. write access to /etc).
+    if '"' in path:
+        raise ValueError(
+            "path contains '\"' which cannot be safely embedded in an SBPL sandbox "
+            "profile: %r. Use a path without double-quote characters." % path)
+    return '"%s"' % path
+
+
+def make_sbpl_profile(allow_network: bool, builddir: str, write=None, path=None,
+                      replay=None) -> str:
+    """Write an SBPL sandbox profile and return its path.
+
+    The profile denies everything by default, then allows process execution,
+    reading, writing the system temp directories and, with *write* (the
+    ``(subpaths, literals, dirs)`` of :func:`package_write_paths`), only the
+    package's own files; without it, anywhere under *builddir* (the work dir).
+    The network is allowed only with *allow_network*.
+
+    *path*: where to write it (the package's ``sandbox.sb`` beside build.sh,
+    kept for replaying the build); a temporary file, for the caller to
+    delete, when None. *replay*: the command it is used with, as a comment.
+    """
+    if write is None:
+        rules = ["(allow file-write* (subpath %s))" % _sbpl_quote(d) for d in _both(builddir)]
+    else:
+        subpaths, literals, dirs = write
+        rules = ["(allow file-write* (subpath %s))" % _sbpl_quote(d)
+                 for p in subpaths for d in _both(p)]
+        rules += ["(allow file-write* (literal %s))" % _sbpl_quote(d)
+                  for p in literals for d in _both(p, literal=True)]
+        # Creating a directory on the way, and touching its metadata, but not
+        # writing into it: that needs one of the paths above.
+        rules += ["(allow file-write-create file-write-mode file-write-owner file-write-times"
+                  " file-write-flags (literal %s))" % _sbpl_quote(d)
+                  for p in dirs for d in _both(p)]
     network_rule = "(allow network*)" if allow_network else ""
     content = _SBPL_TEMPLATE.format(
-        builddir_rules=builddir_rules,
+        builddir_rules="\n".join(rules),
         network_rule=network_rule,
     )
-    fd, path = tempfile.mkstemp(suffix=".sb", prefix="bits-sandbox-")
-    try:
-        os.write(fd, content.encode())
-    finally:
-        os.close(fd)
+    if replay:
+        content = ("; Written by bits for one package's build. Replay it, with the build's\n"
+                   "; environment (bits --debug prints the command), as:\n;   %s\n%s" % (
+                       replay, content))
+    if path is None:
+        fd, path = tempfile.mkstemp(suffix=".sb", prefix="bits-sandbox-")
+        try:
+            os.write(fd, content.encode())
+        finally:
+            os.close(fd)
+    else:
+        with open(path, "w") as fh:
+            fh.write(content)
     return path
+
+
+def failure_hint(build_command: str) -> str:
+    """A hint for a failed build that ran in the macOS sandbox, or ""."""
+    if "sandbox-exec -f" not in build_command:
+        return ""
+    return ("The build ran in a macOS sandbox that lets it write only its own "
+            "directories, the temp dirs and a few caches. `grep 'Operation not "
+            "permitted'` in the log shows what it was refused; the profile is "
+            "sandbox.sb beside build.sh. --sandbox-allow-write PATH allows a "
+            "path, --sandbox=off (or BITS_SANDBOX=0) turns the sandbox off.")
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +445,9 @@ def wrap_build_command(
     docker_active: bool = False,
     container_workdir: Optional[str] = None,
     docker_image: Optional[str] = None,
+    pkg_env: Optional[dict] = None,
+    build_workdir: Optional[str] = None,
+    script_dir: Optional[str] = None,
 ) -> str:
     """Return *build_command* wrapped with the configured sandbox, or unchanged.
 
@@ -329,6 +475,13 @@ def wrap_build_command(
     :param docker_image:
         The Docker image name.  Used as the nested podman image when no
         ``--sandbox-image`` was given.
+    :param pkg_env:
+        The package's build environment. With it, sandbox-exec lets the build
+        write only the package's own files (:func:`package_write_paths`, in
+        *build_workdir* for BUILD); without it, anywhere in *workdir*.
+    :param script_dir:
+        The directory of the package's build.sh: its profile is kept there as
+        sandbox.sb. A temporary file without it.
     """
     # defaults-* packages (defaults-release, defaults-user, …) are pure
     # configuration packages with no compiled build script — they inject
@@ -397,7 +550,14 @@ def wrap_build_command(
 
     # --- sandbox-exec (macOS) ---
     if mode == "sandbox-exec":
-        profile = make_sbpl_profile(allow_network, workdir)
+        write = None
+        if pkg_env is not None:
+            write = package_write_paths(pkg_env, workdir, build_workdir or workdir,
+                                        getattr(opts, "sandboxAllowWrite", None) or ())
+        profile = make_sbpl_profile(
+            allow_network, workdir, write=write,
+            path=os.path.join(script_dir, "sandbox.sb") if script_dir else None,
+            replay="sandbox-exec -f sandbox.sb /bin/bash -e -x build.sh" if script_dir else None)
         return "sandbox-exec -f {} /bin/bash -c {}".format(
             quote(profile), quote(build_command)
         )

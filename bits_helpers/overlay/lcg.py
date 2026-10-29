@@ -52,9 +52,17 @@ def _load_meta(meta_path):
         return json.load(handle)
 
 
-def collect(work_dir, arch):
+def closure_of(meta_path):
+    """{name: (version, revision)} of the dependency closure in a .meta.json."""
+    deps = (_load_meta(meta_path).get("dependencies") or {}).get("recursive") or {}
+    return {d["name"]: (str(d.get("version", "")), str(d.get("revision") or ""))
+            for d in (deps.get("build") or []) + (deps.get("runtime") or []) if d.get("name")}
+
+
+def collect(work_dir, arch, closure=None):
     """Scan ``<work_dir>/<arch>`` for installed packages (``<pkg>/<ver>`` or,
-    with a family, ``<family>/<pkg>/<ver>``).
+    with a family, ``<family>/<pkg>/<ver>``). With *closure* (closure_of), only
+    those packages, at those versions: the work dir may hold others.
 
     Returns ``(records, warnings, errors)``:
       * records  — dict name -> (install_dir, meta); newest ``.meta.json`` wins
@@ -91,6 +99,9 @@ def collect(work_dir, arch):
             errors.append("%s: .meta.json has no package name/version" % meta_path)
             continue
         install_dir = os.path.dirname(meta_path)
+        if closure is not None and closure.get(name) != (
+                str(version), str(pkg.get("revision") or "")):
+            continue
         prev = chosen.get(name)
         if prev is None or mtime > prev[2]:
             if prev is not None:
@@ -100,6 +111,10 @@ def collect(work_dir, arch):
         else:
             warnings.append("duplicate package %r: using %s, ignoring %s"
                             % (name, prev[0], install_dir))
+    # Not under this arch (own_hash, share, reused from CVMFS) or not built here.
+    for name in sorted(set(closure or ()) - set(chosen)):
+        warnings.append("%s %s-%s of the closure is not under %s" % (
+            (name,) + closure[name] + (root,)))
     return {n: (v[0], v[1]) for n, v in chosen.items()}, warnings, errors
 
 
@@ -159,12 +174,17 @@ def main(argv=None):
                              "scanned closure into this directory, with a setup.sh that "
                              "collapses PATH/LD_LIBRARY_PATH/... onto it (native "
                              "bits_helpers.view — no lcgcmake create_lcg_view needed).")
+    parser.add_argument("--closure", default="",
+                        help="A .meta.json (e.g. the view package's own): list only "
+                             "the packages of its dependency closure.")
     parser.add_argument("--lib-path-var", dest="lib_path_var", default="LD_LIBRARY_PATH",
                         help="Loader path variable for the view setup.sh "
                              "(DYLD_LIBRARY_PATH on macOS). Default: %(default)s.")
     args = parser.parse_args(argv)
 
-    records, warnings, errors = collect(args.work_dir, args.architecture)
+    records, warnings, errors = collect(
+        args.work_dir, args.architecture,
+        closure_of(args.closure) if args.closure else None)
     for warning in warnings:
         sys.stderr.write("lcg-view: warning: %s\n" % warning)
     if errors:

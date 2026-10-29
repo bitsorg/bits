@@ -349,6 +349,15 @@ def _check_disk_space(work_dir: str, min_free_gib: float = 10.0) -> Tuple[str, s
         return WARN, "cannot determine disk usage for %s: %s" % (work_dir, exc)
 
 
+def check_read_store(url: str, args) -> Tuple[str, str]:
+    """_check_store of a read store; a site default that cannot be reached is a
+    WARN: a build without --remote-store then goes on without it."""
+    status, detail = _check_store(url, getattr(args, "insecure", False))
+    if status == FAIL and url and not getattr(args, "remoteStoreExplicit", True):
+        return WARN, detail + " (the site's default read store; builds go on without it)"
+    return status, detail
+
+
 def _check_store(url: str, insecure: bool = False) -> Tuple[str, str]:
     """Check remote-store reachability.
 
@@ -390,10 +399,10 @@ def _check_store(url: str, insecure: bool = False) -> Tuple[str, str]:
         return WARN, "s3:// store configured but ~/.s3cfg not found: %s" % url
 
     if url.startswith("b3://"):
-        key = os.environ.get("AWS_ACCESS_KEY_ID", "")
-        if key:
-            return PASS, "AWS_ACCESS_KEY_ID set for b3:// store %s" % url
-        return WARN, "b3:// store configured but AWS_ACCESS_KEY_ID not set: %s" % url
+        from bits_helpers.sync import s3_settings
+        if s3_settings(url[5:].split("/", 1)[0])["access_key"]:
+            return PASS, "S3 credentials set for b3:// store %s" % url
+        return WARN, "b3:// store configured but no S3 credentials for it: %s" % url
 
     if url.startswith("rsync://"):
         return SKIP, "rsync:// store connectivity check not supported; assumed reachable: %s" % url
@@ -402,6 +411,19 @@ def _check_store(url: str, insecure: bool = False) -> Tuple[str, str]:
 
 
 # ── Store tarball probe (--check-store mode) ───────────────────────────────────
+
+def _probe_in_stores(spec: dict, arch: str, store_urls: str,
+                     insecure: bool = False) -> Tuple[str, str]:
+    """_probe_tarball_in_store over every store of a comma-separated list, in
+    order: the first that has the tarball, else the first store's answer."""
+    from bits_helpers.sync import store_urls as _split
+    urls = _split(store_urls) or [""]
+    results = [(url, _probe_tarball_in_store(spec, arch, url, insecure)) for url in urls]
+    for url, (status, detail) in results:
+        if status == PASS:
+            return status, detail + ("  in %s" % url if len(urls) > 1 else "")
+    return results[0][1]
+
 
 def _probe_tarball_in_store(spec: dict, arch: str, store_url: str,
                              insecure: bool = False) -> Tuple[str, str]:
@@ -506,7 +528,7 @@ def _run_check_store_checks(args, specs: dict, own: set,
         if pkg not in own and pkg not in always_built:
             continue
         spec   = specs[pkg]
-        status, detail = _probe_tarball_in_store(spec, arch, store_url, insecure)
+        status, detail = _probe_in_stores(spec, arch, store_url, insecure)
         targets.append((pkg, status, detail))
 
     if not targets:
@@ -669,10 +691,16 @@ def _run_runner_checks(args) -> List[CheckResult]:
     checks.append(("disk space (%s)" % work_dir, disk_status, disk_detail))
 
     # ── Remote store ─────────────────────────────────────────────────────────
-    store_url = (getattr(args, "remoteStore", "") or "").rstrip("/")
+    from bits_helpers.sync import store_urls
     insecure   = getattr(args, "insecure", False)
-    store_status, store_detail = _check_store(store_url, insecure)
-    checks.append(("remote store", store_status, store_detail))
+    reads = store_urls(getattr(args, "remoteStore", ""))
+    writes = [w for w in store_urls(getattr(args, "writeStore", "")) if w not in reads]
+    for url, label in [(u, "remote store") for u in reads or [""]] + \
+                      [(u, "write store") for u in writes]:
+        store_status, store_detail = (check_read_store(url.rstrip("/"), args) if label == "remote store"
+                                      else _check_store(url.rstrip("/"), insecure))
+        checks.append((label + (" " + url if len(reads) + len(writes) > 1 else ""),
+                       store_status, store_detail))
 
     # ── cvmfs-prepub service (optional) ──────────────────────────────────────
     prepub_url = (getattr(args, "prepubUrl", "") or "").rstrip("/")

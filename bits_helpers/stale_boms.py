@@ -145,3 +145,26 @@ def load_local_boms(root):
             out.append({"key": path, "build_id": doc.get("build_id") or name,
                         "packages": pkgs})
     return out
+
+
+def decertify_targets(boms):
+    """What decertifies the local BOM files *boms* ({path: BOM}) of a bits-manifests
+    checkout: ``({(group, build_id, arch): [path, ...]}, [path not understood])``.
+    The group is the file's directory (manifests/<group>/), the architecture the
+    one the certified set files the BOM under."""
+    from bits_helpers.certify import CertifyError, bom_architecture
+    wanted, bad = {}, []
+    for path, bom in sorted(boms.items()):
+        group_dir = os.path.dirname(os.path.abspath(path))
+        try:
+            arch = bom_architecture(bom)
+        except CertifyError:
+            arch = None
+        bid = bom.get("build_id")
+        if (os.path.basename(os.path.dirname(group_dir)) != "manifests" or not arch
+                or not bid or bid == os.path.basename(path)):   # a name, not its own id
+            bad.append(path)
+            continue
+        wanted.setdefault((os.path.basename(group_dir), str(bid), arch),
+                          []).append(path)
+    return wanted, bad

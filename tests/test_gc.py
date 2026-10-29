@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for reachability GC of the shared store (bits_helpers/gc.py)."""
 
+from pathlib import Path
 import os
 import shutil
 import tempfile
@@ -159,10 +160,107 @@ class TestLocalizeManifest(unittest.TestCase):
     .sig) before verification — gc cannot open() a URL like the consumer path."""
 
     def setUp(self):
+        import bits_helpers.download as dl
+        dl._SIGNED.clear()
+        self.addCleanup(dl._SIGNED.clear)
         self.tmp = tempfile.mkdtemp()
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _serve(self, files, got=None):
+        """A download._http_get stand-in: *files* maps a URL to its body (None:
+        the fetch fails). Each body has the ETag "<body>"; a matching
+        If-None-Match gets a 304."""
+        def fake(url, headers, timeout=60):
+            if got is not None:
+                got.append(url)
+            body = files.get(url)
+            if body is None:
+                raise OSError("unreachable %s" % url)
+            tag = '"%s"' % body
+            if headers.get("If-None-Match") == tag:
+                return 304, None, tag
+            return 200, body.encode(), tag
+        return fake
+
+    def _cached(self, name, body):
+        d = os.path.join(self.tmp, "MANIFESTS", "gc")
+        os.makedirs(d, exist_ok=True)
+        for n, b in ((name, body), (name + ".sig", body + "-sig")):
+            with open(os.path.join(d, n), "w") as fh:
+                fh.write(b)
+        return os.path.join(d, name)
+
+    def test_a_cached_copy_is_replaced(self):
+        from unittest.mock import patch
+        url = "https://s3.example/MANIFESTS/common-manifest-x86_64-el9.json"
+        import hashlib
+        old = self._cached("%s.common-manifest-x86_64-el9.json"
+                           % hashlib.sha256(url.encode()).hexdigest()[:12], "old")
+        serve = self._serve({url: "new", url + ".sig": "new-sig"})
+        with patch("bits_helpers.download._http_get", side_effect=serve):
+            local = gc._localize_manifest(url, self.tmp)
+        self.assertEqual(local, old)
+        self.assertEqual((Path(local).read_text(), Path(local + ".sig").read_text()), ("new", "new-sig"))
+        self.assertEqual([n for n in os.listdir(os.path.dirname(local)) if ".part" in n], [])
+
+    def test_a_failed_fetch_never_falls_back_to_the_cached_copy(self):
+        from unittest.mock import patch
+        url = "https://s3.example/MANIFESTS/common-manifest-x86_64-el9.json"
+        for files in ({}, {url: "new"}):                 # the manifest, or only its .sig
+            with self.subTest(files=sorted(files)):
+                import bits_helpers.download as dl
+                dl._SIGNED.clear()
+                import hashlib
+                old = self._cached("%s.common-manifest-x86_64-el9.json"
+                                   % hashlib.sha256(url.encode()).hexdigest()[:12], "old")
+                with patch("bits_helpers.download._http_get",
+                           side_effect=self._serve(files)):
+                    with self.assertRaises(OSError):
+                        gc._localize_manifest(url, self.tmp)
+                self.assertNotEqual(Path(old + ".sig").read_text(), "new-sig")
+
+    def test_two_stores_one_name(self):
+        from unittest.mock import patch
+        a = "https://s3.example/one/MANIFESTS/common-manifest-shared.json"
+        b = "https://s3.example/two/MANIFESTS/common-manifest-shared.json"
+        serve = self._serve({a: "A", a + ".sig": "a", b: "B", b + ".sig": "b"})
+        with patch("bits_helpers.download._http_get", side_effect=serve):
+            pa, pb = gc._localize_manifest(a, self.tmp), gc._localize_manifest(b, self.tmp)
+        self.assertEqual((Path(pa).read_text(), Path(pb).read_text()), ("A", "B"))
+
+    def test_fetched_once_per_run(self):
+        from unittest.mock import patch
+        url = "https://s3.example/MANIFESTS/common-manifest-x86_64-el9.json"
+        got = []
+        with patch("bits_helpers.download._http_get",
+                   side_effect=self._serve({url: "new", url + ".sig": "s"}, got)):
+            a = gc._localize_manifest(url, self.tmp)
+            b = gc._localize_manifest(url, self.tmp)
+        self.assertEqual((a, got), (b, [url, url + ".sig"]))
+        got.clear()
+        with patch("bits_helpers.download._http_get", side_effect=self._serve({}, got)):
+            with self.assertRaises(OSError):
+                gc._localize_manifest(url + "x", self.tmp)
+            with self.assertRaises(OSError):                 # the failure, not a retry
+                gc._localize_manifest(url + "x", self.tmp)
+        self.assertEqual(got, [url + "x"])
+
+    def test_a_build_reuses_nothing_from_a_manifest_it_cannot_fetch(self):
+        """The stale-cache case: a build node's MANIFESTS/trust holds an old,
+        still valid copy; the store cannot be read. Nothing is trusted from it."""
+        from unittest.mock import patch
+        from bits_helpers import build
+        url = "https://s3.example/MANIFESTS/common-manifest-x86_64-el9.json"
+        d = os.path.join(self.tmp, "MANIFESTS", "trust")
+        os.makedirs(d)
+        for n in ("common-manifest-x86_64-el9.json", "common-manifest-x86_64-el9.json.sig"):
+            Path(os.path.join(d, n)).write_text("{}")
+        with patch("bits_helpers.download._http_get", side_effect=self._serve({})), \
+             patch("bits_helpers.trust.trusted_index",
+                   side_effect=AssertionError("the cached copy was verified")):
+            self.assertEqual(build._load_trusted_index(url, self.tmp, None), (None, {}))
 
     def test_local_path_passes_through(self):
         p = os.path.join(self.tmp, "common-manifest-shared.json")
@@ -173,13 +271,8 @@ class TestLocalizeManifest(unittest.TestCase):
         from unittest.mock import patch
         url = "https://s3.example/MANIFESTS/common-manifest-osx_arm64.json"
         got = []
-
-        def fake_download(source, destDir, work_dir, dest_filename=None):
-            got.append(source)
-            with open(os.path.join(destDir, dest_filename), "w") as fh:
-                fh.write("{}")
-
-        with patch("bits_helpers.download.downloadUrllib2", side_effect=fake_download):
+        with patch("bits_helpers.download._http_get",
+                   side_effect=self._serve({url: "{}", url + ".sig": "{}"}, got)):
             local = gc._localize_manifest(url, self.tmp)
         # Both the manifest and its detached signature are fetched...
         self.assertEqual(got, [url, url + ".sig"])
@@ -188,6 +281,68 @@ class TestLocalizeManifest(unittest.TestCase):
         self.assertTrue(os.path.isfile(local + ".sig"))
         self.assertTrue(local.endswith("common-manifest-osx_arm64.json"))
 
+    def test_a_weak_etag_is_never_sent_back(self):
+        from unittest.mock import patch
+        import bits_helpers.download as dl
+        url = "https://s3.example/MANIFESTS/common-manifest-x86_64-el9.json"
+        sent = []
+
+        def weak(u, headers, timeout=60):
+            sent.append(headers.get("If-None-Match"))
+            return 200, b"v", 'W/"v"'
+        for _ in range(2):
+            dl._SIGNED.clear()
+            with patch("bits_helpers.download._http_get", side_effect=weak):
+                gc._localize_manifest(url, self.tmp)
+        self.assertEqual(sent, [None] * 4)
+
+    def test_a_truncated_body_is_a_failed_fetch(self):
+        from http.client import IncompleteRead
+        from unittest.mock import MagicMock, patch
+        import bits_helpers.download as dl
+        resp = MagicMock()
+        resp.__enter__.return_value = resp
+        resp.read.side_effect = IncompleteRead(b"par", 10)
+        with patch("bits_helpers.download.urlopen", return_value=resp):
+            with self.assertRaises(OSError):
+                dl._http_get("https://s3.example/x.json", {})
+
+    def test_an_unchanged_manifest_is_not_downloaded_again(self):
+        """The next run sends the ETag it kept: 304, and the local copy stays.
+        A copy changed on disk, or a store copy that changed, is fetched in full."""
+        from unittest.mock import patch
+        import bits_helpers.download as dl
+        url = "https://s3.example/MANIFESTS/common-manifest-x86_64-el9.json"
+        files = {url: "v1", url + ".sig": "s1"}
+        sent = []
+
+        def run():
+            dl._SIGNED.clear()
+            serve = self._serve(files)
+
+            def spy(u, headers, timeout=60):
+                r = serve(u, headers, timeout)
+                sent.append((u, headers.get("If-None-Match"), r[0]))
+                return r
+            with patch("bits_helpers.download._http_get", side_effect=spy):
+                return gc._localize_manifest(url, self.tmp)
+        local = run()
+        sent.clear()
+        self.assertEqual(run(), local)
+        self.assertEqual([s[2] for s in sent], [304, 304])
+        self.assertEqual(Path(local).read_text(), "v1")
+        files[url] = "v2"                                        # re-signed in the store
+        files[url + ".sig"] = "s2"
+        sent.clear()
+        run()
+        self.assertEqual([s[2] for s in sent], [200, 200])
+        self.assertEqual((Path(local).read_text(), Path(local + ".sig").read_text()), ("v2", "s2"))
+        with open(local, "w") as fh:                             # tampered with on disk
+            fh.write("evil")
+        sent.clear()
+        run()
+        self.assertEqual(sent[0][1:], (None, 200))               # no ETag sent: fetched in full
+        self.assertEqual(Path(local).read_text(), "v2")
 
 if __name__ == "__main__":
     unittest.main()

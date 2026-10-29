@@ -13,13 +13,20 @@ import sys
 from collections import OrderedDict
 from os.path import exists
 
-from bits_helpers.log import banner, debug, dieOnError
+from bits_helpers.log import banner, debug, dieOnError, info
 from bits_helpers.recipe import getRecipeReader, parseRecipe
 from bits_helpers.paths import getConfigPaths, resolveDefaultsFilename
 from bits_helpers.utilities import asList
 
 # Recipe keys that change what a package fetches (its sources, tag, patches).
 SOURCE_KEYS = frozenset({"version", "tag", "source", "sources", "patches"})
+
+
+def override_key(key):
+  """An override's key as the overrides are kept: the package regex lowercased
+  (anything from an @ on dropped), the :matcher as written."""
+  pkg, sep, matcher = str(key).split("@", 1)[0].partition(":")
+  return pkg.lower() + sep + matcher
 
 
 def validateDefaults(finalPkgSpec, defaults):
@@ -157,7 +164,43 @@ def resolve_pkg_family(defaults_meta: dict, package_name: str) -> str:
   return default_family
 
 
+# The build type a chain gets when it qualifies the architecture (a compiler
+# profile's append_arch) but names none: every build of the same binaries then
+# lands under one qualified architecture (…-gcc15-opt), never also …-gcc15.
+DEFAULT_BUILD_TYPE = "opt"
+_BUILD_TYPES = ("opt", "dbg")
+
+
 def readDefaults(configDir, defaults, error, architecture):
+  """The merged defaults of the chain *defaults*, and their bodies.
+
+  A chain that qualifies the architecture but names no build type (no profile
+  marked ``own_hash_neutral``, such as defaults-opt / defaults-dbg) gets
+  DEFAULT_BUILD_TYPE, when that profile can be found: it is inserted into
+  *defaults* (in place, so every later step sees the chain actually built)
+  before any trailing structural overlay, and exempt from recipes'
+  valid_defaults (it was implied, not asked for).
+  """
+  meta, body = _read_defaults_chain(configDir, defaults, error, architecture)
+  if (meta.get("_append_arch_qualifiers") and not meta.get("_own_hash_drop_qualifiers")
+      and not any(d in _BUILD_TYPES for d in defaults)
+      and isinstance(defaults, list)
+      and resolveDefaultsFilename(DEFAULT_BUILD_TYPE, configDir, failOnError=False)):
+    exempt = set(meta.get("_valid_defaults_exempt") or ()) - {"release"}
+    at = len(defaults)
+    while at > 0 and defaults[at - 1] in exempt:
+      at -= 1                                 # overlays stay last
+    before = "::".join(defaults)
+    defaults.insert(at, DEFAULT_BUILD_TYPE)
+    info("--defaults %s names no build type: building %s", before, "::".join(defaults))
+    meta, body = _read_defaults_chain(configDir, defaults, error, architecture)
+    # Implied, not asked for: a recipe's valid_defaults gate is not held against it.
+    meta["_valid_defaults_exempt"] = list(meta.get("_valid_defaults_exempt") or []) + [
+        DEFAULT_BUILD_TYPE]
+  return meta, body
+
+
+def _read_defaults_chain(configDir, defaults, error, architecture):
   defaultsMeta = {}
   defaultsBody = ""
   append_arch_qualifiers = []  # per-default append_arch values, in chain order
@@ -166,6 +209,7 @@ def readDefaults(configDir, defaults, error, architecture):
   missing_defaults = []        # names with no defaults-<name>.sh on the search path
   defaults_dirs = {}           # name -> recipe dir its defaults file came from
   override_dirs = {}           # override key -> dir of the (last) profile setting it
+  version_profiles = {}        # override key -> the (last) profile setting its version
   layout_dirs = set()          # repositories whose cvmfs.yaml is merged already
   # A repository's cvmfs.yaml never overrides a key that a more specific
   # repository's file set, whatever the chain order: first the group's (the
@@ -244,7 +288,9 @@ def readDefaults(configDir, defaults, error, architecture):
         # changes what the package fetches claims it (the blocks deep-merge).
         for key, block in xMeta["overrides"].items():
           if SOURCE_KEYS & set(block or {}):
-            override_dirs[str(key).split("@", 1)[0].lower()] = defaults_dirs.get(xdefaults)
+            override_dirs[override_key(key)] = defaults_dirs.get(xdefaults)
+          if "version" in (block or {}):
+            version_profiles[override_key(key)] = xdefaults
       # A repository's cvmfs.yaml (its CVMFS layout) counts as part of the
       # first profile taken from it, beneath that profile's own keys.
       d = defaults_dirs.get(xdefaults)
@@ -277,6 +323,7 @@ def readDefaults(configDir, defaults, error, architecture):
   defaultsMeta["_missing_defaults"] = missing_defaults
   defaultsMeta["_defaults_dirs"] = defaults_dirs
   defaultsMeta["_override_dirs"] = override_dirs
+  defaultsMeta["_version_profiles"] = version_profiles
 
   debug("Merged Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
 
@@ -379,7 +426,7 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
   commonEnv = {"env": defaultsMeta["env"]} if "env" in defaultsMeta else {}
   overrides["defaults-release"] = commonEnv
   for k, v in defaultsMeta.get("overrides", {}).items():
-    f = k.split("@", 1)[0].lower()
+    f = override_key(k)
     if "@" in k:
       taps[f] = "dist:"+k
     overrides[f] = dict(**(v or {}))

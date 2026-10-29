@@ -34,10 +34,13 @@ class BuildConfig:
   parallel_downloads: int        # raw --parallel-downloads (site clamps to >= 1)
   parallel_sources: int          # concurrent source fetches
   prefetch_workers: int          # tarball prefetch workers, -1 = auto
+  fetch_build_requires: bool     # also fetch/build build_requires of reused packages
 
   # Reuse / store consumers (resolved during import; read later in the loop).
   reuse_overlay: Optional[str]   # host path of the imported reuse overlay
   reuse_cvmfs_base: Optional[str]  # CVMFS Packages base for the reuse overlay
+  symlink_packages_from: Optional[str]  # install root supplying symlinked payloads
+  symlink_policy: str           # independent strict/relaxed package selection
   reuse_beacon: Optional[str]    # reuse-beacon URL (falls back to env at the site)
   store_integrity: bool          # verify store-integrity ledger on cached reuse
 
@@ -74,8 +77,11 @@ class BuildConfig:
         parallel_downloads=getattr(args, "parallelDownloads", 2),
         parallel_sources=getattr(args, "parallelSources", 1),
         prefetch_workers=getattr(args, "prefetchWorkers", -1),
+        fetch_build_requires=getattr(args, "fetchBuildRequires", False),
         reuse_overlay=getattr(args, "reuseOverlay", None),
         reuse_cvmfs_base=getattr(args, "reuseCvmfsBase", None),
+        symlink_packages_from=getattr(args, "symlinkPackagesFrom", None),
+        symlink_policy=getattr(args, "symlinkPolicy", "strict"),
         reuse_beacon=getattr(args, "reuseBeacon", None),
         store_integrity=getattr(args, "storeIntegrity", False),
         monitor=getattr(args, "monitor", None),

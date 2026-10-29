@@ -189,46 +189,47 @@ def make_s3_deleter(s3, bucket, architecture=None):
 
 
 def _localize_manifest(src, work_dir):
-    """Return a local path to the signed manifest, downloading it (and its
+    """Return a local path to the signed manifest, fetching it afresh (and its
     detached ``.sig``) when *src* is a URL. The signature is verified from the
-    ``.sig`` sitting next to the manifest, so both must land together. Raising on
-    a failed fetch keeps gc fail-closed (the caller refuses to sweep).
+    ``.sig`` sitting next to the manifest, so both must land together. A failed
+    fetch raises, never falls back to an older copy (whose roots would miss
+    what was certified since): the caller refuses to sweep.
     """
-    if "://" not in str(src):
-        return src
-    from bits_helpers.download import downloadUrllib2
-    dest = os.path.join(work_dir, "MANIFESTS", "gc")
-    os.makedirs(dest, exist_ok=True)
-    name = os.path.basename(src.split("?")[0]) or "trust-manifest.json"
-    downloadUrllib2(src, dest, work_dir, dest_filename=name)
-    downloadUrllib2(src + ".sig", dest, work_dir, dest_filename=name + ".sig")
-    return os.path.join(dest, name)
+    from bits_helpers.download import fetch_signed_manifest
+    return fetch_signed_manifest(src, os.path.join(work_dir, "MANIFESTS", "gc"), work_dir)
 
 
 def doGc(args, parser):
-    """CLI entrypoint for ``bits gc``."""
+    """CLI entrypoint for ``bits gc``: each store of the (comma-separated) list is
+    swept against its own signed manifest (--trust-manifest, one per store)."""
     from bits_helpers.publish import _normalize_s3_store
-    from bits_helpers.sync import remote_from_url
+    from bits_helpers.sync import remote_from_url, store_urls
     from bits_helpers.log import banner
 
-    store = _normalize_s3_store(args.gcStore)
-    writer = remote_from_url(store, store, args.architecture, args.workDir)
-    bucket = getattr(writer, "remoteStore", None) or getattr(writer, "writeStore", None)
-    s3 = writer.s3
-    objects = gather_s3_store_objects(s3, bucket, args.architecture)
-    try:
-        manifest_path = _localize_manifest(args.trustManifest, args.workDir)
-    except Exception as exc:
-        parser.error("could not fetch trust manifest %s: %s"
-                     % (args.trustManifest, exc))
-    plan = collect_garbage(
-        objects, manifest_path,
-        grace_seconds=int(args.graceDays * 86400),
-        delete_fn=make_s3_deleter(s3, bucket, args.architecture),
-        dry_run=args.dryRun, allow_empty=args.allowEmpty,
-        architecture=args.architecture)
-    if not plan["verified"]:
-        parser.error("common manifest %s did not verify; nothing swept" % args.trustManifest)
-    verb = "would sweep" if args.dryRun else "swept"
-    banner("gc: %s %d object(s); kept %d, %d too young, %d unsafe/non-store",
-           verb, len(plan["delete"]), plan["kept"], plan["young"], plan["unsafe"])
+    # Each store's own certified set: deleting must never use another store's roots.
+    stores = store_urls(args.gcStore)
+    roots = [m.strip() for m in str(args.trustManifest or "").split(",") if m.strip()]
+    if len(stores) != len(roots):
+        parser.error("gc needs one --trust-manifest per store, in the same order "
+                     "(%d store(s), %d manifest(s))" % (len(stores), len(roots)))
+    for url, root in zip(stores, roots):
+        try:
+            manifest_path = _localize_manifest(root, args.workDir)
+        except Exception as exc:
+            parser.error("could not fetch trust manifest %s: %s" % (root, exc))
+        store = _normalize_s3_store(url)
+        writer = remote_from_url(store, store, args.architecture, args.workDir)
+        bucket = getattr(writer, "remoteStore", None) or getattr(writer, "writeStore", None)
+        s3 = writer.s3
+        objects = gather_s3_store_objects(s3, bucket, args.architecture)
+        plan = collect_garbage(
+            objects, manifest_path,
+            grace_seconds=int(args.graceDays * 86400),
+            delete_fn=make_s3_deleter(s3, bucket, args.architecture),
+            dry_run=args.dryRun, allow_empty=args.allowEmpty,
+            architecture=args.architecture)
+        if not plan["verified"]:
+            parser.error("common manifest %s did not verify; nothing swept in %s" % (root, store))
+        verb = "would sweep" if args.dryRun else "swept"
+        banner("gc %s: %s %d object(s); kept %d, %d too young, %d unsafe/non-store",
+               store, verb, len(plan["delete"]), plan["kept"], plan["young"], plan["unsafe"])

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the certification core (bits_helpers/certify.py)."""
 
+from pathlib import Path
 import json
 import os
 import shutil
@@ -64,6 +65,17 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(e["built_by"], "user@host")
         self.assertEqual(e["bits_version"], "1.2.3")
         self.assertEqual(e["bits_dist_hash"], "deadbeefcafe")
+
+    def test_who_built_it_comes_from_the_build_that_compiled_it(self):
+        # A later build that only reused the package lists it without built_by,
+        # and with its own completed_at; the build that compiled it wins either way.
+        reused = _manifest("b2", [_pkg("A", "h1", "sha256:aa", built_by=None,
+                                       completed_at="2026-10-22T00:00:00Z")])
+        built = _manifest("b1", [_pkg("A", "h1", "sha256:aa", built_by="u@host",
+                                      completed_at="2026-10-20T00:00:00Z")])
+        for order in ([reused, built], [built, reused]):
+            e = certify.merge_common_manifest(order)["packages"][0]
+            self.assertEqual((e["built_by"], e["completed_at"]), ("u@host", "2026-10-20T00:00:00Z"))
 
     def test_conflicting_sha_same_arch_fails_closed(self):
         # Same hash + same architecture => same store path => must be same bytes.
@@ -383,7 +395,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         out = os.path.join(self.tmp, "out", "common.json")
         certify.certify([m], self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa",
                         approval_check=lambda common: ["alice", "bob"])
-        doc = json.load(open(out))
+        doc = json.loads(Path(out).read_text())
         self.assertEqual(doc["certified_by"], ["alice", "bob"])
         self.assertIn("certified_at", doc)
         kid, _ = trust.trusted_index(out)          # signature still valid
@@ -414,7 +426,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         with patch.object(forge, "gitlab_identify", return_value="alice"):
             certify.doSign(args, _P())
         per_arch = certify._arch_stem(out, "slc7_x86-64")
-        self.assertEqual(json.load(open(per_arch))["certified_by"], ["alice"])
+        self.assertEqual(json.loads(Path(per_arch).read_text())["certified_by"], ["alice"])
 
     def test_identity_token_rejects_unauthorised_user(self):
         from bits_helpers import forge
@@ -453,7 +465,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
 
         certify.doSign(args, _P())
         per_arch = certify._arch_stem(out, "slc7_x86-64")
-        self.assertEqual(json.load(open(per_arch))["certified_by"], ["alice"])
+        self.assertEqual(json.loads(Path(per_arch).read_text())["certified_by"], ["alice"])
 
     def test_certifier_username_rejected_when_not_admin(self):
         admins = os.path.join(self.tmp, "ADMINS")
@@ -509,7 +521,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         out = os.path.join(self.tmp, "out", "common.json")
         out_path, _ = certify.certify([m], self.key_pem, out,
                                       probe=lambda a, h, t=None: store.get((a, h)))
-        data = json.load(open(out_path))
+        data = json.loads(Path(out_path).read_text())
         data["packages"][0]["tarball_sha256"] = "sha256:evil"
         with open(out_path, "w") as fh:
             json.dump(data, fh, indent=1, sort_keys=True)
@@ -535,6 +547,27 @@ class TestCertifyEndToEnd(unittest.TestCase):
         _, lcg_idx = trust.trusted_index(out, accept_groups=["lcg"])
         self.assertEqual(set(lcg_idx), {"hbase", "hlcg"})
 
+    def test_the_bytes_verified_are_the_bytes_trusted(self):
+        # Another build replacing the local copy between the signature check and
+        # the parse must not get its (unverified) bytes trusted.
+        pkgs = [_pkg("Base", "hbase", "sha256:00")]
+        store = {("slc7_x86-64", "hbase"): "sha256:00"}
+        out = os.path.join(self.tmp, "out", "common.json")
+        certify.certify([_manifest("b1", pkgs)], self.key_pem, out,
+                        probe=lambda a, h, t=None: store.get((a, h)))
+        tampered = json.loads(Path(out).read_text())
+        tampered["packages"][0]["hash"] = "hevil"
+        real = trust.verify_bytes
+
+        def verify_then_swap(*a, **k):
+            kid = real(*a, **k)
+            with open(out, "w") as fh:
+                json.dump(tampered, fh)
+            return kid
+        with patch.object(trust, "verify_bytes", side_effect=verify_then_swap):
+            _, idx = trust.trusted_index(out)
+        self.assertEqual(set(idx), {"hbase"})
+
     def test_build_trusted_reuse_index_honours_trust_groups(self):
         # End-to-end through the consumer gate: --trust-groups lcg parsed and
         # applied to the verified signed manifest.
@@ -551,7 +584,39 @@ class TestCertifyEndToEnd(unittest.TestCase):
         args = SimpleNamespace(trustManifest=out, trustGroups="lcg",
                                requireSignedReuse=True)
         idx = build.trusted_reuse_index(args, self.tmp)
-        self.assertEqual(set(idx), {"hbase", "hlcg"})   # ship filtered out
+        self.assertEqual(set(idx), {("slc7_x86-64", "hbase"),
+                                    ("slc7_x86-64", "hlcg")})   # ship filtered out
+
+    def test_the_same_hash_under_two_architectures_keeps_both(self):
+        # A hash does not include the architecture: the same one certified for
+        # two architectures is two tarballs, each with its own sha256, and
+        # reuse checks each against its own (not whichever manifest came last).
+        from bits_helpers import build
+        store = {("el9-opt", "h"): "sha256:11", ("el9", "h"): "sha256:22"}
+        srcs = []
+        for arch in ("el9-opt", "el9"):           # the bare one read last
+            out = os.path.join(self.tmp, "out", "common-%s.json" % arch)
+            certify.certify([_manifest("b-" + arch, [_pkg("A", "h", store[(arch, "h")],
+                                                          arch=arch)])],
+                            self.key_pem, out, probe=lambda a, h, t=None: store.get((a, h)))
+            srcs.append(out)
+        args = SimpleNamespace(trustManifest=",".join(srcs), trustGroups=None,
+                               requireSignedReuse=True)
+        self.assertEqual(build.trusted_reuse_index(args, self.tmp), store)
+
+    def test_one_object_certified_with_two_sha256_is_not_trusted(self):
+        from unittest import mock
+        from bits_helpers import build
+        parts = {"m1": ("k", {("a", "h"): "sha256:11", ("a", "g"): "sha256:33"}),
+                 "m2": ("k", {("a", "h"): "sha256:22"}),
+                 "m3": ("k", {("a", "h"): "sha256:11"})}
+        with mock.patch("bits_helpers.build._load_trusted_index",
+                        side_effect=lambda src, *a: parts[src]), \
+             mock.patch("bits_helpers.build.warning") as warn:
+            args = SimpleNamespace(trustManifest="m1,m2,m3", trustGroups=None)
+            self.assertEqual(build.trusted_reuse_index(args, self.tmp),
+                             {("a", "g"): "sha256:33"})
+            self.assertIn("two sha256", warn.call_args[0][0])
 
     def test_build_trusted_reuse_index_missing_manifest_degrades(self):
         # Default-on safety: an unreachable/absent signed manifest (e.g. an
@@ -571,14 +636,14 @@ class TestCertifyEndToEnd(unittest.TestCase):
         from bits_helpers import build
         url = "https://s3.cern.ch/swift/v1/b/MANIFESTS/common-manifest-shared.json"
         arch_url = url.replace("-shared", "-x86_64-el9")
-        found = lambda src: (("kid", {"h": "sha"}) if src == arch_url else (None, {}))
+        found = lambda src: (("kid", {("a", "h"): "sha"}) if src == arch_url else (None, {}))
         with mock.patch("bits_helpers.build._load_trusted_index",
                         side_effect=lambda src, *a: found(src)), \
              mock.patch("bits_helpers.build._url_not_found", return_value=True), \
              mock.patch("bits_helpers.build.warning") as warn:
             args = SimpleNamespace(trustManifest=arch_url + "," + url, trustGroups=None,
                                    _guessedTrustManifests={arch_url, url})
-            self.assertEqual(build.trusted_reuse_index(args, self.tmp), {"h": "sha"})
+            self.assertEqual(build.trusted_reuse_index(args, self.tmp), {("a", "h"): "sha"})
             warn.assert_not_called()
             # All guessed manifests absent: one clear warning.
             args = SimpleNamespace(trustManifest=url, trustGroups=None,
@@ -705,7 +770,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
             trustGroups=None, requireSignedReuse=True)
         idx = build.trusted_reuse_index(args, self.tmp)
         # own arch + shared, but NOT the other arch (osx h2).
-        self.assertEqual(idx, {"h1": "sha256:aa", "h3": "sha256:cc"})
+        self.assertEqual(idx, {("slc7_x86-64", "h1"): "sha256:aa", ("shared", "h3"): "sha256:cc"})
 
     def test_freshness_fields_and_expiry_enforced(self):
         import datetime
@@ -713,7 +778,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
                         self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa",
                         valid_days=30, source_commit="cafe1234")
-        doc = json.load(open(out))
+        doc = json.loads(Path(out).read_text())
         self.assertEqual(doc["source_commit"], "cafe1234")
         self.assertIn("expires", doc)
         # Fresh now -> trusted.
@@ -730,7 +795,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         out = os.path.join(self.tmp, "out", "common.json")
         certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
                         self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa")
-        self.assertNotIn("expires", json.load(open(out)))
+        self.assertNotIn("expires", json.loads(Path(out).read_text()))
         import datetime
         far = datetime.datetime(2999, 1, 1, tzinfo=datetime.timezone.utc)
         kid, index = trust.trusted_index(out, now=far)   # still trusted
@@ -741,7 +806,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         certify.certify([_manifest("b1", [_pkg("A", "h1", "sha256:aa")])],
                         self.key_pem, out, probe=lambda a, h, t=None: "sha256:aa",
                         default_group="lcg")
-        entry = json.load(open(out))["packages"][0]
+        entry = json.loads(Path(out).read_text())["packages"][0]
         self.assertEqual(entry["group"], "lcg")
         # Consumer in a different group won't trust it (not base).
         _, ship_idx = trust.trusted_index(out, accept_groups=["ship"])

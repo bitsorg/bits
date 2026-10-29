@@ -47,10 +47,14 @@ def is_ci_authorized(project: str, group: str, policy: dict) -> bool:
     return "*" in allowed or group in allowed
 
 
-def verify_ci_token(token: str, settings, signing_key=None) -> dict:
+def verify_ci_token(token: str, settings, signing_key=None, audience=None) -> dict:
     """Verify a GitLab CI ID token and return its claims, or raise. Enforces
-    RS256, issuer, audience and the presence of exp/iat/aud/iss/sub."""
-    if not (settings.oidc_issuer and settings.oidc_ci_audience
+    RS256, issuer, audience and the presence of exp/iat/aud/iss/sub. *audience*
+    overrides the signing audience, so a token minted for one service (the
+    orchestrator's hints) is never accepted by another (signing)."""
+    if audience is None:
+        audience = settings.oidc_ci_audience
+    if not (settings.oidc_issuer and audience
             and (signing_key or settings.jwks_url)):
         raise ValueError("CI token verification is not configured")
     key = signing_key
@@ -60,5 +64,5 @@ def verify_ci_token(token: str, settings, signing_key=None) -> dict:
         key = _jwks_client(settings.jwks_url).get_signing_key_from_jwt(token).key
     return jwt.decode(
         token, key=key, algorithms=["RS256"],
-        audience=settings.oidc_ci_audience, issuer=settings.oidc_issuer,
+        audience=audience, issuer=settings.oidc_issuer,
         options={"require": ["exp", "iat", "aud", "iss", "sub"]})

@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the cross-device console signing client (bits_helpers.sign_console)."""
 
+from pathlib import Path
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -19,7 +21,7 @@ class TestSignConsole(unittest.TestCase):
         self.mp = os.path.join(self.dir, "m.json")
         with open(self.mp, "wb") as fh:
             fh.write(b'{"packages":[{"package":"A","group":"lcg"}]}')
-        self.digest = hashlib.sha256(open(self.mp, "rb").read()).hexdigest()
+        self.digest = hashlib.sha256(Path(self.mp).read_bytes()).hexdigest()
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -39,7 +41,7 @@ class TestSignConsole(unittest.TestCase):
              patch.object(sign_console.trust, "verify_bytes", lambda b, e, t: "kid1234"), \
              patch.object(sign_console.time, "sleep", lambda s: None):
             out = sign_console.sign_via_console("http://x", self.mp, timeout=10)
-        self.assertEqual(json.load(open(out))["key_id"], "k")
+        self.assertEqual(json.loads(Path(out).read_text())["key_id"], "k")
 
     def test_builds_approve_url_from_console(self):
         captured = {}
@@ -137,6 +139,16 @@ class TestPreapproveViaConsole(unittest.TestCase):
                                                 ["lcg"], self.BOMS)
         sign_console._check_console_url("http://localhost:8080", False)   # local is fine
         sign_console._check_console_url("http://tb:8080", True)           # explicit override
+
+
+class TestPrintQr(unittest.TestCase):
+    def test_says_why_there_is_no_qr_code(self):
+        with patch.dict("sys.modules", {"qrcode": None}), \
+             patch("sys.stdout", new_callable=io.StringIO) as out:
+            sign_console._print_qr("https://bits.example/approve?approve=r1")
+        self.assertIn("module qrcode is not installed", out.getvalue())
+        self.assertIn("Approve on your phone: https://bits.example/approve?approve=r1", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

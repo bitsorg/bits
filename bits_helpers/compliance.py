@@ -27,6 +27,7 @@ import re
 import urllib.request
 
 from bits_helpers.log import banner, debug, error, info, warning
+from bits_helpers import site
 
 # Front-matter keys read from each recipe. Values may be quoted (the header
 # auto-quoting writes them back quoted); strip one level of quotes.
@@ -219,7 +220,7 @@ def scan_specs(specs):
 
 def _anonymous_store_access(endpoint, bucket):
     """True when the bucket answers an UNAUTHENTICATED listing request."""
-    url = "%s/%s/?max-keys=1" % (endpoint.rstrip("/"), bucket)
+    url = "%s/%s/?max-keys=1" % ((endpoint or "https://s3.amazonaws.com").rstrip("/"), bucket)   # boto3's default
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
             return resp.status == 200 and b"ListBucketResult" in resp.read(4096)
@@ -240,19 +241,25 @@ def _s3_client(store_url):
     from botocore import UNSIGNED
     from botocore.client import Config
     from bits_helpers.publish import _normalize_s3_store
-    from bits_helpers.sync import resolve_and_export_s3_config
+    from bits_helpers.sync import resolve_and_export_s3_config, s3_settings
     store = _normalize_s3_store(store_url)
     bucket = store.split("://", 1)[-1].strip("/")
     resolve_and_export_s3_config()
-    endpoint = os.environ.get("S3_ENDPOINT_URL") or os.environ.get(
-        "BITS_S3_ENDPOINT_URL") or "https://s3.cern.ch"
-    style = os.environ.get("S3_ADDRESSING_STYLE", "path")
-    if os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
+    settings = s3_settings(bucket)          # this bucket's, else the run's
+    endpoint = settings["endpoint"] or os.environ.get(
+        "BITS_S3_ENDPOINT_URL") or site.get("store.s3_endpoint")
+    style = settings["addressing_style"] or "path"
+    keys = {}
+    if settings["access_key"] and settings["secret_key"]:
         cfg = Config(s3={"addressing_style": style})
+        keys = {"aws_access_key_id": settings["access_key"],
+                "aws_secret_access_key": settings["secret_key"]}
+        if settings["session_token"]:
+            keys["aws_session_token"] = settings["session_token"]
     else:
         info("no S3 credentials found — auditing anonymously")
         cfg = Config(signature_version=UNSIGNED, s3={"addressing_style": style})
-    return boto3.client("s3", endpoint_url=endpoint, config=cfg), bucket, endpoint
+    return boto3.client("s3", endpoint_url=endpoint, config=cfg, **keys), bucket, endpoint
 
 
 def audit_store(store_url, restricted, work_dir):
@@ -355,8 +362,36 @@ def _recipe_source_prefixes(recipes_dir, rec, restricted):
     return prefixes, unresolved
 
 
+def _decertify_packages(console, groups, packages, dry_run):
+    """Ask bits-orchestrator to take *packages* (names) out of the certified BOMs
+    of *groups* (those the caller administers): each BOM is replaced by itself
+    without them (removal only), and the manifests are re-signed. Returns the
+    number of requests that did not succeed."""
+    from bits_helpers import orchestrated
+    if dry_run:
+        for name in sorted(packages):
+            info("  [dry-run] would ask the orchestrator to decertify %s in %s", name,
+                 ", ".join(groups) or "the groups you administer")
+        return 0
+    failed = 0
+    for name in sorted(packages):
+        for group in groups:
+            try:
+                action = console.settle(console.decertify_package(
+                    group, name, "compliance: not redistributable"))
+            except orchestrated.RequestError as exc:
+                error("  decertify %s in %s: %s", name, group, exc)
+                failed += 1
+                continue
+            ok, words = console.outcome(action)
+            (info if ok else error)("  decertify %s in %s: action %s %s",
+                                    name, group, action.get("id"), words)
+            failed += 0 if ok else 1
+    return failed
+
+
 def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
-                  work_dir="sw"):
+                  work_dir="sw", console=None):
     """Remove non-compliant packages from the store and its manifests.
 
     The admin action behind ``bits compliance --enforce``:
@@ -373,16 +408,54 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
          CI certification self-heals (missing objects are dropped), but the
          signed manifests are stale until then.
 
+    In a store whose certified set bits-orchestrator owns (orchestrated.py), 4 is
+    a decertify-package request instead, for each restricted package found in a
+    BOM or a signed manifest, in each group the caller administers: the set's
+    BOMs lose those entries only. It is made through *console* (an
+    ``orchestrated.Console``; not needed for a dry run), and *key_pem* is
+    refused: the orchestrator alone signs those manifests.
+
     With *dry_run* every action is printed and nothing is touched. Returns the
     number of issues remaining (0 = store clean after enforcement).
     """
+    from bits_helpers import orchestrated
     restricted = {p.lower() for p in rec["restricted"]}
     restricted_src = {p.lower() for p in rec["restricted_sources"]}
     s3, bucket, _endpoint = _s3_client(store_url)
-    if not dry_run and not (os.environ.get("AWS_ACCESS_KEY_ID")
-                            and os.environ.get("AWS_SECRET_ACCESS_KEY")):
+    from bits_helpers.sync import s3_settings
+    if not dry_run and not (s3_settings(bucket)["access_key"]
+                            and s3_settings(bucket)["secret_key"]):
         error("--enforce needs S3 write credentials (a dry run does not)")
         return 1
+    # Before touching anything: who signs this store's manifests.
+    try:
+        marker = orchestrated.read(s3, bucket)
+    except orchestrated.Unknown as exc:
+        error("--enforce: %s (it says whether bits-orchestrator signs the manifests)", exc)
+        return 1
+    if marker and key_pem:
+        error("--enforce: %s signs this store's manifests; drop --key, and the restricted "
+              "packages are decertified instead", orchestrated.describe(marker))
+        return 1
+    if marker and console is None and not dry_run:
+        error("--enforce: %s certifies this store: decertifying the restricted packages needs "
+              "the bits-console URL (--console, $BITS_CONSOLE_URL, the site's console.backend_url) "
+              "and a GitLab token",
+              orchestrated.describe(marker))
+        return 1
+    groups = []
+    if marker and not dry_run:
+        try:
+            console.check()
+            groups = console.groups()
+        except orchestrated.RequestError as exc:
+            error("--enforce: %s", exc)
+            return 1
+        if not groups:
+            error("--enforce: you administer no group of %s's certified set, so nothing "
+                  "could be decertified: an admin of its groups must enforce",
+                  marker["issuer"])
+            return 1
     act = "[dry-run] would" if dry_run else "will"
 
     def _delete_prefix(prefix, why):
@@ -406,8 +479,19 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                                                     Prefix="MANIFESTS/")
             for o in page.get("Contents", []) or []]
     affected_archs, remaining_boms, removed, repo_prune = set(), [], 0, []
+    found = set()                                  # restricted packages present
     for key in keys:
         leaf = key.split("/")[-1]
+        if marker and leaf.startswith("common-manifest") and leaf.endswith(".json"):
+            # What the set still certifies, even where the BOM copies are gone.
+            try:
+                signed = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+                found |= {str(e.get("package")) for e in signed.get("packages") or []
+                          if isinstance(e, dict)
+                          and str(e.get("package", "")).lower() in restricted}
+            except Exception as exc:      # pylint: disable=broad-except
+                warning("enforce: unreadable signed manifest %s (%s)", key, exc)
+            continue
         if (not leaf.endswith(".json") or "/rev-index/" in key
                 or leaf.startswith("common-manifest")):
             continue
@@ -425,6 +509,7 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
         for e in offending:
             arch = e.get("effective_architecture") or ""
             affected_archs.add(arch)
+            found.add(str(e.get("package")))
             removed += _delete_prefix(
                 resolve_store_path(arch, e.get("hash", "")) + "/",
                 "%s — redistributable: false" % e.get("package"))
@@ -457,13 +542,21 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
     info("Enforcement: %d object(s) %s removed, %d build manifest(s) affected, "
          "architectures: %s", removed, "would be" if dry_run else "",
          len(repo_prune), ", ".join(sorted(affected_archs)) or "none")
-    if repo_prune:
+    if repo_prune and not marker:
         warning("Certification re-derives from the bits-manifests git repo — "
                 "prune the matching BOM file(s) there too: %s",
                 ", ".join(sorted(repo_prune)))
 
-    # 4 — re-certify the affected platforms from the rewritten BOMs.
-    if affected_archs and key_pem and not dry_run:
+    # 4 — take the packages out of the orchestrator's set, or re-certify the
+    # affected platforms from the rewritten BOMs.
+    if marker:
+        # One spelling per package: the set matches names case-insensitively.
+        names = {n.lower(): n for n in sorted(found, reverse=True)}
+        if names and _decertify_packages(console, groups, set(names.values()), dry_run):
+            error("Restricted objects were removed, but not every package was "
+                  "decertified; re-run this command (deletions are idempotent)")
+            return 1
+    elif affected_archs and key_pem and not dry_run:
         import tempfile
         from bits_helpers import certify as _certify
         out = os.path.join(tempfile.mkdtemp(prefix="bits-enforce-"),
@@ -500,6 +593,19 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                 "them as missing). Re-run with --key to re-sign now.",
                 ", ".join(sorted(affected_archs)))
     return 0
+
+
+def _console(args):
+    """The bits-console the decertify requests of --enforce go to, or None
+    without a URL or a GitLab token (needed only where the orchestrator owns
+    the set; enforce_store says so then)."""
+    from bits_helpers import forge, orchestrated
+    url = orchestrated.console_url(getattr(args, "console", None))
+    token = forge.resolve_gitlab_token(getattr(args, "gitlabToken", None))
+    if not (url and token):
+        return None
+    return orchestrated.Console(url, token, cafile=getattr(args, "consoleCafile", None),
+                                insecure=getattr(args, "consoleInsecure", False))
 
 
 def doCompliance(args, parser):
@@ -551,41 +657,47 @@ def doCompliance(args, parser):
         if getattr(args, "noStoreCheck", False):
             parser.error("--enforce audits and cleans the store; it cannot be "
                          "combined with --no-store-check")
-        return enforce_store(args.complianceStore, rec, recipes_dir,
-                             key_pem=getattr(args, "enforceKey", None),
-                             dry_run=getattr(args, "dryRun", False),
-                             work_dir=os.path.abspath(args.workDir)) or (
-                                 1 if issues else 0)
+        from bits_helpers.sync import store_urls
+        left = 0
+        for url in store_urls(args.complianceStore):      # each store in turn
+            left += enforce_store(url, rec, recipes_dir,
+                                  key_pem=getattr(args, "enforceKey", None),
+                                  dry_run=getattr(args, "dryRun", False),
+                                  work_dir=os.path.abspath(args.workDir),
+                                  console=_console(args)) or 0
+        return left or (1 if issues else 0)
 
     if not getattr(args, "noStoreCheck", False):
         restricted = {p.lower() for p in rec["restricted"]}
-        try:
-            st = audit_store(args.complianceStore, restricted,
-                             os.path.abspath(args.workDir))
-        except Exception as exc:          # pylint: disable=broad-except
-            error("store audit failed: %s (use --no-store-check to audit "
-                  "recipes only)", exc)
-            return 1
-        info("Store %s: %d build manifest(s), %d signed manifest(s)",
-             st["bucket"], st["boms"], st["signed"])
-        info("  anonymous access ........ %s",
-             "WORLD-READABLE (unauthenticated listing succeeds)"
-             if st["public"] else "no (authenticated only)")
-        if st["stored"]:
-            sev = ("PUBLICLY EXPOSED (bucket is world-readable — this is "
-                   "redistribution)" if st["public"] else
-                   "present (private store: reuse only, do not publish)")
-            line = "%d restricted package build(s) in the store — %s:\n    %s" % (
-                len(st["stored"]), sev, "\n    ".join(sorted(st["stored"])))
-            if st["public"]:
-                issues.append(line)
-            else:
-                info("  %s", line)
-        if st["certified"]:
-            issues.append(
-                "%d restricted package(s) in SIGNED manifests (certified for "
-                "reuse — review): %s"
-                % (len(st["certified"]), "; ".join(sorted(st["certified"]))))
+        from bits_helpers.sync import store_urls
+        for store in store_urls(args.complianceStore):    # each store in turn
+            try:
+                st = audit_store(store, restricted,
+                                 os.path.abspath(args.workDir))
+            except Exception as exc:          # pylint: disable=broad-except
+                issues.append("store audit of %s failed: %s (use --no-store-check to audit "
+                              "recipes only)" % (store, exc))
+                continue
+            info("Store %s: %d build manifest(s), %d signed manifest(s)",
+                 st["bucket"], st["boms"], st["signed"])
+            info("  anonymous access ........ %s",
+                 "WORLD-READABLE (unauthenticated listing succeeds)"
+                 if st["public"] else "no (authenticated only)")
+            if st["stored"]:
+                sev = ("PUBLICLY EXPOSED (bucket is world-readable — this is "
+                       "redistribution)" if st["public"] else
+                       "present (private store: reuse only, do not publish)")
+                line = "%d restricted package build(s) in store %s — %s:\n    %s" % (
+                    len(st["stored"]), st["bucket"], sev, "\n    ".join(sorted(st["stored"])))
+                if st["public"]:
+                    issues.append(line)
+                else:
+                    info("  %s", line)
+            if st["certified"]:
+                issues.append(
+                    "%d restricted package(s) in SIGNED manifests of %s (certified for "
+                    "reuse — review): %s"
+                    % (len(st["certified"]), st["bucket"], "; ".join(sorted(st["certified"]))))
 
     if issues:
         banner("Compliance issues: %d", len(issues))

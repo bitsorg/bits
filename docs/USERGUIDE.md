@@ -178,6 +178,12 @@ For another community the steps are the same, e.g.
 Record per-directory options (work directory, stores) once with `bits use build …`
 inside the repository (see [Configuration](#4-configuration)).
 
+### Getting help
+
+`bits help` lists the commands by group, and `bits help COMMAND` (or
+`bits COMMAND --help`) one command's options; `bits help enter` covers all the
+module commands (`q`, `enter`, `setenv`, `load`, …).
+
 ### ALICE: the aliBuild workflow
 
 The `aliBuild` wrapper keeps ALICE's classic workflow, working from an `alidist` checkout:
@@ -217,7 +223,7 @@ Global settings come from environment variables:
 
 | Variable | Related flag | Description |
 |----------|--------------|-------------|
-| `$BITS_COMMUNITY` | — | Community name (uppercase), e.g. `LHCB` (`$BITS_ORGANISATION`, its former name, still works). Used only when `-c`/`--config-dir` names a directory that does not exist: bits then clones that community's recipe repository from the registry and uses it. The `aliBuild` wrapper sets `ALICE`. |
+| `$BITS_COMMUNITY` | — | Community name (uppercase), e.g. `LHCB` (`$BITS_ORGANISATION`, its former name, still works). Used only when `-c`/`--config-dir` names a directory that does not exist: bits then clones that community's recipe repository from the registry and uses it. The `aliBuild` wrapper sets `ALICE`; `bits --community NAME <sub-command>` sets it too. |
 | `$BITS_WORK_DIR` | `-w` / `--work-dir` | Output directory for built packages (default: `sw`). |
 | `$BITS_REPO_DIR` | `-c` / `--config-dir` | Root directory for recipe repositories. |
 | `$BITS_PROVIDERS` | — | URL of the bits-providers registry, optionally `@tag` (default `https://github.com/bitsorg/bits-providers`; off under the `aliBuild` wrapper). |
@@ -226,7 +232,36 @@ Global settings come from environment variables:
 
 `$BITS_COMMUNITY` is set **uppercase** (`ALICE`, `LHCB`, …). Bits lowercases it internally when resolving the community recipe repository from bits-providers (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`). Normally you do not need it: check out the community repository and run bits inside it.
 
-Settings follow the precedence `CLI flag > bits use profile > environment variable > built-in default`; the exception is `$BITS_PATH`, which, when set, overrides `--search-path`. For the full list of environment variables, see [REFERENCE.md §20](REFERENCE.md#20-environment-variables) and [REFERENCE.md — bits init](REFERENCE.md#bits-init).
+### Where defaults come from
+
+A setting is taken from the first of these that gives it:
+
+1. the command line;
+2. the `bits use` profile (inserted before your own options, so those still win);
+3. the environment (`$BITS_WORK_DIR`, `$BITS_S3_STORE`, `$BITS_CONSOLE_URL`, …);
+4. the community's defaults: the `system:` block of the recipe repository's `defaults-*.sh` (its `remote_store`, `certify_group`, `console_url`, …), which is publish policy and part of no package hash;
+5. the **site configuration**: `NN-<name>.yaml` files describing an installation (its stores, container images, console, providers repository, SBOM namespace and a few paths);
+6. bits' own site-neutral `00-bits.yaml`.
+
+The exception is `$BITS_PATH`, which, when set, overrides `--search-path`.
+
+The CERN stores, images and console URL, formerly built into bits, are in the site file `10-CERN.yaml`, shipped with bits next to `00-bits.yaml`. Files are read from bits' own `site.d/`, then `/etc/bits/site.d/` (a host or runner), `~/.config/bits/site.d/` and `$BITS_SITE_DIR`; a file replaces an earlier one of the same name, then all of them are merged by file name (not directory), the last winning. So:
+
+- **At CERN** there is nothing to do.
+- **Elsewhere**, an empty `10-CERN.yaml` in `/etc/bits/site.d/` switches CERN's values off, and a file of your own sets yours:
+
+  ```yaml
+  # /etc/bits/site.d/10-mylab.yaml
+  store:
+    read: b3://mylab-bits
+    operations: b3://mylab-bits
+    s3_endpoint: https://s3.mylab.example.org
+  console:
+    backend_url: https://bits.mylab.example.org
+  ```
+- **A runner or a person** can override single keys in a later file (`50-…` for a host, `90-…` for yourself).
+
+`bits doctor` lists the files in effect and the store, container and providers values they give. The keys are in [REFERENCE.md — Site configuration](REFERENCE.md#site-configuration); for every environment variable, see [REFERENCE.md §20](REFERENCE.md#20-environment-variables) and [REFERENCE.md — bits init](REFERENCE.md#bits-init).
 
 ---
 
@@ -258,6 +293,7 @@ Bits resolves the full transitive dependency graph of each requested package, co
 | `--build-nice` | Stagger concurrent builders across OS priority levels so CPU contention degrades gracefully — one build runs at full speed, the others are backed off, and the freed top slot is taken over as builds finish. Native builds use `nice`; `--docker` builds use `docker run --cpu-shares`. Opt-in; only affects `--parallel > 1`. Memory is still capped separately. |
 | `--build-nice-step N` | Priority spread between concurrent build slots for `--build-nice` (slot *k* → nice `min(k×N, 19)`). `N=1` is a gentle ladder; larger separates slots more. Default: 5. |
 | `--prefetch-workers N` | Background threads that fetch remote tarballs and sources ahead of the build loop. Default: auto (`min(builders, 4)`); `0` disables. |
+| `--fetch-build-requires` | Also fetch or build the build-only dependencies of reused packages (by default they are not needed and skipped). |
 | `-u`, `--fetch-repos` | Update all source mirrors before building (the default), so a branch builds its current commit. |
 | `--no-fetch-repos` | Build what the mirrors already have (offline). |
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
@@ -288,7 +324,7 @@ Without `--parallel` packages are built one after another, each with the full `-
 bits build --dry-run ROOT
 ```
 
-Computes every package's hash exactly as the build would and prints, in build order, where each one would come from — **installed**, **local tarball**, **from remote store**, **from reuse overlay** — or that it would be **built**, followed by a summary. Nothing is downloaded or installed; http(s):// and b3:// stores are only listed, and other stores (s3://, rsync) are not checked. `bits status --check-store` uses the same store listing. On macOS a dry run also writes `sw/<arch>/Brewfile`.
+Computes every package's hash exactly as the build would and prints, in build order, where each one would come from — **installed**, **local tarball**, **from store**, **from overlay** — or that it would be **built** (**build (unsigned)**: in the store, but no verified signed manifest vouches for it; **build (development)**: a local checkout), followed by a summary. The recipe repository most packages come from is named once, above the table; a package from another shows its own. The store is checked for all packages at once, 16 requests at a time, with a progress line. A real build prints the same plan before it starts. A package that only reused packages need to build (their `build_requires`) is **not needed**: it is neither fetched nor built (`--fetch-build-requires` fetches it anyway). Nothing is downloaded or installed; http(s)://, s3:// and b3:// stores are only listed, and rsync stores are not checked. `bits status --check-store` uses the same store listing. On macOS a dry run also writes `sw/<arch>/Brewfile`.
 
 ### Sharing binaries through a store
 
@@ -470,7 +506,7 @@ Pass the same `--set` / `--day` values as the build so `{release}` and `{day}` r
 bits certify            # latest build: upload what is missing, approve with a passkey, open the MR
 ```
 
-`bits certify` is what a user runs: it uploads anything still missing from the store, asks bits-console for a passkey approval (scan the QR code, compare the code, approve on your phone) and then opens the certification merge request in the manifests repository. `bits sign` — the command formerly called `certify` — is run by the manifests-repo CI to merge the approved build manifests into the signed common manifest. Group, manifests repo and console URL default from the defaults' `system:` block. See [REFERENCE.md — Publishing and certifying a build](REFERENCE.md#publishing-and-certifying-a-build--bits-publish-bits-certify) and [Signing — bits sign](REFERENCE.md#signing--bits-sign).
+`bits certify` is what a user runs: it uploads anything still missing from the store, asks bits-console for a passkey approval (scan the QR code, compare the code, approve on your phone) and then opens the certification merge request in the manifests repository. Where bits-orchestrator owns the store's certified set (`MANIFESTS/orchestrator.json` in the store), it stops after the approval: the orchestrator certifies the build as soon as it is in the store, and `bits sign` refuses that store. `bits sign` — the command formerly called `certify` — is run by the manifests-repo CI to merge the approved build manifests into the signed common manifest. Group, manifests repo and console URL default from the defaults' `system:` block. See [REFERENCE.md — Publishing and certifying a build](REFERENCE.md#publishing-and-certifying-a-build--bits-publish-bits-certify) and [Signing — bits sign](REFERENCE.md#signing--bits-sign).
 
 ### Export an SBOM
 

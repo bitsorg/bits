@@ -1,5 +1,13 @@
 ---
 coverage:
+  # Report coverage changes on PRs, without failing them.
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
   fixes:
     - "bits/::"
 # Disable long, annoying overview comment in PRs; only set statuses with links

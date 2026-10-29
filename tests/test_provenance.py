@@ -122,6 +122,16 @@ class TestProvenanceRecord(unittest.TestCase):
         self.assertEqual(rec["cvmfs_layout"]["views_dir"], "Views")
         self.assertEqual(rec["cvmfs_layout"]["views_path"], "/cvmfs/x/Views")
 
+    def test_relaxed_symlinks_record_loose_provenance_independently_of_reuse(self):
+        for policy, expected in (("strict", "pure"), ("relaxed", "loose")):
+            rec = self._record(SimpleNamespace(
+                annotate={}, architecture="arch", defaults=["release"],
+                reusePolicy="strict", symlinkPackagesFrom="/deployment",
+                symlinkPolicy=policy))
+            self.assertEqual(rec["symlink_policy"], policy)
+            self.assertEqual(rec["reuse_policy"], "strict")
+            self.assertEqual(rec["provenance"], expected)
+
     def test_reuse_policy_defaults_to_strict_when_arg_absent(self):
         # args without a reuse_policy attribute (the aliBuild simple case)
         rec = self._record(SimpleNamespace(annotate={}, architecture="arch",

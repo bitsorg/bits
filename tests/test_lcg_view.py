@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """`bits lcg-view --build-view`: manifest + native merged view + collapsed setup.sh."""
 
+from pathlib import Path
 import json
 import os
 import tempfile
@@ -16,10 +17,10 @@ def _pkg(work, arch, name, ver, files, deps=None):
     for rel in files:
         p = os.path.join(d, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        open(p, "w").write(rel)
-    json.dump({"package": {"name": name, "version": ver, "hash": "h" + name, "revision": 1},
-               "dependencies": {"direct": {"runtime": deps or []}}},
-              open(os.path.join(d, ".meta.json"), "w"))
+        Path(p).write_text(rel)
+    meta = {"package": {"name": name, "version": ver, "hash": "h" + name, "revision": 1},
+            "dependencies": {"direct": {"runtime": deps or []}}}
+    Path(os.path.join(d, ".meta.json")).write_text(json.dumps(meta))
 
 
 class TestBuildView(unittest.TestCase):
@@ -51,7 +52,7 @@ class TestBuildView(unittest.TestCase):
             self.assertFalse(os.path.isabs(os.readlink(root_bin)))
             self.assertTrue(os.path.exists(root_bin))
             # setup.sh collapses the path vars onto the single view dir
-            setup = open(os.path.join(view, "setup.sh")).read()
+            setup = Path(os.path.join(view, "setup.sh")).read_text()
             self.assertIn("export PATH='%s/bin" % os.path.abspath(view), setup)
             self.assertIn("export CMAKE_PREFIX_PATH='%s" % os.path.abspath(view), setup)
             self.assertIn("python3.11/site-packages", setup)  # PYTHONPATH minor detected

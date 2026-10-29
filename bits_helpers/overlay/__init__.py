@@ -58,7 +58,7 @@ def _usage(out=sys.stderr):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help"):
-        _usage()
+        _usage(sys.stdout if argv else sys.stderr)   # asked for: stdout
         return 0 if argv else 2
     fmt, rest = argv[0], argv[1:]
     mod = _load_format(fmt)

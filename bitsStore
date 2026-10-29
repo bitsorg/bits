@@ -28,6 +28,12 @@
 #                          instead of MANIFESTS/ — that is the copy certify reads,
 #                          so rm there (then commit + MR) is what fixes certify;
 #                          rm without it only tidies the store's MANIFESTS/ copies.
+#                          In a store bits-orchestrator certifies (MANIFESTS/
+#                          orchestrator.json), rm --manifests-dir requests a
+#                          decertify action for each stale BOM instead (--console,
+#                          a GitLab token), and rm never deletes the orchestrator's
+#                          signed manifests (nor its marker, unless named exactly
+#                          with --raw and --force).
 #                          --deep hashes objects that carry no recorded sha256.
 #
 # NOTE (hash-only store): new builds write ONLY the content-addressed
@@ -37,13 +43,11 @@
 # selectors now only match LEGACY pointer objects left by older builds and
 # are retained for one-time migration cleanup (`bits store rm --links …`).
 #
-# Credentials: ~/.bits/s3keys (override $BITS_AWS_KEYS_FILE).
-# Store:       CERN S3 by default  (override $BITS_S3_STORE).
+# Credentials: $BITS_AWS_KEYS_FILE, else the site's paths.s3_keys_file.
+# Store:       $BITS_S3_STORE, else the site's store.operations.
 set -euo pipefail
 
 PROG=$(basename "$0")
-STORE="${BITS_S3_STORE:-https://s3.cern.ch/lcgapp-bits-testing}"
-S3KEYS="${BITS_AWS_KEYS_FILE:-$HOME/.bits/s3keys}"
 
 # bitsStore lives next to the bits_helpers package (bits/), so it imports the
 # helpers from its own directory — no dependency on `bits` being on PATH.
@@ -53,18 +57,18 @@ SELFDIR="$(cd "$(dirname "$0")" && pwd)"
 BITS_PY=(python3)
 [[ -x "$SELFDIR/runtime/bin/python3" ]] && BITS_PY=("$SELFDIR/runtime/bin/python3" -E -s)
 
-# Load creds if present; a missing file is not fatal here (--help needs no S3).
-# The Python side checks for credentials before it actually touches S3.
-if [ -f "$S3KEYS" ]; then
-  set +u                     # a creds file may reference vars we don't set
-  # shellcheck disable=SC1090
-  . "$S3KEYS"
-  set -u
-  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
-  [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN || true
+S3KEYS="${BITS_AWS_KEYS_FILE:-}"
+if [[ -z "$S3KEYS" ]]; then
+  S3KEYS=$(BITSSTORE_SELF="$SELFDIR" "${BITS_PY[@]}" -c 'import os, sys; sys.path.insert(0, os.environ["BITSSTORE_SELF"]); from bits_helpers import site; site.main(["paths.s3_keys_file"])')
+  S3KEYS="${S3KEYS:-~/.bits/s3keys}"
+  S3KEYS="${S3KEYS/#\~/$HOME}"
 fi
 
-BITSSTORE_STORE="$STORE" BITSSTORE_SELF="$SELFDIR" \
+# The Python side reads the creds file as bits build does ([bucket NAME] sections
+# included); a missing file is not fatal (--help needs no S3).
+export BITS_AWS_KEYS_FILE="$S3KEYS"
+
+BITSSTORE_STORE="${BITS_S3_STORE:-}" BITSSTORE_SELF="$SELFDIR" \
   PYTHONPATH="${SELFDIR}${PYTHONPATH:+:$PYTHONPATH}" \
   exec "${BITS_PY[@]}" - "$@" <<'PY'
 import argparse, datetime, fnmatch, hashlib, json, os, sys, tempfile
@@ -72,20 +76,26 @@ if sys.flags.ignore_environment:   # bits' own runtime: PYTHONPATH is not read
     sys.path.insert(0, os.environ["BITSSTORE_SELF"])
 
 from bits_helpers.publish import _normalize_s3_store
-from bits_helpers.sync import remote_from_url
+from bits_helpers.sync import remote_from_url, resolve_and_export_s3_config
+resolve_and_export_s3_config()      # the keys file and environment, as bits build reads them
 from bits_helpers.utilities import resolve_store_path, resolve_links_path
-from bits_helpers import stale_boms
+from bits_helpers import orchestrated, stale_boms
 try:
     from bits_helpers import trust
 except Exception:
     trust = None
 
-STORE = os.environ["BITSSTORE_STORE"]
-PROG = "bitsStore"
+from bits_helpers import site
+STORE = os.environ.get("BITSSTORE_STORE") or str(site.get("store.operations") or "")
+if not STORE and not set(sys.argv[1:]) & {"-h", "--help"}:
+    sys.exit("bits store: no store: set $BITS_S3_STORE, or store.operations in a site "
+             "configuration file (see bits doctor)")
+PROG = "bits store"
 NOW = datetime.datetime.now(datetime.timezone.utc)
 # Default bits work dir (S3 client + default MANIFESTS) for the gc/stats verbs;
 # mirrors bits_helpers.args without importing that heavy module on every call.
-_WORKDIR = os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR") or "sw"
+_WORKDIR = (os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR")
+            or site.get("paths.work_dir") or "sw")
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────
@@ -538,7 +548,7 @@ def stale_bom_report(store, s3, bucket, f):
               "Set $BITS_S3_STORE, or pass --force (rm) to select them anyway.",
               file=sys.stderr)
         return {}
-    return {m["key"]: None for m, _c in full}
+    return {m["key"]: (m if f.manifests_dir else None) for m, _c in full}
 
 
 def delete_local_files(paths, f):
@@ -571,6 +581,59 @@ def delete_local_files(paths, f):
             print(f"ERROR removing {path}: {exc}", file=sys.stderr)
     print(f"Done: removed {len(paths) - failed}/{len(paths)} file(s). Commit the removal "
           "in the manifests repo and open an MR.")
+    return 1 if failed else 0
+
+
+def decertify_local(boms, f, marker):
+    """In a store bits-orchestrator certifies, the BOM files of its bits-manifests
+    mirror (--manifests-dir) are not removed: each stale one is asked out of the
+    certified set by a decertify action, whose group is the file's directory
+    (manifests/<group>/). Same dry-run / confirmation rules as a delete."""
+    from bits_helpers import forge
+    wanted, bad = stale_boms.decertify_targets(boms)
+    for path in bad:
+        print(f"{PROG}: {path} is not a BOM under manifests/<group>/; skipped", file=sys.stderr)
+    if not wanted:
+        print("Nothing matched; nothing to decertify.")
+        return 1 if bad else 0
+    print(f"{orchestrated.describe(marker)} owns the certified set: the stale BOMs are "
+          "decertified, not removed")
+    for (group, bid, arch), paths in sorted(wanted.items()):
+        print(f"    {group:<12} {bid[:40]:<40} {arch:<22} {len(paths)} BOM(s)")
+    if f.dry_run:
+        print(f"[dry-run] would request {len(wanted)} decertify action(s) (nothing requested)")
+        return 0
+    url = orchestrated.console_url(f.console)
+    token = forge.resolve_gitlab_token(None)
+    if not (url and token):
+        sys.exit(f"{PROG}: decertifying needs the bits-console URL (--console, "
+                 "$BITS_CONSOLE_URL) and a GitLab token (~/.bits/gitlab-token)")
+    if not f.yes:
+        try:
+            with open("/dev/tty") as tty:
+                sys.stderr.write(f"Ask {url} to decertify {len(wanted)} build(s)? [y/N] ")
+                sys.stderr.flush()
+                if tty.readline().strip().lower() not in ("y", "yes"):
+                    print("Aborted."); return 1
+        except OSError:
+            print("Refusing to decertify without confirmation (no tty). Use --yes.",
+                  file=sys.stderr)
+            return 1
+    console = orchestrated.Console(url, token, cafile=f.console_cafile,
+                                   insecure=f.console_insecure)
+    failed = len(bad)
+    for (group, bid, arch) in sorted(wanted):
+        try:
+            action = console.settle(console.decertify(
+                group, bid, arch, "stale BOM: the store no longer backs it"), timeout=30)
+        except orchestrated.RequestError as exc:
+            print(f"ERROR decertify {bid} ({arch}) in {group}: {exc}", file=sys.stderr)
+            failed += 1
+            continue
+        ok, words = console.outcome(action)
+        print(f"decertify {bid} ({arch}) in {group}: action {action.get('id')} {words}",
+              file=sys.stdout if ok else sys.stderr)
+        failed += 0 if ok else 1
     return 1 if failed else 0
 
 
@@ -742,6 +805,20 @@ def do_delete(s3, bucket, keys, store, f):
         return 0
     protected = set() if f.force else store.referenced_keys(verified_only=True)
     hits = sorted(keys)
+    marker = getattr(f, "marker", None)
+    if marker:
+        # The orchestrator's own manifests, always; its marker unless named exactly
+        # with --force, as going back to the manifests CI does:
+        # `rm --raw MANIFESTS/orchestrator.json --force`.
+        named = f.force and orchestrated.MARKER in (f.raw or [])
+        owned = [k for k in hits if k.startswith(marker["manifests"])
+                 or (k == orchestrated.MARKER and not named)]
+        if owned:
+            print(f"{PROG}: {len(owned)} object(s) are {orchestrated.describe(marker)}'s "
+                  "signed manifests or its marker — not deleted:", file=sys.stderr)
+            for k in owned[:10]:
+                print("   ", k, file=sys.stderr)
+            hits = [k for k in hits if k not in owned]
     blocked = [k for k in hits if k in protected]
     deletable = [k for k in hits if k not in protected]
     if blocked:
@@ -841,6 +918,14 @@ def main():
         sp = sub.add_parser(verb, help="list" if verb == "ls" else "delete")
         add_selection(sp)
         if verb == "rm":
+            sp.add_argument("--console", metavar="URL", default=None,
+                            help="with --stale-boms --manifests-dir in a store bits-orchestrator "
+                                 "certifies: the bits-console to request the decertify actions "
+                                 "from (default: $BITS_CONSOLE_URL)")
+            sp.add_argument("--console-cafile", dest="console_cafile", metavar="PEM", default=None,
+                            help="CA bundle for the console when it is not in this host's trust store")
+            sp.add_argument("--console-insecure", dest="console_insecure", action="store_true",
+                            help="allow http:// / skip TLS verification to the console (testbed only)")
             sp.add_argument("-n", "--dry-run", action="store_true", help="show what would be deleted")
             sp.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
             sp.add_argument("--force", action="store_true",
@@ -860,9 +945,11 @@ def main():
     # S3 client, so the dest names below must match what they read.
     gp = sub.add_parser("gc", help="reachability GC of the shared store")
     gp.add_argument("--trust-manifest", dest="trustManifest", required=True, metavar="PATH",
-                    help="signed common manifest whose hashes are the GC roots (must verify)")
+                    help="signed common manifest whose hashes are the GC roots (must verify); "
+                         "with several stores one per store, comma-separated, in the same order")
     gp.add_argument("--remote-store", "--store", dest="gcStore", metavar="URL", default=STORE,
-                    help="S3 store URL/bucket to sweep (default: %(default)s)")
+                    help="S3 store URL/bucket to sweep; several, comma-separated, each in "
+                         "turn (default: %(default)s)")
     gp.add_argument("-a", "--architecture", dest="architecture", metavar="ARCH", default=None,
                     help="architecture store tree to sweep (default: detected)")
     gp.add_argument("-w", "--work-dir", dest="workDir", metavar="WORKDIR", default=_WORKDIR,
@@ -914,9 +1001,17 @@ def main():
     # do NOT use the ls/rm selection machinery — handle them before the
     # selection-attr normalisation below (which would csv-mangle package/version).
     if args.verb in ("gc", "stats", "upload"):
-        if not os.environ.get("AWS_ACCESS_KEY_ID"):
-            sys.exit(f"{PROG}: no S3 credentials — put them in ~/.bits/s3keys "
-                     "(or set $BITS_AWS_KEYS_FILE / AWS_ACCESS_KEY_ID).")
+        from bits_helpers.publish import _normalize_s3_store
+        from bits_helpers.sync import resolve_and_export_s3_config, s3_settings, store_urls
+        resolve_and_export_s3_config()
+        stores = store_urls(getattr(args, {"gc": "gcStore", "stats": "storeStatsStore",
+                                           "upload": "uploadStore"}[args.verb], ""))
+        for url in stores:                # each bucket's own credentials, else the run's
+            bucket = _normalize_s3_store(url).split("://", 1)[-1].split("/", 1)[0]
+            if not s3_settings(bucket)["access_key"]:
+                sys.exit(f"{PROG}: no S3 credentials for {url} — put them in ~/.bits/s3keys "
+                         "(or set $BITS_AWS_KEYS_FILE / AWS_ACCESS_KEY_ID, or "
+                         "BITS_S3_<BUCKET>_ACCESS_KEY_ID for that bucket).")
         if not getattr(args, "architecture", None):
             from bits_helpers.arch import detectArch
             args.architecture = detectArch()
@@ -927,9 +1022,10 @@ def main():
         if args.verb == "stats":
             from bits_helpers.store_stats import doStoreStats
             return doStoreStats(args, ap) or 0
-        from bits_helpers.publish import _publish_s3       # upload
-        _publish_s3(args.package, args.version, args.architecture, args.workDir,
-                    args.uploadStore, ap, dry_run=args.dryRun)
+        from bits_helpers.publish import _publish_s3       # upload, to every store given
+        for url in stores:
+            _publish_s3(args.package, args.version, args.architecture, args.workDir,
+                        url, ap, dry_run=args.dryRun)
         return 0
 
     # Normalise multi-value filters; give safe defaults for attrs absent on a verb.
@@ -942,7 +1038,8 @@ def main():
                        ("bits_version", None), ("bits_dist", None), ("built_before", None),
                        ("only_signed", False),
                        ("only_boms", False), ("long", False), ("dry_run", False),
-                       ("yes", False), ("force", False), ("deep", False)):
+                       ("yes", False), ("force", False), ("deep", False),
+                       ("console", None), ("console_cafile", None), ("console_insecure", False)):
         if not hasattr(args, name):
             setattr(args, name, dflt)
     args.before_dt = None
@@ -999,6 +1096,15 @@ def main():
     if args.verb == "cat":
         return do_cat(s3, bucket, args.key)
 
+    args.marker = None
+    if args.verb == "rm":
+        # Whether bits-orchestrator owns the certified set: rm then leaves its
+        # manifests alone and decertifies stale BOMs rather than removing them.
+        try:
+            args.marker = orchestrated.read(s3, bucket)
+        except orchestrated.Unknown as exc:
+            sys.exit(f"{PROG}: {exc}")
+
     # Resolve the absolute --before cutoff now that S3 is reachable (it may name a
     # manifest whose upload time we look up). Fail CLOSED: an unresolved cutoff
     # must never fall through to "no age filter" and widen a delete.
@@ -1035,8 +1141,14 @@ def main():
         keys = stale_bom_report(store, s3, bucket, args)
         if args.verb != "rm":
             return 0
+        if args.manifests_dir and args.marker:
+            return decertify_local(keys, args, args.marker)
         if args.manifests_dir:
             return delete_local_files(keys, args)
+        if args.marker and keys:
+            print(f"# the certified set ({orchestrated.describe(args.marker)}) still holds what "
+                  "these copies certified: `--manifests-dir <a bits-manifests checkout>` asks "
+                  "for it to be decertified", file=sys.stderr)
         return do_delete(s3, bucket, keys, store, args)
 
     # Resolve the object set for the chosen view.

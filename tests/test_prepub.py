@@ -5,6 +5,7 @@
 
 import hashlib
 import json
+import shutil
 import os
 import tarfile
 import tempfile
@@ -169,6 +170,7 @@ class TestSubmitJob(unittest.TestCase):
 
     def tearDown(self):
         self.server.shutdown()
+        self.server.server_close()
 
     def _make_tar(self, content=b"fake payload"):
         fd, path = tempfile.mkstemp(suffix=".tar.gz")
@@ -277,6 +279,7 @@ class TestSubmitJob(unittest.TestCase):
         finally:
             os.unlink(tar)
             reject_server.shutdown()
+            reject_server.server_close()
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +296,7 @@ class TestPollJob(unittest.TestCase):
             self.assertEqual(result, "published")
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_raises_on_failed(self):
         server, url = _start_fake_prepub(state="failed")
@@ -302,6 +306,7 @@ class TestPollJob(unittest.TestCase):
                 poll_job(url, "", "test-job-id-123", poll_interval=1, timeout=10)
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_raises_on_aborted(self):
         server, url = _start_fake_prepub(state="aborted")
@@ -311,6 +316,7 @@ class TestPollJob(unittest.TestCase):
                 poll_job(url, "", "test-job-id-123", poll_interval=1, timeout=10)
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_raises_on_timeout(self):
         """When the job never reaches a terminal state, poll_job must time out."""
@@ -322,6 +328,7 @@ class TestPollJob(unittest.TestCase):
                 poll_job(url, "", "test-job-id-123", poll_interval=1, timeout=1)
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_transitions_from_intermediate_to_published(self):
         """Simulate uploading → published across two polls."""
@@ -339,6 +346,7 @@ class TestPollJob(unittest.TestCase):
         result = poll_job(url, "", "test-job-id-123", poll_interval=0, timeout=5)
         self.assertEqual(result, "published")
         server.shutdown()
+        server.server_close()
 
 
 if __name__ == "__main__":
@@ -410,6 +418,7 @@ class TestSignedURI(unittest.TestCase):
                 os.unlink(tar)
         finally:
             server.shutdown()
+            server.server_close()
 
 
 class TestSignedRequestsAreNotReplayed(unittest.TestCase):
@@ -474,3 +483,32 @@ class TestSignedRequestsAreNotReplayed(unittest.TestCase):
         finally:
             os.unlink(tar)
             server.shutdown()
+            server.server_close()
+
+
+class MultipartFileTest(unittest.TestCase):
+    """The streamed upload body: what requests' files= sent, read in pieces."""
+
+    def test_parts_length_and_rewind(self):
+        import email.parser
+        from bits_helpers.prepub import MultipartFile
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        tar = os.path.join(d, "p.tar")
+        payload = os.urandom(300000)
+        with open(tar, "wb") as fh:
+            fh.write(payload)
+        fields = {"repo": (None, "r"), "tar": ("p.tar", tar, "application/x-tar"),
+                  "tar_sha256": (None, "abc")}
+        with MultipartFile(fields) as body:
+            first = b"".join(iter(lambda: body.read(4096), b""))
+            self.assertEqual(len(first), len(body))
+            body.seek(0)                                   # urllib3's retry rewind
+            self.assertEqual(body.read(), first)
+            msg = email.parser.BytesParser().parsebytes(
+                b"Content-Type: " + body.content_type.encode() + b"\r\n\r\n" + first)
+        parts = {p.get_param("name", header="content-disposition"): p for p in msg.get_payload()}
+        self.assertEqual(list(parts), ["repo", "tar_sha256", "tar"])   # the file last
+        self.assertEqual(parts["repo"].get_payload(decode=True), b"r")
+        self.assertEqual(parts["tar"].get_payload(decode=True), payload)
+        self.assertEqual(parts["tar"].get_content_type(), "application/x-tar")

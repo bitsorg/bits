@@ -70,6 +70,9 @@ bits build --parallel 4 ROOT # build up to 4 independent packages at once (--bui
 
 ## Basic Commands
 
+`bits help` lists every command by group; `bits help COMMAND` (the same as
+`bits COMMAND --help`) prints one command's options.
+
 | Command | Description |
 |---------|-------------|
 | `bits build <pkg>` | Build a package and its dependencies (`--dry-run` prints the reuse plan instead). |
@@ -85,8 +88,8 @@ bits build --parallel 4 ROOT # build up to 4 independent packages at once (--bui
 | `bits use [<cmd> <args>]` | Save options per directory (`.bitsuse`) so you do not repeat them; with no arguments, show the active profile. |
 | `bits brew` | macOS: write the Homebrew `Brewfile` for the stack (`sw/<arch>/Brewfile`). |
 | `bits publish` | Relocate a built package (or, with `--release-view`, a release view) and hand it to CVMFS via cvmfs-prepub. |
-| `bits certify` | Make a build trusted for reuse: upload what is missing, approve with a passkey via bits-console, open the certification MR. |
-| `bits sign` | Merge build manifests into a signed common manifest (run by the manifests CI after `bits certify`). |
+| `bits certify` | Make a build trusted for reuse: upload what is missing, approve with a passkey via bits-console, open the certification MR (where the orchestrator owns the store's certified set, it certifies the approved build and no MR is opened). |
+| `bits sign` | Merge build manifests into a signed common manifest (run by the manifests CI after `bits certify`; refused for a store the orchestrator signs). |
 | `bits sbom <manifest>` | Export a build manifest as CycloneDX 1.6 and/or SPDX 2.3 JSON. |
 | `bits checksums` | Hash every tarball and patch of a recipe repository and pin git tags (`--write` records them). |
 | `bits overlay lcg` | Emit an LCG release view (`LCG_externals` + merged `setup.sh`) over a built closure (was `bits lcg-view`). |
@@ -130,7 +133,7 @@ Global settings come from environment variables:
 
 | Variable | Related flag | Description |
 |----------|--------------|-------------|
-| `$BITS_COMMUNITY` | — | Community name (uppercase), e.g. `LHCB` (`$BITS_ORGANISATION`, its former name, still works). Used only when `-c`/`--config-dir` names a directory that does not exist: bits then clones that community's recipe repository from the registry and uses it. The `aliBuild` wrapper sets `ALICE`. |
+| `$BITS_COMMUNITY` | — | Community name (uppercase), e.g. `LHCB` (`$BITS_ORGANISATION`, its former name, still works). Used only when `-c`/`--config-dir` names a directory that does not exist: bits then clones that community's recipe repository from the registry and uses it. The `aliBuild` wrapper sets `ALICE`; `bits --community NAME <sub-command>` sets it too. |
 | `$BITS_WORK_DIR` | `-w` / `--work-dir` | Output directory for built packages (default: `sw`). |
 | `$BITS_REPO_DIR` | `-c` / `--config-dir` | Root directory for recipe repositories. |
 | `$BITS_PROVIDERS` | — | URL of the bits-providers registry, optionally `@tag` (default `https://github.com/bitsorg/bits-providers`; off under the `aliBuild` wrapper). |
@@ -143,6 +146,13 @@ Global settings come from environment variables:
 internally when resolving the community recipe repository from bits-providers
 (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`). Normally you
 do not need it: check out the community repository and run bits inside it.
+
+Installation-wide defaults (stores, container images, the console) come from
+**site configuration** files, `site.d/NN-<name>.yaml`. bits ships CERN's as
+`10-CERN.yaml`; elsewhere, mask it with an empty `/etc/bits/site.d/10-CERN.yaml`
+and add your own. The command line, the `bits use` profile, the environment and the
+community's `system:` defaults all come first
+([where defaults come from](docs/USERGUIDE.md#where-defaults-come-from)).
 
 [Configuration details](docs/USERGUIDE.md#4-configuration)
 

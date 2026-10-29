@@ -17,6 +17,8 @@ from_store                A matching tarball exists in the local TARS store;
                           will be unpacked (fast path, no compilation).
 from_remote_store         Tarball only in the remote store; will be downloaded
                           then unpacked (requires --check-store to detect).
+symlink_from_deployment   A deployed package matches --symlink-packages-from;
+                          its payload will be linked into the work directory.
 build_from_source         Nothing found; will compile from scratch.
 hash_unknown              Git refs unavailable; state cannot be determined
                           accurately (e.g. with --no-fetch-repos).
@@ -28,6 +30,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from glob import glob
 from os.path import abspath, basename, dirname, join
 from pathlib import Path
@@ -47,8 +50,10 @@ from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults
 from bits_helpers.arch import (
     SHARED_ARCH,
     compute_combined_arch,
+    compute_own_hash_arch,
     effective_arch,
 )
+from bits_helpers.cmd import DockerRunner
 from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
 from bits_helpers.workarea import updateReferenceRepoSpec
 
@@ -62,7 +67,8 @@ from bits_helpers.workarea import updateReferenceRepoSpec
 def _readHashFile(fn: str) -> str:
     """Read a .build-hash sentinel file; return "0" if absent."""
     try:
-        return open(fn).read().strip("\n")
+        with open(fn) as f:
+            return f.read().strip("\n")
     except OSError:
         return "0"
 
@@ -85,6 +91,7 @@ FROM_STORE               = "from_store"
 FROM_REMOTE_STORE        = "from_remote_store"
 BUILD_FROM_SOURCE        = "build_from_source"
 HASH_UNKNOWN             = "hash_unknown"
+SYMLINK_FROM_DEPLOYMENT  = "symlink_from_deployment"
 
 # Human-readable labels and terminal colours for each state
 _STATE_LABEL: Dict[str, str] = {
@@ -93,6 +100,7 @@ _STATE_LABEL: Dict[str, str] = {
     ALREADY_INSTALLED:        "already installed",
     FROM_STORE:               "from store       (local tarball)",
     FROM_REMOTE_STORE:        "from store       (remote tarball)",
+    SYMLINK_FROM_DEPLOYMENT:  "symlink from deployment",
     BUILD_FROM_SOURCE:        "build from source",
     HASH_UNKNOWN:             "unknown          (no ref cache)",
 }
@@ -103,6 +111,7 @@ _ANSI: Dict[str, str] = {
     ALREADY_INSTALLED:        "\033[32m",   # green
     FROM_STORE:                "\033[36m",   # cyan
     FROM_REMOTE_STORE:         "\033[36m",   # cyan
+    SYMLINK_FROM_DEPLOYMENT:   "\033[36m",   # cyan
     BUILD_FROM_SOURCE:         "\033[31m",   # red
     HASH_UNKNOWN:              "\033[35m",   # magenta
 }
@@ -221,7 +230,7 @@ def _is_already_installed(spec: dict, work_dir: str, architecture: str) -> bool:
 
 
 def _classify(spec: dict, work_dir: str, architecture: str,
-              sync_helper=None, write_store=None) -> str:
+              sync_helper=None, write_store=None, symlink_cfg=None) -> str:
     """Return the state string for one resolved package spec."""
     pkg = spec["package"]
 
@@ -233,6 +242,17 @@ def _classify(spec: dict, work_dir: str, architecture: str,
         if spec.get("devel_hash", "") + spec.get("deps_hash", "") == old_devel_hash:
             return LOCAL_CHECKOUT_UNCHANGED
         return LOCAL_CHECKOUT
+
+    if symlink_cfg is not None:
+        from bits_helpers.reuse_symlinks import select_symlink_package, matching_local_install
+        match = select_symlink_package(spec, symlink_cfg, architecture)
+        if match:
+            spec["hash"] = match["hash"]
+            spec["revision"] = match["revision"]
+            if matching_local_install(spec, match, work_dir, architecture):
+                return ALREADY_INSTALLED
+            spec["symlink_source"] = match["source"]
+            return SYMLINK_FROM_DEPLOYMENT
 
     # Non-devel: check in order of cost
     if _is_already_installed(spec, work_dir, architecture):
@@ -328,7 +348,7 @@ def _emit_table(rows: List[dict], architecture: str) -> None:
     for r in rows:
         counts[r["state"]] = counts.get(r["state"], 0) + 1
     parts = []
-    for state in (ALREADY_INSTALLED, FROM_STORE, FROM_REMOTE_STORE,
+    for state in (ALREADY_INSTALLED, SYMLINK_FROM_DEPLOYMENT, FROM_STORE, FROM_REMOTE_STORE,
                   LOCAL_CHECKOUT_UNCHANGED, LOCAL_CHECKOUT, BUILD_FROM_SOURCE,
                   HASH_UNKNOWN):
         n = counts.get(state, 0)
@@ -347,6 +367,7 @@ def _emit_json(rows: List[dict], architecture: str) -> None:
                 "version": r["version"],
                 "hash": r.get("hash", ""),
                 "state": r["state"],
+                **({"source": r["source"]} if r.get("source") else {}),
             }
             for r in rows
         ],
@@ -356,25 +377,32 @@ def _emit_json(rows: List[dict], architecture: str) -> None:
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
-def doStatus(args, parser) -> None:
-    """Resolve the dependency tree and report the build state of each package."""
+def resolve_specs(args, parser):
+    """The specs of *args.pkgname* resolved exactly as ``bits build`` resolves them
+    (providers, defaults, overrides, pins; system checks only with --docker), and
+    the context that came with them. Also used by ``bits upgrade``."""
     # Deferred heavy imports (build.py pulls in jinja2, analytics, etc.)
     from bits_helpers.build import (
         add_initdotsh_hash_marker, apply_defaults_legacy_initdotsh,
-        defaults_store_url, hash_local_changes, prepare_hash_inputs,
-        resolve_initdotsh_mode, storeHook)
-    from bits_helpers.hashing import storeHashes
+        providers_and_defaults, resolve_defaults_variables, resolve_initdotsh_mode)
+    from bits_helpers.repo_provider import announce_providers
     from bits_helpers.log import dieOnError
     from bits_helpers.git import git
 
     packages = args.pkgname
     specs: dict = {}
-    buildOrder: list = []
     work_dir = abspath(args.workDir)
     prunePaths(work_dir)
 
     from bits_helpers.repo_provider import resolve_config_dir
     resolve_config_dir(args)
+    _branch_err, _branch_value = git(
+        ("symbolic-ref", "-q", "HEAD"), directory=args.configDir, check=False)
+    branch_basename = (re.sub("refs/heads/", "", _branch_value)
+                       if _branch_err == 0 else "")
+    branch_stream = re.sub("-patches$", "", branch_basename)
+    if branch_stream == branch_basename:
+        branch_stream = ""
 
     # ── Defaults and overrides ─────────────────────────────────────────────────
     # The init.sh mode is part of the defaults-release hash: decide it as build
@@ -386,79 +414,105 @@ def doStatus(args, parser) -> None:
         meta, body = readDefaults(
             args.configDir, args.defaults, parser.error, args.architecture
         )
+        resolve_defaults_variables(meta, args, branch_basename)   # as build does
         add_initdotsh_hash_marker(meta, args.initdotshFromModules)
         return meta, body
 
+    _cli_disable = list(args.disable)
     err, overrides, taps, defaults_meta = parseDefaults(
         args.disable, defaults_reader, debug, args.architecture, args.configDir
     )
     dieOnError(err, err)
+    # The providers and the defaults they hold, exactly as bits build gets them.
+    overrides, taps, defaults_meta, provider_dirs, fetched = providers_and_defaults(
+        args, packages, work_dir, defaults_reader, _cli_disable, overrides, taps,
+        defaults_meta, parse=parseDefaults)
+    announce_providers(fetched)
     apply_defaults_legacy_initdotsh(args, defaults_meta, initdotsh_explicit)
 
     raw_architecture = args.architecture
     args.architecture = compute_combined_arch(defaults_meta, args.defaults, raw_architecture)
-
-    # ── Repository-provider discovery ──────────────────────────────────────────
-    # Mirrors bits build (both phases + the defaults-file seed): status reports
-    # what `bits build` WOULD do, so it must see the same provider-supplied
-    # recipes — previously it passed provider_dirs={} and reported packages a
-    # build would resolve via a provider as missing/hash_unknown.
-    from bits_helpers.repo_provider import (fetch_repo_providers_iteratively,
-                                            load_always_on_providers)
-    always_on_dirs = load_always_on_providers(
-        config_dir        = args.configDir,
-        work_dir          = work_dir,
-        reference_sources = args.referenceSources,
-        fetch_repos       = getattr(args, "fetchRepos", True),
-        bits_providers    = getattr(args, "bits_providers", None),
-        taps              = taps,
-        provider_policy   = getattr(args, "provider_policy", {}),
-        overrides         = overrides,
-        defaults          = args.defaults,
-        default_vars      = defaults_meta.get("variables"),
-    )
-    provider_seed = (list(defaults_meta.get("requires", []))
-                     + list(defaults_meta.get("build_requires", [])))
-    provider_dirs = fetch_repo_providers_iteratively(
-        packages          = packages + provider_seed,
-        config_dir        = args.configDir,
-        work_dir          = work_dir,
-        reference_sources = args.referenceSources,
-        fetch_repos       = getattr(args, "fetchRepos", True),
-        taps              = taps,
-        provider_policy   = getattr(args, "provider_policy", {}),
-        overrides         = overrides,
-        defaults          = args.defaults,
-        default_vars      = defaults_meta.get("variables"),
-    )
-    provider_dirs.update(always_on_dirs)
+    own_hash_arch = compute_own_hash_arch(defaults_meta, args.defaults, raw_architecture)
 
     # ── Package list resolution ────────────────────────────────────────────────
-    # Use no-op lambdas for prefer_check and requirement_check: bits status does
-    # not run any external commands to test system package compatibility.
-    _noop_check = lambda pkg, cmd: (0, "")
-
+    # Without --docker no system checks run: every package is built. With it, as
+    # bits build --docker: the system packages and the container fingerprint
+    # (own_hash packages hash it) come from the build image.
+    docker = bool(getattr(args, "docker", False))
     os.makedirs(join(work_dir, "SPECS"), exist_ok=True)
 
-    systemPackages, ownPackages, failed, validDefaults = getPackageList(
-        packages                = packages,
-        specs                   = specs,
-        configDir               = args.configDir,
-        preferSystem            = False,
-        noSystem                = "*",
-        architecture            = raw_architecture,
-        disable                 = args.disable,
-        force_rebuild           = args.force_rebuild,
-        defaults                = args.defaults,
-        performPreferCheck      = _noop_check,
-        performRequirementCheck = _noop_check,
-        performValidateDefaults = lambda spec: validateDefaults(spec, args.defaults),
-        overrides               = overrides,
-        taps                    = taps,
-        log                     = debug,
-        provider_dirs           = provider_dirs,
-        defaults_meta           = defaults_meta,
-    )
+    config_dir = abspath(args.configDir)
+    with DockerRunner(args.dockerImage if docker else None,
+                      args.docker_extra_args if docker else [],
+                      extra_env={"BITS_CONFIG_DIR": "/pkgdist.bits" if docker else config_dir},
+                      extra_volumes=[config_dir + ":/pkgdist.bits:ro"] if docker else [],
+                      platform=getattr(args, "dockerPlatform", None)) as run:
+        def _check(pkg, cmd):
+            if not docker:
+                return 0, ""
+            with tempfile.TemporaryDirectory(prefix="bits_status_check_") as tmp:
+                return run(cmd, cwd=tmp)
+
+        systemPackages, ownPackages, failed, validDefaults = getPackageList(
+            packages                = packages,
+            specs                   = specs,
+            configDir               = args.configDir,
+            preferSystem            = False,
+            noSystem                = None if docker else "*",
+            architecture            = raw_architecture,
+            disable                 = args.disable,
+            force_rebuild           = args.force_rebuild,
+            defaults                = args.defaults,
+            performPreferCheck      = _check,
+            performRequirementCheck = _check,
+            performValidateDefaults = lambda spec: validateDefaults(spec, args.defaults),
+            overrides               = overrides,
+            taps                    = taps,
+            log                     = debug,
+            provider_dirs           = provider_dirs,
+            defaults_meta           = defaults_meta,
+        )
+        # As build: from the container, or from this host when it is a bits image.
+        rc, out = run("cat /opt/bits/container-fingerprint.hash 2>/dev/null || true")
+        fingerprint = out.strip() if rc == 0 else ""
+
+    if systemPackages:
+        info("Taken from the system: %s", ", ".join(sorted(systemPackages)))
+    own = sorted(p for p, s in specs.items() if s.get("own_hash"))
+    if docker and own and not fingerprint:
+        warning("%s has no readable /opt/bits/container-fingerprint.hash: the hashes of "
+                "%s are not those of a build in it", args.dockerImage, ", ".join(own))
+    for p in own:   # as bits build: the build environment, and the build-type-neutral arch
+        specs[p]["container_fingerprint"] = fingerprint
+        specs[p]["_own_hash_arch"] = own_hash_arch
+    return dict(specs=specs, packages=packages, work_dir=work_dir,
+                branch_basename=branch_basename, branch_stream=branch_stream,
+                raw_architecture=raw_architecture, failed=failed,
+                defaults_meta=defaults_meta, provider_dirs=provider_dirs, taps=taps)
+
+
+def doStatus(args, parser) -> None:
+    """Resolve the dependency tree and report the build state of each package."""
+    # Deferred heavy imports (build.py pulls in jinja2, analytics, etc.)
+    from bits_helpers.build import (
+        _apply_source_mode, _source_mode, defaults_store_url, hash_local_changes,
+        prepare_hash_inputs, storeHook)
+    from bits_helpers.hashing import storeHashes
+    from bits_helpers.build_config import BuildConfig
+    from bits_helpers.log import dieOnError
+
+    source_root = getattr(args, "symlinkPackagesFrom", None)
+    if source_root:
+        args.symlinkPackagesFrom = abspath(os.path.expanduser(source_root))
+        if not os.path.isdir(args.symlinkPackagesFrom):
+            parser.error("--symlink-packages-from is not a directory: %s" %
+                         args.symlinkPackagesFrom)
+    symlink_cfg = BuildConfig.from_args(args)
+
+    r = resolve_specs(args, parser)
+    specs, packages, work_dir, failed = r["specs"], r["packages"], r["work_dir"], r["failed"]
+    branch_basename, branch_stream = r["branch_basename"], r["branch_stream"]
+    raw_architecture, defaults_meta = r["raw_architecture"], r["defaults_meta"]
 
     if failed:
         warning(
@@ -493,10 +547,15 @@ def doStatus(args, parser) -> None:
                 "treated as local checkouts): %s", ", ".join(sorted(mismatched))
             )
 
+    # As bits build: a recipe with both a git source and tarball sources keeps
+    # the form the defaults' source_mode picks (tar: no clone, version identity).
+    source_mode = _source_mode(defaults_meta)
     for pkg, spec in specs.items():
         spec["is_devel_pkg"] = pkg in devel_pkgs
         if spec["is_devel_pkg"]:
             spec["source"] = str(Path.cwd() / pkg)
+        else:
+            _apply_source_mode(spec, source_mode)
         # Initialise SCM (Sapling or Git)
         use_sapling = False
         if "source" in spec:
@@ -531,6 +590,8 @@ def doStatus(args, parser) -> None:
         remote_store_url, defaults_rw = defaults_store_url(defaults_meta)
         if defaults_rw and not write_store_url:
             write_store_url = remote_store_url
+    if "::rw" in remote_store_url and "," in remote_store_url:
+        parser.error("::rw takes one store; give several write stores with --write-store")
     if remote_store_url.endswith("::rw"):
         if write_store_url:
             parser.error("cannot specify ::rw and --write-store at the same time")
@@ -540,6 +601,9 @@ def doStatus(args, parser) -> None:
         remote_store_url = ""
     if not remote_store_url and write_store_url:
         remote_store_url = write_store_url
+    if (symlink_cfg.symlink_packages_from and symlink_cfg.symlink_policy == "relaxed"
+            and write_store_url):
+        parser.error("--symlink-policy relaxed cannot be combined with --write-store")
 
     # Optional remote store for --check-store probing
     sync_helper = None
@@ -556,13 +620,6 @@ def doStatus(args, parser) -> None:
     hash_error_pkgs: List[str] = []
 
     status_write_store = bool(write_store_url)
-    _branch_err, _branch_value = git(
-        ("symbolic-ref", "-q", "HEAD"), directory=args.configDir, check=False)
-    branch_basename = (re.sub("refs/heads/", "", _branch_value)
-                       if _branch_err == 0 else "")
-    branch_stream = re.sub("-patches$", "", branch_basename)
-    if branch_stream == branch_basename:
-        branch_stream = ""
 
     # Git refs: clone/fetch the mirrors, 8 at a time as bits build does, or
     # (--no-fetch-repos) read what they have.
@@ -651,7 +708,7 @@ def doStatus(args, parser) -> None:
             spec["revision"] = "1"
 
         state = _classify(spec, work_dir, args.architecture, sync_helper,
-                          write_store=status_write_store)
+                          write_store=status_write_store, symlink_cfg=symlink_cfg)
         if spec["is_devel_pkg"]:
             # Build disables remote writes after reaching a development package.
             status_write_store = False
@@ -665,6 +722,7 @@ def doStatus(args, parser) -> None:
             "hash":        spec.get("hash", ""),
             "state":       state,
             "state_label": _STATE_LABEL[state],
+            "source": spec.get("symlink_source") if state == SYMLINK_FROM_DEPLOYMENT else None,
         })
 
     if hash_error_pkgs:

@@ -51,6 +51,7 @@ overridden explicitly with ``--prepub-repo`` and ``--prepub-path``.
 import hashlib
 import os
 import time
+import uuid
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -76,6 +77,77 @@ DEFAULT_TIMEOUT       = 1800    # 30 minutes total poll budget
 #: Attempts for a signed submission, retried by re-signing (see below).
 _SUBMIT_ATTEMPTS = 5
 _SUBMIT_BACKOFF  = 0.5   # seconds; doubled per attempt
+
+
+class MultipartFile:
+    """A multipart/form-data body whose one file part is read from disk as it is
+    sent: requests' files= builds the whole body in memory, the size of the tar
+    (twice, briefly). fields is in files= form, {name: (None, value)}, plus the
+    file as {name: (filename, path, content_type)}, sent last. Rewinds (seek) for
+    urllib3's retry; post it as data=, with its content_type as Content-Type."""
+
+    def __init__(self, fields):
+        self.fields = dict(fields)
+        self.boundary = uuid.uuid4().hex
+        self.content_type = "multipart/form-data; boundary=" + self.boundary
+        head, path = [], None
+        for name, (filename, value, *ctype) in self.fields.items():
+            if filename is None:
+                if value is None:          # as requests: a None field is not sent
+                    continue
+                head.append('--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n'
+                            % (self.boundary, name) + str(value) + "\r\n")
+            elif path is None:
+                path, file_head = value, ('--%s\r\nContent-Disposition: form-data; name="%s"; '
+                                          'filename="%s"\r\nContent-Type: %s\r\n\r\n'
+                                          % (self.boundary, name, filename,
+                                             ctype[0] if ctype else "application/octet-stream"))
+            else:
+                raise ValueError("MultipartFile streams one file")
+        if path is None:
+            raise ValueError("MultipartFile needs a file field")
+        self._head = ("".join(head) + file_head).encode()
+        self._tail = ("\r\n--%s--\r\n" % self.boundary).encode()
+        self._fh = open(path, "rb")
+        self._size = os.fstat(self._fh.fileno()).st_size
+        self._pos = 0
+
+    def __len__(self):
+        return len(self._head) + self._size + len(self._tail)
+
+    def tell(self):
+        return self._pos
+
+    def seek(self, pos, whence=0):
+        self._pos = {0: pos, 1: self._pos + pos, 2: len(self) + pos}[whence]
+        return self._pos
+
+    def read(self, n=-1):
+        end = len(self) if n is None or n < 0 else min(len(self), self._pos + n)
+        out, head = [], len(self._head)
+        while self._pos < end:
+            if self._pos < head:
+                chunk = self._head[self._pos:end]
+            elif self._pos < head + self._size:
+                self._fh.seek(self._pos - head)
+                chunk = self._fh.read(min(end, head + self._size) - self._pos)
+                if not chunk:
+                    raise OSError("%s shrank while being sent" % self._fh.name)
+            else:
+                off = self._pos - head - self._size
+                chunk = self._tail[off:off + end - self._pos]
+            out.append(chunk)
+            self._pos += len(chunk)
+        return b"".join(out)
+
+    def close(self):
+        self._fh.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
 
 def _make_session(no_verify_tls: bool = False, signed: bool = True) -> requests.Session:
@@ -299,21 +371,22 @@ def submit_job(
     resp = None
     for attempt in range(1, attempts + 1):
         try:
-            with open(tar_path, "rb") as tar_fh:
-                fields = {
-                    "repo":       (None, repo),
-                    "path":       (None, path),
-                    "tar":        (os.path.basename(tar_path), tar_fh, "application/octet-stream"),
-                    "tar_sha256": (None, digest),
-                }
-                if webhook_url:
-                    fields["webhook_url"] = (None, webhook_url)
+            fields = {
+                "repo":       (None, repo),
+                "path":       (None, path),
+                "tar_sha256": (None, digest),
+                "tar":        (os.path.basename(tar_path), tar_path, "application/octet-stream"),
+            }
+            if webhook_url:
+                fields["webhook_url"] = (None, webhook_url)
 
-                headers = _auth_headers(
-                    token, "POST", _signed_uri(url),
-                    fields=signed_fields, body_hash=digest,
-                    bearer_auth=bearer_auth, no_verify_tls=no_verify_tls)
-                resp = session.post(url, files=fields, headers=headers, timeout=300)
+            headers = _auth_headers(
+                token, "POST", _signed_uri(url),
+                fields=signed_fields, body_hash=digest,
+                bearer_auth=bearer_auth, no_verify_tls=no_verify_tls)
+            with MultipartFile(fields) as body:
+                headers["Content-Type"] = body.content_type
+                resp = session.post(url, data=body, headers=headers, timeout=300)
         except requests.RequestException as exc:
             if attempt == attempts:
                 error("Failed to connect to cvmfs-prepub at %s: %s", prepub_url, exc)

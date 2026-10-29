@@ -321,6 +321,16 @@ class ApplyPatchesTest(unittest.TestCase):
         self.assertEqual(self._patch_cmd(mock_run.call_args),
                          ["patch", "-p0", "--batch", "--input", expected])
 
+    def test_patchset_fingerprint_follows_the_strip_level(self):
+        """A tree patched at another strip level is not reused: a declared level
+        changes the fingerprint, the -p1 default (implicit or explicit) does not."""
+        from bits_helpers.workarea import _patchset_fingerprint
+        fp = lambda strip: _patchset_fingerprint(dict(self._spec(patches=["fix-a.patch"]),
+                                                      patch_strip=strip), self.source_dir)
+        self.assertEqual(fp({}), fp({"fix-a.patch": 1}))
+        self.assertNotEqual(fp({}), fp({"fix-a.patch": 0}))
+        self.assertEqual(fp({"fix-b.patch": 0}), fp({}))   # another patch's level
+
     @patch("subprocess.run")
     def test_patch_strip_absent_defaults_to_p1(self, mock_run):
         """Without a declared strip, application stays at the -p1 default."""

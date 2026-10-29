@@ -18,16 +18,17 @@ from bits_helpers.log import debug, info, error, warning, dieOnError, ProgressPr
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, ver_rev
 from bits_helpers.arch import effective_arch
 from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
+from bits_helpers import site
 
 
-# Default S3 endpoint. Kept for backward compatibility with aliBuild: when no
-# endpoint is configured (neither CLI nor env), b3:// stores talk to CERN S3.
-DEFAULT_S3_ENDPOINT = "https://s3.cern.ch"
+# S3 endpoint of b3:// stores when neither CLI nor env gives one: the site's
+# store.s3_endpoint (CERN S3 in 10-CERN.yaml, as aliBuild had it).
+DEFAULT_S3_ENDPOINT = site.get("store.s3_endpoint")   # None: boto3's own default
 
 # Default private file to read S3 credentials from when they are not in the
 # environment: ~/.bits/s3keys (alongside ~/.bits/gitlab-token). Override with
 # $BITS_AWS_KEYS_FILE.
-DEFAULT_AWS_KEYS_FILE = "~/.bits/s3keys"
+DEFAULT_AWS_KEYS_FILE = site.get("paths.s3_keys_file") or "~/.bits/s3keys"
 
 def redistributable_forms(value) -> frozenset:
   """Parse a ``redistributable:`` value into the set of distributable forms.
@@ -139,15 +140,17 @@ def source_sync_for(spec, sync_helper):
 _SHA256_META = "sha256"
 
 
-def _load_aws_keys_file(path):
+def _load_aws_keys_file(path, bucket=None):
   """Read S3 credentials from a private key file (default ~/.bits/s3keys).
 
   Accepts simple ``KEY=VALUE`` lines (optionally ``export``-prefixed and/or
   quoted) as well as AWS-credentials INI style (``aws_access_key_id = ...``);
-  ``#`` comments and ``[section]`` headers are ignored. Returns a dict with any
-  of: access_key, secret_key, session_token, region, endpoint (empty if the
-  file is absent). Warns — but does not fail — when the file is group/other
-  readable, since it holds a secret.
+  ``#`` comments are ignored. Every line counts for the run's settings, as it
+  always did (other ``[section]`` headers are ignored), except those under a
+  ``[bucket NAME]`` header: they are bucket NAME's (*bucket*). Returns a dict
+  with any of: access_key, secret_key, session_token, region, endpoint,
+  addressing_style (empty if the file or section is absent). Warns — but does
+  not fail — when the file is group/other readable, since it holds a secret.
   """
   import stat
   out = {}
@@ -160,7 +163,9 @@ def _load_aws_keys_file(path):
       "aws_default_region": "region", "aws_region": "region", "region": "region",
       "bits_s3_endpoint_url": "endpoint", "s3_endpoint_url": "endpoint",
       "endpoint_url": "endpoint", "endpoint": "endpoint",
+      "s3_addressing_style": "addressing_style", "addressing_style": "addressing_style",
   }
+  current = None                         # the [bucket NAME] being read, if any
   try:
     if os.stat(path).st_mode & (stat.S_IRWXG | stat.S_IRWXO):
       from bits_helpers.log import warning
@@ -169,7 +174,11 @@ def _load_aws_keys_file(path):
     with open(path) as fh:
       for line in fh:
         line = line.strip()
-        if not line or line[0] in "#[":
+        if line.startswith("["):
+          m = re.match(r"^\[\s*bucket\s+([^\]\s]+)\s*\]", line)
+          current = m.group(1) if m else None
+          continue
+        if not line or line[0] == "#" or current != bucket:
           continue
         if line.startswith("export "):
           line = line[7:]
@@ -183,6 +192,42 @@ def _load_aws_keys_file(path):
   except OSError:
     pass
   return out
+
+
+def _keys_file():
+  return os.path.expanduser(os.environ.get("BITS_AWS_KEYS_FILE") or DEFAULT_AWS_KEYS_FILE)
+
+
+def bucket_endpoint(bucket):
+  """The endpoint *bucket* has of its own (variable or keys-file section), or None."""
+  env = "BITS_S3_%s_ENDPOINT_URL" % re.sub(r"[^A-Za-z0-9]", "_", bucket or "").upper()
+  return os.environ.get(env) or _load_aws_keys_file(_keys_file(), bucket).get("endpoint")
+
+
+def s3_settings(bucket):
+  """The S3 connection of *bucket*: ``BITS_S3_<BUCKET>_<NAME>`` variables (the
+  bucket's name upper-cased, other characters as ``_``) or its ``[bucket NAME]``
+  section of the keys file, else the run's (resolve_and_export_s3_config).
+  The access key, secret and token are taken together from one source."""
+  env = "BITS_S3_%s_" % re.sub(r"[^A-Za-z0-9]", "_", bucket or "").upper()
+  section = _load_aws_keys_file(_keys_file(), bucket) if bucket else {}
+  own = lambda name, key: os.environ.get(env + name) or section.get(key)
+  creds = None
+  for source in ((os.environ.get(env + "ACCESS_KEY_ID"), os.environ.get(env + "SECRET_ACCESS_KEY"),
+                  os.environ.get(env + "SESSION_TOKEN")),
+                 (section.get("access_key"), section.get("secret_key"), section.get("session_token"))):
+    if source[0]:
+      creds = source
+      break
+  creds = creds or (os.environ.get("AWS_ACCESS_KEY_ID"), os.environ.get("AWS_SECRET_ACCESS_KEY"),
+                    os.environ.get("AWS_SESSION_TOKEN"))
+  return {"endpoint": own("ENDPOINT_URL", "endpoint") or os.environ.get("S3_ENDPOINT_URL")
+          or DEFAULT_S3_ENDPOINT,
+          "access_key": creds[0], "secret_key": creds[1], "session_token": creds[2],
+          "region": own("REGION", "region") or os.environ.get("AWS_DEFAULT_REGION")
+          or os.environ.get("AWS_REGION"),
+          "addressing_style": own("ADDRESSING_STYLE", "addressing_style")
+          or os.environ.get("S3_ADDRESSING_STYLE")}
 
 
 def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None,
@@ -203,13 +248,12 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
   connection without threading secrets through the command line.
 
   Backward compatible: with no --s3-* flags and no env vars, the endpoint
-  defaults to CERN S3 and credentials come from AWS_ACCESS_KEY_ID /
+  is the site's (CERN S3 at CERN) and credentials come from AWS_ACCESS_KEY_ID /
   AWS_SECRET_ACCESS_KEY exactly as before (aliBuild behaviour).
   """
   # Fallback credential source, below flags and env: a private ~/.bits/s3keys file
   # (override path with $BITS_AWS_KEYS_FILE). Flags and env (CI) still win.
-  _file = _load_aws_keys_file(os.path.expanduser(
-      os.environ.get("BITS_AWS_KEYS_FILE") or DEFAULT_AWS_KEYS_FILE))
+  _file = _load_aws_keys_file(_keys_file())
 
   def _pick(*names):
     for n in names:
@@ -223,7 +267,8 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
                        "S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL")
               or _file.get("endpoint")
               or DEFAULT_S3_ENDPOINT)
-  os.environ["S3_ENDPOINT_URL"] = endpoint
+  if endpoint:
+    os.environ["S3_ENDPOINT_URL"] = endpoint
 
   access_key = access_key or _pick("BITS_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID") or _file.get("access_key")
   if access_key:
@@ -256,46 +301,70 @@ def normalise_store_url(url):
   return "%s/swift/v1/%s" % m.groups() if m else url
 
 
+def store_urls(value):
+  """The stores of a --remote-store / --write-store value: comma-separated, in order."""
+  return [normalise_store_url(u.strip()) for u in str(value or "").split(",") if u.strip()]
+
+
 def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
                     s3_endpoint=None, s3_access_key=None, s3_secret_key=None,
                     s3_region=None, s3_addressing_style=None):
-  """Parse remote store URLs and return the correct RemoteSync instance for them."""
+  """Parse remote store URLs and return the correct RemoteSync instance for them.
+  Each may list several stores, comma-separated: reads try them in order, uploads
+  go to every write store (MultiRemoteSync)."""
+  reads, writes = store_urls(read_url), store_urls(write_url)
   # A write store alone is also the read store (as with ::rw); otherwise it would
   # fall through to NoRemoteSync below and nothing would be uploaded.
-  dieOnError((write_url or "").startswith("cvmfs://"),
+  dieOnError(any(w.startswith("cvmfs://") for w in writes),
              "Cannot use a cvmfs:// store as a --write-store: CVMFS is read-only.")
-  read_url = normalise_store_url(read_url or write_url or "")
+  reads = reads or list(writes)
   # For S3-backed stores, resolve + export the connection config before any S3
   # backend is built, so boto3 and the upload subprocess share one
   # endpoint/credentials. No-op for non-S3 stores (rsync/cvmfs/https).
-  if (read_url or "").startswith(("s3://", "b3://")) or \
-     (write_url or "").startswith(("s3://", "b3://")):
+  if any(u.startswith(("s3://", "b3://")) for u in reads + writes):
     resolve_and_export_s3_config(s3_endpoint, s3_access_key, s3_secret_key,
                                  s3_region, s3_addressing_style)
-  # Read-only read stores (a CVMFS filesystem mount, an HTTP mirror) cannot
-  # upload. When a separate --write-store is also given it is necessarily a
-  # different backend, so pair the read-only reader with a writer built from
-  # write_url (see DualRemoteSync). Without this, the write store was silently
-  # dropped below and nothing was ever uploaded.
-  if write_url and read_url.startswith("http"):
-    reader = HttpRemoteSync(read_url, architecture, work_dir, insecure)
-    return DualRemoteSync(reader, _writer_from_url(write_url, architecture, work_dir))
-
+  read_url = reads[0] if reads else ""
+  write_url = writes[0] if writes else ""
+  # Several stores, a read-only reader (http) with a writer, or two b3:// buckets
+  # (each with its own credentials): one helper per store.
+  if len(reads) > 1 or len(writes) > 1 or (write_url and (
+      read_url.startswith("http") or (read_url.startswith("b3://") and read_url != write_url))):
+    readers = [_reader_from_url(u, architecture, work_dir, insecure) for u in reads]
+    writers = [_writer_from_url(w, architecture, work_dir) for w in writes]
+    if len(readers) == 1 and len(writers) == 1:
+      return DualRemoteSync(readers[0], writers[0])
+    return MultiRemoteSync(readers, writers)
   if read_url.startswith("http"):
     return HttpRemoteSync(read_url, architecture, work_dir, insecure)
   if read_url.startswith("s3://"):
     return S3RemoteSync(read_url, write_url, architecture, work_dir)
   if read_url.startswith("b3://"):
     return Boto3RemoteSync(read_url, write_url, architecture, work_dir)
-  if read_url.startswith("cvmfs://"):
-    dieOnError(True,
-               "--remote-store cvmfs:// is no longer supported. --remote-store "
-               "is the tarball store (s3://, b3://, rsync:, http). To reuse "
-               "components already deployed on CVMFS, use "
-               "--reuse-from <modules-path>|cvmfs instead.")
+  _no_cvmfs_read(read_url)
   if read_url:
     return RsyncRemoteSync(read_url, write_url, architecture, work_dir)
   return NoRemoteSync()
+
+
+def _no_cvmfs_read(url):
+  dieOnError(url.startswith("cvmfs://"),
+             "--remote-store cvmfs:// is no longer supported. --remote-store "
+             "is the tarball store (s3://, b3://, rsync:, http). To reuse "
+             "components already deployed on CVMFS, use "
+             "--reuse-from <modules-path>|cvmfs instead.")
+
+
+def _reader_from_url(url, architecture, work_dir, insecure):
+  """A read-only helper for one store of a MultiRemoteSync."""
+  if url.startswith("http"):
+    return HttpRemoteSync(url, architecture, work_dir, insecure)
+  if url.startswith("s3://"):
+    return S3RemoteSync(url, "", architecture, work_dir)
+  if url.startswith("b3://"):
+    return Boto3RemoteSync(url, "", architecture, work_dir)
+  _no_cvmfs_read(url)
+  return RsyncRemoteSync(url, "", architecture, work_dir)
 
 
 def _writer_from_url(write_url, architecture, work_dir):
@@ -313,6 +382,26 @@ def _writer_from_url(write_url, architecture, work_dir):
   return RsyncRemoteSync(write_url, write_url, architecture, work_dir)
 
 
+def store_unreachable(sync_helper, insecure=False, timeout=5, tries=2):
+  """Why the store *sync_helper* reads from cannot be reached, or "" when it
+  answers (any HTTP status, a TLS error or a slow answer included) or cannot be
+  checked this way. Bounded: *tries* connection attempts of *timeout* seconds."""
+  url = sync_helper.probe_url()
+  if not url:
+    return ""
+  why = ""
+  for attempt in range(tries):
+    if attempt:
+      time.sleep(2)
+    try:
+      requests.head(url, timeout=(timeout, 60), verify=not insecure, allow_redirects=False)
+      return ""
+    except (requests.exceptions.SSLError, requests.exceptions.ReadTimeout):
+      return ""                          # something answered
+    except requests.RequestException as exc:
+      why = type(exc).__name__
+  return why
+
 class RemoteSync:
   """Base for remote-store backends. Supplies documented no-op defaults for the
   optional STORE-METADATA queries (rev-index markers and content-object
@@ -324,6 +413,10 @@ class RemoteSync:
   def read_rev_markers(self, *args, **kwargs):
     """{revision: hash} rev-index markers recorded in the store, or {}."""
     return {}
+
+  def probe_url(self):
+    """An http(s) URL that answers when the read store is reachable, or None."""
+    return None
 
   def list_store_tarballs(self, *args, **kwargs):
     """Store tarball object names for an (architecture, hash), or []."""
@@ -339,100 +432,168 @@ class RemoteSync:
     return False
 
 
-class DualRemoteSync(RemoteSync):
-  """Read packages from one backend, upload freshly-built ones to another.
+class MultiRemoteSync(RemoteSync):
+  """Read packages from several stores in order, upload freshly built ones to
+  every write store. Each store has its own helper (and, for b3://, its own
+  credentials: s3_settings).
 
-  Used when packages are recalled from a read-only store (e.g. a CVMFS mount)
-  but newly built packages must be published to a different store (e.g. S3).
-  Reads delegate to *reader*; uploads delegate to *writer*.
-
-  Only freshly-built packages are uploaded. A package recalled from the read
-  store carries a non-empty ``spec["cachedTarball"]`` (and, for CVMFS, only a
-  synthetic tarball of symlinks into ``/cvmfs``); uploading it would publish a
-  stub and/or duplicate an artifact that already lives on the read store. This
-  mirrors build.py's own "built_from_source" vs "from_store" distinction.
+  Only freshly-built packages are uploaded. A package recalled from a read
+  store carries a non-empty ``spec["cachedTarball"]``; uploading it would
+  duplicate an artifact that already lives on a read store. This mirrors
+  build.py's own "built_from_source" vs "from_store" distinction.
   """
 
-  def __init__(self, reader, writer) -> None:
-    self.reader = reader
-    self.writer = writer
-    self.architecture = getattr(reader, "architecture", None)
-    self.workdir = getattr(reader, "workdir", None)
+  def __init__(self, readers, writers) -> None:
+    self.readers, self.writers = list(readers), list(writers)
+    first = (self.readers or self.writers or [None])[0]
+    self.architecture = getattr(first, "architecture", None)
+    self.workdir = getattr(first, "workdir", None)
+
+  @property
+  def remoteStore(self):
+    return ",".join(str(getattr(r, "remoteStore", "") or "") for r in self.readers)
 
   # build.py both reads and writes syncHelper.writeStore (the development-package
-  # path sets it to "" to disable uploads), so proxy it onto the writer.
+  # path sets it to "" to disable uploads), so proxy it onto every writer.
   @property
   def writeStore(self):
-    return getattr(self.writer, "writeStore", None)
+    return ",".join(str(w.writeStore) for w in self.writers if getattr(w, "writeStore", ""))
 
   @writeStore.setter
   def writeStore(self, value):
-    self.writer.writeStore = value
+    for w in self.writers:
+      w.writeStore = value
 
   @staticmethod
   def _was_recalled(spec) -> bool:
     return bool(spec.get("cachedTarball"))
 
-  # ── reads → reader ──────────────────────────────────────────────────────────
+  def probe_url(self):
+    return self.readers[0].probe_url() if len(self.readers) == 1 else None
+
+  # ── reads: every reader in order, until there is a local copy ────────────
+  def _have_tarball(self, spec):
+    arch = effective_arch(spec, self.architecture)
+    return any(os.path.isfile(t) for h in spec.get("remote_hashes", ()) for t in glob.glob(
+        os.path.join(self.workdir, resolve_store_path(arch, h), "%s-*.tar.gz" % spec["package"])))
+
   def fetch_tarball(self, spec):
-    return self.reader.fetch_tarball(spec)
+    for r in self.readers:
+      if self._have_tarball(spec):
+        return
+      try:
+        r.fetch_tarball(spec)
+      except Exception as exc:   # pylint: disable=broad-except
+        warning("Store %s: could not fetch %s (%s); trying the next store",
+                getattr(r, "remoteStore", r), spec.get("package"), exc)
 
   def fetch_symlinks(self, spec):
-    return self.reader.fetch_symlinks(spec)
-
-  def read_rev_markers(self, *args, **kwargs):
-    return self._first_nonempty(
-        self.reader.read_rev_markers, self.writer.read_rev_markers, {}, *args, **kwargs)
-
-  def list_store_tarballs(self, *args, **kwargs):
-    return self._first_nonempty(
-        self.reader.list_store_tarballs, self.writer.list_store_tarballs, [], *args, **kwargs)
-
-  def writestore_has_tarball(self, spec, architecture=None):
-    # Existence in the WRITE store only — the reader (e.g. a CVMFS mount) is
-    # irrelevant to whether we must upload.
-    return self.writer.writestore_has_tarball(spec, architecture)
-
-  @staticmethod
-  def _first_nonempty(reader_fn, writer_fn, default, *args, **kwargs):
-    """The reader's answer if it is non-empty, else the writer's. Store metadata
-    (rev-index markers, content-object listings) lives on whichever
-    backend actually holds it; a read-only reader (an http / CVMFS mount) keeps
-    none and returns the empty default, which must then fall through to the
-    writer. Delegating to the reader alone silently returned empty, so the
-    revision counter never saw the markers: it reused a stale (revision, hash)
-    pair, assigned a fresh revision N+1, then unpacked revision N's tarball into
-    the N+1 install root — failing every reused package. Best-effort: a backend
-    that errors is skipped."""
-    for fn in (reader_fn, writer_fn):
+    # The first store last: some backends replace the local links, so its win.
+    for r in reversed(self.readers):
       try:
-        result = fn(*args, **kwargs)
-      except Exception as exc:   # best-effort supplement; try the other backend
-        debug("rev-metadata query failed on %s (%s)",
-              getattr(fn, "__qualname__", fn), exc)
-        result = None
-      if result:
-        return result
-    return default
+        r.fetch_symlinks(spec)
+      except Exception as exc:   # pylint: disable=broad-except
+        debug("Store %s: links of %s not fetched (%s)", getattr(r, "remoteStore", r),
+              spec.get("package"), exc)
 
   def fetch_source(self, *args, **kwargs):
-    return self.reader.fetch_source(*args, **kwargs)
+    for r in self.readers:
+      try:
+        if r.fetch_source(*args, **kwargs):
+          return True
+      except Exception as exc:   # pylint: disable=broad-except
+        debug("Store %s: source not fetched (%s)", getattr(r, "remoteStore", r), exc)
+    return False
 
-  # ── writes → writer (freshly-built packages only) ────────────────────────────
+  def read_rev_markers(self, *args, **kwargs):
+    """The markers of every store, an earlier store's winning: a revision
+    number any of them uses is never handed out again."""
+    merged = {}
+    for helper in self.readers + self.writers:
+      try:
+        for rev, h in (helper.read_rev_markers(*args, **kwargs) or {}).items():
+          merged.setdefault(rev, h)
+      except Exception as exc:   # best-effort supplement; try the other stores
+        debug("rev-metadata query failed on %s (%s)", getattr(helper, "remoteStore", helper), exc)
+    return merged
+
+  def list_store_tarballs(self, *args, **kwargs):
+    # The read stores only: what the build can fetch.
+    for helper in self.readers:
+      try:
+        found = helper.list_store_tarballs(*args, **kwargs)
+      except Exception as exc:   # best-effort; try the other stores
+        debug("store listing failed on %s (%s)", getattr(helper, "remoteStore", helper), exc)
+        found = None
+      if found:
+        return found
+    return []
+
+  def writestore_has_tarball(self, spec, architecture=None):
+    # Existence in EVERY write store — the readers are irrelevant to uploading.
+    return bool(self.writers) and all(w.writestore_has_tarball(spec, architecture)
+                                      for w in self.writers)
+
+  # ── writes: every writer (freshly-built packages only) ────────────────────
   def upload_symlinks_and_tarball(self, spec):
     if self._was_recalled(spec):
-      debug("Not uploading %s: recalled from the read store, not built this run.",
+      debug("Not uploading %s: recalled from a read store, not built this run.",
             spec.get("package", "?"))
       return None
-    return self.writer.upload_symlinks_and_tarball(spec)
+    first = None
+    for w in self.writers:                 # the manifest describes the first store's object
+      w.upload_symlinks_and_tarball(spec)
+      sha = spec.get("store_tarball_sha256")
+      if first is None:
+        first = sha
+      elif sha != first:
+        warning("%s: the write stores hold different tarballs for hash %s (%s, %s); "
+                "the build manifest records the first store's", spec.get("package"),
+                spec.get("hash"), first, sha)
+    if first is not None:
+      spec["store_tarball_sha256"] = first
+    return None
 
   def upload_shell_command(self, spec):
     if self._was_recalled(spec):
       return None
-    return self.writer.upload_shell_command(spec)
+    commands = [c for c in (w.upload_shell_command(spec) for w in self.writers) if c]
+    return " && ".join(commands) or None
 
   def upload_source(self, *args, **kwargs):
-    return self.writer.upload_source(*args, **kwargs)
+    for w in self.writers:
+      w.upload_source(*args, **kwargs)
+
+
+class DualRemoteSync(MultiRemoteSync):
+  """One read store and one write store (a MultiRemoteSync of one each)."""
+
+  def __init__(self, reader, writer) -> None:
+    super().__init__([reader], [writer])
+
+  @property
+  def reader(self):
+    return self.readers[0]
+
+  @property
+  def writer(self):
+    return self.writers[0]
+
+
+def drop_unreachable(sync_helper, insecure=False):
+  """(*sync_helper* without the read stores that cannot be reached, [(url, why)]).
+  Only for read-only helpers: with a write store nothing is dropped."""
+  if getattr(sync_helper, "writeStore", ""):
+    return sync_helper, []
+  readers = sync_helper.readers if isinstance(sync_helper, MultiRemoteSync) else [sync_helper]
+  down = [(r, store_unreachable(r, insecure)) for r in readers]
+  dropped = [(getattr(r, "remoteStore", ""), why) for r, why in down if why]
+  if not dropped:
+    return sync_helper, []
+  kept = [r for r, why in down if not why]
+  if not kept:
+    return NoRemoteSync(), dropped
+  return (kept[0] if len(kept) == 1 else MultiRemoteSync(kept, [])), dropped
 
 
 def _source_remote_path(url_checksum, filename):
@@ -483,6 +644,9 @@ class HttpRemoteSync(RemoteSync):
     self.httpTimeoutSec = 15
     self.httpConnRetries = 4
     self.httpBackoff = 0.4
+
+  def probe_url(self):
+    return self.remoteStore
 
   def getRetry(self, url, dest=None, returnResult=False, log=True, session=None, progress=debug):
     get = session.get if session is not None else requests.get
@@ -689,9 +853,12 @@ class HttpRemoteSync(RemoteSync):
       # Now add any remaining symlinks that aren't in the manifest yet. There
       # should always be relatively few of these, as the separate network
       # requests are a bit expensive.
+      # A failed listing (None) means nothing to add, as an empty one.
       for link in self.getRetry("{}/{}/".format(self.remoteStore, links_path),
-                                session=session):
-        linkname = link["name"]
+                                session=session) or []:
+        linkname = link.get("name") if isinstance(link, dict) else None
+        if not isinstance(linkname, str):
+          continue
         if linkname in symlinks:
           # This symlink is already present in the manifest.
           continue
@@ -702,10 +869,10 @@ class HttpRemoteSync(RemoteSync):
           continue
         # This symlink isn't in the manifest yet, and we don't have it locally,
         # so download it individually.
-        symlinks[linkname] = \
-            self.getRetry("/".join((self.remoteStore, links_path, linkname)),
-                          returnResult=True, log=False, session=session) \
-                .decode("utf-8").rstrip("\r\n")
+        target = self.getRetry("/".join((self.remoteStore, links_path, linkname)),
+                               returnResult=True, log=False, session=session)
+        if target:
+          symlinks[linkname] = target.decode("utf-8").rstrip("\r\n")
     for linkname, target in symlinks.items():
       # Both fields are UNTRUSTED remote data (manifest lines / listing JSON):
       # same validation as every other backend.
@@ -902,6 +1069,24 @@ class S3RemoteSync(RemoteSync):
     ))
     dieOnError(err, "Unable to fetch tarball from specified store.")
 
+  def list_store_tarballs(self, arch, pkg_hash):
+    """Basenames of the content objects stored under *pkg_hash* (s3cmd ls), so
+    bits build --dry-run and bits status see the store. Best-effort: [] on any error."""
+    import subprocess
+    url = "s3://%s/%s/" % (self.remoteStore.rstrip("/"), resolve_store_path(arch, pkg_hash))
+    try:
+      out = subprocess.run(["s3cmd", "ls", "-s", "--host", "s3.cern.ch", "--host-bucket",
+                            "%s.s3.cern.ch" % self.remoteStore, url],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+      debug("store listing failed for %s (%s)", url, exc)
+      return []
+    if out.returncode:
+      debug("store listing failed for %s: %s", url, out.stderr.strip())
+      return []
+    keys = (l.split(None, 3)[-1] for l in out.stdout.splitlines() if l.strip())
+    return [os.path.basename(k) for k in keys if k.startswith(url) and not k.endswith("/")]
+
   def fetch_symlinks(self, spec) -> None:
     err = execute("""\
     mkdir -p "{workDir}/{linksPath}"
@@ -1061,6 +1246,9 @@ class Boto3RemoteSync(RemoteSync):
     self.workdir = workdir
     self._s3_init()
 
+  def probe_url(self):
+    return s3_settings(self.remoteStore or self.writeStore)["endpoint"] or None
+
   def _s3_init(self) -> None:
     # This is a separate method so that we can patch it out for unit tests.
     # Import boto3 here, so that if we don't use this remote store, we don't
@@ -1072,41 +1260,51 @@ class Boto3RemoteSync(RemoteSync):
       error("boto3 must be installed to use %s", Boto3RemoteSync)
       sys.exit(1)
 
-    # Connection settings from the environment (resolve_and_export_s3_config sets
-    # them): endpoint defaults to CERN S3; region and addressing style support
+    # This bucket's connection (s3_settings: its own, else the run's that
+    # resolve_and_export_s3_config set); region and addressing style support
     # non-CERN buckets (MinIO usually needs addressing_style='path').
-    endpoint = os.environ.get("S3_ENDPOINT_URL") or DEFAULT_S3_ENDPOINT
-    region = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION")
-    addressing_style = os.environ.get("S3_ADDRESSING_STYLE")
+    bucket = self.remoteStore or self.writeStore
+    settings = s3_settings(bucket)
+    endpoint, region = settings["endpoint"], settings["region"]
+    addressing_style = settings["addressing_style"]
     config_kwargs = {"s3": {"addressing_style": addressing_style}} if addressing_style else {}
     try:
       try:
         config = Config(
           request_checksum_calculation='WHEN_REQUIRED',
           response_checksum_validation='WHEN_REQUIRED',
+          # Room for bits publish's concurrent package checks (BITS_PUBLISH_JOBS,
+          # 8) and the up to 10 transfer threads of each upload, without
+          # pool-full warnings.
+          max_pool_connections=100,
           **config_kwargs,
         )
       except TypeError:
         # Older boto3 versions don't support the checksum parameters (<1.36.0);
         # still honour the addressing style if one was requested.
-        config = Config(**config_kwargs) if config_kwargs else None
+        config = Config(max_pool_connections=100, **config_kwargs)
+      if not (settings["access_key"] and settings["secret_key"]):
+        raise KeyError("credentials")
       client_kwargs = {
         "endpoint_url": endpoint,
-        "aws_access_key_id": os.environ["AWS_ACCESS_KEY_ID"],
-        "aws_secret_access_key": os.environ["AWS_SECRET_ACCESS_KEY"],
+        "aws_access_key_id": settings["access_key"],
+        "aws_secret_access_key": settings["secret_key"],
       }
       # Temporary/STS credentials (e.g. from ~/.bits/s3keys) carry a session token.
-      if os.environ.get("AWS_SESSION_TOKEN"):
-        client_kwargs["aws_session_token"] = os.environ["AWS_SESSION_TOKEN"]
+      if settings["session_token"]:
+        client_kwargs["aws_session_token"] = settings["session_token"]
       if region:
         client_kwargs["region_name"] = region
       if config:
         client_kwargs["config"] = config
       self.s3 = boto3.client("s3", **client_kwargs)
     except KeyError:
-      error("set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (via a CI/CD "
-            "variable, the gitlab-runner `environment`, or --s3-access-key / "
-            "--s3-secret-key) to use an S3 remote store")
+      key = re.sub(r"[^A-Za-z0-9]", "_", bucket).upper()
+      error("no S3 credentials for bucket %s: set BITS_S3_%s_ACCESS_KEY_ID and "
+            "BITS_S3_%s_SECRET_ACCESS_KEY (or a [%s] section in the keys file) for it, "
+            "or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (via a CI/CD variable, the "
+            "gitlab-runner `environment`, or --s3-access-key / --s3-secret-key) for all",
+            bucket, key, key, bucket)
       sys.exit(1)
 
   def _s3_listdir(self, dirname):

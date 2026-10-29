@@ -409,6 +409,19 @@ class TestSmallerPoints(unittest.TestCase):
                                     "slc9_x86-64-gcc14", "slc9_x86-64")
         self.assertEqual(calls, [(URL + "linux.tgz", None, self.tmp)])
 
+    def test_prefetch_follows_the_plan(self):
+        from bits_helpers import build, plan
+        states = {"a": plan.INSTALLED, "b": plan.LOCAL_TARBALL, "c": plan.REMOTE,
+                  "d": plan.BUILD, "e": plan.DEVEL, "g": plan.SYMLINK}
+        self.assertEqual(build.prefetch_wanted(list("abcdefg"), states),
+                         [("c", False), ("d", True), ("e", True), ("f", True)])
+        self.assertEqual(build.prefetch_wanted(["a"], {}), [("a", True)])  # no plan
+        spec = {"package": "p", "version": "1", "is_devel_pkg": True, "hash": "ab12",
+                "sources": [URL + "p.tgz"]}
+        with patch("bits_helpers.download.download") as download:
+            build._prefetch_package(spec, None, self.tmp, "slc9_x86-64", sources=False)
+        download.assert_not_called()
+
     def test_prefetch_survives_a_fatal_url(self):
         from bits_helpers import build
         spec = {"package": "p", "version": "1", "is_devel_pkg": True, "hash": "ab12",
@@ -427,6 +440,7 @@ class TestSmallerPoints(unittest.TestCase):
         with patch.dict(os.environ, {"BITS_PATH": b}):
             meta, _ = readDefaults(a, ["release", "dev"], lambda *_: None, "slc9_x86-64")
         self.assertEqual(meta["_override_dirs"], {"root": a, "root:osx": b, "boost": b})
+        self.assertEqual(meta["_version_profiles"], {"boost": "dev"})      # who pins a version
 
     def test_build_write_respects_a_legacy_pin(self):
         from unittest.mock import MagicMock

@@ -27,6 +27,8 @@ COVERED = (
   "bits_helpers/build_template.sh",
   "bits_helpers/initdotsh.py",
   "bits_helpers/relativize-configs.sh",
+  "bits_helpers/relocate-references.sh",
+  "bits_helpers/reuse_symlinks.py",
   "bits_helpers/relocate-me.sh",
   "bits_helpers/view-list.sh",
 )
@@ -35,7 +37,12 @@ COVERED = (
 # the container settings. A change there that alters builds bumps BUILD_EPOCH
 # by review, not by this check.
 
-COVERED_SHA256 = "44af202488de34288811754d2eefc5beb5c1cd805b6afb4dccd79386846a5f3c"
+# Progress markers only change console output; package contents and BUILD_EPOCH are unchanged.
+# --symlink-packages-from is opt-in; leave the epoch unchanged to preserve strict reuse of
+# existing deployments. The staging and post-install helpers are covered here.
+# grep -r: symlinks in a package are no longer listed for relocation; existing
+# tarballs stay valid, so BUILD_EPOCH is unchanged.
+COVERED_SHA256 = "9e75269258e86a7a0cff92018adebc9daef8946b85ce849c43e7c71ab7196d00"
 
 
 def covered_sha256(root=None):

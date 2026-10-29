@@ -2,6 +2,7 @@
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from bits_helpers import plan
@@ -70,7 +71,10 @@ class ClassifyTest(unittest.TestCase):
   def test_remote_unsigned(self):
     store = _Store(["zlib-1.3-4.%s.tar.gz" % ARCH])
     self.assertEqual(self._classify(store, trusted={})[0], plan.REMOTE_UNSIGNED)
-    self.assertEqual(self._classify(store, trusted={RH: "sha"})[0], plan.REMOTE)
+    self.assertEqual(self._classify(store, trusted={(ARCH, RH): "sha"})[0], plan.REMOTE)
+    # Certified for another architecture only: not this tarball.
+    self.assertEqual(self._classify(store, trusted={("other-arch", RH): "sha"})[0],
+                     plan.REMOTE_UNSIGNED)
 
   def test_local_preferred_over_remote(self):
     self._tarball(RH, "2")
@@ -105,7 +109,7 @@ class ClassifyTest(unittest.TestCase):
     store = _Store(["zlib-1.3-%s.%s.tar.gz" % (RH, ARCH)])
     self.assertEqual(self._classify(store, trusted={}, **spec),
                      (plan.REMOTE_UNSIGNED, LH, LH))
-    self.assertEqual(self._classify(store, trusted={RH: "sha"}, **spec),
+    self.assertEqual(self._classify(store, trusted={(ARCH, RH): "sha"}, **spec),
                      (plan.REMOTE, RH, RH))
 
   def test_hash_policy_fallback_does_not_change_virtual_package_hash(self):
@@ -126,11 +130,67 @@ class PrintPlanTest(unittest.TestCase):
     with patch("bits_helpers.plan.banner") as b:
       plan.print_plan(rows, store_checked=True)
     text = b.call_args[0][0] % b.call_args[0][1:]
-    self.assertIn("2 reused (1 installed, 0 local tarball, 1 from remote store), 2 to build", text)
+    self.assertIn("2 reused (1 installed, 0 local tarball, 1 from store), 2 to build", text)
+    self.assertIn("1 to build is in the remote store but not reused: no verified signed manifest", text)
     self.assertNotIn("not checked", text)
     with patch("bits_helpers.plan.banner") as b:
       plan.print_plan(rows, store_checked=False)
     self.assertIn("remote store not checked", b.call_args[0][0] % b.call_args[0][1:])
+    with patch("bits_helpers.plan.banner") as b, \
+         patch("bits_helpers.build._try_import_trust", return_value=None):
+      plan.print_plan(rows, store_checked=None)
+    text = b.call_args[0][0] % b.call_args[0][1:]
+    self.assertIn("no remote store used", text)
+    self.assertIn("its signature cannot be checked without the Python package cryptography", text)
+
+
+class NarrowPlanTest(unittest.TestCase):
+  def test_fits_a_terminal(self):
+    rows = [("jupyter_contrib_nbextensions_and_more", "0.7.0", plan.REMOTE, "", "lcg.bits@94a3bce60b"),
+            ("dask_histogram", "2025.2.0", plan.REMOTE, "", "lcg.bits@94a3bce60b"),
+            ("astropy_iers_data", "0.2026.5.25.1.14.13", plan.REMOTE, "", "lcg.bits@94a3bce60b"),
+            ("LCG", "1", plan.BUILD, "", ".@43badb4")]
+    with patch("bits_helpers.plan.banner") as b:
+      plan.print_plan(rows, store_checked=True)
+    lines = (b.call_args[0][0] % b.call_args[0][1:]).splitlines()
+    self.assertIn("Recipes from lcg.bits@94a3bce60b, unless shown", lines)
+    self.assertEqual(max(len(x) for x in lines if x.startswith("dask")), 58)
+    self.assertTrue([x for x in lines if x.startswith("LCG ")][0].endswith("build  [.@43badb4]"))
+    self.assertTrue(all(len(x) <= 76 for x in lines if not x.startswith(("jupyter", "astropy", "0 reused"))))
+
+
+class ListingsTest(unittest.TestCase):
+  def test_listed_once_in_parallel_then_from_the_cache(self):
+    calls = []
+
+    class Helper:
+      def list_store_tarballs(self, arch, h):
+        calls.append((arch, h))
+        if h == "bad":
+          raise OSError("timeout")
+        return ["%s.tar.gz" % h]
+    lister = plan._Listings(Helper())
+    lister.prefetch([("a", "1"), ("a", "2"), ("a", "1"), ("a", "bad")])
+    self.assertEqual(sorted(calls), [("a", "1"), ("a", "2"), ("a", "bad")])
+    self.assertEqual(lister.list_store_tarballs("a", "2"), ["2.tar.gz"])
+    self.assertEqual(lister.list_store_tarballs("a", "3"), ["3.tar.gz"])   # not foreseen
+    with self.assertRaises(OSError):                                       # failed: asked again
+      lister.list_store_tarballs("a", "bad")
+    self.assertEqual(len(calls), 5)
+
+
+  def test_packages_already_here_are_not_listed(self):
+    tmp = tempfile.TemporaryDirectory()
+    self.addCleanup(tmp.cleanup)
+    work = tmp.name
+    d = os.path.join(work, "TARS", ARCH, "store", RH[:2], RH)
+    os.makedirs(d)
+    open(os.path.join(d, "zlib-1.3-1.%s.tar.gz" % ARCH), "w").close()
+    specs = {"zlib": _spec(), "curl": _spec(package="curl", remote_hashes=["cc" + "0" * 38])}
+    args = SimpleNamespace(defaults=["release"], architecture=ARCH)
+    with patch("bits_helpers.build.storeHook"), patch("bits_helpers.hashing.storeHashes"):
+      keys = plan._foreseen(["zlib", "curl"], specs, args, "slc9_x86-64", work, False)
+    self.assertEqual(keys, [(ARCH, "cc" + "0" * 38)])
 
 
 class StoreListableTest(unittest.TestCase):
@@ -173,7 +233,7 @@ class MoreClassifyTest(ClassifyTest):
 class PlanBuildTest(unittest.TestCase):
   def test_devel_disables_write_store_for_later_packages(self):
     import types
-    specs = {"a": _spec(package="a", is_devel_pkg=True), "b": _spec(package="b")}
+    specs = {"a": _spec(package="a", is_devel_pkg=True), "b": _spec(package="b", requires=["a"])}
     args = types.SimpleNamespace(defaults=["release"], architecture=ARCH)
     cfg = types.SimpleNamespace(require_signed_reuse=False, reuse_overlay=None)
     store = types.SimpleNamespace(writeStore="b3://bucket")
@@ -184,6 +244,105 @@ class PlanBuildTest(unittest.TestCase):
     self.assertEqual([r[2] for r in rows], [plan.DEVEL, plan.BUILD])
     self.assertEqual(specs["b"]["hash"], LH)   # local hash: uploads are off after a devel pkg
 
+
+class NeededTest(unittest.TestCase):
+  """Issue #141: a reused package's build_requires are not fetched."""
+
+  def _specs(self):
+    sp = lambda name, runtime=(), build=(): {
+        "package": name, "version": "1", "runtime_requires": list(runtime),
+        "build_requires": list(build), "untracked_requires": [],
+        "requires": list(runtime) + list(build) + ["defaults-release"]}
+    return {"defaults-release": sp("defaults-release"),
+            "gcc-prerequisites": sp("gcc-prerequisites", build=["rocm-sources"]),
+            "rocm-sources": sp("rocm-sources"),
+            "zlib": sp("zlib"),
+            "gcc": sp("gcc", runtime=["zlib"], build=["gcc-prerequisites"]),
+            "app": sp("app", runtime=["gcc"], build=["cmake"]), "cmake": sp("cmake")}
+
+  ORDER = ["defaults-release", "rocm-sources", "gcc-prerequisites", "zlib", "gcc", "cmake", "app"]
+
+  def test_a_reused_packages_build_requires_are_not_needed(self):
+    states = dict.fromkeys(self.ORDER, plan.BUILD)
+    states.update(gcc=plan.REMOTE, zlib=plan.REMOTE)
+    need = plan.needed(self.ORDER, self._specs(), states, ["app"])
+    self.assertEqual(need, {"defaults-release", "app", "cmake", "gcc", "zlib"})
+
+  def test_a_built_package_needs_everything_and_reuse_of_all_needs_runtime_only(self):
+    specs = self._specs()
+    built = plan.needed(self.ORDER, specs, dict.fromkeys(self.ORDER, plan.BUILD), ["app"])
+    self.assertEqual(built, set(self.ORDER))
+    reused = plan.needed(self.ORDER, specs, dict.fromkeys(self.ORDER, plan.INSTALLED), ["app"])
+    self.assertEqual(reused, {"defaults-release", "app", "gcc", "zlib"})
+    # --only-deps: the main package is built later, so its build_requires stay.
+    deps = plan.needed(self.ORDER, specs, dict.fromkeys(self.ORDER, plan.INSTALLED), ["app"],
+                       build_targets={"app"})
+    self.assertIn("cmake", deps)
+
+  def test_the_plan_names_who_does_not_need_it(self):
+    specs = self._specs()
+    states = dict.fromkeys(self.ORDER, plan.REMOTE)
+    need = plan.needed(self.ORDER, specs, states, ["app"], build_targets={"app"})
+    rows = {r[0]: r for r in plan.plan_rows(self.ORDER, specs, states, need,
+                                            source=lambda p: "lcg.bits@abc")}
+    self.assertNotIn("defaults-release", rows)
+    self.assertEqual(rows["gcc-prerequisites"][2:4],
+                     (plan.NOT_NEEDED, "  (build-only, for reused gcc)"))
+    self.assertEqual(rows["gcc"][2:], (plan.REMOTE, "", "lcg.bits@abc"))
+    with patch("bits_helpers.plan.banner") as b:
+      plan.print_plan(list(rows.values()), store_checked=True, title="Build plan")
+    text = b.call_args[0][0] % b.call_args[0][1:]
+    self.assertTrue(text.startswith("Build plan"))
+    self.assertIn("\nRecipes from lcg.bits@abc, unless shown\n", text)
+    self.assertNotIn("[lcg.bits@abc]", text)
+    self.assertIn("4 reused (0 installed, 0 local tarball, 4 from store), 0 to build,"
+                  " 2 not needed", text)
+    with patch("bits_helpers.plan.banner") as b:
+      plan.print_plan(list(rows.values()), store_checked=None)
+    self.assertNotIn("not checked", b.call_args[0][0] % b.call_args[0][1:])
+
+
+  def test_what_defaults_and_development_packages_require_is_needed(self):
+    specs = self._specs()
+    specs["defaults-release"]["requires"] = ["zlib"]
+    specs["cmake"]["is_devel_pkg"] = True
+    order = ["zlib", "defaults-release"] + self.ORDER[1:]
+    need = plan.needed(order, specs, dict.fromkeys(order, plan.REMOTE), ["app"])
+    self.assertEqual(need, {"defaults-release", "zlib", "app", "gcc", "cmake"})
+
+  def test_fetch_build_requires_needs_everything(self):
+    specs, states = self._specs(), dict.fromkeys(self.ORDER, plan.REMOTE)
+    for fetch, not_needed in ((False, {"cmake", "gcc-prerequisites", "rocm-sources"}),
+                              (True, set())):
+      cfg = SimpleNamespace(fetch_build_requires=fetch)
+      with patch.object(plan, "plan", return_value=(states, set(), True)), \
+           patch.object(plan, "banner"):
+        _, _, need = plan.decide(self.ORDER, specs, None, "/sw", None, "", cfg, None,
+                                 targets=["app"])
+      self.assertEqual(set(self.ORDER) - need, not_needed)
+
+  def test_not_needed_packages_adopt_the_planned_hash(self):
+    specs, planned = self._specs(), self._specs()
+    planned["cmake"].update(hash="c" * 40, revision="2", deps_hash="x")
+    plan.adopt(specs, planned, {"cmake"})
+    self.assertEqual((specs["cmake"]["hash"], specs["cmake"]["revision"], specs["cmake"]["not_needed"]),
+                     ("c" * 40, "2", True))
+    self.assertNotIn("deps_hash", specs["cmake"])
+
+  def test_a_reused_package_hashes_as_planned_without_its_build_requires_built(self):
+    import copy
+    from bits_helpers.hashing import storeHashes
+    sp = lambda name, build=(): {"package": name, "version": "1", "recipe": name,
+                                 "commit_hash": "0", "is_devel_pkg": False,
+                                 "requires": list(build), "build_requires": list(build)}
+    specs = {"cmake": sp("cmake"), "app": sp("app", ["cmake"])}
+    planned = copy.deepcopy(specs)
+    for p in ("cmake", "app"):
+      storeHashes(p, planned, considerRelocation=False)
+      planned[p]["hash"], planned[p]["revision"] = planned[p]["remote_revision_hash"], "1"
+    plan.adopt(specs, planned, {"cmake"})       # the loop then starts at app
+    storeHashes("app", specs, considerRelocation=False)
+    self.assertEqual(specs["app"]["remote_hashes"], planned["app"]["remote_hashes"])
 
 if __name__ == "__main__":
   unittest.main()

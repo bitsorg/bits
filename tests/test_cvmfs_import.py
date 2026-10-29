@@ -3,6 +3,7 @@
 
 """Tests for bits_helpers/cvmfs_import."""
 
+from pathlib import Path
 import json
 import os
 import tempfile
@@ -515,14 +516,14 @@ class TestWriteOverlay(unittest.TestCase):
             # modulefile present at name/version
             mf = os.path.join(arch_root, "root", "6.38.00")
             self.assertTrue(os.path.isfile(mf))
-            text = open(mf).read()
+            text = Path(mf).read_text()
             self.assertIn('module-whatis "build_id: %s"' % bid, text)
             # dep edge remapped to bits name in the prereq
             self.assertIn("prereq python/3.13.11", text)
             # modulefile is the single env artifact — no init.sh sidecar
             self.assertFalse(os.path.exists(os.path.join(arch_root, "root", ".6.38.00.init.sh")))
             self.assertIn("setenv ROOT_ROOT /cvmfs/x/ROOT/6.38.00", text)
-            meta = json.load(open(os.path.join(arch_root, "root", ".6.38.00.meta.json")))
+            meta = json.loads(Path(os.path.join(arch_root, "root", ".6.38.00.meta.json")).read_text())
             self.assertEqual(meta["build_id"], bid)
             self.assertEqual(meta["abi_tag"], "x86-64-gcc13")
             # one nested catalog per build_id

@@ -70,11 +70,12 @@ class CertifyConflict(CertifyError):
     """Two builds disagree on the tarball_sha256 for one content hash."""
 
 
-def _now_iso() -> str:
+def now_iso() -> str:
+    """Now, in UTC, as ISO 8601 to the second (…Z)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _norm_sha(value) -> str:
+def norm_sha(value) -> str:
     """Normalise 'sha256:HEX' / 'HEX' to a bare lowercase hex string."""
     s = str(value or "").strip().lower()
     return s.split(":", 1)[1] if ":" in s else s
@@ -178,7 +179,7 @@ def _settle_conflict(key, cands, probe, stale):
     arch, h = key
     stored = [probe(arch, h, e.get("tarball")) for e, _b in cands] if probe is not None else []
     confirmed = [c for c, actual in zip(cands, stored)
-                 if actual is not None and _norm_sha(actual) == _norm_sha(c[0].get("tarball_sha256"))]
+                 if actual is not None and norm_sha(actual) == norm_sha(c[0].get("tarball_sha256"))]
     if len(confirmed) == 1:
         keep = confirmed[0]
         stale.extend((c[0].get("package", "?"), h, c[1]) for c in cands if c is not keep)
@@ -266,7 +267,12 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
             for _fld in ("bits_version", "bits_dist_hash"):
                 if man.get(_fld) and _fld not in entry:
                     entry[_fld] = man[_fld]
-            by_key.setdefault((arch, h), {}).setdefault(_norm_sha(sha), (entry, bid))
+            slot = by_key.setdefault((arch, h), {})
+            have = slot.setdefault(norm_sha(sha), (entry, bid))[0]
+            if entry.get("built_by") and not have.get("built_by"):
+                # Who compiled it and when: the build that did, not one that reused it.
+                have.update({k: entry[k] for k in ("built_by", "completed_at", "bits_version",
+                                                   "bits_dist_hash") if entry.get(k)})
     stale = []                # (package, hash, build_id) claims the store refuted
     packages = []
     for key in sorted(by_key):
@@ -287,7 +293,7 @@ def merge_common_manifest(manifests, default_group=None, valid_days=None,
     common = {
         "schema_version": SCHEMA_VERSION,
         "kind": COMMON_MANIFEST_KIND,
-        "created_at": _now_iso(),
+        "created_at": now_iso(),
         "sources": sources,
         "packages": packages,
     }
@@ -324,7 +330,7 @@ def validate_against_store(common, probe):
     for p in common.get("packages") or []:
         h = p.get("hash")
         arch = p.get("effective_architecture") or ""
-        claimed = _norm_sha(p.get("tarball_sha256"))
+        claimed = norm_sha(p.get("tarball_sha256"))
         actual = probe(arch, h, p.get("tarball"))
         if actual is None:
             # The store has no object for this hash. We cannot vouch for it, but
@@ -333,13 +339,13 @@ def validate_against_store(common, probe):
             # upload, a layout migration). So this is DROPPABLE, not fatal: the
             # caller removes the entry and signs the rest.
             missing.append(p)
-        elif _norm_sha(actual) != claimed:
+        elif norm_sha(actual) != claimed:
             # The object exists but its bytes differ from what the manifest
             # claims. This IS the manifest lying about the store — corruption or
             # tampering — and must never be signed. Fatal.
             fatal.append(
                 "sha256 mismatch for %s %s: manifest=%s store=%s"
-                % (p.get("package", "?"), h, claimed, _norm_sha(actual)))
+                % (p.get("package", "?"), h, claimed, norm_sha(actual)))
     return fatal, missing
 
 
@@ -465,7 +471,7 @@ def certify(manifests, key_pem_path, out_path, probe=None, sig_path=None,
     identity that authorised the certification travels with the signature.
     """
     signer = _make_signer(key_pem_path, sign_proxy, sign_service)
-    common = _prepare_common(manifests, signer, probe, default_group,
+    common = _prepare_common(manifests, signer.key_id, probe, default_group,
                              valid_days, source_commit, approval_check)
     out_abs, sig_path = _write_signed(common, signer, out_path, sig_path)
     debug("certify: signed common manifest %s (%d pkgs) -> %s",
@@ -514,11 +520,14 @@ def _drop_local_revisions(manifests) -> list:
     return out
 
 
-def _prepare_common(manifests, signer, probe, default_group, valid_days,
+def _prepare_common(manifests, key_id, probe, default_group, valid_days,
                     source_commit, approval_check) -> dict:
     """Merge → (approve) → (store-validate) → key-policy check. Returns the
     validated common-manifest dict (with certified_by/at stamped), ready to
     write. Raises :class:`CertifyConflict`/:class:`CertifyError` on any problem.
+
+    *key_id* is a callable giving the signing key's id, for the key-policy
+    check; None skips that check (a computation that signs nothing).
     """
     probe = _cached_probe(probe)
     manifests = _drop_local_revisions(load_build_manifests(manifests))
@@ -554,9 +563,9 @@ def _prepare_common(manifests, signer, probe, default_group, valid_days,
             raise CertifyError("store validation failed:\n  " + "\n  ".join(fatal))
     # Producer-side per-key group binding: refuse to sign groups this key is not
     # authorised for, so an unauthorised signature is never even produced.
-    policy = trust.load_key_policy()
+    policy = trust.load_key_policy() if key_id is not None else None
     if policy is not None:
-        kid = signer.key_id()
+        kid = key_id()
         bad = sorted({(p.get("group") or "common") for p in common["packages"]
                       if not trust.key_authorized(kid, p.get("group"), policy)})
         if bad:
@@ -565,7 +574,7 @@ def _prepare_common(manifests, signer, probe, default_group, valid_days,
                 % (kid, ", ".join(bad)))
     if certified_by:
         common["certified_by"] = sorted(set(certified_by))
-        common["certified_at"] = _now_iso()
+        common["certified_at"] = now_iso()
     return common
 
 
@@ -628,7 +637,29 @@ def certify_by_arch(manifests, key_pem_path, out_path, probe=None,
     see ``_prepare_common``. Returns ``[(out_path, sig_path, arch), ...]``
     sorted by arch.
     """
+    signer = _make_signer(key_pem_path, sign_proxy, sign_service)
+    outputs = []
+    for arch, sub in build_by_arch(manifests, probe=probe, default_group=default_group,
+                                   valid_days=valid_days, source_commit=source_commit,
+                                   approval_check=approval_check, only_archs=only_archs,
+                                   key_id=signer.key_id):
+        op, sp = _write_signed(sub, signer, _arch_stem(out_path, arch))
+        debug("certify: signed %s manifest %s (%d pkgs)", arch, op, len(sub["packages"]))
+        outputs.append((op, sp, arch))
+    return outputs
+
+
+def build_by_arch(manifests, probe=None, default_group=None, valid_days=None,
+                  source_commit=None, approval_check=None, only_archs=None,
+                  key_id=None) -> list:
+    """The per-architecture common manifests :func:`certify_by_arch` signs,
+    computed without signing or writing anything: ``[(arch, manifest), ...]``
+    sorted by arch. *key_id* (a callable giving the signer's key id) enables the
+    key-policy check; None skips it. The orchestrator uses this to compute what
+    a certification would sign and compare it with what was signed.
+    """
     loaded = load_build_manifests(manifests)
+    only = None
     if only_archs is not None:
         only = {a.strip() for a in only_archs if a and a.strip()}
         kept = []
@@ -639,30 +670,27 @@ def certify_by_arch(manifests, key_pem_path, out_path, probe=None,
         debug("certify: scoped to %s — %d of %d manifest(s) kept",
               ", ".join(sorted(only)), len(kept), len(loaded))
         loaded = kept
-    signer = _make_signer(key_pem_path, sign_proxy, sign_service)
-    common = _prepare_common(loaded, signer, probe, default_group,
+    common = _prepare_common(loaded, key_id, probe, default_group,
                              valid_days, source_commit, approval_check)
     buckets = {}
     for p in common["packages"]:
         buckets.setdefault(p.get("effective_architecture") or "shared", []).append(p)
     # Every scoped arch gets a file even when its packages are gone: an empty
     # signed manifest is the revocation of that platform's entries.
-    if only_archs is not None:
+    if only is not None:
         for arch in only:
             buckets.setdefault(arch, [])
     # Always emit at least the shared file so consumers/GC have a well-formed,
     # signed artifact to read even when a certification is (transiently) empty.
     if not buckets:
         buckets = {"shared": []}
-    outputs = []
+    out = []
     for arch in sorted(buckets):
         sub = dict(common)
         sub["architecture"] = arch
         sub["packages"] = buckets[arch]
-        op, sp = _write_signed(sub, signer, _arch_stem(out_path, arch))
-        debug("certify: signed %s manifest %s (%d pkgs)", arch, op, len(buckets[arch]))
-        outputs.append((op, sp, arch))
-    return outputs
+        out.append((arch, sub))
+    return out
 
 
 def make_s3_probe(store_url, work_dir, default_arch):
@@ -672,35 +700,57 @@ def make_s3_probe(store_url, work_dir, default_arch):
     digest (computed from the *actual* bytes, so certification cannot be tricked
     by a manifest that lies about a tarball), or None when the object is absent.
     """
-    import hashlib
     from bits_helpers.publish import _normalize_s3_store
     from bits_helpers.sync import remote_from_url
-    from bits_helpers.utilities import resolve_store_path
 
     store = _normalize_s3_store(store_url)
     writer = remote_from_url(store, store, default_arch, work_dir)
     bucket = getattr(writer, "remoteStore", None) or getattr(writer, "writeStore", None)
-    s3 = writer.s3
+    return s3_probe(writer.s3, bucket, default_arch)
+
+
+def _s3_absent(exc):
+    """Whether an S3 error says the object is not there (rather than failing)."""
+    resp = getattr(exc, "response", None) or {}
+    code = str((resp.get("Error") or {}).get("Code", ""))
+    status = (resp.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    return code in ("404", "NoSuchKey", "NotFound") or status == 404
+
+
+def s3_probe(s3, bucket, default_arch, cache=None):
+    """The probe of :func:`make_s3_probe` over an S3 client and bucket.
+
+    *cache* (optional) remembers digests across runs: ``cache.get(key, etag,
+    size) -> digest | None`` and ``cache.put(key, etag, size, digest)``. Store
+    objects are immutable, so an object whose key, ETag and size are unchanged
+    has the bytes it had; only new objects are streamed and hashed.
+    """
+    import hashlib
+    from bits_helpers.utilities import resolve_store_path
 
     def probe(arch, h, tarball=None):
         prefix = resolve_store_path(arch or default_arch, h) + "/"
-        key = None
+        key = etag = size = None
         # Prefer the exact object the manifest names, so we validate *those* bytes
         # and never hash a different tarball that happens to share the hash dir.
         if tarball:
             cand = prefix + tarball
             try:
-                s3.head_object(Bucket=bucket, Key=cand)
-                key = cand
-            except Exception:
+                head = s3.head_object(Bucket=bucket, Key=cand)
+                key, etag, size = cand, head.get("ETag"), head.get("ContentLength")
+            except Exception as exc:
+                # Only "not there" means absent. Any other error (a timeout, a
+                # 5xx, throttling) must not drop the package from the signed
+                # manifest as if it were gone: fail the run instead.
+                if not _s3_absent(exc):
+                    raise CertifyError("store check failed for %s: %s" % (cand, exc))
                 key = None
         if key is None:
             try:
                 listing = s3.list_objects_v2(Bucket=bucket, Prefix=prefix).get("Contents", [])
             except Exception as exc:
-                warning("certify: store list failed for %s (%s)", prefix, exc)
-                return None
-            tars = [o["Key"] for o in listing if o["Key"].endswith(".tar.gz")]
+                raise CertifyError("store list failed for %s: %s" % (prefix, exc))
+            tars = [o for o in listing if o["Key"].endswith(".tar.gz")]
             # Only fall back when there is exactly one tarball: an ambiguous dir
             # must not be validated against an arbitrarily-chosen object.
             if len(tars) != 1:
@@ -710,7 +760,11 @@ def make_s3_probe(store_url, work_dir, default_arch):
                     debug("certify: named tarball %s absent under %s (found %d .tar.gz)",
                           tarball, prefix, len(tars))
                 return None
-            key = tars[0]
+            key, etag, size = tars[0]["Key"], tars[0].get("ETag"), tars[0].get("Size")
+        if cache is not None and etag and size is not None:
+            known = cache.get(key, etag, size)
+            if known:
+                return known
         digest = hashlib.sha256()
         body = s3.get_object(Bucket=bucket, Key=key)["Body"]
         try:
@@ -718,7 +772,10 @@ def make_s3_probe(store_url, work_dir, default_arch):
                 digest.update(chunk)
         finally:
             body.close()          # release the pooled connection on error too
-        return "sha256:" + digest.hexdigest()
+        out = "sha256:" + digest.hexdigest()
+        if cache is not None and etag and size is not None:
+            cache.put(key, etag, size, out)
+        return out
 
     return probe
 
@@ -814,6 +871,22 @@ def _make_approval_check(args, parser):
     return _check
 
 
+def _refuse_orchestrated(store_url, work_dir, arch, parser):
+    """`bits sign` signs what is then put in the store: refuse a store whose
+    manifests bits-orchestrator signs (see orchestrated.py), or that cannot say
+    whether it does (the manifests CI would overwrite numbered manifests)."""
+    from bits_helpers import orchestrated
+    try:
+        marker = orchestrated.for_store(store_url, work_dir, arch)
+    except orchestrated.Unknown as exc:
+        parser.error("sign: cannot tell whether bits-orchestrator signs this store's "
+                     "manifests: %s (the store's readers need MANIFESTS/orchestrator.json)" % exc)
+    if marker:
+        parser.error("sign: %s signs the manifests of %s (since %s): its certified set "
+                     "changes only through it (bits certify, the decertify action)"
+                     % (marker["issuer"], store_url, marker["since"]))
+
+
 def doSign(args, parser):
     """CLI entrypoint for ``bits sign`` (forge-agnostic; the manifests CI wraps this)."""
     approval_check = None
@@ -824,6 +897,7 @@ def doSign(args, parser):
         sources = [os.path.join(args.workDir, "MANIFESTS")]
     probe = None
     if not getattr(args, "noStoreCheck", False):
+        _refuse_orchestrated(args.certifyStore, args.workDir, args.architecture, parser)
         probe = make_s3_probe(args.certifyStore, args.workDir, args.architecture)
     valid_days = getattr(args, "validDays", None)
     if valid_days is not None and valid_days < 0:

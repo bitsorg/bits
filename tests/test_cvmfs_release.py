@@ -109,6 +109,20 @@ class FindAndMergeTest(unittest.TestCase):
         self.assertEqual(rel.merge_boms(boms)[1], ARCH)
         self.assertEqual(rel.merge_boms(boms, TOOL)[1], TOOL)   # --arch decides
 
+    def test_the_architecture_the_boms_record_wins(self):
+        # A build of the toolchain alone: its BOM is under the toolchain's arch,
+        # the build's own is the one recorded (publish then makes no release).
+        boms = [_bom(TOOL, [_pkg("GCC", "g1", arch=TOOL)], architecture=ARCH,
+                     requested_packages=["GCC"])]
+        self.assertEqual(rel.merge_boms(boms)[1], ARCH)
+        self.assertEqual(rel.merge_boms(boms, TOOL)[1], TOOL)   # --arch decides
+        # The publishing host's arch (older BOMs) is not the build's: not trusted.
+        lcg = [_bom(ARCH, [_pkg("LCG", "l1")], architecture="x86_64-el9")]
+        self.assertIsNone(rel.build_architecture(lcg))
+        self.assertEqual(rel.merge_boms(lcg)[1], ARCH)
+        self.assertEqual(rel.build_architecture([_bom(ARCH, [_pkg("LCG", "l1")],
+                                                       architecture=ARCH)]), ARCH)
+
     def test_merge_refuses_boms_without_templates_or_disagreeing(self):
         with self.assertRaises(rel.ReleaseError):
             rel.merge_boms([_bom(ARCH, [_pkg("ROOT", "r1")], cvmfs_templates=None)])
@@ -120,12 +134,16 @@ class FindAndMergeTest(unittest.TestCase):
 
     def test_signed_check(self):
         pkgs = [_pkg("ROOT", "r1"), _pkg("GCC", "g1")]
-        rel.check_signed(pkgs, {"r1": "sha256:x", "g1": "x"})
+        rel.check_signed(pkgs, {(ARCH, "r1"): "sha256:x", (ARCH, "g1"): "x"})
         with self.assertRaises(rel.ReleaseError) as cm:
-            rel.check_signed(pkgs, {"r1": "sha256:x", "g1": "sha256:other"})
+            rel.check_signed(pkgs, {(ARCH, "r1"): "sha256:x", (ARCH, "g1"): "sha256:other"})
         self.assertIn("GCC", str(cm.exception))
         with self.assertRaises(rel.ReleaseError):
-            rel.check_signed(pkgs, {"r1": "sha256:x"})
+            rel.check_signed(pkgs, {(ARCH, "r1"): "sha256:x"})
+        # The same hash certified for another architecture only does not count.
+        with self.assertRaises(rel.ReleaseError) as cm:
+            rel.check_signed(pkgs, {(ARCH, "r1"): "sha256:x", ("other-arch", "g1"): "sha256:x"})
+        self.assertIn("GCC", str(cm.exception))
 
 
 class FetchTest(unittest.TestCase):

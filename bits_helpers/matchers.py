@@ -199,6 +199,10 @@ def resolve_variables(variables, flavours, architecture, defaults):
   Precedence (low -> high): predefined arch vars < CLI flavours < defaults-file
   entries, except that a CLI flavour always wins over a defaults entry of the
   same name (an explicit override) while remaining visible to every gate.
+
+  ``name: {value: V}`` is a plain entry too; ``export: false`` beside the value
+  only keeps a CLI flavour of that name out of the build environment (see
+  exported_flavours).
   """
   flavours = flavours or {}
   resolved = OrderedDict()
@@ -211,9 +215,29 @@ def resolve_variables(variables, flavours, architecture, defaults):
       if _matcher_active(str(entry["when"]), architecture, defaults, resolved):
         resolved[name] = entry.get("value", True)
       # inactive -> leave undefined (falsy)
+    elif isinstance(entry, dict) and "value" in entry:
+      resolved[name] = entry["value"]
     else:
       resolved[name] = entry
   return resolved
+
+
+def exported_flavours(variables, flavours):
+  """The CLI flavours (``--set``) that go into the build environment, and so
+  into every package's hash: all but those of a defaults ``variables:`` entry
+  declared ``export: false``. Those set only the variable, whose value enters
+  the hash of the recipes whose text uses ``%(NAME)s``, as any defaults
+  variable does (e.g. an Athena ref, used by two recipes alone)."""
+  unexported = set()
+  for name, entry in (variables or {}).items():
+    if isinstance(entry, dict) and "export" in entry:
+      dieOnError(not isinstance(entry["export"], bool),
+                 "variables: %s: export must be true or false, not %r" % (name, entry["export"]))
+      dieOnError("value" not in entry and "when" not in entry,
+                 "variables: %s: export needs a value" % name)
+      if entry["export"] is False:
+        unexported.add(name)
+  return OrderedDict((k, v) for k, v in (flavours or {}).items() if k not in unexported)
 
 
 def filterByArchitectureDefaults(arch, defaults, requires, default_vars=None, version=None):

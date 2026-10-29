@@ -434,5 +434,31 @@ class AcquireBuildLockTest(unittest.TestCase):
                            "acquire_build_lock should refresh the sentinel mtime")
 
 
+
+class PublishRecordRefreshTest(unittest.TestCase):
+    """mark_published_from reads the publish record fetched now, not a copy a
+    previous run left in MANIFESTS/retention."""
+
+    def test_the_record_is_fetched_afresh(self):
+        import json
+        from bits_helpers.cleanup import mark_published_from, published_marker_path
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        old = os.path.join(work, "MANIFESTS", "retention")
+        os.makedirs(old)
+        with open(os.path.join(old, "cvmfs-status.json"), "w") as fh:
+            json.dump({"packages": []}, fh)
+        rec = {"packages": [{"package": "zlib", "version": "1.3", "platform": "x86_64-el9",
+                             "pkg_id": "zlib-1.3-2-x86_64-el9"}]}
+
+        def fake(source, destDir, work_dir, dest_filename=None):
+            with open(os.path.join(destDir, dest_filename), "w") as fh:
+                json.dump(rec, fh)
+            return True
+        with patch("bits_helpers.download.downloadUrllib2", side_effect=fake):
+            mark_published_from(work, "https://cvmfs.example/cvmfs-status.json")
+        self.assertTrue(os.path.exists(published_marker_path(work, "x86_64-el9", "zlib", "1.3-2")))
+
+
 if __name__ == "__main__":
     unittest.main()

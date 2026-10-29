@@ -75,6 +75,22 @@ class TestOpsAdmin(unittest.TestCase):
                              json={"key": "BITS_FORGE_OPS_TOKEN", "value": "steal"})
         self.assertEqual(r.status_code, 400)
 
+    @patch("console_backend.forge_ops.requests.get")
+    def test_ci_var_read_by_any_admin(self, get):
+        url = "/ops/admin/ci-var?key=BITS_DESIRED_REF"
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.assertEqual(self.client.get(url, headers=self._hdr("dave")).status_code, 403)
+        self.assertEqual(self.client.get("/ops/admin/ci-var?key=BITS_FORGE_OPS_TOKEN",
+                                         headers=self._hdr("carol")).status_code, 400)
+        get.return_value = FakeResp(200, {"key": "BITS_DESIRED_REF", "value": "v1.9.3"})
+        r = self.client.get(url, headers=self._hdr("alice"))
+        self.assertEqual(r.json(), {"key": "BITS_DESIRED_REF", "value": "v1.9.3"})
+        self.assertTrue(get.call_args.args[0].endswith("/projects/42/variables/BITS_DESIRED_REF"))
+        get.return_value = FakeResp(404)
+        self.assertIsNone(self.client.get(url, headers=self._hdr("carol")).json()["value"])
+        get.return_value = FakeResp(500)
+        self.assertEqual(self.client.get(url, headers=self._hdr("carol")).status_code, 502)
+
     # ---- refresh -------------------------------------------------------------
     def test_refresh_group_admin_denied(self):
         r = self.client.post("/ops/admin/refresh", headers=self._hdr("alice"), json={})

@@ -16,7 +16,8 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-from bits_helpers.log import dieOnError, debug, error, warning, ProgressPrint
+from bits_helpers.log import dieOnError, debug, error, info, warning, ProgressPrint
+from bits_helpers.build_progress import package_info, package_label
 from bits_helpers.download import download
 from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash, asList
 from bits_helpers.checksum import parse_entry, check_file as check_file_checksum
@@ -473,8 +474,9 @@ def _extract_zip_strip(archive_path, dest_dir, strip=1):
 
 
 def _patchset_fingerprint(spec, patches_dir):
-  """Return a stable hex digest of the recipe's patch set (each patch's name and
-  full content, in declaration order), or None when the package has no patches.
+  """Return a stable hex digest of the recipe's patch set (each patch's name, its
+  declared strip level and full content, in declaration order), or None when the
+  package has no patches.
   Patch files are read from *patches_dir*.
 
   Used to detect when a previously-patched source tree must be re-extracted
@@ -487,9 +489,14 @@ def _patchset_fingerprint(spec, patches_dir):
     return None
   import hashlib
   h = hashlib.sha256()
+  strips = spec.get("patch_strip") or {}
   for patch_entry in patches:
     patch_name, _ = parse_entry(patch_entry)
     h.update(patch_name.encode("utf-8", "replace"))
+    # A declared strip level is part of how the tree was patched; the -p1
+    # default adds nothing, so trees patched with it keep their fingerprint.
+    if str(strips.get(patch_name, 1)) != "1":
+      h.update(b":strip=" + str(strips[patch_name]).encode())
     h.update(b"\0")
     with open(os.path.join(patches_dir, patch_name), "rb") as fh:
       h.update(fh.read())
@@ -522,7 +529,8 @@ def _wipe_source_if_patchset_changed(spec, source_dir):
   current = _patchset_fingerprint(spec, os.path.join(spec["pkgdir"], "patches"))
   if os.path.exists(patched):
     try:
-      recorded = json.loads(open(patched).read()).get("patchset")
+      with open(patched) as f:
+        recorded = json.loads(f.read()).get("patchset")
     except Exception:
       recorded = None   # legacy empty sentinel, or unreadable → treat as changed
     if recorded == current:
@@ -686,7 +694,8 @@ def _extract_source_archives(source_dir, expected_names=None):
   # re-extract with the correct depth.
   if os.path.exists(sentinel):
     try:
-      recorded = json.loads(open(sentinel).read())
+      with open(sentinel) as f:
+        recorded = json.loads(f.read())
       recorded_strips = recorded.get("strips", {})
     except (OSError, ValueError, KeyError):
       recorded_strips = {}
@@ -756,6 +765,9 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
   sync_helper = source_sync_for(spec, sync_helper)
   scm = spec["scm"]
 
+  def report_source(location):
+    package_info("%s: Fetching sources from %s", package_label(spec), location)
+
   def scm_exec(command, directory=".", check=True):
     """Run the given SCM command, simulating a shell exit code."""
     try:
@@ -823,7 +835,8 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
       url, inline_checksum = parse_entry(s)
       src_checksum = _source_checksums.get(url) or inline_checksum
       download(url, source_dir, work_dir, checksum=src_checksum,
-               enforce_mode=enforce_mode, sync_helper=sync_helper)
+               enforce_mode=enforce_mode, sync_helper=sync_helper,
+               progress=report_source)
 
     if parallel_sources <= 1 or len(active_sources) <= 1:
       # Sequential path: preserves original behaviour for the common case.
@@ -855,8 +868,10 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     # There are no sources (neither tarball URLs nor a git repo), so just
     # create an empty SOURCEDIR.  Also handles a spec whose source key is
     # present in the JSON but an empty string.
+    package_info("%s: No sources to fetch", package_label(spec))
     os.makedirs(source_dir, exist_ok=True)
   elif spec["is_devel_pkg"]:
+    report_source("local directory " + spec["source"])
     shutil.rmtree(source_dir, ignore_errors=True)
     # In a container, we mount development packages' source dirs in /.
     # Outside a container, we have access to the source dir directly.
@@ -864,10 +879,12 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
             if containerised_build else spec["source"],
             source_dir)
   elif os.path.isdir(source_dir) and _is_valid_source_checkout(source_dir, scm):
+    report_source("local checkout {} (source: {}, ref: {})".format(source_dir, spec["source"], spec["tag"]))
     # Sources are a relative path or URL and the local repo already exists, so
     # checkout the right commit there.
     err = scm_exec(scm.checkoutCmd(spec["tag"]), source_dir, check=False)
     if err:
+      report_source("{} (ref: {})".format(spec["source"], spec["tag"]))
       # If we can't find the tag, it might be new. Fetch tags and try again.
       tag_ref = "refs/tags/{0}:refs/tags/{0}".format(spec["tag"])
       scm_exec(scm.fetchCmd(spec["source"], tag_ref), source_dir)
@@ -897,6 +914,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
                "source_dir '%s' already contains a .git repository; refusing to "
                "clone '%s' over it to prevent clobbering an existing checkout."
                % (source_dir, spec.get("source", "?")))
+    report_source("{} (ref: {})".format(spec["source"], spec["tag"]))
     shutil.rmtree(source_dir, ignore_errors=True)
     scm_exec(scm.cloneSourceCmd(spec["source"], source_dir, spec.get("reference"),
                                 usePartialClone=True))

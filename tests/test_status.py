@@ -6,10 +6,12 @@
 import json
 import os
 import re
+import shutil
 import tempfile
 import unittest
 from collections import OrderedDict
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from bits_helpers.status import (
@@ -20,6 +22,7 @@ from bits_helpers.status import (
     HASH_UNKNOWN,
     LOCAL_CHECKOUT,
     LOCAL_CHECKOUT_UNCHANGED,
+    SYMLINK_FROM_DEPLOYMENT,
     _classify,
     _emit_json,
     _emit_table,
@@ -29,6 +32,7 @@ from bits_helpers.status import (
 )
 from bits_helpers.hashing import storeHashes
 from bits_helpers.build import add_initdotsh_hash_marker, prepare_hash_inputs
+from bits_helpers.build_config import BuildConfig
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -96,6 +100,65 @@ def _write_tars_symlink(work_dir: str, arch: str, pkg: str, version: str,
     )
     if not os.path.exists(symlink_path):
         os.symlink(rel_target, symlink_path)
+
+
+# ── _try_populate_refs ─────────────────────────────────────────────────────────
+
+class TestStatusSymlinkSelection(unittest.TestCase):
+    def test_selection_matches_build_policy_and_reports_source(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            deployment = os.path.join(tmpdir, "deployment")
+            work = os.path.join(tmpdir, "work")
+            source = os.path.join(deployment, "arch", "external", "mylib", "1.0-1")
+            os.makedirs(os.path.join(source, "etc", "profile.d"))
+            with open(os.path.join(source, "etc", "profile.d", "init.sh"), "w") as fh:
+                fh.write("# deployed init\n")
+            with open(os.path.join(source, ".build-hash"), "w") as fh:
+                fh.write("aabbcc" + "0" * 34 + "\n")
+            spec = _make_spec()
+            spec["pkg_family"] = "external"
+            cfg = BuildConfig.from_args(SimpleNamespace(
+                symlinkPackagesFrom=deployment, symlinkPolicy="strict"))
+            self.assertEqual(_classify(spec, work, "arch", symlink_cfg=cfg),
+                             SYMLINK_FROM_DEPLOYMENT)
+            self.assertEqual(spec["symlink_source"], source)
+            with patch("sys.stdout", new_callable=StringIO) as stdout:
+                _emit_json([dict(package="mylib", version="1.0", hash=spec["hash"],
+                                 state=SYMLINK_FROM_DEPLOYMENT, source=source)], "arch")
+            self.assertEqual(json.loads(stdout.getvalue())["packages"][0]["source"], source)
+
+            local = os.path.join(work, "arch", "external", "mylib", "1.0-1")
+            os.makedirs(os.path.join(local, "etc", "profile.d"))
+            with open(os.path.join(local, "etc", "profile.d", "init.sh"), "w") as fh:
+                fh.write("# installed init\n")
+            with open(os.path.join(local, ".build-hash"), "w") as fh:
+                fh.write("aabbcc" + "0" * 34 + "\n")
+            installed_spec = _make_spec()
+            installed_spec["pkg_family"] = "external"
+            self.assertEqual(_classify(installed_spec, work, "arch", symlink_cfg=cfg),
+                             ALREADY_INSTALLED)
+            shutil.rmtree(local)
+
+            with open(os.path.join(source, ".build-hash"), "w") as fh:
+                fh.write("different\n")
+            mismatched = _make_spec()
+            mismatched["pkg_family"] = "external"
+            self.assertEqual(_classify(mismatched, work, "arch", symlink_cfg=cfg),
+                             BUILD_FROM_SOURCE)
+            relaxed = BuildConfig.from_args(SimpleNamespace(
+                symlinkPackagesFrom=deployment, symlinkPolicy="relaxed"))
+            relaxed_spec = _make_spec()
+            relaxed_spec["pkg_family"] = "external"
+            self.assertEqual(_classify(relaxed_spec, work, "arch", symlink_cfg=relaxed),
+                             SYMLINK_FROM_DEPLOYMENT)
+            self.assertEqual(relaxed_spec["hash"], "different")
+            excluded = BuildConfig.from_args(SimpleNamespace(
+                symlinkPackagesFrom=deployment, symlinkPolicy="relaxed",
+                buildLocal="mylib"))
+            excluded_spec = _make_spec()
+            excluded_spec["pkg_family"] = "external"
+            self.assertEqual(_classify(excluded_spec, work, "arch", symlink_cfg=excluded),
+                             BUILD_FROM_SOURCE)
 
 
 # ── _try_populate_refs ─────────────────────────────────────────────────────────
@@ -951,6 +1014,113 @@ class TestDoStatus(unittest.TestCase):
     @patch("bits_helpers.status.readDefaults")
     @patch("bits_helpers.hashing.storeHashes")
     @patch("bits_helpers.build.storeHook")
+    def test_docker_checks_and_fingerprint_as_in_build(self, mock_hook, mock_store_hashes,
+                                                       mock_read_defaults, mock_parse_defaults,
+                                                       mock_get_package_list):
+        """--docker: system checks run in the container; own_hash folds its fingerprint."""
+        rh = "abcdef" + "0" * 34
+        mock_parse_defaults.return_value = (None, {}, {}, {})
+        mock_read_defaults.return_value = None
+        spec = _make_spec(pkg="GCC-Toolchain", version="v15", remote_revision_hash=rh,
+                          remote_hashes=[rh])
+        spec["own_hash"] = True
+        ran, seen = [], {}
+
+        class FakeRunner:
+            def __init__(self, image, *a, **kw):
+                seen["image"] = image
+            def __enter__(self):
+                def run(cmd, cwd=None):
+                    ran.append(cmd)
+                    return (0, "fp123\n") if "container-fingerprint" in cmd else (1, "")
+                return run
+            def __exit__(self, *exc):
+                return False
+
+        def fake_get_pkg_list(*args, **kwargs):
+            seen["noSystem"] = kwargs["noSystem"]
+            seen["check"] = kwargs["performPreferCheck"](spec, "rpm -q zlib")
+            kwargs["specs"]["GCC-Toolchain"] = spec
+            return ([], ["GCC-Toolchain"], set(), None)
+        mock_get_package_list.side_effect = fake_get_pkg_list
+
+        def fake_store_hashes(p, specs, considerRelocation):
+            seen.update(fp=specs[p].get("container_fingerprint"),
+                        arch=specs[p].get("_own_hash_arch"))
+            specs[p].update(remote_revision_hash=rh, local_revision_hash="l" + rh,
+                            remote_hashes=[rh], local_hashes=["l" + rh], deps_hash="")
+        mock_store_hashes.side_effect = fake_store_hashes
+
+        import bits_helpers.status as status_mod
+        args = self._make_args(["GCC-Toolchain"], json_output=True)
+        args.docker, args.dockerImage, args.docker_extra_args = True, "img:1", []
+        with patch("sys.stdout", new_callable=StringIO), \
+             patch("bits_helpers.status.DockerRunner", FakeRunner), \
+             patch("bits_helpers.status.topological_sort", return_value=["GCC-Toolchain"]), \
+             patch("bits_helpers.status.compute_combined_arch", return_value=self.arch), \
+             patch("bits_helpers.status.compute_own_hash_arch", return_value="neutral-arch"), \
+             patch("bits_helpers.status.prunePaths"):
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.error = lambda msg: (_ for _ in ()).throw(SystemExit(msg))
+            status_mod.doStatus(args, parser)
+        self.assertEqual(seen["image"], "img:1")
+        self.assertIsNone(seen["noSystem"])
+        self.assertEqual(seen["check"], (1, ""))
+        self.assertIn("rpm -q zlib", ran)
+        self.assertEqual((seen["fp"], seen["arch"]), ("fp123", "neutral-arch"))
+
+    @patch("bits_helpers.status.getPackageList")
+    @patch("bits_helpers.status.parseDefaults")
+    @patch("bits_helpers.status.readDefaults")
+    @patch("bits_helpers.hashing.storeHashes")
+    @patch("bits_helpers.build.storeHook")
+    def test_tarball_sources_win_over_git_as_in_build(self, mock_hook, mock_store_hashes,
+                                                       mock_read_defaults, mock_parse_defaults,
+                                                       mock_get_package_list):
+        """source: and sources: → tar mode, as bits build: no git source, no tag."""
+        rh = "abcdef" + "0" * 34
+        mock_parse_defaults.return_value = (None, {}, {}, {})
+        mock_read_defaults.return_value = None
+        spec = _make_spec(pkg="syscalc", version="1.1.7", tag="v1.1.7",
+                          source="https://github.com/syscalc/syscalc",
+                          remote_revision_hash=rh, remote_hashes=[rh])
+        spec["sources"] = ["https://example.org/sysCalc-1.1.7.tar.gz"]
+
+        def fake_get_pkg_list(*args, **kwargs):
+            kwargs["specs"]["syscalc"] = spec
+            return ([], ["syscalc"], set(), None)
+        mock_get_package_list.side_effect = fake_get_pkg_list
+        seen = {}
+
+        def fake_store_hashes(p, specs, considerRelocation):
+            seen.update(source="source" in specs[p], tag=specs[p].get("tag"))
+            specs[p].update(remote_revision_hash=rh, local_revision_hash="l" + rh,
+                            remote_hashes=[rh], local_hashes=["l" + rh], deps_hash="")
+        mock_store_hashes.side_effect = fake_store_hashes
+
+        import bits_helpers.status as status_mod
+        args = self._make_args(["syscalc"], json_output=True)
+        with patch("sys.stdout", new_callable=StringIO), \
+             patch("bits_helpers.status.topological_sort", return_value=["syscalc"]), \
+             patch("bits_helpers.status.compute_combined_arch", return_value=self.arch), \
+             patch("bits_helpers.status.prunePaths"), \
+             patch("bits_helpers.status._fetch_refs_with_clone") as clone, \
+             patch("bits_helpers.status._try_populate_refs") as refs:
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.error = lambda msg: (_ for _ in ()).throw(SystemExit(msg))
+            status_mod.doStatus(args, parser)
+        self.assertEqual(seen["source"], False)
+        self.assertNotEqual(seen["tag"], "v1.1.7")
+        clone.assert_not_called()
+        refs.assert_not_called()
+
+    @patch("bits_helpers.status.getPackageList")
+    @patch("bits_helpers.status.parseDefaults")
+    @patch("bits_helpers.status.readDefaults")
+    @patch("bits_helpers.hashing.storeHashes")
+    @patch("bits_helpers.build.storeHook")
     def test_json_output_structure(self, mock_hook, mock_store_hashes,
                                    mock_read_defaults, mock_parse_defaults,
                                    mock_get_package_list):
@@ -1024,6 +1194,26 @@ class TestDoStatus(unittest.TestCase):
                             status_mod.doStatus(args, parser)
             data = json.loads(mock_out.getvalue())
         self.assertEqual(data["packages"][0]["state"], HASH_UNKNOWN)
+
+
+
+class TestDefaultsVariablesAsBuild(unittest.TestCase):
+    """status resolves the defaults' variables with build's code: same hashes."""
+
+    def test_set_and_release(self):
+        from types import SimpleNamespace
+        from bits_helpers.build import resolve_defaults_variables
+        args = SimpleNamespace(flavours={"release": "LCG_110", "foo": "1"},
+                               architecture="slc9_x86-64", defaults=["release"])
+        meta = {"variables": {"release": "main"}, "env": None}
+        resolve_defaults_variables(meta, args, "")
+        self.assertEqual(meta["variables"]["release"], "LCG_110")
+        self.assertEqual(dict(meta["env"]), {"release": "LCG_110", "foo": "1"})
+        # Without --set, the recipe branch names the release.
+        meta = {"variables": {"release": "main"}}
+        resolve_defaults_variables(meta, SimpleNamespace(
+            flavours={}, architecture="slc9_x86-64", defaults=["release"]), "LCG_110-patches")
+        self.assertEqual(meta["variables"]["release"], "LCG_110")
 
 
 if __name__ == "__main__":

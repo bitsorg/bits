@@ -3,6 +3,7 @@
 
 """Tests for bits_helpers/bits_use — the .bitsuse saved-arg profile."""
 
+from pathlib import Path
 import os
 import shutil
 import sys
@@ -204,7 +205,7 @@ class BitsUseTwoTierTest(unittest.TestCase):
         p = U.write_section("build", ["--docker"])
         self.assertTrue(U._is_home_path(p))
         self.assertTrue(os.path.exists(p))
-        self.assertIn("# dir:", open(p).read())          # dir header recorded
+        self.assertIn("# dir:", Path(p).read_text())          # dir header recorded
         self.assertEqual(os.path.abspath(U._read_path()), os.path.abspath(p))
         self.assertEqual(U.rewrite_argv(["build", "x"]), ["build", "--docker", "x"])
 

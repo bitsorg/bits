@@ -6,6 +6,7 @@ try:
 except ImportError:
     from hashlib import md5 as md5adder
 from os.path import abspath, join, exists, dirname, basename
+from glob import glob
 from os import rename, unlink
 import os
 import re
@@ -14,6 +15,7 @@ from subprocess import getstatusoutput
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 import base64
+import hashlib
 from time import time, sleep
 from types import SimpleNamespace
 from bits_helpers.log import error, warning, debug, info
@@ -179,6 +181,128 @@ def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
         debug("Error while downloading {}: {}".format(source, e))
         return False
     return True
+
+def fetch_fresh(url, dest_dir, name, work_dir=None):
+    """Download *url* to <dest_dir>/<name>, replacing any copy already there
+    (downloadUrllib2 alone keeps an existing file). Raises OSError when the
+    download fails; an older copy is then left alone, never returned."""
+    os.makedirs(dest_dir, exist_ok=True)
+    part = "%s.%d.%s.part" % (name, os.getpid(), os.urandom(4).hex())
+    path = join(dest_dir, part)
+    try:
+        downloadUrllib2(url, dest_dir, work_dir, dest_filename=part)
+        if not os.path.isfile(path):
+            raise OSError("could not download %s" % url)
+        os.replace(path, join(dest_dir, name))
+    finally:
+        for left in [path] + glob(path + ".*.tmp"):      # (downloadUrllib2's own)
+            if os.path.exists(left):
+                unlink(left)
+    return join(dest_dir, name)
+
+
+def _http_get(url, headers, timeout=60):
+    """``(status, body, etag)`` for a GET of *url*; 304 gives no body. Raises
+    OSError on any other failure."""
+    from http.client import HTTPException
+    from urllib.error import HTTPError
+    try:
+        resp = urlopen(Request(url, headers=headers), timeout=timeout)
+        with resp:
+            return resp.status, resp.read(), resp.headers.get("ETag")
+    except HTTPError as e:
+        if e.code == 304:
+            return 304, None, headers.get("If-None-Match")
+        raise OSError("HTTP %s for %s" % (e.code, url))
+    except (URLError, ValueError, HTTPException) as e:   # (a truncated body too)
+        raise OSError("could not fetch %s: %s" % (url, e))
+
+
+def fetch_current(url, dest_dir, name, work_dir=None):
+    """<dest_dir>/<name> as current as *url*, downloading only what changed.
+
+    The ETag of the last download is kept beside the file with the file's
+    sha256, and sent as If-None-Match: the server answers 304 when its copy is
+    the same. A local copy that no longer matches the sha256 it was kept with,
+    or a URL that is not plain http(s) (credentials in it, another scheme), is
+    fetched in full (fetch_fresh). Raises OSError when the fetch fails; an older
+    copy is then never returned.
+    """
+    if not url.startswith(("http://", "https://")) or urlAuthRe.match(url):
+        return fetch_fresh(url, dest_dir, name, work_dir)
+    os.makedirs(dest_dir, exist_ok=True)
+    path, kept = join(dest_dir, name), join(dest_dir, name + ".etag")
+    etag = None
+    try:
+        with open(kept) as fh:
+            tag, digest = fh.read().split("\n")[:2]
+        with open(path, "rb") as fh:
+            if hashlib.sha256(fh.read()).hexdigest() == digest:
+                etag = tag or None
+    except (OSError, ValueError):
+        etag = None
+    headers = {"Cache-Control": "no-cache"}
+    if etag:
+        headers["If-None-Match"] = etag
+    status, body, new_tag = _http_get(url, headers)
+    if status == 304:
+        debug("%s unchanged (ETag %s)", url, etag)
+        return path
+    if status != 200 or body is None:
+        raise OSError("HTTP %s for %s" % (status, url))
+    part = "%s.%d.%s.part" % (path, os.getpid(), os.urandom(4).hex())
+    try:
+        with open(part, "wb") as fh:
+            fh.write(body)
+        os.replace(part, path)
+    finally:
+        if os.path.exists(part):
+            unlink(part)
+    try:
+        # A weak tag (W/"…") may be matched by a copy whose bytes differ.
+        if new_tag and not new_tag.startswith("W/"):
+            with open(kept + ".part", "w") as fh:
+                fh.write("%s\n%s\n" % (new_tag, hashlib.sha256(body).hexdigest()))
+            os.replace(kept + ".part", kept)
+        elif os.path.exists(kept):
+            unlink(kept)
+    except OSError:
+        pass                                # only the next fetch gets slower
+    return path
+
+
+_SIGNED = {}                   # (url, dest dir) -> local path, or the error
+
+
+def fetch_signed_manifest(src, dest_dir, work_dir=None):
+    """A local path for a signed manifest *src* with its detached .sig beside it.
+
+    A local path is returned as it is. A URL is brought up to date, manifest and
+    signature both (fetch_current: a 304 when unchanged), once per process
+    (every caller in one run verifies the same copy). A failed fetch raises OSError, also for later callers in the run: an
+    older copy is never used instead, since it may still vouch for a hash that
+    has been revoked since, or miss the ones certified since.
+    """
+    if "://" not in str(src):
+        return src
+    key = (src, os.path.abspath(dest_dir))
+    got = _SIGNED.get(key)
+    if got is None:
+        # The URL's own name, so two stores' manifests of one name never share
+        # a local copy.
+        name = "%s.%s" % (hashlib.sha256(src.encode()).hexdigest()[:12],
+                          basename(src.split("?")[0]) or "trust-manifest.json")
+        try:
+            # (Re-signed in between, the pair does not match: it fails closed.)
+            got = fetch_current(src, dest_dir, name, work_dir)
+            fetch_current(src + ".sig", dest_dir, name + ".sig", work_dir)
+        except OSError as exc:
+            got = exc
+        _SIGNED[key] = got
+    if isinstance(got, Exception):
+        raise got
+    return got
+
 
 # Download a files from a git url.  We do not clone the remote reposiotory, but
 # we simply pull the branch we are interested in and then we drop all the git
@@ -391,7 +515,7 @@ downloadHandlers = {
 
 
 def download(source, dest, work_dir, checksum=None, enforce_mode="off",
-             sync_helper=None):
+             sync_helper=None, progress=None):
     """Download *source* into *dest*, optionally verifying its checksum.
 
     Parameters
@@ -423,6 +547,9 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
           with the same remote store) can skip the upstream download.
 
         Pass ``None`` (the default) to preserve the previous behaviour.
+    progress:
+        Optional callback receiving the source location before retrieval,
+        including local-cache and remote-store attempts.
     """
     noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
     isCmsdistGenerated = True if 'cmdist-generated=1' in source else False
@@ -504,16 +631,23 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
                 break
     fetched_from_upstream = False
     try:
-        if not exists(realFile):
+        if exists(realFile):
+            if progress:
+                progress("local cache {} (source: {})".format(realFile, source))
+        else:
             # Before hitting the upstream URL, check whether the remote store
             # already has an archived copy of this source.  This makes rebuilds
             # resilient to upstream URL disappearance.
             if sync_helper is not None:
                 debug("Trying remote store for source file: %s", filename)
+                if progress and getattr(sync_helper, "remoteStore", ""):
+                    progress("{} (source: {})".format(sync_helper.remoteStore, source))
                 sync_helper.fetch_source(url_checksum, filename, downloadDir)
 
             if not exists(realFile):
                 debug("Trying to fetch source file: %s", source)
+                if progress:
+                    progress(source)
                 downloadHandler(source, downloadDir, work_dir)
                 fetched_from_upstream = True
     finally:

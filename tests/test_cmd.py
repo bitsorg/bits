@@ -37,7 +37,7 @@ class CmdTestCase(unittest.TestCase):
         with DockerRunner("") as getstatusoutput_docker:
             mock_getoutput.assert_not_called()
             getstatusoutput_docker("echo foo")
-            mock_getstatusoutput.assert_called_with("/bin/bash -c 'echo foo'", cwd=None)
+            mock_getstatusoutput.assert_called_with("/bin/bash -c 'echo foo'", cwd=None, env=mock.ANY)
             mock_getstatusoutput.reset_mock()
         mock_getstatusoutput.assert_not_called()
 
@@ -69,7 +69,7 @@ class CmdTestCase(unittest.TestCase):
         with DockerRunner("", extra_env=extra_env) as getstatusoutput_docker:
             mock_getoutput.assert_not_called()
             getstatusoutput_docker("echo test")
-            mock_getstatusoutput.assert_called_with("env TEST_VAR=test_value ANOTHER_VAR=another_value /bin/bash -c 'echo test'", cwd=None)
+            mock_getstatusoutput.assert_called_with("env TEST_VAR=test_value ANOTHER_VAR=another_value /bin/bash -c 'echo test'", cwd=None, env=mock.ANY)
 
     @mock.patch("bits_helpers.cmd.getoutput")
     @mock.patch("bits_helpers.cmd.getstatusoutput")
@@ -80,7 +80,7 @@ class CmdTestCase(unittest.TestCase):
         with DockerRunner("", extra_env=extra_env) as getstatusoutput_docker:
             mock_getoutput.assert_not_called()
             getstatusoutput_docker("echo test")
-            mock_getstatusoutput.assert_called_with("env MULTILINE_VAR='line1\nline2\nline3' /bin/bash -c 'echo test'", cwd=None)
+            mock_getstatusoutput.assert_called_with("env MULTILINE_VAR='line1\nline2\nline3' /bin/bash -c 'echo test'", cwd=None, env=mock.ANY)
 
     @mock.patch("bits_helpers.cmd.getoutput")
     @mock.patch("bits_helpers.cmd.getstatusoutput")
@@ -91,7 +91,7 @@ class CmdTestCase(unittest.TestCase):
         with DockerRunner("", extra_env=extra_env) as getstatusoutput_docker:
             mock_getoutput.assert_not_called()
             getstatusoutput_docker("echo test")
-            mock_getstatusoutput.assert_called_with("env SEMICOLON_VAR='value1;value2;value3' /bin/bash -c 'echo test'", cwd=None)
+            mock_getstatusoutput.assert_called_with("env SEMICOLON_VAR='value1;value2;value3' /bin/bash -c 'echo test'", cwd=None, env=mock.ANY)
 
 
 if __name__ == '__main__':

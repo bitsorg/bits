@@ -116,6 +116,127 @@ class Settings:
         # then set 1 to enforce — otherwise a never-enrolled admin signs single-shot.
         self.webauthn_required = e.get("BITS_WEBAUTHN_REQUIRED", "0") == "1"
 
+        # The orchestrator (orch/): its SQLite database, shared by the worker (which
+        # migrates and owns it) and this API (requests, approvals). Empty = the
+        # /ops/actions and /ops/events endpoints answer 503.
+        self.orch_db = e.get("BITS_ORCH_DB", "")
+        self.orch_interval = float(e.get("BITS_ORCH_INTERVAL", "30") or "30")
+        # How often (s) the worker reads the heads of the branches schedules follow (30 at least).
+        self.orch_watch_s = max(30.0, float(e.get("BITS_ORCH_WATCH_S", "120") or "120"))
+        # Read-only (read_api) GitLab token the worker reads pipelines, jobs and
+        # job logs with; falls back to the ops token when unset.
+        self.forge_read_token = e.get("BITS_FORGE_READ_TOKEN", "")
+        # M8b: the token that commits the orchestrator's set to bits-manifests
+        # (the mirror); through the credentials proxy's gitlab-mirror route
+        # when BITS_CRED_PROXY_AGENT_SOCKET is set.
+        self.forge_mirror_token = e.get("BITS_FORGE_MIRROR_TOKEN", "")
+        # How far back the worker looks for pipelines when it starts with an empty
+        # database (days); older history is the failure backfill's job.
+        self.orch_lookback_days = float(e.get("BITS_ORCH_LOOKBACK_DAYS", "7") or "7")
+        # The store the builds' BOMs and build index are in (b3://<bucket>; a
+        # trailing ::rw is ignored: the worker only reads). Empty = builds are
+        # recorded from GitLab only, without their BOMs.
+        self.orch_store = e.get("BITS_ORCH_STORE", "")
+        # The store is publicly readable: read it with no credentials at all, at
+        # BITS_ORCH_S3_ENDPOINT (else bits' BITS_S3_ENDPOINT_URL; https). Until M8 the worker only reads, so it then
+        # needs neither keys nor the credentials proxy's s3 route.
+        self.orch_store_anonymous = (e.get("BITS_ORCH_STORE_ANONYMOUS", "") or "").strip().lower() \
+            in ("1", "true", "yes")
+        self.orch_s3_endpoint = (e.get("BITS_ORCH_S3_ENDPOINT") or e.get("BITS_S3_ENDPOINT_URL")
+                                 or "https://s3.cern.ch")
+        # The audience of the CI ID tokens build jobs send with their hints
+        # (/ops/ci/*): its own, so a hint token can never sign anything.
+        self.orch_ci_audience = e.get("BITS_ORCH_CI_AUDIENCE", "bits-orchestrator")
+        # Failure backfill (M2): how many days of older failed pipelines to read
+        # from GitLab, a page per pass, once. 0 = off.
+        self.orch_backfill_days = float(e.get("BITS_ORCH_BACKFILL_DAYS", "0") or "0")
+        # The worker keeps the console's CVMFS status document (cvmfs-status.json
+        # in the build project's package registry), in place of a CI job per build.
+        self.orch_cvmfs_status = (e.get("BITS_ORCH_CVMFS_STATUS", "") or "").strip().lower() \
+            in ("1", "true", "yes")
+        # The build queue: the console's builds wait here and the worker starts
+        # them one per build host (the build project's runners tagged bits-host-<name>).
+        self.orch_queue = (e.get("BITS_ORCH_QUEUE", "") or "").strip().lower() \
+            in ("1", "true", "yes")
+        # prepub nodes whose measurement records say which build published each
+        # CVMFS path (trace.py, for `bits trace`); none: no such index.
+        self.orch_prepub_urls = [u.strip() for u in (e.get("BITS_ORCH_PREPUB_URLS") or "").split(",")
+                                 if u.strip()]
+        # The sbom-scanner service (bits-services) that matches the builds' SBOMs
+        # with a vulnerability database (sbom_scan.py); empty: no scans.
+        self.orch_scanner_url = (e.get("BITS_ORCH_SCANNER_URL") or "").strip()
+        # The scans' vulnerabilities, beside the orchestrator database.
+        self.orch_scans_dir = (os.path.join(os.path.dirname(os.path.abspath(self.orch_db)),
+                                            "sbom-scans") if self.orch_db else "")
+        # A daily copy of the orchestrator database (approvals, failures, the
+        # audit chain cannot be rebuilt): a directory, ideally on another disk.
+        # Empty = no copies.
+        self.orch_backup_dir = e.get("BITS_ORCH_BACKUP_DIR", "")
+        # Certification in shadow (M4): the bits-manifests project whose main
+        # pipelines certify (path or id; empty = off). The worker recomputes each
+        # certification its certify job signed and compares; it signs nothing.
+        # Read with the read token; the store is BITS_ORCH_STORE.
+        self.orch_manifests_project = e.get("BITS_ORCH_MANIFESTS_PROJECT", "")
+        self.orch_manifests_branch = e.get("BITS_ORCH_MANIFESTS_BRANCH", "main") or "main"
+        self.orch_certify_job = e.get("BITS_ORCH_CERTIFY_JOB", "certify-and-publish")
+        self.orch_manifest_prefix = e.get("BITS_ORCH_MANIFEST_PREFIX",
+                                          "MANIFESTS/common-manifest")
+        # M8b, the switch: the worker owns the certified set (no longer read from
+        # bits-manifests, which it mirrors), writes the production manifests
+        # (BITS_ORCH_MANIFEST_PREFIX, without expiry) and is the only signer;
+        # the backend's /sign routes are gone. Unset again = back to M8a.
+        self.orch_owns_set = (e.get("BITS_ORCH_OWNS_SET", "") or "").strip().lower() in (
+            "1", "true", "yes")
+        # Certifications older than this when the worker first looks are not compared.
+        self.orch_shadow_lookback_days = float(e.get("BITS_ORCH_SHADOW_LOOKBACK_DAYS", "3") or "3")
+        # The architecture bits sign assumes for a package without one (its
+        # --architecture); empty = such packages count as absent from the store.
+        self.orch_default_arch = e.get("BITS_ORCH_DEFAULT_ARCH", "")
+        # The outside copy of the audit chain (M4): the audit-log service (on
+        # this host for now, http://audit-log:8443 on an internal network; later
+        # on another node, over https). Empty URL = not shipped. TOKEN may be a
+        # file path.
+        self.orch_audit_url = e.get("BITS_ORCH_AUDIT_URL", "")
+        self.orch_audit_token = e.get("BITS_ORCH_AUDIT_TOKEN", "")
+        self.orch_audit_cafile = e.get("BITS_ORCH_AUDIT_CAFILE", "")
+        # The worker signs only while the outside copy was found in step within
+        # this many minutes (and is not diverged).
+        self.orch_sign_outside_minutes = float(e.get("BITS_ORCH_SIGN_OUTSIDE_MINUTES", "10")
+                                               or "10")
+        # The credentials proxy (M6): a second security-proxy instance holding the
+        # GitLab tokens and the store's keys, which the backend and the worker
+        # reach with gate tokens from its agent socket. Set, it replaces
+        # BITS_FORGE_OPS_TOKEN, BITS_FORGE_READ_TOKEN, BITS_ADMIN_RESOLVE_TOKEN and
+        # the worker's S3 keys; unset, those are used as before.
+        self.cred_proxy_agent_socket = e.get("BITS_CRED_PROXY_AGENT_SOCKET", "")
+        self.cred_proxy_host = e.get("BITS_CRED_PROXY_HOST", "credentials-proxy") or "credentials-proxy"
+        # The store writer (M8a): a security-proxy instance only the worker
+        # reaches, whose s3 route holds the keypair the worker writes its
+        # manifests with. Not the credentials proxy, which the backend can reach too.
+        self.store_writer_agent_socket = e.get("BITS_STORE_WRITER_AGENT_SOCKET", "")
+        self.store_writer_host = e.get("BITS_STORE_WRITER_HOST", "store-writer") or "store-writer"
+        # The worker certifies builds (M8a on): it signs through the signer proxy
+        # and writes the result through the store writer. Off unless
+        # BITS_ORCH_CERTIFY is set.
+        self.orch_certify = (e.get("BITS_ORCH_CERTIFY", "") or "").strip().lower() in ("1", "true", "yes")
+        self.orch_certify_valid_days = float(e.get("BITS_ORCH_CERTIFY_VALID_DAYS", "30") or "30")
+        if not (0 < self.orch_certify_valid_days <= 3650):
+            # 0 would mean "never expires" to bits: not until consumers check `sequence`.
+            raise ValueError("BITS_ORCH_CERTIFY_VALID_DAYS must be above 0 and at most 3650")
+        # At most this many signatures a day: past it, certifying pauses.
+        self.orch_certify_daily_signs = int(e.get("BITS_ORCH_CERTIFY_DAILY_SIGNS", "100") or "100")
+        # The canary (M8a, until M8b): where the worker writes its manifests,
+        # which production does not read, and their comparison with the CI's. A
+        # worker certification with no CI certification of its build after this
+        # many days is 'unmatched'; a CI certification with none after this
+        # many, 'missing'.
+        self.orch_canary_prefix = (e.get("BITS_ORCH_CANARY_PREFIX", "CANARY/common-manifest")
+                                   or "CANARY/common-manifest").strip("/")
+        self.orch_canary_unmatched_days = float(e.get("BITS_ORCH_CANARY_UNMATCHED_DAYS", "7") or "7")
+        self.orch_canary_missing_days = float(e.get("BITS_ORCH_CANARY_MISSING_DAYS", "1") or "1")
+        # The region the worker signs S3 requests for (the proxy re-signs with it).
+        self.orch_s3_region = e.get("BITS_ORCH_S3_REGION", "us-east-1") or "us-east-1"
+
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks
         # endpoints are DISCOVERED from the issuer's well-known doc (the explicit

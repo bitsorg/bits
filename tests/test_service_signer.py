@@ -4,6 +4,7 @@
 the build's pre-approval), no key in CI. HTTP is mocked; the returned envelope is
 verified over our bytes against the trust anchor before it is written."""
 
+from pathlib import Path
 import io
 import json
 import os
@@ -46,7 +47,7 @@ class TestServiceSigner(unittest.TestCase):
             s = certify._ServiceSigner("https://bits.cern.ch", "42", "tok")
             out = s.sign_manifest(self.mf, self.sig)
         self.assertEqual(out, self.sig)
-        self.assertEqual(json.load(open(self.sig)), env)
+        self.assertEqual(json.loads(Path(self.sig).read_text()), env)
         self.assertIn("/sign/preapproved?build_id=42", calls[0])
 
     def test_sign_passes_certifier(self):

@@ -7,6 +7,7 @@ from pathlib import Path
 from bits_helpers import __version__
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
+from bits_helpers import site
 from bits_helpers.repo_provider import (fetch_repo_providers_iteratively, load_always_on_providers,
                                         announce_providers, MAX_PROVIDER_ITERATIONS,
                                         no_recipes_hint)
@@ -21,7 +22,7 @@ from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, 
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, ver_rev, is_virtual_package
 from bits_helpers.arch import detectArch, effective_arch, SHARED_ARCH, compute_combined_arch, compute_own_hash_arch
 from bits_helpers.defaults import parseDefaults, readDefaults
-from bits_helpers.matchers import resolve_variables
+from bits_helpers.matchers import resolve_variables, exported_flavours
 from bits_helpers.packages import getPackageList
 from bits_helpers.initdotsh import generate_initdotsh
 from bits_helpers.hashing import storeHashes
@@ -36,7 +37,10 @@ from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url
 from bits_helpers.build_config import BuildConfig
-from dataclasses import dataclass
+from bits_helpers import plan as _plan
+from bits_helpers import fetch_cache
+from bits_helpers.build_progress import BuildProgress, package_info, package_label, set_package_progress
+from dataclasses import dataclass, field
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 try:
   from bits_helpers.resource_monitor import run_monitor_on_command
@@ -131,6 +135,8 @@ def defaults_store_url(defaults_meta):
     return "", False
   url = str(url).strip()
   writable = url.endswith("::rw")
+  dieOnError("::rw" in url and "," in url,
+             "system: remote_store: ::rw takes one store, not a list (%s)" % url)
   from bits_helpers.sync import normalise_store_url
   return normalise_store_url(url[:-4] if writable else url), writable
 
@@ -243,7 +249,17 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
     spec["version"] = devel_version
 
 
-def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None) -> None:
+def prefetch_wanted(build_order, states):
+  """[(package, with its sources)] worth prefetching, from the plan *states*: an
+  installed or linked package needs neither tarball nor sources, one from the
+  store no sources. Without a plan, everything."""
+  return [(p, states.get(p) != _plan.REMOTE) for p in build_order
+          if states.get(p) not in (_plan.INSTALLED, _plan.LOCAL_TARBALL, _plan.OVERLAY,
+                                   _plan.SYMLINK)]
+
+
+def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None,
+                      sources=True) -> None:
   """Background task: prefetch the prebuilt tarball + all source archives.
 
   Uses the sentinel-file mechanism (``<path>.downloading`` files; see
@@ -303,6 +319,8 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None)
       # Another thread is already fetching this tarball; just wait.
       _wait_for_sentinel(tar_hash_dir)
 
+  if not sources:              # reused from the store: its sources are not needed
+    return
   # --- Source archive prefetch ------------------------------------------------
   # Warms the download cache (SOURCES/cache) only; checkout_sources copies from
   # there. download() uses _acquire_download/_wait_for_sentinel internally, so
@@ -335,7 +353,8 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None)
 
 def readHashFile(fn):
   try:
-    return open(fn).read().strip("\n")
+    with open(fn) as f:
+      return f.read().strip("\n")
   except OSError:
     return "0"
 
@@ -343,21 +362,13 @@ def readHashFile(fn):
 def _localize_manifest(src, work_dir):
   """Return a local filesystem path for a manifest *src*.
 
-  A local path is returned unchanged; a URL is fetched (with its detached
-  ``.sig``) into ``MANIFESTS/trust`` and the local path returned. Note
-  ``downloadUrllib2`` keeps a pre-existing file of the same name, so repeated
-  calls within one build (e.g. from both trust-index and trust-records loaders)
-  resolve to the same local manifest.
+  A local path is returned unchanged; a URL is fetched afresh (with its detached
+  ``.sig``) into ``MANIFESTS/trust``, once per build, so the trust-index and
+  trust-records loaders verify the same copy. A failed fetch raises: the
+  callers then reuse nothing from that manifest (never an older cached copy).
   """
-  if "://" not in src:
-    return src
-  from bits_helpers.download import downloadUrllib2
-  dest = os.path.join(work_dir, "MANIFESTS", "trust")
-  os.makedirs(dest, exist_ok=True)
-  name = os.path.basename(src.split("?")[0]) or "trust-manifest.json"
-  downloadUrllib2(src, dest, work_dir, dest_filename=name)
-  downloadUrllib2(src + ".sig", dest, work_dir, dest_filename=name + ".sig")
-  return os.path.join(dest, name)
+  from bits_helpers.download import fetch_signed_manifest
+  return fetch_signed_manifest(src, os.path.join(work_dir, "MANIFESTS", "trust"), work_dir)
 
 
 _TRUST_IMPORT_WARNED = False
@@ -387,7 +398,7 @@ def _try_import_trust():
 
 
 def _load_trusted_index(src, work_dir, accept_groups):
-  """Verify one signed manifest (local path or URL) -> (key_id, {hash: sha256}).
+  """Verify one signed manifest (local path or URL) -> (key_id, {(arch, hash): sha256}).
 
   Returns ``(None, {})`` on any failure (missing/unreachable/untrusted, or the
   signing library not installed), so a caller can degrade to a rebuild rather
@@ -397,8 +408,8 @@ def _load_trusted_index(src, work_dir, accept_groups):
   if trust is None:
     return None, {}
   try:
-    return trust.trusted_index(_localize_manifest(src, work_dir),
-                               accept_groups=accept_groups)
+    return trust.trusted_object_index(_localize_manifest(src, work_dir),
+                                      accept_groups=accept_groups)
   except Exception as exc:
     warning("--require-signed-reuse: could not fetch/verify %s (%s); those "
             "entries will not be reused.", src, exc)
@@ -406,14 +417,15 @@ def _load_trusted_index(src, work_dir, accept_groups):
 
 
 def trusted_reuse_index(args, work_dir):
-  """Return the verified {hash: tarball_sha256} index for --require-signed-reuse.
+  """Return the verified {(effective_architecture, hash): tarball_sha256} index
+  for --require-signed-reuse.
 
-  --trust-manifest may name several signed manifests (comma-separated): a build
-  node fetches its own ``common-manifest-<arch>.json`` plus the always-relevant
-  ``common-manifest-shared.json`` and this merges their indexes. Each is
-  signature-verified independently; content hashes are globally unique so the
-  merge is collision-free. Loaded once, memoised on *args*. An empty map means
-  nothing is attested, so every remote reuse fails closed.
+  --trust-manifest may name several signed manifests (comma-separated), one per
+  architecture plus ``common-manifest-shared.json``; this merges their indexes.
+  Each is signature-verified independently. A hash alone is not unique (it does
+  not include the architecture), the stored object (architecture, hash) is.
+  Loaded once, memoised on *args*. An empty map means nothing is attested, so
+  every remote reuse fails closed.
   """
   cached = getattr(args, "_trustedReuseIndex", None)
   if cached is not None:
@@ -429,6 +441,7 @@ def trusted_reuse_index(args, work_dir):
             "no remote tarball will be reused.")
   guessed = getattr(args, "_guessedTrustManifests", None) or set()
   absent = []
+  conflicts = set()
   for src in sources:
     kid, part = _load_trusted_index(src, work_dir, accept_groups)
     if not kid and src in guessed and _url_not_found(src):
@@ -440,7 +453,18 @@ def trusted_reuse_index(args, work_dir):
       warning("--require-signed-reuse: could not verify signed manifest %s; "
               "its tarballs will not be reused.", src)
       continue
-    index.update(part)
+    for key, sha in part.items():
+      if key in conflicts:
+        continue
+      if key in index and index[key] != sha:
+        # Two verified manifests disagree about one stored object: the store is
+        # inconsistent somewhere, so neither is trusted for it.
+        warning("--require-signed-reuse: %s@%s is certified with two sha256 (%s, %s); "
+                "it will not be reused.", key[1], key[0], index[key], sha)
+        conflicts.add(key)
+        del index[key]
+        continue
+      index[key] = sha
     debug("Trusted reuse index from %s (signed by %s): %d entries%s",
           src, kid, len(part),
           "" if accept_groups is None else " (groups: %s + common)" % ",".join(accept_groups))
@@ -673,9 +697,41 @@ def _store_container_root(store, endpoint=None):
   if store.startswith(("b3://", "s3://")):
     bucket = store.split("://", 1)[1].split("/", 1)[0].split("::", 1)[0]
     if bucket:
-      ep = str(endpoint or "https://s3.cern.ch").rstrip("/")
+      ep = str(endpoint or site.get("store.s3_endpoint") or "").rstrip("/")
+      if not ep:
+        return None
       return "%s/swift/v1/%s" % (ep, bucket)
   return None
+
+
+def trust_manifest_srcs(store, prefixes, endpoint, work_dir, arch):
+  """``(sources, guessed)``: the signed manifests a build trusts.
+
+  *prefixes* is one prefix or several, comma-separated, in order of preference
+  (e.g. ``STAGING/common-manifest,MANIFESTS/common-manifest``): for each
+  architecture's manifest, the first prefix that has one is used, so a later
+  prefix only fills in the architectures the earlier ones lack. The one used is
+  not checked here: an expired or unverifiable one is not replaced by a later
+  prefix's. Prefer the manifests actually in the store (arch-independent
+  hashes) over names guessed from our own arch; *guessed* is the set of guessed
+  names (they may not exist). With guesses only (no listing found any), every
+  prefix's guesses are kept, so their indexes are merged, not preferred.
+  """
+  order = [p.strip().lstrip("/") for p in str(prefixes or "").split(",") if p.strip()] \
+      or ["MANIFESTS/common-manifest"]
+  listed = [(p, _list_store_manifest_srcs(store, p, endpoint, work_dir)) for p in order]
+  if not any(found for _p, found in listed):
+    # The store cannot be listed (or holds none): every prefix's guessed names,
+    # all kept, since a guess that does not exist is skipped later.
+    guessed = [s for p in order for s in derive_trust_manifest_srcs(store, p, arch, endpoint)]
+    return guessed, set(guessed)
+  chosen = {}
+  for prefix, found in listed:
+    leaf = os.path.basename(prefix)
+    for src in found:
+      name = os.path.basename(src)                 # <leaf>-<arch>.json
+      chosen.setdefault(name[len(leaf):] if name.startswith(leaf) else name, src)
+  return sorted(chosen.values()), set()
 
 
 def derive_trust_manifest_srcs(store, prefix, arch, endpoint=None):
@@ -698,12 +754,12 @@ def derive_trust_manifest_srcs(store, prefix, arch, endpoint=None):
 def _list_store_manifest_srcs(store, prefix, endpoint, work_dir):
   """Every signed common-manifest present in the store (swift JSON listing).
 
-  Content hashes are architecture-independent, so trusting all signed manifests
-  lets a build reuse a hash certified under a different arch than its own (e.g. a
-  bare x86_64-el9 build reusing a gcc15-qualified toolchain). This widens the
-  trust set from arch-scoped to every manifest under the prefix in the bucket;
-  each is still signature + group verified per manifest downstream. [] on any
-  failure -> the caller falls back to derive_trust_manifest_srcs.
+  A build's packages are stored under more than its own architecture name (an
+  own-hash toolchain under the arch without the build type, ``share`` packages
+  under ``share``), so every manifest under the prefix is loaded; each entry
+  still vouches only for its own (architecture, hash), and each manifest is
+  signature + group verified downstream. [] on any failure -> the caller falls
+  back to derive_trust_manifest_srcs.
   """
   prefix = str(prefix or "MANIFESTS/common-manifest").lstrip("/")
   root = _store_container_root(store, endpoint)
@@ -1195,6 +1251,9 @@ def create_provenance_info(package, specs, args):
     _provenance = "own_hash"
   else:
     _provenance = "loose" if _closure_untracked() else "pure"
+  if (getattr(args, "symlinkPackagesFrom", None)
+      and getattr(args, "symlinkPolicy", "strict") == "relaxed"):
+    _provenance = "loose"
   from bits_helpers.deps import deps_graph
   from bits_helpers.build_epoch import BUILD_EPOCH
 
@@ -1220,6 +1279,7 @@ def create_provenance_info(package, specs, args):
     # never hashed — declared under system:, which is not part of any pkg hash).
     "cvmfs_templates": getattr(args, "cvmfsTemplates", None),
     "reuse_policy": getattr(args, "reusePolicy", "strict") or "strict",
+    "symlink_policy": getattr(args, "symlinkPolicy", "strict"),
     "provenance": _provenance,
     # Dependencies this package linked but excluded from its identity hash.
     "untracked_requires": _untracked,
@@ -1304,6 +1364,22 @@ def _extract_error_excerpt(log_path, max_match=15, tail=12, scan_limit=20000):
   return "\n".join(out)
 
 
+def _after_recipe(output, log_path, limit=8):
+  """The error lines bits' build script printed after the recipe's log ended:
+  the failure when the recipe itself succeeded (a missing rsync)."""
+  try:
+    with open(log_path, errors="replace") as f:
+      last = [ln.rstrip("\n") for ln in f if ln.strip()][-1:]
+  except OSError:
+    return []                              # no recipe log to start after
+  output = list(output)
+  start = max((i + 1 for i, ln in enumerate(output) if [ln] == last), default=None)
+  if start is None:
+    return []
+  return [ln for ln in output[start:] if not ln.startswith("+")
+          and (_ERROR_PATTERNS.search(ln) or re.search(r": line \d+: ", ln))][-limit:]
+
+
 def write_failure_summary(work_dir, scheduler, arch):
   """Write a concise per-run failure summary for a --builders build.
 
@@ -1340,13 +1416,13 @@ def write_failure_summary(work_dir, scheduler, arch):
   # different effective platforms, and these run-level logs are not otherwise
   # arch-scoped, so write them under LOGS/<arch>/ to avoid cross-platform
   # clobbering. Fall back to the work-dir root if the directory can't be made.
-  log_dir = os.path.join(work_dir, "LOGS", arch or "")
+  log_dir = os.path.join(abspath(work_dir), "LOGS", arch or "")
   try:
     os.makedirs(log_dir, exist_ok=True)
   except OSError as exc:
     warning("Could not create log dir %s (%s); writing logs to %s instead",
             log_dir, exc, work_dir)
-    log_dir = work_dir
+    log_dir = abspath(work_dir)
   full_path = os.path.join(log_dir, "build-errors-full.log")
   try:
     with open(full_path, "w") as fh:
@@ -1387,31 +1463,41 @@ def write_failure_summary(work_dir, scheduler, arch):
   return (path, full_path)
 
 
+def report_failure_summary(work_dir, scheduler, arch):
+  """Write failure reports and print the log paths for each failed package."""
+  summary_path, full_path = write_failure_summary(work_dir, scheduler, arch)
+  fails = getattr(scheduler, "buildFailures", None) or []
+  if not (summary_path or full_path or fails):
+    return
+  info("=" * 70)
+  info("Build finished with errors. Where to look:")
+  if summary_path:
+    info("  Summary (start here):   %s", summary_path)
+  if full_path:
+    info("  Full error log:         %s", full_path)
+  if fails:
+    info("  Failed package build logs:")
+    for failure in sorted(fails, key=lambda x: x["package"].lower()):
+      info("    %s: %s", failure["package"], failure["log"])
+  info("=" * 70)
+
+
 def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper):
   spec = specs[p]
   debug("Build command: %s", build_command)
-  progress = debug
   # Reuse marker (shown even without --debug): "[from store]" when a remote store
   # is configured (tarball from the shared cache), "[cached]" for a local-only
   # tarball. Blank when the package is compiled.
   _reuse_tag = ((" [from store]" if getattr(syncHelper, "remoteStore", "")
                  else " [cached]") if cachedTarball else "")
-  if args.builders==1:
-    progress_msg = ("Unpacking %s@%s" + _reuse_tag) if cachedTarball else "Compiling %s@%s"
-    if not cachedTarball and not args.debug:
-      progress_msg += " (use --debug for full output)"
-    progress = ProgressPrint(
-      progress_msg %
-      (spec["package"],
-      args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
-    )
-  else:
-    scheduler.log (
-      (("Unpacking %s@%s" + _reuse_tag) if cachedTarball else
-      "Compiling %s@%s (use --debug for full output)") %
-      (spec["package"],
-      args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
-    )
+  stage = "Unpacking" + _reuse_tag if cachedTarball else "Building"
+  if not cachedTarball and not args.debug:
+    stage += " (use --debug for full output)"
+  version = (args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"]
+             else spec["version"])
+  progress = BuildProgress(package_label(spec, version), stage,
+                           emit=scheduler.log if args.builders > 1 else info,
+                           interactive=args.builders == 1)
   # Report progress (no-op unless running under gitlab-runner): this package is
   # now starting. defaults-release is excluded to match the planned total.
   if spec["package"] != "defaults-release":
@@ -1456,19 +1542,37 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
                 "in command); container build runs unthrottled this slot.")
       else:
         build_command = "nice -n %d /bin/sh -c %s" % (nice_level, shlex.quote(build_command))
+  _cache = getattr(args, "fetchCache", "")
+  _cache = _cache if not cachedTarball and fetch_cache.enabled(spec, _cache) else ""
+  _arch = effective_arch(spec, args.architecture)
+  if _cache:
+    _cache_state = fetch_cache.restore(spec, syncHelper, workDir, _cache, _arch)
   from bits_helpers import monitor as _bits_monitor
+  from collections import deque
+  _output = deque(maxlen=400)        # the end of the build script's output
+
+  def _printer(fmt, *a):
+    _output.append(fmt % a if a else fmt)
+    progress(fmt, *a)
   _bits_monitor.note_build(p, getattr(args, "architecture", ""), True)
   try:
     if args.resourceMonitoring:
-      err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=progress)
+      err = run_monitor_on_command(build_command, "{}/{}.json".format(scriptDir, p), printer=_printer)
     else:
-      err = execute(build_command, printer=progress)
+      err = execute(build_command, printer=_printer)
+  except BaseException:
+    progress.end(error=True)
+    raise
   finally:
     _bits_monitor.note_build(p, getattr(args, "architecture", ""), False)
     if nice_ladder is not None:
       nice_ladder.release(nice_token)
-  if args.builders==1:
-    progress.end("failed" if err else "done", err)
+  if err:
+    progress.end(error=True)
+  if _cache and not err:
+    _bwd = args.workDir if spec["is_devel_pkg"] else os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)
+    fetch_cache.save(spec, syncHelper, workDir, _cache, _arch, _cache_state,
+                     os.path.join(_bwd, "BUILD", spec["hash"], fetch_cache.LISTING))
 
   # We do not use the override for devel packages, because we
   # want to avoid having to rebuild things when the /tmp gets cleaned.
@@ -1479,8 +1583,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
 
   # Determine paths
   devSuffix = "-" + args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else ""
-  log_path = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/log"
-  log_abs_path = log_path  # keep the absolute path; log_path may become relative below
+  log_path = abspath(join(buildWorkDir, "BUILD", f"{spec['package']}-latest{devSuffix}", "log"))
   build_dir = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/{spec['package']}"
   # Staging install prefix ($INSTALLROOT in the recipe): where the package's
   # files are installed before being tarred. Useful for inspecting a partial
@@ -1492,10 +1595,10 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   except Exception:  # pylint: disable=broad-except
     install_root = None
 
-  # Use relative paths if we're inside the work directory
+  # Use relative paths for the build and install directories, but keep the log
+  # path absolute so it can be opened directly from any working directory.
   try:
     from os.path import relpath
-    log_path = relpath(log_path, os.getcwd())
     build_dir = relpath(build_dir, os.getcwd())
     if install_root:
       install_root = relpath(install_root, os.getcwd())
@@ -1525,10 +1628,18 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   # Surface the proximate error so the user does not have to open the full log.
   excerpt = ""
   if err:
-    excerpt = _extract_error_excerpt(log_abs_path) or ""
+    excerpt = _extract_error_excerpt(log_path) or ""
     if excerpt:
       buildErrMsg += f"\n{bold}Error excerpt:{reset}\n"
       buildErrMsg += excerpt + "\n"
+    after = _after_recipe(_output, log_path)
+    if after:
+      buildErrMsg += f"\n{bold}After the recipe, bits' build script printed:{reset}\n"
+      buildErrMsg += "".join("    %s\n" % ln for ln in after)
+    from bits_helpers.sandbox import failure_hint
+    hint = failure_hint(build_command)
+    if hint:
+      buildErrMsg += f"\n{bold}Sandbox:{reset}\n  {hint}\n"
 
   updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
   if spec["is_devel_pkg"]:
@@ -1659,7 +1770,14 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     else:
       dieOnError(err, buildErrMsg.strip())
 
-  doFinalSync(spec, specs, args, syncHelper)
+  progress.update("Syncing package to store" if getattr(syncHelper, "writeStore", "")
+                  else "Finalizing package", interactive=False)
+  try:
+    doFinalSync(spec, specs, args, syncHelper)
+  except BaseException:
+    progress.end(error=True)
+    raise
+  progress.end()
 
 
 def _doCheckout(spec, workDir, referenceSources, docker, enforce_mode,
@@ -1686,6 +1804,42 @@ def _doCheckout(spec, workDir, referenceSources, docker, enforce_mode,
   return ""
 
 
+def _report_reuse(args, main_package, metrics_url, instance):
+  """The end-of-build summary of what was reused and built (and why), and the
+  same counts as metrics. Best-effort: never fails a finished build."""
+  try:
+    from bits_helpers import reuse_report
+    packages = args.manifest.packages()
+    text = reuse_report.format_summary(packages)
+    if text:
+      banner("%s", text)
+    if metrics_url:
+      from bits_helpers.metrics import push_prometheus
+      from bits_helpers.monitor import default_instance
+      push_prometheus(metrics_url, "\n".join(reuse_report.metric_lines(
+          packages, instance() or default_instance(), args.architecture, main_package)) + "\n",
+          timeout=5)
+  except Exception as exc:  # pylint: disable=broad-except
+    debug("reuse summary: %s", exc)
+
+
+def _rebuild_reason(spec, sync_helper):
+  """Why a package with no tarball to reuse is built here, in a few words."""
+  from bits_helpers.sync import NoRemoteSync, binary_redistributable
+  if spec.get("is_devel_pkg"):
+    return "development package"
+  if spec.get("force_rebuild"):
+    return "forced rebuild"
+  if is_virtual_package(spec):
+    return "never stored"
+  if not binary_redistributable(spec):
+    return "licence: never stored"
+  if sync_helper is None or isinstance(sync_helper, NoRemoteSync):
+    return "no remote store"
+  # (Absent, or the fetch failed: either way nothing came from the store.)
+  return "not found in the store"
+
+
 def doFinalSync(spec, specs, args, syncHelper):
   # We need to create 2 sets of links, once with the full requires,
   # once with only direct dependencies, since that's required to
@@ -1709,15 +1863,15 @@ def doFinalSync(spec, specs, args, syncHelper):
     # "no redistribution" clause covers the binary form. The package is still
     # built and usable locally; it just never leaves this host.
     if getattr(syncHelper, "writeStore", ""):
-      info("%s@%s [NOT uploaded — redistributable: %s]",
-           spec["package"], spec["version"], spec.get("redistributable"))
+      package_info("%s: not uploaded (redistributable: %s)", package_label(spec),
+                   spec.get("redistributable"))
   elif not spec["revision"].startswith("local") and not is_virtual_package(spec):
     syncHelper.upload_symlinks_and_tarball(spec)
     # Log (info level) that a freshly built tarball was pushed to the write store.
     # Reused packages (cachedTarball) are already there and were marked
     # "[from store]" at build time, so they are skipped here.
     if getattr(syncHelper, "writeStore", "") and not spec.get("cachedTarball"):
-      info("%s@%s [uploaded]", spec["package"], spec["version"])
+      package_info("%s: uploaded", package_label(spec))
     # Record the tarball's SHA-256 in the local integrity ledger so that
     # future recalls from the store can be verified against it.
     # Only active when --store-integrity is set (or store_integrity = true
@@ -1973,6 +2127,13 @@ class _BuildLoopCtx:
   prefetch_executor: object; cmake_prefix_env: bool
   specs_for_checksum_phase: object; monitoredDirs: dict
   build_work_dir: str = ""
+  # Issue #141: the plan's states, the packages it found not needed (build-only
+  # dependencies of reused packages), the live build order (they go back into it
+  # when such a package is built after all) and the full order they are sorted by.
+  planned: dict = field(default_factory=dict)
+  skipped: set = field(default_factory=set)
+  build_order: list = field(default_factory=list)
+  full_order: list = field(default_factory=list)
 
 
 def build_one_package(p, ctx):
@@ -1997,6 +2158,7 @@ def build_one_package(p, ctx):
   monitoredDirs = ctx.monitoredDirs
 
   spec = specs[p]
+  debug("%s: Preparing (checking installed packages and cache)", package_label(spec))
   log_current_package(p, mainPackage, specs, getattr(args, "develPrefix", None))
 
   # Calculate the hashes. We do this in build order so that we can guarantee
@@ -2012,11 +2174,58 @@ def build_one_package(p, ctx):
   debug("Hashes for recipe %s are %s (remote); %s (local)", p,
         ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
 
-  # 4b: if the reuse overlay satisfies this package, set it up from modules
-  # instead of building. Its consumers 'module load' it (generate_initdotsh);
-  # it is neither built nor materialized locally, so we skip the whole
-  # build/unpack path here (this is what avoids the legacy tarball synthesis +
-  # relocate-me.sh). Strict = same remote hash (byte-identical, publishable);
+  # Direct deployment selection needs neither a modulefile nor an overlay.
+  # Resolve the effective architecture (including share) before looking up
+  # the package, and retain the selected revision even when it is empty.
+  from bits_helpers.reuse_symlinks import (
+      select_symlink_package, matching_local_install, stage_reused_package, stage_hook_scripts)
+  try:
+    _linked = select_symlink_package(
+        spec, cfg, args.architecture,
+        trusted=(trusted_reuse_index(args, workDir)
+                 if getattr(cfg, "symlink_packages_from", None) and cfg.require_signed_reuse
+                 else None))
+    if _linked:
+      _existing = matching_local_install(spec, _linked, workDir, args.architecture)
+      if _existing:
+        spec["revision"] = _linked["revision"]
+        spec["hash"] = _linked["hash"]
+        spec["cachedTarball"] = ""
+        spec.setdefault("deps_hash", "")
+        package_info("%s: Already installed at %s (%s)", package_label(spec), _existing,
+                     _linked["hash"][:12])
+        if getattr(args, "manifest", None) is not None:
+          args.manifest.add_package(spec, "already_installed",
+                                    effective_architecture=effective_arch(spec, args.architecture))
+        return
+      _runtime_work = workDir
+      if args.docker:
+        _runtime_work = (cfg.cvmfs_prefix or
+                         (workDir if args.containerUseWorkDir else "/container/bits/sw"))
+      _local_reuse = stage_reused_package(
+          spec, _linked["install_base"], workDir, args.architecture,
+          runtime_work_dir=_runtime_work, source_path=_linked["source"],
+          stage_hooks=stage_hook_scripts(spec, getattr(args, "configDir", "")))
+      spec["revision"] = _linked["revision"]
+      spec["hash"] = _linked["hash"]
+      spec["reuse_symlinked"] = True
+      spec["symlink_source"] = _linked["source"]
+      spec["symlink_policy"] = cfg.symlink_policy
+      spec["cachedTarball"] = ""
+      spec.setdefault("deps_hash", "")
+      package_info("%s: Linked from %s (%s policy) to %s", package_label(spec),
+                   _linked["source"], cfg.symlink_policy, _local_reuse)
+      if getattr(args, "manifest", None) is not None:
+        args.manifest.add_package(spec, "already_installed",
+                                  effective_architecture=effective_arch(spec, args.architecture))
+      return
+  except (OSError, ValueError) as exc:
+    dieOnError(True, "Cannot symlink package %s: %s" % (p, exc))
+
+  # 4b: select reused packages from the module overlay. Consumers source init.sh
+  # from the deployment. Local symlink staging is selected independently by
+  # --symlink-packages-from above.
+  # Both paths skip building/unpacking. Strict = same remote hash (publishable);
   # relaxed = any version in the one-release overlay. defaults-*, --build-local
   # and development packages are never grafted.
   if (cfg.reuse_overlay and not spec["is_devel_pkg"]
@@ -2043,7 +2252,7 @@ def build_one_package(p, ctx):
         spec["hash"] = spec.get("remote_revision_hash") or spec.get("hash", "")
         spec["cachedTarball"] = ""
         spec.setdefault("deps_hash", "")
-        info("Reuse: %s from CVMFS overlay as module %s (not built)", p, _mid)
+        package_info("%s: Reusing CVMFS overlay module %s (not built)", package_label(spec), _mid)
         if getattr(args, "manifest", None) is not None:
           args.manifest.add_package(spec, "already_installed",
                                     effective_architecture=effective_arch(spec, args.architecture))
@@ -2337,7 +2546,7 @@ def build_one_package(p, ctx):
       workDir, effective_arch(spec, args.architecture), spec)
     if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"] \
        and os.path.isdir(devel_install_dir):
-      info("Development package %s does not need rebuild", spec["package"])
+      package_info("%s: Development package does not need rebuild", package_label(spec))
       return
     if spec["devel_hash"]+spec["deps_hash"] == spec["old_devel_hash"]:
       debug("Devel package %s source unchanged but install dir %s is missing "
@@ -2365,7 +2574,7 @@ def build_one_package(p, ctx):
     if fileHash == spec["hash"] and not spec["is_devel_pkg"]:
       # If we get here, the installed package matches the selected hash. It is
       # already usable, so we can register its dependency closure and skip work.
-      debug("Package %s is already installed with the expected hash.", spec["package"])
+      debug("%s: Already installed", package_label(spec))
       # own_hash arch bridge (reuse compatibility): an own_hash package (the
       # toolchain) is installed ONLY under its build-type-NEUTRAL arch. A consumer
       # whose init.sh was generated by the current initdotsh sources it from that
@@ -2457,7 +2666,7 @@ def build_one_package(p, ctx):
           # otherwise-complete package, unlike a freshly built one in doFinalSync.
           try:
             syncHelper.upload_symlinks_and_tarball(spec)
-            info("%s@%s [uploaded from local cache]", spec["package"], spec["version"])
+            package_info("%s: uploaded from local cache", package_label(spec))
           except Exception as exc:
             warning("%s@%s store sync failed: %s", spec["package"], spec["version"], exc)
         else:
@@ -2493,6 +2702,7 @@ def build_one_package(p, ctx):
   tar_hash_dir = os.path.join(workDir, resolve_store_path(effective_arch(spec, args.architecture), spec["hash"]))
   debug("Looking for cached tarball in %s", tar_hash_dir)
   spec["cachedTarball"] = ""
+  _remote_tars = set()   # tarballs the fetch below brings from the remote store
   # Virtual packages (provides_repository, defaults-release) are never in the
   # store: skip the fetch/select/trusted-reuse scan entirely and build locally.
   if not spec["is_devel_pkg"] and not is_virtual_package(spec):
@@ -2539,6 +2749,7 @@ def build_one_package(p, ctx):
       syncHelper.fetch_tarball(spec)
       tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz"))
                   if os.path.isfile(t)]  # skip dangling symlinks
+      _remote_tars = set(tarballs) - _preFetchTars
     finally:
       if _hold_sentinel:
         try:
@@ -2563,12 +2774,13 @@ def build_one_package(p, ctx):
     if (spec["cachedTarball"] and cfg.require_signed_reuse
         and spec["cachedTarball"] not in _preFetchTars):
       _idx = trusted_reuse_index(args, workDir)
-      _sha = _idx.get(spec["hash"])
+      _sha = _idx.get((effective_arch(spec, args.architecture), spec["hash"]))
       if _sha is None:
         warning("Trusted reuse: %s@%s not vouched for by the signed manifest; "
                 "discarding remote tarball and rebuilding.",
                 spec["package"], spec["hash"])
         spec["cachedTarball"] = ""
+        spec["reuse_note"] = "store tarball not certified"
       else:
         _actual = compute_checksum_file(spec["cachedTarball"])
         if _actual != _sha:
@@ -2579,6 +2791,7 @@ def build_one_package(p, ctx):
                   "manifest (expected %s, got %s); discarding and rebuilding.",
                   os.path.basename(spec["cachedTarball"]), _sha, _actual)
           spec["cachedTarball"] = ""
+          spec["reuse_note"] = "store tarball differs from the certified one"
         else:
           debug("Trusted reuse: %s@%s verified against signed manifest",
                 spec["package"], spec["hash"])
@@ -2610,6 +2823,36 @@ def build_one_package(p, ctx):
       if _handle_already_installed(local_hash_path):
         return
       shutil.rmtree(local_hash_path.encode("utf-8"), True)
+
+  # Planned as reused but built after all (e.g. its tarball failed the signed
+  # manifest check): the build-only dependencies the plan skipped for it come
+  # back first, then this package again. Its remote tarballs stay gated.
+  _back = []
+  if ctx.skipped and not spec["cachedTarball"] and ctx.planned.get(p) in _plan.REUSED:
+    _want = _plan.needed(ctx.full_order, specs, ctx.planned, [p], build_targets={p})
+    _back = [d for d in ctx.full_order if d in ctx.skipped and d in _want]
+  if ctx.planned.get(p) == _plan.REMOTE and not spec["cachedTarball"]:
+    try:                     # not in the store after all: asked for again next time
+      from bits_helpers.store_cache import StoreCache, store_id
+      _kept = StoreCache(workDir, store_id(syncHelper))
+      _kept.forget(effective_arch(spec, args.architecture), spec.get("remote_hashes") or ())
+      _kept.save()
+    except Exception as exc:          # pylint: disable=broad-except
+      debug("could not update the store cache: %s", exc)
+  if _back:
+    warning("%s is built after all: fetching or building first what it needs to build: %s",
+            p, ", ".join(_back))
+    ctx.skipped.difference_update(_back)
+    for d in _back:                          # their own loop pass decides afresh
+      for k in ("hash", "revision", "not_needed"):
+        specs[d].pop(k, None)
+    spec["prefetched_tarballs"] = sorted(set(spec.get("prefetched_tarballs", ())) | _remote_tars)
+    ctx.build_order[0:0] = _back + [p]
+    return
+
+  # Why this package is built here (the end-of-build reuse summary says).
+  if not spec["cachedTarball"] and not spec.get("reuse_note"):
+    spec["reuse_note"] = _rebuild_reason(spec, syncHelper)
 
   # The actual build script.
   
@@ -2677,7 +2920,29 @@ def build_one_package(p, ctx):
   # Packages base (an absolute /cvmfs path, identical on host and in the
   # container once /cvmfs is mounted).
   _reuse_cvmfs_base = cfg.reuse_cvmfs_base
+  _reuse_relocations = {}
+  _reuse_relocations_text = ""
+  if cfg.symlink_packages_from:
+    from bits_helpers.reuse_symlinks import serialize_relocation_table
+    for _reused_spec in specs.values():
+      if _reused_spec.get("reuse_symlinked"):
+        _reuse_relocations.update(_reused_spec.get("reuse_reference_paths", {}))
+    if _reuse_relocations:
+      # Exact package mappings above preserve families and effective arches.
+      # The fallback maps other paths under the deployment's Packages root.
+      _reuse_relocations[cfg.symlink_packages_from.rstrip("/")] = abspath(init_workDir)
+    try:
+      _reuse_relocations_text = serialize_relocation_table(_reuse_relocations)
+    except ValueError as exc:
+      dieOnError(True, str(exc))
   makedirs(scriptDir, exist_ok=True)
+  _reuse_relocations_file = ""
+  if _reuse_relocations_text:
+    _map_name = "reuse-relocations.tsv"
+    writeAll(join(scriptDir, _map_name), _reuse_relocations_text + "\n")
+    _reuse_relocations_file = join(
+        abspath(init_workDir), os.path.relpath(scriptDir, abspath(args.workDir)),
+        _map_name)
   # Remember where the resource monitor will write this package's trace so we
   # can aggregate build stats once the run finishes (P3).
   if args.resourceMonitoring:
@@ -2711,6 +2976,7 @@ def build_one_package(p, ctx):
   # actual build script
   bits_dir = dirname(dirname(realpath(__file__)))
   buildEnvironment = [
+    ("BITS_REUSE_RELOCATIONS_FILE", _reuse_relocations_file),
     ("ARCHITECTURE", raw_architecture),
     ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
     ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
@@ -2761,6 +3027,9 @@ def build_one_package(p, ctx):
     # build_template.sh makes a private writable copy so the shared read-only
     # SOURCES tree is never mutated. Empty (off) for modern out-of-tree builds.
     ("BITS_PRIVATE_SOURCE", "1" if not getattr(args, "initdotshFromModules", True) else ""),
+    # fetch_cache: true (issue #129), relative to WORK_DIR; empty when off.
+    ("BITS_FETCH_CACHE", fetch_cache.relative_dir(spec, effective_arch(spec, args.architecture))
+     if fetch_cache.enabled(spec, getattr(args, "fetchCache", "")) else ""),
   ]
   if "sources" in spec:
     for idx, src in enumerate(spec["sources"]):
@@ -2786,6 +3055,9 @@ def build_one_package(p, ctx):
   # Add the computed track_env environment
   buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
 
+
+  # What the macOS sandbox lets this package's build write is derived from it.
+  _pkg_env = {k: v for k, v in buildEnvironment if isinstance(v, str)}
 
   # In case the --docker options is passed, we setup a docker container which
   # will perform the actual build. Otherwise build as usual using bash.
@@ -2843,7 +3115,16 @@ def build_one_package(p, ctx):
       jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",
       # Mount /cvmfs read-only when reusing deployed components, so a reused
       # dep's init.sh (and its files under /cvmfs) resolve inside the container.
-      cvmfsMount=("-v /cvmfs:/cvmfs:ro " if cfg.reuse_cvmfs_base else ""),
+      cvmfsMount=(("-v /cvmfs:/cvmfs:ro " if cfg.reuse_cvmfs_base or
+                   (cfg.symlink_packages_from and
+                    (cfg.symlink_packages_from == "/cvmfs" or
+                     cfg.symlink_packages_from.startswith("/cvmfs/"))) else "") +
+                  "".join(
+                    "-v %s " % quote("%s:%s:ro" % (root, root))
+                    for root in dict.fromkeys((cfg.reuse_cvmfs_base,
+                                               cfg.symlink_packages_from))
+                    if cfg.symlink_packages_from and root and root.rstrip("/") != "/cvmfs"
+                    and not root.startswith("/cvmfs/"))),
       platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
       roSources=_ro_sources,
       image=quote(args.dockerImage),
@@ -2894,6 +3175,10 @@ def build_one_package(p, ctx):
       docker_active=bool(getattr(args, "docker", False)),
       container_workdir=container_workDir if getattr(args, "docker", False) else None,
       docker_image=getattr(args, "dockerImage", None),
+      pkg_env=_pkg_env,
+      build_workdir=abspath(args.workDir if spec["is_devel_pkg"]
+                            else os.environ.get("BITS_BUILD_WORK_DIR", args.workDir)),
+      script_dir=abspath(scriptDir),
   )
 
 
@@ -2918,6 +3203,121 @@ def build_one_package(p, ctx):
     scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
 
 
+def enter_target(package, spec, build_family):
+  """The module to enter: the version just built, else the family's latest alias."""
+  if spec is not None:
+    return "%s/%s" % (package, ver_rev(spec))
+  return "%s/latest-%s" % (package, build_family)
+
+
+def latest_alias_note(package, spec, build_family):
+  """A note naming the family's latest alias, when the hint names the version built."""
+  if spec is None or not build_family:
+    return ""
+  return "\n\n(%s/latest-%s enters the newest build of this family.)" % (package, build_family)
+
+
+def providers_and_defaults(args, packages, workDir, defaultsReader, _cli_disable,
+                           overrides, taps, defaultsMeta, parse=parseDefaults):
+  """Clone the repository providers and re-read the defaults until both settle
+  (bits status uses this too, for the same defaults and hashes). Returns
+  (overrides, taps, defaultsMeta, provider_dirs, fetched provider dirs)."""
+  always_on_dirs = load_always_on_providers(
+    config_dir        = args.configDir,
+    work_dir          = workDir,
+    reference_sources = args.referenceSources,
+    fetch_repos       = getattr(args, "fetchRepos", True),
+    bits_providers    = getattr(args, "bits_providers", None),
+    taps              = taps,
+    provider_policy   = getattr(args, "provider_policy", {}),
+    force_tracked     = getattr(args, "forceTracked", False),
+    overrides         = overrides,
+    defaults          = args.defaults,
+    default_vars      = defaultsMeta.get("variables"),
+  )
+  # Discovery <-> defaults resolution is a FIXED POINT, not one pass. The override
+  # that turns the `release` variable into an lcg.bits branch tag
+  # (`overrides: lcg.bits: tag: "%(release)s"`) can itself live INSIDE a provider
+  # (the shared stacks base), so it is invisible on the first, config-dir-only
+  # parse: a stacks-inheriting community (key4hep/ship/lhcb) would otherwise fetch
+  # lcg.bits at the bare `requires:` default (main) regardless of `release` or a
+  # `--set release=` on the CLI, because there is no override yet to consume the
+  # value. So fetch with the overrides/variables known so far, re-parse now that
+  # the providers (and their overrides) are on BITS_PATH, and repeat until the set
+  # of (provider, commit) pins stops moving. Re-pointing a provider changes its
+  # checkout dir, so BITS_PATH is rebuilt from a stable base each pass to stop a
+  # superseded tag from shadowing the new one. atlas declares the override in its
+  # own config dir, so it converges on the first fetch (the second pass just
+  # confirms the fixed point); an inheriting community converges once the stacks
+  # override/release become visible.
+  _base_bits_path = os.environ.get("BITS_PATH", "")
+  provider_dirs = {}
+  _prev_pin_sig = None
+  for _disc_pass in range(MAX_PROVIDER_ITERATIONS):
+    os.environ["BITS_PATH"] = _base_bits_path
+    defaults_provider_seed = (
+      list(defaultsMeta.get("requires", []))
+      + list(defaultsMeta.get("build_requires", []))
+      + list(getattr(args, "_bootstrap_provider_requires", []) or [])
+    )
+    provider_dirs = fetch_repo_providers_iteratively(
+      packages          = packages + defaults_provider_seed,
+      config_dir        = args.configDir,
+      work_dir          = workDir,
+      reference_sources = args.referenceSources,
+      fetch_repos       = getattr(args, "fetchRepos", True),
+      taps              = taps,
+      provider_policy   = getattr(args, "provider_policy", {}),
+      overrides         = overrides,
+      defaults          = args.defaults,
+      default_vars      = defaultsMeta.get("variables"),
+      force_tracked     = getattr(args, "forceTracked", False),
+      announce          = False,  # once, after the loop converges
+    )
+    _fetched_dirs = dict(provider_dirs)
+    provider_dirs.update(always_on_dirs)
+    # (provider, commit) pin set: order-independent and re-point-sensitive.
+    _pin_sig = frozenset((_n, _h) for (_d, (_n, _h)) in provider_dirs.items())
+    # Re-resolve the defaults chain now that the provider repos are on BITS_PATH,
+    # so the full stacks base + compiler axis contribute their env / package_family
+    # / overrides / append_arch / system. Reset disable to the original CLI set so
+    # a provider-supplied disable is picked up without double-counting config-dir
+    # ones.
+    args.disable = list(_cli_disable)
+    (err, overrides, taps, defaultsMeta) = parse(args.disable,
+                                          defaultsReader, debug, args.architecture, args.configDir)
+    dieOnError(err, err)
+    if _pin_sig == _prev_pin_sig:
+      break
+    _prev_pin_sig = _pin_sig
+  else:
+    warning("Provider discovery did not reach a fixed point after %d passes; "
+            "using the last resolved provider set (some provider pins may still "
+            "be moving).", MAX_PROVIDER_ITERATIONS)
+  return overrides, taps, defaultsMeta, provider_dirs, _fetched_dirs
+
+
+def resolve_defaults_variables(meta, args, branch_basename):
+  """The defaults' variables as a build resolves them: gated entries, the --set
+  flavours, the release (bits status uses this too, for the same hashes)."""
+  flavours = getattr(args, "flavours", None) or {}
+  exported = exported_flavours(meta.get("variables"), flavours)
+  meta["variables"] = resolve_variables(
+      meta.get("variables"), flavours, args.architecture, args.defaults)
+  # The release: an explicit non-trunk release:, else the recipe branch, else
+  # main; %(release)s then picks the lcg.bits branch, as the CVMFS {release} does.
+  from bits_helpers.cvmfs_layout import (
+      resolve_release as _resolve_release, _declared_release as _declared)
+  if isinstance(meta.get("variables"), dict) and _declared(meta):
+    meta["variables"]["release"] = _resolve_release(meta, branch_basename)
+  # Flavours also go into the env (so the hash), not those of `export: false` variables.
+  if exported:
+    from collections import OrderedDict as _OD
+    # An empty `env:` block parses to None, so setdefault would keep it None.
+    if not isinstance(meta.get("env"), dict):
+      meta["env"] = _OD()
+    for _k, _v in exported.items():
+      meta["env"][_k] = _v
 
 
 def doBuild(args, parser):
@@ -2973,32 +3373,7 @@ def doBuild(args, parser):
     # --flavour values are folded in as inputs. The resulting map feeds the
     # (?NAME) conditional matchers that gate package requires and %(NAME)s recipe
     # templating. CLI flavours override a defaults entry of the same name.
-    flavours = getattr(args, "flavours", None) or {}
-    meta["variables"] = resolve_variables(
-        meta.get("variables"), flavours, args.architecture, args.defaults)
-    # Resolve the release LABEL and write it back into `release`, so that
-    # %(release)s (which the defaults feed to the lcg.bits branch override)
-    # follows the same rule as the CVMFS {release} slot: an explicit non-trunk
-    # release: wins, else the working-dir branch, else "main". This is what makes
-    # a build on a recipe branch fetch the matching lcg.bits branch, while the
-    # default/main line keeps building lcg.bits `main` exactly as before.
-    # Only groups that OPT IN by declaring a `release` are touched — a group using
-    # a different convention (e.g. %(lcgversion)s) is left untouched, so no extra
-    # variable is introduced and its package hashes are unchanged.
-    from bits_helpers.cvmfs_layout import (
-        resolve_release as _resolve_release, _declared_release as _declared)
-    if isinstance(meta.get("variables"), dict) and _declared(meta):
-      meta["variables"]["release"] = _resolve_release(meta, branch_basename)
-    # Flavours are ALSO exported into the build environment + package hash (via
-    # the `env:` map, which becomes the defaults-release env every package
-    # depends on), exactly as before.
-    if flavours:
-      from collections import OrderedDict as _OD
-      # An empty `env:` block parses to None, so setdefault would keep it None.
-      if not isinstance(meta.get("env"), dict):
-        meta["env"] = _OD()
-      for _k, _v in flavours.items():
-        meta["env"][_k] = _v
+    resolve_defaults_variables(meta, args, branch_basename)
     # init.sh-from-modules (the default) publishes a build-mode marker through the
     # defaults-release env. Routing it here is deliberate: the defaults env is
     # (a) folded into every package's hash, so the mode yields a distinct,
@@ -3039,78 +3414,8 @@ def doBuild(args, parser):
   # Discovery is transitive (fetch_repo_providers_iteratively re-reads each
   # cloned provider's own requires), so the config-dir seed only needs the
   # first hop and a single re-parse then covers the whole provider graph.
-  always_on_dirs = load_always_on_providers(
-    config_dir        = args.configDir,
-    work_dir          = workDir,
-    reference_sources = args.referenceSources,
-    fetch_repos       = args.fetchRepos,
-    bits_providers    = getattr(args, "bits_providers", None),
-    taps              = taps,
-    provider_policy   = getattr(args, "provider_policy", {}),
-    force_tracked     = getattr(args, "forceTracked", False),
-    overrides         = overrides,
-    defaults          = args.defaults,
-    default_vars      = defaultsMeta.get("variables"),
-  )
-  # Discovery <-> defaults resolution is a FIXED POINT, not one pass. The override
-  # that turns the `release` variable into an lcg.bits branch tag
-  # (`overrides: lcg.bits: tag: "%(release)s"`) can itself live INSIDE a provider
-  # (the shared stacks base), so it is invisible on the first, config-dir-only
-  # parse: a stacks-inheriting community (key4hep/ship/lhcb) would otherwise fetch
-  # lcg.bits at the bare `requires:` default (main) regardless of `release` or a
-  # `--set release=` on the CLI, because there is no override yet to consume the
-  # value. So fetch with the overrides/variables known so far, re-parse now that
-  # the providers (and their overrides) are on BITS_PATH, and repeat until the set
-  # of (provider, commit) pins stops moving. Re-pointing a provider changes its
-  # checkout dir, so BITS_PATH is rebuilt from a stable base each pass to stop a
-  # superseded tag from shadowing the new one. atlas declares the override in its
-  # own config dir, so it converges on the first fetch (the second pass just
-  # confirms the fixed point); an inheriting community converges once the stacks
-  # override/release become visible.
-  _base_bits_path = os.environ.get("BITS_PATH", "")
-  provider_dirs = {}
-  _prev_pin_sig = None
-  for _disc_pass in range(MAX_PROVIDER_ITERATIONS):
-    os.environ["BITS_PATH"] = _base_bits_path
-    defaults_provider_seed = (
-      list(defaultsMeta.get("requires", []))
-      + list(defaultsMeta.get("build_requires", []))
-      + list(getattr(args, "_bootstrap_provider_requires", []) or [])
-    )
-    provider_dirs = fetch_repo_providers_iteratively(
-      packages          = packages + defaults_provider_seed,
-      config_dir        = args.configDir,
-      work_dir          = workDir,
-      reference_sources = args.referenceSources,
-      fetch_repos       = args.fetchRepos,
-      taps              = taps,
-      provider_policy   = getattr(args, "provider_policy", {}),
-      overrides         = overrides,
-      defaults          = args.defaults,
-      default_vars      = defaultsMeta.get("variables"),
-      force_tracked     = getattr(args, "forceTracked", False),
-      announce          = False,  # once, after the loop converges
-    )
-    _fetched_dirs = dict(provider_dirs)
-    provider_dirs.update(always_on_dirs)
-    # (provider, commit) pin set: order-independent and re-point-sensitive.
-    _pin_sig = frozenset((_n, _h) for (_d, (_n, _h)) in provider_dirs.items())
-    # Re-resolve the defaults chain now that the provider repos are on BITS_PATH,
-    # so the full stacks base + compiler axis contribute their env / package_family
-    # / overrides / append_arch / system. Reset disable to the original CLI set so
-    # a provider-supplied disable is picked up without double-counting config-dir
-    # ones.
-    args.disable = list(_cli_disable)
-    (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
-                                          defaultsReader, debug, args.architecture, args.configDir)
-    dieOnError(err, err)
-    if _pin_sig == _prev_pin_sig:
-      break
-    _prev_pin_sig = _pin_sig
-  else:
-    warning("Provider discovery did not reach a fixed point after %d passes; "
-            "using the last resolved provider set (some provider pins may still "
-            "be moving).", MAX_PROVIDER_ITERATIONS)
+  overrides, taps, defaultsMeta, provider_dirs, _fetched_dirs = providers_and_defaults(
+    args, packages, workDir, defaultsReader, _cli_disable, overrides, taps, defaultsMeta)
   announce_providers(_fetched_dirs)
   # A defaults name with no defaults-<name>.sh anywhere on the (now complete)
   # search path is a typo or a missing repository, not a flavour: say so, rather
@@ -3222,6 +3527,13 @@ def doBuild(args, parser):
   args.reuseOverlay = None
   args.reuseBuildId = None
   args.reuseCvmfsBase = None
+  if getattr(args, "symlinkPackagesFrom", None):
+    args.symlinkPackagesFrom = os.path.abspath(os.path.expanduser(args.symlinkPackagesFrom))
+    dieOnError(not os.path.isdir(args.symlinkPackagesFrom),
+               "--symlink-packages-from is not a directory: %s" %
+               args.symlinkPackagesFrom)
+    info("Symlink packages: %s (%s policy)", args.symlinkPackagesFrom,
+         getattr(args, "symlinkPolicy", "strict"))
   if args.reuseFrom:
     info("Reuse-from modules: %s", args.reuseFrom)
     _install_base = _cvmfs.get("install_path") if _cvmfs else None
@@ -3307,6 +3619,14 @@ def doBuild(args, parser):
   # A recipe's own sandbox_network field still overrides this per package
   # (handled in sandbox.wrap_build_command). YAML parses bare on/off as bools,
   # so normalise to the "on"/"off" strings the sandbox layer expects.
+  # The sandbox, when --sandbox is not given: $BITS_SANDBOX, else the defaults'
+  # `sandbox:` (on/off), turns on sandbox-exec for a macOS build outside Docker.
+  if getattr(args, "sandbox", None) is None:
+    from bits_helpers.sandbox import default_mode
+    args.sandbox = default_mode(os.environ.get("BITS_SANDBOX"), _system_opt("sandbox", None),
+                                bool(getattr(args, "docker", False)))
+  # The cache of sources builds download themselves (issue #129), if any.
+  args.fetchCache = fetch_cache.cache_name(_system_opt("fetch_cache", None))
   if getattr(args, "sandboxNetwork", None) is None:
     _dn = _system_opt("sandbox_network", "on")
     if isinstance(_dn, bool):
@@ -3405,17 +3725,20 @@ def doBuild(args, parser):
            or os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
            or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
     _prefix = _system_opt("trust_manifest_prefix", "MANIFESTS/common-manifest")
-    _store = getattr(args, "remoteStore", "")
-    # Prefer the manifests actually in the store (arch-independent hashes) over
-    # two names guessed from our own arch; fall back to name construction.
-    _srcs = _list_store_manifest_srcs(_store, _prefix, _ep,
-                                      getattr(args, "workDir", None))
-    if not _srcs:
-      _srcs = derive_trust_manifest_srcs(
-          _store, _prefix, str(getattr(args, "architecture", "") or ""), _ep)
-      args._guessedTrustManifests = set(_srcs)   # names guessed, may not exist
+    # The signed manifests of every read store (a b3:// one at its own endpoint).
+    from bits_helpers.sync import store_urls, bucket_endpoint
+    _srcs, _guessed = [], set()
+    for _store in store_urls(getattr(args, "remoteStore", "")):
+      _sep = (bucket_endpoint(_store[5:].split("/", 1)[0])
+              if _store.startswith("b3://") else None) or _ep
+      _s, _g = trust_manifest_srcs(_store, _prefix, _sep, getattr(args, "workDir", None),
+                                   str(getattr(args, "architecture", "") or ""))
+      _srcs += [x for x in _s if x not in _srcs]
+      _guessed |= _g
+    if _guessed:
+      args._guessedTrustManifests = _guessed     # names guessed, may not exist
     if _srcs:
-      args.trustManifest = ",".join(_srcs)
+      args.trustManifest, args._trustFromStore = ",".join(_srcs), True
       banner("Signed reuse: %d trust manifest(s) from\n  %s/",
              len(_srcs), os.path.dirname(os.path.commonprefix(_srcs)))
       debug("--require-signed-reuse: trust manifests -> %s", args.trustManifest)
@@ -3462,6 +3785,12 @@ def doBuild(args, parser):
     dieOnError(True,
                "--reuse-policy relaxed produces loose-provenance artifacts that cannot be "
                "published. Drop --write-store, or rebuild with --reuse-policy strict.")
+  if (getattr(args, "symlinkPackagesFrom", None)
+      and getattr(args, "symlinkPolicy", "strict") == "relaxed"
+      and getattr(args, "writeStore", "")):
+    dieOnError(True,
+               "--symlink-policy relaxed produces loose-provenance artifacts that cannot be "
+               "published. Drop --write-store, or use --symlink-policy strict.")
 
   # Snapshot the resolved build knobs now that the resolution phase above has
   # settled them, so downstream reads use typed cfg.<knob> instead of repeating
@@ -3477,6 +3806,17 @@ def doBuild(args, parser):
                                s3_secret_key=getattr(args, "s3SecretKey", None),
                                s3_region=getattr(args, "s3Region", None),
                                s3_addressing_style=getattr(args, "s3AddressingStyle", None))
+  # Read-only stores that cannot be reached (an offline laptop): build without them
+  # rather than retry every request. With a write store nothing changes.
+  from bits_helpers.sync import drop_unreachable, NoRemoteSync
+  syncHelper, _down = drop_unreachable(syncHelper, getattr(args, "insecure", False))
+  for _url, _why in _down:
+    warning("The store %s cannot be reached (%s): building without it "
+            "(--no-remote-store does so without trying).", _url, _why)
+  if _down and isinstance(syncHelper, NoRemoteSync):
+    args.remoteStore = ""
+    if getattr(args, "_trustFromStore", False):
+      args.trustManifest = None            # derived from that store: nothing to verify
 
   # If the bits workdir contains a .sl directory (or .git/sl for git repos
   # with Sapling enabled), we use Sapling as SCM. Otherwise, we default to git
@@ -3560,6 +3900,7 @@ def doBuild(args, parser):
         return getstatusoutput_docker(cmd, cwd=temp_dir)
 
     _satisfied_reqs = set()   # system_requirement packages found present (SBOM)
+    _system_info = {}         # their versions and references, as their checks said
     systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = packages,
                      specs                   = specs,
@@ -3578,7 +3919,8 @@ def doBuild(args, parser):
                      log                     = debug,
                      provider_dirs          = provider_dirs,
                      defaults_meta           = defaultsMeta,
-                     satisfied_requirements  = _satisfied_reqs)
+                     satisfied_requirements  = _satisfied_reqs,
+                     system_info             = _system_info)
 
     # Read the container fingerprint (only present in a bits-containers image), so
     # own_hash packages can fold the build environment — bison/flex/glibc/binutils
@@ -3642,7 +3984,8 @@ def doBuild(args, parser):
       _u = x.get("unfiltered_requires") or {}
       _edges[n] = ([r for r in _u.get("runtime") or [] if r in _sys],
                    [r for r in _u.get("build") or [] if r in _sys])
-    args.manifest.set_system_packages(_sys, _edges)
+    args.manifest.set_system_packages(_sys, _edges,
+                                      {n: i for n, i in _system_info.items() if n in _sys})
   for x in specs.values():
     x["requires"] = [r for r in x["requires"] if r not in args.disable]
     x["build_requires"] = [r for r in x["build_requires"] if r not in args.disable]
@@ -3705,7 +4048,8 @@ def doBuild(args, parser):
       spec = specs[pkg]
       return resolve_spec_data(spec, str(spec.get("tag", spec.get("version", "?"))),
                                args.defaults, strict=False)
-    if len(builtPackages) > 1:
+    if args.plugin != "legacy" and len(builtPackages) > 1:
+      # The legacy build prints its plan instead (further below).
       # One row per package as (name/ref, source); source is the recipe origin
       # "repo@commit" (already includes its own '@'), or the devel marker. Align
       # the source column so a long build order is easy to scan, e.g.:
@@ -3725,18 +4069,8 @@ def doBuild(args, parser):
       banner("Packages will be built in the following order:\n - %s",
              "\n - ".join("{}  [{}]".format(label.ljust(_w), source)
                           for label, source in _rows))
-    else:
+    elif len(builtPackages) <= 1:
       banner("No dependencies of package %s to build.", buildOrder[-1])
-
-    # Tell the progress reporter how many packages will be built, so it can post
-    # a percentage to the GitLab commit status as each one starts (no-op unless
-    # running under gitlab-runner). defaults-release is excluded to match the
-    # plan shown above.
-    try:
-      from bits_helpers import progress as _progress
-      _progress.set_total(len([x for x in builtPackages if x != "defaults-release"]))
-    except Exception:
-      pass
 
 
   if develPkgs:
@@ -3918,12 +4252,46 @@ def doBuild(args, parser):
 
   debug("We will build packages in the following order: %s", " ".join(buildOrder))
 
+  # The plan: where each package comes from, decided as the loop will decide it
+  # (read-only; the store is only listed). Build-only dependencies of reused
+  # packages are not needed, so not fetched nor built (issue #141).
+  _plan_args = dict(
+      targets=[x for x in packages if x in specs] or buildOrder[-1:],
+      build_targets={buildOrder[-1]} if args.onlyDeps else set(),
+      source=lambda x: specs[x].get("recipe_source", "?"))
   if args.dryRun:
-    from bits_helpers.plan import plan_build
-    plan_build(buildOrder, specs, args, workDir, syncHelper, raw_architecture,
-               cfg, lambda: trusted_reuse_index(args, workDir))
+    _plan.plan_build(buildOrder, specs, args, workDir, syncHelper, raw_architecture,
+                     cfg, lambda: trusted_reuse_index(args, workDir), **_plan_args)
     info("--dry-run / -n specified. Not building.")
     return
+  _full_order, _skipped, _states = list(buildOrder), set(), {}
+  try:
+    import copy
+    _planned = copy.deepcopy(specs)
+    _, _plan_states, _need = _plan.decide(
+        buildOrder, _planned, args, workDir, syncHelper, raw_architecture, cfg,
+        lambda: trusted_reuse_index(args, workDir), title="Build plan", **_plan_args)
+    _plan.adopt(specs, _planned, set(buildOrder) - _need)
+    _skipped, _states = set(buildOrder) - _need, _plan_states
+    buildOrder = [x for x in buildOrder if x in _need]
+  except Exception as exc:          # pylint: disable=broad-except
+    warning("Could not plan the build (%s): every package is fetched or built.", exc)
+  try:
+    from bits_helpers.cleanup import touch_sentinel as _touch
+    for d in _skipped:     # kept by bits cleanup: an older init.sh may still source them
+      if _states.get(d) == _plan.INSTALLED:
+        _touch(workDir, args.architecture, d, ver_rev(specs[d]))
+  except OSError as exc:
+    debug("Could not mark the installed packages not needed as used: %s", exc)
+  # Tell the progress reporter how many packages will be built, so it can post
+  # a percentage to the GitLab commit status as each one starts (no-op unless
+  # running under gitlab-runner). defaults-release is excluded, as in the plan.
+  try:
+    from bits_helpers import progress as _progress
+    _progress.set_total(len([x for x in buildOrder if x != "defaults-release"])
+                        - (1 if args.onlyDeps and len(buildOrder) > 1 else 0))
+  except Exception:
+    pass
 
   # We now iterate on all the packages, making sure we build correctly every
   # single one of them. This is done this way so that the second time we run we
@@ -4077,22 +4445,19 @@ def doBuild(args, parser):
   _prefetch_workers = cfg.prefetch_workers
   if _prefetch_workers < 0:
     _prefetch_workers = min(max(int(getattr(args, "builders", 1)), 1), 4)
-  _prefetch_executor = None
-  if _prefetch_workers > 0 and buildOrder and not isinstance(syncHelper,
+  _prefetch_executor, _prefetch_futures = None, []
+  _prefetch_order = prefetch_wanted(buildOrder, _states)
+  if _prefetch_workers > 0 and _prefetch_order and not isinstance(syncHelper,
       __import__("bits_helpers.sync", fromlist=["NoRemoteSync"]).NoRemoteSync):
     debug("Starting %d prefetch worker(s)", _prefetch_workers)
     _prefetch_executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=_prefetch_workers,
         thread_name_prefix="bits-prefetch",
     )
-    for _pkg in buildOrder:
-      _pspec = specs[_pkg]
-      _prefetch_executor.submit(_prefetch_package, _pspec, syncHelper, workDir, args.architecture,
-                                raw_architecture)
-    # Do NOT call executor.shutdown() here — we let it run in the background
-    # and join lazily via a daemon-thread finaliser registered below.
-    import atexit
-    atexit.register(lambda ex=_prefetch_executor: ex.shutdown(wait=False, cancel_futures=True))
+    _prefetch_futures = [
+        _prefetch_executor.submit(_prefetch_package, specs[_pkg], syncHelper, workDir,
+                                  args.architecture, raw_architecture, sources=_src)
+        for _pkg, _src in _prefetch_order]
 
   # Default build_family for the final banner, matching the in-loop formula
   # (build.py sets it per-package below). Needed so a reused/skipped MAIN package
@@ -4107,55 +4472,54 @@ def doBuild(args, parser):
       develPackageBranch=develPackageBranch, defaultsMeta=defaultsMeta,
       buildTargets=buildTargets, packages=packages,
       prefetch_executor=_prefetch_executor, cmake_prefix_env=_cmake_prefix_env,
-      specs_for_checksum_phase=specs_for_checksum_phase, monitoredDirs=monitoredDirs)
-  while buildOrder:
-    build_one_package(buildOrder.pop(0), ctx)
-  buildWorkDir = ctx.build_work_dir
+      specs_for_checksum_phase=specs_for_checksum_phase, monitoredDirs=monitoredDirs,
+      planned=_states, skipped=_skipped, build_order=buildOrder, full_order=_full_order)
+  set_package_progress(specs, buildOrder)
+  try:
+    while buildOrder:
+      build_one_package(buildOrder.pop(0), ctx)
+    buildWorkDir = ctx.build_work_dir
 
-  if (args.builders > 1) and buildTargets:
-    _run_t0 = time.monotonic()
-    try:
-      scheduler.run()
-    finally:
-      # Always stop the straggler-renice watchdog, even if run() raised.
-      if getattr(scheduler, "renice_watchdog", None) is not None:
-        scheduler.renice_watchdog.stop()
-    _run_wall = time.monotonic() - _run_t0
-    # Refresh the self-tuning resource-stats file from this run's monitor traces
-    # so the next --builders invocation can schedule with up-to-date estimates (P3).
-    # Also estimate CPU utilisation and, when there is headroom, record/print a
-    # suggestion for --builders / --oversubscribe.
-    _tuning = None
-    if args.resourceMonitoring and monitoredDirs:
+    if (args.builders > 1) and buildTargets:
+      _run_t0 = time.monotonic()
       try:
-        from bits_helpers.build_stats import aggregate_and_write, tuning_report, default_stats_path
-        _tuning = tuning_report(monitoredDirs, _run_wall, args.builders, args.jobs,
-                                cfg.oversubscribe)
-        aggregate_and_write(workDir, monitoredDirs, tuning=_tuning, arch=args.architecture)
-      except Exception as exc:  # pylint: disable=broad-except
-        warning("Could not update build resource stats: %s", exc)
-    for (action, error) in scheduler.errors.items():
-      info("* The action \"{}\" was not completed successfully because {}".format(action, error))
-    # Write a concise failure summary plus a combined full error log, and tell
-    # the user where to find them and the individual per-package logs.
-    _summary_path, _full_path = write_failure_summary(workDir, scheduler, args.architecture)
-    if _summary_path or _full_path:
-      info("=" * 70)
-      info("Build finished with errors. Where to look:")
-      if _summary_path:
-        info("  Summary (start here):   %s", _summary_path)
-      if _full_path:
-        info("  Full error log:         %s", _full_path)
-      info("  Per-package build logs: %s/BUILD/<package>-latest/log", workDir)
-      info("=" * 70)
-    # End-of-run resource-tuning hint. Only on a clean build — the utilisation
-    # numbers are meaningless for a partial/failed run. The full report is in
-    # bits_build_stats.json under "tuning".
-    if _tuning and _tuning.get("headroom") and not scheduler.brokenJobs:
-      banner("Resource tuning (recorded in %s):\n  %s",
-             default_stats_path(workDir, args.architecture), _tuning["recommendation"])
-    if scheduler.brokenJobs:
-      dieOnError(True, "Please fix the above errors.")
+        scheduler.run()
+      finally:
+        # Always stop the straggler-renice watchdog, even if run() raised.
+        if getattr(scheduler, "renice_watchdog", None) is not None:
+          scheduler.renice_watchdog.stop()
+      _run_wall = time.monotonic() - _run_t0
+      # Refresh the self-tuning resource-stats file from this run's monitor traces
+      # so the next --builders invocation can schedule with up-to-date estimates (P3).
+      # Also estimate CPU utilisation and, when there is headroom, record/print a
+      # suggestion for --builders / --oversubscribe.
+      _tuning = None
+      if args.resourceMonitoring and monitoredDirs:
+        try:
+          from bits_helpers.build_stats import aggregate_and_write, tuning_report, default_stats_path
+          _tuning = tuning_report(monitoredDirs, _run_wall, args.builders, args.jobs,
+                                  cfg.oversubscribe)
+          aggregate_and_write(workDir, monitoredDirs, tuning=_tuning, arch=args.architecture)
+        except Exception as exc:  # pylint: disable=broad-except
+          warning("Could not update build resource stats: %s", exc)
+      for (action, error) in scheduler.errors.items():
+        info("* The action \"{}\" was not completed successfully because {}".format(action, error))
+      # Write a concise failure summary plus a combined full error log, and tell
+      # the user where to find them and the individual per-package logs.
+      report_failure_summary(workDir, scheduler, args.architecture)
+      # End-of-run resource-tuning hint. Only on a clean build — the utilisation
+      # numbers are meaningless for a partial/failed run. The full report is in
+      # bits_build_stats.json under "tuning".
+      if _tuning and _tuning.get("headroom") and not scheduler.brokenJobs:
+        banner("Resource tuning (recorded in %s):\n  %s",
+               default_stats_path(workDir, args.architecture), _tuning["recommendation"])
+      if scheduler.brokenJobs:
+        dieOnError(True, "Please fix the above errors.")
+  finally:
+    # The queued prefetches nobody needs any more: at exit Python would wait
+    # for every one (a pool worker drains its queue before it stops).
+    for _f in _prefetch_futures:
+      _f.cancel()
 
   # ── Post-build checksum phase ──────────────────────────────────────────────
   # Runs after all packages have been built (or confirmed up-to-date) so that
@@ -4215,7 +4579,8 @@ def doBuild(args, parser):
              f"\n\n  {abspath(join(args.workDir, args.architecture))}\n"
              f"{_install_root_line}\n"
              "You can use this package by loading the environment:"
-             f"\n\n  bits {_arch_flag}enter {mainPackage}/latest-{mainBuildFamily}"
+             f"\n\n  bits {_arch_flag}enter {enter_target(mainPackage, _main_spec, mainBuildFamily)}"
+             f"{latest_alias_note(mainPackage, _main_spec, mainBuildFamily)}"
              f"{_arch_note}{_container_note}",
              )
   else:
@@ -4236,6 +4601,8 @@ def doBuild(args, parser):
   if getattr(args, "manifest", None) is not None:
     args.manifest.complete()
     banner("Build manifest written to:\n  %s", args.manifest.path)
+    _report_reuse(args, mainPackage, _mon_url if _mon_on else None,
+                  lambda: cfg.monitor_instance or _system_opt("monitor_instance", None))
     if getattr(args, "signManifest", None):
       from bits_helpers import trust
       sig = trust.sign_manifest(args.manifest.path, args.signManifest)
@@ -4260,16 +4627,14 @@ def doBuild(args, parser):
   # a conditional branch and may never have been assigned on this path.
   _store_mon_url = (cfg.monitor_url
                     or os.environ.get("METRICS_URL") or "").strip().rstrip("/")
-  if _store_mon_url and getattr(syncHelper, "writeStore", "") and getattr(syncHelper, "s3", None):
+  # The first b3:// write store's (the gauges carry no bucket label).
+  _w = next((w for w in (getattr(syncHelper, "writers", None) or [syncHelper])
+             if getattr(w, "writeStore", "") and getattr(w, "s3", None)), None)
+  if _store_mon_url and _w is not None:
     from bits_helpers import store_stats as _ss
-    _bucket = getattr(syncHelper, "remoteStore", "") or getattr(syncHelper, "writeStore", "")
-    # Endpoint precedence matches the S3 client / the require-signed-reuse derive.
-    _store_ep = (getattr(args, "s3Endpoint", None)
-                 or os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
-                 or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
-    _ss.push_store_gauges(syncHelper.s3, _bucket, _store_mon_url,
-                          work_dir=args.workDir,
-                          store=getattr(args, "remoteStore", "") or _bucket,
-                          endpoint=_store_ep)
+    from bits_helpers.sync import s3_settings
+    _bucket = getattr(_w, "remoteStore", "") or getattr(_w, "writeStore", "")
+    _ss.push_store_gauges(_w.s3, _bucket, _store_mon_url, work_dir=args.workDir,
+                          store="b3://" + _bucket, endpoint=s3_settings(_bucket)["endpoint"])
 
   debug("Everything done")

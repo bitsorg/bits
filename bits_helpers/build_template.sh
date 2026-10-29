@@ -3,6 +3,7 @@ BITS_START_TIMESTAMP=$(date +%%s)
 # Automatically generated build script
 unset DYLD_LIBRARY_PATH
 echo "bits: start building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP"
+echo "bits:stage:prepare"
 get_file_from_configDir() {
   # B2 FIX: quote $BITS_CONFIG_DIR in dirname/basename and quote ${repo_dir}/${d}
   # in the test so that paths with spaces are not word-split.
@@ -50,9 +51,14 @@ cleanup() {
 
 trap cleanup EXIT
 
-# Cleanup variables which should not be exposed to user code
+# Cleanup variables which should not be exposed to user code: every S3 secret,
+# the run's and each bucket's (BITS_S3_<BUCKET>_*).
 unset AWS_ACCESS_KEY_ID
 unset AWS_SECRET_ACCESS_KEY
+for _bits_v in $(compgen -e | grep -E '^(AWS_SESSION_TOKEN|BITS_AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|BITS_S3_.+_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN))$'); do
+  unset "$_bits_v"
+done
+unset _bits_v
 
 set -e
 set +h
@@ -155,6 +161,8 @@ fi
 export BUILDROOT="$BITS_BUILD_WORK_DIR/BUILD/$PKGHASH"
 export SOURCEDIR="$WORK_DIR/SOURCES/$PKGNAME/$PKGVERSION/$COMMIT_HASH"
 export BUILDDIR="$BUILDROOT/$PKGNAME"
+# fetch_cache: true: the directory bits restored the recipe's downloads into.
+if [ -n "${BITS_FETCH_CACHE:-}" ]; then export BITS_FETCH_CACHE="$WORK_DIR/$BITS_FETCH_CACHE"; fi
 
 # All caching for RECC should happen relative to $WORK_DIR
 export RECC_PROJECT_ROOT=$WORK_DIR
@@ -244,9 +252,11 @@ source_up
 EOF
 
 cd "$BUILDROOT"
-ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest"
+# The "latest" links with /bin/ln: GNU ln -f replaces a link through a temporary
+# name beside it, which the macOS sandbox (sandbox.py) does not allow.
+/bin/ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest"
 if [[ $DEVEL_PREFIX ]]; then
-  ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest-$DEVEL_PREFIX"
+  /bin/ln -snf "$PKGHASH" "$BITS_BUILD_WORK_DIR/BUILD/$PKGNAME-latest-$DEVEL_PREFIX"
 fi
 
 cd "$BUILDDIR"
@@ -271,6 +281,7 @@ function Run() { # dummy function
 }
 
 if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
+  echo "bits:stage:recipe"
   set -o pipefail;
   # Keep DYLD_LIBRARY_PATH (set from dependencies by init.sh above) so build-time
   # tools on macOS find their dependencies' dylibs, mirroring LD_LIBRARY_PATH on
@@ -282,10 +293,12 @@ if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
   } 2>&1 | tee "$BUILDROOT/log"
   rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # read PIPESTATUS[0] BEFORE any command clobbers it
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
+    echo "bits:stage:incremental"
     set -o pipefail
     (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log"
     rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # propagate the real recipe exit code (was masked to 1)
 elif [[ "$CACHED_TARBALL" == "" ]]; then
+   echo "bits:stage:recipe"
    set -o pipefail;
    # Keep DYLD_LIBRARY_PATH (from dependencies via init.sh) — see note above.
    { set -e
@@ -295,6 +308,7 @@ elif [[ "$CACHED_TARBALL" == "" ]]; then
    } 2>&1 | tee "$BUILDROOT/log"
    rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # read PIPESTATUS[0] BEFORE any command clobbers it
 else
+  echo "bits:stage:unpack"
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
   # files.
   rm -rf "$BUILDROOT/log"
@@ -316,6 +330,15 @@ else
   mv "$WORK_DIR/TMP/$PKGHASH/$PKGPATH" "$INSTALLROOT"
   pushd "$WORK_DIR/INSTALLROOT/$PKGHASH"
   if [ -w "$INSTALLROOT" ]; then
+      # Relocate with this bits' relocate-me.sh, not the one in the tarball: that
+      # is from the bits that packed it, and an older one doubles INSTALLROOT/<hash>
+      # in the paths when, as here, the target lies under the work dir. The
+      # package's own lines (modulefile, macOS) are written again below and run
+      # when the installed copy is relocated. (A tarball too old to have
+      # .bits-pkginfo keeps its own script: this one needs that file.)
+      if [ -f "$INSTALLROOT/etc/profile.d/.bits-pkginfo" ]; then
+        install "${BITS_SCRIPT_DIR}/bits_helpers/relocate-me.sh" "$INSTALLROOT/"
+      fi
       WORK_DIR=$WORK_DIR /bin/bash -ex "$INSTALLROOT/relocate-me.sh"
   fi
   popd
@@ -323,6 +346,15 @@ else
   rm -rf "$WORK_DIR/TMP/$PKGHASH"
 fi
 
+# What the build left in its fetch cache, by sha256, for bits to save (a failure only skips that).
+if [ -z "$CACHED_TARBALL" ] && [ -n "${BITS_FETCH_CACHE:-}" ] && [ -d "$BITS_FETCH_CACHE" ]; then
+  _bits_sha=sha256sum; command -v sha256sum >/dev/null || _bits_sha="shasum -a 256"
+  (cd "$BITS_FETCH_CACHE" && find . -type f -exec $_bits_sha {} + | LC_ALL=C sort -k2) \
+    > "$BUILDROOT/fetched-sources.sha256" || rm -f "$BUILDROOT/fetched-sources.sha256"
+  unset _bits_sha
+fi
+
+echo "bits:stage:relocate-config"
 # Regenerate init.sh, in case the package build clobbered it. This
 # particularly happens in the AliEn-Runtime package, since it copies other
 # packages into its installroot wholesale.
@@ -428,9 +460,11 @@ cd "$WORK_DIR/INSTALLROOT/$PKGHASH"
 
 # Run post-install hooks
 if [[ $PKGNAME != defaults-* ]]; then
+  echo "bits:stage:post-install"
   run_hooks "POST_INSTALL"
 fi
 
+echo "bits:stage:relocate-config"
 # Relativise in-tree absolute symlinks so the artefact is relocatable.
 # A build can install an absolute symlink into its own INSTALLROOT (e.g. bzip2's
 # bin/bzless -> $INSTALLROOT/bin/bzmore). That target is a build-time path: it
@@ -464,6 +498,14 @@ unset _pack_root
 # ${pcfiledir}, .cmake on ${CMAKE_CURRENT_LIST_DIR}; the grep guard leaves
 # already-relative configs untouched.
 if [ -w "$INSTALLROOT" ]; then
+  # Like CMS relocateReference: linked dependencies can emit their original
+  # prefixes into a NEW package's text files. Rewrite those local files before
+  # collecting .bits-relocate, so subsequent relocation sees WORK_DIR paths.
+  # The helper uses find/xargs/grep/perl and never follows symlink directories.
+  if [ -n "${BITS_REUSE_RELOCATIONS_FILE:-}" ]; then
+    bash "${BITS_SCRIPT_DIR}/bits_helpers/relocate-references.sh" \
+      "$INSTALLROOT" --file "$BITS_REUSE_RELOCATIONS_FILE"
+  fi
   bash "${BITS_SCRIPT_DIR}/bits_helpers/relativize-configs.sh" "$INSTALLROOT"
   # Find which files need relocation — only now, after every tree mutation, so
   # configs made relative above drop out and files written by POST_INSTALL hooks
@@ -477,6 +519,7 @@ if [ -w "$INSTALLROOT" ]; then
     || echo "bits: WARNING: could not write $PKGNAME's .bits-view.json" >&2
 fi
 
+echo "bits:stage:package"
 # Archive creation
 # B7 FIX: replace backtick with $(...) and quote $PKGHASH; use -c (chars) consistently.
 HASHPREFIX=$(echo "$PKGHASH" | cut -c1,2)
@@ -551,6 +594,7 @@ elif [ -z "$CACHED_TARBALL" ]; then
 fi
 wait "$rsync_pid"
 
+echo "bits:stage:relocate"
 # We've copied files into their final place; now relocate.
 # Use $PKGPATH (= $EFFECTIVE_ARCHITECTURE[/$PKGFAMILY]/$PKGNAME/$_VERREV) so
 # that PKGFAMILY packages (e.g. externals/foo, cms/bar) are found correctly.
@@ -562,11 +606,11 @@ fi
 # Last package built gets a "latest" mark.
 # dirname of $PKGPATH = $EFFECTIVE_ARCHITECTURE[/$PKGFAMILY]/$PKGNAME
 # B4 FIX: quote ${_VERREV} and $(dirname ...) so spaces in PKGPATH don't split.
-ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest"
+/bin/ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest"
 
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
-  ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest-${BUILD_FAMILY}"
+  /bin/ln -snf "${_VERREV}" "$(dirname "$PKGPATH")/latest-${BUILD_FAMILY}"
 fi
 
 # When the package is definitely fully installed, install the file that marks

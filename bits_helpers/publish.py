@@ -28,6 +28,9 @@ from os.path import abspath, basename, exists, join
 from bits_helpers.log import debug, error, info, warning, banner
 from bits_helpers.arch import detectArch
 
+_NO_STORE = ("no store: give --remote-store, set $BITS_S3_STORE, or store.operations "
+             "in a site configuration file")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -168,14 +171,19 @@ def _normalize_s3_store(url):
       https://<host>/[swift/v1/]<bucket>[/...]  -> b3://<bucket> (+ endpoint, path-style)
       b3://<bucket> / s3://<bucket> / rsync:...  -> passthrough
     """
+    if "," in (url or ""):
+        error("this command works on one store, not a list: %s", url)
+        sys.exit(1)
     if url.startswith(("b3://", "s3://", "rsync:", "cvmfs://")):
         return url
     m = re.match(r"^https?://([^/]+)/(?:swift/v1/)?([^/?#]+)", url)
     if not m:
         return url
     host, bucket = m.group(1), m.group(2)
-    os.environ.setdefault("BITS_S3_ENDPOINT_URL", "https://%s" % host)
-    os.environ.setdefault("S3_ADDRESSING_STYLE", "path")  # CERN RGW path-style
+    # This bucket's endpoint (sync.s3_settings), so stores on other hosts keep theirs.
+    key = "BITS_S3_%s_" % re.sub(r"[^A-Za-z0-9]", "_", bucket).upper()
+    os.environ.setdefault(key + "ENDPOINT_URL", "https://%s" % host)
+    os.environ.setdefault(key + "ADDRESSING_STYLE", "path")  # CERN RGW path-style
     return "b3://%s" % bucket
 
 
@@ -195,12 +203,149 @@ def _run_leaf():
     return "%s-%s-%s.json" % (host, ts, rnd)
 
 
-def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=None, dry_run=False):
+# The build-manifest fields a BOM entry carries (plus tarball and its sha256).
+_BOM_FIELDS = ("package", "version", "revision", "effective_architecture",
+               "hash", "commit_hash", "pkg_family", "built_by", "completed_at",
+               "license", "redistributable", "view", "requires")
+
+# How many packages are checked/uploaded at once (BITS_PUBLISH_JOBS). Each is a
+# few S3 round trips (rev-index marker, HEAD of the content object), so a
+# serial pass over a whole stack spends minutes waiting on the network.
+_PUBLISH_JOBS = 8
+
+
+def _publish_jobs():
+    try:
+        return max(1, min(64, int(os.environ.get("BITS_PUBLISH_JOBS") or _PUBLISH_JOBS)))
+    except ValueError:
+        return _PUBLISH_JOBS
+
+
+def _bom_documents(published, manifest_doc, architecture, build_id):
+    """``(packages, [(effective_arch, BOM)])`` for the *published* ``(entry,
+    store tarball)`` pairs: the minimal BOM entries, and one BOM per architecture."""
+    import getpass, socket, datetime
+    from bits_helpers.checksum import checksum_file
+    # completed_at is kept per package so every hash carries "when built".
+    # license/redistributable are the compliance metadata: the BOM (and
+    # the signed manifest merged from it) must know what may be laid
+    # into a public CVMFS tree and what attribution a NOTICE file needs.
+    # view/requires: what a release made later from this BOM alone (bits
+    # cvmfs release) needs: the view rules and the dependency order.
+    packages = []
+    for e, tar in published:
+        m = {k: e[k] for k in _BOM_FIELDS if k in e}
+        m["tarball"] = e.get("tarball") or basename(tar)
+        m["tarball_sha256"] = e.get("tarball_sha256") or checksum_file(tar)
+        packages.append(m)
+    try:
+        _user = getpass.getuser()
+    except Exception:
+        _user = "unknown"
+    # A BOM is per-platform: partition the entries by their effective
+    # architecture ("shared" — noarch — is just another platform) and
+    # emit one BOM per architecture, with the architecture in the file
+    # name. This is the invariant that lets certification be scoped per
+    # platform (a BOM pairs with exactly one common-manifest-<arch>) —
+    # bits_helpers.certify.bom_architecture() refuses mixed BOMs.
+    by_arch = {}
+    for m in packages:
+        by_arch.setdefault(m.get("effective_architecture") or "shared", []).append(m)
+    provenance = {
+        "build_id": build_id,
+        "published_by": "%s@%s" % (_user, socket.gethostname().split(".")[0]),
+        "published_at": datetime.datetime.now(datetime.timezone.utc)
+                            .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "architecture": architecture,
+    }
+    # The CI pipeline that produced this build — the id the console's passkey
+    # pre-approval is keyed on. The certify job reads it from this BOM to
+    # consume that pre-approval when it signs. Absent for a local publish.
+    # FUTURE(build_id-unification 2026-09-20): source_pipeline_id is CI-only
+    # (empty off-CI), so CLI/external BOMs are not pre-approvable by it. Unify
+    # the pre-approval anchor on the deterministic manifest build_id. KEEP this
+    # until that lands. Doc: signing-authz-unified-model-2026-09-20.
+    pipeline_id = os.environ.get("CI_PIPELINE_ID", "").strip()
+    if pipeline_id:
+        provenance["source_pipeline_id"] = pipeline_id
+    # The build's CVMFS layout (release name, package paths) and what it
+    # was asked to build: a release is made from these later, from the
+    # BOM alone, without the build's work directory.
+    for fld in ("cvmfs_templates", "requested_packages"):
+        if manifest_doc.get(fld):
+            provenance[fld] = manifest_doc[fld]
+    return packages, [(arch, dict(provenance, effective_architecture=arch, packages=by_arch[arch]))
+                      for arch in sorted(by_arch)]
+
+
+# Who and when: the only BOM fields a reused BOM may differ in.
+_BOM_RUN_FIELDS = ("published_by", "published_at")
+
+
+def _published_bom(writers, build_id, published, manifest_doc, architecture):
+    """The BOMs this CI pipeline already published for this build, as
+    ``[(arch, bom_dict)]``, or None to publish afresh.
+
+    The publish job's BOM step and `bits certify` in the same job publish the
+    same manifest; the second finds the first's BOMs through the pipeline's build
+    index (BUILDS/by-pipeline/<pipeline>/<build_id>.json) instead of checking every
+    package and uploading the BOMs again. Only the store's sha256 of each tarball
+    is taken from them: the documents are made again from the local manifest
+    exactly as a publish makes them, and must equal the stored ones but for who
+    published them and when. Anything else in the bucket is never certified.
+    """
+    import json as _json
+    pid = os.environ.get("CI_PIPELINE_ID", "").strip()
+    w = next(iter(writers.values()), None)
+    if not (pid and build_id and w is not None and getattr(w, "s3", None)
+            and getattr(w, "writeStore", None)):
+        return None
+
+    def _get(key):
+        return _json.loads(w.s3.get_object(Bucket=w.writeStore, Key=key)["Body"].read())
+    try:
+        index = _get("BUILDS/by-pipeline/%s/%s.json" % (pid, build_id))
+        keys = index.get("keys") or []
+        if index.get("build_id") != build_id or not keys:
+            return None
+        stored = []
+        for key in keys:
+            if not str(key).startswith("MANIFESTS/%s/" % build_id):
+                return None
+            stored.append(_get(key))
+        sha = {}
+        for doc in stored:
+            for p in doc.get("packages") or []:
+                if not (isinstance(p, dict) and p.get("hash") and p.get("tarball_sha256")):
+                    return None
+                sha.setdefault(p["hash"], p["tarball_sha256"])
+        if set(sha) != {e.get("hash") for e, _tar in published}:
+            raise ValueError("other packages")
+        _pkgs, mine = _bom_documents([(dict(e, tarball_sha256=sha[e["hash"]]), tar)
+                                      for e, tar in published],
+                                     manifest_doc, architecture, build_id)
+
+        def _same(a, b):
+            return ({k: v for k, v in a.items() if k not in _BOM_RUN_FIELDS}
+                    == {k: v for k, v in b.items() if k not in _BOM_RUN_FIELDS})
+        if len(stored) != len(mine) or not all(
+                isinstance(d, dict) and _same(d, m) for d, (_a, m) in zip(stored, mine)):
+            raise ValueError("not this publish's")
+    except Exception as exc:  # pylint: disable=broad-except
+        debug("pipeline %s: no BOM to reuse for %s (%s); publishing afresh", pid, build_id, exc)
+        return None
+    return [(a, d) for (a, _m), d in zip(mine, stored)]
+
+
+def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=None, dry_run=False,
+                           reuse_pipeline_bom=False, gauges=True):
     """Bulk-upload every built package in a manifest to the S3 store.
 
     *manifest* is a manifest file path, or 'latest'/None to use the newest under
     WORKDIR/MANIFESTS. With *dry_run*, list what would be uploaded and touch no
-    network (no credentials needed).
+    network (no credentials needed). With *reuse_pipeline_bom* (`bits certify`),
+    the BOMs this CI pipeline's publish step already wrote for the same packages
+    are returned instead of publishing again.
     """
     import json as _json
     from bits_helpers.sync import remote_from_url
@@ -219,6 +364,9 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
         entries = manifest_doc.get("packages", [])
     except Exception as exc:
         parser.error("could not read manifest %s: %s" % (man, exc))
+    # The build's own architecture, not the publishing host's: it is what the
+    # BOMs record and the fallback for entries without an effective one.
+    architecture = manifest_doc.get("architecture") or architecture
     if not entries:
         parser.error("no packages listed in manifest %s" % man)
     write_store = _normalize_s3_store(store_url)
@@ -275,6 +423,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
     writers = {}
     done = set()
     published = []      # (entry, store-tarball-path) actually/would-be uploaded
+    jobs = []           # (n, entry, arch, tarball, spec) to check/upload
     n = ok = 0
     for e in entries:
         h = e.get("hash")
@@ -310,25 +459,63 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             ok += 1
             published.append((e, tar))
             continue
-        writer = writers.get(arch) or writers.setdefault(
-            arch, remote_from_url(write_store, write_store, arch, work_dir))
-        spec = {"package": pkg, "version": e.get("version"),
-                "revision": e.get("revision"), "hash": h}
+        if arch not in writers:
+            writers[arch] = remote_from_url(write_store, write_store, arch, work_dir)
+        jobs.append((n, e, arch, tar, {"package": pkg, "version": e.get("version"),
+                                       "revision": e.get("revision"), "hash": h}))
+
+    if jobs and reuse_pipeline_bom:
+        from bits_helpers.provenance import build_id_from_manifest
+        _bid = build_id_from_manifest(manifest_doc)
+        _reused = _published_bom(writers, _bid, [(j[1], j[3]) for j in jobs],
+                                 manifest_doc, architecture)
+        if _reused is not None:
+            banner("Using the BOM this pipeline already published for %s (%d package(s))",
+                   _bid, len(jobs))
+            return _bid, _reused, _system_from_manifest(manifest_doc)
+
+    def _upload(job):
+        _n, _e, _arch, _tar, _spec = job
+        writers[_arch].upload_symlinks_and_tarball(_spec)
+
+    # Independent per-package store checks/uploads, a few at a time; the BOM is
+    # still assembled in manifest order, so it does not depend on which finished
+    # first.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    done_ok = {}
+    if jobs:
+        pool = ThreadPoolExecutor(max_workers=min(_publish_jobs(), len(jobs)))
+        futures = {}
         try:
-            writer.upload_symlinks_and_tarball(spec)
-            # The upload path records the sha256 of the object actually in the
-            # store (kept-as-found or freshly uploaded). It overrides whatever
-            # the build manifest recorded: the store object is authoritative,
-            # and the build's locally-packed bytes may legitimately differ
-            # (.tar.gz is not byte-reproducible). The BOM below must describe
-            # the stored bytes or `bits sign` will reject it.
-            if spec.get("store_tarball_sha256"):
-                e = dict(e, tarball_sha256=spec["store_tarball_sha256"])
-            ok += 1
-            published.append((e, tar))
-            info("  [%d] %s %s", n, pkg, h[:12])
-        except Exception as exc:
-            error("  FAILED %s (%s): %s", pkg, h[:12], exc)
+            futures.update({pool.submit(_upload, j): j for j in jobs})
+            for fut in as_completed(futures):
+                _n, _e, _arch, _tar, _spec = futures[fut]
+                try:
+                    fut.result()
+                except Exception as exc:  # pylint: disable=broad-except
+                    error("  FAILED %s (%s): %s", _spec["package"], _spec["hash"][:12], exc)
+                    continue
+                # The upload path records the sha256 of the object actually in
+                # the store (kept-as-found or freshly uploaded). It overrides
+                # whatever the build manifest recorded: the store object is
+                # authoritative, and the build's locally-packed bytes may
+                # legitimately differ (.tar.gz is not byte-reproducible). The BOM
+                # below must describe the stored bytes or `bits sign` rejects it.
+                if _spec.get("store_tarball_sha256"):
+                    _e = dict(_e, tarball_sha256=_spec["store_tarball_sha256"])
+                done_ok[_n] = (_e, _tar)
+                info("  [%d/%d] %s %s", len(done_ok), len(jobs), _spec["package"],
+                     _spec["hash"][:12])
+        except BaseException:
+            # Ctrl-C, or a writer giving up (SystemExit): stop at once, not after
+            # the rest of the queue.
+            for f in futures:
+                f.cancel()                    # (cancel_futures needs Python 3.9)
+            pool.shutdown(wait=False)
+            raise
+        pool.shutdown(wait=True)
+    ok += len(done_ok)
+    published.extend(done_ok[k] for k in sorted(done_ok))
 
     # Upload a MINIMAL BOM manifest under MANIFESTS/ (trust-relevant fields only;
     # drop variables/patches/source_checksums, which bloat it and can leak config)
@@ -343,65 +530,15 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
     if not dry_run and ok == n:
         w = next(iter(writers.values()), None)
         if w is not None and hasattr(w, "s3") and getattr(w, "writeStore", None):
-            # completed_at is kept per package so every hash carries "when built".
-            # license/redistributable are the compliance metadata: the BOM (and
-            # the signed manifest merged from it) must know what may be laid
-            # into a public CVMFS tree and what attribution a NOTICE file needs.
-            # view/requires: what a release made later from this BOM alone (bits
-            # cvmfs release) needs: the view rules and the dependency order.
-            _keep = ("package", "version", "revision", "effective_architecture",
-                     "hash", "commit_hash", "pkg_family", "built_by", "completed_at",
-                     "license", "redistributable", "view", "requires")
-            packages = []
-            for e, tar in published:
-                m = {k: e[k] for k in _keep if k in e}
-                m["tarball"] = e.get("tarball") or basename(tar)
-                m["tarball_sha256"] = e.get("tarball_sha256") or checksum_file(tar)
-                packages.append(m)
-            import tempfile as _tf, getpass, socket, datetime
             from bits_helpers.provenance import build_id_from_manifest
+            import tempfile as _tf
             # Canonical, deterministic build_id (same id the build itself used):
             # <label>-<digest> over the full package set. Two hosts building the
             # same release agree on it, so it names the release in the bucket.
             build_id = build_id_from_manifest(manifest_doc) or "unknown"
             leaf = _run_leaf()
-            try:
-                _user = getpass.getuser()
-            except Exception:
-                _user = "unknown"
-            # A BOM is per-platform: partition the entries by their effective
-            # architecture ("shared" — noarch — is just another platform) and
-            # emit one BOM per architecture, with the architecture in the file
-            # name. This is the invariant that lets certification be scoped per
-            # platform (a BOM pairs with exactly one common-manifest-<arch>) —
-            # bits_helpers.certify.bom_architecture() refuses mixed BOMs.
-            by_arch = {}
-            for m in packages:
-                by_arch.setdefault(
-                    m.get("effective_architecture") or "shared", []).append(m)
-            _provenance = {
-                "build_id": build_id,
-                "published_by": "%s@%s" % (_user, socket.gethostname().split(".")[0]),
-                "published_at": datetime.datetime.now(datetime.timezone.utc)
-                                    .strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "architecture": architecture,
-            }
-            # The CI pipeline that produced this build — the id the console's passkey
-            # pre-approval is keyed on. The certify job reads it from this BOM to
-            # consume that pre-approval when it signs. Absent for a local publish.
-            # FUTURE(build_id-unification 2026-09-20): source_pipeline_id is CI-only
-            # (empty off-CI), so CLI/external BOMs are not pre-approvable by it. Unify
-            # the pre-approval anchor on the deterministic manifest build_id. KEEP this
-            # until that lands. Doc: signing-authz-unified-model-2026-09-20.
+            packages, docs = _bom_documents(published, manifest_doc, architecture, build_id)
             _pipeline_id = os.environ.get("CI_PIPELINE_ID", "").strip()
-            if _pipeline_id:
-                _provenance["source_pipeline_id"] = _pipeline_id
-            # The build's CVMFS layout (release name, package paths) and what it
-            # was asked to build: a release is made from these later, from the
-            # BOM alone, without the build's work directory.
-            for _fld in ("cvmfs_templates", "requested_packages"):
-                if manifest_doc.get(_fld):
-                    _provenance[_fld] = manifest_doc[_fld]
             bom = []                    # [(effective_arch, bom_dict), ...]
             _stem = leaf[:-len(".json")]
             # One temp dir for ALL per-arch BOMs, removed when done (the
@@ -412,10 +549,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             _bomdir = _tf.mkdtemp(prefix="bits-bom-")
             _bom_failed = None
             try:
-                for _arch in sorted(by_arch):
-                    doc = dict(_provenance,
-                               effective_architecture=_arch,
-                               packages=by_arch[_arch])
+                for _arch, doc in docs:
                     arch_leaf = "%s.%s.json" % (_stem, _arch)
                     tmp = os.path.join(_bomdir, arch_leaf)
                     with open(tmp, "w") as fh:
@@ -426,7 +560,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                     try:
                         w.s3.upload_file(tmp, w.writeStore, key)
                         info("Manifest (minimal BOM, %d pkgs, %s, build_id=%s) -> %s/%s",
-                             len(by_arch[_arch]), _arch, build_id, w.writeStore, key)
+                             len(doc["packages"]), _arch, build_id, w.writeStore, key)
                         bom.append((_arch, doc))
                     except Exception as exc:
                         error("manifest upload failed for %s: %s", _arch, exc)
@@ -483,16 +617,16 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
     # re-publish, which never runs `bits build`) is a store mutation, and the
     # Monitoring dashboard's store bar reads these gauges via the snapshot —
     # without this push the bar goes stale/empty between builds.
-    if not dry_run and ok:
+    # (*gauges*: once per publish, for the first store: they carry no bucket label.)
+    if not dry_run and ok and gauges:
         _mon = (os.environ.get("METRICS_URL") or "").strip().rstrip("/")
         _w = next(iter(writers.values()), None)
         if _mon and _w is not None and getattr(_w, "s3", None) and getattr(_w, "writeStore", None):
             from bits_helpers import store_stats as _ss
-            _pub_ep = (os.environ.get("BITS_S3_ENDPOINT_URL") or os.environ.get("S3_ENDPOINT_URL")
-                       or os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL"))
+            from bits_helpers.sync import s3_settings
             _ss.push_store_gauges(_w.s3, _w.writeStore, _mon, work_dir=work_dir,
                                   store=getattr(_w, "remoteStore", "") or _w.writeStore,
-                                  endpoint=_pub_ep)
+                                  endpoint=s3_settings(_w.writeStore)["endpoint"])
     if dry_run or not bom:
         return None
     return build_id, bom, _system_from_manifest(manifest_doc)
@@ -521,23 +655,27 @@ def _system_from_manifest(manifest_doc):
         return {}
 
 
-def _preapprove_build(args, parser, build_id, bom, system):
-    """Passkey pre-approval of this build via bits-console, before the MR.
+def _preapprove_build(args, parser, build_id, bom, system, for_mr=True):
+    """Passkey pre-approval of this build via bits-console, before the MR (or,
+    without *for_mr*, as all that certifies it: see orchestrated.py).
     *bom* is the list of (arch, bom_dict) just published; the approval binds their
     packages. Exits (no MR) if it is refused or times out."""
-    from bits_helpers import forge
+    from bits_helpers import forge, orchestrated
     from bits_helpers.sign_console import preapprove_via_console
     # Check everything the MR needs first: don't ask a human to approve a build
     # whose MR then cannot be opened.
-    if not (args.certifyGroup and getattr(args, "manifestsRemote", None)
-            and forge.resolve_gitlab_token(getattr(args, "gitlabToken", None))):
+    if not args.certifyGroup:
+        parser.error("certify: needs a group (--group or `system: certify_group:`) before "
+                     "asking for an approval")
+    if for_mr and not (getattr(args, "manifestsRemote", None)
+                       and forge.resolve_gitlab_token(getattr(args, "gitlabToken", None))):
         parser.error("certify: needs a group (--group), the manifests repo (--manifests-remote) "
                      "and a GitLab token (~/.bits/gitlab-token) before asking for an approval")
-    console = (getattr(args, "console", None) or os.environ.get("BITS_CONSOLE_URL")
-               or (system or {}).get("console_url"))
+    console = orchestrated.console_url(getattr(args, "console", None), system)
     if not console:
         parser.error("certify: the passkey approval needs the bits-console URL — --console, "
-                     "$BITS_CONSOLE_URL or `system: console_url:` (or --approval none)")
+                     "$BITS_CONSOLE_URL, `system: console_url:` or a site configuration's "
+                     "console.backend_url (or --approval none)")
     preapprove_via_console(console, build_id, [args.certifyGroup], [d for _a, d in bom],
                            cafile=getattr(args, "consoleCafile", None),
                            insecure=getattr(args, "consoleInsecure", False))
@@ -607,30 +745,69 @@ def _submit_certification_mr(args, parser, build_id, bom):
 
 
 
+def _bom_shas(bom):
+    """{(arch, hash): tarball sha256} of a published build's BOMs."""
+    return {(arch, p.get("hash")): p.get("tarball_sha256")
+            for arch, doc in bom or () for p in doc.get("packages", ())}
+
+
+def _orchestrator_marker(store_url, work_dir, architecture):
+    """The store's orchestrator marker (see orchestrated.py), or None. A store that
+    cannot say is taken as unmarked: the MR is opened as before, and refused by the
+    manifests CI if the orchestrator does own the set."""
+    from bits_helpers import orchestrated
+    try:
+        return orchestrated.for_store(store_url, work_dir, architecture)
+    except orchestrated.Unknown as exc:
+        warning("certify: %s; certifying through a merge request", exc)
+        return None
+
+
 def doCertify(args, parser):
     """`bits certify`: make a build trusted — upload what is missing, get a passkey
     approval via bits-console (unless --approval none), open the certification MR.
-    The manifests-repo CI then signs it (`bits sign`)."""
-    from bits_helpers import forge
+    The manifests-repo CI then signs it (`bits sign`). In a store whose certified
+    set bits-orchestrator owns, the approval is the end: it certifies the build."""
+    from bits_helpers import forge, orchestrated
     from bits_helpers.args import DEFAULT_S3_STORE
     dry = getattr(args, "dryRun", False)
-    if getattr(args, "approval", "passkey") == "none" and not getattr(args, "certifier", None):
+    passkey = getattr(args, "approval", "passkey") == "passkey"
+    architecture = getattr(args, "architecture", None) or detectArch()
+    from bits_helpers.sync import store_urls
+    stores = store_urls(getattr(args, "publishStore", None) or DEFAULT_S3_STORE)
+    if not stores:
+        parser.error(_NO_STORE)
+    # Several stores: published to each, certified once, from the first (whose
+    # orchestrator marker decides how), as the build manifest records it.
+    marker = None if dry else _orchestrator_marker(stores[0], abspath(args.workDir), architecture)
+    if not passkey and not marker and not getattr(args, "certifier", None):
         # Without an approval the MR merges but can never be signed; that is only
         # right for a build approved elsewhere, whose MR a bot opens for a human.
         parser.error("certify: --approval none is for builds already approved elsewhere "
                      "(bits-console) and needs --certifier <user>")
     # Fail before uploading when no MR could be opened anyway.
-    if not dry and not forge.resolve_gitlab_token(getattr(args, "gitlabToken", None)):
+    if not dry and not marker and not forge.resolve_gitlab_token(getattr(args, "gitlabToken", None)):
         parser.error("certify: no GitLab token for the MR — ~/.bits/gitlab-token, "
                      "$BITS_CERTIFIER_TOKEN or --gitlab-token")
-    architecture = getattr(args, "architecture", None) or detectArch()
-    res = _publish_from_manifest(architecture, abspath(args.workDir),
-                                 getattr(args, "publishStore", None) or DEFAULT_S3_STORE, parser,
-                                 manifest=getattr(args, "fromManifest", None) or "latest",
-                                 dry_run=dry)
+    res, ref = None, None
+    for i, url in enumerate(stores):
+        got = _publish_from_manifest(architecture, abspath(args.workDir), url, parser,
+                                     manifest=getattr(args, "fromManifest", None) or "latest",
+                                     dry_run=dry, reuse_pipeline_bom=True, gauges=i == 0)
+        if res is None:
+            res, ref = got, url                # the first store with a BOM is certified
+        elif got:
+            first, other = _bom_shas(res[1]), _bom_shas(got[1])
+            differ = sorted("%s@%s" % (k[1], k[0]) for k in first
+                            if k in other and other[k] != first[k])
+            if differ:
+                warning("certify: %s holds other tarballs than %s for %s; only %s's are "
+                        "certified (signed reuse rejects the others)",
+                        url, ref, ", ".join(differ), ref)
     if dry:
-        info("[dry-run] would then %sopen the certification MR",
-             "ask bits-console for a passkey approval and " if getattr(args, "approval", "passkey") == "passkey" else "")
+        info("[dry-run] would then %sopen the certification MR (no MR when the store "
+             "says bits-orchestrator certifies)",
+             "ask bits-console for a passkey approval and " if passkey else "")
         return
     if not res:
         parser.error("certify: no build manifest (BOM) was published, so there is nothing to certify")
@@ -640,7 +817,16 @@ def doCertify(args, parser):
     args.certifyGroup = getattr(args, "certifyGroup", None) or system.get("certify_group")
     args.manifestsRemote = getattr(args, "manifestsRemote", None) or system.get("manifests_remote")
     args.certifyRef = getattr(args, "certifyRef", None) or system.get("certify_ref")
-    if getattr(args, "approval", "passkey") == "passkey":
+    if marker:
+        if passkey:
+            _preapprove_build(args, parser, build_id, bom, system, for_mr=False)
+            banner("Build %s is pre-approved: %s certifies it into %s (no merge request)",
+                   build_id, orchestrated.describe(marker), marker["manifests"])
+        else:
+            banner("Build %s is published: %s certifies it once it is pre-approved "
+                   "(no merge request)", build_id, orchestrated.describe(marker))
+        return
+    if passkey:
         _preapprove_build(args, parser, build_id, bom, system)
     _submit_certification_mr(args, parser, build_id, bom)
 
@@ -673,9 +859,14 @@ def doPublish(args, parser):
     if _fm is not None:
         architecture = getattr(args, "architecture", None) or detectArch()
         from bits_helpers.args import DEFAULT_S3_STORE
-        store_url = getattr(args, "publishStore", None) or DEFAULT_S3_STORE
-        _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
-                               manifest=_fm, dry_run=getattr(args, "dryRun", False))
+        from bits_helpers.sync import store_urls
+        stores = store_urls(getattr(args, "publishStore", None) or DEFAULT_S3_STORE)
+        if not stores:
+            parser.error(_NO_STORE)
+        for i, url in enumerate(stores):       # every write store gets the build
+            _publish_from_manifest(architecture, abspath(args.workDir), url, parser,
+                                   manifest=_fm, dry_run=getattr(args, "dryRun", False),
+                                   gauges=i == 0)
         return
 
     if not getattr(args, "package", None):

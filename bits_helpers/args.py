@@ -8,6 +8,7 @@ from bits_helpers.arch import (detectArch, arch_distro_token, arch_machine_token
                                normalise_arch_key, detectArchComponents,
                                apply_arch_template)
 from bits_helpers.workarea import cleanup_git_log
+from bits_helpers import site
 import multiprocessing
 
 import re
@@ -19,13 +20,9 @@ import subprocess as commands
 from os.path import abspath, dirname, basename
 import sys
 
-# Default workdir: fall back on "sw" if env is not set or empty
-DEFAULT_WORK_DIR = os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR") or "sw"
-# Default container registry for --docker image selection (the bits-containers
-# minimal-OS toolchain images). Overridable per invocation via BITS_DOCKER_REGISTRY
-# or per community via a `docker_registry:` field in defaults-release; bypassed
-# entirely by BITS_LEGACY_REGISTRY=1 (legacy alisw builders).
-DEFAULT_DOCKER_REGISTRY = "gitlab-registry.cern.ch/bits/containers"
+# Default workdir: the environment, else the site configuration (paths.work_dir).
+DEFAULT_WORK_DIR = (os.environ.get("BITS_WORK_DIR") or os.environ.get("ALICE_WORK_DIR")
+                    or site.get("paths.work_dir") or "sw")
 
 
 def _add_s3_connection_opts(group):
@@ -43,7 +40,7 @@ def _add_s3_connection_opts(group):
                      help=("S3 endpoint URL for b3:// stores (e.g. "
                            "https://s3.amazonaws.com or http://minio.local:9000). "
                            "Overrides $S3_ENDPOINT_URL / $AWS_ENDPOINT_URL_S3. "
-                           "Default: https://s3.cern.ch. Set this to use a non-CERN bucket."))
+                           "Default: the site configuration's store.s3_endpoint (CERN: https://s3.cern.ch)."))
   group.add_argument("--s3-access-key", dest="s3AccessKey", metavar="KEY", default=None,
                      help=("S3 access key id. Overrides $AWS_ACCESS_KEY_ID. Prefer the "
                            "env var (a CI/CD variable or gitlab-runner `environment` entry) "
@@ -156,10 +153,9 @@ def _docker_memory_args():
 # cd to this directory before start
 DEFAULT_CHDIR = os.environ.get("BITS_CHDIR") or "."
 
-# Default S3 content store for the store-operating actions (certify, compliance,
-# gc, store-stats, publish). Precedence: CLI --remote-store (or a .bitsuse-recorded
-# one) > $BITS_S3_STORE > this literal. Same env var the bitsStore launcher reads.
-DEFAULT_S3_STORE = os.environ.get("BITS_S3_STORE") or "https://s3.cern.ch/lcgapp-bits-testing"
+# Store of the store-operating actions (certify, compliance, gc, store-stats,
+# publish): --remote-store > $BITS_S3_STORE > the site's store.operations.
+DEFAULT_S3_STORE = os.environ.get("BITS_S3_STORE") or site.get("store.operations") or ""
 
 # Worker count assumed when --parallel/--builders is given with no number.
 BUILDERS_AUTO = 4
@@ -313,8 +309,8 @@ def add_architecture_arguments(subparsers, ctx):
 
 def add_version_arguments(subparsers, ctx):
   """`bits version` — display the version and architecture (no options)."""
-  return subparsers.add_parser("version", help="display %(prog)s version",
-                               description="Display the %(prog)s version (tag, commit and "
+  return subparsers.add_parser("version", help="display the bits version",
+                               description="Display the bits version (tag, commit and "
                                            "date) and the architecture. Same as --version.")
 
 
@@ -517,9 +513,10 @@ def add_doctor_arguments(subparsers, ctx):
   be rebuilt from scratch. rsync://, https://, b3:// and s3:// remote stores
   are recognised. Some of these require credentials: s3:// remotes require an
   ~/.s3cfg; b3:// remotes require AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-  environment variables. A useful remote store is
-  'https://s3.cern.ch/swift/v1/alibuild-repo'. It requires no credentials and
-  provides tarballs for the most common supported architectures.
+  environment variables. Without --remote-store, the site configuration's
+  store.read_by_arch / store.read (at CERN: ALICE's public alibuild-repo for its
+  architectures, else lcgapp-bits-testing) or the community's system: remote_store
+  is used.
   """)
   doctor_remote.add_argument("--no-remote-store", action="store_true",
                             help="Disable the use of the remote store, even if it is enabled by default.")
@@ -681,8 +678,8 @@ def add_init_arguments(subparsers, ctx):
       description="With no PACKAGE, 'bits init' records the supplied options as a "
                   "'bits use' profile (./.bitsuse or a ~/.bits/use record) so you do not "
                   "repeat them on every build, then exits. --architecture goes to [common], "
-                  "the rest to [build]. community/providers have no build flag — set "
-                  "$BITS_COMMUNITY / $BITS_PROVIDERS for those.")
+                  "the rest to [build]. community/providers are not saved — set "
+                  "$BITS_COMMUNITY (or 'bits --community') / $BITS_PROVIDERS for those.")
   init_cfg.add_argument("--providers", dest="providers", default=None, metavar="URL",
                         help="URL of the bits-providers repository. Has no build-time flag; "
                              "set the BITS_PROVIDERS environment variable instead.")
@@ -694,9 +691,10 @@ def add_init_arguments(subparsers, ctx):
                              "'--write-store' in the [build] profile).")
   init_cfg.add_argument("--community", "--organisation", dest="organisation", default=None,
                         metavar="NAME",
-                        help="Community selecting the registry/provider 'home' repo. Has no "
-                             "build-time flag; set the BITS_COMMUNITY environment variable "
-                             "instead (the aliBuild wrapper sets it).")
+                        help="Community selecting the registry/provider 'home' repo. Not "
+                             "saved; set the BITS_COMMUNITY environment variable or give "
+                             "'bits --community NAME' before the sub-command (the aliBuild "
+                             "wrapper sets it).")
 
   # version takes no options; the architecture is auto-detected for display.
   return init_parser
@@ -714,6 +712,7 @@ def add_status_arguments(subparsers, ctx):
           "from_store (local tarball), from_remote_store (remote tarball, requires "
           "--check-store), local_checkout (development package, will rebuild), "
           "local_checkout_unchanged (development package, nothing changed), "
+          "symlink_from_deployment (matching deployed package), "
           "build_from_source (will compile), or hash_unknown (git refs not cached; "
           "e.g. with --no-fetch-repos)."
       ),
@@ -742,6 +741,11 @@ def add_status_arguments(subparsers, ctx):
       help=("Directory where reference git repos are cached. "
             "'%%(workDir)s' will be substituted. Default '%(default)s'."),
   )
+  status_parser.add_argument(
+      "--flavour", "--flavor", "--set", dest="flavours", action="append",
+      default=[], metavar="NAME[=VALUE]",
+      help="Same as `bits build --set`; pass the build's values (e.g. "
+           "release=LCG_110) for the same package hashes.")
   status_parser.add_argument(
       "--no-local", dest="noDevel", metavar="PACKAGE", default=[],
       action="append",
@@ -793,9 +797,32 @@ def add_status_arguments(subparsers, ctx):
             "locally. Implies a network round-trip per package."),
   )
   status_parser.add_argument(
+      "--symlink-packages-from", dest="symlinkPackagesFrom", metavar="DEPLOYMENT-ROOT",
+      help="Report packages that bits build would link from this deployment.",
+  )
+  status_parser.add_argument(
+      "--symlink-policy", dest="symlinkPolicy", choices=["strict", "relaxed"],
+      default="strict", help="Match deployed packages by hash (strict) or path (relaxed).",
+  )
+  status_parser.add_argument(
+      "--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",
+      help="Exclude these packages from deployment symlink selection.",
+  )
+  status_parser.add_argument(
       "--json", dest="json_output", action="store_true", default=False,
       help="Emit a machine-readable JSON report instead of the human-readable table.",
   )
+  status_docker = status_parser.add_argument_group(
+      title="Use a Docker container",
+      description="As bits build --docker: the system packages and the container "
+                  "fingerprint (in the toolchain's hash) come from the container.")
+  status_docker.add_argument("--docker", dest="docker", action="store_true",
+                             help="Check for system packages inside a Docker container.")
+  status_docker.add_argument("--docker-image", dest="dockerImage", metavar="IMAGE", default=None,
+                             help=("The Docker image to use, as for the build. Implies --docker. "
+                                   "By default, an image is chosen from the architecture."))
+  status_docker.add_argument("--docker-extra-args", metavar="ARGLIST", default="",
+                             help="Command-line arguments to pass to 'docker run'. Implies --docker.")
   return status_parser
 
 
@@ -1040,8 +1067,8 @@ def add_publish_arguments(subparsers, ctx):
                                     "WORKDIR/MANIFESTS. Use --store to pick the target."))
   ctx.remote_store(publish_parser, dest="publishStore",
                    help=("S3 store URL/bucket for --from-manifest. Accepts an https URL "
-                         "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>. "
-                         "Default: %(default)s"))
+                         "(https://<host>/<bucket>), b3://<bucket>, or s3://<bucket>; "
+                         "several, comma-separated, each get the build. Default: %(default)s"))
 
   # cvmfs-prepub direct-upload path (replaces the spool + bits-ingest + bits-publisher flow).
   _prepub = publish_parser.add_argument_group(
@@ -1114,7 +1141,8 @@ def add_certify_arguments(subparsers, ctx):
                  help=("passkey (default): wait for a passkey approval via bits-console before the MR. "
                        "none: open the MR only — for builds approved elsewhere (a console build; needs --certifier)."))
   p.add_argument("--console", dest="console", metavar="URL", default=None,
-                 help="bits-console URL for the approval (default: $BITS_CONSOLE_URL, then `system: console_url:`).")
+                 help=("bits-console URL for the approval (default: $BITS_CONSOLE_URL, `system: console_url:`, "
+                       "then the site's console.backend_url)."))
   p.add_argument("--console-cafile", dest="consoleCafile", metavar="PEM", default=None,
                  help="CA bundle for the console when it is not in this host's trust store (e.g. the CERN CA).")
   p.add_argument("--console-insecure", dest="consoleInsecure", action="store_true", default=False,
@@ -1123,7 +1151,8 @@ def add_certify_arguments(subparsers, ctx):
                  help=("Record USER as certified_by (when a bot opens the MR for a human already "
                        "verified upstream, e.g. bits-console). Default: $GITLAB_USER_LOGIN."))
   ctx.remote_store(p, dest="publishStore",
-                   help="S3 store the build is uploaded to / checked in. Default: %(default)s")
+                   help="S3 store the build is uploaded to / checked in; several, comma-"
+                        "separated, each get it, the first is certified. Default: %(default)s")
   ctx.work_dir(p, help="Work directory holding MANIFESTS/ and the build. Default: %(default)s")
   ctx.architecture(p, help="Architecture of the build. Default: detected")
   return p
@@ -1276,14 +1305,29 @@ def add_compliance_arguments(subparsers, ctx):
                                  help=("ADMIN: remove non-compliant packages from the store — delete their "
                                        "TARS objects, rev-index markers and SOURCES archives, rewrite the "
                                        "per-build BOMs without them, and (with --key) re-certify the affected "
-                                       "architectures. Requires S3 write credentials. Combine with --dry-run "
+                                       "architectures; in a store whose certified set bits-orchestrator owns, "
+                                       "ask it to take the packages out of the set's BOMs instead (--console, "
+                                       "a GitLab token). Requires S3 write credentials. Combine with --dry-run "
                                        "to preview every action first."))
   compliance_parser.add_argument("--dry-run", dest="dryRun", action="store_true", default=False,
                                  help="With --enforce: print every deletion/rewrite without touching anything.")
   compliance_parser.add_argument("--key", dest="enforceKey", metavar="PEM", default=None,
                                  help=("With --enforce: Ed25519 release key to re-sign the affected "
                                        "architectures' common manifests after the purge. Without it the next "
-                                       "CI certification heals them (removed objects are dropped as missing)."))
+                                       "CI certification heals them (removed objects are dropped as missing). "
+                                       "Refused for a store whose manifests bits-orchestrator signs."))
+  compliance_parser.add_argument("--console", dest="console", metavar="URL", default=None,
+                                 help=("With --enforce, in a store bits-orchestrator certifies: the bits-console "
+                                       "to request the decertify actions from (default: $BITS_CONSOLE_URL, then the "
+                                       "site's console.backend_url)."))
+  compliance_parser.add_argument("--console-cafile", dest="consoleCafile", metavar="PEM", default=None,
+                                 help="CA bundle for the console when it is not in this host's trust store.")
+  compliance_parser.add_argument("--console-insecure", dest="consoleInsecure", action="store_true",
+                                 default=False,
+                                 help="Allow http:// / skip TLS verification to the console (trusted testbed only).")
+  compliance_parser.add_argument("--gitlab-token", dest="gitlabToken", metavar="PAT", default=None,
+                                 help=("GitLab token the decertify requests are made with (default: "
+                                       "$BITS_CERTIFIER_TOKEN / $GITLAB_TOKEN / ~/.bits/gitlab-token)."))
   return compliance_parser
 
 
@@ -1351,6 +1395,45 @@ def add_checksums_arguments(subparsers, ctx):
   cp.add_argument("-j", "--jobs", dest="jobs", type=int, default=8, metavar="N",
                   help="Parallel downloads / git queries. Default: %(default)s.")
   return cp
+
+
+def add_upgrade_arguments(subparsers, ctx):
+  """`bits upgrade` — set new package versions in the recipes, in place."""
+  up = subparsers.add_parser(
+      "upgrade",
+      help="set new versions of packages in the recipes, in place",
+      description=(
+          "Resolve PACKAGE as bits build would, find the file that sets each chosen "
+          "package's version (its recipe, the defaults profile whose overrides pin it, "
+          "or the recipe whose requires pin it) and set the new version, and a tag "
+          "that spells it. A file of a repository provider's cached checkout is first "
+          "copied, with its patches, into CONFIGDIR. The versions come from a plan exported "
+          "as CSV from bits-console (by default the newest upgrade-plan-*.csv in the current "
+          "directory) and --to. New tarball URLs, git tags and PyPI versions are checked; a "
+          "version with no tarball is built from a git tag instead when one is found. Exit "
+          "status 1 when a package is left for a hand edit or to check."),
+  )
+  up.add_argument("pkgname", nargs="+", metavar="PACKAGE",
+                  help="The package(s) the build builds; a .csv file among them is the plan (as --plan).")
+  up.add_argument("--to", dest="to", action="append", default=[], metavar="PACKAGE=VERSION",
+                  help="A package and its new version (repeatable).")
+  up.add_argument("--plan", metavar="FILE", default=None,
+                  help=("An upgrade plan exported as CSV from the console's Plan view (default: the "
+                        "newest upgrade-plan-*.csv in the current directory, unless only --to is given)."))
+  up.add_argument("--wave", dest="waves", type=int, action="append", default=[], metavar="N",
+                  help="A wave of a release line's plan to take (repeatable; default: every wave).")
+  up.add_argument("--line", metavar="LINE", default=None,
+                  help="The release line to take from a converged plan.")
+  ctx.defaults(up, help="Defaults profile(s), as for the build; use :: to combine. Default: %(default)s.")
+  ctx.architecture(up, help="Architecture, as for the build. Default: %(default)s.")
+  ctx.config_dir(up, help="The recipe directory, as for the build; copies go there. Default: %(default)s.")
+  ctx.work_dir(up, help="Work directory, as for the build. Default: %(default)s.")
+  up.add_argument("--set", dest="variables", action="append", default=[], metavar="NAME=VALUE",
+                  help="As for the build (e.g. release=LCG_110) (repeatable).")
+  ctx.search_path(up)
+  up.add_argument("--no-check", dest="no_check", action="store_true", default=False,
+                  help="Do not check the new sources (URLs, git tags, PyPI).")
+  return up
 
 
 def add_build_arguments(subparsers, ctx):
@@ -1519,11 +1602,11 @@ def add_build_arguments(subparsers, ctx):
   Builds can be done inside a Docker container, to make it easier to get a
   common, usable environment. The Docker daemon must be installed and running
   on your system. With --docker and no --docker-image, the image is derived from
-  the architecture as <registry>/<machine>-<distro>[-cuda]:latest, where the
-  registry is BITS_DOCKER_REGISTRY, else a `docker_registry:` field in
-  defaults-release, else the built-in default (BITS_DOCKER_TAG overrides the
-  tag). Set BITS_LEGACY_REGISTRY=1 for the legacy alisw/<distro>-builder images
-  (the aliBuild wrapper sets this). Images are fetched if unavailable.
+  the architecture as <registry>/<machine>-<distro>[-cuda]:<tag>. The registry is
+  BITS_DOCKER_REGISTRY, else system: docker_registry in defaults-release, else
+  the site configuration's containers.registry; the tag likewise BITS_DOCKER_TAG,
+  system: docker_tag, containers.tag. BITS_LEGACY_REGISTRY=1 (set by the aliBuild
+  wrapper) uses containers.legacy_image. Images are fetched if unavailable.
   """)
   build_docker.add_argument("--docker", dest="docker", action="store_true",
                             help="Build inside a Docker container.")
@@ -1573,14 +1656,17 @@ def add_build_arguments(subparsers, ctx):
   (no VM, no overhead).  On Linux, podman (rootless) is used only when --docker
   is active (a nested podman container inside the builder image) or when
   requested explicitly with --sandbox=podman; a plain local Linux build is not
-  sandboxed and never invokes podman.
+  sandboxed and never invokes podman. In the macOS sandbox a build may write
+  only its own files in the work dir, the temp dirs and a few caches.
   """)
   build_sandbox.add_argument(
-      "--sandbox", dest="sandbox", metavar="MODE", default="off",
+      "--sandbox", dest="sandbox", metavar="MODE", default=None,
       choices=["off", "auto", "podman", "sandbox-exec"],
       help=(
           "Recipe sandbox mode. "
-          "'off' (default): no sandboxing. "
+          "'off' (default): no sandboxing, unless $BITS_SANDBOX=1 or `sandbox: on` "
+          "in the active defaults asks for sandbox-exec on a macOS build without "
+          "--docker ($BITS_SANDBOX=0 overrides the defaults). "
           "'auto': sandbox-exec on macOS, nested podman when --docker is active "
           "and podman is present in the builder image (else off), and off on a "
           "local Linux build. "
@@ -1588,6 +1674,10 @@ def add_build_arguments(subparsers, ctx):
           "'sandbox-exec': macOS only."
       ),
   )
+  build_sandbox.add_argument(
+      "--sandbox-allow-write", dest="sandboxAllowWrite", metavar="PATH", default=[],
+      action="append",
+      help="With sandbox-exec, also let builds write under PATH (repeatable).")
   build_sandbox.add_argument(
       "--sandbox-image", dest="sandboxImage", metavar="IMAGE", default=None,
       help=(
@@ -1616,9 +1706,10 @@ def add_build_arguments(subparsers, ctx):
   be rebuilt from scratch. rsync://, https://, b3:// and s3:// remote stores
   are recognised. Some of these require credentials: s3:// remotes require an
   ~/.s3cfg; b3:// remotes require AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-  environment variables. A useful remote store is
-  'https://s3.cern.ch/swift/v1/alibuild-repo'. It requires no credentials and
-  provides tarballs for the most common supported architectures. To archive to
+  environment variables. Without --remote-store, the site configuration's
+  store.read_by_arch / store.read (at CERN: ALICE's public alibuild-repo for its
+  architectures, else lcgapp-bits-testing; store.read not with --write-store
+  alone) or the community's system: remote_store is used. To archive to
   and reuse from your own bucket, use a b3://<bucket> store (append ::rw to
   --remote-store, or add --write-store) and set the connection via the --s3-*
   options / env vars below; a non-CERN endpoint (AWS, MinIO, Ceph) is supported
@@ -1692,6 +1783,19 @@ def add_build_arguments(subparsers, ctx):
                                   "not configured. A trailing '::relaxed' or '::strict' also sets the reuse "
                                   "policy (e.g. 'cvmfs::relaxed'); it must agree with --reuse-policy if both "
                                   "are given. Defaults to $BITS_REUSE_FROM; an empty value turns reuse off."))
+  build_remote.add_argument("--symlink-packages-from", dest="symlinkPackagesFrom",
+                            metavar="DEPLOYMENT-ROOT", default=None,
+                            help=("Find installed packages under ROOT/<architecture>/[family/]<package>/"
+                                  "<version[-revision]>, or ROOT/share for shared packages. "
+                                  "Link matches into the work directory with private relocated "
+                                  "initialization files. No modulefiles or --reuse-from are needed."))
+  build_remote.add_argument("--symlink-policy", dest="symlinkPolicy",
+                            choices=["strict", "relaxed"], default="strict",
+                            help=("Package symlink selection: strict (default) requires .build-hash "
+                                  "to match a computed package hash (with signed reuse, a certified one); "
+                                  "relaxed matches the architecture, "
+                                  "family and version path without checking the hash. "
+                                  "Independent of --reuse-policy."))
   build_remote.add_argument("--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",
                             help=("Comma-separated packages to always build locally even under "
                                   "--reuse-policy relaxed (e.g. a package you need patched), rather than "
@@ -1720,12 +1824,15 @@ def add_build_arguments(subparsers, ctx):
                             metavar="N",
                             help="""\
                             Start N background threads that pre-download pre-built tarballs and source
-                            archives for all packages in the build graph before they are needed, so that
+                            archives for the packages the build needs before it needs them, so that
                             downloads overlap the (serial) preparation loop instead of blocking it. A
                             .downloading sentinel file coordinates with the build loop so no file is
                             fetched twice. Default: -1 (auto = min(builders, 4)); 0 disables prefetch.
                             Works in all build modes.
                             """)
+  build_remote.add_argument("--fetch-build-requires", dest="fetchBuildRequires", action="store_true",
+                            help=("Fetch or build the build-only dependencies of packages that are "
+                                  "reused from a store too (by default they are skipped: nothing needs them)."))
   build_remote.add_argument("--parallel-downloads", dest="parallelDownloads", type=int, default=2,
                             metavar="N",
                             help="""\
@@ -1861,9 +1968,11 @@ def doParseArgs():
   # `ctx` carries the shared cross-cutting adders (architecture, work_dir, …).
   ctx = _ArgCtx(detectedArch)
 
-  parser = argparse.ArgumentParser(epilog="""\
-  For help about each option, specify --help after the option itself. For
-  complete documentation please refer to https://alisw.github.io/alibuild.
+  # The command people type (bitsBuild is run through it).
+  _prog = "aliBuild" if os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild" else "bits"
+  parser = argparse.ArgumentParser(prog=_prog, epilog="""\
+  Each command lists its options with --help. Documentation:
+  https://github.com/bitsorg/bits/tree/main/docs
   """)
 
   from bits_helpers import _VERSION_INFO
@@ -1899,6 +2008,7 @@ def doParseArgs():
   verify_parser = add_verify_arguments(subparsers, ctx)
   add_sbom_arguments(subparsers, ctx)
   add_checksums_arguments(subparsers, ctx)
+  add_upgrade_arguments(subparsers, ctx)
   stats_parser = add_stats_arguments(subparsers, ctx)
 
   import_parser = add_import_arguments(subparsers, ctx)
@@ -1955,14 +2065,20 @@ def doParseArgs():
     # have their own (see _own_dry_run above).
     if x in ["--debug", "-d"]:
       return 0
-    if x in ["-n", "--dry-run"] and not _own_dry_run:
-      return 0
+    if x in ["-n", "--dry-run"]:
+      return 3 if _own_dry_run else 0   # their own -n goes after them
 #   if x in ["build", "init", "clean", "analytics", "doctor", "deps"]:
     if x in ["build", "init", "clean", "doctor", "deps"]:
       return 1
     return 2
   rest.sort(key=optionOrder)
   sys.argv = [prog] + rest
+  if "upgrade" in sys.argv[1:4]:        # its plan.csv may follow the options: put it first
+    k = sys.argv.index("upgrade") + 1
+    tail = sys.argv[k:]
+    first = [i for i, t in enumerate(tail)
+             if t.lower().endswith(".csv") and (i == 0 or tail[i - 1] != "--plan")]
+    sys.argv[k:] = [tail[i] for i in first] + [t for i, t in enumerate(tail) if i not in first]
 
   # For "bits init" config mode: record which flags were explicit on the CLI so
   # that doInitConfig() can write only the settings the user actually specified.
@@ -2066,24 +2182,17 @@ On Mac, 1-2 latest supported OSX versions:
    Apple Silicon: osx_arm64
 """
 
-# When updating this variable, also update docs/docs/user.md!
-S3_SUPPORTED_ARCHS = "slc7_x86-64", "slc8_x86-64", "ubuntu2004_x86-64", "ubuntu2204_x86-64", "ubuntu2404_x86-64", "slc9_x86-64", "slc9_aarch64"
-# Match S3 support by (distro, machine) rather than exact string, so an
-# equivalent layout (e.g. ubuntu2404_x86_64) still resolves to the same entry.
-_S3_SUPPORTED_ARCH_KEYS = {normalise_arch_key(a) for a in S3_SUPPORTED_ARCHS}
+def _defaults_docker(args, key):
+  """A container setting (docker_registry, docker_tag) of the merged defaults
+  chain, under system: or, the old spelling, top-level; else None.
 
-def _defaults_docker_registry(args):
-  """Return the `docker_registry:` value from the merged defaults chain, or None.
-
-  A community pins its container registry in defaults-release either as a bare
-  top-level `docker_registry:` or under `system: docker_registry:`. Read
-  defensively: a malformed/unreadable defaults set must not break arg parsing.
+  Read defensively: a malformed/unreadable defaults set must not break arg parsing.
   """
   try:
     meta, _ = readDefaults(args.configDir, args.defaults,
                            lambda *a, **k: None, args.architecture)
     sysd = meta.get("system", {}) or {}
-    val = sysd.get("docker_registry", meta.get("docker_registry"))
+    val = sysd.get(key, meta.get(key))
     return val.strip() if isinstance(val, str) and val.strip() else None
   except (Exception, SystemExit):
     # readDefaults calls sys.exit(1) on a malformed defaults file; don't let this
@@ -2135,11 +2244,127 @@ def _with_release_base(defaults):
   return defaults
 
 
+def _finalise_docker(args, parser):
+  """The container options of build, doctor, deps and status: --docker implied by
+  an image or extra args, the docker run arguments, the image and the platform."""
+  if args.dockerImage or args.docker_extra_args:
+    args.docker = True
+
+  args.docker_extra_args = shlex.split(args.docker_extra_args)
+  args.docker_extra_args.append("--network=host")
+  # Pin the build container to the full set of online host CPUs so that
+  # make -j sees the real core count rather than the cgroup
+  # quota inherited from the GitLab runner process.
+  # /sys/devices/system/cpu/online gives the kernel-reported online CPU
+  # list (e.g. "0-7") which reflects actual hardware, not the caller's
+  # cgroup CPU quota.  Only inject if the user hasn't already specified
+  # --cpuset-cpus in --docker-extra-args.
+  # Rootless podman can only apply limits whose cgroup controller is delegated
+  # to the user; skip the others rather than fail to start the container.
+  # (build.py also runs such containers with --userns=keep-id, not --user.)
+  args.rootless_podman = bool(args.docker) and _is_rootless_podman()
+  _ctrls = _rootless_podman_controllers() if args.rootless_podman else None
+  # Podman labels containers for SELinux (docker-ce does not), which blocks
+  # the bind-mounted home-dir workdir/configdir; :z relabelling is too slow on
+  # SOURCES and impossible on /cvmfs, so turn labelling off instead.
+  if args.rootless_podman and not any(a.startswith("--security-opt")
+                                      for a in args.docker_extra_args):
+    args.docker_extra_args.append("--security-opt=label=disable")
+  _skipped = []
+  if not any(a.startswith("--cpuset-cpus") for a in args.docker_extra_args):
+    if _ctrls is None or "cpuset" in _ctrls:
+      args.docker_extra_args.append("--cpuset-cpus=" + _host_online_cpus())
+    else:
+      _skipped.append("cpuset")
+
+  # Hard memory cap on the build container so that no single build can OOM
+  # the HOST (see _docker_memory_args). Skipped when the user passes any
+  # --memory* themselves.
+  if not any(a.startswith("--memory") for a in args.docker_extra_args):
+    if _ctrls is None or "memory" in _ctrls:
+      args.docker_extra_args.extend(_docker_memory_args())
+    else:
+      _skipped.append("memory")
+  if _skipped:
+    from bits_helpers.log import warning
+    warning("rootless podman: cgroup controller(s) %s not available to this user, "
+            "so the build container is not limited by them. To enable (root): put "
+            "'[Service]' and 'Delegate=cpu cpuset io memory pids' in "
+            "/etc/systemd/system/user@.service.d/delegate.conf, run "
+            "'systemctl daemon-reload', then log in again.",
+            ", ".join(_skipped))
+
+  if args.docker and args.architecture.startswith("osx"):
+    parser.error("cannot use `-a %s` and --docker" % args.architecture)
+
+  if args.docker and commands.getstatusoutput("which docker")[0]:
+    parser.error("cannot use --docker as docker executable is not found")
+
+  # If specified, used the docker image requested, otherwise, if running
+  # in docker the docker image is given by the first part of the
+  # architecture we want to build for.
+  if args.docker and not args.dockerImage:
+    # The image from the architecture: <registry>/<machine>-<distro>[-cuda]:<tag>,
+    # each from the environment, the defaults' system: or the site configuration;
+    # BITS_LEGACY_REGISTRY (the aliBuild wrapper) or no registry: legacy_image.
+    # Only the base OS and the -cuda axis pick the image; the compiler axes
+    # (-gccNN/-clang) and build type (-opt/-dbg) are resolved inside the
+    # container by the entrypoint shim, so they do not change it.
+    distro_token = arch_distro_token(args.architecture) or args.architecture.split("_")[0]
+    _legacy = os.environ.get("BITS_LEGACY_REGISTRY", "").strip().lower() in ("1", "true", "yes", "on")
+    _registry = None if _legacy else (
+      os.environ.get("BITS_DOCKER_REGISTRY", "").strip()
+      or _defaults_docker(args, "docker_registry")
+      or site.get("containers.registry"))
+    _machine = (arch_machine_token(args.architecture) or "").replace("-", "_")
+    if _registry and _machine and distro_token:
+      _name = "%s-%s" % (_machine, distro_token)
+      if re.search(r"(^|-)cuda(-|$)", args.architecture):
+        _name += "-cuda"
+      _tag = (os.environ.get("BITS_DOCKER_TAG", "").strip()
+              or _defaults_docker(args, "docker_tag") or site.get("containers.tag") or "latest")
+      args.dockerImage = "%s/%s:%s" % (str(_registry).rstrip("/"), _name, _tag)
+    elif site.get("containers.legacy_image"):
+      args.dockerImage = str(site.get("containers.legacy_image")).replace("{distro}", distro_token)
+    else:
+      parser.error("--docker: no image for %s; give --docker-image, or set containers.registry "
+                   "in a site configuration file" % args.architecture)
+
+  # ── --docker-platform / cross-compilation ─────────────────────────────────
+  # Derive the Docker --platform value from --architecture when the user has
+  # not set it explicitly.  If the target architecture matches the host we
+  # leave it as None (no --platform flag → daemon uses native image variant,
+  # zero overhead).  If they differ we inject the matching platform string so
+  # that Docker pulls the correct image variant and QEMU transparently
+  # emulates the target ISA inside the builder container.
+  #
+  # The special sentinel value "native" lets users opt out of automatic
+  # injection even when cross-compiling (useful on native ARM runners that
+  # happen to run an x86-64 bits client, or for testing).
+  if args.docker:
+    if getattr(args, "dockerPlatform", None) == "native":
+      args.dockerPlatform = None
+    elif not getattr(args, "dockerPlatform", None):
+      from bits_helpers.arch import docker_platform_for_arch, detectArch as _detectArch
+      target_plat = docker_platform_for_arch(args.architecture)
+      host_plat   = docker_platform_for_arch(_detectArch())
+      if target_plat and target_plat != host_plat:
+        args.dockerPlatform = target_plat
+      else:
+        args.dockerPlatform = None
+
+  # --sandbox-image implies --sandbox=podman. Promote from the mode-unset
+  # states ("off" is the default, "auto" the legacy default); an explicit
+  # "podman"/"sandbox-exec" is left as chosen.
+  if getattr(args, "sandboxImage", None) and getattr(args, "sandbox", None) in (None, "off", "auto"):
+    args.sandbox = "podman"
+
+
 def finaliseArgs(args, parser):
 
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
-  if args.action in ["version", "architecture", "verify", "stats", "sbom", "checksums"]:
+  if args.action in ["version", "architecture", "verify", "stats", "sbom", "checksums", "upgrade"]:
     return args
 
   # Minimal finalisation for cvmfs-path: only the defaults profile is loaded
@@ -2159,6 +2384,7 @@ def finaliseArgs(args, parser):
     args.noDevel       = normalise_multiple_options(args.noDevel)
     args.disable       = normalise_multiple_options(args.disable)
     args.force_rebuild = normalise_multiple_options(args.force_rebuild)
+    args.flavours      = _parse_flavours(getattr(args, "flavours", None))
     args.referenceSources = args.referenceSources % {"workDir": args.workDir}
     # Repository-provider configuration, mirroring the general path below:
     # `bits status` reports what `bits build` WOULD do, so it must resolve
@@ -2167,11 +2393,12 @@ def finaliseArgs(args, parser):
     _alibuild = os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild"
     args.bits_providers = (
       os.environ.get("BITS_PROVIDERS")
-      or ("" if _alibuild else "https://github.com/bitsorg/bits-providers"))
+      or ("" if _alibuild else site.get("providers.url") or ""))
     if args.bits_providers:
       os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
     args.provider_policy = _parse_provider_policy(
       getattr(args, "providerPolicy", None) or "")
+    _finalise_docker(args, parser)
     return args
 
   # compliance group mode rides the general finalisation: it needs the
@@ -2195,9 +2422,8 @@ def finaliseArgs(args, parser):
   # child processes inherit it. Under the aliBuild wrapper (BITS_BRANDING=aliBuild)
   # the built-in default is off (classic aliBuild uses a local alidist checkout);
   # native `bits` defaults to the provider path.
-  _BITS_PROVIDERS_DEFAULT = "https://github.com/bitsorg/bits-providers"
   _alibuild_mode = os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild"
-  _providers_default = "" if _alibuild_mode else _BITS_PROVIDERS_DEFAULT
+  _providers_default = "" if _alibuild_mode else site.get("providers.url") or ""
   args.bits_providers = os.environ.get("BITS_PROVIDERS") or _providers_default
   if args.bits_providers:
     os.environ.setdefault("BITS_PROVIDERS", args.bits_providers)
@@ -2271,120 +2497,7 @@ def finaliseArgs(args, parser):
     cleanup_git_log(args.referenceSources)
 
   if args.action in ("build", "doctor", "deps"):
-    if args.dockerImage or args.docker_extra_args:
-      args.docker = True
-
-    args.docker_extra_args = shlex.split(args.docker_extra_args)
-    args.docker_extra_args.append("--network=host")
-    # Pin the build container to the full set of online host CPUs so that
-    # make -j sees the real core count rather than the cgroup
-    # quota inherited from the GitLab runner process.
-    # /sys/devices/system/cpu/online gives the kernel-reported online CPU
-    # list (e.g. "0-7") which reflects actual hardware, not the caller's
-    # cgroup CPU quota.  Only inject if the user hasn't already specified
-    # --cpuset-cpus in --docker-extra-args.
-    # Rootless podman can only apply limits whose cgroup controller is delegated
-    # to the user; skip the others rather than fail to start the container.
-    # (build.py also runs such containers with --userns=keep-id, not --user.)
-    args.rootless_podman = bool(args.docker) and _is_rootless_podman()
-    _ctrls = _rootless_podman_controllers() if args.rootless_podman else None
-    # Podman labels containers for SELinux (docker-ce does not), which blocks
-    # the bind-mounted home-dir workdir/configdir; :z relabelling is too slow on
-    # SOURCES and impossible on /cvmfs, so turn labelling off instead.
-    if args.rootless_podman and not any(a.startswith("--security-opt")
-                                        for a in args.docker_extra_args):
-      args.docker_extra_args.append("--security-opt=label=disable")
-    _skipped = []
-    if not any(a.startswith("--cpuset-cpus") for a in args.docker_extra_args):
-      if _ctrls is None or "cpuset" in _ctrls:
-        args.docker_extra_args.append("--cpuset-cpus=" + _host_online_cpus())
-      else:
-        _skipped.append("cpuset")
-
-    # Hard memory cap on the build container so that no single build can OOM
-    # the HOST (see _docker_memory_args). Skipped when the user passes any
-    # --memory* themselves.
-    if not any(a.startswith("--memory") for a in args.docker_extra_args):
-      if _ctrls is None or "memory" in _ctrls:
-        args.docker_extra_args.extend(_docker_memory_args())
-      else:
-        _skipped.append("memory")
-    if _skipped:
-      from bits_helpers.log import warning
-      warning("rootless podman: cgroup controller(s) %s not available to this user, "
-              "so the build container is not limited by them. To enable (root): put "
-              "'[Service]' and 'Delegate=cpu cpuset io memory pids' in "
-              "/etc/systemd/system/user@.service.d/delegate.conf, run "
-              "'systemctl daemon-reload', then log in again.",
-              ", ".join(_skipped))
-
-    if args.docker and args.architecture.startswith("osx"):
-      parser.error("cannot use `-a %s` and --docker" % args.architecture)
-
-    if args.docker and commands.getstatusoutput("which docker")[0]:
-      parser.error("cannot use --docker as docker executable is not found")
-
-    # If specified, used the docker image requested, otherwise, if running
-    # in docker the docker image is given by the first part of the
-    # architecture we want to build for.
-    if args.docker and not args.dockerImage:
-      # Choose the builder image from the architecture. Resolution order:
-      #   1. BITS_LEGACY_REGISTRY truthy  -> legacy alisw/<distro>-builder
-      #      (ALICE guard, mirrors BITS_LEGACY_INITDOTSH; the aliBuild wrapper
-      #      sets it so ALICE keeps its images regardless of any registry here).
-      #   2. otherwise -> a bits-containers-style image from the configured
-      #      registry: BITS_DOCKER_REGISTRY env, else a `docker_registry:` field
-      #      in defaults-release, else the built-in DEFAULT_DOCKER_REGISTRY.
-      #      Image = <registry>/<machine>-<distro>[-cuda]:<tag> (BITS_DOCKER_TAG,
-      #      default latest). If the arch cannot be decomposed, fall back to the
-      #      legacy alisw builder.
-      # Only the base OS and the -cuda axis pick the image; the compiler axes
-      # (-gccNN/-clang) and build type (-opt/-dbg) are resolved inside the
-      # container by the entrypoint shim, so they do not change it.
-      distro_token = arch_distro_token(args.architecture) or args.architecture.split("_")[0]
-      _legacy = os.environ.get("BITS_LEGACY_REGISTRY", "").strip().lower() in ("1", "true", "yes", "on")
-      _registry = None if _legacy else (
-        os.environ.get("BITS_DOCKER_REGISTRY", "").strip()
-        or _defaults_docker_registry(args)
-        or DEFAULT_DOCKER_REGISTRY)
-      _machine = (arch_machine_token(args.architecture) or "").replace("-", "_")
-      if _registry and _machine and distro_token:
-        _name = "%s-%s" % (_machine, distro_token)
-        if re.search(r"(^|-)cuda(-|$)", args.architecture):
-          _name += "-cuda"
-        _tag = os.environ.get("BITS_DOCKER_TAG", "").strip() or "latest"
-        args.dockerImage = "%s/%s:%s" % (_registry.rstrip("/"), _name, _tag)
-      else:
-        args.dockerImage = "registry.cern.ch/alisw/%s-builder" % distro_token
-
-    # ── --docker-platform / cross-compilation ─────────────────────────────────
-    # Derive the Docker --platform value from --architecture when the user has
-    # not set it explicitly.  If the target architecture matches the host we
-    # leave it as None (no --platform flag → daemon uses native image variant,
-    # zero overhead).  If they differ we inject the matching platform string so
-    # that Docker pulls the correct image variant and QEMU transparently
-    # emulates the target ISA inside the builder container.
-    #
-    # The special sentinel value "native" lets users opt out of automatic
-    # injection even when cross-compiling (useful on native ARM runners that
-    # happen to run an x86-64 bits client, or for testing).
-    if args.docker:
-      if getattr(args, "dockerPlatform", None) == "native":
-        args.dockerPlatform = None
-      elif not getattr(args, "dockerPlatform", None):
-        from bits_helpers.arch import docker_platform_for_arch, detectArch as _detectArch
-        target_plat = docker_platform_for_arch(args.architecture)
-        host_plat   = docker_platform_for_arch(_detectArch())
-        if target_plat and target_plat != host_plat:
-          args.dockerPlatform = target_plat
-        else:
-          args.dockerPlatform = None
-
-    # --sandbox-image implies --sandbox=podman. Promote from the mode-unset
-    # states ("off" is the default, "auto" the legacy default); an explicit
-    # "podman"/"sandbox-exec" is left as chosen.
-    if getattr(args, "sandboxImage", None) and getattr(args, "sandbox", "off") in ("off", "auto"):
-      args.sandbox = "podman"
+    _finalise_docker(args, parser)
 
   if "annotate" in args:
     for comment_assignment in args.annotate:
@@ -2412,17 +2525,23 @@ def finaliseArgs(args, parser):
     # otherwise system.remote_store overrides the built-in arch default below.
     args.remoteStoreExplicit = bool(args.remoteStore)
 
-    # A public read store is enabled by default on selected platforms. Unlike
+    # Without one given, the site's read store for the architecture. Unlike
     # aliBuild, activating a store does NOT force --no-system (reuse is
     # content-hash addressed); use --no-system for a self-contained build.
-    if normalise_arch_key(args.architecture) in _S3_SUPPORTED_ARCH_KEYS and not args.preferSystem and not args.no_remote_store:
-      if not args.remoteStore:
-        args.remoteStore = "https://s3.cern.ch/swift/v1/alibuild-repo"
-    elif args.no_remote_store:
+    if args.no_remote_store:
       args.remoteStore = ""
+    elif not args.remoteStore and not args.preferSystem:
+      # store.read is the default only when no write store is given (a write
+      # store alone is also the read store) and not for aliBuild.
+      args.remoteStore = site.read_store(args.architecture, fallback=not (
+          args.writeStore or _alibuild_mode))
 
     if args.remoteStore.endswith("::rw") and args.writeStore:
       parser.error("cannot specify ::rw and --write-store at the same time")
+    if "::rw" in args.writeStore:
+      parser.error("::rw belongs to --remote-store, not --write-store")
+    if "::rw" in args.remoteStore and "," in args.remoteStore:
+      parser.error("::rw takes one store; give several write stores with --write-store")
 
     if args.remoteStore.endswith("::rw"):
       args.remoteStore = args.remoteStore[0:-4]
@@ -2433,10 +2552,10 @@ def finaliseArgs(args, parser):
     from bits_helpers.sync import normalise_store_url
     args.normalisedStores = []
     for _attr in ("remoteStore", "writeStore"):
-      _url = getattr(args, _attr)
-      if normalise_store_url(_url) != _url:
-        args.normalisedStores.append((_url, normalise_store_url(_url)))
-        setattr(args, _attr, normalise_store_url(_url))
+      _urls = [u.strip() for u in getattr(args, _attr).split(",") if u.strip()]
+      args.normalisedStores += [(u, normalise_store_url(u)) for u in _urls
+                                if normalise_store_url(u) != u]
+      setattr(args, _attr, ",".join(normalise_store_url(u) for u in _urls))
 
   if args.action in ["build", "init"]:
     if "develPrefix" in args and args.develPrefix is None:

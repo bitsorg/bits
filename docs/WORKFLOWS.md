@@ -29,6 +29,8 @@ This document describes the complete bits development-to-deployment workflow —
 
  [Phase 4 — Publish]                        Build → Production ───→ /cvmfs/.../releases/
                                             Build → Personal   ───→ /cvmfs/.../user/me/
+                                            Nightly slot       ───→ /cvmfs/.../nightlies/<day>/
+ git push <recipe or source branch> ──────→ CI build of the slot (store only)
 
  [Phase 5 — Verify]
  bits verify --from-manifest <manifest.json> --cvmfs-root /cvmfs/alice.cern.ch
@@ -177,11 +179,99 @@ The pipeline enforces this independently of the UI. Even a manually crafted API 
 
 The **Builds** tab in bits-console shows a live pipeline list with log streaming. The **CVMFS Status** tab updates once ingestion completes and the stratum-0 transaction is published. Production builds become available experiment-wide — to all developers' `bits enter` sessions, to batch grid jobs at WLCG sites, and to downstream CI pipelines. Stratum-1 replicas propagate the change automatically.
 
+### Step 4 — Schedule nightly builds
+
+A nightly build is a **slot**: a build defined once, run by the orchestrator on
+given days at a given time, and approved in advance. Slots are on the console's
+**Schedules** tab; everyone signed in sees them, the community's admins make,
+change and approve them (a certifying slot: admins of every group it certifies
+for).
+
+| Field | What it sets |
+|-------|--------------|
+| Package, Version | What is built (a blank version: the recipe's). |
+| Defaults chain | How it is built and **where its builds go**. With stacks.bits' `dev3`, builds go to `…/nightlies/dev3/{day}/…`; the orchestrator gives each build its night's weekday as `{day}`, so a build that starts after midnight still lands in its night's directory. Blank: `release`. |
+| Variants | Defaults chains put before it, one a line: `gcc15::opt` and `clang::opt` with `dev3` build `gcc15::opt::dev3` and `clang::opt::dev3`. |
+| Platforms | Each platform × each variant is one build of the night, a *cell* (64 at most). |
+| Variables, Extra recipe repositories, Extra build arguments, Jobs | As in the Build dialog: `--set` (e.g. `release=LCG_110`), more recipe repositories, more `bits build` options (not `--defaults`), `-j`. |
+| Days, Time | When it runs, in the instance's time zone (shown beside the time). |
+| Publish to CVMFS, Certify, Groups it certifies for | Where the result goes after the build. |
+| Build on each commit to | The branches it also builds on, see Step 5. |
+
+To set one up:
+
+1. On **Schedules**, click **+ New slot**, fill it in and **Save**. Or set up a
+   build in the Build dialog (package, platforms, defaults) and click
+   **💾 Save as pipeline**: a full platforms × defaults matrix (2 to 16 chains)
+   becomes one slot with the chains as its variants, any other one slot per
+   chain. It is saved paused, every day at 02:00, without variables or followed
+   branches: **Edit** it first.
+2. If it certifies, click **Approve**, then **Use your passkey**. The approval
+   covers 30 nights of every cell, but 100 builds at most (fewer nights for a
+   slot of more than 3 cells), or 30 days, whichever ends first; **▶ Run now**
+   uses it up too. A night it cannot cover whole, and a slot without one, builds
+   but certifies nothing. A change of what it builds or where needs a new
+   approval; a new time, days or followed branches do not.
+3. **Resume** a slot saved paused.
+
+At its time the orchestrator queues a build per cell, and they start as build
+hosts become free. A night missed by less than 6 hours still runs; a cell whose
+last build still runs skips the night; a build that finds no free host for 12
+hours is not run. **▶ Run now** builds every cell not still running, as
+today's night; **Pause**, **Edit** and **✕** (delete) do what they say.
+
+Each night's results are in the nightly matrix, on the console's **Nightlies**
+page (14 nights; a build opens its log) and the phone app's **Nightlies** tab
+(7): a row per slot, a cell per platform, variant and night (queued, running,
+passed, failed and where, or not run and why). A slot's page in the app has
+**Run again** for the failed cells of its last night.
+
+### Step 5 — Build on each push (CI)
+
+A slot can also build whenever a branch it follows gets a new commit. In its
+**Build on each commit to**, list up to 8 `https://host/path.git@branch` entries,
+separated by `;`: the recipe repository at its release branch, and the sources of
+packages built from git, e.g. `https://github.com/root-project/root.git@master`.
+The list only decides *when* the slot builds: the build takes its recipes and
+versions as a nightly does, so following a source branch helps only when the
+slot's recipes build that branch (as dev3 builds ROOT `master`).
+*Follow its recipe repositories* replaces the list with the community's recipe
+repository at the branch the slot's `release` variable names (else `main`), and
+those of its extra recipe repositories that name a branch.
+
+- The orchestrator reads each branch's head every 2 minutes: no webhook and no
+  token in the repository. Only public repositories can be followed.
+- A branch just added is not built; its next commit is. A paused slot follows
+  nothing, and after **Resume** the heads it finds count as just added.
+- Pushes come in bursts, so it waits until the branches have not moved for
+  5 minutes (30 minutes at most after the first new commit), then builds every
+  cell of the slot once for the burst.
+- A slot runs one CI build at a time. Commits pushed meanwhile are built
+  together when it ends, and nothing is cancelled. Nightlies and CI builds do
+  not wait for each other.
+- A CI build goes to the binary store only: it is never certified nor published
+  to CVMFS. It shows whether the branches build.
+- Each build fetches its recipes and sources when it starts, so it may hold
+  commits newer than the heads recorded when it fired. A commit that changes no package's hash still makes a short
+  pipeline, which finds everything built.
+
+The Schedules tab shows each followed branch's head, marked *new: builds soon*
+until it is built. CI builds have a matrix of their own, apart from the
+nightlies: the console's **CI builds** page shows each such slot's latest 10, a
+column per build with the heads when it fired and a row per cell, and the phone
+app's **CI** tab the same, its latest 7.
+
+**For operators:** slots need the orchestrator's build queue
+(`BITS_ORCH_QUEUE=1`). The instance's time zone is the site setting
+`console.time_zone`; `BITS_ORCH_WATCH_S` (120 s, at least 30) sets how often
+heads are read, and the worker must reach the repositories' hosts over HTTPS.
+See *Nightly schedules* and *Commit CI* in `console-backend/README.md`.
+
 ### Pipeline internals (for runner admins)
 
 The following is relevant to teams setting up or maintaining build runners, not to developers triggering builds through the UI.
 
-Clicking **Build → Production** queues a GitLab CI pipeline that runs `bits build --docker` on a registered runner, with the workDir bind-mounted at the community's `cvmfs_prefix` path inside the container so binaries compile with their final deployment paths already embedded. The resulting tarballs are then ingested into CVMFS via one of two paths depending on the community's `publish_pipeline` setting:
+Clicking **Build → Production** queues the build; with the orchestrator's build queue on, it waits there (not in GitLab) for a free build host, and then starts a GitLab CI pipeline pinned to that host. The pipeline runs `bits build --docker` on a registered runner, with the workDir bind-mounted at the community's `cvmfs_prefix` path inside the container so binaries compile with their final deployment paths already embedded. The resulting tarballs are then ingested into CVMFS via one of two paths depending on the community's `publish_pipeline` setting:
 
 - **cvmfs-prepub path** (`publish_pipeline: .gitlab/cvmfs-prepub-publish.yml`): the build host POSTs a tar directly to the `cvmfs-prepub` REST API, which handles CAS ingestion and the CVMFS gateway transaction. No dedicated ingest runners are required.
 - **Legacy spool path** (`publish_pipeline: .gitlab/cvmfs-publish.yml`): tarballs are spooled to a staging area, a CVMFS transaction is opened on the stratum-0, and `cvmfs_server publish` is run on a dedicated publisher runner. This path is retained for communities that have not yet migrated to cvmfs-prepub.
@@ -226,6 +316,8 @@ bits build --docker <pkg>        open build modal
 git push + recipe MR ──────────→ merge triggers ──→ [Build → Production] → /releases/…
 bits build --write-checksums                       [Build → Personal]   → /user/me/…
                                  Monitor: Builds + CVMFS Status tabs
+                                 Schedules: a slot ──────────────→ nightlies/<day>/…
+git push (a followed branch) ──→ the slot's CI build ─→ store only
 
 bits verify --from-manifest …                                            ← confirm ✓
 ```
@@ -236,6 +328,7 @@ bits verify --from-manifest …                                            ← c
 
 | Topic | Location |
 |-------|----------|
+| Nightly slots and CI builds (the orchestrator) | `console-backend/README.md`: *Nightly schedules*, *Commit CI* |
 | Full command reference (`bits build`, `bits status`, `bits verify`, …) | [REFERENCE.md §16](REFERENCE.md#16-command-line-reference) |
 | Docker builds and `--cvmfs-prefix` | [REFERENCE.md §22](REFERENCE.md#22-docker-support) |
 | Remote binary store backends (S3, HTTP, rsync) | [REFERENCE.md §21](REFERENCE.md#21-remote-binary-store-backends) |

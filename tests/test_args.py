@@ -27,6 +27,8 @@ ARCHITECTURE_ERROR = "Unknown / unsupported architecture: foo.\n\n.*"
 PARSER_ERRORS = {
   "build --force-unknown-architecture": BUILD_MISSING_PKG_ERROR,
   "build --force-unknown-architecture zlib --foo": 'unrecognized arguments: --foo',
+  "build --force-unknown-architecture zlib --symlinks": 'unrecognized arguments: --symlinks',
+  "status zlib --symlinks": 'unrecognized arguments: --symlinks',
   "init --docker-image": 'unrecognized arguments: --docker-image',
   "builda --force-unknown-architecture zlib" : "argument action: invalid choice: 'builda'.*",
   "build --force-unknown-architecture zlib --no-system --always-prefer-system" : 'argument --prefer-system/--always-prefer-system: not allowed with argument --no-system',
@@ -45,6 +47,10 @@ class FakeExit(Exception):
   pass
 
 CORRECT_BEHAVIOR = [
+  ((), "build --force-unknown-architecture gcc --symlink-packages-from /deploy --symlink-policy relaxed", [("symlinkPolicy", "relaxed"), ("symlinkPackagesFrom", "/deploy")]),
+  ((), "build --force-unknown-architecture gcc --reuse-from /deployment/Modules/modulefiles", [("reuseFrom", "/deployment/Modules/modulefiles"), ("symlinkPackagesFrom", None)]),
+  ((), "build --force-unknown-architecture gcc --reuse-from /deployment/Modules/modulefiles --symlink-packages-from /local/Packages", [("symlinkPackagesFrom", "/local/Packages")]),
+  ((), "build --force-unknown-architecture gcc", [("symlinkPackagesFrom", None)]),
   ((), "build --force-unknown-architecture zlib"                                       , [("action", "build"), ("workDir", "sw"), ("referenceSources", "sw/MIRROR")]),
   ((), "init"                                                                          , [("action", "init"), ("workDir", "sw"), ("referenceSources", "sw/MIRROR")]),
   ((), "version"                                                                       , [("action", "version")]),
@@ -55,6 +61,7 @@ CORRECT_BEHAVIOR = [
   ((), "build --force-unknown-architecture -u zlib"                                    , [("fetchRepos", True)]),
   ((), "build --force-unknown-architecture --no-fetch-repos zlib"                      , [("fetchRepos", False)]),
   ((), "status zlib"                                                                   , [("fetchRepos", True)]),
+  ((), "status zlib --symlink-packages-from /deploy --symlink-policy relaxed --build-local gcc", [("symlinkPackagesFrom", "/deploy"), ("symlinkPolicy", "relaxed"), ("buildLocal", "gcc")]),
   ((), "status --no-fetch-repos zlib"                                                  , [("fetchRepos", False)]),
   ((), "build --force-unknown-architecture -j 10 zlib --disable gcc --disable foo"     , [("disable", ["gcc", "foo"])]),
   ((), "build --force-unknown-architecture -j 10 zlib --disable gcc --disable foo,bar" , [("disable", ["gcc", "foo", "bar"])]),
@@ -66,7 +73,11 @@ CORRECT_BEHAVIOR = [
   ((), "build --force-unknown-architecture zlib --remote-store rsync://test.local/::rw", [("noSystem", None), ("remoteStore", "rsync://test.local/"), ("writeStore", "rsync://test.local/")]),
   ((), "build --force-unknown-architecture zlib --no-remote-store --remote-store rsync://test.local/", [("noSystem", None), ("remoteStore", "")]),
   ((), "build zlib --architecture slc7_x86-64"                                         , [("noSystem", None), ("preferSystem", False), ("remoteStore", "https://s3.cern.ch/swift/v1/alibuild-repo")]),
-  ((), "build zlib --architecture ubuntu1804_x86-64"                                   , [("noSystem", None), ("preferSystem", False), ("remoteStore", "")]),
+  ((), "build zlib --architecture ubuntu1804_x86-64"                                   , [("noSystem", None), ("preferSystem", False), ("remoteStore", "https://s3.cern.ch/swift/v1/lcgapp-bits-testing")]),
+  # A write store alone is also the read store (build.py): no site store.read then,
+  # but an architecture's own read store stays.
+  ((), "build zlib --architecture ubuntu1804_x86-64 --write-store b3://mine"            , [("remoteStore", ""), ("writeStore", "b3://mine")]),
+  ((), "build zlib --architecture slc7_x86-64 --write-store b3://mine"                  , [("remoteStore", "https://s3.cern.ch/swift/v1/alibuild-repo"), ("writeStore", "b3://mine")]),
   ((), "status zlib --write-store b3://bits-write"                                      , [("action", "status"), ("writeStore", "b3://bits-write")]),
   ((), "build zlib -a slc7_x86-64"                                                     , [("docker", False), ("dockerImage", None), ("docker_extra_args", ["--network=host", _MOCK_CPUSET_ARG])]),
   ((), "build zlib -a slc7_x86-64 --docker-image registry.cern.ch/alisw/some-builder"  , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/some-builder")]),
@@ -96,8 +107,19 @@ GETSTATUSOUTPUT_MOCKS = {
 }
 
 class ArgsTestCase(unittest.TestCase):
+  @mock.patch.dict(os.environ, {"BITS_BRANDING": "aliBuild"})
+  @mock.patch("bits_helpers.args._defaults_docker", return_value=None)
+  @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")
+  @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
+  @mock.patch("bits_helpers.args._docker_memory_args", return_value=[])
+  @mock.patch("bits_helpers.args._is_rootless_podman", return_value=False)
+  def test_alibuild_has_no_site_wide_read_store(self, *_):
+    for arch, store in (("ubuntu1804_x86-64", ""), ("slc7_x86-64", "https://s3.cern.ch/swift/v1/alibuild-repo")):
+      with patch.object(sys, "argv", ["alibuild", "build", "zlib", "--architecture", arch]):
+        self.assertEqual(doParseArgs()[0].remoteStore, store)
+
   @mock.patch.dict(os.environ, {"BITS_DOCKER_REGISTRY": "", "BITS_LEGACY_REGISTRY": "", "BITS_DOCKER_TAG": ""})
-  @mock.patch("bits_helpers.args._defaults_docker_registry", return_value=None)
+  @mock.patch("bits_helpers.args._defaults_docker", return_value=None)
   @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
   @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
   # Neutralise the host-dependent --memory/--memory-swap docker injection so
@@ -116,6 +138,26 @@ class ArgsTestCase(unittest.TestCase):
         args = vars(args)
         for k, v in effects:
           self.assertEqual(args[k], v)
+
+  @mock.patch.dict(os.environ, {"BITS_DOCKER_REGISTRY": "", "BITS_LEGACY_REGISTRY": "", "BITS_DOCKER_TAG": ""})
+  @mock.patch("bits_helpers.args._defaults_docker", return_value=None)
+  @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
+  @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
+  @mock.patch("bits_helpers.args._docker_memory_args", return_value=[])
+  @mock.patch("bits_helpers.args._is_rootless_podman", return_value=False)
+  @mock.patch('bits_helpers.args.commands')
+  def test_status_docker_as_build(self, mock_commands, *_):
+    """bits status takes the container options as bits build does."""
+    mock_commands.getstatusoutput.side_effect = lambda x : GETSTATUSOUTPUT_MOCKS[x]
+    with patch.object(sys, "argv", ["bits", "status", "--docker-image", "img:1", "-a", "slc9_x86-64",
+                                    "zlib"]):
+      args, _ = doParseArgs()
+    self.assertTrue(args.docker)
+    self.assertEqual(args.dockerImage, "img:1")
+    self.assertIn("--network=host", args.docker_extra_args)
+    with patch.object(sys, "argv", ["bits", "status", "--docker", "-a", "slc9_x86-64", "zlib"]):
+      args, _ = doParseArgs()
+    self.assertEqual(args.dockerImage, "gitlab-registry.cern.ch/bits/containers/x86_64-slc9:latest")
 
   @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
   @mock.patch('bits_helpers.args.argparse.ArgumentParser.error')
@@ -446,6 +488,12 @@ class CvmfsPathSetTest(unittest.TestCase):
       args, _ = doParseArgs()
     self.assertEqual(args.flavours, {"release": "LCG_110", "foo": "true"})
 
+  def test_status_takes_set_too(self):
+    with patch.object(sys, "argv", ["bits"] + shlex.split(
+        "status ROOT -a slc7_x86-64 --set release=LCG_110")):
+      args, _ = doParseArgs()
+    self.assertEqual(args.flavours, {"release": "LCG_110"})
+
 class SubcommandDryRunTestCase(unittest.TestCase):
   """-n/--dry-run listed in init/clean/publish help keeps the hoisted value."""
 
@@ -466,6 +514,29 @@ class DistStringTestCase(unittest.TestCase):
     self.assertEqual(bits_string("me/recipes@dev"), {"repo": "me/recipes", "ver": "dev"})
     self.assertEqual(bits_string(""), {"repo": "alisw/alidist", "ver": ""})
 
+
+
+class DryRunOrderTestCase(unittest.TestCase):
+  """-n before a command with its own --dry-run is that command's."""
+
+  def _parse(self, cmd):
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
+         mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
+         mock.patch("bits_helpers.args.commands") as mock_cmd, \
+         patch.object(sys, "argv", ["bits"] + shlex.split(cmd)):
+      mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
+      args, _ = doParseArgs()
+      return vars(args)
+
+  def test_prune(self):
+    self.assertTrue(self._parse("-n prune")["dryRun"])
+    self.assertTrue(self._parse("prune -n")["dryRun"])
+    self.assertFalse(self._parse("prune")["dryRun"])
+
+  def test_compliance(self):
+    self.assertTrue(self._parse("--dry-run compliance")["dryRun"])
+    with self.assertRaises(SystemExit):   # it has no -n: refused, not ignored
+      self._parse("-n compliance")
 
 if __name__ == '__main__':
   unittest.main()

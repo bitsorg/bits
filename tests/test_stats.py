@@ -3,6 +3,7 @@
 
 """Tests for the `bits stats` resource report (bits_helpers/stats.py)."""
 
+from pathlib import Path
 import json
 import os
 import sys
@@ -42,7 +43,7 @@ class TraceMetricsTest(unittest.TestCase):
 
     def _trace(self, samples):
         p = os.path.join(self.d, "t.json")
-        json.dump(samples, open(p, "w"))
+        Path(p).write_text(json.dumps(samples))
         return p
 
     def test_peaks_and_average(self):
@@ -65,7 +66,7 @@ class TraceMetricsTest(unittest.TestCase):
 
     def test_empty_or_bad(self):
         self.assertIsNone(stats.trace_metrics(self._trace([])))
-        bad = os.path.join(self.d, "bad.json"); open(bad, "w").write("not json")
+        bad = os.path.join(self.d, "bad.json"); Path(bad).write_text("not json")
         self.assertIsNone(stats.trace_metrics(bad))
 
 
@@ -106,18 +107,17 @@ class FlagsTest(unittest.TestCase):
 class CollectAndRenderTest(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
-        json.dump({
+        Path(os.path.join(self.d, "bits_build_stats.json")).write_text(json.dumps({
             "resources": {"cpu": 800, "rss": 16 * GB},
             "packages": {"build": {
                 "ROOT":  {"cpu": 760, "rss": int(6.2 * GB), "time": 1850},
                 "Gaudi": {"cpu": 110, "rss": GB, "time": 420},
             }},
-        }, open(os.path.join(self.d, "bits_build_stats.json"), "w"))
+        }))
         sd = os.path.join(self.d, "SPECS", "arch", "Gaudi", "v-1")
         os.makedirs(sd)
-        json.dump([{"time": t, "cpu": 100, "rss": GB, "num_threads": 3}
-                   for t in range(0, 420, 5)],
-                  open(os.path.join(sd, "Gaudi.json"), "w"))
+        samples = [{"time": t, "cpu": 100, "rss": GB, "num_threads": 3} for t in range(0, 420, 5)]
+        Path(os.path.join(sd, "Gaudi.json")).write_text(json.dumps(samples))
 
     def tearDown(self):
         shutil.rmtree(self.d, ignore_errors=True)

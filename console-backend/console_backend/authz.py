@@ -55,12 +55,14 @@ def tree_policy(settings) -> dict:
     simply populates that group — legitimate in the ADMINS format.
     Empty unless both admins_group and a resolve token are set. Raises on API
     failure so the caller can serve a stale policy rather than lock everyone out."""
-    root, token = settings.admins_group, settings.admin_resolve_token
-    if not (root and token):
+    from . import credproxy
+    root = settings.admins_group
+    if not (root and credproxy.has(settings, "groups")):
         return {}
-    api = settings.gitlab_api_url
-    pol = {"*": _humans(forge.gitlab_group_members(api, token, root, inherited=False))}
-    for sub in forge.gitlab_subgroups(api, token, root):
+    api, token = credproxy.gitlab(settings, "groups")
+    pol = {"*": _humans(forge.gitlab_group_members(api, token, credproxy.segment(settings, root),
+                                                   inherited=False))}
+    for sub in forge.gitlab_subgroups(api, token, credproxy.segment(settings, root)):
         name = str(sub.get("path", "")).strip().lower()
         if name:
             pol[name] = _humans(forge.gitlab_group_members(api, token, sub["id"], inherited=False))
@@ -75,8 +77,15 @@ def resolve_policy(policy, settings, user_token) -> dict:
         return {}
     if not forge.admin_policy_grouprefs(policy):
         return policy   # already literal usernames — no token/network
-    token = settings.admin_resolve_token or user_token
-    resolver = forge.make_group_resolver(settings.gitlab_api_url, token)
+    from . import credproxy
+    if credproxy.has(settings, "groups"):
+        api, token = credproxy.gitlab(settings, "groups")
+    else:   # the caller's own token, straight to GitLab
+        api, token = settings.gitlab_api_url, user_token
+    resolver = forge.make_group_resolver(api, token)
+    if credproxy.has(settings, "groups") and credproxy.proxied(settings):
+        plain = resolver
+        resolver = lambda ref: plain(credproxy.segment(settings, ref))  # noqa: E731
     return forge.resolve_admin_policy(policy, resolver)
 
 
@@ -89,7 +98,8 @@ def resolved_admin_policy(settings, user_token) -> dict:
     # result deterministic and shareable across users. Gating on admins_group too
     # would cache a per-user (&ref-via-caller-token) resolution and leak it — and
     # the tree contributes nothing without the token anyway.
-    if settings.admin_resolve_token:
+    from . import credproxy
+    if credproxy.has(settings, "groups"):
         key = (settings.admin_policy_source, settings.admins_group)
         hit = _CACHE.get(key)
         if hit and hit[1] > time.time():

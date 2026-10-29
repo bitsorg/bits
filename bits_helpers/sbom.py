@@ -28,7 +28,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 try:
     from bits_helpers import __version__
@@ -37,10 +37,11 @@ except ImportError:
 
 from bits_helpers.spdx_ids import EXCEPTIONS, LICENSES
 from bits_helpers.sync import redistributable_forms
+from bits_helpers import site
 
 CDX_SPEC = "1.6"
 SPDX_VERSION = "SPDX-2.3"
-NAMESPACE = "https://bits.cern.ch/sbom"      # SPDX documentNamespace base
+NAMESPACE = str(site.get("sbom.namespace") or "https://spdx.org/spdxdocs/bits")   # SPDX documentNamespace base
 
 _ALGS = {"md5": ("MD5", "MD5", 32), "sha1": ("SHA-1", "SHA1", 40),
          "sha256": ("SHA-256", "SHA256", 64), "sha384": ("SHA-384", "SHA384", 96),
@@ -163,8 +164,24 @@ def _source_urls(e):
     return out
 
 
+def _references(e, prefix):
+    """The recipe's references (manifest ``references``) that start with *prefix*."""
+    return [r for r in e.get("references") or [] if isinstance(r, str) and r.startswith(prefix)]
+
+
+def _name(c):
+    """The component's name: a system package found by the package manager goes
+    by the distribution's name (e.g. zlib1g), which scanners match on."""
+    m = c["system"] and re.match(r"pkg:(?:rpm|deb)/[^/]+/([^@?]+)@", _purl(c["entry"]))
+    return unquote(m.group(1)) if m else c["name"]
+
+
 def _purl(e):
-    """A package URL: pkg:github for GitHub-hosted code, else pkg:generic."""
+    """A package URL: the recipe's own (e.g. pkg:pypi), else pkg:github for
+    GitHub-hosted code, else pkg:generic."""
+    own = _references(e, "pkg:")
+    if own:
+        return own[0]
     name, ver = str(e["package"]), str(e.get("version") or "")
     for u in [clean_url(e.get("source"))] + [u for u, _ in _source_urls(e)]:
         m = _GITHUB.search(u or "")
@@ -221,12 +238,17 @@ def components(manifest):
         built.append(c)
         by_name.setdefault(name, []).append(c)
     system_names = set(manifest.get("system_packages") or [])
+    system_info = manifest.get("system_package_info") or {}
     system = {}
     for c in built:
         for field in ("requires", "build_requires"):
             for d in c["entry"].get(field) or []:
                 if d not in by_name and d in system_names and d not in system:
-                    system[d] = {"name": d, "key": "", "entry": {"package": d}, "system": True,
+                    info = system_info.get(d) or {}
+                    system[d] = {"name": d, "key": "", "system": True,
+                                 "entry": {"package": d, "version": info.get("version") or "",
+                                           "references": info.get("references") or [],
+                                           "sbom": info.get("sbom") or ""},
                                  "ref": unique("%s@system" % d), "deps": [], "build_deps": []}
     for d in sorted(system):
         by_name[d] = [system[d]]
@@ -241,7 +263,7 @@ def components(manifest):
 
 def _roots(manifest, comps):
     wanted = set(manifest.get("requested_packages") or [])
-    roots = [c["ref"] for c in comps if c["name"] in wanted and not c["system"]]
+    roots = [c["ref"] for c in comps if c["name"] in wanted]      # a system one too: the release needs it
     return roots or [c["ref"] for c in comps if not c["system"]][-1:]
 
 
@@ -277,11 +299,20 @@ def _shipped(e):
 def _props(c):
     e = c["entry"]
     if c["system"]:
-        return [{"name": "bits:provided_by", "value": "system"}]
+        props = [{"name": "bits:provided_by", "value": "system"}]
+        if e.get("sbom") == "tool":                 # a host tool, not shipped
+            props.append({"name": "bits:sbom", "value": "tool"})
+        if _name(c) != c["name"]:
+            props.append({"name": "bits:package", "value": c["name"]})
+        return props + [{"name": "syft:cpe23", "value": x} for x in _references(e, "cpe:2.3:")[1:]]
     out = [("bits:hash", e.get("hash")), ("bits:revision", e.get("revision")),
            ("bits:effective_architecture", e.get("effective_architecture")),
            ("bits:pkg_family", e.get("pkg_family")), ("bits:outcome", e.get("outcome")),
-           ("bits:redistributable", e.get("redistributable")), ("bits:commit", _commit(e))]
+           ("bits:redistributable", e.get("redistributable")), ("bits:commit", _commit(e)),
+           ("bits:pinned_by", e.get("pinned_by")),
+           ("bits:sbom", "tool" if e.get("sbom") == "tool" else None)]
+    # Further CPEs under the property name syft and grype read them from.
+    out += [("syft:cpe23", x) for x in _references(e, "cpe:2.3:")[1:]]
     out += [("bits:build_requires", d) for d in e.get("build_requires") or []]
     out += [("bits:patch", ("%s %s" % (p.get("name"), p.get("checksum") or "")).strip())
             for p in e.get("patches") or [] if isinstance(p, dict)]
@@ -294,10 +325,15 @@ def to_cyclonedx(manifest, build_id="unknown"):
     out = []
     for c in comps:
         e = c["entry"]
-        comp = {"type": "library", "bom-ref": c["ref"], "name": c["name"]}
+        comp = {"type": "library", "bom-ref": c["ref"], "name": _name(c)}
         if not c["system"]:
-            comp["version"] = _full_version(e)
+            # The upstream version, as scanners compare it; the bits revision is
+            # a property (bits:revision).
+            comp["version"] = str(e.get("version") or "")
             comp["purl"] = _purl(e)
+            cpes = _references(e, "cpe:2.3:")
+            if cpes:
+                comp["cpe"] = cpes[0]
             sha = _checksum(e.get("tarball_sha256"))
             if sha:
                 comp["hashes"] = [{"alg": _ALGS[sha[0]][0], "content": sha[1]}]
@@ -316,6 +352,13 @@ def to_cyclonedx(manifest, build_id="unknown"):
                 refs.append({"type": "vcs", "url": clean_url(e.get("source"))})
             if refs:
                 comp["externalReferences"] = refs
+        elif e.get("version"):
+            # A system package whose check named its version: identified for scanners.
+            comp["version"] = str(e["version"])
+            comp["purl"] = _purl(e)
+            cpes = _references(e, "cpe:2.3:")
+            if cpes:
+                comp["cpe"] = cpes[0]
         comp["properties"] = _props(c)
         out.append(comp)
     release = {"type": "application", "bom-ref": "release", "name": build_id,
@@ -380,14 +423,21 @@ def to_spdx(manifest, build_id="unknown"):
     packages = []
     for c in comps:
         e = c["entry"]
-        pkg = {"SPDXID": ids[c["ref"]], "name": c["name"],
+        pkg = {"SPDXID": ids[c["ref"]], "name": _name(c),
                "downloadLocation": "NOASSERTION", "filesAnalyzed": False,
                "licenseConcluded": "NOASSERTION", "licenseDeclared": "NOASSERTION",
                "copyrightText": "NOASSERTION"}
         if c["system"]:
-            pkg["comment"] = "Provided by the host system; not built by bits."
+            pkg["comment"] = "Provided by the host system%s; not built by bits." % (
+                "" if _name(c) == c["name"] else " (bits package %s)" % c["name"])
+            if e.get("version"):
+                pkg["versionInfo"] = str(e["version"])
+                pkg["externalRefs"] = [{"referenceCategory": "PACKAGE-MANAGER",
+                                        "referenceType": "purl", "referenceLocator": _purl(e)}]
+                pkg["externalRefs"] += [{"referenceCategory": "SECURITY", "referenceType": "cpe23Type",
+                                         "referenceLocator": x} for x in _references(e, "cpe:2.3:")]
         else:
-            pkg["versionInfo"] = _full_version(e)
+            pkg["versionInfo"] = str(e.get("version") or "")
             loc = _download(e)
             pkg["downloadLocation"] = loc if _SPDX_DOWNLOAD.match(loc) else "NOASSERTION"
             lic = str(e.get("license") or "").strip()
@@ -400,6 +450,8 @@ def to_spdx(manifest, build_id="unknown"):
                 pkg["checksums"] = [{"algorithm": _ALGS[sha[0]][1], "checksumValue": sha[1]}]
             pkg["externalRefs"] = [{"referenceCategory": "PACKAGE-MANAGER",
                                     "referenceType": "purl", "referenceLocator": _purl(e)}]
+            pkg["externalRefs"] += [{"referenceCategory": "SECURITY", "referenceType": "cpe23Type",
+                                     "referenceLocator": x} for x in _references(e, "cpe:2.3:")]
             info = ["bits build hash %s" % e["hash"]] if e.get("hash") else []
             if _commit(e):
                 info.append("commit %s" % _commit(e))

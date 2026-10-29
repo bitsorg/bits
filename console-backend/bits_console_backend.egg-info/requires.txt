@@ -1,0 +1,5 @@
+fastapi==0.138.0
+uvicorn==0.49.0
+httpx==0.28.1
+pyjwt[crypto]==2.15.1
+webauthn==2.5.2

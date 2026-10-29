@@ -33,6 +33,11 @@ _HASH_EXCLUDED_META_KEYS = frozenset({
     # view: what the package exports to a release's merged view — presentation
     # only, applied at publish time from the build manifest.
     "view",
+    # references: CPEs and purls naming the package for vulnerability scanners
+    # (written into the SBOM); they never affect the build.
+    "references",
+    # sbom: tool marks a host tool, run but never shipped: scans leave it out.
+    "sbom",
 })
 
 # Source-selection keys are ALSO dropped from the recipe TEXT hash — not because
@@ -285,6 +290,8 @@ def storeHashes(package, specs, considerRelocation):
   
   if not package.startswith("defaults-"):
     for hook_name in sorted(spec.get("hook", {})):
+      if hook_name == "SYMLINK_STAGE":   # runs on reuse only: no part of the build
+        continue
       h_all("hook:" + hook_name + "=" + str(spec["hook"][hook_name]))
     for hook_name in sorted(spec.get("hook_params", {})):
       h_all("hook_params:" + hook_name + "=" + str(spec["hook_params"][hook_name]))

@@ -359,10 +359,11 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         fields["prewarm"] = (None, "true")
     for k, v in identity.items():
         fields[k] = (None, v)
-    with open(tar_file, "rb") as tfh:
-        fields["tar"] = ("pkg.tar", tfh, "application/octet-stream")
+    fields["tar"] = ("pkg.tar", tar_file, "application/octet-stream")
+    with _pp.MultipartFile(fields) as body:   # streamed: the tar is not held in memory
+        headers["Content-Type"] = body.content_type
         try:
-            resp = session.post(url, files=fields, headers=headers, timeout=1800)
+            resp = session.post(url, data=body, headers=headers, timeout=1800)
         except requests.ConnectionError as exc:
             raise SystemExit("upload of %s cut off by prepub (%s); prepub refuses"
                              " an upload that is too large or would fill its"
@@ -448,6 +449,106 @@ def _writes_outside_pkgroot(before, after, pkgroot):
     root = pkgroot.rstrip(os.sep)
     return sorted(p for p in (after - before)
                   if p != root and not p.startswith(root + os.sep))
+
+
+def _pkginfo(pkgroot):
+    """(PKG_DIR, PP) from etc/profile.d/.bits-pkginfo, or (None, None)."""
+    info = {}
+    try:
+        with open(os.path.join(pkgroot, "etc", "profile.d", ".bits-pkginfo")) as fh:
+            for line in fh:
+                k, _, v = line.strip().partition("=")
+                info[k] = v.strip('"')
+    except OSError:
+        return None, None
+    m = re.fullmatch(r"\$\{PKGPATH:-(.*)\}", info.get("PP", ""))
+    return info.get("PKG_DIR") or None, (m.group(1) if m else info.get("PP")) or info.get("OP")
+
+
+def dependency_targets(pkgroot, ctx):
+    """{work-dir path: CVMFS path} for every dependency in the package's
+    .meta.json, and its own path to PKG_DIR (relocate-me.sh maps that). A value
+    is a ValueError (or None) when the dependency has no CVMFS path."""
+    pkg_dir, pp = _pkginfo(pkgroot)
+    if not pkg_dir or not pp:
+        return {}
+    out = {"%s/%s" % (pkg_dir, pp): pkg_dir}
+    try:
+        with open(os.path.join(pkgroot, ".meta.json")) as fh:
+            rec = (json.load(fh).get("dependencies") or {}).get("recursive") or {}
+    except (OSError, ValueError):
+        rec = {}
+    for d in (rec.get("build") or []) + (rec.get("runtime") or []):
+        if not d.get("name"):
+            continue
+        ver, rev = str(d.get("version") or ""), str(d.get("revision") or "")
+        fam = d.get("pkg_family") or ""
+        vdir = ver + ("-" + rev if rev else "")
+        arch = d.get("effective_architecture") or ctx["arch"]
+        old = "/".join([pkg_dir, arch] + ([fam] if fam else []) + [d["name"], vdir])
+        if old in out:
+            continue
+        try:   # .meta.json has no dependency commits: {commit} stays unresolved
+            p = resolve_pkg_path(
+                pkgroot, ctx["repo"], d["name"], vdir, ver, rev, ctx.get("platform", ""),
+                ctx.get("install_dir", ""), "{commit}", ctx.get("user", ""), fam,
+                kind="path", tmpl_prefix=ctx["tmpl_prefix"], arch=arch,
+                prefix_fallback=ctx.get("prefix_fallback"), templates=ctx.get("templates"))
+            out[old] = "/cvmfs/%s/%s" % (ctx["repo"], p) if p else None
+        except ValueError as e:
+            out[old] = e
+    return out
+
+
+def relocate_dependencies(pkgroot, targets):
+    """Rewrite the dependencies' work-dir paths in the files relocate-me.sh
+    relocates to their CVMFS paths, before it runs: it maps everything under
+    PKG_DIR to the package's own path. Returns the files still naming PKG_DIR."""
+    listing = os.path.join(pkgroot, "etc", "profile.d", ".bits-relocate")
+    if not targets or not os.path.isfile(listing):
+        return []
+    pkg_dir, _pp = _pkginfo(pkgroot)
+    olds = sorted(targets, key=len, reverse=True)
+    # A path ends where a version could not go on: 1.0-1 is not 1.0-10.
+    rx = re.compile(b"(?:" + b"|".join(re.escape(o.encode()) for o in olds)
+                    + rb")(?![\w.+~-])")
+    # Left for relocate-me.sh: the package's own staging dir. Anything else
+    # (BUILD/, SOURCES/, a package not in the closure) would land in the package.
+    left = re.compile(re.escape(pkg_dir.encode()) + b"/(?!INSTALLROOT/)")
+    with open(listing) as fh:
+        rels = [l.rstrip("\n") for l in fh if l.strip()]
+    leftover = []
+    for rel in rels:
+        if os.path.isabs(rel) or ".." in rel.split("/"):
+            continue   # relocate-me.sh only edits files in the package
+        f = os.path.join(pkgroot, rel)
+        if os.path.islink(f) or not os.path.isfile(f):
+            continue
+        with open(f, "rb") as fh:
+            data = fh.read()
+
+        def new(m):
+            old = m.group(0).decode()
+            t = targets[old]
+            if t == pkg_dir:
+                return t.encode()
+            if not isinstance(t, str):
+                raise SystemExit("%s refers to %s, which has no CVMFS path: %s"
+                                 % (rel, old, t or "no template"))
+            if pkg_dir in t:   # relocate-me.sh would rewrite it again
+                raise SystemExit("cannot relocate %s to %s: it contains the build dir %s"
+                                 % (old, t, pkg_dir))
+            return t.encode()
+        out = rx.sub(new, data)
+        if left.search(rx.sub(b"", data)):
+            leftover.append(rel)
+        if out != data:   # replace, as sed -i does: keeps the mode, breaks hard links
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(f), prefix=".reloc-")
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(out)
+            os.chmod(tmp, os.stat(f).st_mode & 0o7777)
+            os.replace(tmp, f)
+    return leftover
 
 
 def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash="",
@@ -746,29 +847,70 @@ def _list_tree(entries):
     return tree
 
 
+def _vdir(spec):
+    rev = spec.get("revision", "")
+    return spec.get("version", "") + ("-" + rev if rev else "")
+
+
+def _local_root(spec, ctx):
+    """The package's local install tree when it holds this very build, else None."""
+    fam = spec.get("pkg_family", "")
+    local = os.path.join(os.path.dirname(ctx["tars_root"].rstrip("/")),
+                         spec.get("effective_architecture") or ctx["arch"],
+                         *([fam] if fam else []), spec["package"], _vdir(spec))
+    try:
+        with open(os.path.join(local, ".meta.json")) as fh:
+            same = (json.load(fh).get("package") or {}).get("hash") == spec.get("hash")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return local if same else None
+
+
+def _package_tarball(spec, ctx, what):
+    tar = tar_path(spec, ctx["tars_root"], ctx["arch"])
+    if not os.path.isfile(tar):
+        raise SystemExit("%s@%s: no tarball to %s from (%s)"
+                         % (spec["package"], _vdir(spec), what, tar))
+    return tar
+
+
 def _package_tree(spec, ctx):
     """The package's view entries: its .bits-view.json (written by the build),
     from the local install tree when that holds this very build, else from the
     tarball; a tarball without one (built before) is listed in full."""
-    rev = spec.get("revision", "")
-    vdir = spec.get("version", "") + ("-" + rev if rev else "")
-    fam = spec.get("pkg_family", "")
-    local = os.path.join(os.path.dirname(ctx["tars_root"].rstrip("/")),
-                         spec.get("effective_architecture") or ctx["arch"],
-                         *([fam] if fam else []), spec["package"], vdir)
+    local = _local_root(spec, ctx)
     try:
-        with open(os.path.join(local, ".meta.json")) as fh:
-            same = (json.load(fh).get("package") or {}).get("hash") == spec.get("hash")
-        if same:
+        if local:
             with open(os.path.join(local, ".bits-view.json")) as fh:
                 return _list_tree(json.load(fh)["entries"])
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    tar = tar_path(spec, ctx["tars_root"], ctx["arch"])
-    if not os.path.isfile(tar):
-        raise SystemExit("%s@%s: no tarball to list its files from (%s)"
-                         % (spec["package"], vdir, tar))
-    return _tar_tree(tar)
+    return _tar_tree(_package_tarball(spec, ctx, "list its files"))
+
+
+def _package_file(spec, ctx, rel):
+    """The text of the package's *rel* (package-relative) as published, or None
+    when it has none: from the local install tree when that holds this very
+    build, else from the tarball (<arch>/[<family>/]<pkg>/<ver-rev>/...), its
+    revision placeholder filled as the install fills it."""
+    import tarfile
+    local = _local_root(spec, ctx)
+    if local:
+        try:
+            with open(os.path.join(local, rel)) as fh:
+                return fh.read()
+        except OSError:
+            return None
+    fam = spec.get("pkg_family", "")
+    want = os.path.join(spec.get("effective_architecture") or ctx["arch"],
+                        *([fam] if fam else []), spec["package"], _vdir(spec), rel)
+    with tarfile.open(_package_tarball(spec, ctx, "read %s" % rel), "r:*") as tf:
+        for m in tf:
+            if os.path.normpath(m.name) == want and m.isfile():
+                text = tf.extractfile(m).read().decode("utf-8", "replace")
+                return text.replace("@@PKGREVISION@%s@@" % spec.get("hash", ""),
+                                    spec.get("revision", ""))
+    return None
 
 
 def _tar_tree(tar):
@@ -818,6 +960,38 @@ def _tar_tree(tar):
     return tree
 
 
+def _resolve(tree, path, depth=0):
+    """*path* of a package tree from _tar_tree with its symlinks followed
+    inside the package, or None when it leaves it or does not exist."""
+    kind, target = tree.get(path, (None, ""))
+    if kind != "link" or depth > 16:
+        return path if kind else None
+    t = os.path.normpath(os.path.join(os.path.dirname(path), target))
+    return None if target.startswith("/") or t.startswith("..") else _resolve(tree, t, depth + 1)
+
+
+def _resolve_path(tree, rel, depth=0):
+    """*rel* of a package tree from _tar_tree with every symlink on the way
+    followed, as the file system would; None when it does not exist. Raises
+    ValueError when a link leads out of the package."""
+    cur = ""
+    for part in rel.split("/"):
+        cur = cur + "/" + part if cur else part
+        kind, target = tree.get(cur, (None, ""))
+        if kind is None:
+            return None
+        if kind == "link":
+            t = os.path.normpath(os.path.join(os.path.dirname(cur), target))
+            if depth > 16:
+                raise ValueError("%s: too many links" % cur)
+            if target.startswith("/") or t == ".." or t.startswith("../"):
+                raise ValueError("%s is a link out of the package" % cur)
+            cur = _resolve_path(tree, t, depth + 1)
+            if cur is None:
+                return None
+    return cur
+
+
 def _view_entries(tree, subdirs):
     """(view-relative path, package-relative path) for every file or symlink the
     view links, walking *subdirs* of a package tree from _tar_tree. A symlinked
@@ -827,25 +1001,18 @@ def _view_entries(tree, subdirs):
     for path in tree:
         children.setdefault(os.path.dirname(path), []).append(path)
 
-    def resolve(path, depth=0):
-        kind, target = tree.get(path, (None, ""))
-        if kind != "link" or depth > 16:
-            return path if kind else None
-        t = os.path.normpath(os.path.join(os.path.dirname(path), target))
-        return None if target.startswith("/") or t.startswith("..") else resolve(t, depth + 1)
-
     out = []
 
     def walk(logical, real, seen):
         for child in sorted(children.get(real, [])):
             name = os.path.join(logical, os.path.basename(child))
-            real_child = resolve(child)
+            real_child = _resolve(tree, child)
             if real_child and tree[real_child][0] == "dir" and real_child not in seen:
                 walk(name, real_child, seen | {real_child})
             else:
                 out.append((name, name))
     for sub in subdirs:
-        real = resolve(sub)
+        real = _resolve(tree, sub)
         if real and tree[real][0] == "dir":
             walk(sub, real, {real})
     return out
@@ -865,6 +1032,17 @@ _VIEW_KEEP = ("lib*/pkgconfig", "lib*/python*", "lib*/python*/site-packages",
               "share/man")
 
 
+def _view_rules(spec, exclude):
+    """(directories the view walks, patterns it drops) for a package, or None
+    when the view leaves it out."""
+    rules = spec.get("view", True)
+    if spec["package"] in exclude or rules is False:
+        return None
+    rules = rules if isinstance(rules, dict) else {}
+    return (list(VIEW_SUBDIRS) + [str(p).strip("/") for p in (rules.get("include") or [])],
+            [str(p).strip("/") for p in (rules.get("exclude") or [])])
+
+
 def merged_view(ctx, specs, staging, view_path):
     """Build the release's merged view in *staging*: relative symlinks from
     *view_path* (repo-relative) into each package's published path, listed from
@@ -877,12 +1055,10 @@ def merged_view(ctx, specs, staging, view_path):
     exclude = set(ctx["templates"].get("view_exclude") or [])
     plans, users = [], {}   # users: view path -> packages with an entry at/below it
     for spec in reversed(specs):
-        rules = spec.get("view", True)
-        if spec["package"] in exclude or rules is False:
+        rules = _view_rules(spec, exclude)
+        if rules is None:
             continue
-        rules = rules if isinstance(rules, dict) else {}
-        drop = [str(p).strip("/") for p in (rules.get("exclude") or [])]
-        subdirs = list(VIEW_SUBDIRS) + [str(p).strip("/") for p in (rules.get("include") or [])]
+        subdirs, drop = rules
         entries = []
         for vrel, prel in _view_entries(_package_tree(spec, ctx), subdirs):
             dropped = _excluded(prel, drop)
@@ -939,20 +1115,97 @@ def merged_view(ctx, specs, staging, view_path):
     return res
 
 
-def write_view_setup(staging, published_at):
+def view_environment(ctx, specs, view_path, top_level):
+    """What loading the release's modules sets, for its view's setup.sh: the
+    modulefiles of *top_level* (all *specs* without it) and of the modules they
+    load, read without Tcl (bits_helpers.modulefile_env). Returns (env, problems),
+    env {"paths": {var: [entries]}, "sets": {var: value}, "base": (relative to
+    the view, absolute)} with modulefile_env.VIEW / BASE in the values, or None.
+    A problem means setup.sh does not set everything the modules do."""
+    from bits_helpers import modulefile_env as mfe
+    pkgs_root = (fixed_dir(ctx, "packages")
+                 if (ctx.get("templates") or {}).get("packages") else None)
+    if not pkgs_root:
+        return None, ["the group has no packages directory"]
+    by = {sp["package"]: sp for sp in specs}
+    members = {n: _vdir(sp) for n, sp in by.items()}
+    trees = {}
+
+    def unsupported(what, call):
+        try:
+            return call()
+        except (SystemExit, OSError, ValueError, EOFError) as exc:
+            raise mfe.Unsupported("cannot %s: %s" % (what, exc))
+
+    def tree(pkg):
+        if pkg not in trees:
+            trees[pkg] = unsupported("list it", lambda: _package_tree(by[pkg], ctx))
+        return trees[pkg]
+
+    def is_dir(pkg, rel):
+        try:
+            real = _resolve_path(tree(pkg), rel)
+        except ValueError as exc:   # modulecmd follows it out of the package; we cannot
+            raise mfe.Unsupported(str(exc))
+        return real is not None and tree(pkg)[real][0] == "dir"
+
+    def read(pkg):
+        return unsupported("read its modulefile", lambda: _package_file(
+            by[pkg], ctx, "etc/modulefiles/%s" % pkg))
+
+    exclude = set(ctx["templates"].get("view_exclude") or [])
+    # Beside what a view links, a package root holds only its own metadata.
+    own = ("etc", "relocate-me.sh")
+
+    def in_view(pkg, rel):
+        rules = _view_rules(by[pkg], exclude)
+        if not rules:
+            return False
+        if not rel:   # the root (CMAKE_PREFIX_PATH): only when the view has all of it
+            try:
+                names = [p for p in tree(pkg) if "/" not in p]
+            except mfe.Unsupported:
+                return False
+            return not rules[1] and all(
+                p.startswith(".") or p in own or p in rules[0] for p in names)
+        return not _excluded(rel, rules[1]) and any(
+            rel == d or rel.startswith(d + "/") for d in rules[0])
+
+    top = list(top_level or []) or [sp["package"] for sp in specs]
+    problems = ["the release's %s is not in it" % t for t in top if t not in by]
+    ops, more = mfe.release_ops([t for t in top if t in by], members, read, is_dir)
+    paths, sets, rest = mfe.setup_env(ops, members, in_view)
+    base = (os.path.relpath(pkgs_root, view_path), "/cvmfs/%s/%s" % (ctx["repo"], pkgs_root))
+    return {"paths": paths, "sets": sets, "base": base}, problems + more + rest
+
+
+def write_view_setup(staging, published_at, env=None):
     """setup.sh / setup.csh for a merged view; one entry per variable, prepended.
     setup.sh locates itself under bash and zsh (so the view works wherever the
     repository is mounted); other shells, and csh which cannot, use the path it
-    is published at (*published_at*, absolute)."""
+    is published at (*published_at*, absolute). With *env* (view_environment),
+    also what the release's modules set: their path entries beside the view's,
+    and their other variables (each package's <PKG>_ROOT, ...), below the
+    packages directory found from the view."""
     import glob
     from bits_helpers.view import view_env
+    from bits_helpers.modulefile_env import BASE, INHERITED, VIEW
     def _ver(site):
         mm = os.path.basename(os.path.dirname(site))[len("python"):]
         return tuple(int(x) for x in mm.split(".") if x.isdigit()), mm
     sites = glob.glob(os.path.join(staging, "lib*", "python*", "site-packages"))
     python_mm = max(map(_ver, sites))[1] if sites else None
-    env = view_env(staging, python_mm=python_mm)
-    env = {k: v.replace(staging, "@V@") for k, v in sorted(env.items())}
+    # Each variable's entries in order, INHERITED where its value from before goes:
+    # the modules' as they set them, then the view's own that they did not add.
+    paths = {var: list(entries) for var, entries in (env or {}).get("paths", {}).items()}
+    for var, value in view_env(staging, python_mm=python_mm).items():
+        have = paths.setdefault(var, [INHERITED])
+        for e in value.replace(staging, VIEW).split(":"):
+            if e not in have:
+                have.insert(have.index(INHERITED), e)
+    sets = (env or {}).get("sets", {})
+    uses_base = any(BASE in v for v in list(sets.values()) +
+                    [e for es in paths.values() for e in es if e is not INHERITED])
     sh = ["# Source this file (bash/zsh/sh) to use this release view.",
           'if [ -n "${BASH_SOURCE:-}" ]; then _s="${BASH_SOURCE[0]}"',
           "elif [ -n \"${ZSH_VERSION:-}\" ]; then eval '_s=${(%):-%x}'",
@@ -962,10 +1215,28 @@ def write_view_setup(staging, published_at):
     csh = ["# Source this file (csh/tcsh) to use this release view.",
            'set _v = "%s"' % published_at,
            "setenv BITS_VIEW $_v"]
-    for var, val in env.items():
-        sh.append('export %s="%s${%s:+:$%s}"' % (var, val.replace("@V@", "$_v"), var, var))
-        csh.append('if ($?%s) then\n  setenv %s "%s:${%s}"\nelse\n  setenv %s "%s"\nendif'
-                   % (var, var, val.replace("@V@", "$_v"), var, var, val.replace("@V@", "$_v")))
+    if uses_base:
+        rel, absolute = env["base"]
+        sh.append('_b="$(cd "$_v/%s" 2>/dev/null && pwd)" || _b="$_v/%s"' % (rel, rel))
+        csh.append('set _b = "%s"' % absolute)
+
+    def shell(v):   # the same in both: $_v and $_b
+        return v.replace(VIEW, "$_v").replace(BASE, "$_b")
+    for var in sorted(paths):
+        at = paths[var].index(INHERITED)
+        before = shell(":".join(paths[var][:at]))
+        after = shell(":".join(paths[var][at + 1:]))
+        if before:
+            value = before + "${%s:+:$%s}" % (var, var) + (":" + after if after else "")
+        else:
+            value = "${%s:+$%s:}" % (var, var) + after
+        sh.append('export %s="%s"' % (var, value))
+        csh.append('if ($?%s) then\n  setenv %s "%s"\nelse\n  setenv %s "%s"\nendif'
+                   % (var, var, ":".join(p for p in (before, "${%s}" % var, after) if p),
+                      var, ":".join(p for p in (before, after) if p)))
+    for var in sorted(sets):
+        sh.append('export %s="%s"' % (var, shell(sets[var])))
+        csh.append('setenv %s "%s"' % (var, shell(sets[var])))
     # Man pages only while MANPATH is set: unset, man derives its search path
     # from PATH (the view's bin -> share/man), and setting it would hide the
     # system's own pages.
@@ -973,8 +1244,8 @@ def write_view_setup(staging, published_at):
         sh.append('if [ -n "${MANPATH:-}" ]; then export MANPATH="$_v/share/man:$MANPATH"; fi')
         # Multi-line: csh expands ${MANPATH} on a one-line if even when unset.
         csh.append('if ($?MANPATH) then\n  setenv MANPATH "$_v/share/man:${MANPATH}"\nendif')
-    sh.append("unset _s _v")
-    csh.append("unset _v")
+    sh.append("unset _s _v" + (" _b" if uses_base else ""))
+    csh.append("unset _v" + (" _b" if uses_base else ""))
     for name, body in (("setup.sh", sh), ("setup.csh", csh)):
         with open(os.path.join(staging, name), "w") as fh:
             fh.write("\n".join(body) + "\n")
@@ -1111,8 +1382,13 @@ def publish_one(spec, ctx):
 
         reloc = os.path.join(pkgroot, "relocate-me.sh")
         if os.path.isfile(reloc):
-            env = dict(os.environ,
-                       INSTALL_BASE="/cvmfs/%s/%s" % (ctx["repo"], path),
+            own = "/cvmfs/%s/%s" % (ctx["repo"], path)
+            stray = relocate_dependencies(pkgroot, dependency_targets(pkgroot, ctx))
+            if stray:
+                print("WARNING: %s@%s: %d file(s) name the build area outside the package "
+                      "and its dependencies: %s" % (pkg, vdir, len(stray), " ".join(stray[:5])
+                      + (" ..." if len(stray) > 5 else "")), file=sys.stderr)
+            env = dict(os.environ, INSTALL_BASE=own,
                        WORK_DIR=work_dir, BITS_RELOCATE_STRIP_PP="1")
             # Views (lcg-view) place the packages they reference with these.
             if ctx.get("templates"):
@@ -1466,8 +1742,16 @@ def main(argv=None):
     rel_links = rel_view = False
     if a.release_view:
         tm = templates or {}
+        # A build of the toolchain (own_hash) alone is no release of this arch:
+        # its top-level packages live under another one (noarch ones may).
+        tops = [s for s in pkgs if s.get("package") in (_man.get("requested_packages") or [])]
+        outside = bool(tops and a.arch) and all(
+            (s.get("effective_architecture") or a.arch) not in (a.arch, SHARED_ARCH, "shared")
+            for s in tops)
         why = ("the group has no cvmfs_packages_template" if not tm.get("packages")
                else "the build has no release (the main line)" if not tm.get("release")
+               else "its top-level packages (%s) live outside %s"
+               % (", ".join(sorted(s["package"] for s in tops)), a.arch) if outside
                else "")
         rel_links = not why and bool(tm.get("path")) and tm["path"] != tm["packages"]
         rel_view = not why and bool(tm.get("views"))
@@ -1678,7 +1962,20 @@ def _publish_merged_view(ctx, specs, emit, top_level=None, force=False):
         for path, winner, loser in res["conflicts"]:
             sys.stderr.write("[publish] merged view: %s from %s, not %s\n"
                              % (path, winner, loser))
-        write_view_setup(staging, "/cvmfs/%s/%s" % (ctx["repo"], view_path))
+        env, problems = view_environment(ctx, specs, view_path, top_level)
+        for why in problems:
+            sys.stderr.write("[publish] merged view: setup.sh does not set what the "
+                             "modules do: %s\n" % why)
+        write_view_setup(staging, "/cvmfs/%s/%s" % (ctx["repo"], view_path), env)
+        # The one top-level module setup.sh stands in for, when it does.
+        top = next((sp for sp in specs if sp["package"] in top_level), None) \
+            if not problems and len(top_level) == 1 else None
+        if top:
+            marker = os.path.join(staging, setup_marker(top))
+            with open(marker, "w") as fh:
+                fh.write("# setup.sh sets what loading %s/%s sets\n"
+                         % (top["package"], _vdir(top)))
+            os.chmod(marker, 0o644)
         # The view's identity: what prepub compares to decide to replace it.
         # Modes are hashed, so they must not depend on the publisher's umask.
         for dp, dns, _fns in os.walk(staging):
@@ -1692,7 +1989,7 @@ def _publish_merged_view(ctx, specs, emit, top_level=None, force=False):
         if exists:
             if state.get("hash") == fp:
                 emit(["SKIPPED merged view: %s is unchanged" % view_path])
-                return 0
+                return _publish_view_pointer(ctx, top, view_path, emit) if top else 0
             owner = _view_owner(ctx, view_path) if not force else None
             if owner and top_level and owner != top_level:
                 emit(["FAILED merged view: %s was made from %s, not %s; "
@@ -1707,7 +2004,9 @@ def _publish_merged_view(ctx, specs, emit, top_level=None, force=False):
         with open(os.path.join(staging, ".meta.json"), "w") as f:
             json.dump({"package": {"package": "merged-view", "hash": fp},
                        "top_level": top_level, "build_id": ctx.get("build_id", ""),
-                       "members": recorded}, f, indent=1)
+                       "members": recorded,
+                       "setup": {"modules": not problems, "problems": problems[:50]}},
+                      f, indent=1)
         os.chmod(os.path.join(staging, ".meta.json"), 0o644)
         # No .cvmfscatalog here: both publish paths ingest with create-catalog-on-
         # root (-c / -C true), which adds the marker itself; a second one fails.
@@ -1720,12 +2019,47 @@ def _publish_merged_view(ctx, specs, emit, top_level=None, force=False):
         jid = _publish_tar(ctx, view_path, tar, label, identity=view_path,
                            identity_hash=fp, replace=replace)
         emit(["PUBLISHED %s %s" % (jid, label)])
-        return 0
+        return _publish_view_pointer(ctx, top, view_path, emit) if top else 0
     except (SystemExit, Exception) as exc:
         emit(["FAILED merged view: %s" % exc])
         return 1
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def setup_marker(spec):
+    """The file in a release's view that says its setup.sh sets what loading
+    the release's top-level module *spec* sets: there only while the view is
+    one made for that very module."""
+    return ".setup-complete.%s.%s" % (spec["package"], _vdir(spec))
+
+
+def view_pointer(spec, ctx):
+    """Where the modules directory points from a release's top-level module to
+    its view: <modules dir>/<pkg>/.<ver-rev>.view, a link to the view's
+    setup_marker (a file, not a modulefile, so modulecmd passes it over). A view
+    replaced by another release's has no such marker: the link then dangles."""
+    mod = _spec_path(spec, ctx, "modules")
+    return mod and "%s/.%s.view" % (mod, _vdir(spec))
+
+
+def _publish_view_pointer(ctx, spec, view_path, emit):
+    """The link from the release's top-level module *spec* to its view
+    (view_pointer), unless it is published already. Returns the rc contribution."""
+    root = (fixed_dir(ctx, "modules")
+            if (ctx.get("templates") or {}).get("modules") else None)
+    link = view_pointer(spec, ctx) if root else None
+    if not link:
+        return 0
+    st = published_state(ctx, link) if ctx["submit"] else None
+    if st and st.get("exists"):
+        return 0
+    label = "view-pointer@%s" % root
+    jid, err = publish_links(ctx, root, [(link, "%s/%s" % (view_path, setup_marker(spec)))],
+                             label)
+    emit(["PUBLISHED %s %s" % (jid, label)] if err is None else
+         ["FAILED view pointer %s: %s" % (link, err)])
+    return 0 if err is None else 1
 
 
 def _publish_release_links(ctx, specs, emit):

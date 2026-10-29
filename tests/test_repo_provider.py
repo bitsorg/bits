@@ -274,6 +274,125 @@ class TestCloneOrUpdateProvider(unittest.TestCase):
             spec, self.work_dir, self.ref_dir, fetch_repos=False)
         self.assertEqual(got_hash, commit)
 
+    # ── a tag that names nothing in the repository ──────────────────────────
+    def _cloned(self, scm):
+        return any("clone" in (c[0][0] if c[0] else []) for c in scm.exec.call_args_list)
+
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_unknown_tag_dies_before_cloning(self, MockGit, mock_logged_scm, mock_update_ref):
+        scm = self._mock_scm()
+        scm.parseRefs.return_value = {"refs/heads/LCG_110": "41623d8010d5631143882c13"}
+        MockGit.return_value = scm
+        spec = self._spec()
+        spec["tag"] = "LCG_110b"
+        with patch("bits_helpers.log.error") as err, self.assertRaises(SystemExit):
+            clone_or_update_provider(spec, self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertIn("no branch or tag 'LCG_110b'", err.call_args[0][0] % err.call_args[0][1:])
+        self.assertFalse(self._cloned(scm))
+        self.assertFalse(os.path.exists(os.path.join(
+            _provider_cache_root(self.work_dir, spec["package"]), "LCG_110b")))
+
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec",
+           side_effect=lambda _r, _p, spec, **_k: spec.__setitem__("reference", "/mirror"))
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_tag_newer_than_the_mirror_is_found_upstream(self, MockGit, mock_logged_scm, _ref):
+        scm = self._mock_scm()
+        scm.listRefsCmd.side_effect = lambda repo: ["ls-remote", repo]
+        scm.parseRefs.side_effect = lambda out: out
+        spec = self._spec()
+        spec["tag"] = "v2"
+        refs = {"/mirror": {"refs/tags/v1": "1111111111aa"},
+                spec["source"]: {"refs/tags/v2": "2222222222bb"}}
+        mock_logged_scm.side_effect = lambda _s, _p, _r, cmd, *a, **k: refs[cmd[-1]]
+        MockGit.return_value = scm
+        _, got = clone_or_update_provider(spec, self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertEqual(got, "2222222222bb")
+
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm", side_effect=SystemExit(1))
+    @patch("bits_helpers.repo_provider.Git")
+    def test_unlisted_refs_and_a_name_dies(self, MockGit, mock_logged_scm, mock_update_ref):
+        scm = self._mock_scm()
+        MockGit.return_value = scm
+        spec = self._spec()
+        spec["tag"] = "LCG_110b"
+        with self.assertRaises(SystemExit):
+            clone_or_update_provider(spec, self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertFalse(self._cloned(scm))
+
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_commit_as_tag_still_clones(self, MockGit, mock_logged_scm, mock_update_ref):
+        scm = self._mock_scm()
+        scm.parseRefs.return_value = {"refs/heads/main": "43badb4296a8cd324a90"}
+        MockGit.return_value = scm
+        spec = self._spec()
+        spec["tag"] = "deadbeef1234"
+        checkout_dir, got = clone_or_update_provider(
+            spec, self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertEqual(got, "deadbeef1234")
+        self.assertTrue(self._cloned(scm))
+
+    # ── an unfinished checkout, and another bits fetching the provider ───────
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_unfinished_checkout_is_redone(self, MockGit, mock_logged_scm, mock_update_ref):
+        commit = "abcdef1234567890"
+        scm = self._mock_scm(commit)
+        MockGit.return_value = scm
+        spec = self._spec()
+        stale = os.path.join(_provider_cache_root(self.work_dir, spec["package"]), commit[:10])
+        os.makedirs(os.path.join(stale, ".git"))       # cloned, never checked out
+        checkout_dir, _ = clone_or_update_provider(
+            spec, self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertEqual(checkout_dir, stale)
+        self.assertTrue(self._cloned(scm))
+        self.assertFalse(os.path.exists(os.path.join(stale, ".git")))   # removed before the clone
+        self.assertTrue(os.path.exists(os.path.join(stale, ".bits_provider_ok")))
+
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_waits_for_another_bits_fetching_it(self, MockGit, mock_logged_scm, mock_update_ref):
+        import fcntl
+        import threading
+        scm = self._mock_scm()
+        MockGit.return_value = scm
+        spec = self._spec()
+        root = _provider_cache_root(self.work_dir, spec["package"])
+        os.makedirs(root)
+        holder = open(os.path.join(root, ".lock"), "a")
+        fcntl.flock(holder, fcntl.LOCK_EX)              # the other bits
+        t = threading.Thread(target=clone_or_update_provider, daemon=True,
+                             args=(spec, self.work_dir, self.ref_dir, False))
+        try:
+            t.start()
+            t.join(0.5)
+            self.assertTrue(t.is_alive())
+            self.assertFalse(self._cloned(scm))
+        finally:
+            holder.close()                              # the other bits is done
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(self._cloned(scm))
+
+    @patch("bits_helpers.repo_provider.warning")
+    @patch("bits_helpers.repo_provider.fcntl.flock", side_effect=OSError(37, "No locks available"))
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_no_lock_goes_on_without(self, MockGit, mock_logged_scm, _ref, _flock, warn):
+        scm = self._mock_scm()
+        MockGit.return_value = scm
+        clone_or_update_provider(self._spec(), self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertTrue(self._cloned(scm))
+        self.assertIn("going on without it", warn.call_args[0][0])
+
     @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
     @patch("bits_helpers.repo_provider.logged_scm")
     @patch("bits_helpers.repo_provider.Git")

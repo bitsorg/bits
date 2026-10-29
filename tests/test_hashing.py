@@ -176,6 +176,16 @@ class NormalizeRecipeMetadataExclusionTestCase(unittest.TestCase):
         self.assertEqual(self._n(self.HEADER),
                          self._n(self.HEADER.replace("requires:\n", "view: false\nrequires:\n")))
 
+    def test_references_are_hash_invariant(self):
+        # references: CPEs/purls for scanners, written into the SBOM only.
+        withr = self.HEADER.replace(
+            "requires:\n",
+            "references:\n"
+            "  - cpe:2.3:a:sqlite:sqlite:3.32.3:*:*:*:*:*:*:*\n"
+            "  - pkg:pypi/foo@%(version)s\n"
+            "requires:\n")
+        self.assertEqual(self._n(self.HEADER), self._n(withr))
+
     def test_adding_preload_block_is_hash_invariant(self):
         # The preload: test list (consumed post-publish by `bits preload`) is
         # hash-excluded — its indented block is dropped and editing it must not
