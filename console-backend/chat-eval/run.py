@@ -24,7 +24,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from console_backend.orch import chat, chat_docs  # noqa: E402
+from console_backend.orch import chat, chat_docs, db  # noqa: E402
 
 JUDGE = ("Here is an answer to a user's question.\n\nAnswer:\n<<<\n%s\n>>>\n\n"
          "Does the answer state the following (in any wording)? Reply with only yes or no.\n%s")
@@ -54,8 +54,8 @@ def _local_files(local, src):
 
 
 def index(local, faq):
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = db.connect(":memory:")          # the orchestrator's schema: refresh keeps state in kv
+    db.migrate(conn)
     chat_docs.ensure(conn)
     sources = chat_docs.sources_of(_Settings())
     if local:
@@ -116,6 +116,7 @@ def main():
     ap.add_argument("--judge", action="store_true", help="the model checks each must / must_not")
     ap.add_argument("--faq", action="store_true", help="index docs/FAQ.md too (made from these cases)")
     ap.add_argument("--only", help="comma-separated case ids")
+    ap.add_argument("--sample", type=int, help="this many cases, spread over the set (the same each run)")
     ap.add_argument("--context", type=int, default=16384)
     ap.add_argument("--think", action="store_true", help="let a thinking model think first")
     ap.add_argument("--out", help="write a markdown report here")
@@ -125,6 +126,9 @@ def main():
     if a.only:
         keep = set(a.only.split(","))
         cases = [c for c in cases if c["id"] in keep]
+    if a.sample and a.sample < len(cases):
+        step = len(cases) / a.sample
+        cases = [cases[int(i * step)] for i in range(a.sample)]
     conn = index(a.local, a.faq)
     hits = total = facts = facts_ok = wrong = 0
     report = ["# Help chat evaluation", "",

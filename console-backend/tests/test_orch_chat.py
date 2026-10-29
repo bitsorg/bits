@@ -421,6 +421,23 @@ class ExplainTest(_DB):
         self.assertGreater(len(rec), 11000)
 
 
+class EvalRunnerTest(unittest.TestCase):
+    """chat-eval/run.py indexes the docs as the worker does (it once lacked the kv table)."""
+
+    def test_it_indexes_from_the_network(self):
+        import sys
+        import os.path
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                        "chat-eval"))
+        import run
+        real = chat_docs.refresh
+        s = FakeSession({RAW: (DOC, "e1")})
+        with patch.object(run, "_Settings", type("S", (), {"chat_docs": [SRC]})), \
+             patch.object(run.chat_docs, "refresh", lambda conn, sources: real(conn, sources, s)):
+            conn = run.index(None, False)
+        self.assertEqual(chat_docs.status(conn)["sections"], 5)
+
+
 class ContextTest(_DB):
     def test_a_failed_build_with_its_cause_and_redacted_excerpt(self):
         self._fail(1, bits_failure())
