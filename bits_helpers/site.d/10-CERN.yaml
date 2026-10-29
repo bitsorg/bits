@@ -22,3 +22,6 @@ sbom:
 console:
   backend_url: https://bits.cern.ch
   time_zone: Europe/Zurich
+  docs:
+    - https://gitlab.cern.ch/buncic/bits-console
+    - https://gitlab.cern.ch/buncic/bits-manifests/-/raw/main/README.md

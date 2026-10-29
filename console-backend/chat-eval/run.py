@@ -6,14 +6,16 @@ sources and, with --model, the model's answers (judged by the model itself with
 --judge, else for a person to read in the report).
 
     python chat-eval/run.py                                  # the search, docs from GitHub
-    python chat-eval/run.py --local ~/src                    # docs from checkouts in ~/src/<repo>
+    python chat-eval/run.py --local ~/src                    # docs from checkouts in ~/src/<repo or project>
     python chat-eval/run.py --model gemma4:12b --judge --out report.md
 """
 
 import argparse
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import sys
 import time
 
@@ -28,36 +30,63 @@ JUDGE = ("Here is an answer to a user's question.\n\nAnswer:\n<<<\n%s\n>>>\n\n"
          "Does the answer state the following (in any wording)? Reply with only yes or no.\n%s")
 
 
+def _local_root(local, src):
+    """The checkout in LOCAL of a source's repository (bits: this one)."""
+    m = re.match(r"https://[^/]+/(?:[^/]+/)*?([^/]+?)(?:/-/raw/.*)?$", src)
+    repo = m.group(1) if m else src.split("/")[1]
+    return os.path.dirname(os.path.dirname(HERE)) if repo == "bits" else os.path.join(local, repo)
+
+
+def _local_files(local, src):
+    """[(file source, its path in the checkout)] of a source, from a checkout in LOCAL."""
+    root = _local_root(local, src)
+    if not chat_docs.is_repo(src):
+        path = (re.match(r".*/-/raw/[^/]+/(.+)", src).group(1) if src.startswith("https://")
+                else chat_docs.parse_source(src)[2])
+        return [(src, os.path.join(root, path))]
+    try:
+        paths = subprocess.run(["git", "-C", root, "ls-files"], capture_output=True, text=True,
+                               check=True).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        paths = [os.path.relpath(os.path.join(d, f), root) for d, _, fs in os.walk(root) for f in fs]
+    prefix = "%s/-/raw/main/" % src if src.startswith("https://") else src + "/"
+    return [(prefix + p, os.path.join(root, p)) for p, _ in chat_docs._markdown([(p, "") for p in paths])]
+
+
 def index(local, faq):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     chat_docs.ensure(conn)
-    for src in chat_docs.DEFAULT_SOURCES:
-        if src.endswith("/FAQ.md") and not faq:
-            continue                   # its entries are these cases: it would answer them
-        owner, repo, path = chat_docs.parse_source(src)
-        if local:
-            root = os.path.dirname(os.path.dirname(HERE)) if repo == "bits" else os.path.join(local, repo)
-            try:
-                text = open(os.path.join(root, path), encoding="utf-8").read()
-            except OSError as e:
-                print("skipped %s: %s" % (src, e), file=sys.stderr)
-                continue
-        else:
-            r = requests.get(chat_docs.RAW % (owner, repo, path), timeout=20)
-            if r.status_code != 200:
-                print("skipped %s: HTTP %s" % (src, r.status_code), file=sys.stderr)
-                continue
-            text = r.text
-        chat_docs._replace(conn, src, chat_docs.WEB % (owner, repo, path), text, "", "", 0)
+    sources = chat_docs.sources_of(_Settings())
+    if local:
+        for src in sources:
+            for fsrc, path in _local_files(local, src):
+                try:
+                    chat_docs._replace(conn, fsrc, open(path, encoding="utf-8").read(), "", "", "", 0)
+                except OSError as e:
+                    print("skipped %s: %s" % (fsrc, e), file=sys.stderr)
+    else:
+        try:
+            chat_docs.refresh(conn, sources)
+        except RuntimeError as e:          # what could not be read is said; the rest is indexed
+            print(e, file=sys.stderr)
+    if not faq:                            # its entries are these cases: it would answer them
+        conn.execute("DELETE FROM chat_sections WHERE source LIKE '%/docs/FAQ.md'")
     return conn
 
 
 def _key(url):
-    """'docs/USERGUIDE.md#platforms' of a section's link (bits) or '<repo>/README.md#…'."""
+    """'docs/USERGUIDE.md#platforms' of a section's link (bits), else '<repo>/README.md#…'."""
+    m = re.match(r"https://[^/]+/(?:[^/]+/)*?([^/]+)/-/blob/[^/]+/(.+)", url)
+    if m:                                  # GitLab
+        return "%s/%s" % m.groups()
     rest = url.split("github.com/", 1)[-1]
     owner, repo, _blob, _ref, path = rest.split("/", 4)
     return path if repo == "bits" else "%s/%s" % (repo, path)
+
+
+class _Settings:
+    chat_docs = [d.strip() for d in os.environ.get("BITS_CHAT_DOCS", "").split(",") if d.strip()]
 
 
 def record(build):

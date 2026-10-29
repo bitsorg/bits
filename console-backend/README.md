@@ -322,13 +322,15 @@ cause when a signature matched (`cause`), the text, then `done` or `error`. The 
 gets no tools. The backend sends it the best docs sections and, for a build, what the
 orchestrator recorded of it (outcome, where it stopped, failed jobs, the redacted
 excerpts, the issue), marked as data never to be followed. The worker's `chat_docs` step
-reads the docs from GitHub (`BITS_CHAT_DOCS`, owner/repo/path, default the bits docs and
-the community READMEs, each repository's default branch) every
+reads the docs (`BITS_CHAT_DOCS`: a GitHub repository `owner/repo` or file
+`owner/repo/path`, a GitLab project `https://host/group/project` or a raw `…/file.md`;
+default every markdown file of the bits repositories on GitHub, each on its default
+branch, and the site's `console.docs`, at CERN bits-console and bits-manifests) every
 `BITS_CHAT_DOCS_REFRESH_S` (3600), when they changed, into a full-text index
 (SQLite FTS5) in this database. Limits: one question at a time per user,
 `BITS_CHAT_PER_MINUTE` (6), `BITS_CHAT_PARALLEL` (2) answers at once and
 `BITS_CHAT_QUEUE` (4) waiting; per answer `BITS_CHAT_CONTEXT` (16384 tokens, best set
-as Ollama's `OLLAMA_CONTEXT_LENGTH` too), `BITS_CHAT_ANSWER_TOKENS` (800) and
+as Ollama's `OLLAMA_CONTEXT_LENGTH` too), `BITS_CHAT_ANSWER_TOKENS` (1500) and
 `BITS_CHAT_TIMEOUT_S` (90); a thinking model answers without thinking first unless
 `BITS_CHAT_THINK=1`. Nothing of a chat is kept except a vote (`POST
 /ops/chat/feedback`), with its question, answer and sources, for 90 days (migration 24;

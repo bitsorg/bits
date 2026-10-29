@@ -12,6 +12,7 @@ containers:
 console:
   backend_url:          # the console backend (bits trace, certify, compliance --enforce)
   time_zone: UTC        # the instance's, for every community: nightly schedules, times shown
+  docs: []              # the console's docs for the help chat: GitLab projects or raw .md addresses
 providers:
   url: https://github.com/bitsorg/bits-providers
 sbom:

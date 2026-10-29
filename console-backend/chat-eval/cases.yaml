@@ -3342,3 +3342,17 @@
   must_not:
   - bits runs natively on Windows
   answer: No. bits runs on Linux and macOS (Intel and Apple Silicon); Windows is not supported.
+- id: console-add-community
+  kind: docs
+  question: How to configure a new user community in bits-console?
+  sources:
+  - bits-console/README.md#adding-a-new-community-bitsadmins-only
+  must:
+  - copy communities/example/ to communities/<name>/
+  - edit ui-config.yaml
+  - open a merge request
+  must_not:
+  - the documentation does not cover it
+  answer: 'A bits-admin adds it: create a branch, copy communities/example/ to communities/<name>/, edit
+    its ui-config.yaml (at least title, admins, cvmfs_prefix, cvmfs_user_prefix and platforms), replace
+    its icon, and open a merge request; when merged, GitLab Pages redeploys the console.'

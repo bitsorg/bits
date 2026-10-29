@@ -1,11 +1,15 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The help chat's documentation index: the bits docs and the community READMEs
-from GitHub (each repository's default branch), split at headings into a SQLite
-full-text index (FTS5) in the orchestrator database.
+"""The help chat's documentation index: the markdown files of the bits
+repositories on GitHub (bits, the services, CVMFS publishing, the containers and
+every community's *.bits, each on its default branch) and the site's console docs
+(site `console.docs`), split at headings into a SQLite full-text index (FTS5) in
+the orchestrator database.
 
-refresh - the worker's step: every BITS_CHAT_DOCS_REFRESH_S, each source is read
-          again when it changed (ETag) and its sections replaced.
+refresh - the worker's step: every BITS_CHAT_DOCS_REFRESH_S, each repository is
+          listed again (conditionally) and only its files whose blob changed are
+          read again; a host that cannot be reached, or limits the rate, is left
+          for the next pass with what it gave before.
 search  - the sections that best match a question, for the API.
 
 The index is derived (made again from the sources at any time), so its tables
@@ -14,26 +18,33 @@ are created here, not by a migration, and a missing FTS5 only turns the chat off
 
 import collections
 import hashlib
+import json
 import logging
 import re
+import urllib.parse
 
 from . import db
 
 log = logging.getLogger("bits_orchestrator.chat_docs")
 
-# owner/repo/path, read from the repository's default branch (HEAD).
-DEFAULT_SOURCES = (
-    ["bitsorg/bits/" + p for p in ("README.md", "docs/FAQ.md", "docs/USERGUIDE.md",
-                                   "docs/WORKFLOWS.md", "docs/COOKBOOK.md",
-                                   "docs/REFERENCE.md", "CHANGELOG.md")]
-    + ["bitsorg/%s/README.md" % r for r in (
-        "alice.bits", "atlas.bits", "bits.bits", "bits-providers", "cms.bits", "key4hep.bits",
-        "lcg.bits", "lhcb.bits", "ship.bits", "stacks.bits", "testbed.bits")])
+# A source is a repository (owner/repo on GitHub, https://host/group/project on
+# GitLab: all its markdown files) or one file (owner/repo/path, https://…/file.md).
+DEFAULT_SOURCES = ["bitsorg/" + r for r in (
+    "bits", "bits-services", "cvmfs-bits", "cvmfs-testbed", "bits-containers",
+    "bits-recipe-tools", "bits-providers", "alice.bits", "atlas.bits", "bits.bits", "cms.bits",
+    "common.bits", "key4hep.bits", "lcg.bits", "lhcb.bits", "ship.bits", "stacks.bits",
+    "testbed.bits")]
 RAW = "https://raw.githubusercontent.com/%s/%s/HEAD/%s"
 WEB = "https://github.com/%s/%s/blob/HEAD/%s"
+GITHUB_TREE = "https://api.github.com/repos/%s/%s/git/trees/HEAD?recursive=1"
 MAX_SECTION = 4000        # characters of one indexed section; longer ones are split
 MAX_FILE = 2 * 1024 * 1024
-RETRY_S = 300            # a source that could not be read: tried again this soon
+MAX_LISTING = 32 * 1024 * 1024
+MAX_FILES = 100           # markdown files of one repository, at most
+MAX_PAGES = 50            # of a GitLab tree (100 entries each)
+SKIP = re.compile(r"(^|/)(vendor|node_modules|third_party|\.github)/|(^|/)(LICENSE|COPYING|NOTICE)[^/]*$",
+                  re.IGNORECASE)
+RETRY_S = 300            # a pass with errors: the next this soon (without listing again)
 
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS chat_sources (
@@ -46,6 +57,14 @@ SCHEMA = [
     )""",
     """CREATE VIRTUAL TABLE IF NOT EXISTS chat_sections USING fts5(
         source UNINDEXED, url UNINDEXED, title, body, tokenize = 'porter unicode61')""",
+    # A repository's markdown files ({file: blob}) as last listed, kept when it
+    # cannot be listed; ok_ms when it last was.
+    """CREATE TABLE IF NOT EXISTS chat_repos (
+        repo        TEXT PRIMARY KEY,
+        etag        TEXT NOT NULL DEFAULT '',
+        files       TEXT NOT NULL DEFAULT '{}',
+        ok_ms       INTEGER NOT NULL DEFAULT 0
+    )""",
 ]
 
 
@@ -53,6 +72,9 @@ def ensure(conn):
     with db.transaction(conn):
         for sql in SCHEMA:
             conn.execute(sql)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(chat_sources)")}
+        if "blob" not in cols:          # the blob a file was read at, from its listing
+            conn.execute("ALTER TABLE chat_sources ADD COLUMN blob TEXT NOT NULL DEFAULT ''")
 
 
 def parse_source(spec):
@@ -61,6 +83,170 @@ def parse_source(spec):
     if len(parts) != 3 or not all(parts) or ".." in parts[2].split("/"):
         raise ValueError("a docs source is owner/repo/path: %r" % spec)
     return tuple(parts)
+
+
+_RAW_URL = re.compile(r"https://[\w.-]+(?::\d+)?/[\w./%+~-]+\.md")
+_GITHUB_REPO = re.compile(r"[\w.-]+/[\w.-]+")
+_GITLAB_PROJECT = re.compile(r"https://([\w.-]+(?::\d+)?)/([\w.-]+(?:/[\w.-]+)+)")
+_GITLAB_FILE = re.compile(r"https://[^/]+/(?:[^/]+/)*?([^/]+)/-/raw/[^/]+/(.+)")
+
+
+def is_repo(source):
+    return bool(_GITHUB_REPO.fullmatch(source) or (
+        _GITLAB_PROJECT.fullmatch(source) and "/-/" not in source and not source.endswith(".md")))
+
+
+def host_of(source):
+    return urllib.parse.urlsplit(source).hostname if source.startswith("https://") else "github.com"
+
+
+def _name(repo, path):
+    """A file's name in titles: its path without .md (and docs/), after its
+    repository's name but for bits' own."""
+    p = re.sub(r"^docs/", "", urllib.parse.unquote(path)).rsplit(".", 1)[0]
+    return p if repo == "bits" else "%s %s" % (repo, p)
+
+
+def locate(source):
+    """(raw address, web address, name) of a file: owner/repo/path on GitHub, or
+    the https address of a raw markdown file (GitLab's .../-/raw/<ref>/<path> is
+    shown at .../-/blob/<ref>/<path>). The name heads its sections' titles."""
+    if source.startswith("https://"):
+        if not _RAW_URL.fullmatch(source) or "/../" in source:
+            raise ValueError("a docs address is https://host/.../file.md: %r" % source)
+        m = _GITLAB_FILE.match(source)
+        name = _name(m.group(1), m.group(2)) if m else source.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        return source, source.replace("/-/raw/", "/-/blob/", 1), name
+    owner, repo, path = parse_source(source)
+    q = urllib.parse.quote(path, safe="/")
+    return RAW % (owner, repo, q), WEB % (owner, repo, q), _name(repo, path)
+
+
+def sources_of(settings):
+    """The sources to index: BITS_CHAT_DOCS, else the bits repositories and the
+    site's console docs (`console.docs`)."""
+    if settings.chat_docs:
+        return list(settings.chat_docs)
+    from bits_helpers import site
+    return DEFAULT_SOURCES + [str(u) for u in (site.get("console.docs") or [])]
+
+
+# --- listing repositories ------------------------------------------------------------
+
+class _HostDown(Exception):
+    """The host cannot be reached, or limits the rate: leave it for this pass."""
+
+
+def _get(session, url, etag="", headers=None, limit=MAX_FILE):
+    """(status, body bytes, response headers) of a conditional GET without redirects
+    (a private file redirects to a sign-in page); at most *limit* bytes."""
+    import requests
+    h = dict(headers or {})
+    if etag:
+        h["If-None-Match"] = etag
+    try:
+        with session.get(url, headers=h, timeout=(5, 20), stream=True, allow_redirects=False) as r:
+            if r.status_code in (403, 429) and (r.headers.get("X-RateLimit-Remaining") == "0"
+                                                or r.status_code == 429):
+                raise _HostDown("%s limits the rate" % urllib.parse.urlsplit(url).hostname)
+            if r.status_code != 200:
+                return r.status_code, b"", r.headers
+            body = b""
+            for chunk in r.iter_content(65536):
+                body += chunk
+                if len(body) > limit:
+                    raise ValueError("%s is larger than %d bytes" % (url, limit))
+            return 200, body, r.headers
+    except (requests.ConnectionError, requests.Timeout) as e:
+        raise _HostDown("%s cannot be reached (%s)" % (urllib.parse.urlsplit(url).hostname,
+                                                       type(e).__name__))
+
+
+def _markdown(paths):
+    """The markdown files to index of a repository's [(path, blob)], the top ones first."""
+    md = [(p, b) for p, b in paths if p.lower().endswith(".md") and not SKIP.search(p)
+          and ".." not in p.split("/")]
+    return sorted(md, key=lambda x: (x[0].count("/"), x[0]))[:MAX_FILES]
+
+
+def _list_github(session, repo, etag, token):
+    """(files {source: blob} or None when unchanged, etag)."""
+    owner, name = repo.split("/")
+    headers = {"Authorization": "Bearer " + token} if token else {}
+    st, body, h = _get(session, GITHUB_TREE % (owner, name), etag, headers, MAX_LISTING)
+    if st == 304:
+        return None, etag
+    if st != 200:
+        raise ValueError("HTTP %d" % st)
+    tree = json.loads(body)
+    if tree.get("truncated"):
+        raise ValueError("the tree is truncated")
+    paths = [(e["path"], e.get("sha", "")) for e in tree.get("tree") or () if e.get("type") == "blob"]
+    return {"%s/%s" % (repo, p): b for p, b in _markdown(paths)}, h.get("ETag", "")
+
+
+def _list_gitlab(session, repo):
+    host, project = _GITLAB_PROJECT.fullmatch(repo).groups()
+    api = "https://%s/api/v4/projects/%s" % (host, urllib.parse.quote(project, safe=""))
+    st, body, _ = _get(session, api, limit=MAX_LISTING)
+    if st != 200:
+        raise ValueError("HTTP %d" % st)
+    branch = json.loads(body).get("default_branch") or "main"
+    paths, page = [], "1"
+    for _ in range(MAX_PAGES):
+        st, body, h = _get(session, "%s/repository/tree?recursive=true&per_page=100&page=%s"
+                           % (api, page), limit=MAX_LISTING)
+        if st != 200:
+            raise ValueError("HTTP %d" % st)
+        paths += [(e["path"], e.get("id", "")) for e in json.loads(body) if e.get("type") == "blob"]
+        page = h.get("X-Next-Page") or ""
+        if not page:
+            break
+    else:
+        raise ValueError("more than %d pages" % MAX_PAGES)
+    q = lambda x: urllib.parse.quote(x, safe="/")
+    return {"%s/-/raw/%s/%s" % (repo, q(branch), q(p)): b for p, b in _markdown(paths)}
+
+
+def expand(conn, session, sources, errors, down, now, every_s, token=""):
+    """{file source: blob} of *sources* (blob '' for a file named itself). A repository
+    listed less than *every_s* ago, or that cannot be listed now, gives its files as
+    last listed (or as indexed, before its first listing)."""
+    out = {}
+    for src in sources:
+        if not is_repo(src):
+            out.setdefault(src, "")
+            continue
+        row = conn.execute("SELECT * FROM chat_repos WHERE repo = ?", (src,)).fetchone()
+        kept = json.loads(row["files"]) if row else {r[0]: r[1] for r in conn.execute(
+            "SELECT source, blob FROM chat_sources WHERE substr(source, 1, ?) = ?",
+            (len(src) + 1, src + "/"))}
+        host = host_of(src)
+        if host in down or (row and now - row["ok_ms"] < 0.9 * every_s * 1000):
+            out.update(kept)
+            continue
+        try:
+            if host == "github.com":
+                files, etag = _list_github(session, src, row["etag"] if row else "", token)
+                files = kept if files is None else files
+            else:
+                files, etag = _list_gitlab(session, src), ""
+        except _HostDown as e:
+            down.add(host)
+            errors.append(str(e))
+            out.update(kept)
+            continue
+        except Exception as e:
+            errors.append("%s not listed: %s" % (src, e))
+            out.update(kept)
+            continue
+        with db.transaction(conn):
+            conn.execute("INSERT INTO chat_repos (repo, etag, files, ok_ms) VALUES (?, ?, ?, ?)"
+                         " ON CONFLICT(repo) DO UPDATE SET etag = excluded.etag,"
+                         " files = excluded.files, ok_ms = excluded.ok_ms",
+                         (src, etag, json.dumps(files), now))
+        out.update(files)
+    return out
 
 
 # --- splitting ------------------------------------------------------------------
@@ -125,42 +311,27 @@ def sections(text, name, url):
 
 # --- refresh ----------------------------------------------------------------------
 
-def _fetch(session, url, etag):
-    """(status, text, etag) of a conditional GET, at most MAX_FILE bytes read."""
-    headers = {"If-None-Match": etag} if etag else {}
-    with session.get(url, headers=headers, timeout=(5, 20), stream=True) as r:
-        if r.status_code != 200:
-            return r.status_code, "", etag
-        body = b""
-        for chunk in r.iter_content(65536):
-            body += chunk
-            if len(body) > MAX_FILE:
-                raise ValueError("%s is larger than %d bytes" % (url, MAX_FILE))
-        return 200, body.decode("utf-8", "replace"), r.headers.get("ETag", "")
-
-
-def _replace(conn, source, url, text, etag, sha, now):
-    name = source.split("/", 2)[2].rsplit("/", 1)[-1].rsplit(".", 1)[0]
-    repo = source.split("/")[1]
-    name = name if repo == "bits" else "%s %s" % (repo, name)
+def _replace(conn, source, text, etag, sha, blob, now):
+    _, url, name = locate(source)
     secs = sections(text, name, url)
     with db.transaction(conn):
         conn.execute("DELETE FROM chat_sections WHERE source = ?", (source,))
         conn.executemany("INSERT INTO chat_sections (source, url, title, body) VALUES (?, ?, ?, ?)",
                          [(source, u, t, b) for t, u, b in secs])
-        conn.execute("INSERT INTO chat_sources (source, etag, sha256, sections, fetched_ms, changed_ms)"
-                     " VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(source) DO UPDATE SET"
-                     " etag = excluded.etag, sha256 = excluded.sha256, sections = excluded.sections,"
-                     " fetched_ms = excluded.fetched_ms, changed_ms = excluded.changed_ms",
-                     (source, etag, sha, len(secs), now, now))
+        conn.execute("INSERT INTO chat_sources (source, etag, sha256, blob, sections, fetched_ms,"
+                     " changed_ms) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source) DO UPDATE SET"
+                     " etag = excluded.etag, sha256 = excluded.sha256, blob = excluded.blob,"
+                     " sections = excluded.sections, fetched_ms = excluded.fetched_ms,"
+                     " changed_ms = excluded.changed_ms",
+                     (source, etag, sha, blob, len(secs), now, now))
     return len(secs)
 
 
-def refresh(conn, sources, session=None, every_s=3600, now=None):
-    """When due, fetch every source again if it changed (ETag) and index the ones
-    whose text changed; returns how many. Sources no longer listed leave the index.
-    One that cannot be read keeps its sections, is tried again in RETRY_S, and the
-    step reports it."""
+def refresh(conn, sources, session=None, every_s=3600, now=None, token=""):
+    """When due, list the repositories and read the files that changed; returns how
+    many were indexed again. Files and repositories no longer listed leave the
+    index. Errors are reported (RuntimeError) after the rest is done, and the next
+    pass is then in RETRY_S, which reads again only what failed."""
     import requests
     from . import reconcile
     ensure(conn)
@@ -170,57 +341,69 @@ def refresh(conn, sources, session=None, every_s=3600, now=None):
         return 0
     own = session is None
     session = session or requests.Session()
-    listed = set(sources)
-    with db.transaction(conn):
-        for (gone,) in conn.execute("SELECT source FROM chat_sources").fetchall():
-            if gone not in listed:
-                conn.execute("DELETE FROM chat_sections WHERE source = ?", (gone,))
-                conn.execute("DELETE FROM chat_sources WHERE source = ?", (gone,))
-    changed, errors = 0, []
+    changed, errors, down = 0, [], set()
     try:
-        changed = _read_all(conn, sources, session, now, errors)
+        files = expand(conn, session, sources, errors, down, now, every_s, token)
+        with db.transaction(conn):
+            for (gone,) in conn.execute("SELECT source FROM chat_sources").fetchall():
+                if gone not in files:
+                    conn.execute("DELETE FROM chat_sections WHERE source = ?", (gone,))
+                    conn.execute("DELETE FROM chat_sources WHERE source = ?", (gone,))
+            for (repo,) in conn.execute("SELECT repo FROM chat_repos").fetchall():
+                if repo not in sources:
+                    conn.execute("DELETE FROM chat_repos WHERE repo = ?", (repo,))
+        changed = _read_all(conn, files, session, now, errors, down)
     finally:
         if own:
             session.close()
-    end = fixed_now or db.now_ms()     # from the end of the pass: a slow one is not again at once
-    with db.transaction(conn):
-        reconcile._kv_set(conn, "chat.docs.next_ms",
-                          str(end + 1000 * (min(RETRY_S, every_s) if errors else every_s)))
+        end = fixed_now or db.now_ms()     # from the end of the pass: a slow one is not again at once
+        with db.transaction(conn):
+            reconcile._kv_set(conn, "chat.docs.next_ms",
+                              str(end + 1000 * (min(RETRY_S, every_s) if errors else every_s)))
     if errors:
-        raise RuntimeError("docs not read: " + "; ".join(errors))
+        raise RuntimeError("docs not read: " + "; ".join(errors[:10])
+                           + ("; and %d more" % (len(errors) - 10) if len(errors) > 10 else ""))
     return changed
 
 
-def _read_all(conn, sources, session, now, errors):
-    """Fetch and index *sources*; returns how many changed, appends to *errors*."""
-    import requests
+def _read_all(conn, files, session, now, errors, down):
+    """Read and index the *files* ({source: blob}) whose blob is not the one indexed;
+    returns how many changed, appends to *errors*."""
     changed = 0
-    for source in sources:
+    for source, blob in files.items():
+        host = host_of(source)
+        if host in down:
+            continue
         row = conn.execute("SELECT * FROM chat_sources WHERE source = ?", (source,)).fetchone()
-        owner, repo, path = parse_source(source)
+        if blob and row and row["blob"] == blob:
+            continue                       # as listed, unchanged since it was read
         try:
-            status_, text, etag = _fetch(session, RAW % (owner, repo, path),
-                                         row["etag"] if row else "")
-        except (requests.ConnectionError, requests.Timeout) as e:
-            errors.append("GitHub cannot be reached (%s); the rest next time" % type(e).__name__)
-            break                      # one wait, not one per source
+            raw = locate(source)[0]
+            status_, body, h = _get(session, raw, row["etag"] if row else "")
+        except _HostDown as e:
+            down.add(host)
+            errors.append(str(e))
+            continue
         except Exception as e:
             errors.append("%s: %s" % (source, e))
             continue
         if status_ == 304 and row:
             with db.transaction(conn):
-                conn.execute("UPDATE chat_sources SET fetched_ms = ? WHERE source = ?", (now, source))
+                conn.execute("UPDATE chat_sources SET fetched_ms = ?, blob = ? WHERE source = ?",
+                             (now, blob, source))
             continue
         if status_ != 200:
             errors.append("%s: HTTP %s" % (source, status_))
             continue
+        text = body.decode("utf-8", "replace")
         sha = hashlib.sha256(text.encode()).hexdigest()
+        etag = h.get("ETag", "")
         if row and row["sha256"] == sha:
             with db.transaction(conn):
-                conn.execute("UPDATE chat_sources SET fetched_ms = ?, etag = ? WHERE source = ?",
-                             (now, etag, source))
+                conn.execute("UPDATE chat_sources SET fetched_ms = ?, etag = ?, blob = ?"
+                             " WHERE source = ?", (now, etag, blob, source))
             continue
-        _replace(conn, source, WEB % (owner, repo, path), text, etag, sha, now)
+        _replace(conn, source, text, etag, sha, blob, now)
         changed += 1
     return changed
 
@@ -243,18 +426,41 @@ def query(text, limit_terms=24):
     return " OR ".join('"%s"' % t.replace('"', "") for t in terms[:limit_terms])
 
 
-def search(conn, text, limit=6, budget=24000):
-    """[{title, url, body}] best first, at most *limit* and about *budget* characters."""
-    q = query(text)
+# Recipe repositories every community's builds draw on: never another community's.
+SHARED_RECIPES = frozenset(("common.bits", "stacks.bits", "lcg.bits", "bits.bits"))
+
+
+def repo_of(source):
+    """The repository name of an indexed file (bits, alice.bits, bits-console, …)."""
+    m = _GITLAB_FILE.match(source)
+    return m.group(1) if m else source.split("/")[1]
+
+
+def search(conn, text, limit=6, budget=24000, community=""):
+    """[{title, url, body}] best first, at most *limit* and about *budget* characters.
+    With *community*, its own recipe repository (<community>.bits) comes first and
+    another community's comes last, unless the question names that community."""
+    q = query(text + (" " + community if community else ""))
     if not q:
         return []
     try:
-        rows = conn.execute("SELECT title, url, body FROM chat_sections WHERE chat_sections MATCH ?"
-                            " ORDER BY bm25(chat_sections, 0.0, 0.0, 4.0, 1.0) LIMIT ?",
-                            (q, limit * 3)).fetchall()
+        rows = conn.execute("SELECT source, title, url, body FROM chat_sections WHERE chat_sections"
+                            " MATCH ? ORDER BY bm25(chat_sections, 0.0, 0.0, 4.0, 1.0) LIMIT ?",
+                            (q, limit * 4)).fetchall()
     except Exception as e:                 # no index yet, or no FTS5
         log.warning("docs search: %s", e)
         return []
+    if community:
+        own, words = community.lower() + ".bits", set(_WORD.findall((text or "").lower()))
+
+        def rank(r):
+            repo = repo_of(r["source"])
+            if repo == own:
+                return 0
+            other = (repo.endswith(".bits") and repo not in SHARED_RECIPES
+                     and repo[:-5] not in words)
+            return 2 if other else 1
+        rows = sorted(rows, key=rank)          # stable: bm25's order within each
     out, used = [], 0
     for r in rows:
         if len(out) >= limit or (out and used + len(r["body"]) > budget):
