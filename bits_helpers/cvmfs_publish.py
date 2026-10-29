@@ -1313,8 +1313,8 @@ def publish_one(spec, ctx):
     commit = spec.get("commit", "")
     arch = spec.get("effective_architecture") or ctx["arch"]
 
-    # Publish once: with a packages template a package's path is its identity,
-    # so one that is already there (same build hash) is not sent again.
+    # A package already at its path (same build hash) is not sent again, with or
+    # without a packages template: ingest can only add, so a resend fails.
     skip_pkg = False   # the tree is there: publish only its missing modulefile
     replace = False    # another build's tree is there: replace it
     publish_once = bool((ctx.get("templates") or {}).get("packages"))
@@ -1323,9 +1323,9 @@ def publish_one(spec, ctx):
     # (module_links), instead of a copy published as a commit of its own.
     link_modules = publish_once and bool(
         (ctx.get("templates") or {}).get("modules") and fixed_dir(ctx, "modules"))
-    if publish_once and ctx.get("submit", True):
+    if ctx.get("templates") and ctx.get("submit", True):
         path = package_path(spec, ctx)
-        state = published_state(ctx, path)
+        state = published_state(ctx, path) if path else None
         if state and state.get("exists"):
             if state.get("hash") and state["hash"] == spec.get("hash"):
                 if link_modules:
@@ -1335,6 +1335,14 @@ def publish_one(spec, ctx):
                 if mstate is None or mstate.get("exists"):
                     raise AlreadyPublished(path)
                 skip_pkg = True
+            elif not publish_once:
+                # No packages template: staged publishes over it, as before; ingest
+                # cannot, and prepub replaces only by a packages template's identity.
+                if ctx.get("publish_path") == "ingest":
+                    raise SystemExit(
+                        "%s@%s: %s is already published by another build (hash %s, this "
+                        "build %s); the ingest path cannot publish over it" % (
+                            pkg, vdir, path, state.get("hash") or "unknown", spec.get("hash")))
             elif not ctx.get("replace_on_conflict"):
                 raise SystemExit(
                     "%s@%s: %s is already published by another build (hash %s, this "

@@ -603,6 +603,7 @@ class TestPublishOneLayout(unittest.TestCase):
                 "effective_architecture": "tc"}
         paths = []
         with mock.patch.object(cp, "tar_path", lambda s, r, a: tar), \
+             mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
              mock.patch.object(cp, "_publish_tar",
                                lambda c, p, *a, **k: paths.append(p) or "J"):
             cp.publish_one(spec, ctx)
@@ -661,6 +662,7 @@ class TestPublishOneLayout(unittest.TestCase):
                 times[label] = {m.mtime for m in tf.getmembers()}
             return "J"
         with mock.patch.object(cp, "tar_path", lambda s, r, a: tar), \
+             mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
              mock.patch.object(cp, "_publish_tar", publish):
             cp.publish_one(spec, ctx)
         self.assertEqual(times, {"zlib@1.3-1(pkg)": {1791468480},
@@ -723,6 +725,40 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         for st in ({"exists": False}, None):
             with mock.patch.object(cp, "published_state", lambda c, p, st=st: st):
                 self.assertEqual(cp.publish_one(self.SPEC, ctx), [])
+
+    def test_releases_only_layout_skips_what_is_published(self):
+        """Without a packages template (ALICE's layout) the same build is not sent
+        again either; another build's is refused on ingest, sent on staged."""
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = {"prefix": "/cvmfs/r/g", "path": "{prefix}/{platform}/Packages/{pkg}/{tag}",
+              "modules": "{prefix}/{platform}/Modules/modulefiles/{pkg}"}
+        asked = []
+        same = lambda c, p: asked.append(p) or {"exists": True, "hash": "h1"}
+        with mock.patch.object(cp, "published_state", same):
+            with self.assertRaises(cp.AlreadyPublished):
+                cp.publish_one(self.SPEC, self._ctx(templates=tm, publish_path="ingest"))
+        self.assertEqual(asked, ["g/x86_64-el9/Packages/ROOT/6.36-2",
+                                 "g/x86_64-el9/Modules/modulefiles/ROOT/6.36-2"])
+        # The tree there, its modulefile not: only the modulefile would go (no tar here).
+        tree = lambda c, p: {"exists": "Modules" not in p, "hash": "h1"}
+        with mock.patch.object(cp, "published_state", tree), \
+             mock.patch.object(cp, "_publish_tar", _boom):
+            with self.assertRaises(cp.AlreadyPublished):
+                cp.publish_one(self.SPEC, self._ctx(templates=tm, publish_path="ingest"))
+        other = lambda c, p: {"exists": True, "hash": "other"}
+        with mock.patch.object(cp, "published_state", other):
+            for replace in (False, True):   # prepub could not replace it either
+                with self.assertRaises(SystemExit) as cm:
+                    cp.publish_one(self.SPEC, self._ctx(templates=tm, publish_path="ingest",
+                                                        replace_on_conflict=replace))
+                self.assertIn("the ingest path cannot publish over it", str(cm.exception))
+            # staged publishes over it, as before (here: no tar -> nothing).
+            self.assertEqual(cp.publish_one(self.SPEC, self._ctx(templates=tm,
+                                                                 publish_path="staged")), [])
+        # A manifest without templates is not asked about (no path to ask for).
+        with mock.patch.object(cp, "published_state", _boom):
+            self.assertEqual(cp.publish_one(self.SPEC, self._ctx(templates=None)), [])
 
     def test_view_tar_has_relative_links(self):
         import tarfile
