@@ -9,7 +9,7 @@ Beyond building, bits covers the path to deployment:
 - **Supply chain**: deterministic tarballs, CycloneDX/SPDX SBOMs (`bits sbom`), and source/patch checksums with git commit pins (`bits checksums`).
 - **Per-directory profiles** (`bits use`) so repeated options stay out of every command line.
 
-> Full documentation is available in [docs/USERGUIDE.md](docs/USERGUIDE.md), [docs/COOKBOOK.md](docs/COOKBOOK.md), and [docs/REFERENCE.md](docs/REFERENCE.md). This guide covers only the essentials.
+> Full documentation is available in [docs/USERGUIDE.md](docs/USERGUIDE.md), [docs/COOKBOOK.md](docs/COOKBOOK.md), and [docs/REFERENCE.md](docs/REFERENCE.md); short answers to common questions are in [docs/FAQ.md](docs/FAQ.md). This guide covers only the essentials.
 
 ---
 
