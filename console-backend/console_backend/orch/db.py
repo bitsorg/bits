@@ -641,6 +641,24 @@ MIGRATIONS = [
         "ALTER TABLE schedule_runs ADD COLUMN commits TEXT NOT NULL DEFAULT ''",
         "CREATE INDEX schedule_runs_fired ON schedule_runs (schedule_id, fired_by, created_ms)",
     ],
+    # 24: the help chat's voted exchanges (chat.py), kept for evaluation
+    # (CHAT_FEEDBACK_DAYS); nothing else of a chat is kept.
+    [
+        """CREATE TABLE chat_feedback (
+            id          INTEGER PRIMARY KEY,
+            user        TEXT NOT NULL,
+            community   TEXT NOT NULL DEFAULT '',
+            pipeline_id INTEGER,
+            vote        TEXT NOT NULL,
+            question    TEXT NOT NULL,
+            answer      TEXT NOT NULL,
+            sources     TEXT NOT NULL DEFAULT '[]',
+            comment     TEXT NOT NULL DEFAULT '',
+            model       TEXT NOT NULL DEFAULT '',
+            created_ms  INTEGER NOT NULL
+        )""",
+        "CREATE INDEX chat_feedback_created ON chat_feedback (created_ms)",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

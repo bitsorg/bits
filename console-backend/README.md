@@ -312,6 +312,30 @@ build-type variants share their sources. A day with a build but no record
 (before the first record) gets that build's counts as they are when recorded. `GET /ops/sbom/history?community=&days=`
 serves it with today's point computed afresh (the Vulnerabilities page's chart).
 
+**The help chat** (`orch/chat.py`, `orch/chat_docs.py`, with `BITS_CHAT_URL`, the
+address of Ollama on this host, e.g. `http://127.0.0.1:11434`, and `BITS_CHAT_MODEL`,
+default `gemma4:12b`): any signed-in user asks how to use bits (`POST /ops/chat
+{question, community?, history?}`) or why a build failed (`{pipeline}`), and gets the
+answer as server-sent events: the documentation sections used (`sources`), a reviewed
+cause when a signature matched (`cause`), the text, then `done` or `error`. The model
+gets no tools. The backend sends it the best docs sections and, for a build, what the
+orchestrator recorded of it (outcome, where it stopped, failed jobs, the redacted
+excerpts, the issue), marked as data never to be followed. The worker's `chat_docs` step
+reads the docs from GitHub (`BITS_CHAT_DOCS`, owner/repo/path, default the bits docs and
+the community READMEs, each repository's default branch) every
+`BITS_CHAT_DOCS_REFRESH_S` (3600), when they changed, into a full-text index
+(SQLite FTS5) in this database. Limits: one question at a time per user,
+`BITS_CHAT_PER_MINUTE` (6), `BITS_CHAT_PARALLEL` (2) answers at once and
+`BITS_CHAT_QUEUE` (4) waiting; per answer `BITS_CHAT_CONTEXT` (16384 tokens, best set
+as Ollama's `OLLAMA_CONTEXT_LENGTH` too), `BITS_CHAT_ANSWER_TOKENS` (800) and
+`BITS_CHAT_TIMEOUT_S` (90); a thinking model answers without thinking first unless
+`BITS_CHAT_THINK=1`. Nothing of a chat is kept except a vote (`POST
+/ops/chat/feedback`), with its question, answer and sources, for 90 days (migration 24;
+`GET /ops/chat/feedback` for overall admins; 50 a user a day; the worker's `chat_votes`
+step expires them, chat on or off). `GET /ops/chat` says whether it is on and whether
+Ollama has the model. `chat-eval/run.py` measures the search on `chat-eval/cases.yaml` and,
+with `--model` (and `--judge`), the answers.
+
 **Nightly schedules** (`orch/schedules.py`, ADR bits 0007): a schedule builds
 one package at one version, with one defaults chain and recipe repositories, on
 several platforms, on given weekdays at a time of the bits instance's time zone

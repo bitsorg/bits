@@ -12,7 +12,8 @@ CVMFS status document (cvmfs_status.py), then collect and backfill (failures.py:
 every failed job's record, deduplicated into issues), phases (phases.py:
 what each finished build's job spent its time on), trace (trace.py: which
 build published each CVMFS path), then ship (outside.py: the
-events to the outside copy of the audit chain) and the daily backup. Certification
+events to the outside copy of the audit chain), with BITS_CHAT_URL the help
+chat's docs index (chat.py), and the daily backup. Certification
 in shadow (shadow.py) runs on a thread of its own, since a first comparison
 hashes a whole architecture of the store; so do the worker's certifications
 (certifier.py, M8a: the "certify" step only requests them). Schedules are added by
@@ -29,7 +30,7 @@ import threading
 import time
 
 from .. import config
-from . import (actions, approvals, authority, build_queue, certifier, cvmfs_status, db, events,
+from . import (actions, approvals, authority, build_queue, certifier, chat, cvmfs_status, db, events,
                failures, kinds, mirror, nightlies, outside, phases, reconcile, sbom_history,
                sbom_scan, schedules, shadow, trace, watches)
 
@@ -66,6 +67,8 @@ class Worker:
             # Which build published each CVMFS path (bits trace).
             ("trace", lambda: trace.step(self.conn, settings.orch_prepub_urls)),
             ("ship", lambda: outside.ship(self.conn, self.outside)),
+            # The help chat's votes older than 90 days, chat on or off.
+            ("chat_votes", lambda: chat.expire_votes(self.conn)),
             ("backup", self._backup),
         ]
         if settings.orch_certify:
@@ -102,8 +105,11 @@ class Worker:
         if settings.orch_owns_set:
             # M8b: the set is the worker's; bits-manifests mirrors it, and the
             # store says whose manifests these are.
-            self.steps.insert(len(self.steps) - 2, ("mirror", self._mirror))
-            self.steps.insert(len(self.steps) - 2, ("marker", self._marker))
+            self.steps.insert(len(self.steps) - 3, ("mirror", self._mirror))
+            self.steps.insert(len(self.steps) - 3, ("marker", self._marker))
+        if settings.chat_url:
+            # The help chat's docs index, from GitHub.
+            self.steps.insert(len(self.steps) - 2, ("chat_docs", lambda: chat.step(self.conn, settings)))
         self._errors = {}                 # step -> last error text
         self._stop = threading.Event()
 

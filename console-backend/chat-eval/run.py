@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Evaluate the help chat on cases.yaml: whether the docs search finds each case's
+sources and, with --model, the model's answers (judged by the model itself with
+--judge, else for a person to read in the report).
+
+    python chat-eval/run.py                                  # the search, docs from GitHub
+    python chat-eval/run.py --local ~/src                    # docs from checkouts in ~/src/<repo>
+    python chat-eval/run.py --model gemma4:12b --judge --out report.md
+"""
+
+import argparse
+import json
+import os
+import sqlite3
+import sys
+import time
+
+import requests
+import yaml
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from console_backend.orch import chat, chat_docs  # noqa: E402
+
+JUDGE = ("Here is an answer to a user's question.\n\nAnswer:\n<<<\n%s\n>>>\n\n"
+         "Does the answer state the following (in any wording)? Reply with only yes or no.\n%s")
+
+
+def index(local, faq):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    chat_docs.ensure(conn)
+    for src in chat_docs.DEFAULT_SOURCES:
+        if src.endswith("/FAQ.md") and not faq:
+            continue                   # its entries are these cases: it would answer them
+        owner, repo, path = chat_docs.parse_source(src)
+        if local:
+            root = os.path.dirname(os.path.dirname(HERE)) if repo == "bits" else os.path.join(local, repo)
+            try:
+                text = open(os.path.join(root, path), encoding="utf-8").read()
+            except OSError as e:
+                print("skipped %s: %s" % (src, e), file=sys.stderr)
+                continue
+        else:
+            r = requests.get(chat_docs.RAW % (owner, repo, path), timeout=20)
+            if r.status_code != 200:
+                print("skipped %s: HTTP %s" % (src, r.status_code), file=sys.stderr)
+                continue
+            text = r.text
+        chat_docs._replace(conn, src, chat_docs.WEB % (owner, repo, path), text, "", "", 0)
+    return conn
+
+
+def _key(url):
+    """'docs/USERGUIDE.md#platforms' of a section's link (bits) or '<repo>/README.md#…'."""
+    rest = url.split("github.com/", 1)[-1]
+    owner, repo, _blob, _ref, path = rest.split("/", 4)
+    return path if repo == "bits" else "%s/%s" % (repo, path)
+
+
+def record(build):
+    lines = ["community: %s · package: %s · platform: %s" % (
+        build.get("community"), build.get("package"), build.get("platform")),
+        "outcome: failed · stopped in: %s" % build.get("failed_in", "")]
+    if build.get("failure_reason"):
+        lines.append("failed jobs: bits-prepub-build (%s)" % build["failure_reason"])
+    lines.append("log excerpt (redacted):\n" + chat._clean(build.get("excerpt"), chat.MAX_EXCERPT))
+    return chat._clean("\n".join(lines), 4 * chat.MAX_EXCERPT)
+
+
+def ask(url, model, msgs, ctx, tokens, think=False):
+    r = requests.post(url + "/api/chat", timeout=300, json={
+        "model": model, "messages": msgs, "stream": False, "think": think,
+        "options": {"num_ctx": ctx, "num_predict": tokens, "temperature": 0.2}})
+    r.raise_for_status()
+    return r.json()["message"]["content"]
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--cases", default=os.path.join(HERE, "cases.yaml"))
+    ap.add_argument("--local", help="read the docs from checkouts in LOCAL/<repo> (bits: this one)")
+    ap.add_argument("--url", default=os.environ.get("BITS_CHAT_URL", "http://127.0.0.1:11434"))
+    ap.add_argument("--model", help="also ask this model each case")
+    ap.add_argument("--judge", action="store_true", help="the model checks each must / must_not")
+    ap.add_argument("--faq", action="store_true", help="index docs/FAQ.md too (made from these cases)")
+    ap.add_argument("--only", help="comma-separated case ids")
+    ap.add_argument("--context", type=int, default=16384)
+    ap.add_argument("--think", action="store_true", help="let a thinking model think first")
+    ap.add_argument("--out", help="write a markdown report here")
+    a = ap.parse_args()
+
+    cases = yaml.safe_load(open(a.cases))
+    if a.only:
+        keep = set(a.only.split(","))
+        cases = [c for c in cases if c["id"] in keep]
+    conn = index(a.local, a.faq)
+    hits = total = facts = facts_ok = wrong = 0
+    report = ["# Help chat evaluation", "",
+              "model: %s · %s" % (a.model or "(search only)", time.strftime("%Y-%m-%d %H:%M")), ""]
+    for c in cases:
+        rec = record(c["build"]) if c.get("build") else None
+        docs = chat_docs.search(conn, c["question"] + " " + (chat._error_lines(c.get("build", {})
+                                                                              .get("excerpt")) if rec else ""))
+        got = [_key(d["url"]) for d in docs]
+        hit = None
+        if c.get("sources"):
+            total += 1
+            hit = any(s in got for s in c["sources"])
+            hits += hit
+        report += ["## %s" % c["id"], "", "**Q:** " + c["question"], "",
+                   "search: %s" % ("found" if hit else "missed" if hit is False else "n/a")
+                   + ("" if hit or not c.get("sources") else " (expected %s; got %s)"
+                      % (", ".join(c["sources"]), ", ".join(got[:3]) or "nothing")), ""]
+        if a.model:
+            t0 = time.monotonic()
+            answer = ask(a.url, a.model, chat.messages(c["question"], docs, rec), a.context, 800, a.think)
+            report += ["**A** (%.0f s): %s" % (time.monotonic() - t0, answer), ""]
+            for kind, items in (("must", c.get("must") or []), ("must_not", c.get("must_not") or [])):
+                for fact in items:
+                    mark = "?"
+                    if a.judge:
+                        said = ask(a.url, a.model, [{"role": "user", "content": JUDGE % (answer, fact)}],
+                                   4096, 5).strip().lower().startswith("yes")
+                        ok = said if kind == "must" else not said
+                        mark = "✓" if ok else "✗"
+                        if kind == "must":
+                            facts += 1
+                            facts_ok += ok
+                        else:
+                            wrong += not ok
+                    report.append("- %s %s: %s" % (mark, kind, fact))
+            report.append("")
+        print("%-50s %s" % (c["id"][:50], {True: "found", False: "MISSED", None: "-"}[hit]),
+              file=sys.stderr)
+    summary = "search found the expected section for %d of %d cases (%.0f%%)" % (
+        hits, total, 100.0 * hits / max(total, 1))
+    if a.judge:
+        summary += "; answers stated %d of %d facts, and %d wrong claims" % (facts_ok, facts, wrong)
+    print(summary)
+    if a.out:
+        report.insert(3, summary + "\n")
+        open(a.out, "w").write("\n".join(report) + "\n")
+
+
+if __name__ == "__main__":
+    main()

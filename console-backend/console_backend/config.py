@@ -3,6 +3,7 @@
 """Environment-driven settings for the bits-console backend."""
 
 import os
+import re
 
 
 class Settings:
@@ -236,6 +237,29 @@ class Settings:
         self.orch_canary_missing_days = float(e.get("BITS_ORCH_CANARY_MISSING_DAYS", "1") or "1")
         # The region the worker signs S3 requests for (the proxy re-signs with it).
         self.orch_s3_region = e.get("BITS_ORCH_S3_REGION", "us-east-1") or "us-east-1"
+
+        # The help chat (orch/chat.py): Ollama's address on this host (empty = no
+        # chat), its model, and the docs it answers from (owner/repo/path, comma-separated).
+        self.chat_url = (e.get("BITS_CHAT_URL") or "").strip().rstrip("/")
+        self.chat_model = (e.get("BITS_CHAT_MODEL") or "gemma4:12b").strip()
+        _docs = e.get("BITS_CHAT_DOCS", "")
+        self.chat_docs = [d.strip() for d in _docs.split(",") if d.strip()] or None
+        for d in self.chat_docs or ():
+            if not re.fullmatch(r"[\w.-]+/[\w.-]+/[\w./-]+", d) or ".." in d:
+                raise ValueError("BITS_CHAT_DOCS: %r is not owner/repo/path" % d)
+        self.chat_docs_refresh_s = max(300.0, float(e.get("BITS_CHAT_DOCS_REFRESH_S", "3600") or "3600"))
+        # Answers at once, questions waiting, a user's questions a minute, and per
+        # answer: the model's context (tokens), its length (tokens) and time (s).
+        self.chat_parallel = max(1, int(e.get("BITS_CHAT_PARALLEL", "2") or "2"))
+        self.chat_queue = max(0, int(e.get("BITS_CHAT_QUEUE", "4") or "4"))
+        self.chat_per_minute = max(1, int(e.get("BITS_CHAT_PER_MINUTE", "6") or "6"))
+        self.chat_context = max(4096, int(e.get("BITS_CHAT_CONTEXT", "16384") or "16384"))
+        self.chat_answer_tokens = max(64, int(e.get("BITS_CHAT_ANSWER_TOKENS", "800") or "800"))
+        if self.chat_answer_tokens > self.chat_context // 4:
+            raise ValueError("BITS_CHAT_ANSWER_TOKENS must be at most a quarter of BITS_CHAT_CONTEXT")
+        self.chat_timeout_s = max(10.0, float(e.get("BITS_CHAT_TIMEOUT_S", "90") or "90"))
+        # Let a thinking model think first (slower, its thoughts are not shown): off.
+        self.chat_think = (e.get("BITS_CHAT_THINK", "") or "").strip().lower() in ("1", "true", "yes")
 
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks

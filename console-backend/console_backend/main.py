@@ -53,7 +53,9 @@ catalog_cache = catalog.CatalogCache(token=settings.github_token,
 app = FastAPI(title="bits-console backend", version="0.1.0")
 
 from .orch import api as orch_api   # noqa: E402  (the orchestrator's routes)
+from .orch import chat as orch_chat  # noqa: E402  (the help chat's)
 app.include_router(orch_api.router)
+app.include_router(orch_chat.router)
 
 
 _unavailable_logged = [0.0]
