@@ -39,94 +39,174 @@ The same `bits build` command that a developer runs interactively also drives th
 
 ## 2. Installation & Prerequisites
 
-### System requirements
+bits itself needs only Python 3.8+ and git ([Installing Bits](#installing-bits)). What
+a *build* needs depends on where it runs:
 
-| Requirement | Notes |
-|-------------|-------|
-| Linux or macOS | x86-64 or ARM64 |
-| Python 3.8+ | Required |
-| Git | Required; Sapling (`sl`) is optional |
-| `modulecmd` | Required for `bits enter / load / unload` |
-| GNU tar (macOS) | Recommended on macOS (`brew install gnu-tar`) — without it bits warns and tarballs may not be byte-reproducible |
+- **In a container** (`bits build --docker`, recommended on Linux): the platform's
+  builder image has the compilers, build tools and system libraries; the host needs
+  docker or rootless podman. See [Building in a container](#building-in-a-container).
+- **On this machine**: the host must have the build tools and system `-devel`
+  libraries the recipes expect. See [Building natively](#building-natively-what-to-install).
 
-Install Environment Modules for your platform:
+Outside ALICE, only a container build reuses what the community's CI built: see
+[Finding a platform with pre-built binaries](#finding-a-platform-with-pre-built-binaries).
+
+### Platforms
+
+"Supported" means three different things for a platform:
+
+| | Where it is listed | Platforms today |
+|---|---|---|
+| **bits runs there** | the architectures `bits build` accepts (others need `--force-unknown-architecture`; it prints examples) | RHEL/AlmaLinux/Rocky, any version, on x86-64, aarch64 and ppc64le; Ubuntu, Debian and Fedora on x86-64; macOS on Intel and Apple silicon |
+| **a builder image exists** | [bits-containers](https://github.com/bitsorg/bits-containers) `platforms.yaml` (images `gitlab-registry.cern.ch/bits/containers/<platform>`) | `x86_64-el8`, `x86_64-el9`, `x86_64-el10`, `aarch64-el9`, `x86_64-ubuntu2204`, `x86_64-ubuntu2404`, `x86_64-ubuntu2604` |
+| **pre-built binaries exist** | the community's platforms: its console's Build dialog, or `platforms:` in its bits-console `ui-config.yaml` | the seven above for LCG, CMS, Key4hep, LHCb and SHiP; ATLAS: the four EL ones; ALICE: five, under its own names (below) |
+
+A platform name is the CPU and the OS (`x86_64-el9`). A build adds its compiler and
+build type from the defaults (`append_arch`): `--architecture x86_64-el9 --defaults
+gcc15::opt` installs under `sw/x86_64-el9-gcc15-opt/`. `bits architecture` prints the
+name bits gives this machine when no `--architecture` is given: `slc9_x86-64` for
+RHEL, AlmaLinux and Rocky 9, `ubuntu2404_x86-64` for Ubuntu 24.04. These older names
+are not the CI's, so a build under them reuses nothing the CI built.
+
+ALICE is the exception: its platforms are built under these names (the last field of
+its `ui-config.yaml` platforms: `slc9_x86-64`, `slc9_aarch64`, `ubuntu2404_x86-64`, …),
+in its own images (`registry.cern.ch/alisw/<distro>-builder`), and read from ALICE's
+store. For ALICE, build with the `aliBuild` wrapper, which picks those images, or give
+`--docker-image registry.cern.ch/alisw/slc9-builder` (`--docker` alone would ask for
+`gitlab-registry.cern.ch/bits/containers/x86_64-slc9`, which does not exist).
+
+### Building in a container
 
 ```bash
-# macOS
-brew install modules
-
-# Debian / Ubuntu
-apt-get install environment-modules
-
-# RHEL / CentOS / AlmaLinux
-yum install environment-modules
+bits doctor                      # checks docker / rootless podman (cgroup delegation), git, Python
+bits build --docker --architecture x86_64-el9 --defaults gcc15::opt ROOT
 ```
 
-### Installing the build toolchain and system packages
+- The host needs Python 3.8+, git, and docker, or podman run by your user
+  (`podman-docker` provides the `docker` command); bits adapts its container options to
+  rootless podman, and `bits doctor` says which cgroup controllers to delegate. No
+  compiler or `-devel` packages are needed on the host.
+- The image is chosen from the platform: `x86_64-el9` builds in
+  `gitlab-registry.cern.ch/bits/containers/x86_64-el9:latest`, pulled when missing;
+  `--docker-image` names another. See [REFERENCE §22](REFERENCE.md#22-docker-support).
+- Another CPU builds through QEMU: on an x86-64 host, `--architecture aarch64-el9`
+  needs the binfmt handlers (once: `docker run --rm --privileged
+  multiarch/qemu-user-static --reset -p yes`), and is slow; see
+  [Cross-compilation](REFERENCE.md#222-cross-compilation-via-qemu).
+- What is built runs where its platform runs: an `x86_64-el9` build made on an
+  Ubuntu host is for EL9 machines, and `bits enter` it on an EL9 host.
 
-bits builds almost everything it needs from source, but it still relies on a host
-toolchain to bootstrap (a working C/C++/Fortran compiler, the autotools/CMake build
-tools, `git`, `patch`, `make`, and the usual archive utilities). Install these once
-before your first build:
+### Building natively: what to install
+
+A native build uses the host's compiler to build the stack's own (GCC-Toolchain), the
+host's build tools, and a set of system libraries the recipes link against instead of
+building them (`prefer_system` and `system_requirement` recipes: krb5 for curl and
+xrootd, libuuid, OpenSSL, X11 and GL for ROOT, …). The lists below are those the
+builder images are made from (bits-containers `packages/build-tools.*.txt` and
+`packages/dev-libs.*.txt`, the source of truth); installing them makes a host match
+the image of its platform. `bits doctor <package>` reports what one build still lacks.
+
+**AlmaLinux / Rocky 8, 9 and 10** (EPEL and CRB, called PowerTools on 8, are needed for
+some; on RHEL itself enable `codeready-builder-for-rhel-N-$(arch)-rpms` with
+`subscription-manager` and install EPEL from its release RPM):
 
 ```bash
-# Debian / Ubuntu
-sudo apt install \
-  build-essential gfortran git patch make cmake autoconf automake libtool m4 \
-  pkg-config curl wget tar gzip bzip2 xz-utils unzip \
-  python3 python3-pip python3-venv environment-modules
+sudo dnf install -y dnf-plugins-core epel-release
+sudo dnf config-manager --set-enabled crb          # on 8: --set-enabled powertools
+sudo dnf install -y \
+  bison flex make autoconf automake libtool patch perl perl-core perl-devel tar gzip unzip \
+  texinfo gettext-devel m4 swig pkgconf-pkg-config gcc gcc-c++ gcc-gfortran strace \
+  environment-modules perf git rsync hostname which libcap-devel python3 \
+  krb5-devel libuuid-devel openssl-devel zlib-devel bzip2-devel xz-devel libpng-devel \
+  freetype-devel libxml2-devel lz4-devel ncurses-devel readline-devel libX11-devel \
+  libXt-devel motif-devel libXpm-devel libXext-devel libXft-devel mesa-libGLU-devel \
+  libXcursor-devel libXrandr-devel libXinerama-devel libXi-devel libXrender-devel \
+  apr-devel apr-util-devel cyrus-sasl-devel subversion-devel elfutils-devel snappy-devel \
+  xerces-c-devel sqlite-devel libuv-devel libunwind-devel libtirpc-devel
+```
 
-# RHEL / AlmaLinux / Rocky (enable CRB/EPEL for some packages)
-sudo dnf groupinstall "Development Tools"
-sudo dnf install \
-  gcc-gfortran git patch make cmake autoconf automake libtool m4 \
-  pkgconfig curl wget tar gzip bzip2 xz unzip \
-  python3 python3-pip environment-modules
+**Ubuntu 22.04, 24.04 and 26.04:**
 
-# macOS (Xcode command-line tools provide the compiler / git / make)
+```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  bison flex make autoconf automake libtool libtool-bin patch perl libperl-dev tar gzip \
+  unzip texinfo gettext autopoint m4 swig pkg-config gcc g++ gfortran strace \
+  environment-modules git rsync hostname libcap-dev python3 python3-venv \
+  libkrb5-dev uuid-dev libssl-dev zlib1g-dev libbz2-dev liblzma-dev libpng-dev \
+  libfreetype-dev libxml2-dev liblz4-dev libncurses-dev libreadline-dev libx11-dev \
+  libmotif-dev libxpm-dev libxext-dev libxft-dev libglu1-mesa-dev libxcursor-dev \
+  libxrandr-dev libxinerama-dev libxi-dev libxrender-dev libapr1-dev libaprutil1-dev \
+  libsasl2-dev libsvn-dev libdw-dev libsnappy-dev libxerces-c-dev libsqlite3-dev \
+  libuv1-dev libunwind-dev
+sudo apt-get install -y linux-tools-generic     # perf, for the recipes that check for it
+```
+
+Debian is not a builder platform: the Ubuntu list mostly applies (perf is
+`linux-perf` there), and nothing pre-built is reused.
+
+**macOS** (Intel or Apple silicon; there is no container build): the Xcode command-line
+tools, then the Homebrew formulae the recipes declare (`homebrew_formula:`), which bits
+writes into `sw/<arch>/Brewfile`:
+
+```bash
 xcode-select --install
-brew install cmake autoconf automake libtool pkg-config gnu-tar wget modules
-```
-
-**Per-recipe system packages.** A few recipes deliberately use a library or tool from
-the system instead of building it (these are declared as `system_requirement` recipes,
-e.g. `readline`, `elfutils`/`libdw`, `perf`). When such a package is missing, bits stops
-early and lists the missing requirements rather than failing mid-build;
-`bits doctor <package>` then prints each recipe's install hint. You don't need to
-install them all up front — build what you need and follow the hint, or check ahead of
-time with:
-
-```bash
-bits doctor               # no package: checks this machine (Python modules, git/compiler,
-                          # docker or rootless podman, disk space, store access)
-bits doctor <package>     # reports any missing system requirements for that package
-```
-
-Common ones on Debian / Ubuntu (RHEL/AlmaLinux equivalents in parentheses):
-
-```bash
-sudo apt install libreadline-dev       # readline           (readline-devel)
-sudo apt install libdw-dev libelf-dev  # elfutils / libdw    (elfutils-devel)  e.g. heaptrack
-sudo apt install linux-perf            # perf                (perf)            e.g. adaptyst
-```
-
-**macOS: the Homebrew system layer.** On macOS, stable low-level libraries are taken from
-Homebrew instead of being built (recipes declare `homebrew_formula:`). Every macOS build
-records the formulae declared by the recipes it sees (config dir and providers) in `sw/<arch>/Brewfile`. On the **first** macOS build
-that file does not exist yet, so bits writes it and stops with instructions; install the
-formulae and re-run:
-
-```bash
+brew install modules gnu-tar                 # gnu-tar: byte-reproducible tarballs
 bits build ROOT                              # first run: writes sw/<arch>/Brewfile and stops
 brew bundle --file sw/<arch>/Brewfile        # install the listed formulae
 bits build ROOT                              # now builds
 
 bits build --brew ROOT                       # alternative: install missing formulae on demand
 bits brew                                    # write the Brewfile without resolving a build
-bits build --dry-run ROOT                    # also writes the Brewfile, nothing built
 ```
 
 See [REFERENCE.md — macOS Homebrew system layer](REFERENCE.md#macos-homebrew-system-layer).
+
+**One package's requirements.** When a recipe's system requirement is missing, bits
+stops before building and lists it; `bits doctor <package>` prints each recipe's
+install hint:
+
+```bash
+bits doctor               # this machine: Python modules, git/compiler, docker or rootless podman, disk, stores
+bits doctor <package>     # the system requirements of that package
+```
+
+### Finding a platform with pre-built binaries
+
+A package is reused from the store when a build of the same hash is there and a
+signed manifest vouches for it. The hash covers the recipes, the defaults and, for the
+compiler toolchain and so for everything built with it, the builder image
+(`/opt/bits/container-fingerprint.hash`). So the CI's binaries are reused by a build
+that names the CI's platform, uses its defaults and runs in its image:
+
+1. **List the community's platforms**: its console's Build dialog, or `platforms:` in
+   its `ui-config.yaml` (e.g. `x86_64-el9`; for ALICE the last field, e.g.
+   `slc9_x86-64`), and the defaults it builds with (e.g. `gcc15::opt`). On a machine
+   with CVMFS, `bits cvmfs platforms`, run in the recipe repository, lists what is
+   published under its prefix (`cvmfs.yaml`), by full architecture
+   (`x86_64-el9-gcc15-opt`); what is in the store can differ.
+2. **Pick the one to build for.** To run the result on this machine, the one of its
+   OS and CPU; to build for elsewhere, any (another CPU through QEMU).
+3. **Check before building**: in the recipe repository, a dry run with the same
+   options shows, per package, **from store** or **build** (**build (unsigned)**: in
+   the store, but no signed manifest vouches for it). It needs docker, and pulls the
+   builder image the first time, as it reads the image's fingerprint:
+
+   ```bash
+   bits build --dry-run --docker --architecture x86_64-el9 --defaults gcc15::opt ROOT
+   ```
+
+4. **Build**, and record the options once for this checkout:
+
+   ```bash
+   bits use build --docker --architecture x86_64-el9 --defaults gcc15::opt
+   bits build ROOT
+   ```
+
+The store is the site's (at CERN `https://s3.cern.ch/lcgapp-bits-testing`, where the
+bits CI publishes; ALICE's architectures read ALICE's store); `--remote-store` names
+another. Outside ALICE, a native build, or one under the name bits gives the machine
+(`slc9_x86-64`), hashes differently and builds everything.
 
 ### Installing Bits
 
@@ -162,8 +242,18 @@ registry.
 
 ### 2. Check, then build
 
+In a container, on the CI's platform (see [Platforms](#platforms)), which reuses what
+the CI built:
+
 ```bash
 bits doctor                             # check that this machine is set up to run bits
+bits build --dry-run --docker --architecture x86_64-el9 --defaults gcc15::opt ROOT
+bits build --docker --architecture x86_64-el9 --defaults gcc15::opt ROOT
+```
+
+Or natively, with [the system packages](#building-natively-what-to-install) installed:
+
+```bash
 bits doctor --defaults gcc15 ROOT       # check ROOT's system requirements
 bits build --dry-run --defaults gcc15 ROOT  # optional: what would be reused and what built
 bits build --defaults gcc15 ROOT        # resolves and builds ROOT and all dependencies

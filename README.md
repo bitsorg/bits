@@ -24,14 +24,38 @@ source .venv/bin/activate
 pip install -e .                # install Python dependencies
 ```
 
-**Requirements**: Python 3.8+, git, and [Environment Modules](https://modules.sourceforge.net/) (`modulecmd`).  
-On macOS: `brew install modules`. The first build on macOS records the Homebrew packages the stack needs in `sw/<arch>/Brewfile` and stops until you run `brew bundle --file sw/<arch>/Brewfile` (or re-run with `--brew` to install them on demand; `bits brew` regenerates the file).  
-On Debian/Ubuntu: `apt-get install environment-modules`  
-On RHEL/CentOS: `yum install environment-modules`
+**Requirements** depend on where you build:
+
+- **In a container** (`--docker`, recommended on Linux): Python 3.8+, git, and docker or
+  rootless podman. The builder image brings the compilers, build tools and system
+  libraries. See [Building in a container](docs/USERGUIDE.md#building-in-a-container).
+- **On this machine**: the build tools and system `-devel` libraries the recipes
+  expect, which the builder images list per platform. See
+  [Building natively](docs/USERGUIDE.md#building-natively-what-to-install) for the
+  install command for EL 8/9/10, Ubuntu 22.04/24.04/26.04 and macOS.
+
+`bits doctor` checks either setup. Which platforms are supported, and which have
+pre-built binaries, is in [Platforms](docs/USERGUIDE.md#platforms).
 
 ---
 
 ## Quick Start
+
+### Before you start: pick the platform to build for
+
+Pre-built binaries are reused only for a platform the community's CI builds, built
+the same way. On Linux, build in that platform's builder image with `--docker` and
+name the platform with `--architecture`: the one matching your machine, if you want to
+run the result here (the compiler and build type come from `--defaults`):
+
+```bash
+bits architecture      # this machine's own name, e.g. slc9_x86-64 on AlmaLinux 9
+```
+
+The CI platforms are `x86_64-el8`, `x86_64-el9`, `x86_64-el10`, `aarch64-el9`,
+`x86_64-ubuntu2204`, `x86_64-ubuntu2404` and `x86_64-ubuntu2604` (a community may
+build fewer; ALICE builds under the older names such as `slc9_x86-64`). The name
+bits gives an EL9 machine by itself, `slc9_x86-64`, is not one of them. See [Finding a platform with pre-built binaries](docs/USERGUIDE.md#finding-a-platform-with-pre-built-binaries).
 
 ### Check out a community recipe repository, then build inside it
 
@@ -42,7 +66,9 @@ community's defaults, CVMFS layout and recipes. Clone one and run bits inside it
 ```bash
 git clone https://github.com/bitsorg/stacks.bits && cd stacks.bits
 #   or: bits init stacks.bits && cd stacks.bits   (resolved in the bits-providers registry)
-bits build --defaults gcc15 ROOT
+bits build --dry-run --docker --architecture x86_64-el9 --defaults gcc15::opt ROOT  # per package: from store, or build
+bits build --docker --architecture x86_64-el9 --defaults gcc15::opt ROOT   # on an EL9 machine
+#   or natively, with the system packages installed: bits build --defaults gcc15 ROOT
 
 # Enter the built environment and run
 bits enter ROOT/latest
@@ -223,11 +249,11 @@ bits prune -n                     # dry-run: show what would be removed
 ## Docker & Remote Builds
 
 ```bash
-# Build inside a Docker container for a specific Linux version
-bits build --docker --architecture ubuntu2004_x86-64 ROOT
+# Build inside the builder image of a platform (gitlab-registry.cern.ch/bits/containers/x86_64-ubuntu2404)
+bits build --docker --architecture x86_64-ubuntu2404 ROOT
 
 # Cross-compile for ARM64 on an x86-64 host (requires QEMU binfmt handlers)
-bits build --docker --architecture slc9_aarch64 MyAnalysis
+bits build --docker --architecture aarch64-el9 MyAnalysis
 
 # Use a remote binary store (S3, HTTP, rsync) to share pre-built artifacts
 bits build --remote-store s3://mybucket/builds ROOT

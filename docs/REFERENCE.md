@@ -4304,7 +4304,7 @@ When `--docker` is specified, bits wraps the build in a `docker run` invocation.
 
 ```bash
 # Use the default image for the target architecture
-bits build --docker --architecture ubuntu2004_x86-64 ROOT
+bits build --docker --architecture x86_64-ubuntu2404 ROOT
 
 # Specify an image explicitly
 bits build --docker --docker-image alisw/slc9-builder:latest ROOT
@@ -4313,7 +4313,7 @@ bits build --docker --docker-image alisw/slc9-builder:latest ROOT
 bits build --docker --docker-extra-args "--memory=8g --cpus=4" ROOT
 ```
 
-Without `--docker-image`, the image is derived from the architecture as `<registry>/<machine>-<distro>[-cuda]:<tag>`, for example `gitlab-registry.cern.ch/bits/containers/x86_64-slc9:latest` for `slc9_x86-64`. Only the OS, the CPU and a `cuda` part of the architecture select the image; compiler and build-type parts do not. The registry is `$BITS_DOCKER_REGISTRY`, else `system: docker_registry` in `defaults-release` (a top-level `docker_registry:` is still read), else the [site configuration](#site-configuration)'s `containers.registry` (at CERN `gitlab-registry.cern.ch/bits/containers`). The tag is `$BITS_DOCKER_TAG`, else `system: docker_tag`, else `containers.tag` (`latest`). With `BITS_LEGACY_REGISTRY=1` (set by default by the `aliBuild` wrapper), or without a registry or when the architecture cannot be split into OS and CPU, the site's `containers.legacy_image` is used instead (at CERN `registry.cern.ch/alisw/<distro>-builder`); without one, `--docker-image` must be given. Images are pulled when missing.
+Without `--docker-image`, the image is derived from the architecture as `<registry>/<machine>-<distro>[-cuda]:<tag>`, for example `gitlab-registry.cern.ch/bits/containers/x86_64-el9:latest` for `x86_64-el9` (or `x86_64-el9-gcc15-opt`). The images [bits-containers](https://github.com/bitsorg/bits-containers) publishes are those of its `platforms.yaml` (`x86_64-el8/el9/el10`, `aarch64-el9`, `x86_64-ubuntu2204/2404/2604`); the name bits gives an EL9 host by default, `slc9_x86-64`, asks for `x86_64-slc9`, which it does not publish (see [USERGUIDE — Platforms](USERGUIDE.md#platforms)). Only the OS, the CPU and a `cuda` part of the architecture select the image; compiler and build-type parts do not. The registry is `$BITS_DOCKER_REGISTRY`, else `system: docker_registry` in `defaults-release` (a top-level `docker_registry:` is still read), else the [site configuration](#site-configuration)'s `containers.registry` (at CERN `gitlab-registry.cern.ch/bits/containers`). The tag is `$BITS_DOCKER_TAG`, else `system: docker_tag`, else `containers.tag` (`latest`). With `BITS_LEGACY_REGISTRY=1` (set by default by the `aliBuild` wrapper), or without a registry or when the architecture cannot be split into OS and CPU, the site's `containers.legacy_image` is used instead (at CERN `registry.cern.ch/alisw/<distro>-builder`); without one, `--docker-image` must be given. Images are pulled when missing.
 
 Bits mounts into the container the work directory (read-write, except `SOURCES/`, which is read-only so a recipe cannot modify shared sources in place; `BITS_READONLY_SOURCES=0` turns this off), the recipe directory (read-only), the bits installation, and any `-v` volumes. `~/.ssh` is **not** mounted. When components deployed on CVMFS are reused (`--reuse-from`), `/cvmfs` is also mounted read-only.
 
@@ -4489,10 +4489,10 @@ container).  **No extra flags are needed for the common case**:
 
 ```bash
 # On an x86-64 host, build for aarch64 — platform injected automatically
-bits build MyAnalysis -a slc9_aarch64 --docker
+bits build MyAnalysis -a aarch64-el9 --docker
 
 # Equivalent explicit form
-bits build MyAnalysis -a slc9_aarch64 --docker --docker-platform linux/arm64
+bits build MyAnalysis -a aarch64-el9 --docker --docker-platform linux/arm64
 ```
 
 Pass `--docker-platform native` to suppress automatic injection and always use the
@@ -4502,13 +4502,13 @@ client, or for testing without QEMU overhead).
 #### Builder image availability
 
 A builder image must exist for the target CPU. The default images carry the CPU in
-their name (for example `aarch64-slc9` for `slc9_aarch64`); the legacy
+their name (`gitlab-registry.cern.ch/bits/containers/aarch64-el9` for `aarch64-el9`); the legacy
 `alisw/<distro>-builder` images need an arm64 variant in their multi-arch manifest.
 Confirm availability before scheduling cross-compilation CI jobs:
 
 ```bash
-# Check that the default slc9 builder image for aarch64 exists
-docker manifest inspect gitlab-registry.cern.ch/bits/containers/aarch64-slc9:latest
+# Check that the default EL9 builder image for aarch64 exists
+docker manifest inspect gitlab-registry.cern.ch/bits/containers/aarch64-el9:latest
 ```
 
 If no image exists for the target CPU, an ARM-native runner (available on CERN's
@@ -4559,7 +4559,7 @@ builds, `--sandbox=off` is the recommended setting unless the runner is known to
 support nested namespaces under QEMU:
 
 ```bash
-bits build MyAnalysis -a slc9_aarch64 --docker --sandbox=off
+bits build MyAnalysis -a aarch64-el9 --docker --sandbox=off
 ```
 
 ---
