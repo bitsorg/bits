@@ -348,13 +348,15 @@ class ApiTest(_DB):
 class OllamaTest(unittest.TestCase):
     """The client against Ollama's /api/chat and /api/tags, through a mock transport."""
 
+    made = []
+
     def _run(self, handler, fn):
         import asyncio
         import httpx
         real = httpx.AsyncClient
         settings = config.Settings(env={"BITS_CHAT_URL": "http://ollama"})
         with patch.object(chat.httpx, "AsyncClient",
-                          lambda **k: real(transport=httpx.MockTransport(handler), **k)):
+                          lambda **k: self.made.append(k) or real(transport=httpx.MockTransport(handler), **k)):
             return asyncio.run(fn(settings))
 
     def test_the_stream_and_its_errors(self):
@@ -369,6 +371,7 @@ class OllamaTest(unittest.TestCase):
         async def collect(settings):
             return [p async for p in chat.ollama_stream(settings, [{"role": "user", "content": "q"}])]
         self.assertEqual(self._run(ok, collect), ["Hel", "lo"])
+        self.assertIs(self.made[-1]["trust_env"], False)        # never through a proxy
         self.assertEqual((seen[0]["model"], seen[0]["stream"], seen[0]["think"], seen[0]["options"]["num_ctx"]),
                          ("gemma4:12b", True, False, 16384))
         for handler, text in ((lambda r: httpx.Response(404), "HTTP 404"),

@@ -141,7 +141,8 @@ async def ollama_stream(settings, msgs, deadline=None):
                         "num_predict": settings.chat_answer_tokens, "temperature": 0.2}}
     timeout = httpx.Timeout(settings.chat_timeout_s, connect=5.0)
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        # The model is on this host: never through an HTTP(S)_PROXY of the environment.
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             async with client.stream("POST", settings.chat_url + "/api/chat", json=body) as r:
                 if r.status_code != 200:
                     raise ChatError("the model answered HTTP %d" % r.status_code)
@@ -174,7 +175,7 @@ async def model_state(settings):
         return _tags["value"]
     out = {"available": False, "digest": ""}
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=3.0, trust_env=False) as client:
             r = await client.get(settings.chat_url + "/api/tags")
         for m in (r.json().get("models") or []) if r.status_code == 200 else []:
             if settings.chat_model in (m.get("name"), m.get("model")):

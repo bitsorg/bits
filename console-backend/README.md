@@ -313,7 +313,8 @@ build-type variants share their sources. A day with a build but no record
 serves it with today's point computed afresh (the Vulnerabilities page's chart).
 
 **The help chat** (`orch/chat.py`, `orch/chat_docs.py`, with `BITS_CHAT_URL`, the
-address of Ollama on this host, e.g. `http://127.0.0.1:11434`, and `BITS_CHAT_MODEL`,
+address of Ollama on this host, e.g. `http://127.0.0.1:11434`, or from a container
+`http://host.docker.internal:11434` (bits-services' DEPLOYMENT.md), and `BITS_CHAT_MODEL`,
 default `gemma4:12b`): any signed-in user asks how to use bits (`POST /ops/chat
 {question, community?, history?}`) or why a build failed (`{pipeline}`), and gets the
 answer as server-sent events: the documentation sections used (`sources`), a reviewed
