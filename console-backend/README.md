@@ -321,7 +321,11 @@ answer as server-sent events: the documentation sections used (`sources`), a rev
 cause when a signature matched (`cause`), the text, then `done` or `error`. The model
 gets no tools. The backend sends it the best docs sections and, for a build, what the
 orchestrator recorded of it (outcome, where it stopped, failed jobs, the redacted
-excerpts, the issue), marked as data never to be followed. The worker's `chat_docs` step
+excerpts, the issue), how it differs from the last successful build of the same package
+and platform (version, CI commit, build host, followed heads and, for admins, its build
+variables), and for a failed build the end of its job logs and of `bits-build.log` or
+`bits-publish.log`, read from GitLab when asked (kept 10 minutes) and redacted, all
+marked as data never to be followed. The worker's `chat_docs` step
 reads the docs (`BITS_CHAT_DOCS`: a GitHub repository `owner/repo` or file
 `owner/repo/path`, a GitLab project `https://host/group/project` or a raw `…/file.md`;
 default every markdown file of the bits repositories on GitHub, each on its default
@@ -331,8 +335,9 @@ branch, and the site's `console.docs`, at CERN bits-console and bits-manifests) 
 `BITS_CHAT_PER_MINUTE` (6), `BITS_CHAT_PARALLEL` (2) answers at once and
 `BITS_CHAT_QUEUE` (4) waiting; per answer `BITS_CHAT_CONTEXT` (16384 tokens, best set
 as Ollama's `OLLAMA_CONTEXT_LENGTH` too), `BITS_CHAT_ANSWER_TOKENS` (1500) and
-`BITS_CHAT_TIMEOUT_S` (90); a thinking model answers without thinking first unless
-`BITS_CHAT_THINK=1`. Nothing of a chat is kept except a vote (`POST
+`BITS_CHAT_TIMEOUT_S` (90); a thinking model thinks first only to explain a failure
+(`BITS_CHAT_EXPLAIN_THINK`, on, when the model can and the context is 8192 or more;
+twice the time) or with `BITS_CHAT_THINK=1`. Nothing of a chat is kept except a vote (`POST
 /ops/chat/feedback`), with its question, answer and sources, for 90 days (migration 24;
 `GET /ops/chat/feedback` for overall admins; 50 a user a day; the worker's `chat_votes`
 step expires them, chat on or off). `GET /ops/chat` says whether it is on and whether

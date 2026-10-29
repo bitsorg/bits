@@ -264,6 +264,9 @@ class Settings:
         self.chat_timeout_s = max(10.0, float(e.get("BITS_CHAT_TIMEOUT_S", "90") or "90"))
         # Let a thinking model think first (slower, its thoughts are not shown): off.
         self.chat_think = (e.get("BITS_CHAT_THINK", "") or "").strip().lower() in ("1", "true", "yes")
+        # ... and to explain a failure (on: slower, but it reasons better over logs).
+        self.chat_explain_think = (e.get("BITS_CHAT_EXPLAIN_THINK", "1") or "").strip().lower() in (
+            "1", "true", "yes")
 
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks

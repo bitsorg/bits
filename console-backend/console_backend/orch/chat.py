@@ -21,6 +21,7 @@ import contextlib
 import json
 import logging
 import re
+import threading
 import time
 
 import httpx
@@ -76,25 +77,162 @@ def _error_lines(text, limit=600):
     return " ".join(keep)[:limit]
 
 
-def build_context(conn, pipeline, limit=4 * MAX_EXCERPT):
+# Variables a build is compared on (not secrets); the others never leave the record.
+COMPARED = ("DEFAULTS", "RUNNER_ARCH", "BITS_BUILD_ARGS",
+            "BITS_PRIMARY_RECIPES", "BITS_EXTRA_REPOS", "BITS_RUNNER_TAG", "BITS_DESIRED_REF",
+            "PUBLISH_CVMFS", "CERTIFY", "CVMFS_INSTALL_DIR", "CVMFS_RELEASE_VIEW",
+            "PREPUB_PUBLISH_PATH")
+LOG_TAIL = 128 * 1024        # bytes of a log read for an explanation
+LOG_LINES = 200              # its last lines kept
+LOGS_KEPT_S = 600            # a build's logs as read, reused this long
+# Where a job stopped -> the artifact that tells why (bits writes them beside its output).
+ARTIFACT = {"build": "bits-build.log", "publish": "bits-publish.log", "finish": "bits-publish.log"}
+_logs = collections.OrderedDict()   # (pipeline, failed jobs) -> (monotonic, {title: text})
+_reading = collections.defaultdict(threading.Lock)   # one read of a pipeline's logs at a time
+
+
+def _host(jobs, status):
+    """The runner of the build job (of *status*), else of any job."""
+    jobs = list(jobs or ())
+    pick = [j for j in jobs if j.get("status") == status and j.get("stage") == "build"] + jobs
+    return next((str(j.get("runner")) for j in pick if j.get("runner")), "")
+
+
+def what_changed(conn, b, admin):
+    """Lines on how build *b* differs from the last successful build of the same
+    package and platform: its version, CI commit, build host, the heads of the
+    branches a slot followed and, for admins, its build variables (COMPARED)."""
+    good = conn.execute("SELECT * FROM pipelines WHERE is_build = 1 AND outcome = 'success'"
+                        " AND community = ? AND package = ? AND platform = ? AND id < ?"
+                        " ORDER BY id DESC LIMIT 1",
+                        (b["community"], b.get("package") or "", b.get("platform") or "",
+                         b["pipeline"])).fetchone()
+    if not b.get("platform"):
+        return ["not compared with an earlier build: this one names no platform"]
+    if good is None:
+        return ["no earlier successful build of this package on this platform is recorded"]
+    changes = []
+
+    def diff(what, old, new):
+        if (old or "") != (new or ""):
+            changes.append("%s: %s → %s" % (what, old or "(none)", new or "(none)"))
+    diff("version", good["version"], b.get("version"))
+    diff("ref", good["ref"], b.get("ref"))
+    gsha = conn.execute("SELECT sha FROM pipelines WHERE id = ?", (b["pipeline"],)).fetchone()
+    diff("CI scripts commit", good["sha"][:8], (gsha["sha"] if gsha else "")[:8])
+    diff("build host", _host(json.loads(good["jobs"]), "success"), _host(b.get("jobs"), "failed"))
+    if admin:                              # the build variables, before the (many) heads
+        old_v, new_v = json.loads(good["variables"] or "{}"), b.get("variables") or {}
+        for k in COMPARED:
+            diff(k, failures.redact(str(old_v.get(k, ""))), failures.redact(str(new_v.get(k, ""))))
+    heads = lambda pid: (conn.execute("SELECT commits FROM schedule_runs WHERE pipeline_id = ?",
+                                      (pid,)).fetchone() or {"commits": ""})["commits"]
+    try:
+        old_h, new_h = json.loads(heads(good["id"]) or "{}"), json.loads(heads(b["pipeline"]) or "{}")
+    except ValueError:
+        old_h, new_h = {}, {}
+    for branch in sorted(set(old_h) | set(new_h)):
+        diff("head of " + branch, str(old_h.get(branch, ""))[:8], str(new_h.get(branch, ""))[:8])
+    when = good["finished_at"] or good["created_at"]
+    head = "the last successful build of this package and platform: pipeline %d, %s" % (good["id"], when)
+    return [head] + (["since then: " + c for c in changes] or
+                     ["nothing recorded changed since then (the recipes or sources may have)"])
+
+
+_PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+_PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+
+
+def _tail(raw, drop_runner=True):
+    """The last LOG_LINES lines of a log's tail, cleaned and redacted as a whole
+    before it is cut (a secret across the cut is still found), without the runner's
+    own lines, and without the end of a key whose start the tail cut off."""
+    lines = failures.redact("\n".join(failures.clean(raw or b""))).split("\n")
+    for i, ln in enumerate(lines):
+        if _PEM_BEGIN.search(ln):
+            break
+        if _PEM_END.search(ln):
+            lines = lines[i + 1:]
+            break
+    for i in range(len(lines) - 1, -1, -1):  # a key whose end the tail has not: from it on
+        if _PEM_END.search(lines[i]):
+            break
+        if _PEM_BEGIN.search(lines[i]):
+            lines = lines[:i] + ["[a private key, left out]"]
+            break
+    lines = [ln for ln in lines if ln.strip() and not (drop_runner and failures._RUNNER.match(ln))]
+    return "\n".join(lines[-LOG_LINES:])
+
+
+def fetch_logs(settings, b, stopped):
+    """{title: redacted text} read from GitLab now for a failed build: the end of
+    each failed job's log, without the runner's own lines, and of its bits log
+    (bits-build.log, bits-publish.log: where it stopped). A read that fails is left
+    out and not kept, so the next question tries it again."""
+    from . import kinds
+    failed = [j for j in b.get("jobs") or () if j.get("status") == "failed"][:2]
+    key = (int(b["pipeline"]), tuple(j.get("id") for j in failed))
+    with _reading[key[0]]:                 # concurrent questions: one read
+        hit = _logs.get(key)
+        if hit and time.monotonic() - hit[0] < LOGS_KEPT_S:
+            return hit[1]
+        out, complete = {}, True
+        try:
+            reader = kinds.Deps(settings).reader()
+        except Exception as e:
+            log.warning("chat: no GitLab to read logs from: %s", e)
+            return {}
+        for j in failed:
+            name = j.get("name") or str(j.get("id"))
+            reads = [("the end of job %s's log" % name,
+                      lambda j=j: _tail(reader.job_log_tail(j["id"], LOG_TAIL)))]
+            if j.get("stage") == "build":       # bits writes its logs in the build job
+                art = ARTIFACT.get(stopped) or "bits-build.log"
+                reads.append(("the end of %s of job %s" % (art, name),
+                              lambda j=j, art=art: _tail(reader.job_artifact_tail(j["id"], art, LOG_TAIL),
+                                                         False)))
+            for title, read in reads:
+                try:
+                    text = read()
+                except Exception as e:          # the rest is still something
+                    log.warning("chat: %s of pipeline %d: %s", title, key[0], e)
+                    complete = False
+                    continue
+                if text:
+                    out[title] = text
+        if complete:
+            _logs[key] = (time.monotonic(), out)
+            while len(_logs) > 32:
+                _logs.popitem(last=False)
+    if len(_reading) > 64:                     # the locks of pipelines no longer kept
+        kept = {k[0] for k in _logs}
+        for pid in [p for p, lk in list(_reading.items()) if p not in kept and not lk.locked()]:
+            _reading.pop(pid, None)
+    return out
+
+
+def build_context(conn, pipeline, limit=4 * MAX_EXCERPT, admin=False, logs=None):
     """{record, cause, search, community} of a recorded build pipeline, or None.
-    *record* (at most *limit* characters) is the text the model reads; *cause* a
-    reviewed signature's."""
+    *record* (at most *limit* characters) is the text the model reads: the build,
+    where it stopped, the recorded excerpts, what changed since its last good build,
+    and *logs* ({title: text}, fetch_logs'); *cause* a reviewed signature's."""
     b = reconcile.get_build(conn, pipeline)
     if b is None:
         return None
     c = str(b["community"] or "").lower()
-    fails = failures.list_failures(conn, communities={c}, pipeline=pipeline, limit=3)
+    fails = failures.list_failures(conn, communities={c}, pipeline=pipeline, limit=2)
     stopped = phases.for_pipelines(conn, [pipeline]).get(int(pipeline), {}).get("failed_in", "")
     issue = (failures.get_issue(conn, fails[0]["issue"], communities={c})
              if fails and fails[0].get("issue") else None)
     sig = (issue or {}).get("signature")
     jobs = ["%s (%s)" % (j.get("name"), j.get("failure_reason") or "failed")
             for j in b.get("jobs") or () if j.get("status") == "failed"]
+    bits_v = next((f.get("bits_version") for f in fails if f.get("bits_version")), "")
     lines = ["community: %s · package: %s %s · platform: %s · ref: %s" % (
                  c, b.get("package") or "?", b.get("version") or "", b.get("platform") or "?",
                  b.get("ref") or "?"),
-             "outcome: %s%s" % (b.get("outcome"), " · stopped in: " + stopped if stopped else "")]
+             "outcome: %s%s%s" % (b.get("outcome"), " · stopped in: " + stopped if stopped else "",
+                                  " · bits " + bits_v if bits_v else "")]
     if jobs:
         lines.append("failed jobs: " + ", ".join(jobs))
     if sig:
@@ -104,17 +242,30 @@ def build_context(conn, pipeline, limit=4 * MAX_EXCERPT):
         lines.append("this failure was seen %s time(s), on %s, in %s" % (
             issue.get("count"), ", ".join(issue.get("platforms") or []) or "?",
             ", ".join(issue.get("communities") or []) or "?"))
+    if b.get("outcome") == "failed":
+        lines += [_clean(x, 600) for x in what_changed(conn, b, admin)[:12]]
     for f in fails:
-        lines.append("log excerpt of %s %s (redacted):\n%s" % (
+        lines.append("recorded error excerpt of %s %s:\n%s" % (
             f.get("package") or "?", f.get("version") or "",
-            _clean(f.get("excerpt"), min(MAX_EXCERPT, limit // 3))))
+            _clean(f.get("excerpt"), min(MAX_EXCERPT, limit // 5))))
     if not fails and b.get("outcome") == "failed":
-        lines.append("no log excerpt was recorded for this build")
-    record = _clean("\n".join(lines), limit)
-    search = " ".join([b.get("package") or ""] + [_error_lines(f.get("excerpt")) for f in fails]
-                      + ([sig.get("cause") or ""] if sig else []) + [stopped])
+        lines.append("no error excerpt was recorded for this build")
+    head = "\n".join(lines)
+    room = limit - len(head)
+    items = list((logs or {}).items())
+    for i, (title, text) in enumerate(items):       # what is left, shared by those left
+        share = (room - len(title) - 3) // (len(items) - i)
+        if share < 300:
+            break
+        tail = _clean(text, 10 ** 9)[-share:]           # the end: where the error is
+        head += "\n%s:\n%s" % (title, tail)
+        room -= len(tail) + len(title) + 3
+    record = _clean(head, limit)
+    search = " ".join([b.get("package") or "", stopped] + ([sig.get("cause") or ""] if sig else [])
+                      + [_error_lines(f.get("excerpt")) for f in fails]
+                      + [_error_lines(t) for t in (logs or {}).values()])
     cause = {"cause": sig.get("cause"), "action": sig.get("action")} if sig else None
-    return {"record": record, "cause": cause, "search": search, "community": c}
+    return {"record": record, "cause": cause, "search": search[:2000], "community": c}
 
 
 def messages(question, docs, record=None, history=(), community=""):
@@ -139,13 +290,16 @@ class ChatError(Exception):
     pass
 
 
-async def ollama_stream(settings, msgs, deadline=None):
+async def ollama_stream(settings, msgs, deadline=None, think=None):
     """The answer's text as the model writes it (Ollama's /api/chat, streamed), cut
-    at *deadline* (monotonic) even when a line brings no text."""
-    body = {"model": settings.chat_model, "messages": msgs, "stream": True, "think": settings.chat_think,
-            "options": {"num_ctx": settings.chat_context,
-                        "num_predict": settings.chat_answer_tokens, "temperature": 0.2}}
+    at *deadline* (monotonic) even when a line brings no text; while the model
+    thinks (*think*), "" for each of its lines, so the caller can show it is alive."""
+    think = settings.chat_think if think is None else think
+    body = {"model": settings.chat_model, "messages": msgs, "stream": True, "think": think,
+            "options": {"num_ctx": settings.chat_context, "temperature": 0.2,
+                        "num_predict": settings.chat_answer_tokens + (THINK_TOKENS if think else 0)}}
     timeout = httpx.Timeout(settings.chat_timeout_s, connect=5.0)
+    wrote = False
     try:
         # The model is on this host: never through an HTTP(S)_PROXY of the environment.
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
@@ -162,10 +316,15 @@ async def ollama_stream(settings, msgs, deadline=None):
                         raise ChatError("the model's answer could not be read")
                     if d.get("error"):
                         raise ChatError("the model: %s" % d["error"])
-                    piece = (d.get("message") or {}).get("content") or ""
-                    if piece:
+                    msg = d.get("message") or {}
+                    piece = msg.get("content") or ""
+                    if piece or msg.get("thinking"):
+                        wrote = wrote or bool(piece)
                         yield piece
                     if d.get("done"):
+                        if not wrote and d.get("done_reason") == "length":
+                            raise ChatError("the model used up its tokens before answering"
+                                            " (thinking): ask again, or more narrowly")
                         return
     except httpx.HTTPError as e:
         raise ChatError("the model cannot be reached (%s)" % type(e).__name__)
@@ -175,18 +334,23 @@ _tags = {"at": 0.0, "value": None}
 
 
 async def model_state(settings):
-    """{available, digest} of the configured model, read from Ollama at most every 30 s."""
+    """{available, digest, thinks} of the configured model, read from Ollama at most
+    every 30 s; *thinks*: it can think first (its capabilities say so)."""
     now = time.monotonic()
     if _tags["value"] is not None and now - _tags["at"] < 30:
         return _tags["value"]
-    out = {"available": False, "digest": ""}
+    out = {"available": False, "digest": "", "thinks": False}
     try:
         async with httpx.AsyncClient(timeout=3.0, trust_env=False) as client:
             r = await client.get(settings.chat_url + "/api/tags")
-        for m in (r.json().get("models") or []) if r.status_code == 200 else []:
-            if settings.chat_model in (m.get("name"), m.get("model")):
-                out = {"available": True, "digest": m.get("digest") or ""}
-    except (httpx.HTTPError, ValueError):
+            for m in (r.json().get("models") or []) if r.status_code == 200 else []:
+                if settings.chat_model in (m.get("name"), m.get("model")):
+                    out = {"available": True, "digest": m.get("digest") or "", "thinks": False}
+            if out["available"]:
+                show = await client.post(settings.chat_url + "/api/show", json={"model": settings.chat_model})
+                caps = (show.json().get("capabilities") or []) if show.status_code == 200 else []
+                out["thinks"] = "thinking" in caps
+    except (httpx.HTTPError, ValueError, AttributeError):
         pass
     _tags.update(at=now, value=out)
     return out
@@ -204,7 +368,7 @@ class Gate:
         self.recent = collections.defaultdict(collections.deque)
 
     def _lapse(self, settings):
-        old = time.monotonic() - 2 * settings.chat_timeout_s - 30
+        old = time.monotonic() - 3 * settings.chat_timeout_s - 30   # waiting, then a thinking answer
         for u in [u for u, (_, t) in self.places.items() if t < old]:
             del self.places[u]
 
@@ -261,14 +425,31 @@ def _sse(event, data):
     return "%sdata: %s\n\n" % (head, json.dumps(data, ensure_ascii=False))
 
 
-async def _answer(settings, user, msgs, docs, cause):
+async def _answer(settings, user, prepare, think=False):
+    """The answer's events. *prepare()* (blocking: the database, GitLab) gives
+    (messages, docs, cause); it runs once the user is admitted, so no question
+    refused here costs a read."""
     # Admitted here, not before the response: a generator that never starts
     # never runs its finally, and would hold the user's place.
     why, place = gate.admit(user, settings)
     if why:
         yield _sse("error", {"error": why[1]})
         return
+    job = None
     try:
+        job = asyncio.ensure_future(run_in_threadpool(prepare))
+        while not job.done():
+            await asyncio.wait({job}, timeout=WAIT_BEAT_S)
+            if not job.done():
+                yield ": reading\n\n"
+        place[1] = time.monotonic()        # the wait for the model starts now
+        try:
+            msgs, docs, cause = job.result()
+        except ChatError:
+            raise
+        except Exception as e:             # the database or GitLab: say so, not a cut stream
+            log.warning("chat: preparing the answer: %s", e)
+            raise ChatError("the build and the docs could not be read: try again")
         yield _sse("sources", [{"n": i, "title": d["title"], "url": d["url"]}
                                for i, d in enumerate(docs, 1)])
         if cause:
@@ -283,10 +464,15 @@ async def _answer(settings, user, msgs, docs, cause):
                 beat = now
                 yield ": waiting\n\n"
             await asyncio.sleep(0.25)
-        t0 = time.monotonic()
-        async with contextlib.aclosing(ollama_stream(settings, msgs, t0 + settings.chat_timeout_s)) as pieces:
+        t0 = beat = time.monotonic()
+        deadline = t0 + settings.chat_timeout_s * (2 if think else 1)
+        async with contextlib.aclosing(ollama_stream(settings, msgs, deadline, think)) as pieces:
             async for piece in pieces:
-                yield _sse(None, {"text": piece})
+                if piece:
+                    yield _sse(None, {"text": piece})
+                elif time.monotonic() - beat > WAIT_BEAT_S:     # thinking: still alive
+                    beat = time.monotonic()
+                    yield ": thinking\n\n"
         yield _sse("done", {"model": settings.chat_model, "ms": int(1000 * (time.monotonic() - t0))})
     except ChatError as e:
         log.warning("chat: %s", e)
@@ -296,6 +482,8 @@ async def _answer(settings, user, msgs, docs, cause):
         yield _sse("error", {"error": "the model's answer could not be read"})
     finally:
         gate.leave(user, place)
+        if job is not None and not job.done():      # the client left during the reads
+            job.add_done_callback(lambda f: f.cancelled() or f.exception())
 
 
 # --- routes ---------------------------------------------------------------------
@@ -325,10 +513,14 @@ def _history(raw, budget):
     return out
 
 
-def budgets(settings):
+THINK_TOKENS = 2048          # what a thinking model may spend thinking, beside its answer
+
+
+def budgets(settings, think=False):
     """Characters of (docs, build record, history) the model's context leaves room for,
-    at some 3 characters a token beside the rules, the question and the answer."""
-    room = max(0, settings.chat_context - settings.chat_answer_tokens - 800) * 3
+    at some 3 characters a token beside the rules, the question, the answer (and thinking)."""
+    room = max(0, settings.chat_context - settings.chat_answer_tokens - 800
+               - (THINK_TOKENS if think else 0)) * 3
     return room * 45 // 100, room * 35 // 100, room * 20 // 100
 
 
@@ -375,28 +567,41 @@ async def chat(request: Request):
     question = question.strip() or (EXPLAIN if pipeline else "")
     if not question:
         raise HTTPException(400, "expected {question} or {pipeline}")
-    docs_chars, record_chars, history_chars = budgets(settings)
+    think = settings.chat_think
+    if pipeline and settings.chat_explain_think and settings.chat_context >= 8192:
+        think = think or (await model_state(settings)).get("thinks", False)
+    docs_chars, record_chars, history_chars = budgets(settings, think)
     history = _history(payload.get("history") or [], history_chars)
     why = gate.refusal(data["user"], settings)
     if why:
         raise HTTPException(*why)
+    b, stopped, admin = None, "", False
+    if pipeline:
+        def read():
+            with api._open() as conn:
+                b = reconcile.get_build(conn, pipeline)
+                return b, b and phases.for_pipelines(conn, [pipeline]).get(pipeline, {}).get("failed_in", "")
+        b, stopped = await run_in_threadpool(read)
+        if b is None:
+            raise HTTPException(404, "no such build")
+        mine = await api._scope(data)
+        admin = mine is None or str(b["community"]).lower() in mine
+    asked_in = community.strip().lower()
 
-    def gather():
+    def prepare():
+        # The logs as read now are for its community's admins, as its variables are:
+        # anyone else has the excerpts the orchestrator recorded.
+        logs = fetch_logs(settings, b, stopped) if b and admin and b.get("outcome") == "failed" else None
         with api._open() as conn:
-            ctx = build_context(conn, pipeline, record_chars) if pipeline else None
+            ctx = build_context(conn, pipeline, record_chars, admin, logs) if pipeline else None
             if pipeline and ctx is None:
-                return None, None
+                raise ChatError("the build is no longer recorded")
             terms = " ".join([question, (ctx or {}).get("search", "")])
-            return ctx, chat_docs.search(conn, terms, budget=docs_chars,
-                                         community=(ctx or {}).get("community") or community)
-    ctx, docs = await run_in_threadpool(gather)
-    if pipeline and ctx is None:
-        raise HTTPException(404, "no such build")
-    msgs = messages(question, docs, ctx and ctx["record"], history,
-                    (ctx or {}).get("community") or community.strip().lower())
-    log.info("chat: a question%s, %d sections", " on pipeline %d" % pipeline if pipeline else "",
-             len(docs))
-    return StreamingResponse(_answer(settings, data["user"], msgs, docs, ctx and ctx["cause"]),
+            c = (ctx or {}).get("community") or asked_in
+            docs = chat_docs.search(conn, terms, budget=docs_chars, community=c)
+        return messages(question, docs, ctx and ctx["record"], history, c), docs, ctx and ctx["cause"]
+    log.info("chat: a question%s", " on pipeline %d" % pipeline if pipeline else "")
+    return StreamingResponse(_answer(settings, data["user"], prepare, think),
                              media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
