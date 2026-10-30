@@ -157,6 +157,15 @@ class IndexTest(_DB):
                                            now=10 ** 10 + chat_docs.RETRY_S * 1000), 0)  # 304
         self.assertEqual(len(s.calls), 3)
 
+    def test_a_refresh_time_in_seconds_as_a_float(self):
+        from console_backend.orch import reconcile
+        s = FakeSession({RAW: (DOC, "e1")})
+        chat_docs.refresh(self.conn, [SRC], s, every_s=3600.0, now=1000)
+        self.assertEqual(reconcile._kv_get(self.conn, "chat.docs.next_ms"), str(1000 + 3600 * 1000))
+        reconcile._kv_set(self.conn, "chat.docs.next_ms", "4601000.0")    # as stored before
+        self.assertEqual(chat_docs.refresh(self.conn, [SRC], s, every_s=3600.0, now=2000), 0)
+        chat_docs.refresh(self.conn, [SRC], s, every_s=3600.0, now=4601001)
+
     def test_a_source_no_longer_listed_leaves_the_index(self):
         chat_docs.refresh(self.conn, [SRC], FakeSession({RAW: (DOC, "e1")}), now=1000)
         chat_docs.refresh(self.conn, [], FakeSession({}), now=10 ** 10)

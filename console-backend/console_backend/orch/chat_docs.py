@@ -337,7 +337,8 @@ def refresh(conn, sources, session=None, every_s=3600, now=None, token=""):
     ensure(conn)
     fixed_now = now
     now = now or db.now_ms()
-    if now < int(reconcile._kv_get(conn, "chat.docs.next_ms", "0") or 0):
+    # float(): a time once stored as "….0" (every_s a float) stopped every pass.
+    if now < float(reconcile._kv_get(conn, "chat.docs.next_ms", "0") or 0):
         return 0
     own = session is None
     session = session or requests.Session()
@@ -359,7 +360,7 @@ def refresh(conn, sources, session=None, every_s=3600, now=None, token=""):
         end = fixed_now or db.now_ms()     # from the end of the pass: a slow one is not again at once
         with db.transaction(conn):
             reconcile._kv_set(conn, "chat.docs.next_ms",
-                              str(end + 1000 * (min(RETRY_S, every_s) if errors else every_s)))
+                              str(int(end + 1000 * (min(RETRY_S, every_s) if errors else every_s))))
     if errors:
         raise RuntimeError("docs not read: " + "; ".join(errors[:10])
                            + ("; and %d more" % (len(errors) - 10) if len(errors) > 10 else ""))
