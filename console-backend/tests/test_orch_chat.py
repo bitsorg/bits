@@ -460,6 +460,21 @@ class EvalRunnerTest(unittest.TestCase):
         docs = [{"url": web + "c", "title": "R › C", "also": [web + "b"]}]
         self.assertTrue(run.found(["docs/R.md#b"], docs, titles))
 
+    def test_it_takes_the_services_index_without_the_faq(self):
+        import os
+        import tempfile
+        run = self._run()
+        path = os.path.join(tempfile.mkdtemp(), "orch.db")
+        live = db.connect(path)
+        db.migrate(live)
+        chat_docs.ensure(live)
+        chat_docs.refresh(live, [SRC], FakeSession({RAW: (DOC, "e1")}), now=1000)
+        chat_docs._replace(live, "bitsorg/bits/docs/FAQ.md", "# FAQ\n\n## Q?\n\nA.\n", "", "", "", 0)
+        live.close()
+        conn = run.index(None, False, path)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM chat_sections").fetchone()[0], 5)
+        self.assertTrue(chat_docs.search(conn, "builder images"))
+
     def test_a_sample_keeps_its_cases_when_one_is_added(self):
         run = self._run()
         cases = [{"id": "case-%d" % i} for i in range(40)]
@@ -475,7 +490,7 @@ class EvalRunnerTest(unittest.TestCase):
         real = chat_docs.refresh
         s = FakeSession({RAW: (DOC, "e1")})
         with patch.object(run, "_Settings", type("S", (), {"chat_docs": [SRC]})), \
-             patch.object(run.chat_docs, "refresh", lambda conn, sources: real(conn, sources, s)):
+             patch.object(run.chat_docs, "refresh", lambda conn, sources, **kw: real(conn, sources, s)):
             conn = run.index(None, False)
         self.assertEqual(chat_docs.status(conn)["sections"], 5)
 

@@ -5,7 +5,7 @@
 sources and, with --model, the model's answers (judged by the model itself with
 --judge, else for a person to read in the report).
 
-    python chat-eval/run.py                                  # the search, docs from GitHub
+    python chat-eval/run.py                                  # the search, docs as the service has them
     python chat-eval/run.py --local ~/src                    # docs from checkouts in ~/src/<repo or project>
     python chat-eval/run.py --model gemma4:12b --judge --out report.md
     python chat-eval/run.py --model qwen3.5:9b --judge --judge-model gemma4:12b --sample 30
@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -55,12 +56,24 @@ def _local_files(local, src):
     return [(prefix + p, os.path.join(root, p)) for p, _ in chat_docs._markdown([(p, "") for p in paths])]
 
 
-def index(local, faq):
+def _copy(conn, path):
+    """The docs index of the orchestrator's database at *path*, read only."""
+    live = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    try:
+        rows = live.execute("SELECT source, url, title, body FROM chat_sections").fetchall()
+    finally:
+        live.close()
+    conn.executemany("INSERT INTO chat_sections (source, url, title, body) VALUES (?, ?, ?, ?)", rows)
+
+
+def index(local, faq, live=""):
     conn = db.connect(":memory:")          # the orchestrator's schema: refresh keeps state in kv
     db.migrate(conn)
     chat_docs.ensure(conn)
     sources = chat_docs.sources_of(_Settings())
-    if local:
+    if live:
+        _copy(conn, live)
+    elif local:
         for src in sources:
             for fsrc, path in _local_files(local, src):
                 try:
@@ -69,9 +82,9 @@ def index(local, faq):
                     print("skipped %s: %s" % (fsrc, e), file=sys.stderr)
     else:
         try:
-            chat_docs.refresh(conn, sources)
-        except RuntimeError as e:          # what could not be read is said; the rest is indexed
-            print(e, file=sys.stderr)
+            chat_docs.refresh(conn, sources, token=os.environ.get("BITS_GITHUB_TOKEN", ""))
+        except RuntimeError as e:          # a part missing would score as wrong answers
+            sys.exit("%s: nothing evaluated (--db or --local reads them elsewhere)" % e)
     if not faq:                            # its entries are these cases: it would answer them
         conn.execute("DELETE FROM chat_sections WHERE source LIKE '%/docs/FAQ.md'")
     return conn
@@ -138,6 +151,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--cases", default=os.path.join(HERE, "cases.yaml"))
     ap.add_argument("--local", help="read the docs from checkouts in LOCAL/<repo> (bits: this one)")
+    ap.add_argument("--db", default=os.environ.get("BITS_ORCH_DB", ""),
+                    help="the orchestrator's database, whose docs index is used (default $BITS_ORCH_DB);"
+                         " without one, or with --local, the docs are read from GitHub or LOCAL")
     ap.add_argument("--url", default=os.environ.get("BITS_CHAT_URL", "http://127.0.0.1:11434"))
     ap.add_argument("--model", help="also ask this model each case")
     ap.add_argument("--judge", action="store_true", help="the model checks each must / must_not")
@@ -156,7 +172,12 @@ def main():
         keep = set(a.only.split(","))
         cases = [c for c in cases if c["id"] in keep]
     cases = sample(cases, a.sample)
-    conn = index(a.local, a.faq)
+    live = a.db if a.db and not a.local and os.path.exists(a.db) else ""
+    conn = index(a.local, a.faq, live)
+    n = conn.execute("SELECT COUNT(*) FROM chat_sections").fetchone()[0]
+    if not n:                              # every answer would be "not covered": say so instead
+        sys.exit("no docs indexed%s: nothing to evaluate" % (" in " + live if live else ""))
+    print("%d sections, from %s" % (n, live or a.local or "GitHub"), file=sys.stderr)
     titles = {_key(r["url"]): re.sub(r" \(\d+\)$", "", r["title"])
               for r in conn.execute("SELECT url, title FROM chat_sections")}
     hits = total = facts = facts_ok = wrong = 0

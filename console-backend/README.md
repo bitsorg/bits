@@ -343,7 +343,8 @@ twice the time) or with `BITS_CHAT_THINK=1`. Nothing of a chat is kept except a 
 `GET /ops/chat/feedback` for overall admins; 50 a user a day; the worker's `chat_votes`
 step expires them, chat on or off). `GET /ops/chat` says whether it is on and whether
 Ollama has the model. `chat-eval/run.py` measures the search on `chat-eval/cases.yaml` and,
-with `--model` (and `--judge`, `--judge-model` for another model to check them), the answers.
+with `--model` (and `--judge`, `--judge-model` for another model to check them), the answers;
+in the service's container it searches the docs index of `$BITS_ORCH_DB`, without the FAQ.
 
 **Nightly schedules** (`orch/schedules.py`, ADR bits 0007): a schedule builds
 one package at one version, with one defaults chain and recipe repositories, on
