@@ -330,31 +330,6 @@ async def ollama_stream(settings, msgs, deadline=None, think=None):
         raise ChatError("the model cannot be reached (%s)" % type(e).__name__)
 
 
-TERMS = """You help find the documentation of bits, a tool that builds software stacks \
-from recipes. Reply with one line of 6 to 12 search keywords for the user's question: the \
-commands, options, file names and terms its documentation would use. Only the keywords."""
-TERMS_TIMEOUT_S = 20
-
-
-def search_terms(settings, question, previous=""):
-    """Words to search the docs by, from the model (blocking): those the docs would use
-    and the question may not; "" when it cannot say. *previous*: the user's last question."""
-    text = ("Earlier question: %s\n" % previous[:500] if previous else "") + "Question: " + question
-    # num_ctx as for answers: another would make Ollama load the model again.
-    body = {"model": settings.chat_model, "stream": False, "think": False,
-            "messages": [{"role": "system", "content": TERMS}, {"role": "user", "content": text}],
-            "options": {"num_ctx": settings.chat_context, "num_predict": 64, "temperature": 0}}
-    try:
-        with httpx.Client(timeout=httpx.Timeout(TERMS_TIMEOUT_S, connect=5.0), trust_env=False) as c:
-            r = c.post(settings.chat_url + "/api/chat", json=body)
-            r.raise_for_status()
-            out = r.json()["message"]["content"]
-    except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
-        log.warning("chat: no search terms (%s)", type(e).__name__)
-        return ""
-    return " ".join(out.split())[:300] if isinstance(out, str) else ""
-
-
 _tags = {"at": 0.0, "value": None}
 
 
@@ -450,28 +425,10 @@ def _sse(event, data):
     return "%sdata: %s\n\n" % (head, json.dumps(data, ensure_ascii=False))
 
 
-async def _beats(job):
-    """': reading' comments until *job* is done: proxies keep the stream."""
-    while not job.done():
-        await asyncio.wait({job}, timeout=WAIT_BEAT_S)
-        if not job.done():
-            yield ": reading\n\n"
-
-
-def _result(job):
-    try:
-        return job.result()
-    except ChatError:
-        raise
-    except Exception as e:                 # the database or GitLab: say so, not a cut stream
-        log.warning("chat: preparing the answer: %s", e)
-        raise ChatError("the build and the docs could not be read: try again")
-
-
-async def _answer(settings, user, prepare, compose, think=False):
-    """The answer's events. Blocking, in turn: *prepare()* (the database, GitLab) once
-    the user is admitted, so no question refused here costs a read; *compose(prepared)*
-    gives (messages, docs, cause) once a model's place is free, as it may ask the model."""
+async def _answer(settings, user, prepare, think=False):
+    """The answer's events. *prepare()* (blocking: the database, GitLab) gives
+    (messages, docs, cause); it runs once the user is admitted, so no question
+    refused here costs a read."""
     # Admitted here, not before the response: a generator that never starts
     # never runs its finally, and would hold the user's place.
     why, place = gate.admit(user, settings)
@@ -481,10 +438,22 @@ async def _answer(settings, user, prepare, compose, think=False):
     job = None
     try:
         job = asyncio.ensure_future(run_in_threadpool(prepare))
-        async for b in _beats(job):
-            yield b
+        while not job.done():
+            await asyncio.wait({job}, timeout=WAIT_BEAT_S)
+            if not job.done():
+                yield ": reading\n\n"
         place[1] = time.monotonic()        # the wait for the model starts now
-        prepared = _result(job)
+        try:
+            msgs, docs, cause = job.result()
+        except ChatError:
+            raise
+        except Exception as e:             # the database or GitLab: say so, not a cut stream
+            log.warning("chat: preparing the answer: %s", e)
+            raise ChatError("the build and the docs could not be read: try again")
+        yield _sse("sources", [{"n": i, "title": d["title"], "url": d["url"]}
+                               for i, d in enumerate(docs, 1)])
+        if cause:
+            yield _sse("cause", cause)
         t0 = beat = time.monotonic()
         while not gate.take(place, settings):
             now = time.monotonic()
@@ -495,14 +464,6 @@ async def _answer(settings, user, prepare, compose, think=False):
                 beat = now
                 yield ": waiting\n\n"
             await asyncio.sleep(0.25)
-        job = asyncio.ensure_future(run_in_threadpool(compose, prepared))
-        async for b in _beats(job):
-            yield b
-        msgs, docs, cause = _result(job)
-        yield _sse("sources", [{"n": i, "title": d["title"], "url": d["url"]}
-                               for i, d in enumerate(docs, 1)])
-        if cause:
-            yield _sse("cause", cause)
         t0 = beat = time.monotonic()
         deadline = t0 + settings.chat_timeout_s * (2 if think else 1)
         async with contextlib.aclosing(ollama_stream(settings, msgs, deadline, think)) as pieces:
@@ -520,12 +481,9 @@ async def _answer(settings, user, prepare, compose, think=False):
         log.warning("chat: the model's answer: %s", e)
         yield _sse("error", {"error": "the model's answer could not be read"})
     finally:
-        if job is not None and not job.done():
-            # The client left during a read, or while the model gives search terms:
-            # the place is freed when that ends, so no more run than the limits allow.
-            job.add_done_callback(lambda f: (gate.leave(user, place), f.cancelled() or f.exception()))
-        else:
-            gate.leave(user, place)
+        gate.leave(user, place)
+        if job is not None and not job.done():      # the client left during the reads
+            job.add_done_callback(lambda f: f.cancelled() or f.exception())
 
 
 # --- routes ---------------------------------------------------------------------
@@ -629,30 +587,21 @@ async def chat(request: Request):
         mine = await api._scope(data)
         admin = mine is None or str(b["community"]).lower() in mine
     asked_in = community.strip().lower()
-    previous = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
 
     def prepare():
-        if not pipeline:
-            return None
         # The logs as read now are for its community's admins, as its variables are:
         # anyone else has the excerpts the orchestrator recorded.
         logs = fetch_logs(settings, b, stopped) if b and admin and b.get("outcome") == "failed" else None
         with api._open() as conn:
-            ctx = build_context(conn, pipeline, record_chars, admin, logs)
-        if ctx is None:
-            raise ChatError("the build is no longer recorded")
-        return ctx
-
-    def compose(ctx):
-        # Explain searches by the build's error lines; a question also by the model's words.
-        terms = search_terms(settings, question, previous) if question != EXPLAIN else ""
-        words = " ".join([question, (ctx or {}).get("search", "")])
-        c = (ctx or {}).get("community") or asked_in
-        with api._open() as conn:
-            docs = chat_docs.search(conn, words, budget=docs_chars, community=c, terms=terms)
+            ctx = build_context(conn, pipeline, record_chars, admin, logs) if pipeline else None
+            if pipeline and ctx is None:
+                raise ChatError("the build is no longer recorded")
+            terms = " ".join([question, (ctx or {}).get("search", "")])
+            c = (ctx or {}).get("community") or asked_in
+            docs = chat_docs.search(conn, terms, budget=docs_chars, community=c)
         return messages(question, docs, ctx and ctx["record"], history, c), docs, ctx and ctx["cause"]
     log.info("chat: a question%s", " on pipeline %d" % pipeline if pipeline else "")
-    return StreamingResponse(_answer(settings, data["user"], prepare, compose, think),
+    return StreamingResponse(_answer(settings, data["user"], prepare, think),
                              media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 

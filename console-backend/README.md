@@ -331,9 +331,8 @@ reads the docs (`BITS_CHAT_DOCS`: a GitHub repository `owner/repo` or file
 default every markdown file of the bits repositories on GitHub, each on its default
 branch, and the site's `console.docs`, at CERN bits-console and bits-manifests) every
 `BITS_CHAT_DOCS_REFRESH_S` (3600), when they changed, into a full-text index
-(SQLite FTS5) in this database. A question is searched by its words and by search terms
-the model gives for it (one short call, without thinking), the two results merged; a
-section of a few lines comes with its subsections. Limits: one question at a time per user,
+(SQLite FTS5) in this database; a section of a few lines comes with its subsections.
+Limits: one question at a time per user,
 `BITS_CHAT_PER_MINUTE` (6), `BITS_CHAT_PARALLEL` (2) answers at once and
 `BITS_CHAT_QUEUE` (4) waiting; per answer `BITS_CHAT_CONTEXT` (16384 tokens, best set
 as Ollama's `OLLAMA_CONTEXT_LENGTH` too), `BITS_CHAT_ANSWER_TOKENS` (1500) and

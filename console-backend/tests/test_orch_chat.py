@@ -188,15 +188,6 @@ class IndexTest(_DB):
         self.assertTrue(got[0]["title"].endswith("Short"))
         self.assertTrue(any("zebra" in d["body"] and d["title"].endswith("Long (2)") for d in got))
 
-    def test_the_models_terms_find_what_the_question_does_not(self):
-        chat_docs.refresh(self.conn, [SRC], FakeSession({RAW: (DOC, "e1")}), now=1000)
-        self.assertEqual(chat_docs.search(self.conn, "how do I ship it?"), [])
-        got = chat_docs.search(self.conn, "how do I ship it?", terms="publish console")
-        self.assertTrue(got[0]["url"].endswith("#phase-4--ci-build-and-cvmfs-publication-via-bits-console"))
-
-    def test_results_in_both_lists_come_first(self):
-        a, b = [{"rowid": i} for i in (1, 2, 3)], [{"rowid": i} for i in (4, 3)]
-        self.assertEqual([r["rowid"] for r in chat_docs._merged([a, b])], [3, 1, 4, 2])
 
 
 class RepoTest(_DB):
@@ -531,11 +522,6 @@ class ApiTest(_DB):
         self.client = TestClient(main.app)
         chat_docs.refresh(self.conn, [SRC], FakeSession({RAW: (DOC, "e1")}), now=1000)
         self.sent, self.thought, self.logs = [], [], {}
-        self.asked, self.terms = [], ""
-        p = patch.object(chat, "search_terms",
-                         lambda settings, q, previous="": self.asked.append((q, previous)) or self.terms)
-        p.start()
-        self.addCleanup(p.stop)
         self.fetched = []
         p = patch.object(chat, "fetch_logs", lambda settings, b, stopped: self.fetched.append(b["pipeline"])
                          or self.logs)
@@ -572,46 +558,6 @@ class ApiTest(_DB):
         self.assertIn("[1] GUIDE › Guide › 2. Installation & Prerequisites › Platforms", user)
         self.assertNotIn("Build record", user)
         self.assertEqual((chat.gate.counts(main.settings), chat.gate.places), ((0, 0), {}))
-
-    def test_a_question_is_searched_by_the_models_terms_too(self):
-        self.terms = "builder images"
-        ev = _events(self._post("dave", {"question": "what can I run on?", "history": [
-            {"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}).text)
-        self.assertTrue(ev[0][1][0]["url"].endswith("#platforms"))
-        self.assertEqual(self.asked, [("what can I run on?", "hi")])
-        self._fail(1, bits_failure())
-        self._pass()
-        ev = _events(self._post("dave", {"pipeline": 1}).text)
-        self.assertEqual((ev[0][0], ev[-1][0]), ("sources", "done"))
-        self.assertEqual(len(self.asked), 1)          # Explain searches by the build's errors
-
-    def test_a_place_is_kept_while_the_search_terms_are_asked_for(self):
-        import asyncio
-        import threading
-        go, inside = threading.Event(), threading.Event()
-
-        def compose(prepared):
-            inside.set()
-            go.wait(5)
-            return [], [], None
-
-        async def leave_early():
-            gen = chat._answer(main.settings, "dave", lambda: None, compose)
-            async for _ in gen:
-                if inside.is_set():
-                    break
-            await gen.aclose()
-            held = dict(chat.gate.places)
-            go.set()
-            for _ in range(200):
-                if not chat.gate.places:
-                    break
-                await asyncio.sleep(0.01)
-            return held
-        with patch.object(chat, "WAIT_BEAT_S", 0.01):
-            held = asyncio.run(leave_early())
-        self.assertIn("dave", held)
-        self.assertEqual(chat.gate.places, {})
 
     def test_explain_a_failure(self):
         self._fail(1, bits_failure())
@@ -851,36 +797,6 @@ class WorkerTest(_DB):
         got = names({"BITS_CHAT_URL": "http://127.0.0.1:11434"})
         self.assertEqual(got[-4:], ["ship", "chat_docs", "chat_votes", "backup"])
 
-
-class TermsTest(unittest.TestCase):
-    def setUp(self):
-        import httpx
-        self.httpx, self.seen, self.reply = httpx, [], None
-        self.settings = config.Settings(env={"BITS_CHAT_URL": "http://ollama:11434",
-                                             "BITS_CHAT_CONTEXT": "8192"})
-        real = httpx.Client
-
-        def handler(request):
-            self.seen.append(json.loads(request.content))
-            return self.reply(request)
-        p = patch.object(chat.httpx, "Client",
-                         lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
-        p.start()
-        self.addCleanup(p.stop)
-
-    def test_the_model_is_asked_for_search_terms(self):
-        self.reply = lambda r: self.httpx.Response(200, json={"message": {"content": " bits enter\n load "}})
-        self.assertEqual(chat.search_terms(self.settings, "how do I use ROOT?", "I built ROOT"),
-                         "bits enter load")
-        body = self.seen[0]
-        self.assertEqual((body["options"]["num_ctx"], body["think"], body["stream"]), (8192, False, False))
-        self.assertIn("Earlier question: I built ROOT", body["messages"][-1]["content"])
-
-    def test_no_terms_when_the_model_cannot_say(self):
-        for reply in (lambda r: self.httpx.Response(500), lambda r: self.httpx.Response(200, text="x"),
-                      lambda r: self.httpx.Response(200, json={"message": {"content": 3}})):
-            self.reply = reply
-            self.assertEqual(chat.search_terms(self.settings, "q"), "")
 
 
 if __name__ == "__main__":

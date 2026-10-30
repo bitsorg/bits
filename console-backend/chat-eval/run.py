@@ -17,7 +17,6 @@ import re
 import subprocess
 import sys
 import time
-import types
 
 import requests
 import yaml
@@ -151,27 +150,21 @@ def main():
     conn = index(a.local, a.faq)
     titles = {_key(r["url"]): re.sub(r" \(\d+\)$", "", r["title"])
               for r in conn.execute("SELECT url, title FROM chat_sections")}
-    model = types.SimpleNamespace(chat_url=a.url, chat_model=a.model, chat_context=a.context)
-    hits = plain_hits = total = facts = facts_ok = wrong = 0
+    hits = total = facts = facts_ok = wrong = 0
     report = ["# Help chat evaluation", "",
               "model: %s · %s" % (a.model or "(search only)", time.strftime("%Y-%m-%d %H:%M")), ""]
     for c in cases:
         rec = record(c["build"]) if c.get("build") else None
         words = c["question"] + " " + (chat._error_lines(c["build"].get("excerpt")) if rec else "")
-        # As the chat: the model's search terms for a question, not for Explain.
-        terms = chat.search_terms(model, c["question"]) if a.model and c["question"] != chat.EXPLAIN else ""
-        docs = chat_docs.search(conn, words, terms=terms)
+        docs = chat_docs.search(conn, words)
         got = [_key(d["url"]) for d in docs]
         hit = None
         if c.get("sources"):
             total += 1
             hit = found(c["sources"], docs, titles)
             hits += hit
-            plain_hits += found(c["sources"], chat_docs.search(conn, words), titles) if terms else hit
-        report += ["## %s" % c["id"], "", "**Q:** " + c["question"], ""]
-        if terms:
-            report += ["search terms: " + terms, ""]
-        report += ["search: %s" % ("found" if hit else "missed" if hit is False else "n/a")
+        report += ["## %s" % c["id"], "", "**Q:** " + c["question"], "",
+                   "search: %s" % ("found" if hit else "missed" if hit is False else "n/a")
                    + ("" if hit or not c.get("sources") else " (expected %s; got %s)"
                       % (", ".join(c["sources"]), ", ".join(got[:3]) or "nothing")), ""]
         if a.model:
@@ -197,8 +190,6 @@ def main():
               file=sys.stderr)
     summary = "search found the expected section for %d of %d cases (%.0f%%)" % (
         hits, total, 100.0 * hits / max(total, 1))
-    if a.model:
-        summary += " (without the model's search terms: %d)" % plain_hits
     if a.judge:
         summary += "; answers stated %d of %d facts, and %d wrong claims" % (facts_ok, facts, wrong)
     print(summary)
