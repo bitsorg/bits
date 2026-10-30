@@ -333,6 +333,65 @@ async def ollama_stream(settings, msgs, deadline=None, think=None):
         raise ChatError("the model cannot be reached (%s)" % type(e).__name__)
 
 
+# An embedding model's own forms of a search query and a document (EmbeddingGemma's,
+# nomic-embed-text's); another model gets the text as it is.
+EMBED_PROMPTS = {"embeddinggemma": ("task: search result | query: {text}", "title: {title} | text: {text}"),
+                 "nomic-embed-text": ("search_query: {text}", "search_document: {title}\n{text}")}
+
+
+# Sections given with a question, at most (and within the docs' budget): more when
+# they are found by meaning too, which ranks the right one lower more often.
+SECTIONS, SECTIONS_BY_MEANING = 6, 10
+
+
+def _prompts(model):
+    return EMBED_PROMPTS.get(model.split(":")[0], ("{text}", "{title}\n{text}"))
+
+
+def vector_key(settings):
+    """What a section's vector depends on beside its text: the model and its form."""
+    return "%s\n%s" % (settings.chat_embed_model, _prompts(settings.chat_embed_model)[1])
+
+
+def embed(settings, texts, timeout=30):
+    """The vectors of *texts* from the embedding model (blocking); ChatError when it cannot."""
+    # Kept loaded for an hour: a question must not wait for it to load (10 s at most).
+    body = {"model": settings.chat_embed_model, "input": list(texts), "truncate": True, "keep_alive": "1h"}
+    try:
+        with httpx.Client(timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False) as c:
+            r = c.post(settings.chat_url + "/api/embed", json=body)
+            if r.status_code != 200:
+                raise ChatError("the embedding model answered HTTP %d" % r.status_code)
+            vecs = r.json().get("embeddings")
+    except httpx.HTTPError as e:
+        raise ChatError("the embedding model cannot be reached (%s)" % type(e).__name__)
+    except (ValueError, AttributeError):
+        raise ChatError("the embedding model's answer could not be read")
+    if (not isinstance(vecs, list) or len(vecs) != len(texts)
+            or not all(isinstance(v, list) and v for v in vecs)):
+        raise ChatError("the embedding model's answer could not be read")
+    return vecs
+
+
+def embed_docs(settings, sections):
+    """The vectors of [(title, body)], as documents."""
+    doc = _prompts(settings.chat_embed_model)[1]
+    return embed(settings, [doc.format(title=t, text=b) for t, b in sections])
+
+
+def near(settings, text):
+    """(model, the vector of *text* as a query) for the docs search; None without an
+    embedding model or when it cannot answer: the search is then by words only."""
+    if not settings.chat_embed_model:
+        return None
+    query = _prompts(settings.chat_embed_model)[0]
+    try:
+        return vector_key(settings), embed(settings, [query.format(text=text[:2000])], timeout=10)[0]
+    except ChatError as e:
+        log.warning("chat: the docs searched by words only: %s", e)
+        return None
+
+
 _tags = {"at": 0.0, "value": None}
 
 
@@ -601,7 +660,8 @@ async def chat(request: Request):
                 raise ChatError("the build is no longer recorded")
             terms = " ".join([question, (ctx or {}).get("search", "")])
             c = (ctx or {}).get("community") or asked_in
-            docs = chat_docs.search(conn, terms, budget=docs_chars, community=c)
+            q = near(settings, terms)
+            docs = chat_docs.search(conn, terms, SECTIONS_BY_MEANING if q else SECTIONS, docs_chars, c, q)
         return messages(question, docs, ctx and ctx["record"], history, c), docs, ctx and ctx["cause"]
     log.info("chat: a question%s", " on pipeline %d" % pipeline if pipeline else "")
     return StreamingResponse(_answer(settings, data["user"], prepare, think),
@@ -677,6 +737,19 @@ def expire_votes(conn):
 
 
 def step(conn, settings, session=None):
-    """The worker's, with the chat: the docs index up to date."""
-    return chat_docs.refresh(conn, chat_docs.sources_of(settings), session=session,
-                             every_s=settings.chat_docs_refresh_s, token=settings.github_token)
+    """The worker's, with the chat: the docs index up to date and, with an embedding
+    model, its vectors (made for what was read even when some docs were not)."""
+    errors, n = [], 0
+    try:
+        n = chat_docs.refresh(conn, chat_docs.sources_of(settings), session=session,
+                              every_s=settings.chat_docs_refresh_s, token=settings.github_token)
+    except RuntimeError as e:
+        errors.append(str(e))
+    if settings.chat_embed_model:
+        try:
+            chat_docs.embed_sections(conn, vector_key(settings), lambda s: embed_docs(settings, s))
+        except (ChatError, ValueError) as e:
+            errors.append("vectors not made: %s" % e)
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    return n

@@ -169,7 +169,7 @@ class IndexTest(_DB):
     def test_a_source_no_longer_listed_leaves_the_index(self):
         chat_docs.refresh(self.conn, [SRC], FakeSession({RAW: (DOC, "e1")}), now=1000)
         chat_docs.refresh(self.conn, [], FakeSession({}), now=10 ** 10)
-        self.assertEqual(chat_docs.status(self.conn), {"sources": 0, "sections": 0, "changed_ms": 0})
+        self.assertEqual(chat_docs.status(self.conn), {"sources": 0, "sections": 0, "changed_ms": 0, "vectors": 0})
 
     def test_search(self):
         chat_docs.refresh(self.conn, [SRC], FakeSession({RAW: (DOC, "e1")}), now=1000)
@@ -178,6 +178,35 @@ class IndexTest(_DB):
         self.assertEqual(chat_docs.search(self.conn, 'the "of" and'), [])        # stop words only
         self.assertTrue(chat_docs.search(self.conn, 'installing "python3" OR NEAR('))
         self.assertEqual(chat_docs.query('a "b" c-d'), '"c-d"')
+
+    def test_vectors_find_what_the_words_do_not(self):
+        chat_docs.refresh(self.conn, [SRC], FakeSession({RAW: (DOC, "e1")}), now=1000)
+        sent = []
+
+        def embed(sections):
+            sent.extend(sections)
+            return [[1.0, 0.0] if "Publish" in b else [0.0, 1.0] for _, b in sections]
+        self.assertEqual(chat_docs.embed_sections(self.conn, "m", embed), 5)
+        self.assertEqual(chat_docs.embed_sections(self.conn, "m", embed), 0)   # none again
+        self.assertEqual(chat_docs.search(self.conn, "how do I ship it?"), [])
+        got = chat_docs.search(self.conn, "how do I ship it?", near=("m", [0.9, 0.1]))
+        self.assertTrue(got[0]["url"].endswith("#phase-4--ci-build-and-cvmfs-publication-via-bits-console"))
+        self.assertEqual(chat_docs.search(self.conn, "how do I ship it?", near=("other", [1.0, 0.0])), [])
+        chat_docs.refresh(self.conn, [SRC], FakeSession({RAW: (DOC.replace("Publish with", "Ship with"), "e2")}),
+                          now=10 ** 10)
+        self.assertEqual(chat_docs.embed_sections(self.conn, "m", embed), 1)   # the changed section
+        self.assertEqual(chat_docs.status(self.conn)["vectors"], 5)              # its old one gone
+        with self.assertRaises(ValueError):
+            chat_docs.embed_sections(self.conn, "n", lambda sections: [[1.0]], now=10 ** 10)
+        self.assertEqual(chat_docs.embed_sections(self.conn, "n", embed, now=10 ** 10 + 1000), 0)   # waits
+        self.assertEqual(chat_docs.embed_sections(self.conn, "n", embed,
+                                                  now=10 ** 10 + chat_docs.RETRY_S * 1000), 5)
+
+    def test_an_index_without_vectors_is_searched_by_words(self):
+        chat_docs.refresh(self.conn, [SRC], FakeSession({RAW: (DOC, "e1")}), now=1000)
+        self.conn.execute("DROP TABLE chat_vectors")
+        got = chat_docs.search(self.conn, "Which builder images are there?", near=("m", [1.0, 0.0]))
+        self.assertTrue(got[0]["url"].endswith("#platforms"))
 
     def test_a_short_section_brings_its_subsections(self):
         chat_docs.refresh(self.conn, [SRC], FakeSession({RAW: (DOC, "e1")}), now=1000)
@@ -593,6 +622,20 @@ class ApiTest(_DB):
         self.assertNotIn("Build record", user)
         self.assertEqual((chat.gate.counts(main.settings), chat.gate.places), ((0, 0), {}))
 
+    def test_a_question_is_searched_by_meaning_too(self):
+        main.settings = config.Settings(env=dict(self.ENV, BITS_ORCH_DB=self.path,
+                                                 BITS_CHAT_EMBED_MODEL="embeddinggemma"))
+        fake = lambda settings, texts, timeout=60: [[1.0, 0.0] if ("Publish" in t or "ship" in t) else [0.0, 1.0]
+                                                    for t in texts]
+        with patch.object(chat, "embed", fake):
+            chat_docs.embed_sections(self.conn, chat.vector_key(main.settings),
+                                     lambda secs: chat.embed_docs(main.settings, secs))
+            real, limits = chat_docs.search, []
+            with patch.object(chat.chat_docs, "search", lambda *a, **k: limits.append(a[2]) or real(*a, **k)):
+                ev = _events(self._post("dave", {"question": "how do I ship it?"}).text)
+        self.assertTrue(ev[0][1][0]["url"].endswith("#phase-4--ci-build-and-cvmfs-publication-via-bits-console"))
+        self.assertEqual(limits, [chat.SECTIONS_BY_MEANING])
+
     def test_explain_a_failure(self):
         self._fail(1, bits_failure())
         self._pass()
@@ -831,6 +874,64 @@ class WorkerTest(_DB):
         got = names({"BITS_CHAT_URL": "http://127.0.0.1:11434"})
         self.assertEqual(got[-4:], ["ship", "chat_docs", "chat_votes", "backup"])
 
+
+
+class EmbedTest(_DB):
+    def setUp(self):
+        super().setUp()
+        import httpx
+        self.httpx, self.seen = httpx, []
+        self.reply = lambda body: httpx.Response(200, json={"embeddings": [[1.0, 0.0]] * len(body["input"])})
+        self.settings = config.Settings(env={"BITS_CHAT_URL": "http://ollama:11434",
+                                             "BITS_CHAT_EMBED_MODEL": "embeddinggemma"})
+        real = httpx.Client
+
+        def handler(request):
+            body = json.loads(request.content)
+            self.seen.append((request.url.path, body))
+            return self.reply(body)
+        p = patch.object(chat.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_the_models_forms_of_queries_and_documents(self):
+        self.assertEqual(chat.near(self.settings, "how?"), (chat.vector_key(self.settings), [1.0, 0.0]))
+        self.assertEqual(chat.embed_docs(self.settings, [("T", "body")]), [[1.0, 0.0]])
+        self.assertEqual(self.seen[0][1]["keep_alive"], "1h")
+        self.assertEqual([(p, b["model"], b["input"]) for p, b in self.seen], [
+            ("/api/embed", "embeddinggemma", ["task: search result | query: how?"]),
+            ("/api/embed", "embeddinggemma", ["title: T | text: body"])])
+        off = config.Settings(env={"BITS_CHAT_URL": "http://ollama:11434"})
+        self.assertIsNone(chat.near(off, "how?"))
+
+    def test_words_only_when_the_model_cannot_say(self):
+        for reply in (lambda b: self.httpx.Response(404), lambda b: self.httpx.Response(200, text="x"),
+                      lambda b: self.httpx.Response(200, json={"embeddings": []})):
+            self.reply = reply
+            self.assertIsNone(chat.near(self.settings, "how?"))
+            with self.assertRaises(chat.ChatError):
+                chat.embed_docs(self.settings, [("T", "body")])
+
+    def test_the_worker_makes_vectors_even_when_some_docs_were_not_read(self):
+        from console_backend.orch import reconcile
+        self.settings.chat_docs = [SRC]
+        chat.step(self.conn, self.settings, FakeSession({RAW: (DOC, "e1")}))
+        self.assertEqual(chat_docs.status(self.conn)["vectors"], 5)
+        self.settings.chat_docs = [SRC, "bitsorg/bits/docs/OTHER.md"]
+        s = FakeSession({RAW: (DOC.replace("Publish with", "Ship with"), "e2"),
+                         chat_docs.RAW % ("bitsorg", "bits", "docs/OTHER.md"): ValueError("x")})
+        reconcile._kv_set(self.conn, "chat.docs.next_ms", "0")
+        with self.assertRaises(RuntimeError) as e:
+            chat.step(self.conn, self.settings, s)
+        self.assertIn("docs not read", str(e.exception))
+        self.assertNotIn("vectors not made", str(e.exception))
+        self.assertEqual(len(self.seen[-1][1]["input"]), 1)      # the changed section's
+        self.reply = lambda body: self.httpx.Response(500)
+        reconcile._kv_set(self.conn, "chat.docs.next_ms", "0")
+        s.files[RAW] = (DOC, "e1")
+        with self.assertRaises(RuntimeError) as e:
+            chat.step(self.conn, self.settings, s)
+        self.assertIn("vectors not made: the embedding model answered HTTP 500", str(e.exception))
 
 
 if __name__ == "__main__":

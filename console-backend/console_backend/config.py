@@ -251,6 +251,9 @@ class Settings:
                   else re.fullmatch(r"[\w.-]+/[\w.-]+(/[\w./-]+)?", d))
             if not ok or ".." in d.split("/"):
                 raise ValueError("BITS_CHAT_DOCS: %r is not owner/repo[/path] or an https address" % d)
+        # A model that gives the sections vectors, so that a question finds them by
+        # meaning too (an Ollama embedding model, e.g. embeddinggemma): unset = words only.
+        self.chat_embed_model = (e.get("BITS_CHAT_EMBED_MODEL") or "").strip()
         self.chat_docs_refresh_s = max(300.0, float(e.get("BITS_CHAT_DOCS_REFRESH_S", "3600") or "3600"))
         # Answers at once, questions waiting, a user's questions a minute, and per
         # answer: the model's context (tokens), its length (tokens) and time (s).

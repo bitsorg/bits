@@ -10,17 +10,24 @@ refresh - the worker's step: every BITS_CHAT_DOCS_REFRESH_S, each repository is
           listed again (conditionally) and only its files whose blob changed are
           read again; a host that cannot be reached, or limits the rate, is left
           for the next pass with what it gave before.
+embed_sections - with an embedding model (BITS_CHAT_EMBED_MODEL), the worker's
+          too: a vector for each section, so that a question finds sections by
+          meaning as well as by its words.
 search  - the sections that best match a question, for the API.
 
 The index is derived (made again from the sources at any time), so its tables
 are created here, not by a migration, and a missing FTS5 only turns the chat off.
 """
 
+import array
 import collections
 import hashlib
 import json
 import logging
+import math
+import operator
 import re
+import time
 import urllib.parse
 
 from . import db
@@ -64,6 +71,12 @@ SCHEMA = [
         etag        TEXT NOT NULL DEFAULT '',
         files       TEXT NOT NULL DEFAULT '{}',
         ok_ms       INTEGER NOT NULL DEFAULT 0
+    )""",
+    # A section's vector (float32, unit length), by the digest of the embedding
+    # model, its title and its text: a section that changes gets a new one.
+    """CREATE TABLE IF NOT EXISTS chat_vectors (
+        digest      TEXT PRIMARY KEY,
+        vec         BLOB NOT NULL
     )""",
 ]
 
@@ -438,6 +451,8 @@ def repo_of(source):
 
 
 SHORT = 600               # characters: a section this short comes with its subsections
+RRF_K = 60                # rank merging: a result in both lists beats the top of one
+EMBED_BATCH = 16          # sections to the embedding model at once
 
 
 def _ranked(conn, text, n):
@@ -447,6 +462,78 @@ def _ranked(conn, text, n):
     return conn.execute("SELECT rowid, source, title, url, body FROM chat_sections WHERE"
                         " chat_sections MATCH ? ORDER BY bm25(chat_sections, 0.0, 0.0, 4.0, 1.0)"
                         " LIMIT ?", (q, n)).fetchall()
+
+
+def _merged(lists):
+    """The rows of *lists* (each best first) by reciprocal rank: best in all first."""
+    score, rows = collections.Counter(), {}
+    for ranked in lists:
+        for i, r in enumerate(ranked):
+            score[r["rowid"]] += 1.0 / (RRF_K + i)
+            rows.setdefault(r["rowid"], r)
+    return sorted(rows.values(), key=lambda r: -score[r["rowid"]])
+
+
+def digest(model, title, body):
+    return hashlib.sha256("\0".join((model, title, body)).encode()).hexdigest()
+
+
+def _unit(vec):
+    n = math.sqrt(sum(x * x for x in vec)) or 1.0
+    return array.array("f", (x / n for x in vec))
+
+
+def embed_sections(conn, model, embed, budget_s=20, now=None):
+    """Vectors, from *embed*([(title, body)]) -> [[float]], for the sections that have
+    none for *model*, for up to *budget_s* (the rest at the next pass); those of
+    sections no longer indexed are dropped. Returns how many were made. After a
+    failure (raised) the next try is in RETRY_S."""
+    from . import reconcile
+    ensure(conn)
+    now = now or db.now_ms()
+    if now < float(reconcile._kv_get(conn, "chat.vectors.next_ms", "0") or 0):
+        return 0
+    want = {}
+    for r in conn.execute("SELECT title, body FROM chat_sections"):
+        want.setdefault(digest(model, r["title"], r["body"]), (r["title"], r["body"]))
+    have = {d for (d,) in conn.execute("SELECT digest FROM chat_vectors")}
+    if have - set(want):
+        with db.transaction(conn):
+            conn.executemany("DELETE FROM chat_vectors WHERE digest = ?", [(d,) for d in have - set(want)])
+    todo = [(d, s) for d, s in want.items() if d not in have]
+    made, t0 = 0, time.monotonic()
+    for i in range(0, len(todo), EMBED_BATCH):
+        if time.monotonic() - t0 > budget_s:
+            break
+        batch = todo[i:i + EMBED_BATCH]
+        try:
+            vecs = embed([s for _, s in batch])
+            if len(vecs) != len(batch):
+                raise ValueError("the embedding model gave %d vectors for %d sections" % (len(vecs), len(batch)))
+        except Exception:
+            with db.transaction(conn):
+                reconcile._kv_set(conn, "chat.vectors.next_ms", str(int(now + RETRY_S * 1000)))
+            raise
+        with db.transaction(conn):
+            conn.executemany("INSERT OR REPLACE INTO chat_vectors (digest, vec) VALUES (?, ?)",
+                             [(d, _unit(v).tobytes()) for (d, _), v in zip(batch, vecs)])
+        made += len(batch)
+    return made
+
+
+def _nearest(conn, model, vec, n):
+    """The *n* sections nearest to *vec* (a question's, from *model*), best first."""
+    q = _unit(vec)
+    vecs = dict(conn.execute("SELECT digest, vec FROM chat_vectors").fetchall())
+    scored = []
+    for r in conn.execute("SELECT rowid, source, title, url, body FROM chat_sections"):
+        b = vecs.get(digest(model, r["title"], r["body"]))
+        if b and len(b) == 4 * len(q):
+            v = array.array("f")
+            v.frombytes(b)
+            scored.append((sum(map(operator.mul, q, v)), r))
+    scored.sort(key=lambda x: -x[0])
+    return [r for _, r in scored[:n]]
 
 
 def _subsections(conn, r, shown):
@@ -473,9 +560,10 @@ def _subsections(conn, r, shown):
     return body, got
 
 
-def search(conn, text, limit=6, budget=24000, community=""):
+def search(conn, text, limit=6, budget=24000, community="", near=None):
     """[{title, url, body, also}] best first, at most *limit* and about *budget* characters;
-    *also*: the urls of the subsections a short section brought along. With *community*,
+    *also*: the urls of the subsections a short section brought along. *near*: (model,
+    the question's vector), whose nearest sections are merged in rank by rank. With *community*,
     its own recipe repository (<community>.bits) comes first and another community's
     comes last, unless the question names that community."""
     try:
@@ -483,6 +571,11 @@ def search(conn, text, limit=6, budget=24000, community=""):
     except Exception as e:                 # no index yet, or no FTS5
         log.warning("docs search: %s", e)
         return []
+    if near:
+        try:
+            rows = _merged([rows, _nearest(conn, near[0], near[1], limit * 4)])
+        except Exception as e:             # no vectors yet: by words only
+            log.warning("docs search by meaning: %s", e)
     if community:
         own, words = community.lower() + ".bits", set(_WORD.findall((text or "").lower()))
 
@@ -493,7 +586,7 @@ def search(conn, text, limit=6, budget=24000, community=""):
             other = (repo.endswith(".bits") and repo not in SHARED_RECIPES
                      and repo[:-5] not in words)
             return 2 if other else 1
-        rows = sorted(rows, key=rank)          # stable: bm25's order within each
+        rows = sorted(rows, key=rank)          # stable: the search's order within each
     out, used, shown = [], 0, set()        # shown: rowids given, or brought along
     for r in rows:
         if len(out) >= limit:
@@ -511,10 +604,14 @@ def search(conn, text, limit=6, budget=24000, community=""):
 
 
 def status(conn):
-    """{sources, sections, changed_ms} of the index; zeros without one."""
+    """{sources, sections, changed_ms, vectors} of the index; zeros without one."""
     try:
         r = conn.execute("SELECT COUNT(*) AS n, COALESCE(SUM(sections), 0) AS s,"
                          " COALESCE(MAX(changed_ms), 0) AS c FROM chat_sources").fetchone()
     except Exception:
-        return {"sources": 0, "sections": 0, "changed_ms": 0}
-    return {"sources": r["n"], "sections": r["s"], "changed_ms": r["c"]}
+        return {"sources": 0, "sections": 0, "changed_ms": 0, "vectors": 0}
+    try:
+        v = conn.execute("SELECT COUNT(*) FROM chat_vectors").fetchone()[0]
+    except Exception:                      # an index from before the vectors
+        v = 0
+    return {"sources": r["n"], "sections": r["s"], "changed_ms": r["c"], "vectors": v}

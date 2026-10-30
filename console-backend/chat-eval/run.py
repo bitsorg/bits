@@ -19,6 +19,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import types
 
 import requests
 import yaml
@@ -61,9 +62,14 @@ def _copy(conn, path):
     live = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
     try:
         rows = live.execute("SELECT source, url, title, body FROM chat_sections").fetchall()
+        try:
+            vecs = live.execute("SELECT digest, vec FROM chat_vectors").fetchall()
+        except sqlite3.OperationalError:   # an index from before the vectors
+            vecs = []
     finally:
         live.close()
     conn.executemany("INSERT INTO chat_sections (source, url, title, body) VALUES (?, ?, ?, ?)", rows)
+    conn.executemany("INSERT INTO chat_vectors (digest, vec) VALUES (?, ?)", vecs)
 
 
 def index(local, faq, live=""):
@@ -151,6 +157,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--cases", default=os.path.join(HERE, "cases.yaml"))
     ap.add_argument("--local", help="read the docs from checkouts in LOCAL/<repo> (bits: this one)")
+    ap.add_argument("--embed-model", default=os.environ.get("BITS_CHAT_EMBED_MODEL", ""),
+                    help="search by meaning too, as the chat does with BITS_CHAT_EMBED_MODEL (the default)")
     ap.add_argument("--db", default=os.environ.get("BITS_ORCH_DB", ""),
                     help="the orchestrator's database, whose docs index is used (default $BITS_ORCH_DB);"
                          " without one, or with --local, the docs are read from GitHub or LOCAL")
@@ -178,21 +186,35 @@ def main():
     if not n:                              # every answer would be "not covered": say so instead
         sys.exit("no docs indexed%s: nothing to evaluate" % (" in " + live if live else ""))
     print("%d sections, from %s" % (n, live or a.local or "GitHub"), file=sys.stderr)
+    embedder = types.SimpleNamespace(chat_url=a.url, chat_embed_model=a.embed_model)
+    budget = chat.budgets(types.SimpleNamespace(chat_context=a.context, chat_answer_tokens=a.answer_tokens),
+                          a.think)[0]
+    if a.embed_model:                      # vectors the service has, else made here
+        try:
+            made = chat_docs.embed_sections(conn, chat.vector_key(embedder), lambda s: chat.embed_docs(embedder, s),
+                                        10 ** 9)
+        except (chat.ChatError, ValueError) as e:
+            sys.exit("%s: %s" % (a.embed_model, e))
+        print("%s: %d vectors made here" % (a.embed_model, made), file=sys.stderr)
     titles = {_key(r["url"]): re.sub(r" \(\d+\)$", "", r["title"])
               for r in conn.execute("SELECT url, title FROM chat_sections")}
-    hits = total = facts = facts_ok = wrong = 0
+    hits = word_hits = total = facts = facts_ok = wrong = unembedded = 0
     report = ["# Help chat evaluation", "",
               "model: %s · %s" % (a.model or "(search only)", time.strftime("%Y-%m-%d %H:%M")), ""]
     for c in cases:
         rec = record(c["build"]) if c.get("build") else None
         words = c["question"] + " " + (chat._error_lines(c["build"].get("excerpt")) if rec else "")
-        docs = chat_docs.search(conn, words)
+        q = chat.near(embedder, words)
+        unembedded += bool(a.embed_model and not q)
+        docs = chat_docs.search(conn, words, chat.SECTIONS_BY_MEANING if q else chat.SECTIONS, budget, near=q)
         got = [_key(d["url"]) for d in docs]
         hit = None
         if c.get("sources"):
             total += 1
             hit = found(c["sources"], docs, titles)
             hits += hit
+            word_hits += found(c["sources"], chat_docs.search(conn, words, chat.SECTIONS, budget),
+                               titles) if q else hit
         report += ["## %s" % c["id"], "", "**Q:** " + c["question"], "",
                    "search: %s" % ("found" if hit else "missed" if hit is False else "n/a")
                    + ("" if hit or not c.get("sources") else " (expected %s; got %s)"
@@ -220,6 +242,9 @@ def main():
               file=sys.stderr)
     summary = "search found the expected section for %d of %d cases (%.0f%%)" % (
         hits, total, 100.0 * hits / max(total, 1))
+    if a.embed_model:
+        summary += " (by words only, %d sections: %d%s)" % (
+            chat.SECTIONS, word_hits, "; %d questions not embedded" % unembedded if unembedded else "")
     if a.judge:
         summary += "; answers stated %d of %d facts, and %d wrong claims" % (facts_ok, facts, wrong)
     print(summary)

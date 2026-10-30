@@ -332,7 +332,9 @@ default every markdown file of the bits repositories on GitHub, each on its defa
 branch, and the site's `console.docs`, at CERN bits-console and bits-manifests) every
 `BITS_CHAT_DOCS_REFRESH_S` (3600), when they changed, into a full-text index
 (SQLite FTS5) in this database; a section of a few lines comes with its subsections.
-Limits: one question at a time per user,
+With `BITS_CHAT_EMBED_MODEL` (an Ollama embedding model, e.g. `embeddinggemma`) the
+worker also gives each section a vector, and a question finds sections by meaning as well
+as by its words (one embedding call per question; ten sections instead of six). Limits: one question at a time per user,
 `BITS_CHAT_PER_MINUTE` (6), `BITS_CHAT_PARALLEL` (2) answers at once and
 `BITS_CHAT_QUEUE` (4) waiting; per answer `BITS_CHAT_CONTEXT` (16384 tokens, best set
 as Ollama's `OLLAMA_CONTEXT_LENGTH` too), `BITS_CHAT_ANSWER_TOKENS` (1500) and
