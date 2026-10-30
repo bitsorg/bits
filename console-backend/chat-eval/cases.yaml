@@ -2680,6 +2680,20 @@
     the full `log` (e.g. `sw/BUILD/my_package-latest/log`); the build itself runs in its `my_package/`
     subdirectory, where you can re-run the failing command by hand. Re-run with `bits build --debug my_package`
     for more verbose bits output.
+- id: debug-asked-briefly
+  kind: docs
+  question: How to debug bits?
+  sources:
+  - docs/COOKBOOK.md#debug-a-failed-build
+  must:
+  - '`bits build --debug` for more verbose output'
+  - the failed build's directory is kept, with its full log
+  - re-run the failing command in the build's subdirectory
+  must_not:
+  - the documentation does not cover debugging
+  answer: Re-run the build with `bits build --debug my_package` for more verbose output. A failed
+    build's directory is kept and the BUILD FAILED message prints its path; its `log` is the full
+    log, and the build runs in its `my_package/` subdirectory, where you can re-run the failing command.
 - id: override-version-via-defaults
   kind: docs
   question: How do I build a different ROOT version without editing the recipe?
