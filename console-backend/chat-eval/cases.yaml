@@ -2106,6 +2106,8 @@
   sources:
   - docs/USERGUIDE.md#how-bits-works
   - docs/USERGUIDE.md#common-options
+  - docs/REFERENCE.md#selecting-a-profile
+  - docs/REFERENCE.md#combining-multiple-profiles-with-
   must:
   - 'defaults-<name>.sh files chained with ::'
   - release is always the base
@@ -2226,6 +2228,7 @@
   sources:
   - docs/USERGUIDE.md#enter-a-sub-shell-with-modules-loaded
   - docs/USERGUIDE.md#load--unload-in-the-current-shell
+  - docs/COOKBOOK.md#use-the-built-environment
   must:
   - '`bits enter ROOT/latest`'
   - '`exit` to leave'

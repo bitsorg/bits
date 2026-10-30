@@ -331,7 +331,9 @@ reads the docs (`BITS_CHAT_DOCS`: a GitHub repository `owner/repo` or file
 default every markdown file of the bits repositories on GitHub, each on its default
 branch, and the site's `console.docs`, at CERN bits-console and bits-manifests) every
 `BITS_CHAT_DOCS_REFRESH_S` (3600), when they changed, into a full-text index
-(SQLite FTS5) in this database. Limits: one question at a time per user,
+(SQLite FTS5) in this database. A question is searched by its words and by search terms
+the model gives for it (one short call, without thinking), the two results merged; a
+section of a few lines comes with its subsections. Limits: one question at a time per user,
 `BITS_CHAT_PER_MINUTE` (6), `BITS_CHAT_PARALLEL` (2) answers at once and
 `BITS_CHAT_QUEUE` (4) waiting; per answer `BITS_CHAT_CONTEXT` (16384 tokens, best set
 as Ollama's `OLLAMA_CONTEXT_LENGTH` too), `BITS_CHAT_ANSWER_TOKENS` (1500) and
@@ -342,7 +344,7 @@ twice the time) or with `BITS_CHAT_THINK=1`. Nothing of a chat is kept except a 
 `GET /ops/chat/feedback` for overall admins; 50 a user a day; the worker's `chat_votes`
 step expires them, chat on or off). `GET /ops/chat` says whether it is on and whether
 Ollama has the model. `chat-eval/run.py` measures the search on `chat-eval/cases.yaml` and,
-with `--model` (and `--judge`), the answers.
+with `--model` (and `--judge`, `--judge-model` for another model to check them), the answers.
 
 **Nightly schedules** (`orch/schedules.py`, ADR bits 0007): a schedule builds
 one package at one version, with one defaults chain and recipe repositories, on

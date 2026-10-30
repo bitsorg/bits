@@ -436,17 +436,62 @@ def repo_of(source):
     return m.group(1) if m else source.split("/")[1]
 
 
-def search(conn, text, limit=6, budget=24000, community=""):
-    """[{title, url, body}] best first, at most *limit* and about *budget* characters.
-    With *community*, its own recipe repository (<community>.bits) comes first and
-    another community's comes last, unless the question names that community."""
-    q = query(text + (" " + community if community else ""))
+RRF_K = 60                # rank merging: a result in both lists beats the top of one
+SHORT = 600               # characters: a section this short comes with its subsections
+
+
+def _ranked(conn, text, n):
+    q = query(text)
     if not q:
         return []
+    return conn.execute("SELECT rowid, source, title, url, body FROM chat_sections WHERE"
+                        " chat_sections MATCH ? ORDER BY bm25(chat_sections, 0.0, 0.0, 4.0, 1.0)"
+                        " LIMIT ?", (q, n)).fetchall()
+
+
+def _merged(lists):
+    """The rows of *lists* (each best first) by reciprocal rank: best in all first."""
+    score, rows = collections.Counter(), {}
+    for ranked in lists:
+        for i, r in enumerate(ranked):
+            score[r["rowid"]] += 1.0 / (RRF_K + i)
+            rows.setdefault(r["rowid"], r)
+    return sorted(rows.values(), key=lambda r: -score[r["rowid"]])
+
+
+def _subsections(conn, r, shown):
+    """(body, [(rowid, url)]) of a short section with the subsections after it, up to
+    MAX_SECTION; rowids in *shown* are left out. A document's own intro (its title is
+    the file and its first heading at most) brings none: that would be the whole file.
+    A file's sections are stored together, in order."""
+    body, got = r["body"], []
+    if len(body) >= SHORT or r["title"].count(" › ") < 2:
+        return body, got
+    prefixes = tuple({r["title"] + " › ", re.sub(r" \(\d+\)$", "", r["title"]) + " › "})
+    for c in conn.execute("SELECT rowid, source, title, url, body FROM chat_sections WHERE rowid > ?"
+                          " ORDER BY rowid LIMIT 12", (r["rowid"],)):
+        if c["source"] != r["source"] or not c["title"].startswith(prefixes):
+            break
+        if c["rowid"] in shown:
+            continue
+        head = c["title"].split(" › ", r["title"].count(" › ") + 1)[-1]
+        add = "\n\n## %s\n\n%s" % (head, c["body"])
+        if len(body) + len(add) > MAX_SECTION:
+            break
+        body += add
+        got.append((c["rowid"], c["url"]))
+    return body, got
+
+
+def search(conn, text, limit=6, budget=24000, community="", terms=""):
+    """[{title, url, body, also}] best first, at most *limit* and about *budget* characters;
+    *also*: the urls of the subsections a short section brought along. *terms*: more
+    words to search by (the model's), merged with the question's results rank by rank.
+    With *community*, its own recipe repository (<community>.bits) comes first and
+    another community's comes last, unless the question names that community."""
+    extra = " " + community if community else ""
     try:
-        rows = conn.execute("SELECT source, title, url, body FROM chat_sections WHERE chat_sections"
-                            " MATCH ? ORDER BY bm25(chat_sections, 0.0, 0.0, 4.0, 1.0) LIMIT ?",
-                            (q, limit * 4)).fetchall()
+        rows = _merged([_ranked(conn, t + extra, limit * 4) for t in (text, terms) if t])
     except Exception as e:                 # no index yet, or no FTS5
         log.warning("docs search: %s", e)
         return []
@@ -460,15 +505,20 @@ def search(conn, text, limit=6, budget=24000, community=""):
             other = (repo.endswith(".bits") and repo not in SHARED_RECIPES
                      and repo[:-5] not in words)
             return 2 if other else 1
-        rows = sorted(rows, key=rank)          # stable: bm25's order within each
-    out, used = [], 0
+        rows = sorted(rows, key=rank)          # stable: the merged order within each
+    out, used, shown = [], 0, set()        # shown: rowids given, or brought along
     for r in rows:
-        if len(out) >= limit or (out and used + len(r["body"]) > budget):
+        if len(out) >= limit:
             break
-        if any(o["url"] == r["url"] and o["body"] == r["body"] for o in out):
+        if r["rowid"] in shown:
             continue
-        out.append({"title": r["title"], "url": r["url"], "body": r["body"]})
-        used += len(r["body"])
+        body, got = _subsections(conn, r, shown)
+        if out and used + len(body) > budget:
+            break
+        out.append({"title": r["title"], "url": r["url"], "body": body,
+                    "also": list(dict.fromkeys(u for _, u in got))})
+        shown.update([r["rowid"]] + [i for i, _ in got])
+        used += len(body)
     return out
 
 

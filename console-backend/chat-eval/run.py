@@ -8,16 +8,16 @@ sources and, with --model, the model's answers (judged by the model itself with
     python chat-eval/run.py                                  # the search, docs from GitHub
     python chat-eval/run.py --local ~/src                    # docs from checkouts in ~/src/<repo or project>
     python chat-eval/run.py --model gemma4:12b --judge --out report.md
+    python chat-eval/run.py --model qwen3.5:9b --judge --judge-model gemma4:12b --sample 30
 """
 
 import argparse
-import json
 import os
 import re
-import sqlite3
 import subprocess
 import sys
 import time
+import types
 
 import requests
 import yaml
@@ -27,7 +27,9 @@ sys.path.insert(0, os.path.dirname(HERE))
 from console_backend.orch import chat, chat_docs, db  # noqa: E402
 
 JUDGE = ("Here is an answer to a user's question.\n\nAnswer:\n<<<\n%s\n>>>\n\n"
-         "Does the answer state the following (in any wording)? Reply with only yes or no.\n%s")
+         "Does the answer state or show the following? It counts when said in other words, or "
+         "shown in a command, example or configuration of the answer. Reply with only yes or no."
+         "\n\n%s")
 
 
 def _local_root(local, src):
@@ -85,6 +87,15 @@ def _key(url):
     return path if repo == "bits" else "%s/%s" % (repo, path)
 
 
+def found(expected, docs, titles):
+    """Whether *docs* has an *expected* section (a key), one of its subsections, or a
+    short section that brought it along; *titles*: {key: title} of the index."""
+    got = {_key(u) for d in docs for u in [d["url"]] + d.get("also", [])}
+    heads = [re.sub(r" \(\d+\)$", "", d["title"]) for d in docs]
+    return any(s in got or (s in titles and any(h.startswith(titles[s] + " › ") for h in heads))
+               for s in expected)
+
+
 class _Settings:
     chat_docs = [d.strip() for d in os.environ.get("BITS_CHAT_DOCS", "").split(",") if d.strip()]
 
@@ -97,6 +108,12 @@ def record(build):
         lines.append("failed jobs: bits-prepub-build (%s)" % build["failure_reason"])
     lines.append("log excerpt (redacted):\n" + chat._clean(build.get("excerpt"), chat.MAX_EXCERPT))
     return chat._clean("\n".join(lines), 4 * chat.MAX_EXCERPT)
+
+
+def judged(a, answer, fact):
+    reply = ask(a.url, a.judge_model or a.model, [{"role": "user", "content": JUDGE % (answer, fact)}],
+                a.context, 8)
+    return reply.strip().lstrip("*\"' ").lower().startswith("yes")
 
 
 def ask(url, model, msgs, ctx, tokens, think=False):
@@ -114,10 +131,12 @@ def main():
     ap.add_argument("--url", default=os.environ.get("BITS_CHAT_URL", "http://127.0.0.1:11434"))
     ap.add_argument("--model", help="also ask this model each case")
     ap.add_argument("--judge", action="store_true", help="the model checks each must / must_not")
+    ap.add_argument("--judge-model", help="this model checks them instead")
     ap.add_argument("--faq", action="store_true", help="index docs/FAQ.md too (made from these cases)")
     ap.add_argument("--only", help="comma-separated case ids")
     ap.add_argument("--sample", type=int, help="this many cases, spread over the set (the same each run)")
-    ap.add_argument("--context", type=int, default=16384)
+    ap.add_argument("--context", type=int, default=16384, help="as BITS_CHAT_CONTEXT")
+    ap.add_argument("--answer-tokens", type=int, default=1500, help="as BITS_CHAT_ANSWER_TOKENS")
     ap.add_argument("--think", action="store_true", help="let a thinking model think first")
     ap.add_argument("--out", help="write a markdown report here")
     a = ap.parse_args()
@@ -130,33 +149,41 @@ def main():
         step = len(cases) / a.sample
         cases = [cases[int(i * step)] for i in range(a.sample)]
     conn = index(a.local, a.faq)
-    hits = total = facts = facts_ok = wrong = 0
+    titles = {_key(r["url"]): re.sub(r" \(\d+\)$", "", r["title"])
+              for r in conn.execute("SELECT url, title FROM chat_sections")}
+    model = types.SimpleNamespace(chat_url=a.url, chat_model=a.model, chat_context=a.context)
+    hits = plain_hits = total = facts = facts_ok = wrong = 0
     report = ["# Help chat evaluation", "",
               "model: %s · %s" % (a.model or "(search only)", time.strftime("%Y-%m-%d %H:%M")), ""]
     for c in cases:
         rec = record(c["build"]) if c.get("build") else None
-        docs = chat_docs.search(conn, c["question"] + " " + (chat._error_lines(c.get("build", {})
-                                                                              .get("excerpt")) if rec else ""))
+        words = c["question"] + " " + (chat._error_lines(c["build"].get("excerpt")) if rec else "")
+        # As the chat: the model's search terms for a question, not for Explain.
+        terms = chat.search_terms(model, c["question"]) if a.model and c["question"] != chat.EXPLAIN else ""
+        docs = chat_docs.search(conn, words, terms=terms)
         got = [_key(d["url"]) for d in docs]
         hit = None
         if c.get("sources"):
             total += 1
-            hit = any(s in got for s in c["sources"])
+            hit = found(c["sources"], docs, titles)
             hits += hit
-        report += ["## %s" % c["id"], "", "**Q:** " + c["question"], "",
-                   "search: %s" % ("found" if hit else "missed" if hit is False else "n/a")
+            plain_hits += found(c["sources"], chat_docs.search(conn, words), titles) if terms else hit
+        report += ["## %s" % c["id"], "", "**Q:** " + c["question"], ""]
+        if terms:
+            report += ["search terms: " + terms, ""]
+        report += ["search: %s" % ("found" if hit else "missed" if hit is False else "n/a")
                    + ("" if hit or not c.get("sources") else " (expected %s; got %s)"
                       % (", ".join(c["sources"]), ", ".join(got[:3]) or "nothing")), ""]
         if a.model:
             t0 = time.monotonic()
-            answer = ask(a.url, a.model, chat.messages(c["question"], docs, rec), a.context, 800, a.think)
+            answer = ask(a.url, a.model, chat.messages(c["question"], docs, rec), a.context,
+                         a.answer_tokens, a.think)
             report += ["**A** (%.0f s): %s" % (time.monotonic() - t0, answer), ""]
             for kind, items in (("must", c.get("must") or []), ("must_not", c.get("must_not") or [])):
                 for fact in items:
                     mark = "?"
                     if a.judge:
-                        said = ask(a.url, a.model, [{"role": "user", "content": JUDGE % (answer, fact)}],
-                                   4096, 5).strip().lower().startswith("yes")
+                        said = judged(a, answer, fact)
                         ok = said if kind == "must" else not said
                         mark = "✓" if ok else "✗"
                         if kind == "must":
@@ -170,6 +197,8 @@ def main():
               file=sys.stderr)
     summary = "search found the expected section for %d of %d cases (%.0f%%)" % (
         hits, total, 100.0 * hits / max(total, 1))
+    if a.model:
+        summary += " (without the model's search terms: %d)" % plain_hits
     if a.judge:
         summary += "; answers stated %d of %d facts, and %d wrong claims" % (facts_ok, facts, wrong)
     print(summary)
