@@ -12,6 +12,7 @@ sources and, with --model, the model's answers (judged by the model itself with
 """
 
 import argparse
+import hashlib
 import os
 import re
 import subprocess
@@ -95,6 +96,16 @@ def found(expected, docs, titles):
                for s in expected)
 
 
+def sample(cases, n):
+    """*n* of *cases*, in their order: those whose names hash lowest, so the same each
+    run, and adding or removing a case changes at most one of them."""
+    if not n or n >= len(cases):
+        return cases
+    keep = set(sorted((c["id"] for c in cases),
+                      key=lambda i: hashlib.sha256(i.encode()).hexdigest())[:n])
+    return [c for c in cases if c["id"] in keep]
+
+
 class _Settings:
     chat_docs = [d.strip() for d in os.environ.get("BITS_CHAT_DOCS", "").split(",") if d.strip()]
 
@@ -133,7 +144,7 @@ def main():
     ap.add_argument("--judge-model", help="this model checks them instead")
     ap.add_argument("--faq", action="store_true", help="index docs/FAQ.md too (made from these cases)")
     ap.add_argument("--only", help="comma-separated case ids")
-    ap.add_argument("--sample", type=int, help="this many cases, spread over the set (the same each run)")
+    ap.add_argument("--sample", type=int, help="this many cases, the same each run (adding a case changes one at most)")
     ap.add_argument("--context", type=int, default=16384, help="as BITS_CHAT_CONTEXT")
     ap.add_argument("--answer-tokens", type=int, default=1500, help="as BITS_CHAT_ANSWER_TOKENS")
     ap.add_argument("--think", action="store_true", help="let a thinking model think first")
@@ -144,9 +155,7 @@ def main():
     if a.only:
         keep = set(a.only.split(","))
         cases = [c for c in cases if c["id"] in keep]
-    if a.sample and a.sample < len(cases):
-        step = len(cases) / a.sample
-        cases = [cases[int(i * step)] for i in range(a.sample)]
+    cases = sample(cases, a.sample)
     conn = index(a.local, a.faq)
     titles = {_key(r["url"]): re.sub(r" \(\d+\)$", "", r["title"])
               for r in conn.execute("SELECT url, title FROM chat_sections")}

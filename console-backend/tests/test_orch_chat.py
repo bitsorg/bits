@@ -460,6 +460,16 @@ class EvalRunnerTest(unittest.TestCase):
         docs = [{"url": web + "c", "title": "R › C", "also": [web + "b"]}]
         self.assertTrue(run.found(["docs/R.md#b"], docs, titles))
 
+    def test_a_sample_keeps_its_cases_when_one_is_added(self):
+        run = self._run()
+        cases = [{"id": "case-%d" % i} for i in range(40)]
+        before = run.sample(cases, 10)
+        after = run.sample(cases[:20] + [{"id": "new"}] + cases[20:], 10)
+        self.assertEqual((len(before), len(after)), (10, 10))
+        self.assertLessEqual(len({c["id"] for c in before} - {c["id"] for c in after}), 1)
+        self.assertEqual(run.sample(cases, 10), before)
+        self.assertEqual(run.sample(cases, 0), cases)
+
     def test_it_indexes_from_the_network(self):
         run = self._run()
         real = chat_docs.refresh
