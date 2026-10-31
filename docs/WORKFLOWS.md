@@ -55,7 +55,7 @@ Bits resolves the complete dependency graph, downloads sources, and compiles in 
 
 Remote binary stores ([§21 of REFERENCE.md](REFERENCE.md#21-remote-binary-store-backends)) mean that pre-built artifacts are downloaded when available and a local build is only triggered for packages that are missing or have changed. The first `bits build` on a fresh workstation typically takes a few minutes for the last few packages and seconds for everything else.
 
-Multiple recipe repositories can be composed. For example, `alice.bits` builds the ALICE software stack on top of packages from `lcg.bits` (the LHC Computing Grid release stack) and `community.bits` (HEP common libraries). The [repository provider feature](REFERENCE.md#13-repository-provider-feature) lets bits load additional recipe repos dynamically at dependency-resolution time, with no manual configuration required.
+Multiple recipe repositories can be composed. For example, `alice.bits` builds the ALICE software stack on the recipes of `alidist.bits` (ALICE's alidist), and the other communities build on `stacks.bits` and `lcg.bits` (the LCG release stack). The [repository provider feature](REFERENCE.md#13-repository-provider-feature) lets bits load additional recipe repos dynamically at dependency-resolution time, with no manual configuration required.
 
 ---
 
