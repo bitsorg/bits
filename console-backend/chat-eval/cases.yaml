@@ -369,6 +369,7 @@
   question: How do I use my project's defaults on top of release?
   sources:
   - docs/REFERENCE.md#bits-build
+  - docs/REFERENCE.md#selecting-a-profile
   must:
   - '`--defaults`'
   - '`release` is layered first automatically (same as `release::myproject`)'
@@ -1077,6 +1078,7 @@
     it. Is there a way?
   sources:
   - docs/REFERENCE.md#dependencies
+  - docs/COOKBOOK.md#iterate-on-a-dependency-without-rebuilding-the-stack-above-it
   must:
   - use untracked_requires
   - you are responsible for ABI compatibility

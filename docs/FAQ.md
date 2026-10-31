@@ -655,7 +655,7 @@ Also asked as: *How do I use my project's defaults on top of release?*
 
 Join them with `::`, e.g. `bits build --defaults dev::gcc13 MyPackage`. This loads `defaults-release.sh`, `defaults-dev.sh` and `defaults-gcc13.sh` in that order and deep-merges their headers left to right: later scalars win, lists are concatenated, dicts are recursively merged. `release` is always prepended, so `--defaults myproject` is the same as `--defaults release::myproject`.
 
-See: [Combining multiple profiles with `::`](REFERENCE.md#combining-multiple-profiles-with-), [bits build](REFERENCE.md#bits-build).
+See: [Combining multiple profiles with `::`](REFERENCE.md#combining-multiple-profiles-with-), [bits build](REFERENCE.md#bits-build), [Selecting a profile](REFERENCE.md#selecting-a-profile).
 
 ### How do I build a different ROOT version without editing the recipe?
 

@@ -3536,7 +3536,7 @@ The content-addressed store path (`TARS/<arch>/store/<h2>/<hash>/`) is unaffecte
 
 ### Site configuration
 
-The defaults and assumptions an installation may change (stores, container images, the console, the providers repository, the SBOM namespace and a few paths) are in YAML files named `NN-<name>.yaml`; CERN's values, formerly built into bits, are in its `10-CERN.yaml`. The files are read from these directories in order:
+To use bits outside CERN, with your own binary stores and bits-console instead of CERN's, change its site configuration. The defaults and assumptions an installation may change (stores, container images, the console, the providers repository, the SBOM namespace and a few paths) are in YAML files named `NN-<name>.yaml`; CERN's values, formerly built into bits, are in its `10-CERN.yaml`. The files are read from these directories in order:
 
 1. `bits_helpers/site.d/` in bits: `00-bits.yaml` (site-neutral) and `10-CERN.yaml` (CERN);
 2. `/etc/bits/site.d/` (a host, a runner);
