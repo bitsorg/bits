@@ -50,9 +50,9 @@ MAX_LISTING = 32 * 1024 * 1024
 MAX_FILES = 100           # markdown files of one repository, at most
 MAX_PAGES = 50            # of a GitLab tree (100 entries each)
 # Not docs for users: licences, others' code, plans (ROADMAP: what does not exist
-# yet) and instructions for coding agents (AGENTS).
+# yet), instructions for coding agents (AGENTS); and TASKS, only links to the docs.
 SKIP = re.compile(r"(^|/)(vendor|node_modules|third_party|\.github)/"
-                  r"|(^|/)(LICENSE|COPYING|NOTICE|ROADMAP|AGENTS)[^/]*$", re.IGNORECASE)
+                  r"|(^|/)(LICENSE|COPYING|NOTICE|ROADMAP|AGENTS|TASKS)[^/]*$", re.IGNORECASE)
 RETRY_S = 300            # a pass with errors: the next this soon (without listing again)
 
 SCHEMA = [

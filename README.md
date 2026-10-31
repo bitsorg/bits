@@ -9,7 +9,7 @@ Beyond building, bits covers the path to deployment:
 - **Supply chain**: deterministic tarballs, CycloneDX/SPDX SBOMs (`bits sbom`), and source/patch checksums with git commit pins (`bits checksums`).
 - **Per-directory profiles** (`bits use`) so repeated options stay out of every command line.
 
-> Full documentation is available in [docs/USERGUIDE.md](docs/USERGUIDE.md), [docs/COOKBOOK.md](docs/COOKBOOK.md), and [docs/REFERENCE.md](docs/REFERENCE.md); short answers to common questions are in [docs/FAQ.md](docs/FAQ.md). This guide covers only the essentials.
+> Full documentation is available in [docs/USERGUIDE.md](docs/USERGUIDE.md), [docs/COOKBOOK.md](docs/COOKBOOK.md), and [docs/REFERENCE.md](docs/REFERENCE.md); [docs/TASKS.md](docs/TASKS.md) says where each common task is explained, and short answers to common questions are in [docs/FAQ.md](docs/FAQ.md). This guide covers only the essentials.
 
 ---
 
@@ -19,7 +19,7 @@ Beyond building, bits covers the path to deployment:
 git clone https://github.com/bitsorg/bits.git
 cd bits
 export PATH=$PWD:$PATH          # add bits to your PATH
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .                # install Python dependencies
 ```
@@ -43,10 +43,11 @@ pre-built binaries, is in [Platforms](docs/USERGUIDE.md#platforms).
 
 ### Before you start: pick the platform to build for
 
-Pre-built binaries are reused only for a platform the community's CI builds, built
-the same way. On Linux, build in that platform's builder image with `--docker` and
-name the platform with `--architecture`: the one matching your machine, if you want to
-run the result here (the compiler and build type come from `--defaults`):
+What you pass to `--architecture` decides what is reused: pre-built binaries are
+reused only for a platform the community's CI builds, built the same way. On Linux,
+build in that platform's builder image with `--docker` and name the platform with
+`--architecture`: the one matching your machine, if you want to run the result here
+(the compiler and build type come from `--defaults`):
 
 ```bash
 bits architecture      # this machine's own name, e.g. slc9_x86-64 on AlmaLinux 9
@@ -123,7 +124,7 @@ bits build --parallel 4 ROOT # build up to 4 independent packages at once (--bui
 
 Two admin/CI groups act on shared infrastructure: **`bits store`** (`ls`, `rm`,
 `verify`, `cat`, `gc`, `stats`, `upload`) manages the S3 binary store, and **`bits cvmfs`**
-(`platforms`, `show`, `summary`, `stage`, `publish`) inspects a deployed CVMFS tree
+(`platforms`, `show`, `summary`, `stage`, `publish`, `release`) inspects a deployed CVMFS tree
 and drives producer-side publishing. `bits publish` publishes packages to CVMFS (bare
 `bits publish` bulk-uploads the latest build manifest to the S3 store); single-package
 S3 uploads are `bits store upload`. The old spellings `bits store-stats`,
@@ -145,7 +146,7 @@ bits use build --work-dir /path/to/sw --remote-store https://mybucket/builds --d
 ```
 
 The profile is stored in `./.bitsuse` (or under `~/.bits/use/` when the current
-directory is not writeable). Each `bits use SECTION …` replaces that section;
+directory is not writeable or not owned by you). Each `bits use SECTION …` replaces that section;
 `bits use` alone shows the active profile, `bits use --clear [SECTION]` removes it and
 `bits use --help` lists the forms. A `.bitsuse` file is only honoured when it is owned
 by you. Profiles replace the retired `bits.rc` file.
@@ -167,6 +168,7 @@ Global settings come from environment variables:
 | `$BITS_S3_STORE` | `--remote-store` (store ops) | Default S3 store for `bits store` (`gc`/`stats`/`upload`), `certify`, `publish`, `compliance`. |
 | `$BITS_PREREQUISITES_URL` | — | URL shown when `bits doctor` cannot find the C++ compiler or git. |
 | `$BITS_CVMFS_REPOS` | `--cvmfs-repos` | Comma-separated CVMFS mount paths checked by `bits doctor --runner`. |
+| `$BITS_CONSOLE_URL` | `--console` | bits-console that `bits certify` asks for approvals and `bits compliance --enforce` for decertifications (else, for `bits certify`, `system: console_url`; then the site's `console.backend_url`). |
 
 `$BITS_COMMUNITY` is set **uppercase** (`ALICE`, `LHCB`, …).  Bits lowercases it
 internally when resolving the community recipe repository from bits-providers
@@ -321,7 +323,7 @@ deprecated spelling of `--release-view`.
 ```bash
 git clone https://github.com/bitsorg/bits.git
 cd bits
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .[test]
 
@@ -345,6 +347,8 @@ See **[WORKFLOWS.md](docs/WORKFLOWS.md)** for the full phase-by-phase walkthroug
 
 ## Next Steps
 
+- **[Find what you need](docs/TASKS.md)** — common tasks, each with the sections that explain it
+- **[FAQ](docs/FAQ.md)** — short answers to specific questions
 - **[User Guide](docs/USERGUIDE.md)** — installation, configuration, building, environments, cleaning up
 - **[Cookbook](docs/COOKBOOK.md)** — practical recipes for common tasks
 - **[Reference Manual](docs/REFERENCE.md)** — command-line flags, recipe format, environment variables, Docker, stores, CVMFS pipeline, developer guide

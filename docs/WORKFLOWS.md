@@ -89,7 +89,7 @@ When `bits build` resolves the dependency graph it scans for directories adjacen
 alice.bits/       ← recipe repo (bits looks here for recipes)
 mylib/            ← local source checkout (bits detects and uses this automatically)
 sw/               ← bits workDir (output of all builds)
-  el9_x86-64/
+  slc9_x86-64/
     ROOT/6.30.00/
     Geant4/11.2.0/
     mylib/local/  ← your build, overrides any upstream version
@@ -99,10 +99,11 @@ Because the build environment — compiler, flags, dependency versions — is id
 
 ### Validate in the CI image
 
-Once the local build passes, verify it inside the same Docker image that CI will use:
+To be sure a change will build in CI before you push it, build it inside the same Docker image that CI uses:
 
 ```bash
-bits build --docker --architecture el9_x86-64 mylib
+bits build --docker --architecture slc9_x86-64 \
+           --docker-image registry.cern.ch/alisw/slc9-builder mylib
 ```
 
 This spins up the official builder container, bind-mounts the current directory (including the local `mylib/` checkout), and runs the build inside it. If this succeeds, CI will succeed for the same reason.
@@ -160,7 +161,7 @@ The distinction between a group-wide production build and a personal-area build 
 
 ### Step 1 — Connect to bits-console
 
-Navigate to **[bits-console.web.cern.ch](https://bits-console.web.cern.ch)**, select your community, and sign in with your GitLab personal access token. See the [bits-console documentation](https://gitlab.cern.ch/buncic/bits-console) for required token scopes and role setup.
+To log in, open **[bits-console.web.cern.ch](https://bits-console.web.cern.ch)**, select your community, and click **Sign in**: you sign in with your CERN account (CERN SSO). See the [bits-console documentation](https://gitlab.cern.ch/buncic/bits-console#getting-access) for the access you need.
 
 ### Step 2 — Browse and trigger a build
 
@@ -171,7 +172,7 @@ The **Package Browser** lists all packages from the community's configured recip
 | **Build → Production** | `bits-admin` and `group-admin` only | Production CVMFS namespace, e.g. `/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.30/x86_64-el9` |
 | **Build → Personal area** | All users with Developer access | Personal CVMFS namespace, e.g. `/cvmfs/sft.cern.ch/lcg/user/jsmith/ROOT/6.30/x86_64-el9` |
 
-The pipeline enforces this independently of the UI. Even a manually crafted API call is rejected unless `GITLAB_USER_LOGIN` matches an entry in the `GROUP_ADMINS_<NAME>` CI variable on the GitLab project.
+The pipeline enforces this independently of the UI. Even a manually crafted API call for a production build is rejected unless `GITLAB_USER_LOGIN` matches an entry in the `GROUP_ADMINS_<NAME>` CI variable on the GitLab project.
 
 **Personal-area builds** are the natural path for patch testing and hotfixes that need to be shared with a specific analysis team before a production release. Any user with Developer access can publish here without waiting for a group-admin to approve a full stack rebuild.
 
@@ -289,7 +290,7 @@ bits verify --from-manifest alice-o2-20260411.json \
             --cvmfs-root /cvmfs/alice.cern.ch
 ```
 
-`bits verify` reads the SHA-256 digests and provider commit SHAs recorded in the manifest (written automatically to `$WORK_DIR/MANIFESTS/` during the build) and checks them against the live files on the CVMFS mount. Any mismatch is reported with PASS/FAIL/MISS status and a non-zero exit code. This is particularly useful for:
+`bits verify` reads the SHA-256 digests and provider commit SHAs recorded in the manifest (written automatically to `$WORK_DIR/MANIFESTS/` during the build) and checks them: each package tarball in the store under `--cvmfs-root` (then the work directory) is hashed again, and each provider's commit is compared with its local checkout, when there is one. Any mismatch is reported with PASS/FAIL/MISS status and a non-zero exit code. This is particularly useful for:
 
 - physics analyses that must demonstrate reproducibility for a journal submission,
 - audit trails required by experiment computing boards,
@@ -313,7 +314,7 @@ bits status <pkg>
 bits build <pkg>
 
 bits build --docker <pkg>        open build modal
-git push + recipe MR ──────────→ merge triggers ──→ [Build → Production] → /releases/…
+git push + recipe MR ──────────→ merge; click ────→ [Build → Production] → /releases/…
 bits build --write-checksums                       [Build → Personal]   → /user/me/…
                                  Monitor: Builds + CVMFS Status tabs
                                  Schedules: a slot ──────────────→ nightlies/<day>/…

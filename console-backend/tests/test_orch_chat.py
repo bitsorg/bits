@@ -254,7 +254,7 @@ class RepoTest(_DB):
         tree = chat_docs.GITHUB_TREE % ("bitsorg", "cvmfs-bits")
         files = files or {"README.md": "b1", "docs/SETUP.md": "b2", "vendor/x/README.md": "b3",
                           "LICENSE.md": "b4", "main.go": "b5", "a/../b.md": "b6", "C#.md": "b7",
-                          "docs/ROADMAP.md": "b10", "AGENTS.md": "b11"}
+                          "docs/ROADMAP.md": "b10", "AGENTS.md": "b11", "docs/TASKS.md": "b12"}
         listing = {"truncated": truncated, "tree": [{"type": "blob", "path": p, "sha": b}
                                                     for p, b in files.items()]}
         return tree, (json.dumps(listing), etag)

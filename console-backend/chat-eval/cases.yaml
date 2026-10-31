@@ -691,7 +691,7 @@
   answer: Run `bits upgrade PACKAGE ... plan.csv` (without a file it takes the newest `upgrade-plan-*.csv`
     in the current directory); `--wave N` limits it to waves (0 known exploited, 1 within the major version,
     2 major upgrades), `--line LINE` picks a release line from the converged plan, and `--to PKG=VER`
-    adds or overrides versions. `bits -n upgrade ...` only reports what it would change. Then build, fix
+    adds or overrides versions. `bits upgrade -n ...` only reports what it would change. Then build, fix
     what is left, and commit the edited and copied files to a branch.
 - id: stats-slowest-packages
   kind: docs
@@ -1710,12 +1710,14 @@
   sources:
   - docs/REFERENCE.md#what-is-checked
   must:
-  - exact string comparison
+  - the manifest architecture must begin with the detected host name
+  - bits detects slc9_x86-64 on EL9, so an x86_64-el9 manifest FAILs
+  must_not:
   - a defaults suffix in the manifest architecture causes FAIL
-  must_not: []
-  answer: The manifest's `architecture` is compared as an exact string with the architecture bits detects
-    on the host. A manifest whose architecture carries a defaults suffix (for example `slc9_x86-64-gcc13`)
-    therefore reports FAIL even on a matching host, and the FAIL counts toward the exit code.
+  answer: The manifest's `architecture` must begin with the name bits detects on the host, so a defaults
+    suffix (for example `slc9_x86-64-gcc13`) passes. bits detects the older names (`slc9_x86-64` on EL9),
+    so a manifest of an `x86_64-el9` build reports FAIL even on an EL9 node. The FAIL counts toward the
+    exit code.
 - id: d-verify-exit-codes
   kind: docs
   question: What do the bits verify exit codes mean? My CI job exits with 2.
@@ -1726,7 +1728,7 @@
   - 1 means a mismatch (FAIL) and takes precedence
   - 3 means the manifest is missing or invalid
   must_not: []
-  answer: 0 means everything verifiable matches; 1 means at least one FAIL (checksum or commit mismatch);
+  answer: 0 means everything verifiable matches; 1 means at least one FAIL (checksum, commit or architecture mismatch);
     2 means at least one MISS (a tarball not found, so consistency is unknown) and no FAIL; 3 means the
     manifest file is missing, unreadable or not valid JSON. If there are both FAILs and MISSes, exit code
     1 takes precedence.
@@ -2394,11 +2396,11 @@
   - docs/WORKFLOWS.md#step-1--connect-to-bits-console
   must:
   - select your community
-  - sign in with a GitLab personal access token
+  - sign in with your CERN account (CERN SSO)
   must_not:
-  - you sign in with a passkey
-  answer: Go to bits-console.web.cern.ch, select your community, and sign in with your GitLab personal
-    access token. The bits-console documentation lists the required token scopes and role setup.
+  - sign in with a GitLab personal access token
+  answer: Go to bits-console.web.cern.ch, select your community, and click Sign in; you sign in with
+    your CERN account (CERN SSO). The bits-console documentation says which GitLab access you need.
 - id: production-build-button-missing
   kind: docs
   question: I only see 'Build → Personal area' in the build dialog, where is Build → Production?

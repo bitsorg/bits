@@ -24,8 +24,8 @@ Bits is **not** a traditional package manager like `apt` or `conda`. Instead it 
 
 ### How bits works
 
-What happens when you run `bits build ROOT` in a community's recipe repository, in
-one page. The rest of this guide gives the details.
+What happens when you run `bits build ROOT` in a community's recipe repository, and how
+bits decides whether a package needs rebuilding or can be reused, in one page. The rest of this guide gives the details.
 
 **Recipes.** Each package is described by a recipe, `<package>.sh`: a short YAML header
 (version, where the source comes from, which packages it needs) and a Bash script that
@@ -35,14 +35,14 @@ builds and installs it.
 in your community's repository: `stacks.bits` for the LCG stack, `alice.bits`,
 `atlas.bits`, `cms.bits`, `key4hep.bits`, `lhcb.bits` or `ship.bits`. It holds the
 community's settings and a few recipes of its own, and names the shared recipe
-repositories it builds on (`lcg.bits`, with about 1,100 LCG recipes; `alidist` for
+repositories it builds on (`lcg.bits`, with about 1,100 LCG recipes; `alidist.bits` for
 ALICE). bits finds those in its registry, [bits-providers](https://github.com/bitsorg/bits-providers),
 and clones them itself, at the branch your community asks for:
 
 ```
 key4hep.bits ─┐
 atlas.bits   ─┤
-lhcb.bits    ─┼─▶ stacks.bits ─▶ lcg.bits        alice.bits ─▶ alidist
+lhcb.bits    ─┼─▶ stacks.bits ─▶ lcg.bits        alice.bits ─▶ alidist.bits
 ship.bits    ─┘   (settings)     (recipes)        (settings)    (recipes)
 ```
 
@@ -119,7 +119,9 @@ Outside ALICE, only a container build reuses what the community's CI built: see
 
 ### Platforms
 
-"Supported" means three different things for a platform:
+Which Linux distributions (Debian included) and Macs bits works on, and which have
+builder images and pre-built binaries. "Supported" means three different
+things for a platform:
 
 | | Where it is listed | Platforms today |
 |---|---|---|
@@ -133,6 +135,8 @@ gcc15::opt` installs under `sw/x86_64-el9-gcc15-opt/`. `bits architecture` print
 name bits gives this machine when no `--architecture` is given: `slc9_x86-64` for
 RHEL, AlmaLinux and Rocky 9, `ubuntu2404_x86-64` for Ubuntu 24.04. These older names
 are not the CI's, so a build under them reuses nothing the CI built.
+
+#### ALICE platforms and builder images
 
 ALICE is the exception: its platforms are built under these names (the last field of
 its `ui-config.yaml` platforms: `slc9_x86-64`, `slc9_aarch64`, `ubuntu2404_x86-64`, …),
@@ -155,7 +159,7 @@ bits build --docker --architecture x86_64-el9 --defaults gcc15::opt ROOT
 - The image is chosen from the platform: `x86_64-el9` builds in
   `gitlab-registry.cern.ch/bits/containers/x86_64-el9:latest`, pulled when missing;
   `--docker-image` names another. See [REFERENCE §22](REFERENCE.md#22-docker-support).
-- Another CPU builds through QEMU: on an x86-64 host, `--architecture aarch64-el9`
+- Another CPU builds through QEMU, so an x86 laptop can build aarch64 (ARM) packages: on an x86-64 host, `--architecture aarch64-el9`
   needs the binfmt handlers (once: `docker run --rm --privileged
   multiarch/qemu-user-static --reset -p yes`), and is slow; see
   [Cross-compilation](REFERENCE.md#222-cross-compilation-via-qemu).
@@ -170,7 +174,9 @@ building them (`prefer_system` and `system_requirement` recipes: krb5 for curl a
 xrootd, libuuid, OpenSSL, X11 and GL for ROOT, …). The lists below are those the
 builder images are made from (bits-containers `packages/build-tools.*.txt` and
 `packages/dev-libs.*.txt`, the source of truth); installing them makes a host match
-the image of its platform. `bits doctor <package>` reports what one build still lacks.
+the image of its platform. If a build stops at once over a missing system requirement,
+install these: `bits doctor <package>` reports what one build still
+lacks, and a container build (`--docker`) needs none of them.
 
 **AlmaLinux / Rocky 8, 9 and 10** (EPEL and CRB, called PowerTools on 8, are needed for
 some; on RHEL itself enable `codeready-builder-for-rhel-N-$(arch)-rpms` with
@@ -353,7 +359,7 @@ aliBuild build O2
 
 ## 4. Configuration
 
-Record per-directory settings once with `bits use`, so you do not repeat them on every command. It saves command-line options in a profile and inserts them into later commands. A leading section name says which command they belong to (`build`, `deps`, `publish`, …); without one they go to `[common]`, which is applied to every architecture-aware command, so keep it to options all of them accept (`--architecture`).
+Record per-directory settings once with `bits use`, so you do not repeat them on every command. They are kept in a `.bitsuse` file (see below for when it is ignored). `bits use` saves command-line options in a profile and inserts them into later commands. A leading section name says which command they belong to (`build`, `deps`, `publish`, …); without one they go to `[common]`, which is applied to every architecture-aware command, so keep it to options all of them accept (`--architecture`).
 
 ```bash
 bits use --architecture x86_64-el9-gcc14-opt                 # [common]: every arch-aware command
@@ -371,7 +377,7 @@ Each `bits use SECTION …` replaces that whole section, so give all of a sectio
 bits init --work-dir /path/to/sw --remote-store https://s3.cern.ch/swift/v1/mybucket
 ```
 
-The profile is `./.bitsuse` in the current directory, or a record under `~/.bits/use/` when the directory is not writeable or not owned by you. A local `.bitsuse` is only honoured when it is owned by you; otherwise the `~/.bits/use/` record is used. `bits use --help` lists these forms.
+The profile is `./.bitsuse` in the current directory, so it applies only to commands run in that directory, or a record under `~/.bits/use/` when the directory is not writeable or not owned by you. A local `.bitsuse` is only honoured when it is owned by you; otherwise the `~/.bits/use/` record is used. `bits use --help` lists these forms.
 
 > **`bits.rc` is retired.** Earlier versions read `bits.rc` / `.bitsrc` / `~/.bitsrc`; those files are no longer read. Move per-directory settings into a `bits use` profile and global ones into the environment variables below.
 
@@ -385,6 +391,9 @@ Global settings come from environment variables:
 | `$BITS_PROVIDERS` | — | URL of the bits-providers registry, optionally `@tag` (default `https://github.com/bitsorg/bits-providers`; off under the `aliBuild` wrapper). |
 | `$BITS_PATH` | `--search-path` | Recipe search path. |
 | `$BITS_S3_STORE` | `--remote-store` (store ops) | Default S3 store for `bits store` (`gc`/`stats`/`upload`), `certify`, `publish`, `compliance`. |
+| `$BITS_PREREQUISITES_URL` | — | URL shown when `bits doctor` cannot find the C++ compiler or git. |
+| `$BITS_CVMFS_REPOS` | `--cvmfs-repos` | Comma-separated CVMFS mount paths checked by `bits doctor --runner`. |
+| `$BITS_CONSOLE_URL` | `--console` | bits-console that `bits certify` asks for approvals and `bits compliance --enforce` for decertifications (else, for `bits certify`, `system: console_url`; then the site's `console.backend_url`). |
 
 `$BITS_COMMUNITY` is set **uppercase** (`ALICE`, `LHCB`, …). Bits lowercases it internally when resolving the community recipe repository from bits-providers (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`). Normally you do not need it: check out the community repository and run bits inside it.
 
@@ -699,6 +708,8 @@ bits overlay lcg -a x86_64-el9-gcc15 --platform x86_64-el9-gcc15-opt \
 
 ## Next Steps
 
+- **[Find what you need](TASKS.md)** — common tasks, each with the sections that explain it
+- **[FAQ](FAQ.md)** — short answers to specific questions
 - **[Cookbook](COOKBOOK.md)** — practical recipes for common tasks
 - **[Reference Manual](REFERENCE.md)** — command-line flags, recipe format, environment variables, Docker, stores, CVMFS pipeline, developer guide
 - **[Workflows](WORKFLOWS.md)** — development-to-deployment walkthrough

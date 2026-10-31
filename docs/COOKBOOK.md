@@ -25,6 +25,8 @@ bits enter ROOT/latest      # drop into the built environment
 
 ### Use the built environment
 
+Once a package such as ROOT is built, use it by loading its environment.
+
 **Interactive sub-shell** — opens a new shell with all modules loaded; the prompt changes so it is clear you are inside a bits environment:
 
 ```bash
@@ -68,10 +70,10 @@ Useful for understanding which packages will be built and in what order before c
 
 ```bash
 # Different Linux version
-bits build --docker --architecture ubuntu2004_x86-64 ROOT
+bits build --docker --architecture x86_64-ubuntu2404 ROOT
 
-# Cross-compile for ARM64 on an x86-64 host (requires QEMU binfmt handlers)
-bits build --docker --architecture slc9_aarch64 MyAnalysis
+# Build aarch64 (ARM64) packages on an x86-64 machine (requires QEMU binfmt handlers)
+bits build --docker --architecture aarch64-el9 MyAnalysis
 ```
 
 The `--architecture` string selects both the OS image and the target CPU. When the target architecture differs from the host, bits automatically injects the matching Docker `--platform` flag so QEMU handles emulation transparently. See [§22.2 Cross-compilation via QEMU](REFERENCE.md#222-cross-compilation-via-qemu) for QEMU setup details.
@@ -330,7 +332,7 @@ bits use build --remote-store https://store.example.com/store \
 bits build ROOT
 ```
 
-The store settings are saved to the profile's `[build]` section (`./.bitsuse`, or a record under `~/.bits/use/` when the directory is not writeable); `bits use` with no arguments shows what is saved.
+The store settings are saved to the profile's `[build]` section (`./.bitsuse`, or a record under `~/.bits/use/` when the directory is not writeable or not owned by you); `bits use` with no arguments shows what is saved.
 
 ### Share pre-built artifacts over S3
 
@@ -382,7 +384,7 @@ Bits tracks a sentinel file for each installed package; `bits prune` (formerly `
 
 ### Verify a live deployment against a build manifest
 
-After publishing to CVMFS (or any shared store), confirm that what is deployed matches what was built:
+After publishing to CVMFS (or any shared store), check that what is deployed is exactly what was built:
 
 ```bash
 bits verify --from-manifest alice-o2-20260411.json \
