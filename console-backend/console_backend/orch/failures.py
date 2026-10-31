@@ -216,20 +216,30 @@ SEEDS = [
      r"|scheduler_failure|data_integrity_failure)",
      "The runner failed or lost the job",
      "Retry on another host", 1),
+    (r"UNIQUE constraint failed: catalog\.md5path",
+     "The package is already published at that path, and the ingest path cannot add files over it",
+     "Update bits (it then skips packages already published), or give the community a"
+     " cvmfs_packages_template in its cvmfs.yaml", 0),
 ]
+# New seeds go at the end: a database has had the first *n* of them ("1": the first four).
+FIRST_SEEDS = 4
 
 
 def seed_signatures(conn):
-    """The first signatures, once (an admin can retire them)."""
-    if reconcile._kv_get(conn, "signatures.seeded") == "1":
-        return 0
+    """The seeds a database has not had yet (an admin can retire them; retired, they stay
+    so), then the issues they name. Returns how many were added."""
+    had = reconcile._kv_get(conn, "signatures.seeded") or "0"
+    had = FIRST_SEEDS if had == "1" else int(had)
+    new = SEEDS[had:]
     with db.transaction(conn):
-        for pattern, cause, action, safe in SEEDS:
+        for pattern, cause, action, safe in new:
             conn.execute("INSERT INTO signatures (pattern, cause, action, safe_to_retry, state,"
                          " proposed_by, accepted_by, created_ms) VALUES (?,?,?,?, 'active',"
                          " 'seed', 'seed', ?)", (pattern, cause, action, safe, db.now_ms()))
-        reconcile._kv_set(conn, "signatures.seeded", "1")
-    return len(SEEDS)
+        reconcile._kv_set(conn, "signatures.seeded", str(len(SEEDS)))
+    if new and had:
+        rematch(conn)
+    return len(new)
 
 
 def _compiled(conn):

@@ -329,6 +329,22 @@ class CollectTest(_DB):
         self.assertEqual(failures.seed_signatures(self.conn), 0)
         self.assertEqual(len(failures.list_signatures(self.conn)), n)
 
+    def test_a_new_seed_reaches_a_database_seeded_before_it(self):
+        from console_backend.orch import reconcile
+        with db.transaction(self.conn):                # as the first four left it
+            self.conn.execute("DELETE FROM signatures WHERE id > ?", (failures.FIRST_SEEDS,))
+            self.conn.execute("UPDATE signatures SET state = 'retired' WHERE id = 1")
+            reconcile._kv_set(self.conn, "signatures.seeded", "1")
+        self._fail(1, bits_failure(error="failed to add '/alice/x/.meta.json' to catalog: UNIQUE constraint"
+                                         " failed: catalog.md5path_1, catalog.md5path_2"))
+        self._pass()
+        self.assertIsNone(failures.list_issues(self.conn)[0]["signature"])
+        self.assertEqual(failures.seed_signatures(self.conn), len(failures.SEEDS) - failures.FIRST_SEEDS)
+        self.assertIn("already published", failures.list_issues(self.conn)[0]["signature"]["cause"])
+        sigs = failures.list_signatures(self.conn)
+        self.assertEqual(len(sigs), len(failures.SEEDS))
+        self.assertEqual(sigs[0]["state"], "retired")       # a retired seed stays retired
+
 
 class BackfillTest(_DB):
     def test_older_failed_pipelines_are_read_page_by_page_until_the_horizon(self):

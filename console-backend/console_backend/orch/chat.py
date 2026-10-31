@@ -105,6 +105,20 @@ def _host(jobs, status):
     return next((str(j.get("runner")) for j in pick if j.get("runner")), "")
 
 
+# Where a failed job stopped (phases.failed_in), said for whoever reads the record.
+STOPPED = {"build": "the packages did not build",
+           "certify": "the packages were built; it stopped after the build (certification,"
+                      " the BOMs to the store)",
+           "publish": "the packages were built; publishing them to CVMFS failed",
+           "finish": "the packages were built and published; a step after publishing failed"}
+
+
+def stopped_in(stopped):
+    if not stopped:
+        return ""
+    return " · stopped in: %s%s" % (stopped, " (%s)" % STOPPED[stopped] if stopped in STOPPED else "")
+
+
 def what_changed(conn, b, admin):
     """Lines on how build *b* differs from the last successful build of the same
     package and platform: its version, CI commit, build host, the heads of the
@@ -238,7 +252,7 @@ def build_context(conn, pipeline, limit=4 * MAX_EXCERPT, admin=False, logs=None)
     lines = ["community: %s · package: %s %s · platform: %s · ref: %s" % (
                  c, b.get("package") or "?", b.get("version") or "", b.get("platform") or "?",
                  b.get("ref") or "?"),
-             "outcome: %s%s%s" % (b.get("outcome"), " · stopped in: " + stopped if stopped else "",
+             "outcome: %s%s%s" % (b.get("outcome"), stopped_in(stopped),
                                   " · bits " + bits_v if bits_v else "")]
     if jobs:
         lines.append("failed jobs: " + ", ".join(jobs))

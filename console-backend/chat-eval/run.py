@@ -26,7 +26,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from console_backend.orch import chat, chat_docs, db  # noqa: E402
+from console_backend.orch import chat, chat_docs, db, failures  # noqa: E402
 
 JUDGE = ("Here is an answer to a user's question.\n\nAnswer:\n<<<\n%s\n>>>\n\n"
          "Does the answer state or show the following? It counts when said in other words, or "
@@ -132,9 +132,13 @@ class _Settings:
 def record(build):
     lines = ["community: %s · package: %s · platform: %s" % (
         build.get("community"), build.get("package"), build.get("platform")),
-        "outcome: failed · stopped in: %s" % build.get("failed_in", "")]
+        "outcome: failed" + chat.stopped_in(build.get("failed_in", ""))]
     if build.get("failure_reason"):
         lines.append("failed jobs: bits-prepub-build (%s)" % build["failure_reason"])
+    for pattern, cause, action, _ in failures.SEEDS:   # as a new service's reviewed causes
+        if re.search(pattern, "%s\nreason:%s" % (build.get("excerpt") or "", build.get("failure_reason") or "")):
+            lines.append("known cause (reviewed): %s · suggested action: %s" % (cause, action))
+            break
     lines += build.get("changed") or []          # as what_changed() gives them
     lines.append("log excerpt (redacted):\n" + chat._clean(build.get("excerpt"), chat.MAX_EXCERPT))
     return chat._clean("\n".join(lines), 4 * chat.MAX_EXCERPT)

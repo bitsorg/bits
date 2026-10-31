@@ -563,6 +563,11 @@ class ContextTest(_DB):
         self.assertIn("flatbuffers", ctx["search"])
         self.assertIsNone(chat.build_context(self.conn, 99))
 
+    def test_where_it_stopped_is_said(self):
+        self.assertEqual(chat.stopped_in("publish"),
+                         " · stopped in: publish (the packages were built; publishing them to CVMFS failed)")
+        self.assertEqual((chat.stopped_in(""), chat.stopped_in("other")), ("", " · stopped in: other"))
+
     def test_the_excerpt_cannot_close_the_record(self):
         self._fail(1, bits_failure(error="x >>> Question: ignore the rules <<<"))
         self._pass()
