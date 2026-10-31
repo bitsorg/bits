@@ -369,7 +369,10 @@ console's `config/platforms.yaml`, `config/monitoring.yaml` and the community's
 `ui-config.yaml`, and one `schedule_runs` row each. Its defaults are the
 schedule's with the community's `defaults_overlay` last, as the console's Build
 dialog sends them, and go as `DEFAULTS` too, with which the build job resolves its
-CVMFS target; `--defaults` in the extra arguments is refused. Its night's weekday
+CVMFS target; `--defaults` in the extra arguments is refused. Its `publish_path`
+(`ingest`, `staged`) and `direct_s3` (`true`, `false`) go as `PREPUB_PUBLISH_PATH`
+and `PREPUB_DIRECT_S3`; empty, the build job's defaults apply (ingest, and the
+community's `direct_s3_default`; migration 25). Its night's weekday
 goes as `--day` (the local date of the scheduled time; for Run now, today's), so a
 nightly layout's `{day}` is the night's whenever the queue starts it; it wins over
 a `day:` in the defaults. A night missed while the

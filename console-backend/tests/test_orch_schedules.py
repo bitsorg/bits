@@ -36,6 +36,19 @@ class CheckTest(unittest.TestCase):
         self.assertEqual((s["community"], s["days"], s["certify_groups"], s["enabled"], s["jobs"]),
                          ("lcg", sch.EVERY_DAY, ["lcg"], True, 0))
 
+    def test_the_publish_route_and_its_defaults(self):
+        s = sch.check(_p(), "lcg")
+        self.assertEqual((s["publish_path"], s["direct_s3"]), ("", ""))
+        s = sch.check(_p(publish_path="ingest", direct_s3=False), "lcg")
+        self.assertEqual((s["publish_path"], s["direct_s3"]), ("ingest", "false"))
+        self.assertEqual(sch.check(_p(direct_s3="true"), "lcg")["direct_s3"], "true")
+        self.assertEqual(sch.content_sha256(s), sch.content_sha256(sch.check(_p(), "lcg")))   # not in the hash
+        for bad in ({"publish_path": "prepub"}, {"publish_path": 1}, {"direct_s3": "yes"},
+                    {"publish_path": False}, {"direct_s3": 0}, {"direct_s3": []},
+                    {"publish_path": "staged", "direct_s3": True}):
+            with self.assertRaises(sch.Invalid, msg=bad):
+                sch.check(_p(**bad), "lcg")
+
     def test_what_is_refused(self):
         for bad in ({"package": "ROOT; rm"}, {"platforms": []}, {"platforms": ["a", "a"]},
                     {"time": "2:00"}, {"time": "24:00"}, {"days": 0}, {"days": 128},
@@ -195,6 +208,13 @@ class ApiTest(unittest.TestCase):
                                  ("schedule.paused", ["after", "before"]), ("schedule.updated", ["after", "before"]),
                                  ("schedule.resumed", ["after", "before"]), ("schedule.deleted", ["before"])])
         self.assertEqual(self.client.get("/ops/schedules").status_code, 401)
+
+    def test_a_schedules_publish_route_is_kept(self):
+        r = self._do("POST", "alice", "/ops/schedules",
+                     dict(_p(publish_path="staged", direct_s3=False), community="lcg"))
+        self.assertEqual((r.status_code, r.json()["publish_path"], r.json()["direct_s3"]), (200, "staged", "false"))
+        read = self._do("GET", "dave", "/ops/schedules?community=lcg").json()["schedules"][0]
+        self.assertEqual((read["publish_path"], read["direct_s3"]), ("staged", "false"))
 
     def test_a_change_may_come_from_the_console_and_the_app(self):
         main.settings.frontend_origin = "https://pages"            # another origin: a preflight

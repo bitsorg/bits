@@ -38,6 +38,7 @@ _TIME = _RE(r"([01][0-9]|2[0-3]):[0-5][0-9]")
 MAX_PLATFORMS = 32
 MAX_VARIANTS = 16
 MAX_CELLS = 64                     # platforms x variants: the builds of one night
+PUBLISH_PATHS = ("", "ingest", "staged")   # "": the build job's default, ingest
 MAX_CHAIN = 160                    # a variant::defaults, leaving room for a community's overlay
 MAX_WATCHES = 8
 EVERY_DAY = 0b1111111              # bit 0 Monday ... bit 6 Sunday
@@ -143,6 +144,18 @@ def check(p, community):
     s["days"] = days
     s["time"] = _text(p, "time", _TIME, "HH:MM")
     s["certify"], s["cvmfs"] = _flag(p, "certify"), _flag(p, "cvmfs")
+    # How the builds reach CVMFS, as the Build dialog sends it; "" each: the build
+    # job's default (ingest) and the community's direct-S3 default.
+    s["publish_path"] = "" if p.get("publish_path") is None else p["publish_path"]
+    if s["publish_path"] not in PUBLISH_PATHS:
+        raise Invalid("publish_path: ingest or staged, or empty for the default (ingest)")
+    d3 = "" if p.get("direct_s3") is None else p["direct_s3"]
+    d3 = ("true" if d3 else "false") if isinstance(d3, bool) else d3
+    if d3 not in ("", "true", "false"):
+        raise Invalid("direct_s3: true, false, or empty for the community's default")
+    if d3 == "true" and s["publish_path"] == "staged":
+        raise Invalid("direct_s3: only on the ingest path")
+    s["direct_s3"] = d3
     groups = p.get("certify_groups") or [s["community"]]
     if not isinstance(groups, list) or not 0 < len(groups) <= 8 or not all(
             isinstance(g, str) and _GROUP.fullmatch(g) for g in groups):
@@ -157,8 +170,9 @@ _CONTENT = ("community", "package", "version", "defaults", "extra_repos", "set",
 
 
 def content_sha256(s):
-    """What is built and where it goes, not when (days, time, the watch list) or
-    whether (enabled). Variants count only when set: a schedule without keeps its hash."""
+    """What is built and where it goes, not when (days, time, the watch list), whether
+    (enabled) or by which route (publish_path, direct_s3). Variants count only when
+    set: a schedule without keeps its hash."""
     content = {k: s[k] for k in _CONTENT}
     if s.get("variants"):                       # only when set: older schedules keep their hash
         content["variants"] = s["variants"]
@@ -252,12 +266,14 @@ def _public(s):
 def _store(conn, s, sid=None):
     cols = ("community", "community_dir", "name", "package", "version", "defaults", "extra_repos", "set_vars",
             "platforms", "rebuild", "debug", "jobs", "extra_build_args", "days", "time", "certify",
-            "cvmfs", "certify_groups", "enabled", "variants", "watch", "content_sha256")
+            "cvmfs", "certify_groups", "enabled", "variants", "watch", "content_sha256",
+            "publish_path", "direct_s3")
     vals = (s["community"], s["community_dir"], s["name"], s["package"], s["version"], s["defaults"], s["extra_repos"],
             json.dumps(s["set"]), json.dumps(s["platforms"]), int(s["rebuild"]), int(s["debug"]),
             s["jobs"], s["extra_build_args"], s["days"], s["time"], int(s["certify"]),
             int(s["cvmfs"]), json.dumps(s["certify_groups"]), int(s["enabled"]),
-            json.dumps(s["variants"]), s["watch"], content_sha256(s))
+            json.dumps(s["variants"]), s["watch"], content_sha256(s),
+            s["publish_path"], s["direct_s3"])
     return cols, vals
 
 

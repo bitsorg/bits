@@ -80,6 +80,13 @@ class VariablesTest(unittest.TestCase):
         self.assertEqual((v["CERTIFY"], v["BITS_CERTIFIER"]), ("true", "alice"))
         self.assertNotIn("--day", v["BITS_BUILD_ARGS"])
 
+    def test_a_schedules_publish_route_goes_with_its_builds(self):
+        s = dict(self.s, publish_path="ingest", direct_s3="false")
+        v = _vars(nl.variables(s, "x86_64-el9", self.cfg, None, "2026-10-29"))
+        self.assertEqual((v["PREPUB_PUBLISH_PATH"], v["PREPUB_DIRECT_S3"]), ("ingest", "false"))
+        v = _vars(nl.variables(self.s, "x86_64-el9", self.cfg, None, "2026-10-29"))
+        self.assertNotIn("PREPUB_PUBLISH_PATH", v)             # the build job's defaults
+
     def test_the_communitys_defaults_overlay_comes_last_as_in_the_console(self):
         cfg = dict(self.cfg, community=dict(self.cfg["community"], defaults_overlay="testbed"))
         v = _vars(nl.variables(self.s, "x86_64-el9", cfg, None, "2026-10-29"))

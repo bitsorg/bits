@@ -133,6 +133,7 @@ def variables(s, platform, cfg, certifier, night="", variant=""):
          ("DEFAULTS", chain), ("VERSION", s["version"]), ("BITS_EXTRA_REPOS", s["extra_repos"]),
          ("PUBLISH_CVMFS", "true" if s["cvmfs"] else ""),
          ("CERTIFY", "true" if certifier else ""), ("BITS_CERTIFIER", certifier or ""),
+         ("PREPUB_PUBLISH_PATH", s.get("publish_path") or ""), ("PREPUB_DIRECT_S3", s.get("direct_s3") or ""),
          ("NIGHTLY_SUFFIX", SUFFIX)]
     return [{"key": k, "value": x} for k, x in v if x]
 

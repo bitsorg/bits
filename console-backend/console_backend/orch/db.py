@@ -659,6 +659,11 @@ MIGRATIONS = [
         )""",
         "CREATE INDEX chat_feedback_created ON chat_feedback (created_ms)",
     ],
+    # 25: a schedule's publish route (schedules.py); empty: the build job's defaults.
+    [
+        "ALTER TABLE schedules ADD COLUMN publish_path TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE schedules ADD COLUMN direct_s3 TEXT NOT NULL DEFAULT ''",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)
