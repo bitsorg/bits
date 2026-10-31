@@ -1054,64 +1054,90 @@ Build one or more packages and all their dependencies.
 bits build [options] PACKAGE [PACKAGE ...]
 ```
 
+The options, by what they are for:
+
+#### bits build: what to build and with which defaults
+
+Which packages, for which platform and defaults profiles, with which flavours and system packages:
+
 | Option | Description |
 |--------|-------------|
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `--flavour NAME[=VALUE]` (aliases `--flavor`, `--set`) | Set a build-wide flavour variable (repeatable, comma-separated). `NAME`→`true`, `NAME=VALUE`→`VALUE`, `!NAME`→`false`. Gates `(?NAME)` conditional requires/sources/patches and is exported into the build environment (not for a variable declared `export: false`); overrides a defaults `variables:` entry of the same name. See [Flavours](#flavours). |
-| `--reuse-from PATH\|cvmfs` | Reuse components already deployed on CVMFS, found through their published modulefiles at this absolute modules-tree path (unlike `--remote-store`, which is a tarball store). The literal `cvmfs` takes the location from the defaults `system:` layout (`module_dir` under `cvmfs_dir`) or, failing that, from `cvmfs_modules_template`. A trailing `::relaxed` or `::strict` also sets the reuse policy (e.g. `cvmfs::relaxed`); it must agree with `--reuse-policy` if both are given. Defaults to `$BITS_REUSE_FROM`. See [Reusing deployed components](#relaxed-cvmfs-reuse). |
-| `--reuse-policy {strict,relaxed}` | How a `--reuse-from` component is matched. `strict` (default): only on an exact content-hash match; the result is publishable. `relaxed`: any deployed build of the **same version** (revision and hash may differ), for fast local development on top of e.g. an LCG release, so only the top of the stack is built. Relaxed builds have *loose* provenance and cannot be published: combining them with `--write-store` is refused. Falls back to the defaults `reuse_policy:` value. |
-| `--build-local PKG[,PKG…]` | Packages to always build locally even when they could be reused (e.g. one you need patched), instead of taking them from `--reuse-from`. |
-| `--symlink-packages-from ROOT` | Link matching installed packages into the local work directory with private relocated initialization files. ROOT contains `ROOT/<architecture>/[family/]<package>/<version[-revision]>`; shared packages are found under `ROOT/share`, and a family-free layout is supported. No modulefiles are required. An existing local installation with the same build hash is kept as is. Selection skips development packages, virtual packages and `--build-local` entries. Unmatched packages proceed through normal store/build handling. The source installation must remain accessible. |
-| `--symlink-policy {strict,relaxed}` | Independent of `--reuse-policy`. `strict` (default) requires `.build-hash` to match the computed remote package hash and, with signed reuse on, the signed manifest to certify that hash. `relaxed` matches the architecture, family and version path without requiring a matching hash. Explicit `force_revision` values, including an empty revision, are respected. Otherwise the expected directory label is preferred, followed by sorted versions of the same package version. Relaxed builds have loose provenance and cannot use `--write-store`. |
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [The `architecture:` template](#architecture-string-and-the-architecture-template)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `--day DAY` | Value of the `{day}` nightly CVMFS path slot (e.g. `Fri`). Default: the UTC weekday, filled in only when a template uses `{day}`; `''` collapses the slot. Layout only — never hashed. See [bits store / bits cvmfs](#bits-store--bits-cvmfs-admin--ci-groups). |
-| `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
-| `--no-auto-patch` | Do not apply recipe `patches:` automatically for any package in this build. The patch files are still staged in `$SOURCEDIR` and exported as `$PATCH0..$PATCH_COUNT`; each recipe must then apply them itself (e.g. with the `bits_apply_patches` helper). A single recipe or a defaults profile can also opt out with `auto_patch: false`. See [Controlling patch application](#controlling-patch-application). |
-| `--parallel [N]` | Number of packages to build at the same time. Bare `--parallel` uses 4; without it the build is serial (the default). With N>1 each build's `$JOBS` is divided across the builders so that together they do not oversubscribe the machine (see [Memory-aware parallelism](#memory-aware-parallelism)). `--builders` is a kept alias. |
-| `--oversubscribe FACTOR` | CPU oversubscription factor (≥ 1.0) for the per-builder `-j` share: each package gets `ceil(jobs × FACTOR ÷ parallel)`, still clamped to `-j` and to the (unscaled) memory cap. Falls back to `build_oversubscribe:` in the active defaults, then 1.0. |
-| `--unleash-final` / `--no-unleash-final` | The final (top-level) package depends on all the others, so it always builds last and alone. Unleashing (on by default) gives it the full `-j` instead of the per-builder share; the `mem_per_job` cap still applies. `--no-unleash-final` keeps it on the per-builder share. Falls back to `build_unleash_final:` in the defaults `system:` block. Only affects `--parallel` > 1. |
-| `--legacy-initdotsh` / `--initdotsh-from-modules` | How each build's **dependency environment** is set up. Default (`--initdotsh-from-modules`): derived from the dependencies' modulefiles, the same environment used at run time, so recipes need not rebuild `PYTHONPATH`, include paths etc. by hand. `--legacy-initdotsh`: the old build-time `init.sh`. The choice **changes package hashes**: legacy mode gives the same hashes as before, so bits can still reuse **alidist** tarballs. Legacy mode can also be selected with `BITS_LEGACY_INITDOTSH=1` (the aliBuild compatibility wrapper sets it). |
-| `--critical-path-schedule` / `--no-critical-path-schedule` | Start ready `--parallel` jobs in order of their **critical path**: the longest chain, weighted by recorded build times, from the job to the final target, so the slowest chain starts as early as possible. Build times come from a previous run's `bits_build_stats.json`; without history, depth in the dependency graph is used. **On by default**; `--no-critical-path-schedule` starts jobs in the order they were queued. Falls back to `build_critical_path_schedule:` in the defaults `system:` block. Changes only the order, never what is built or any hash. |
-| `--build-nice` / `--no-build-nice` | Give concurrent `--parallel` builds staggered OS priorities so CPU contention degrades gracefully: one build runs at full priority and the others are progressively lowered; when a build finishes, the next one moves up. Native builds run under `nice -n N`; `--docker`/podman builds get `docker run --cpu-shares=W`. Memory is still capped separately by `mem_per_job`. **Off by default**; only affects `--parallel` > 1. |
-| `--build-nice-step N` | Nice increment between concurrent build slots when `--build-nice` is set: slot *k* → nice `min(k×N, 19)`. `N=1` gives a gentle `0,1,2,3` ladder; larger values separate the slots more aggressively. Default: 5. |
-| `--build-nice-boost-after SECONDS` | With `--build-nice`, a watchdog raises the priority of one long-running straggler at a time, so a single heavy compile does not drag out the end of the build. Native builds: the longest-running lowered build is reniced towards 0 (needs root or `CAP_SYS_NICE`; otherwise a logged no-op). `--docker`/podman builds: a compiler process (e.g. `cc1plus`, `f951`) running longer than this is reniced as root inside the container; this **needs `ps` (package `procps`) in the build image**, see the note below. `0` disables. Default: 600. |
-| `--prefetch-workers N` | Spawn *N* background threads to fetch remote tarballs and source archives ahead of the main build loop, so downloads overlap with compilation instead of blocking the serial preparation pass. Default: `-1` (auto — scales with `--parallel`, capped at 4); `0` disables. No effect without a remote store (`--remote-store`, `--write-store` or the default store). |
-| `--fetch-build-requires` | Also fetch or build the build-only dependencies (`build_requires`) of packages reused from a store. By default they are **not needed** and skipped: the build plan printed before the build lists them as `not needed (build-only, for reused X)`. If a package planned as reused is built after all (e.g. its tarball is not vouched for by the signed manifest), its skipped dependencies are fetched or built first. |
-| `--parallel-downloads N` | Maximum concurrent source/tarball downloads the `--parallel` scheduler runs as standalone download tasks (so a checkout overlaps the previous package's build). Default: 2. |
-| `--auto-resources` | Opt-in for `--parallel` > 1: load the per-package CPU and memory statistics recorded by a previous run, and turn on monitoring to refresh them, so a new build starts only while the machine still has CPU and memory to spare. Off by default (concurrency is then limited only by `--parallel`); explicit `--resources` / `--resource-monitoring` still apply. |
-| `--brew` | **macOS only.** Let a recipe that sources a system library from Homebrew run `brew install <formula>` on demand (during dependency resolution) when the formula is missing. Without it, such a recipe fails with a message naming the formula to install. Exported to recipe `prefer_system_check` scripts as `BITS_BREW=1`. See [macOS Homebrew system layer](#macos-homebrew-system-layer). |
-| `--parallel-sources N` | Download up to *N* `sources:` URLs concurrently within a single package checkout. Default: 1 (sequential). |
 | `-e KEY=VALUE` | Extra environment variable binding (repeatable). |
-| `-z PREFIX`, `--devel-prefix PREFIX` | Version prefix for development packages. |
-| `-u`, `--fetch-repos` | Fetch updates into the source mirrors before building, so a branch (`tag: main`) builds its current commit. The default; a mirror that cannot be fetched (offline) is used as it is, with a warning. |
-| `--no-fetch-repos` | Do not fetch: a branch builds the commit its mirror already has. Missing mirrors are still cloned. |
-| `--no-local PACKAGE` | Do not use a local checkout for PACKAGE (repeatable). |
-| `--force-tracked` | Do not pick up any package from a local checkout. |
 | `--force-rebuild PACKAGE` | Always rebuild PACKAGE from scratch (repeatable; same as `force_rebuild: true` in its recipe). |
 | `--only-deps` | Build only the dependencies, not the requested package (e.g. to warm a cache). |
 | `--annotate PACKAGE=COMMENT` | Store COMMENT in PACKAGE's build metadata when it is built or downloaded in this run. |
+| `--from-manifest FILE` | Rebuild the packages a manifest JSON file requested (`requested_packages`); versions and tarballs are resolved afresh, not pinned or checked against the manifest. `PACKAGE` is then optional: without it, the manifest's requested packages are built. See [§25 Build Manifest](#25-build-manifest). |
+| `--disable PACKAGE` | Do not build PACKAGE nor the dependencies only it needs (repeatable or comma-separated). |
+| `--prefer-system` | Always prefer system packages where supported. (`--always-prefer-system` is a kept alias.) |
+| `--no-system [PACKAGES]` | Never use system packages for the comma-separated PACKAGES; bare, for any package. |
+| `--brew` | **macOS only.** Let a recipe that sources a system library from Homebrew run `brew install <formula>` on demand (during dependency resolution) when the formula is missing. Without it, such a recipe fails with a message naming the formula to install. Exported to recipe `prefer_system_check` scripts as `BITS_BREW=1`. See [macOS Homebrew system layer](#macos-homebrew-system-layer). |
+| `--no-auto-patch` | Do not apply recipe `patches:` automatically for any package in this build. The patch files are still staged in `$SOURCEDIR` and exported as `$PATCH0..$PATCH_COUNT`; each recipe must then apply them itself (e.g. with the `bits_apply_patches` helper). A single recipe or a defaults profile can also opt out with `auto_patch: false`. See [Controlling patch application](#controlling-patch-application). |
+| `--legacy-initdotsh` / `--initdotsh-from-modules` | How each build's **dependency environment** is set up. Default (`--initdotsh-from-modules`): derived from the dependencies' modulefiles, the same environment used at run time, so recipes need not rebuild `PYTHONPATH`, include paths etc. by hand. `--legacy-initdotsh`: the old build-time `init.sh`. The choice **changes package hashes**: legacy mode gives the same hashes as before, so bits can still reuse **alidist** tarballs. Legacy mode can also be selected with `BITS_LEGACY_INITDOTSH=1` (the aliBuild compatibility wrapper sets it). |
 | `--plugin PLUGIN` | Plugin that performs the actual build. |
+
+#### bits build: directories, recipe repositories and local checkouts
+
+Where the work directory and the recipes are, and which local checkouts are built:
+
+| Option | Description |
+|--------|-------------|
 | `-C DIR`, `--chdir DIR` | Change to DIR first (or set `$BITS_CHDIR`). |
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
 | `-c DIR`, `--config-dir DIR` | Directory containing recipe files. Default: `.`. |
 | `--search-path NAMES` | Comma-separated recipe sub-repos to search besides the config dir. A relative NAME resolves to `<config-dir>/NAME.bits`; absolute paths are used as-is. Seeds `BITS_PATH` (an explicit `$BITS_PATH` wins). |
 | `--reference-sources DIR` | Directory for the local mirrors of git repositories. Default: `<work-dir>/MIRROR`. |
-| `--remote-store URL` | Binary store to fetch pre-built tarballs from; several, comma-separated, are tried in order (e.g. production, then the PR store). Append `::rw` to also upload to a single store (cannot be combined with `--write-store`). Without it, the [site configuration](#site-configuration)'s `store.read_by_arch` / `store.read` is the default (at CERN `https://s3.cern.ch/lcgapp-bits-testing`, where the bits CI builds publish, and ALICE's public store for ALICE's architectures; with `--write-store` alone, or under the aliBuild wrapper, only the latter); a `remote_store:` entry in the defaults `system:` block replaces that default. |
-| `--write-store URL` | Binary store to upload built tarballs to; several, comma-separated, all receive every built package (an upload failure to any fails the package). Revision numbers are chosen from the markers of every read and write store, so the stores never disagree on one. Given alone (no `--remote-store`), it is also the read store, except where a default remote store applies (then use `--remote-store URL::rw`). |
-| `--no-remote-store` | Disable the default remote store; a `--write-store` is still read from. Without it, an http(s):// or b3:// read store that does not answer (an offline laptop) is noticed once at the start, and the build goes on without it, with a warning. Not when a write store is set. |
-| `--insecure` | Do not validate TLS certificates of an `https://` store. |
-| `--sign-manifest KEY.pem`, `--trust-manifest URL\|PATH`, `--require-signed-reuse` / `--no-require-signed-reuse`, `--trust-groups G1,G2` | Signed reuse of remote tarballs: on by default (fail-closed), trust derived from the store's signed manifests. See [Signing and verifying the archive tier](#signing-and-verifying-the-archive-tier). |
-| `--reuse-beacon URL` | Report reused-from-store hashes to `<URL>/api/reuse` (best-effort; falls back to `$BITS_REUSE_BEACON`). |
+| `--provider-policy POLICY` | Control where each repository provider is inserted into `BITS_PATH`. Format: comma-separated `name:prepend\|append` pairs; every provider defaults to `append`, and this flag is the only way to grant `prepend`. See [§13 Provider policy](#provider-policy). |
+| `-u`, `--fetch-repos` | Fetch updates into the source mirrors before building, so a branch (`tag: main`) builds its current commit. The default; a mirror that cannot be fetched (offline) is used as it is, with a warning. |
+| `--no-fetch-repos` | Do not fetch: a branch builds the commit its mirror already has. Missing mirrors are still cloned. |
+| `--no-local PACKAGE` | Do not use a local checkout for PACKAGE (repeatable). |
+| `--force-tracked` | Do not pick up any package from a local checkout. |
+| `-z PREFIX`, `--devel-prefix PREFIX` | Version prefix for development packages. |
+
+#### bits build: reusing what is already deployed on CVMFS
+
+Build only the top of the stack on top of a release already on CVMFS (an LCG release, say), or link packages installed elsewhere:
+
+| Option | Description |
+|--------|-------------|
+| `--reuse-from PATH\|cvmfs` | Reuse components already deployed on CVMFS, found through their published modulefiles at this absolute modules-tree path (unlike `--remote-store`, which is a tarball store). The literal `cvmfs` takes the location from the defaults `system:` layout (`module_dir` under `cvmfs_dir`) or, failing that, from `cvmfs_modules_template`. A trailing `::relaxed` or `::strict` also sets the reuse policy (e.g. `cvmfs::relaxed`); it must agree with `--reuse-policy` if both are given. Defaults to `$BITS_REUSE_FROM`. See [Reusing deployed components](#relaxed-cvmfs-reuse). |
+| `--reuse-policy {strict,relaxed}` | How a `--reuse-from` component is matched. `strict` (default): only on an exact content-hash match; the result is publishable. `relaxed`: any deployed build of the **same version** (revision and hash may differ), for fast local development on top of e.g. an LCG release, so only the top of the stack is built. Relaxed builds have *loose* provenance and cannot be published: combining them with `--write-store` is refused. Falls back to the defaults `reuse_policy:` value. |
+| `--build-local PKG[,PKG…]` | Packages to always build locally even when they could be reused (e.g. one you need patched), instead of taking them from `--reuse-from`. |
+| `--symlink-packages-from ROOT` | Link matching installed packages into the local work directory with private relocated initialization files. ROOT contains `ROOT/<architecture>/[family/]<package>/<version[-revision]>`; shared packages are found under `ROOT/share`, and a family-free layout is supported. No modulefiles are required. An existing local installation with the same build hash is kept as is. Selection skips development packages, virtual packages and `--build-local` entries. Unmatched packages proceed through normal store/build handling. The source installation must remain accessible. |
+| `--symlink-policy {strict,relaxed}` | Independent of `--reuse-policy`. `strict` (default) requires `.build-hash` to match the computed remote package hash and, with signed reuse on, the signed manifest to certify that hash. `relaxed` matches the architecture, family and version path without requiring a matching hash. Explicit `force_revision` values, including an empty revision, are respected. Otherwise the expected directory label is preferred, followed by sorted versions of the same package version. Relaxed builds have loose provenance and cannot use `--write-store`. |
+
+#### bits build: parallel builds and resources
+
+Build several packages at once, share the CPUs and memory between them, and watch the build host:
+
+| Option | Description |
+|--------|-------------|
+| `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
+| `--parallel [N]` | Number of packages to build at the same time. Bare `--parallel` uses 4; without it the build is serial (the default). With N>1 each build's `$JOBS` is divided across the builders so that together they do not oversubscribe the machine (see [Memory-aware parallelism](#memory-aware-parallelism)). `--builders` is a kept alias. |
+| `--oversubscribe FACTOR` | CPU oversubscription factor (≥ 1.0) for the per-builder `-j` share: each package gets `ceil(jobs × FACTOR ÷ parallel)`, still clamped to `-j` and to the (unscaled) memory cap. Falls back to `build_oversubscribe:` in the active defaults, then 1.0. |
+| `--unleash-final` / `--no-unleash-final` | The final (top-level) package depends on all the others, so it always builds last and alone. Unleashing (on by default) gives it the full `-j` instead of the per-builder share; the `mem_per_job` cap still applies. `--no-unleash-final` keeps it on the per-builder share. Falls back to `build_unleash_final:` in the defaults `system:` block. Only affects `--parallel` > 1. |
+| `--critical-path-schedule` / `--no-critical-path-schedule` | Start ready `--parallel` jobs in order of their **critical path**: the longest chain, weighted by recorded build times, from the job to the final target, so the slowest chain starts as early as possible. Build times come from a previous run's `bits_build_stats.json`; without history, depth in the dependency graph is used. **On by default**; `--no-critical-path-schedule` starts jobs in the order they were queued. Falls back to `build_critical_path_schedule:` in the defaults `system:` block. Changes only the order, never what is built or any hash. |
+| `--build-nice` / `--no-build-nice` | Give concurrent `--parallel` builds staggered OS priorities so CPU contention degrades gracefully: one build runs at full priority and the others are progressively lowered; when a build finishes, the next one moves up. Native builds run under `nice -n N`; `--docker`/podman builds get `docker run --cpu-shares=W`. Memory is still capped separately by `mem_per_job`. **Off by default**; only affects `--parallel` > 1. |
+| `--build-nice-step N` | Nice increment between concurrent build slots when `--build-nice` is set: slot *k* → nice `min(k×N, 19)`. `N=1` gives a gentle `0,1,2,3` ladder; larger values separate the slots more aggressively. Default: 5. |
+| `--build-nice-boost-after SECONDS` | With `--build-nice`, a watchdog raises the priority of one long-running straggler at a time, so a single heavy compile does not drag out the end of the build. Native builds: the longest-running lowered build is reniced towards 0 (needs root or `CAP_SYS_NICE`; otherwise a logged no-op). `--docker`/podman builds: a compiler process (e.g. `cc1plus`, `f951`) running longer than this is reniced as root inside the container; this **needs `ps` (package `procps`) in the build image**, see the note below. `0` disables. Default: 600. |
+| `--auto-resources` | Opt-in for `--parallel` > 1: load the per-package CPU and memory statistics recorded by a previous run, and turn on monitoring to refresh them, so a new build starts only while the machine still has CPU and memory to spare. Off by default (concurrency is then limited only by `--parallel`); explicit `--resources` / `--resource-monitoring` still apply. |
+| `--resource-monitoring` | Enable per-package CPU/memory monitoring. **Default: on when `--parallel` > 1**, off for serial builds. |
+| `--no-resource-monitoring` | Disable per-package monitoring even when `--parallel` > 1. |
+| `--resources FILE` | JSON resource-utilisation file for scheduling. |
 | `--monitor` / `--no-monitor`, `--monitor-url URL`, `--monitor-interval SECS`, `--monitor-disk-interval SECS`, `--monitor-instance NAME` | Best-effort background sampler of the build host (load, memory, filesystem, `sw/` size) and the building packages, pushed to a VictoriaMetrics/Prometheus URL (`<URL>/api/v1/import/prometheus`; falls back to `$METRICS_URL`, then the system `monitor_url`). Off by default (bits-console enables it); never blocks or fails the build. Intervals default to 15 s and 60 s. |
-| `--s3-endpoint URL` | S3 endpoint for `b3://` stores. Overrides `$S3_ENDPOINT_URL` / `$AWS_ENDPOINT_URL_S3`; default `https://s3.cern.ch`. Set for a **non-CERN** bucket (AWS, MinIO, Ceph RGW). |
-| `--s3-access-key KEY` | S3 access key id. Overrides `$AWS_ACCESS_KEY_ID` (prefer the env var — a CI/CD variable or gitlab-runner `environment` entry — so the secret is not on the command line). |
-| `--s3-secret-key KEY` | S3 secret access key. Overrides `$AWS_SECRET_ACCESS_KEY`. |
-| `--s3-region REGION` | S3 region. Overrides `$AWS_DEFAULT_REGION`. |
-| `--s3-addressing-style {auto,path,virtual}` | S3 addressing style for `b3://` stores. MinIO usually needs `path`. Overrides `$S3_ADDRESSING_STYLE`. |
-| `--disable PACKAGE` | Do not build PACKAGE nor the dependencies only it needs (repeatable or comma-separated). |
-| `--prefer-system` | Always prefer system packages where supported. (`--always-prefer-system` is a kept alias.) |
-| `--no-system [PACKAGES]` | Never use system packages for the comma-separated PACKAGES; bare, for any package. |
+
+**Build-image requirement: `procps`.** With `--build-nice` under `--docker`/podman, the straggler boost finds the compiler process by running `ps` inside the build container, so build images for `bits build --docker` should include the **`procps`** package (`procps-ng` on RPM distros). Without `ps`, bits warns once and skips in-container boosting; the build itself is unaffected. Native builds use `psutil` on the host and need no `ps` in any image.
+
+#### bits build: Docker, containers and the sandbox
+
+Build in a container with your own image, for another Linux or CPU, and isolate the build:
+
+| Option | Description |
+|--------|-------------|
 | `--docker` | Build inside a Docker container. |
 | `--docker-image IMAGE` | Docker image to use. Implies `--docker`. Default: derived from the architecture and registry (see [§22](#22-docker-support)). |
 | `--docker-extra-args ARGS` | Extra arguments for `docker run`. Implies `--docker`. bits always adds `--network=host` and, unless given, `--cpuset-cpus=<host CPUs>`. |
@@ -1123,22 +1149,51 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--sandbox-allow-write PATH` | With `sandbox-exec`, also let builds write under PATH (repeatable). |
 | `--sandbox-image IMAGE` | Container image for `--sandbox=podman` when not using `--docker`. Implies `--sandbox=podman`. |
 | `--sandbox-network MODE` | Default network restriction inside the sandbox: `on` blocks network access, `off` allows it. A recipe's `sandbox_network:` always wins; falls back to `sandbox_network:` in the active defaults, then `on`. No effect where sandboxing is off. |
-| `--no-auto-cleanup` | Keep the build directories after a successful build. |
-| `--aggressive-cleanup` | Delete as much build data as possible when cleaning up. |
-| `--resource-monitoring` | Enable per-package CPU/memory monitoring. **Default: on when `--parallel` > 1**, off for serial builds. |
-| `--no-resource-monitoring` | Disable per-package monitoring even when `--parallel` > 1. |
-| `--resources FILE` | JSON resource-utilisation file for scheduling. |
+
+#### bits build: source checksums
+
+Check the downloaded sources against the checksums in the recipes:
+
+| Option | Description |
+|--------|-------------|
 | `--check-checksums` | Warn on source/patch checksum mismatch; continue the build. |
 | `--enforce-checksums` | Abort on source/patch checksum mismatch or missing checksum. |
 | `--print-checksums` | Print checksums for all sources/patches in YAML format after the build. |
 | `--write-checksums` | Add the fetched sources', patches' and git tags' checksums to `checksums/<package>.checksum` after the build. For a whole repository, use `bits checksums`. |
-| `--store-integrity` | Record the SHA-256 of each uploaded tarball and verify it every time the tarball is fetched again; a mismatch is fatal. Persist it with `bits use build --store-integrity`. See [§21 Store integrity verification](#store-integrity-verification). |
-| `--provider-policy POLICY` | Control where each repository provider is inserted into `BITS_PATH`. Format: comma-separated `name:prepend\|append` pairs; every provider defaults to `append`, and this flag is the only way to grant `prepend`. See [§13 Provider policy](#provider-policy). |
-| `--from-manifest FILE` | Rebuild the packages a manifest JSON file requested (`requested_packages`); versions and tarballs are resolved afresh, not pinned or checked against the manifest. `PACKAGE` is then optional: without it, the manifest's requested packages are built. See [§25 Build Manifest](#25-build-manifest). |
 
 The three `--*-checksums` flags are mutually exclusive. Precedence (highest → lowest): the command-line flag > per-recipe `enforce_checksums: true` > `checksum_mode:` in the defaults profile > `off`. `--write-checksums` is independent, can be combined with any of them, and can also be turned on with `write_checksums: true` in the defaults profile. See [§18 — Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles).
 
-**Build-image requirement: `procps`.** With `--build-nice` under `--docker`/podman, the straggler boost finds the compiler process by running `ps` inside the build container, so build images for `bits build --docker` should include the **`procps`** package (`procps-ng` on RPM distros). Without `ps`, bits warns once and skips in-container boosting; the build itself is unaffected. Native builds use `psutil` on the host and need no `ps` in any image.
+#### bits build: cleaning up
+
+What is removed after a successful build:
+
+| Option | Description |
+|--------|-------------|
+| `--no-auto-cleanup` | Keep the build directories after a successful build. |
+| `--aggressive-cleanup` | Delete as much build data as possible when cleaning up. |
+
+#### bits build: binary stores, uploads and downloads
+
+Reuse pre-built tarballs from a binary store, upload what you build to your own bucket, and how downloads run:
+
+| Option | Description |
+|--------|-------------|
+| `--remote-store URL` | Binary store to fetch pre-built tarballs from; several, comma-separated, are tried in order (e.g. production, then the PR store). Append `::rw` to also upload to a single store (cannot be combined with `--write-store`). Without it, the [site configuration](#site-configuration)'s `store.read_by_arch` / `store.read` is the default (at CERN `https://s3.cern.ch/lcgapp-bits-testing`, where the bits CI builds publish, and ALICE's public store for ALICE's architectures; with `--write-store` alone, or under the aliBuild wrapper, only the latter); a `remote_store:` entry in the defaults `system:` block replaces that default. |
+| `--write-store URL` | Binary store to upload built tarballs to; several, comma-separated, all receive every built package (an upload failure to any fails the package). Revision numbers are chosen from the markers of every read and write store, so the stores never disagree on one. Given alone (no `--remote-store`), it is also the read store, except where a default remote store applies (then use `--remote-store URL::rw`). |
+| `--no-remote-store` | Disable the default remote store; a `--write-store` is still read from. Without it, an http(s):// or b3:// read store that does not answer (an offline laptop) is noticed once at the start, and the build goes on without it, with a warning. Not when a write store is set. |
+| `--insecure` | Do not validate TLS certificates of an `https://` store. |
+| `--sign-manifest KEY.pem`, `--trust-manifest URL\|PATH`, `--require-signed-reuse` / `--no-require-signed-reuse`, `--trust-groups G1,G2` | Signed reuse of remote tarballs: on by default (fail-closed), trust derived from the store's signed manifests. See [Signing and verifying the archive tier](#signing-and-verifying-the-archive-tier). |
+| `--reuse-beacon URL` | Report reused-from-store hashes to `<URL>/api/reuse` (best-effort; falls back to `$BITS_REUSE_BEACON`). |
+| `--s3-endpoint URL` | S3 endpoint for `b3://` stores. Overrides `$S3_ENDPOINT_URL` / `$AWS_ENDPOINT_URL_S3`; default `https://s3.cern.ch`. Set for a **non-CERN** bucket (AWS, MinIO, Ceph RGW). |
+| `--s3-access-key KEY` | S3 access key id. Overrides `$AWS_ACCESS_KEY_ID` (prefer the env var — a CI/CD variable or gitlab-runner `environment` entry — so the secret is not on the command line). |
+| `--s3-secret-key KEY` | S3 secret access key. Overrides `$AWS_SECRET_ACCESS_KEY`. |
+| `--s3-region REGION` | S3 region. Overrides `$AWS_DEFAULT_REGION`. |
+| `--s3-addressing-style {auto,path,virtual}` | S3 addressing style for `b3://` stores. MinIO usually needs `path`. Overrides `$S3_ADDRESSING_STYLE`. |
+| `--store-integrity` | Record the SHA-256 of each uploaded tarball and verify it every time the tarball is fetched again; a mismatch is fatal. Persist it with `bits use build --store-integrity`. See [§21 Store integrity verification](#store-integrity-verification). |
+| `--prefetch-workers N` | Spawn *N* background threads to fetch remote tarballs and source archives ahead of the main build loop, so downloads overlap with compilation instead of blocking the serial preparation pass. Default: `-1` (auto — scales with `--parallel`, capped at 4); `0` disables. No effect without a remote store (`--remote-store`, `--write-store` or the default store). |
+| `--fetch-build-requires` | Also fetch or build the build-only dependencies (`build_requires`) of packages reused from a store. By default they are **not needed** and skipped: the build plan printed before the build lists them as `not needed (build-only, for reused X)`. If a package planned as reused is built after all (e.g. its tarball is not vouched for by the signed manifest), its skipped dependencies are fetched or built first. |
+| `--parallel-downloads N` | Maximum concurrent source/tarball downloads the `--parallel` scheduler runs as standalone download tasks (so a checkout overlaps the previous package's build). Default: 2. |
+| `--parallel-sources N` | Download up to *N* `sources:` URLs concurrently within a single package checkout. Default: 1 (sequential). |
 
 #### S3 store: common CI/CD config with per-runner overrides
 
