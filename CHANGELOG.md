@@ -4,9 +4,10 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 # Unreleased
 
 ## Scheduled builds and CI on push
-How to set them up: WORKFLOWS, Phase 4, steps 4 and 5. They need the build queue of the bits-console service (`BITS_ORCH_QUEUE=1`, below).
+How to set them up: WORKFLOWS, Phase 4, steps 4 to 6. They need the build queue of the bits-console service (`BITS_ORCH_QUEUE=1`, below).
 - **[Feature]** Nightly slots, made on the console's Schedules tab (**+ New slot**, or **Save as pipeline** in the Build dialog): a package with its defaults chain, variables and repositories, built on each of its platforms × variants on given days at a given time, with one passkey approval for 30 nights of certified builds. The defaults decide where the builds go; a nightly layout's `{day}` is the night's weekday.
-- **[Feature]** CI on push: a slot's **Build on each commit to** lists the branches it follows (public https repositories, 8 at most). The bits-console service reads their heads every 2 minutes and, once a burst of pushes has settled (5 minutes, 30 at most), builds every cell (a platform × variant) as a nightly would, to the store only: never certified nor published.
+- **[Feature]** CI on push: a slot's **On each commit** (*builds*) with its **Branches** lists the branches it follows (public https repositories, 8 at most). The bits-console service reads their heads every 2 minutes and, once a burst of pushes has settled (5 minutes, 30 at most), builds every cell (a platform × variant) as a nightly would, to the store only: never certified nor published.
+- **[Feature]** Publishing to the final destination: a slot's nightly, commit builds and publishing are each turned on or off. **Publish to the final destination** builds and publishes where a Production build goes (no `{day}`): on each commit (*On each commit: builds and publishes*), at its own days and time, or by **⇪ Publish now**, under the slot's standing approval; *Create release view* publishes the release view too. For example, bits' `views/current` follows bits `main`.
 - **[Feature]** Results: nightly and CI builds apart, in the console's Nightlies and CI builds pages and the phone app's Nightlies and CI tabs (Security moves into More): a row per slot, a column per night or per CI build (with the heads it fired on), a row per cell; the app's slot page has Run now and Run again of the failed cells.
 
 ## Configuration

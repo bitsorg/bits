@@ -409,6 +409,30 @@ days) as `commits` rows.
 Run now (every cell) or Run again (the cells of some platforms, or some cells by
 their matrix name, `<platform> <variant>`), today's night, each cell's next attempt.
 
+**A schedule's scenarios** (migration 26): `nightly` (on by default) fires at its
+`days` and `time`; `on_commit` says what a change of its followed branches does:
+`""` nothing, `build` a commit run (as above; a schedule stored before keeps
+`build` when it follows branches, and a client that sends no `on_commit` gets
+`build` with a `watch` list), `publish` a publishing run. `publish` turns on
+**publishing to the final destination**: a publishing run (`fired_by` `publish`,
+`trigger` `time`, `commit` or `manual`) builds the night's cells with `--day=`, so
+a template's `{day}` is left out and the builds go where a Production build of the
+console goes, with `PUBLISH_CVMFS`, `CVMFS_RELEASE_VIEW` when `release_view` (as a
+night that publishes, `cvmfs`, does), and `NIGHTLY_SUFFIX` ` [publish]`. It fires on a commit (`on_commit` `publish`), at
+its own `publish_days` and `publish_time` (`last_published_ms`; 0 days: none),
+and by `POST /ops/schedules/{id}/run {publish: true}` (Publish now). It publishes
+only under the schedule's standing approval in force when it fires (it takes none of
+its runs: those are certified builds'), else it builds only ("built, not published:
+no standing approval"); `/approvals/standing/request` takes a schedule that certifies
+or publishes. A `PUT` without these fields keeps them as they are. At least one of `nightly`,
+`on_commit` and `publish` is on; `on_commit` `publish` needs `publish`. `publish`,
+`release_view` and `on_commit` `publish` enter `content_sha256` only when set, so
+older schedules keep their hash and turning publishing on needs a new approval.
+Nights, commit runs and publishing runs do not hold each other; `GET
+/ops/schedules` gives `next_publish_ms`, the approval in force to admins of a
+publishing schedule too, and the matrix a schedule's latest publishing runs as
+`publishes` rows (with their `trigger`).
+
 **Triage** (`orch/vuln_triage.py`): a community admin's rule says a
 vulnerability does not matter there, for one version of a package, every
 version, every package, or every vulnerability of a package (`vuln_id` `*`):

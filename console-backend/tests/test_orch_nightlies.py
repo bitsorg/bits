@@ -246,11 +246,70 @@ class StepTest(_Nights):
         sch.update(self.conn, s["id"], sch.check({"name": "ROOT nightly", "package": "ROOT", "time": "02:00",
                                                   "platforms": ["x86_64-el9", "aarch64-el9"], "certify": True},
                                                  "LCG"), "alice", 1)
+        with db.transaction(self.conn):                      # changed the day before, not today
+            self.conn.execute("UPDATE schedules SET last_fired_ms = ? WHERE id = ?",
+                              (_ms(2026, 10, 29, 12, 0), s["id"]))
         self._done()
         nl.step(self.conn, self.reader, "main", UTC, now=_ms(2026, 10, 30, 2, 1))    # new content: none
         self.assertEqual({r["reason"] for r in self.conn.execute(
             "SELECT reason FROM schedule_runs WHERE schedule_id = ? AND night = '2026-10-30'", (s["id"],))},
             {"built, not certified: no standing approval"})
+
+
+class PublishTest(_Nights):
+    """Publishing to the final destination: at its own times, by Publish now; the
+    nightly on or off on its own."""
+
+    def _publishing(self, **more):
+        p = dict(nightly=False, publish=True, publish_days=sch.EVERY_DAY, publish_time="06:00", release_view=True)
+        p.update(more)
+        return self._schedule(_ms(2026, 10, 27, 12, 0), **p)
+
+    def _queued(self):
+        return [_vars(json.loads(r["variables"])) for r in self.conn.execute("SELECT * FROM build_queue ORDER BY id")]
+
+    def test_it_publishes_at_its_time_without_day_and_not_the_nightly(self):
+        s = self._publishing()
+        with db.transaction(self.conn):
+            self.conn.execute("UPDATE schedules SET last_published_ms = ? WHERE id = ?",
+                              (_ms(2026, 10, 27, 12, 0), s["id"]))
+        approvals.grant_standing(self.conn, nl.subject(s["id"]), s["content_sha256"], ["lcg"], "alice",
+                                 5, 30, {"id": "x"}, b"\1" * 16)
+        self.assertEqual(nl.step(self.conn, self.reader, "main", UTC, now=_ms(2026, 10, 28, 2, 1)), 0)
+        self.assertEqual(nl.step(self.conn, self.reader, "main", UTC, now=_ms(2026, 10, 28, 6, 1)), 1)
+        self.assertEqual({(r["fired_by"], r["trigger"]) for r in self.conn.execute("SELECT * FROM schedule_runs")},
+                         {("publish", "time")})
+        for v in self._queued():
+            self.assertEqual((v["PUBLISH_CVMFS"], v["CVMFS_RELEASE_VIEW"]), ("true", "true"))
+            self.assertIn("--day=", v["BITS_BUILD_ARGS"].split())
+            self.assertNotIn("--day", v["BITS_BUILD_ARGS"].split())
+        m = nl.matrix(self.conn, None, 2, UTC, now=_ms(2026, 10, 28, 7, 0))["rows"][0]
+        self.assertEqual((m["cells"], len(m["publishes"]), m["publishes"][0]["trigger"]), ({}, 1, "time"))
+
+    def test_without_a_standing_approval_it_only_builds(self):
+        s = self._publishing()
+        with db.transaction(self.conn):
+            nl.run_now(self.conn, s["id"], [], nl.config(self.reader, "LCG", "main"), "main", UTC, "alice",
+                       now=_ms(2026, 10, 28, 9, 0), publish=True)
+        self.assertEqual({(r["fired_by"], r["trigger"], r["reason"]) for r in self.conn.execute(
+            "SELECT * FROM schedule_runs")}, {("publish", "manual", "built, not published: no standing approval")})
+        for v in self._queued():
+            self.assertNotIn("PUBLISH_CVMFS", v)
+            self.assertNotIn("CVMFS_RELEASE_VIEW", v)
+
+    def test_publish_now_needs_a_publishing_schedule(self):
+        s = self._schedule(_ms(2026, 10, 27, 12, 0))
+        with self.assertRaises(sch.Invalid):
+            nl.run_now(self.conn, s["id"], [], nl.config(self.reader, "LCG", "main"), "main", UTC, "alice",
+                       now=_ms(2026, 10, 28, 9, 0), publish=True)
+
+    def test_a_nightly_that_publishes_keeps_its_day_and_may_make_its_release_view(self):
+        self._schedule(_ms(2026, 10, 27, 12, 0), cvmfs=True, release_view=True)
+        nl.step(self.conn, self.reader, "main", UTC, now=_ms(2026, 10, 28, 2, 1))
+        for v in self._queued():
+            self.assertEqual((v["PUBLISH_CVMFS"], v["CVMFS_RELEASE_VIEW"], v["NIGHTLY_SUFFIX"]),
+                             ("true", "true", " [nightly]"))
+            self.assertIn("--day Wed", v["BITS_BUILD_ARGS"])
 
 
 class ResultsTest(_Nights):

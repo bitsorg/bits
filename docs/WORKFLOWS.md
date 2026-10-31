@@ -182,11 +182,19 @@ The **Builds** tab in bits-console shows a live pipeline list with log streaming
 
 ### Step 4 — Schedule nightly builds
 
-A nightly build is a **slot**: a build defined once, run by the orchestrator on
-given days at a given time, and approved in advance. Slots are on the console's
-**Schedules** tab; everyone signed in sees them, the community's admins make,
-change and approve them (a certifying slot: admins of every group it certifies
-for).
+To define a schedule, make a **slot**: a build defined once, run by the
+orchestrator without anyone clicking, and approved in advance. Slots are on the
+console's **Schedules** tab; everyone signed in sees them, the community's admins
+make, change and approve them (a certifying slot: admins of every group it
+certifies for). A slot has three scenarios, each on or off:
+
+- **Nightly**: it builds on given days at a given time (this step); with
+  *Publish to CVMFS* it publishes by its templates, `{day}` being the night's weekday.
+- **On each commit**: a new commit to a branch it follows builds it (CI, Step 5),
+  or builds and publishes it to the final destination (Step 6).
+- **Publish to the final destination**: it builds and publishes where a
+  Production build goes, without `{day}`: on a commit, at its own days and time,
+  or by **⇪ Publish now** (Step 6).
 
 | Field | What it sets |
 |-------|--------------|
@@ -195,9 +203,10 @@ for).
 | Variants | Defaults chains put before it, one a line: `gcc15::opt` and `clang::opt` with `dev3` build `gcc15::opt::dev3` and `clang::opt::dev3`. |
 | Platforms | Each platform × each variant is one build of the night, a *cell* (64 at most). |
 | Variables, Extra recipe repositories, Extra build arguments, Jobs | As in the Build dialog: `--set` (e.g. `release=LCG_110`), more recipe repositories, more `bits build` options (not `--defaults`), `-j`. |
-| Days, Time | When it runs, in the instance's time zone (shown beside the time). |
-| Publish to CVMFS, Certify, Groups it certifies for | Where the result goes after the build. |
-| Build on each commit to | The branches it also builds on, see Step 5. |
+| Nightly: Days, Time, Publish to CVMFS | Whether and when its nightly runs, in the instance's time zone (shown beside the time), and whether it publishes. |
+| On each commit, Branches | Whether a commit to the branches it follows builds it, or builds and publishes it: Steps 5 and 6. |
+| Publish to the final destination, its days and time | Publishing where a Production build goes: Step 6. |
+| Create release view, Certify, Groups it certifies and publishes for | What a publishing build adds, and whether it certifies. |
 
 To set one up:
 
@@ -207,12 +216,15 @@ To set one up:
    becomes one slot with the chains as its variants, any other one slot per
    chain. It is saved paused, every day at 02:00, without variables or followed
    branches: **Edit** it first.
-2. If it certifies, click **Approve**, then **Use your passkey**. The approval
-   covers 30 nights of every cell, but 100 builds at most (fewer nights for a
-   slot of more than 3 cells), or 30 days, whichever ends first; **▶ Run now**
-   uses it up too. A night it cannot cover whole, and a slot without one, builds
-   but certifies nothing. A change of what it builds or where needs a new
-   approval; a new time, days or followed branches do not.
+2. If it certifies or publishes to the final destination, click **Approve**, then
+   **Use your passkey**. The approval covers 30 nights of every cell, but 100
+   builds at most (fewer nights for a slot of more than 3 cells), or 30 days,
+   whichever ends first; **▶ Run now** uses it up too. A night it cannot cover
+   whole, and a slot without one, builds but certifies nothing (nor publishes to
+   the final destination). Publishing uses none of its builds: a slot that only
+   publishes is approved for the 30 days. A change of what it builds or where, or
+   publishing turned on, needs a new approval; a new time, days or followed
+   branches do not.
 3. **Resume** a slot saved paused.
 
 At its time the orchestrator queues a build per cell, and they start as build
@@ -229,8 +241,8 @@ passed, failed and where, or not run and why). A slot's page in the app has
 
 ### Step 5 — Build on each push (CI)
 
-A slot can also build whenever a branch it follows gets a new commit. In its
-**Build on each commit to**, list up to 8 `https://host/path.git@branch` entries,
+A slot can also build whenever a branch it follows gets a new commit: set its
+**On each commit** to *builds* and, in **Branches**, list up to 8 `https://host/path.git@branch` entries,
 separated by `;`: the recipe repository at its release branch, and the sources of
 packages built from git, e.g. `https://github.com/root-project/root.git@master`.
 The list only decides *when* the slot builds: the build takes its recipes and
@@ -251,7 +263,7 @@ those of its extra recipe repositories that name a branch.
   together when it ends, and nothing is cancelled. Nightlies and CI builds do
   not wait for each other.
 - A CI build goes to the binary store only: it is never certified nor published
-  to CVMFS. It shows whether the branches build.
+  to CVMFS. It shows whether the branches build. To publish on each commit, see Step 6.
 - Each build fetches its recipes and sources when it starts, so it may hold
   commits newer than the heads recorded when it fired. A commit that changes no package's hash still makes a short
   pipeline, which finds everything built.
@@ -261,6 +273,36 @@ until it is built. CI builds have a matrix of their own, apart from the
 nightlies: the console's **CI builds** page shows each such slot's latest 10, a
 column per build with the heads when it fired and a row per cell, and the phone
 app's **CI** tab the same, its latest 7.
+
+### Step 6 — Publish the latest version to its final destination
+
+A slot with **Publish to the final destination** on builds what its nightly
+builds and publishes it where a Production build of the Build dialog goes: its
+defaults' CVMFS templates without `{day}` (the build gets `--day=`). Use it to
+keep a package's latest version published in place, e.g. bits itself, which
+the CVMFS entry point runs from `/cvmfs/bits.cern.ch/bits/views/current/<arch>`.
+
+- It fires on each commit to the branches it follows when **On each commit** is
+  *builds and publishes to the final destination*, at its own days and time if
+  any are chosen, and by **⇪ Publish now** on its row.
+- It publishes only under the slot's standing approval in force when it fires
+  (Step 4, item 2); without one its builds go to the store only, marked *built,
+  not published: no standing approval*. A commit built so is not published later:
+  after approving, use **⇪ Publish now**.
+- *Create release view* makes every build the slot publishes (here, and its
+  nightly with *Publish to CVMFS*) publish the release view too, as the Build
+  dialog's option does; a view at a fixed path (bits' `views/current`) is replaced
+  when the community allows it (`replace_on_conflict`).
+- An unchanged build has the same hash, so publishing it again changes nothing.
+  Publishing runs, nightlies and CI builds do not wait for each other.
+- Its runs are on the console's **CI builds** page, under *Publishing to the
+  final destination*, with what fired each (its time, a commit, Publish now).
+
+For bits, in the **Bits** community: a slot for `bits` on `x86_64-el8` and
+`aarch64-el9`, Nightly off, On each commit *builds and publishes to the final
+destination* with the branches
+`https://github.com/bitsorg/bits.git@main;https://github.com/bitsorg/bits.bits.git@main`,
+Publish to the final destination on, Create release view on, then Approve.
 
 **For operators:** slots need the orchestrator's build queue
 (`BITS_ORCH_QUEUE=1`). The instance's time zone is the site setting

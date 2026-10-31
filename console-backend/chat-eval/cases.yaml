@@ -2534,12 +2534,12 @@
   sources:
   - docs/WORKFLOWS.md#step-5--build-on-each-push-ci
   must:
-  - Build on each commit to field
+  - On each commit set to builds, with the branches in Branches
   - up to 8 https://host/path.git@branch entries separated by ;
   - the list only decides when it builds; recipes and versions are taken as for a nightly
   must_not:
   - the build always checks out the followed branch whatever the recipes say
-  answer: 'Yes. In the slot''s Build on each commit to field, list up to 8 `https://host/path.git@branch`
+  answer: 'Yes. Set the slot''s On each commit to builds, and in Branches list up to 8 `https://host/path.git@branch`
     entries separated by `;`, e.g. `https://github.com/root-project/root.git@master`. The list only decides
     when the slot builds: the build still takes its recipes and versions as a nightly does, so following
     a source branch helps only when the slot''s recipes build that branch (as dev3 builds ROOT `master`).
@@ -2570,14 +2570,94 @@
   sources:
   - docs/WORKFLOWS.md#step-5--build-on-each-push-ci
   must:
-  - binary store only
-  - never certified or published to CVMFS
+  - 'with builds: binary store only, never certified or published'
   - CI builds page (latest 10) and app CI tab (latest 7)
+  - builds and publishes to the final destination publishes on each commit
   must_not:
   - CI builds are published to the nightlies area
-  answer: 'No. A CI build goes to the binary store only; it is never certified nor published to CVMFS
-    and just shows whether the branches build. Its results have their own matrix: the console''s CI builds
-    page shows each slot''s latest 10 builds and the phone app''s CI tab its latest 7.'
+  answer: 'Not when On each commit is set to builds: such a CI build goes to the binary store only, is
+    never certified nor published to CVMFS and just shows whether the branches build. Its results have
+    their own matrix: the console''s CI builds page shows each slot''s latest 10 builds and the phone
+    app''s CI tab its latest 7. To publish on each commit instead, set On each commit to builds and publishes
+    to the final destination (with Publish to the final destination on and the slot approved).'
+- id: define-schedule-scenarios
+  kind: docs
+  question: How do I define a schedule in bits-console, and what can it do?
+  sources:
+  - bits-console/README.md#defining-a-slot-how-to-set-up-a-schedule
+  - docs/WORKFLOWS.md#step-4--schedule-nightly-builds
+  must:
+  - a slot on the Schedules tab
+  - 'three scenarios: nightly, on each commit, publish to the final destination'
+  - nightly publishes with {day}; the final destination has no {day}
+  - Approve with a passkey to certify or publish to the final destination
+  must_not:
+  - a slot can only run at night
+  answer: 'Make a slot on the Schedules tab (+ New slot, or Save as pipeline in the Build dialog): what
+    it builds (package, version, defaults chain, variants, platforms, variables) and up to three scenarios,
+    each on or off. Nightly builds on chosen days at a time, and with Publish to CVMFS publishes by the
+    defaults'' templates with {day} the night''s weekday. On each commit builds when a followed branch
+    gets new commits (CI, store only), or builds and publishes to the final destination. Publish to the
+    final destination publishes where a Production build goes, without {day}: on a commit, at its own
+    days and time, or by Publish now. A slot that certifies or publishes to the final destination needs
+    Approve with a passkey.'
+- id: publish-latest-bits-final-destination
+  kind: docs
+  question: How can I publish the latest bits to /cvmfs/bits.cern.ch automatically whenever bits main
+    changes?
+  sources:
+  - docs/WORKFLOWS.md#step-6--publish-the-latest-version-to-its-final-destination
+  - bits-console/README.md#publishing-the-latest-version-to-its-final-destination
+  must:
+  - a slot for bits in the Bits community
+  - 'On each commit: builds and publishes to the final destination, following bits and bits.bits main'
+  - Publish to the final destination and Create release view on
+  - Approve it; it replaces views/current
+  must_not:
+  - a nightly slot publishes bits to views/current every night by itself
+  answer: In the Bits community, make a slot for package `bits` on `x86_64-el8` and `aarch64-el9` with
+    Nightly off, On each commit set to builds and publishes to the final destination with the branches
+    `https://github.com/bitsorg/bits.git@main;https://github.com/bitsorg/bits.bits.git@main`, Publish
+    to the final destination on and Create release view on, then Approve it with your passkey. Each new
+    commit builds bits `main` and publishes it where a Production build goes, replacing `/cvmfs/bits.cern.ch/bits/views/current/<arch>`,
+    which the CVMFS entry point runs.
+- id: publish-to-final-not-nightly-dir
+  kind: docs
+  question: My scheduled builds land in the per-weekday nightly directory. Can a slot publish to the normal
+    release location instead?
+  sources:
+  - docs/WORKFLOWS.md#step-6--publish-the-latest-version-to-its-final-destination
+  - bits-console/README.md#publishing-the-latest-version-to-its-final-destination
+  must:
+  - Publish to the final destination
+  - builds with --day=, no {day}, where a Production build goes
+  - on a commit, at its own days and time, or Publish now
+  - needs the standing approval
+  must_not:
+  - edit the defaults to remove {day}
+  answer: 'Yes: turn on the slot''s Publish to the final destination. Its publishing runs build with `--day=`,
+    so a template''s `{day}` is left out and the builds go where a Production build of the Build dialog
+    goes. It publishes on each commit (On each commit: builds and publishes), at its own days and time
+    if any are chosen, and by Publish now; the nightly, if on, still publishes by the nightly templates.
+    It publishes only under the slot''s standing approval.'
+- id: publish-run-not-published-approval
+  kind: docs
+  question: 'My slot''s publishing run says ''built, not published: no standing approval''. What do I
+    do?'
+  sources:
+  - docs/WORKFLOWS.md#step-6--publish-the-latest-version-to-its-final-destination
+  - docs/WORKFLOWS.md#step-4--schedule-nightly-builds
+  must:
+  - it needs a standing approval in force
+  - Approve, then Use your passkey, by a community admin
+  - 30 days; a change of what it builds or where needs a new one
+  must_not:
+  - publishing runs never need an approval
+  answer: A slot publishes to its final destination only under its standing approval in force. An admin
+    of the community (of every group it certifies for) clicks Approve on its row on the Schedules tab,
+    then Use your passkey. The approval lasts 30 days (100 builds at most if it also certifies), and a
+    change of what the slot builds or where, or publishing turned on, needs a new one; a new time, days
+    or followed branches do not. Then Publish now, or wait for the next commit or publishing time.
 - id: operator-config-for-slots-and-ci
   kind: docs
   question: We run our own console instance. What has to be configured for nightly slots and commit CI?

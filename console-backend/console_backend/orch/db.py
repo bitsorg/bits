@@ -664,6 +664,21 @@ MIGRATIONS = [
         "ALTER TABLE schedules ADD COLUMN publish_path TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE schedules ADD COLUMN direct_s3 TEXT NOT NULL DEFAULT ''",
     ],
+    # 26: a schedule's scenarios (schedules.py): its nightly on or off, what a commit
+    # does (on_commit: '', build, publish), publishing to the final destination (and
+    # its own times), the release view; existing ones keep what they did.
+    [
+        "ALTER TABLE schedules ADD COLUMN nightly INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE schedules ADD COLUMN on_commit TEXT NOT NULL DEFAULT ''",
+        "UPDATE schedules SET on_commit = 'build' WHERE watch != ''",
+        "ALTER TABLE schedules ADD COLUMN publish INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE schedules ADD COLUMN publish_days INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE schedules ADD COLUMN publish_time TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE schedules ADD COLUMN last_published_ms INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE schedules ADD COLUMN release_view INTEGER NOT NULL DEFAULT 0",
+        # a publishing run's trigger: time, commit or manual (fired_by: publish)
+        "ALTER TABLE schedule_runs ADD COLUMN trigger TEXT NOT NULL DEFAULT ''",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

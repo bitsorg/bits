@@ -36,6 +36,28 @@ class CheckTest(unittest.TestCase):
         self.assertEqual((s["community"], s["days"], s["certify_groups"], s["enabled"], s["jobs"]),
                          ("lcg", sch.EVERY_DAY, ["lcg"], True, 0))
 
+    def test_the_scenarios_and_their_defaults(self):
+        s = sch.check(_p(), "LCG")
+        self.assertEqual((s["nightly"], s["on_commit"], s["publish"], s["publish_days"], s["publish_time"],
+                          s["release_view"]), (True, "", False, 0, "", False))
+        bits = sch.check(_p(nightly=False, publish=True, on_commit="publish", release_view=True,
+                            watch="https://github.com/bitsorg/bits@main", publish_days=1, publish_time="05:30"), "Bits")
+        self.assertEqual((bits["on_commit"], bits["publish_days"], bits["publish_time"]), ("publish", 1, "05:30"))
+        self.assertEqual(sch.check(_p(publish_days=1, publish_time="05:30"), "lcg")["publish_days"], 0)
+        for bad in (dict(nightly=False), dict(on_commit="build"), dict(on_commit="publish", watch="https://x.org/y@main"),
+                    dict(on_commit="deploy", watch="https://x.org/y@main"), dict(publish=True, publish_days=1),
+                    dict(publish=True, publish_days=128, publish_time="01:00")):
+            with self.assertRaises(sch.Invalid, msg=bad):
+                sch.check(_p(**bad), "lcg")
+        plain = sch.content_sha256(s)                 # older schedules keep their hash
+        self.assertEqual(plain, sch.content_sha256(sch.check(_p(nightly=False, on_commit="build",
+                                                                watch="https://x.org/y@main"), "lcg")))
+        for more in (dict(publish=True), dict(release_view=True)):
+            self.assertNotEqual(plain, sch.content_sha256(sch.check(_p(**more), "lcg")), more)
+        self.assertEqual(sch.next_run_ms(bits, _ms(2026, 11, 2, 1, 0), ZURICH), None)        # no nightly
+        self.assertEqual(sch.next_run_ms(bits, _ms(2026, 11, 2, 1, 0), ZURICH, publish=True),
+                         _ms(2026, 11, 2, 5, 30, ZURICH))
+
     def test_the_publish_route_and_its_defaults(self):
         s = sch.check(_p(), "lcg")
         self.assertEqual((s["publish_path"], s["direct_s3"]), ("", ""))
@@ -215,6 +237,27 @@ class ApiTest(unittest.TestCase):
         self.assertEqual((r.status_code, r.json()["publish_path"], r.json()["direct_s3"]), (200, "staged", "false"))
         read = self._do("GET", "dave", "/ops/schedules?community=lcg").json()["schedules"][0]
         self.assertEqual((read["publish_path"], read["direct_s3"]), ("staged", "false"))
+
+    def test_a_publishing_schedule_shows_its_next_publish_and_its_approval(self):
+        r = self._do("POST", "alice", "/ops/schedules", dict(_p(certify=False, nightly=False, publish=True,
+                     publish_days=sch.EVERY_DAY, publish_time="05:00"), community="lcg"))
+        self.assertEqual(r.status_code, 200, r.text)
+        s = r.json()
+        self.assertEqual((s["next_run_ms"], s["approval"]), (None, None))
+        self.assertGreater(s["next_publish_ms"], db.now_ms())
+        u = "/ops/schedules/%d/run" % s["id"]
+        self.assertEqual(self._do("POST", "alice", u, {"publish": "yes"}).status_code, 400)
+        self.assertEqual(self._do("POST", "alice", u, {"publish": True}).status_code, 503)   # the queue is off
+
+    def test_a_client_without_the_scenarios_keeps_them(self):
+        r = self._do("POST", "alice", "/ops/schedules", dict(_p(certify=False, nightly=False, publish=True,
+                     on_commit="publish", watch="https://x.org/y@main", release_view=True), community="lcg"))
+        s = r.json()
+        old = {k: v for k, v in _p(certify=False, watch="https://x.org/y@main", time="04:00").items()}
+        r = self._do("PUT", "alice", "/ops/schedules/%d" % s["id"], dict(old, revision=1))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([r.json()[k] for k in sch.SCENARIO_FIELDS], [s[k] for k in sch.SCENARIO_FIELDS])
+        self.assertEqual(r.json()["content_sha256"], s["content_sha256"])
 
     def test_a_change_may_come_from_the_console_and_the_app(self):
         main.settings.frontend_origin = "https://pages"            # another origin: a preflight

@@ -9,6 +9,7 @@ held still for SETTLE_MS (or have waited MAX_WAIT_MS) and none of its commit
 runs is still queued or running; nothing is cancelled. A branch first seen (or
 seen again) is not built: only a change is. Commit runs certify and publish
 nothing, and record the heads when they fired: a build reads its branches then.
+With on_commit=publish a change fires a publishing run instead (nightlies.py).
 """
 
 import datetime as dt
@@ -192,6 +193,11 @@ def read(conn, now=None, every_s=120, get_head=head):
     return changed
 
 
+def _fired_by(s):
+    """The run a commit fires: a commit run, or a publishing run (on_commit=publish)."""
+    return "publish" if s.get("on_commit") == "publish" else "commit"
+
+
 def ready(conn, s, now):
     """The heads to build (JSON) when *s* should fire a commit run now, else None."""
     want = set(schedules.watches(s))
@@ -203,8 +209,8 @@ def ready(conn, s, now):
     if (any(now - r["changed_ms"] < SETTLE_MS for r in moved)
             and now - min(r["moved_ms"] for r in moved) < MAX_WAIT_MS):
         return None                                   # still moving
-    if conn.execute("SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND fired_by = 'commit'"
-                    " AND state IN ('queued', 'running') LIMIT 1", (s["id"],)).fetchone():
+    if conn.execute("SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND fired_by = ?"
+                    " AND state IN ('queued', 'running') LIMIT 1", (s["id"], _fired_by(s))).fetchone():
         return None                                   # one goes on: after it
     return json.dumps({"%s@%s" % (r["repo"], r["branch"]): r["sha"] for r in rows}, sort_keys=True)
 
@@ -234,7 +240,8 @@ def step(conn, reader, ref, tz, now=None, every_s=120, get_head=head):
                 continue
             night = dt.datetime.fromtimestamp(now / 1000, tz).date().isoformat()
             nightlies.fire_night(conn, fresh, night, schedules.cells(fresh), cfgs[s["community_dir"]], ref,
-                                 "commit", now, fired_by="commit", commits=heads)
+                                 "commit", now, fired_by=_fired_by(fresh), commits=heads,
+                                 trigger="commit" if _fired_by(fresh) == "publish" else "")
             for w, sha in json.loads(heads).items():
                 repo, branch = w.rsplit("@", 1)
                 conn.execute("UPDATE schedule_watches SET built_sha = ?, moved_ms = 0 WHERE schedule_id = ?"

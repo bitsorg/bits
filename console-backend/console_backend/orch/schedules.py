@@ -3,6 +3,13 @@
 """Nightly schedules (ADR bits 0007): what a community builds every night, on
 which platforms, on which weekdays at what time of the bits instance's time zone.
 
+A schedule (a slot) has three scenarios, each on or off: its nightly (days, time;
+it publishes, with cvmfs, by the CVMFS templates with {day} the night's weekday),
+what a commit to the branches it follows does (on_commit: build only, or build
+and publish), and publishing to the final destination (publish: the templates
+without {day}, as a Production build from the console does; on a commit with
+on_commit=publish, at its own publish_days/publish_time, or by Publish now).
+
 A schedule (a row of the nightly matrix) builds one package at one version, with
 one defaults chain and recipe repositories, on several platforms, and each of
 its variants (ADR bits 0009: defaults chains put before its own). Its content
@@ -39,6 +46,8 @@ MAX_PLATFORMS = 32
 MAX_VARIANTS = 16
 MAX_CELLS = 64                     # platforms x variants: the builds of one night
 PUBLISH_PATHS = ("", "ingest", "staged")   # "": the build job's default, ingest
+ON_COMMIT = ("", "build", "publish")        # what a commit to a followed branch does
+SCENARIO_FIELDS = ("nightly", "on_commit", "publish", "publish_days", "publish_time", "release_view")
 MAX_CHAIN = 160                    # a variant::defaults, leaving room for a community's overlay
 MAX_WATCHES = 8
 EVERY_DAY = 0b1111111              # bit 0 Monday ... bit 6 Sunday
@@ -143,6 +152,25 @@ def check(p, community):
         raise Invalid("days: a weekday mask, 1 (Monday) to 127 (every day)")
     s["days"] = days
     s["time"] = _text(p, "time", _TIME, "HH:MM")
+    s["nightly"] = _flag(p, "nightly", True)
+    # A client that predates on_commit: a watch list builds, as it did.
+    s["on_commit"] = p.get("on_commit", "build" if s["watch"] else "")
+    if s["on_commit"] not in ON_COMMIT:
+        raise Invalid("on_commit: build, publish, or empty for nothing")
+    if s["on_commit"] and not s["watch"]:
+        raise Invalid("watch: the branches whose commits %s" % (
+            "are built" if s["on_commit"] == "build" else "are built and published"))
+    s["publish"] = _flag(p, "publish")
+    if s["on_commit"] == "publish" and not s["publish"]:
+        raise Invalid("on_commit: publish needs publishing to the final destination on")
+    pdays = p.get("publish_days", 0)
+    if isinstance(pdays, bool) or not isinstance(pdays, int) or not 0 <= pdays <= EVERY_DAY:
+        raise Invalid("publish_days: a weekday mask, 0 (no time of its own) to 127 (every day)")
+    s["publish_days"] = pdays if s["publish"] else 0
+    s["publish_time"] = _text(p, "publish_time", _TIME, "HH:MM") if s["publish_days"] else ""
+    s["release_view"] = _flag(p, "release_view")
+    if not (s["nightly"] or s["on_commit"] or s["publish"]):
+        raise Invalid("nightly, on_commit, publish: turn on at least one")
     s["certify"], s["cvmfs"] = _flag(p, "certify"), _flag(p, "cvmfs")
     # How the builds reach CVMFS, as the Build dialog sends it; "" each: the build
     # job's default (ingest) and the community's direct-S3 default.
@@ -171,11 +199,15 @@ _CONTENT = ("community", "package", "version", "defaults", "extra_repos", "set",
 
 def content_sha256(s):
     """What is built and where it goes, not when (days, time, the watch list), whether
-    (enabled) or by which route (publish_path, direct_s3). Variants count only when
-    set: a schedule without keeps its hash."""
+    (enabled) or by which route (publish_path, direct_s3). Variants, publishing on a
+    commit or to the final destination and the release view count only when set: a
+    schedule without keeps its hash."""
     content = {k: s[k] for k in _CONTENT}
-    if s.get("variants"):                       # only when set: older schedules keep their hash
-        content["variants"] = s["variants"]
+    for k in ("variants", "publish", "release_view"):   # only when set: older schedules keep their hash
+        if s.get(k):
+            content[k] = s[k]
+    if s.get("on_commit") == "publish":
+        content["on_commit"] = "publish"
     text = json.dumps(content, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -186,8 +218,16 @@ def cells(s):
 
 
 def watches(s):
-    """[(repo, branch)] the schedule follows: its watch list, url@branch."""
+    """[(repo, branch)] the schedule follows: its watch list, url@branch, when a
+    commit does something (on_commit)."""
+    if not s.get("on_commit", "build"):
+        return []
     return [tuple(w.rsplit("@", 1)) for w in s.get("watch", "").split(";") if w]
+
+
+def publishes(s):
+    """Whether the schedule publishes to the final destination (Publish now too)."""
+    return bool(s.get("publish"))
 
 
 def cell_key(platform, variant):
@@ -210,24 +250,31 @@ def _local(day, hhmm, tz):
     return naive.replace(tzinfo=tz)
 
 
-def occurrences(s, after_ms, before_ms, tz):
+def occurrences(s, after_ms, before_ms, tz, publish=False):
     """[(night, ms)] of the schedule's times in (after_ms, before_ms], oldest
-    first: night is the local date (ISO) of its scheduled time."""
+    first: night is the local date (ISO) of its scheduled time. *publish*: its
+    publishing times (publish_days, publish_time), else its nightly's."""
+    days, hhmm = (s["publish_days"], s["publish_time"]) if publish else (s["days"], s["time"])
+    if not days:
+        return []
     start = dt.datetime.fromtimestamp(after_ms / 1000, tz).date() - dt.timedelta(days=1)
     end = dt.datetime.fromtimestamp(before_ms / 1000, tz).date() + dt.timedelta(days=1)
     out, day = [], start
     while day <= end:
-        if s["days"] >> day.weekday() & 1:
-            ms = int(_local(day, s["time"], tz).timestamp() * 1000)
+        if days >> day.weekday() & 1:
+            ms = int(_local(day, hhmm, tz).timestamp() * 1000)
             if after_ms < ms <= before_ms:
                 out.append((day.isoformat(), ms))
         day += dt.timedelta(days=1)
     return out
 
 
-def next_run_ms(s, now_ms, tz):
-    """The schedule's next time after *now_ms*, or None when it never runs."""
-    found = occurrences(s, now_ms, now_ms + 8 * 86400 * 1000, tz)
+def next_run_ms(s, now_ms, tz, publish=False):
+    """The schedule's next nightly (*publish*: its next publishing) time after
+    *now_ms*, or None when it has none."""
+    if not (s["publish"] if publish else s["nightly"]):
+        return None
+    found = occurrences(s, now_ms, now_ms + 8 * 86400 * 1000, tz, publish)
     return found[0][1] if found else None
 
 
@@ -237,7 +284,7 @@ def _row(r):
     d = dict(r)
     for k in ("set", "platforms", "certify_groups", "variants"):
         d[k] = json.loads(d.pop("set_vars") if k == "set" else d[k])
-    for k in ("rebuild", "debug", "certify", "cvmfs", "enabled"):
+    for k in ("rebuild", "debug", "certify", "cvmfs", "enabled", "nightly", "publish", "release_view"):
         d[k] = bool(d[k])
     return d
 
@@ -267,13 +314,15 @@ def _store(conn, s, sid=None):
     cols = ("community", "community_dir", "name", "package", "version", "defaults", "extra_repos", "set_vars",
             "platforms", "rebuild", "debug", "jobs", "extra_build_args", "days", "time", "certify",
             "cvmfs", "certify_groups", "enabled", "variants", "watch", "content_sha256",
-            "publish_path", "direct_s3")
+            "publish_path", "direct_s3", "nightly", "on_commit", "publish", "publish_days",
+            "publish_time", "release_view")
     vals = (s["community"], s["community_dir"], s["name"], s["package"], s["version"], s["defaults"], s["extra_repos"],
             json.dumps(s["set"]), json.dumps(s["platforms"]), int(s["rebuild"]), int(s["debug"]),
             s["jobs"], s["extra_build_args"], s["days"], s["time"], int(s["certify"]),
             int(s["cvmfs"]), json.dumps(s["certify_groups"]), int(s["enabled"]),
             json.dumps(s["variants"]), s["watch"], content_sha256(s),
-            s["publish_path"], s["direct_s3"])
+            s["publish_path"], s["direct_s3"], int(s["nightly"]), s["on_commit"], int(s["publish"]),
+            s["publish_days"], s["publish_time"], int(s["release_view"]))
     return cols, vals
 
 
@@ -290,10 +339,10 @@ def create(conn, s, user):
     with db.transaction(conn):
         _taken(conn, s)
         cols, vals = _store(conn, s)
-        cur = conn.execute("INSERT INTO schedules (%s, revision, last_fired_ms, created_by,"
-                           " created_ms, updated_by, updated_ms) VALUES (%s, 1, ?, ?, ?, ?, ?)"
+        cur = conn.execute("INSERT INTO schedules (%s, revision, last_fired_ms, last_published_ms,"
+                           " created_by, created_ms, updated_by, updated_ms) VALUES (%s, 1, ?, ?, ?, ?, ?, ?)"
                            % (", ".join(cols), ", ".join("?" * len(cols))),
-                           vals + (now, user, now, user, now))
+                           vals + (now, now, user, now, user, now))
         new = get(conn, cur.lastrowid)
         events.append(conn, "schedule.created", "schedule:%d" % new["id"],
                       events.Actor("person", user), {"after": _public(new)})
@@ -317,9 +366,9 @@ def update(conn, sid, s, user, revision):
             raise Conflict("changed since: revision %d, not %d" % (old["revision"], revision))
         _taken(conn, s, sid)
         cols, vals = _store(conn, dict(s, enabled=old["enabled"], community_dir=old["community_dir"]))
-        conn.execute("UPDATE schedules SET %s, revision = revision + 1, updated_by = ?,"
-                     " updated_ms = ?, last_fired_ms = MAX(last_fired_ms, ?) WHERE id = ?"
-                     % ", ".join("%s = ?" % c for c in cols), vals + (user, now, now, int(sid)))
+        conn.execute("UPDATE schedules SET %s, revision = revision + 1, updated_by = ?, updated_ms = ?,"
+                     " last_fired_ms = MAX(last_fired_ms, ?), last_published_ms = MAX(last_published_ms, ?)"
+                     " WHERE id = ?" % ", ".join("%s = ?" % c for c in cols), vals + (user, now, now, now, int(sid)))
         new = get(conn, sid)
         events.append(conn, "schedule.updated", "schedule:%d" % new["id"],
                       events.Actor("person", user), {"before": _public(old), "after": _public(new)})
@@ -337,8 +386,9 @@ def set_enabled(conn, sid, enabled, user):
         if old["enabled"] != bool(enabled):
             # Resumed: from now on, no night missed while it was paused.
             conn.execute("UPDATE schedules SET enabled = ?, revision = revision + 1, updated_by = ?,"
-                         " updated_ms = ?, last_fired_ms = MAX(last_fired_ms, ?) WHERE id = ?",
-                         (int(bool(enabled)), user, now, now if enabled else 0, int(sid)))
+                         " updated_ms = ?, last_fired_ms = MAX(last_fired_ms, ?),"
+                         " last_published_ms = MAX(last_published_ms, ?) WHERE id = ?",
+                         (int(bool(enabled)), user, now, now if enabled else 0, now if enabled else 0, int(sid)))
             events.append(conn, "schedule.resumed" if enabled else "schedule.paused",
                           "schedule:%d" % old["id"], events.Actor("person", user),
                           {"before": {"enabled": old["enabled"]}, "after": {"enabled": bool(enabled)}})

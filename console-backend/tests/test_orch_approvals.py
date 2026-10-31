@@ -284,6 +284,18 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(r.status_code, 400)                # no passkey enrolled
         self.assertIn("passkey", r.json()["detail"])
 
+    def test_a_schedule_that_publishes_or_certifies_may_be_approved(self):
+        from console_backend.orch import schedules as sch
+        p = {"name": "bits", "package": "bits", "platforms": ["x86_64-el8"], "time": "02:00",
+             "nightly": False, "publish": True}
+        pub = sch.create(self.conn, sch.check(p, "lcg"), "alice")
+        none = sch.create(self.conn, sch.check(dict(p, name="ci", publish=False, on_commit="build",
+                                                     watch="https://x.org/y@main"), "lcg"), "alice")
+        for s, code in ((pub, 400), (none, 409)):          # 400: past the schedule's check, no passkey
+            body = {"schedule": "schedule:%d" % s["id"], "sha256": s["content_sha256"], "groups": ["lcg"],
+                    "runs": 5, "days": 30}
+            self.assertEqual(self._post("alice", "/approvals/standing/request", body).status_code, code)
+
     def test_the_standing_flow_with_a_passkey(self):
         from soft_webauthn import SoftWebauthnDevice
         from console_backend import credentials, webauthn_rp

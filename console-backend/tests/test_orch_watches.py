@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from console_backend.orch import db, events, nightlies as nl, schedules as sch, watches as w
+from console_backend.orch import approvals, db, events, nightlies as nl, schedules as sch, watches as w
 from test_orch_nightlies import Reader, _vars
 
 UTC = dt.timezone.utc
@@ -324,6 +324,32 @@ class WatchTest(_Watched):
         self.assertEqual([r["commits"]["%s@LCG_110" % REPO][:2] for r in rows], ["%02d" % k for k in range(13, 3, -1)])
 
 
+class PublishOnCommitTest(_Watched):
+    def test_a_moved_head_publishes_under_the_standing_approval(self):
+        s = self.schedule(on_commit="publish", publish=True, release_view=True, certify=False, cvmfs=False)
+        self.step(T0)
+        self.heads[(ROOT, "master")] = "c" * 40
+        self.step(T0 + 3 * MIN)
+        self.assertEqual(self.step(T0 + 9 * MIN), 1)
+        self.assertEqual(self.runs(), [("clang::opt", "publish", "queued"), ("gcc15::opt", "publish", "queued")])
+        r = self.conn.execute("SELECT * FROM schedule_runs").fetchone()
+        self.assertEqual((r["trigger"], r["reason"]), ("commit", "built, not published: no standing approval"))
+        self.assertNotIn("PUBLISH_CVMFS", _vars(json.loads(self.conn.execute(
+            "SELECT variables FROM build_queue").fetchone()["variables"])))
+        approvals.grant_standing(self.conn, "schedule:%d" % s["id"], s["content_sha256"], ["lcg"], "alice",
+                                 5, 30, {"id": "x"}, b"\1" * 16)
+        with db.transaction(self.conn):
+            self.conn.execute("UPDATE schedule_runs SET state = 'passed'")
+        self.heads[(ROOT, "master")] = "d" * 40
+        self.step(T0 + 12 * MIN)
+        self.assertEqual(self.step(T0 + 18 * MIN), 1)
+        v = _vars(json.loads(self.conn.execute("SELECT variables FROM build_queue ORDER BY id DESC").fetchone()
+                             ["variables"]))
+        self.assertEqual((v["PUBLISH_CVMFS"], v["CVMFS_RELEASE_VIEW"], v["NIGHTLY_SUFFIX"]),
+                         ("true", "true", " [publish]"))
+        self.assertIn("--day=", v["BITS_BUILD_ARGS"].split())
+
+
 class WatchListTest(unittest.TestCase):
     def test_what_a_schedule_may_follow_and_its_hash(self):
         p = {"name": "n", "package": "ROOT", "platforms": ["x86_64-el9"], "time": "02:00"}
@@ -335,6 +361,9 @@ class WatchListTest(unittest.TestCase):
         for bad in (REPO, "http://x/y@main", "https://h.org:99999/x@main", "%s@a;%s@a" % (REPO, REPO), ";".join("%s@b%d" % (REPO, i) for i in range(9))):
             with self.assertRaises(sch.Invalid, msg=bad):
                 sch.check(dict(p, watch=bad), "lcg")
+        self.assertEqual((s["on_commit"], plain["on_commit"]), ("build", ""))   # as before on_commit
+        off = sch.check(dict(p, watch="%s@master" % ROOT, on_commit=""), "lcg")
+        self.assertEqual(sch.watches(off), [])                                  # followed, not built
 
 
 if __name__ == "__main__":

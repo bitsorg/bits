@@ -75,8 +75,9 @@
     PUT  /ops/schedules/{id}           the same fields and the revision it changes
     DELETE /ops/schedules/{id}
     POST /ops/schedules/{id}/pause, /resume
-    POST /ops/schedules/{id}/run       {platforms?[], cells?[]}: Run now (all) or Run again
-                                       (some), today's night, each cell's next attempt
+    POST /ops/schedules/{id}/run       {platforms?[], cells?[], publish?}: Run now (all) or Run
+                                       again (some), today's night, each cell's next attempt;
+                                       with publish: true, Publish now (to the final destination)
     GET  /ops/nightlies?community=&nights=   the nightly matrix (as /ops/builds)
     POST /approvals/standing/request   {schedule, sha256, groups[], runs, days}: a passkey
                                        challenge bound to them
@@ -1161,9 +1162,10 @@ def _schedule_out(conn, s, admin, tz, now):
     """A schedule as the API shows it: its next run, and for admins the approval in force."""
     out = {k: v for k, v in s.items() if k != "deleted_ms"}
     out["next_run_ms"] = schedules.next_run_ms(s, now, tz) if s["enabled"] else None
+    out["next_publish_ms"] = schedules.next_run_ms(s, now, tz, publish=True) if s["enabled"] else None
     if s["watch"]:
         out["watching"] = watches.heads(conn, s["id"])
-    if admin and s["certify"]:
+    if admin and (s["certify"] or s["publish"]):
         out["approval"] = approvals.standing_in_force(conn, "schedule:%d" % s["id"],
                                                       s["content_sha256"])
     return out
@@ -1250,6 +1252,8 @@ async def update_schedule(sid: int, request: Request):
     data = await _caller(request)
     old = await _schedule_admin(data, sid)
     p = await _body(request)
+    if isinstance(p, dict):            # a client from before the scenarios keeps them as they are
+        p = dict({k: old[k] for k in schedules.SCENARIO_FIELDS}, **p)
     try:
         s = schedules.check(p, old["community"])
     except schedules.Invalid as e:
@@ -1274,13 +1278,15 @@ async def delete_schedule(sid: int, request: Request):
 
 @router.post("/ops/schedules/{sid}/run")
 async def run_schedule(sid: int, request: Request):
-    """Run now, by an admin of its community: the builds take the queue's turn."""
+    """Run now (or Publish now), by an admin of its community: the builds take the queue's turn."""
     data = await _caller(request)
     old = await _schedule_admin(data, sid)
     p = await _body(request)
-    plats, cells = p.get("platforms") or [], p.get("cells") or []
+    plats, cells, publish = p.get("platforms") or [], p.get("cells") or [], p.get("publish", False)
     if not all(isinstance(x, list) and all(isinstance(y, str) for y in x) for x in (plats, cells)):
         raise HTTPException(400, "platforms, cells: lists of the schedule's platforms and cells")
+    if not isinstance(publish, bool):
+        raise HTTPException(400, "publish: true or false")
     _queue_on()
     tz, m = _tz(), _m()
     refs = m.settings.forge_refs
@@ -1296,15 +1302,16 @@ async def run_schedule(sid: int, request: Request):
     def write():
         with _open() as conn:
             with db.transaction(conn):
-                return nightlies.run_now(conn, sid, plats, cfg, ref, tz, data["user"], cells=cells)
+                return nightlies.run_now(conn, sid, plats, cfg, ref, tz, data["user"], cells=cells,
+                                         publish=publish)
     try:
         states = await run_in_threadpool(write)
     except schedules.Invalid as e:
         raise HTTPException(400, str(e))
     if states is None:
         raise HTTPException(404, "no such schedule")
-    audit.record("schedule_run", user=data["user"], community=old["community"], schedule=sid,
-                 cells=sorted(states))
+    audit.record("schedule_published" if publish else "schedule_run", user=data["user"],
+                 community=old["community"], schedule=sid, cells=sorted(states))
     return {"runs": states}
 
 
@@ -1368,11 +1375,12 @@ async def standing_request(request: Request):
         raise HTTPException(403, "%s is not an admin for all of: %s"
                             % (data["user"], ", ".join(groups)))
     if schedule.startswith("schedule:"):
-        # A nightly schedule: as it is now, for the groups it certifies, by its community's admin.
+        # A schedule that certifies or publishes to the final destination: as it is now,
+        # for the groups it certifies (and publishes) for, by its community's admin.
         s = await _schedule_admin(data, int(schedule.split(":")[1]))
-        if not s["certify"] or sha != s["content_sha256"] or groups != s["certify_groups"]:
-            raise HTTPException(409, "the schedule does not certify, or no longer has this content"
-                                     " (sha256) or these groups: reload it")
+        if not (s["certify"] or s["publish"]) or sha != s["content_sha256"] or groups != s["certify_groups"]:
+            raise HTTPException(409, "the schedule neither certifies nor publishes, or no longer has this"
+                                     " content (sha256) or these groups: reload it")
     creds = m.credstore.get(data["user"])
     if not creds:
         raise HTTPException(400, "no passkey enrolled; enrol first")

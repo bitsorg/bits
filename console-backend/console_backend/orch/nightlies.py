@@ -14,6 +14,12 @@ the worker was down fires on its return within GRACE_MS; older ones are not
 run. A platform whose previous night still waits or builds skips this one.
 A certifying schedule's builds certify under its standing approval in force
 (schedule:<id>@<content_sha256>); without one they build and certify nothing.
+
+A publishing run (fired_by publish; its trigger: time, commit or manual) builds
+what a night does but publishes to the final destination: --day= collapses a
+template's {day}, as a Production build from the console. It publishes only
+under the schedule's standing approval in force; without one it only builds.
+Nights, commit runs and publishing runs do not hold each other.
 """
 
 import datetime as dt
@@ -30,6 +36,9 @@ log = logging.getLogger("bits_orchestrator.nightlies")
 
 GRACE_MS = 6 * 3600 * 1000
 SUFFIX = " [nightly]"              # the pipeline name's, as the GitLab fan-out's
+PUBLISH_SUFFIX = " [publish]"      # ... of a publishing run
+_KINDS = {"time": ("time", "manual"), "manual": ("time", "manual"),   # what holds what
+          "commit": ("commit",), "publish": ("publish",)}
 _OPEN = ("queued", "running")
 _RESOLVED = re.compile(r"[A-Za-z0-9._:/@+-]{1,300}", re.ASCII)   # an image, a directory, an arch
 
@@ -92,8 +101,9 @@ def defaults_chain(s, community_cfg, variant=""):
 def build_args(s, platform_arch, image, max_jobs, day="", defaults=None):
     """BITS_BUILD_ARGS, in lib-pipeline-dispatch.sh's order, with the schedule's
     `set` variables before its extra arguments; *day* (its night's) fills a
-    nightly layout's {day}, whenever the queue starts the build; *defaults*: the
-    chain (defaults_chain), else the schedule's."""
+    nightly layout's {day}, whenever the queue starts the build (None: --day=,
+    no {day}, the final destination); *defaults*: the chain (defaults_chain),
+    else the schedule's."""
     defaults = s["defaults"] if defaults is None else defaults
     a = []
     if s["rebuild"]:
@@ -111,7 +121,9 @@ def build_args(s, platform_arch, image, max_jobs, day="", defaults=None):
         a.append("--debug")
     if defaults:
         a += ["--defaults", defaults]
-    if day:
+    if day is None:
+        a.append("--day=")
+    elif day:
         a += ["--day", day]
     for k, v in s["set"].items():
         a += ["--set", "%s=%s" % (k, v)]
@@ -120,21 +132,23 @@ def build_args(s, platform_arch, image, max_jobs, day="", defaults=None):
     return " ".join(a)
 
 
-def variables(s, platform, cfg, certifier, night="", variant=""):
+def variables(s, platform, cfg, certifier, night="", variant="", final=False):
     """The queued build of *platform* on *night* (ISO date): [{key, value}]. *cfg*:
     config(); *certifier*: who certifies (the standing approval's approver), or
-    None. DEFAULTS too: the build job resolves its CVMFS target with it."""
+    None. DEFAULTS too: the build job resolves its CVMFS target with it. *final*:
+    a publishing run's, to the final destination (no {day})."""
     img, install_dir, arch, runner = resolve_platform(platform, cfg["platforms"], cfg["community"])
-    day = WEEKDAYS[dt.date.fromisoformat(night).weekday()] if night else ""
+    day = None if final else WEEKDAYS[dt.date.fromisoformat(night).weekday()] if night else ""
     chain = defaults_chain(s, cfg["community"], variant)
     v = [("PACKAGE", s["package"]), ("PLATFORM", platform), ("RUNNER_ARCH", runner),
          ("BITS_RUNNER_TAG", build_queue.ARCH_TAG + runner), ("COMMUNITY", s["community_dir"]),
          ("CVMFS_INSTALL_DIR", install_dir), ("BITS_BUILD_ARGS", build_args(s, arch, img, cfg["max_jobs"], day, chain)),
          ("DEFAULTS", chain), ("VERSION", s["version"]), ("BITS_EXTRA_REPOS", s["extra_repos"]),
          ("PUBLISH_CVMFS", "true" if s["cvmfs"] else ""),
+         ("CVMFS_RELEASE_VIEW", "true" if s["cvmfs"] and s.get("release_view") else ""),
          ("CERTIFY", "true" if certifier else ""), ("BITS_CERTIFIER", certifier or ""),
          ("PREPUB_PUBLISH_PATH", s.get("publish_path") or ""), ("PREPUB_DIRECT_S3", s.get("direct_s3") or ""),
-         ("NIGHTLY_SUFFIX", SUFFIX)]
+         ("NIGHTLY_SUFFIX", PUBLISH_SUFFIX if final else SUFFIX)]
     return [{"key": k, "value": x} for k, x in v if x]
 
 
@@ -168,13 +182,14 @@ def config(reader, community_dir, ref):
 
 # --- runs --------------------------------------------------------------------------
 
-def _run(conn, s, night, cell, attempt, state, reason="", entry=None, now=None, fired_by="time", commits=""):
+def _run(conn, s, night, cell, attempt, state, reason="", entry=None, now=None, fired_by="time", commits="",
+         trigger=""):
     now = now or db.now_ms()
     conn.execute("INSERT INTO schedule_runs (schedule_id, night, platform, variant, attempt, state,"
-                 " content_sha256, queue_entry, reason, created_ms, updated_ms, fired_by, commits)"
-                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 " content_sha256, queue_entry, reason, created_ms, updated_ms, fired_by, commits, trigger)"
+                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                  (s["id"], night, cell[0], cell[1], attempt, state, s["content_sha256"], entry,
-                  reason[:500], now, now, fired_by, commits))
+                  reason[:500], now, now, fired_by, commits, trigger))
 
 
 def _attempt(conn, sid, night, cell):
@@ -183,11 +198,12 @@ def _attempt(conn, sid, night, cell):
     return (r["a"] or 0) + 1
 
 
-def _still_open(conn, sid, cell, commit):
-    # Nightlies and commit runs do not hold each other: neither is lost to the other.
+def _still_open(conn, sid, cell, fired_by):
+    # Nights, commit runs and publishing runs do not hold each other: none is lost to another.
+    kinds = _KINDS[fired_by]
     return conn.execute("SELECT 1 FROM schedule_runs WHERE schedule_id = ? AND platform = ? AND variant = ?"
-                        " AND state IN ('queued', 'running') AND (fired_by = 'commit') = ? LIMIT 1",
-                        (sid,) + tuple(cell) + (int(commit),)).fetchone()
+                        " AND state IN ('queued', 'running') AND fired_by IN (%s) LIMIT 1"
+                        % ",".join("?" * len(kinds)), (sid,) + tuple(cell) + kinds).fetchone()
 
 
 def _certifier(conn, s, n):
@@ -205,20 +221,28 @@ def _certifier(conn, s, n):
     return a["approver"], ""
 
 
-def fire_night(conn, s, night, cells, cfg, ref, why, now=None, fired_by="time", commits=""):
+def fire_night(conn, s, night, cells, cfg, ref, why, now=None, fired_by="time", commits="", trigger=""):
     """Within the caller's transaction: queue *night*'s builds of *cells*
     [(platform, variant)] (a cell still waiting or building skips it, one that
-    cannot be built is not run). *fired_by*: time, manual or commit; a commit
-    run (*commits*: the heads when it fired, JSON) certifies and publishes nothing.
-    Returns the runs' states by cell_key."""
+    cannot be built is not run). *fired_by*: time, manual, commit or publish; a
+    commit run certifies and publishes nothing, a publishing run (*trigger*: time,
+    commit or manual) publishes to the final destination under the standing
+    approval; *commits*: the heads when it fired, JSON. Returns the runs' states
+    by cell_key."""
+    note = ""
     if fired_by == "commit":
         s = dict(s, certify=False, cvmfs=False)
+    elif fired_by == "publish":
+        if approvals.standing_in_force(conn, subject(s["id"]), s["content_sha256"]):
+            s = dict(s, cvmfs=True)
+        else:
+            s, note = dict(s, cvmfs=False, certify=False), "built, not published: no standing approval"
     run = lambda c, attempt, state, reason="", entry=None: _run(  # noqa: E731
-        conn, s, night, c, attempt, state, reason, entry, now, fired_by, commits)
+        conn, s, night, c, attempt, state, reason, entry, now, fired_by, commits, trigger)
     go, states = [], {}
     for c in cells:
         key, attempt = schedules.cell_key(*c), _attempt(conn, s["id"], night, c)
-        if _still_open(conn, s["id"], c, fired_by == "commit"):
+        if _still_open(conn, s["id"], c, fired_by):
             if why == "scheduled":                 # Run now records nothing: its run still goes on
                 run(c, attempt, "skipped", "the previous night still runs")
             states[key] = "skipped"
@@ -231,10 +255,11 @@ def fire_night(conn, s, night, cells, cfg, ref, why, now=None, fired_by="time", 
             states[key] = "not_run"
             continue
         go.append((c, attempt))
-    certifier, note = _certifier(conn, s, len(go))
+    certifier, why_not = _certifier(conn, s, len(go))
+    note = note or why_not
     if go:
         builds = [("%s%s (%s)" % (s["package"], " " + s["version"] if s["version"] else "", ", ".join(filter(None, c))),
-                   variables(s, c[0], cfg, certifier, night, c[1])) for c, _a in go]
+                   variables(s, c[0], cfg, certifier, night, c[1], final=fired_by == "publish")) for c, _a in go]
         batch, ids = build_queue.add_in(conn, s["community"], subject(s["id"]), ref, builds,
                                         events.WORKER, batch="%s:%s:%s" % (subject(s["id"]), night,
                                                                            secrets.token_hex(4)))
@@ -244,24 +269,29 @@ def fire_night(conn, s, night, cells, cfg, ref, why, now=None, fired_by="time", 
             states[schedules.cell_key(*c)] = "queued"
     events.append(conn, "schedule.fired", subject(s["id"]), events.WORKER,
                   {"night": night, "why": why, "runs": states, "certifier": certifier,
-                   "fired_by": fired_by, "commits": json.loads(commits) if commits else None})
+                   "fired_by": fired_by, "trigger": trigger or None,
+                   "commits": json.loads(commits) if commits else None})
     return states
 
 
-def _not_run(conn, s, night, reason, now=None):
+def _not_run(conn, s, night, reason, now=None, publish=False):
+    kind = dict(fired_by="publish", trigger="time") if publish else {}
     for c in schedules.cells(s):
-        _run(conn, s, night, c, _attempt(conn, s["id"], night, c), "not_run", reason, now=now)
+        _run(conn, s, night, c, _attempt(conn, s["id"], night, c), "not_run", reason, now=now, **kind)
     events.append(conn, "schedule.not_run", subject(s["id"]), events.WORKER,
-                  {"night": night, "reason": reason})
+                  {"night": night, "reason": reason, "publish": publish})
 
 
-def run_now(conn, sid, platforms, cfg, ref, tz, user, now=None, cells=None):
+def run_now(conn, sid, platforms, cfg, ref, tz, user, now=None, cells=None, publish=False):
     """Within the caller's transaction: Run now (every cell) or Run again (the
     cells of some *platforms*, or some *cells* by cell_key): today's night, each
-    cell's next attempt. The states, or None when the schedule is not there."""
+    cell's next attempt; *publish*: Publish now, a publishing run. The states, or
+    None when the schedule is not there."""
     s = schedules.get(conn, sid)
     if s is None:
         return None
+    if publish and not schedules.publishes(s):
+        raise schedules.Invalid("publish: the schedule does not publish to the final destination")
     now = now or db.now_ms()
     night = dt.datetime.fromtimestamp(now / 1000, tz).date().isoformat()
     every = {schedules.cell_key(*c): c for c in schedules.cells(s)}
@@ -273,25 +303,37 @@ def run_now(conn, sid, platforms, cfg, ref, tz, user, now=None, cells=None):
             raise schedules.Invalid("%s: not the schedule's: %s" % (what, ", ".join(sorted(unknown))))
     chosen = [c for k, c in every.items() if (not platforms and not cells) or c[0] in (platforms or [])
               or k in (cells or [])]
+    if publish:
+        return fire_night(conn, s, night, chosen, cfg, ref, "publish now by %s" % user, now,
+                          fired_by="publish", trigger="manual")
     return fire_night(conn, s, night, chosen, cfg, ref, "run now by %s" % user, now, fired_by="manual")
 
 
+def _last(publish):
+    return "last_published_ms" if publish else "last_fired_ms"
+
+
 def due(conn, now, tz):
-    """[(schedule, [(night, ms)])] of the enabled schedules whose time came since they last fired."""
+    """[(schedule, publish, [(night, ms)])] of the enabled schedules whose nightly (or
+    publishing, *publish*) time came since it last fired."""
     out = []
     for s in schedules.listing(conn):
-        if s["enabled"]:
-            occ = schedules.occurrences(s, s["last_fired_ms"], now, tz)
+        if not s["enabled"]:
+            continue
+        for publish, on in ((False, s["nightly"]), (True, s["publish"])):
+            occ = schedules.occurrences(s, s[_last(publish)], now, tz, publish) if on else []
             if occ:
-                out.append((s, occ))
+                out.append((s, publish, occ))
     return out
 
 
 def step(conn, reader, ref, tz, now=None):
-    """The worker step: fire every schedule that is due. Returns how many nights fired."""
+    """The worker step: fire every schedule's nightly or publishing that is due.
+    Returns how many fired."""
     now = now or db.now_ms()
     fired, cfgs, unread = 0, {}, []
-    for s, occ in due(conn, now, tz):
+    for s, publish, occ in due(conn, now, tz):
+        last = _last(publish)
         night, ms = occ[-1]
         late = now - ms > GRACE_MS
         cfg = None
@@ -308,20 +350,24 @@ def step(conn, reader, ref, tz, now=None):
             cfg = cfgs[s["community_dir"]]
         with db.transaction(conn):
             fresh = schedules.get(conn, s["id"])
-            if fresh is None or not fresh["enabled"] or fresh["last_fired_ms"] != s["last_fired_ms"] \
+            if fresh is None or not fresh["enabled"] or fresh[last] != s[last] \
                     or fresh["content_sha256"] != s["content_sha256"]:
                 continue                                    # changed meanwhile: the next pass
             for n, _ms in occ[-15:-1]:                    # the last two weeks' at most
-                _not_run(conn, s, n, "the orchestrator was not running", now)
+                _not_run(conn, s, n, "the orchestrator was not running", now, publish)
             if late:
                 _not_run(conn, s, night, "not fired in time: the orchestrator was not running,"
-                                         " or the console's configuration could not be read", now)
+                                         " or the console's configuration could not be read", now, publish)
             elif isinstance(cfg, Unbuildable):
-                _not_run(conn, s, night, str(cfg), now)
+                _not_run(conn, s, night, str(cfg), now, publish)
+            elif publish:
+                fire_night(conn, s, night, schedules.cells(s), cfg, ref, "scheduled publish", now,
+                           fired_by="publish", trigger="time")
+                fired += 1
             else:
                 fire_night(conn, s, night, schedules.cells(s), cfg, ref, "scheduled", now)
                 fired += 1
-            conn.execute("UPDATE schedules SET last_fired_ms = ? WHERE id = ?", (now, s["id"]))
+            conn.execute("UPDATE schedules SET %s = ? WHERE id = ?" % last, (now, s["id"]))
     if unread:
         raise RuntimeError("the console's configuration could not be read for schedules %s"
                            % ", ".join(map(str, unread)))
@@ -395,22 +441,23 @@ def results(conn, now=None):
 
 # --- the matrix --------------------------------------------------------------------
 
-COMMIT_ROWS = 10                   # a schedule's latest commit runs in the matrix,
+COMMIT_ROWS = 10                   # a schedule's latest commit (and publishing) runs in the matrix,
 COMMIT_DAYS = 30                   # of these days
 
 
-def _commit_rows(conn, sid, now):
-    """The schedule's latest commit runs (of COMMIT_DAYS), newest first: one per
-    fire, [{commits (the heads when it fired), fired_ms, cells}]."""
+def _commit_rows(conn, sid, now, fired_by="commit"):
+    """The schedule's latest commit (or publishing) runs of COMMIT_DAYS, newest first:
+    one per fire, [{commits (the heads when it fired), trigger, fired_ms, cells}]."""
     since = now - COMMIT_DAYS * 86400 * 1000
     nth = conn.execute("SELECT created_ms FROM (SELECT DISTINCT created_ms FROM schedule_runs WHERE"
-                       " schedule_id = ? AND fired_by = 'commit' AND created_ms >= ? ORDER BY created_ms"
-                       " DESC LIMIT 1 OFFSET ?)", (sid, since, COMMIT_ROWS - 1)).fetchone()
+                       " schedule_id = ? AND fired_by = ? AND created_ms >= ? ORDER BY created_ms"
+                       " DESC LIMIT 1 OFFSET ?)", (sid, fired_by, since, COMMIT_ROWS - 1)).fetchone()
     out = {}
-    for r in conn.execute("SELECT * FROM schedule_runs WHERE schedule_id = ? AND fired_by = 'commit'"
+    for r in conn.execute("SELECT * FROM schedule_runs WHERE schedule_id = ? AND fired_by = ?"
                           " AND created_ms >= ? ORDER BY created_ms, attempt",
-                          (sid, max(since, nth["created_ms"] if nth else 0))):
+                          (sid, fired_by, max(since, nth["created_ms"] if nth else 0))):
         row = out.setdefault((r["created_ms"], r["commits"]), {"commits": json.loads(r["commits"] or "{}"),
+                                                               "trigger": r["trigger"],
                                                                "fired_ms": r["created_ms"], "cells": {}})
         row["cells"][schedules.cell_key(r["platform"], r["variant"])] = {
             k: r[k] for k in ("state", "attempt", "reason", "failed_at", "pipeline_id", "build_id")}
@@ -420,8 +467,8 @@ def _commit_rows(conn, sid, now):
 def matrix(conn, communities, nights, tz, now=None):
     """The nightly matrix of *communities* (lowercase; None = all) over the last
     *nights* nights: one row per schedule, a cell per platform and night, its
-    latest attempt of a night (a time or manual run); and its latest commit runs,
-    each with the heads when it fired and a run per cell."""
+    latest attempt of a night (a time or manual run); and its latest commit runs
+    and publishing runs, each with the heads when it fired and a run per cell."""
     now = now or db.now_ms()
     today = dt.datetime.fromtimestamp(now / 1000, tz).date()
     days = [(today - dt.timedelta(days=i)).isoformat() for i in range(nights - 1, -1, -1)]
@@ -429,16 +476,18 @@ def matrix(conn, communities, nights, tz, now=None):
     for s in schedules.listing(conn, communities):
         cells = {}
         for r in conn.execute(
-                "SELECT * FROM schedule_runs WHERE schedule_id = ? AND night >= ? AND fired_by != 'commit'"
-                " ORDER BY attempt", (s["id"], days[0])):
+                "SELECT * FROM schedule_runs WHERE schedule_id = ? AND night >= ?"
+                " AND fired_by IN ('time', 'manual') ORDER BY attempt", (s["id"], days[0])):
             cells.setdefault(schedules.cell_key(r["platform"], r["variant"]), {})[r["night"]] = {
                 k: r[k] for k in ("state", "attempt", "reason", "failed_at", "pipeline_id", "build_id")}
         rows.append({"schedule": dict({k: s[k] for k in ("id", "name", "package", "version", "defaults",
-                                                         "platforms", "variants", "enabled", "time", "days")},
+                                                         "platforms", "variants", "enabled", "time", "days",
+                                                         "nightly", "on_commit", "publish")},
                                       cells=[{"key": schedules.cell_key(*c), "platform": c[0], "variant": c[1]}
                                              for c in schedules.cells(s)]),
                      "cells": cells,
                      "commits": _commit_rows(conn, s["id"], now),
+                     "publishes": _commit_rows(conn, s["id"], now, "publish"),
                      "failed": {n: sum(1 for p in cells.values() if p.get(n, {}).get("state") == "failed")
                                 for n in days}})
     return {"nights": days, "rows": rows}

@@ -147,10 +147,18 @@ See: [Connect to bits-console](WORKFLOWS.md#step-1--connect-to-bits-console),
 [Browse and trigger a build](WORKFLOWS.md#step-2--browse-and-trigger-a-build),
 [Getting access](https://gitlab.cern.ch/buncic/bits-console/-/blob/main/README.md#getting-access).
 
-### Build every night, or on each push
+### Define a schedule: build every night, or on each push
+A slot on the console's Schedules tab builds a package at its nightly time, on each
+commit to the branches it follows, or both.
 See: [Schedule nightly builds](WORKFLOWS.md#step-4--schedule-nightly-builds),
 [Build on each push (CI)](WORKFLOWS.md#step-5--build-on-each-push-ci),
-[Setting up a nightly slot](https://gitlab.cern.ch/buncic/bits-console/-/blob/main/README.md#setting-up-a-nightly-slot).
+[Defining a slot](https://gitlab.cern.ch/buncic/bits-console/-/blob/main/README.md#defining-a-slot-how-to-set-up-a-schedule).
+
+### Publish the latest version automatically, in its final destination
+A slot can also publish where a Production build goes, not in a per-day nightly
+directory: on each commit, at its own time, or by Publish now (e.g. bits itself).
+See: [Publish the latest version to its final destination](WORKFLOWS.md#step-6--publish-the-latest-version-to-its-final-destination),
+[Publishing the latest version](https://gitlab.cern.ch/buncic/bits-console/-/blob/main/README.md#publishing-the-latest-version-to-its-final-destination).
 
 ### Find out why a build failed in the console
 The console's Failures page and **Explain** on a failed build say what went wrong.
