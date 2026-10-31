@@ -135,6 +135,7 @@ def record(build):
         "outcome: failed · stopped in: %s" % build.get("failed_in", "")]
     if build.get("failure_reason"):
         lines.append("failed jobs: bits-prepub-build (%s)" % build["failure_reason"])
+    lines += build.get("changed") or []          # as what_changed() gives them
     lines.append("log excerpt (redacted):\n" + chat._clean(build.get("excerpt"), chat.MAX_EXCERPT))
     return chat._clean("\n".join(lines), 4 * chat.MAX_EXCERPT)
 

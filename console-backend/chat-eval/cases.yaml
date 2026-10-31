@@ -3269,6 +3269,29 @@
     of the defaults, not from where it is published, and the `system:` block the overlay changes is never
     hashed. The hashes are the same as in the production build, so the certified store is reused and only
     the publish destination changes.
+- id: failure-nightly-direct-s3-publish-path
+  kind: failure
+  question: Why did this build fail, and what should I do about it?
+  build:
+    community: bits
+    package: bits
+    platform: x86_64-el8
+    failed_in: publish
+    failure_reason: script_failure
+    changed:
+    - 'the last successful build of this package and platform: pipeline 1201, 2026-10-29T21:10:04Z'
+    - 'since then: PREPUB_PUBLISH_PATH: ingest → (none)'
+    excerpt: "[publish] direct-S3: on (PREPUB_DIRECT_S3=true)\nERROR: direct-S3 requires PREPUB_PUBLISH_PATH=ingest"
+  sources: []
+  must:
+  - the build succeeded and the publish step failed
+  - direct-S3 needs PREPUB_PUBLISH_PATH=ingest, which this build did not set
+  - set PREPUB_PUBLISH_PATH=ingest (or turn direct-S3 off) for these builds
+  must_not:
+  - the cause is unknown and the build directory or --debug must be inspected first
+  answer: The build itself succeeded; publishing stopped because direct-S3 is on and works only on the
+    ingest path, but this build set no PREPUB_PUBLISH_PATH, while the last successful one had `ingest`.
+    Set PREPUB_PUBLISH_PATH=ingest for these builds (or turn direct-S3 off).
 - id: failure-alice-ingest-republish
   kind: failure
   question: Why did this build fail? The build log looks fine.
