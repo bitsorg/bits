@@ -3314,7 +3314,7 @@
   - the package was already published at that path
   - ingest cannot add over existing files
   must_not:
-  - the compiler or the build failed
+  - the packages failed to compile
   - the CVMFS repository is corrupted
   answer: The build itself succeeded; the job failed in the CVMFS publish. The package GCC-Toolchain v14.2.0-alice2-4
     was already published at that path, and the ingest publish path can only add files, so adding its
