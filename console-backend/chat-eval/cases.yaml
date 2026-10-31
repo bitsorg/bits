@@ -1029,7 +1029,7 @@
   - pkg:(?linux) for Linux
   - (?!osx) is an architecture regex, not variable negation
   must_not:
-  - (?!osx) negates the osx variable
+  - (?!NAME) negates any variable, e.g. (?!myflavour) for a flavour
   answer: 'Use the predefined platform variables: `pkg:(?osx)` is a macOS-only dependency and `pkg:(?linux)`
     its counterpart. Note that `pkg:(?!osx)` is a negative-lookahead regex matched against the architecture
     string, not variable negation; there is no variable-negation atom.'
