@@ -65,15 +65,14 @@ def _explicit_rc_keys(explicit_flags):
 
 
 # Where each persistable setting is recorded in the bits use profile.
-# (section, canonical flag, args attribute). --architecture is broadly accepted
-# so it goes to [common]; the rest to [build] (kept out of [common] so the module
-# commands q/enter are unaffected). community/providers have no build-time
-# flag and are handled via the environment (see _INIT_ENV_ONLY).
+# (section, canonical flag, args attribute). --architecture (a platform) and
+# --defaults go to [common], so q/enter find the tree they build into; the rest
+# to [build]. community/providers have no build-time flag (see _INIT_ENV_ONLY).
 _INIT_PROFILE_MAP = {
     "architecture":      ("common", "--architecture",      "architecture"),
     "work_dir":          ("build",  "--work-dir",          "workDir"),
     "config_dir":        ("build",  "--config-dir",        "configDir"),
-    "defaults":          ("build",  "--defaults",          "defaults"),
+    "defaults":          ("common", "--defaults",          "defaults"),
     "reference_sources": ("build",  "--reference-sources", "referenceSources"),
     "remote_store":      ("build",  "--remote-store",      "initRemoteStore"),
     "write_store":       ("build",  "--write-store",       "initWriteStore"),
@@ -82,11 +81,33 @@ _INIT_ENV_ONLY = {"organisation": ("BITS_COMMUNITY",    "organisation"),
                   "providers":    ("BITS_PROVIDERS",    "providers")}
 
 
+def _saved(section):
+    """The active profile's *section* tokens ([] without one)."""
+    from bits_helpers import bits_use
+    path = bits_use._read_path()
+    return bits_use.read_all(path).get(section, []) if path else []
+
+
+def _merged(old, new):
+    """*old* tokens without the options *new* sets (flag VALUE pairs), then *new*."""
+    aliases = {"-a": "--architecture"}
+    flags = {aliases.get(t, t) for t in new[::2]}
+    kept, skip = [], False
+    for t in old:
+        if skip:
+            skip = False
+        elif aliases.get(t, t) in flags:
+            skip = True
+        elif t.split("=", 1)[0] not in flags:
+            kept.append(t)
+    return kept + new
+
+
 def doInitConfig(args):
     """Record the options supplied on the CLI as a reusable ``bits use`` profile
     (``./.bitsuse`` or a ~/.bits/use record), so they need not be repeated on
     every build. Only settings the user explicitly named are saved:
-    ``--architecture`` goes to the ``[common]`` section, the rest to ``[build]``.
+    ``--architecture`` and ``--defaults`` go to ``[common]``, the rest to ``[build]``.
 
     ``organisation`` (the community) and ``providers`` have no build-time flag; for
     those the user is pointed at ``$BITS_COMMUNITY`` / ``$BITS_PROVIDERS``. With --dry-run the
@@ -126,6 +147,8 @@ def doInitConfig(args):
         info("Would save to the bits use profile:\n%s", preview or "(nothing)")
         return
 
+    if tokens["common"]:                   # [common] keeps the other one of -a / --defaults
+        tokens["common"] = _merged(_saved("common"), tokens["common"])
     saved_to = None
     for section in ("common", "build"):
         if tokens[section]:

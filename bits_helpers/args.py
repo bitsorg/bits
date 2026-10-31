@@ -6,7 +6,7 @@ from bits_helpers.utilities import normalise_multiple_options
 from bits_helpers.defaults import readDefaults
 from bits_helpers.arch import (detectArch, arch_distro_token, arch_machine_token,
                                normalise_arch_key, detectArchComponents,
-                               apply_arch_template)
+                               apply_arch_template, qualified_arch)
 from bits_helpers.workarea import cleanup_git_log
 from bits_helpers import site
 import multiprocessing
@@ -284,6 +284,11 @@ class _ArgCtx:
     p.add_argument("-C", "--chdir", dest="chdir", metavar="DIR",
                    default=DEFAULT_CHDIR, help=help)
 
+  def arch_defaults(self, p):
+    p.add_argument("--defaults", dest="archDefaults", metavar="DEFAULTS", default=None,
+                   help=("With a platform as -a (e.g. x86_64-el9), the defaults it was built "
+                         "with (e.g. gcc14::opt): the work dir's tree for them."))
+
   def defaults(self, p, help):
     p.add_argument("--defaults", dest="defaults", metavar="DEFAULT", default="release",
                    help=help)
@@ -323,6 +328,7 @@ def add_clean_arguments(subparsers, ctx):
   ctx.architecture(clean_parser,
                    help=("Clean up build results for this architecture. Default is the current system "
                          "architecture, which is '%(default)s'."))
+  ctx.arch_defaults(clean_parser)
   clean_parser.add_argument("--aggressive-cleanup", dest="aggressiveCleanup", action="store_true",
                             help="Delete as much build data as possible when cleaning up.")
   clean_dirs = clean_parser.add_argument_group(title="Customise bits directories")
@@ -351,6 +357,7 @@ def add_prune_arguments(subparsers, ctx):
                help="Persistent bits work directory to clean. Default: %(default)s.")
   ctx.architecture(cleanup_parser,
                    help="Architecture sub-directory to scan. Default: %(default)s.")
+  ctx.arch_defaults(cleanup_parser)
   cleanup_parser.add_argument("--max-age", dest="maxAgeDays", type=float, default=7.0, metavar="DAYS",
                               help=("Evict packages whose sentinel has not been touched in more than "
                                     "DAYS days. Default: %(default)s. Set to 0 to disable age-based "
@@ -677,8 +684,8 @@ def add_init_arguments(subparsers, ctx):
       title="Persistent configuration (bits use)",
       description="With no PACKAGE, 'bits init' records the supplied options as a "
                   "'bits use' profile (./.bitsuse or a ~/.bits/use record) so you do not "
-                  "repeat them on every build, then exits. --architecture goes to [common], "
-                  "the rest to [build]. community/providers are not saved — set "
+                  "repeat them on every build, then exits. --architecture and --defaults go to "
+                  "[common], the rest to [build]. community/providers are not saved — set "
                   "$BITS_COMMUNITY (or 'bits --community') / $BITS_PROVIDERS for those.")
   init_cfg.add_argument("--providers", dest="providers", default=None, metavar="URL",
                         help="URL of the bits-providers repository. Has no build-time flag; "
@@ -910,6 +917,7 @@ def add_import_arguments(subparsers, ctx):
                help="Build work area (overlay defaults to <work-dir>/MODULES).")
   ctx.architecture(import_parser,
                    help="Architecture the deployment was built for (default: %(default)s).")
+  ctx.arch_defaults(import_parser)
   import_parser.add_argument("--modulepath", dest="importModulepath",
                              metavar="DIR", default=None,
                              help="MODULEPATH of the foreign deployment to harvest via modulecmd.")
@@ -1049,6 +1057,7 @@ def add_publish_arguments(subparsers, ctx):
                help="bits work directory containing the installed packages. Default: %(default)s.")
   ctx.architecture(publish_parser,
                    help="Target architecture. Default: %(default)s.")
+  ctx.arch_defaults(publish_parser)
   publish_parser.add_argument("--scratch-dir", dest="scratchDir", default=None, metavar="DIR",
                               help="Directory for the temporary CVMFS working copy. Defaults to a system temp dir.")
   publish_parser.add_argument("--no-relocate", dest="noRelocate", action="store_true", default=False,
@@ -1155,6 +1164,7 @@ def add_certify_arguments(subparsers, ctx):
                         "separated, each get it, the first is certified. Default: %(default)s")
   ctx.work_dir(p, help="Work directory holding MANIFESTS/ and the build. Default: %(default)s")
   ctx.architecture(p, help="Architecture of the build. Default: detected")
+  ctx.arch_defaults(p)
   return p
 
 
@@ -1249,6 +1259,7 @@ def add_sign_arguments(subparsers, ctx):
                help="bits work directory (source of MANIFESTS when no MANIFEST is given). Default: %(default)s.")
   ctx.architecture(certify_parser,
                    help="Architecture for store-path resolution. Default: %(default)s.")
+  ctx.arch_defaults(certify_parser)
   return certify_parser
 
 
@@ -2125,6 +2136,23 @@ def matchValidArch(architecture):
   return machine in ("x86-64", "arm64", "aarch64", "ppc64", "ppc64le")
 
 
+def _tree_architecture(args):
+  """The work dir's tree that args.architecture (a platform) builds into with
+  args.archDefaults, else args.architecture unchanged (with a warning)."""
+  wd = os.path.join(os.path.expanduser(getattr(args, "chdir", None) or "."),
+                    os.path.expanduser(getattr(args, "workDir", None) or DEFAULT_WORK_DIR))
+  try:
+    trees = [d for d in os.listdir(wd) if os.path.isdir(os.path.join(wd, d))]
+  except OSError:
+    trees = []
+  arch = qualified_arch(args.architecture, args.archDefaults, trees)
+  if arch is None and any(t.startswith(args.architecture + "-") for t in trees):
+    from bits_helpers.log import warning
+    warning("--defaults %s: no single tree of %s in %s; using %s", args.archDefaults,
+            args.architecture, wd, args.architecture)
+  return arch or args.architecture
+
+
 def _architecture_given_on_cmdline(argv):
   """True iff -a/--architecture was passed explicitly (so a defaults
   `architecture:` template must be ignored).
@@ -2361,6 +2389,10 @@ def _finalise_docker(args, parser):
 
 
 def finaliseArgs(args, parser):
+  # --defaults beside a platform -a, for commands that work on an install tree
+  # (clean, prune, import, publish, certify, sign): the tree it builds into.
+  if getattr(args, "archDefaults", None) and _architecture_given_on_cmdline(sys.argv):
+    args.architecture = _tree_architecture(args)
 
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:

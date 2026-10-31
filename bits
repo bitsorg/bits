@@ -175,6 +175,9 @@ Usage: bits [OPTIONS] COMMAND [MODULES] ...      MODULES: PKG[/VERSION][,PKG...]
 Options:
   -a, --architecture ARCH  default: the one installed, else the community's for
                            this host, else the host's
+  --defaults PROFILES      with a platform as -a, the tree it builds into with
+                           them: -a x86_64-el9 --defaults gcc14::opt finds
+                           x86_64-el9-gcc14-opt
   -w, --work-dir DIR       default: $BITS_WORK_DIR, else sw or ../sw; not needed
                            for a community's CVMFS modules alone
   --no-refresh             do not refresh the modules directory
@@ -422,6 +425,34 @@ function tokensMatch() {
     esac
     echo "$a"
   done
+  return 0
+}
+
+function qualifiedArch() {
+  # qualifiedArch PLATFORM DEFAULTS: of the archs on stdin, PLATFORM if it is one,
+  # else the one it builds into with DEFAULTS (a::b): PLATFORM-<name>… with every
+  # name in the chain (opt if it names no build type), the most of them wins;
+  # nothing when none matches or they tie.
+  local p=$1 names a q r n best= top=-1 tie= all
+  names=$(printf '%s\n' ${2//::/ } | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-)
+  [[ $'\n'"$names"$'\n' == *$'\n'opt$'\n'* || $'\n'"$names"$'\n' == *$'\n'dbg$'\n'* ]] ||
+    names+=$'\n'opt
+  all=$(sort -u)
+  [[ $'\n'"$all"$'\n' == *$'\n'"$p"$'\n'* ]] && { echo "$p"; return 0; }
+  while read -r a; do
+    [[ "$a" == "$p-"* ]] || continue
+    n=0; r=${a#"$p"}
+    while [[ -n "$r" ]]; do
+      for q in $names; do
+        [[ "$r" == "-$q" || "$r" == "-$q-"* ]] && { r=${r#"-$q"}; n=$((n+1)); continue 2; }
+      done
+      break
+    done
+    [[ -z "$r" ]] || continue
+    if (( n > top )); then best=$a; top=$n; tie=
+    elif (( n == top )); then tie=1; fi
+  done <<< "$all"
+  [[ -n "$best" && -z "$tie" ]] && echo "$best"
   return 0
 }
 
@@ -763,6 +794,7 @@ fi
 UNAME=$(uname)
 
 ARCHITECTURE=
+DEFAULTS=
 WORK_DIR=
 NO_REFRESH=
 DEFAULT_WORK_DIRS=("$BITS_WORK_DIR" "$BITS_WORK_DIR" ${BITSBUILD_CHDIR:+"$BITSBUILD_CHDIR/sw"} sw ../sw)
@@ -783,6 +815,10 @@ do
 	  i=$((i+1)); ARCHITECTURE="${ARGV[$i]}";;
       --work-dir|-w)
 	  i=$((i+1)); WORK_DIR="${ARGV[$i]}";;
+      --defaults)
+	  i=$((i+1)); DEFAULTS="${ARGV[$i]}";;
+      --defaults=*)
+	  DEFAULTS="${ARGV[$i]#--defaults=}";;
       --no-refresh)
 	  NO_REFRESH=1;;
       -q)
@@ -981,6 +1017,18 @@ if [[ -z "$_ARCH_GIVEN" ]]; then
     # Nothing installed yet → host arch from python (e.g. for a first build).
     ARCHITECTURE="$([[ -z "$BITS_PY" ]] && "bitsBuild" architecture 2> /dev/null || true)"
     [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$(${BITS_PY:+"$BITS_PY" -E -s} "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
+  fi
+fi
+# --defaults with a platform as -a (x86_64-el9 with gcc14::opt): the installed or
+# published tree it builds into (x86_64-el9-gcc14-opt), see qualifiedArch.
+if [[ -n "$DEFAULTS" && -n "$_ARCH_GIVEN" ]]; then
+  _a=$( { [[ -n "$NO_WORK_DIR" ]] || { ls -1 "$WORK_DIR/MODULES"; ls -1 "$WORK_DIR"; } 2> /dev/null
+          [[ -z "$_tree" ]] || publishedArchs "$_tree"; } | qualifiedArch "$ARCHITECTURE" "$DEFAULTS")
+  if [[ -n "$_a" ]]; then
+    ARCHITECTURE=$_a
+  else
+    printf "${EY}NOTE: no single tree of %s for --defaults %s; choose one with -a${EZ}\n" \
+      "$ARCHITECTURE" "$DEFAULTS" >&2
   fi
 fi
 _bt_mark archdetect         # arch autodetect (python spawn only when needed)

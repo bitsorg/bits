@@ -1855,7 +1855,7 @@ Clones the upstream source repository for each named package into a writable loc
 
 #### Config mode — record persistent settings with `bits use`
 
-To stop typing the same options (`--remote-store`, `--architecture`, …) on every build, record them once. `bits use build …` (below) is the general way to record persistent settings. As a shortcut, when **no PACKAGE** is given, `bits init` saves only the options you name on its command line as a `bits use` profile (`./.bitsuse`, or a record under `~/.bits/use/` when the directory is not writeable or not owned by you) and exits, so you do not repeat them on every build. `--architecture` goes to the `[common]` section (used by every command that takes an architecture), the rest to `[build]`; each section written replaces its previous content, as with `bits use`. Flags you give explicitly on a later command still win. Under the `aliBuild` wrapper, `aliBuild init` with no PACKAGE instead clones the recipe repository (`--dist`) into the config dir, as classic aliBuild did.
+To stop typing the same options (`--remote-store`, `--architecture`, …) on every build, record them once. `bits use build …` (below) is the general way to record persistent settings. As a shortcut, when **no PACKAGE** is given, `bits init` saves only the options you name on its command line as a `bits use` profile (`./.bitsuse`, or a record under `~/.bits/use/` when the directory is not writeable or not owned by you) and exits, so you do not repeat them on every build. `--architecture` and `--defaults` go to the `[common]` section (used by every command that takes an architecture), each keeping the other, the rest to `[build]`, which is replaced as with `bits use`. Flags you give explicitly on a later command still win. Under the `aliBuild` wrapper, `aliBuild init` with no PACKAGE instead clones the recipe repository (`--dist`) into the config dir, as classic aliBuild did.
 
 ```bash
 # Persist a remote binary store for the current project
@@ -1873,8 +1873,8 @@ bits init --dry-run --remote-store https://store.example.com/store
 |---------------|----------|-------------|
 | `--remote-store URL` | `[build]` | Binary store to fetch pre-built tarballs from. |
 | `--write-store URL` | `[build]` | Binary store to upload newly-built tarballs to. |
-| `-a ARCH`, `--architecture ARCH` | `[common]` | Default target architecture. |
-| `--defaults PROFILE` | `[build]` | Default profile(s), `::` separated. |
+| `-a ARCH`, `--architecture ARCH` | `[common]` | Default platform (e.g. `x86_64-el9`). |
+| `--defaults PROFILE` | `[common]` | Default profile(s), `::` separated. |
 | `-c DIR`, `--config-dir DIR` | `[build]` | Default recipe directory. |
 | `-w DIR`, `--work-dir DIR` | `[build]` | Default work/output directory. |
 | `--reference-sources DIR` | `[build]` | Default mirror directory. |
@@ -1883,7 +1883,7 @@ bits init --dry-run --remote-store https://store.example.com/store
 
 > **`bits.rc` has been retired.** Earlier versions read a `bits.rc` / `.bitsrc` / `~/.bitsrc` file; it is no longer read. Per-directory settings now live in a `bits use` profile (above); global settings come from environment variables: `$BITS_WORK_DIR`, `$BITS_REPO_DIR` (config dir), `$BITS_COMMUNITY`, `$BITS_PROVIDERS`, `$BITS_PATH` (recipe search path — see `--search-path`), `$BITS_S3_STORE`, `$BITS_PREREQUISITES_URL`, `$BITS_CVMFS_REPOS`. Display prefix and branding (`$BITS_PKG_PREFIX`, `$BITS_BRANDING`) are set by the `aliBuild` wrapper.
 
-**Saving frequently-used CLI args (`bits use`).** `bits use` records raw command-line arguments per directory so you don't retype them. `bits use --architecture X` saves to the `[common]` section (applied to every arch-aware command); `bits use build --docker --sandbox off` saves to `[build]` (that command only). Saved args are injected right after the action and before your own args, so an explicit flag still wins. Saving a section replaces it, so give all of its args in one call. `bits use` (no args) shows the active profile and its source; `bits use --clear [SECTION]` clears it; `bits use --help` prints the forms (a `-h`/`--help` is never saved). Storage is two-tier: a local `./.bitsuse` when the directory is writeable and owned by you, otherwise a per-directory record under `~/.bits/use/` — so a choice persists even in a read-only checkout. A local `.bitsuse` is used only when you own it; otherwise it is ignored and the `~/.bits/use/` record applies. `.bitscmd`, the file's previous name, is still read as a fallback.
+**Saving frequently-used CLI args (`bits use`).** `bits use` records raw command-line arguments per directory so you don't retype them. `bits use --architecture x86_64-el9 --defaults gcc14::opt` saves to the `[common]` section (applied to every arch-aware command: `bits build` installs into the tree they make, and the commands that work on an installed tree, `q`, `enter`, `load`, `setenv`, `clean`, `prune`, `import`, `publish`, `certify` and `sign`, find it with them, see [bits enter](#bits-enter)); `bits use build --docker --sandbox off` saves to `[build]` (that command only). Saved args are injected right after the action and before your own args, so an explicit flag still wins. Saving a section replaces it, so give all of its args in one call. `bits use` (no args) shows the active profile and its source; `bits use --clear [SECTION]` clears it; `bits use --help` prints the forms (a `-h`/`--help` is never saved). Storage is two-tier: a local `./.bitsuse` when the directory is writeable and owned by you, otherwise a per-directory record under `~/.bits/use/` — so a choice persists even in a read-only checkout. A local `.bitsuse` is used only when you own it; otherwise it is ignored and the `~/.bits/use/` record applies. `.bitscmd`, the file's previous name, is still read as a fallback.
 
 ---
 
@@ -1956,7 +1956,9 @@ path as before.
 
 The shell type is auto-detected from the parent process (`bash`, `zsh`, `ksh`, `csh`/`tcsh`, `sh`). Override with the `MODULES_SHELL` environment variable. The prompt is set to `[MODULE_LIST] \w $>` (or the zsh/ksh equivalent) for the duration of the session. Nesting `bits enter` inside another bits environment is blocked.
 
-All module commands (`enter`, `load`, `unload`, `setenv`, `q`, `avail`, `modulecmd`) also accept `-w DIR` (default: `$BITS_WORK_DIR`, else `./sw` or `../sw`; with none of them, `q`, `enter`, `load`, `printenv`, `unload` and `setenv` use the community's CVMFS modules alone, e.g. in a grid job; `--dev` needs a work dir), `-a ARCH` (default: the installed architecture, preferring the host's CPU and OS when several are present; with none installed, the one the community's CVMFS module trees publish for this host, if exactly one) and `--no-refresh` (do not refresh the modules directory).
+All module commands (`enter`, `load`, `unload`, `setenv`, `q`, `avail`, `modulecmd`) also accept `-w DIR` (default: `$BITS_WORK_DIR`, else `./sw` or `../sw`; with none of them, `q`, `enter`, `load`, `printenv`, `unload` and `setenv` use the community's CVMFS modules alone, e.g. in a grid job; `--dev` needs a work dir), `-a ARCH` (default: the installed architecture, preferring the host's CPU and OS when several are present; with none installed, the one the community's CVMFS module trees publish for this host, if exactly one), `--defaults PROFILES` and `--no-refresh` (do not refresh the modules directory).
+
+With a platform as `-a` and `--defaults`, as a `bits use` profile gives them, the commands use the installed or published tree the platform builds into with those defaults: `-a x86_64-el9 --defaults gcc14::opt` finds `x86_64-el9-gcc14-opt`, not `-gcc15-opt` or `-gcc14-dbg`. An `-a` that is itself a tree is used as it is. Otherwise the tree's qualifiers must all be named in the chain (`opt` when it names no build type), and the tree with the most of them wins; with none, or a tie, bits says so and keeps `-a` as given. Without `-a`, `--defaults` changes nothing here. `clean`, `prune`, `import`, `publish`, `certify` and `sign` take `--defaults` the same way, over the work directory's trees.
 
 ---
 
@@ -3285,12 +3287,13 @@ Packages that declare `architecture: share` (see [§19](#19-architecture-indepen
 ##### Entering a qualified-architecture build
 
 The module frontend (`bits enter`/`q`/`load`) auto-detects only the **raw**
-architecture, so when a build was qualified you must point it at the combined
-string. After a successful qualified build the success banner prints the exact
-command, e.g. `bits -a slc7_x86-64-dev-gcc13 enter MyPackage/1.2.3-1` (the version
-just built; `MyPackage/latest-<build family>` enters the family's newest), and
-suggests `export BITS_ARCHITECTURE=slc7_x86-64-dev-gcc13` to make it the default
-for the session. As a convenience, when `-a` is not given and the detected raw
+architecture, so when a build was qualified, give it the platform and the defaults
+(`bits enter -a slc7_x86-64 --defaults dev::gcc13 …`, see [bits enter](#bits-enter)),
+or the combined string. After a successful qualified build the success banner prints
+the exact command, e.g. `bits -a slc7_x86-64-dev-gcc13 enter MyPackage/1.2.3-1` (the
+version just built; `MyPackage/latest-<build family>` enters the family's newest), and
+suggests `bits use --architecture slc7_x86-64 --defaults dev::gcc13` to record both
+for the directory. As a convenience, when `-a` is not given and the detected raw
 architecture has no install tree under the work dir, the frontend uses the sole
 architecture present (if there is exactly one) or warns and lists them (if
 several) instead of silently picking one. An explicit `-a` is always respected.

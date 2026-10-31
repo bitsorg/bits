@@ -153,7 +153,7 @@ See: [22. Docker Support](REFERENCE.md#22-docker-support), [Platforms](USERGUIDE
 
 ### I'm tired of typing --docker --architecture ... on every command. Is there a config file?
 
-Record the options once per directory with `bits use`, e.g. `bits use build --docker --architecture x86_64-el9 --defaults gcc15::opt`; options without a section name go to `[common]`, applied to every architecture-aware command. The profile is saved in `./.bitsuse` and inserted before your own arguments, so an explicit flag still wins. Each `bits use SECTION ...` replaces that whole section, `bits use` alone shows the active profile and `bits use --clear [SECTION]` removes it.
+Record the options once per directory with `bits use`: the platform and the defaults without a section name, e.g. `bits use --architecture x86_64-el9 --defaults gcc15::opt`, go to `[common]`, applied to every architecture-aware command (`bits q` and `bits enter` use them to find the tree the build installed into); `bits use build --docker` saves options for `bits build` only. The profile is saved in `./.bitsuse` and inserted before your own arguments, so an explicit flag still wins. Each `bits use SECTION ...` replaces that whole section, `bits use` alone shows the active profile and `bits use --clear [SECTION]` removes it.
 
 See: [4. Configuration](USERGUIDE.md#4-configuration), [Finding a platform with pre-built binaries](USERGUIDE.md#finding-a-platform-with-pre-built-binaries).
 
@@ -421,9 +421,9 @@ See: [bits query / list / avail](REFERENCE.md#bits-query--list--avail).
 
 ### bits enter can't find my package built with a gcc13 profile. What should I do?
 
-The module frontend auto-detects only the raw architecture, so pass the combined one, e.g. `bits -a slc7_x86-64-dev-gcc13 enter MyPackage/1.2.3-1`; the success banner prints the exact command. You can also `export BITS_ARCHITECTURE=slc7_x86-64-dev-gcc13` for the session. To clean such a tree, use `bits clean -a <combined arch>`.
+The module frontend auto-detects only the raw architecture, so give it the platform and the defaults the package was built with, e.g. `bits enter -a slc7_x86-64 --defaults dev::gcc13 MyPackage/1.2.3-1`, or record them for the directory with `bits use --architecture slc7_x86-64 --defaults dev::gcc13`; the combined architecture works too (`bits -a slc7_x86-64-dev-gcc13 enter ...`), and the success banner prints that command. To clean such a tree, use `bits clean -a slc7_x86-64 --defaults dev::gcc13`.
 
-See: [Entering a qualified-architecture build](REFERENCE.md#entering-a-qualified-architecture-build), [Cleaning up](REFERENCE.md#cleaning-up).
+See: [Entering a qualified-architecture build](REFERENCE.md#entering-a-qualified-architecture-build), [Cleaning up](REFERENCE.md#cleaning-up), [bits enter](REFERENCE.md#bits-enter).
 
 ## Writing recipes
 
@@ -1109,7 +1109,7 @@ See: [Open points](https://github.com/bitsorg/bits.bits/blob/main/README.md#open
 
 ### How do I build Athena for ATLAS with bits?
 
-Run `bits init atlas.bits && cd atlas.bits`, record the settings with `bits use build --docker --architecture x86_64-el9 --defaults atlas::gcc15::opt --set release=LCG_110 --set athena_release=release/25.0.75`, then `bits build Athena`, which builds the LCG base, AthenaExternals and Athena. `bits enter Athena/latest` gives you a shell with it; the build architecture is `x86_64-el9-gcc15-opt`.
+Run `bits init atlas.bits && cd atlas.bits`, record the settings with `bits use --architecture x86_64-el9 --defaults atlas::gcc15::opt` and `bits use build --docker --set release=LCG_110 --set athena_release=release/25.0.75`, then `bits build Athena`, which builds the LCG base, AthenaExternals and Athena. `bits enter Athena/latest` gives you a shell with it; the build architecture is `x86_64-el9-gcc15-opt`.
 
 See: [Getting started](https://github.com/bitsorg/atlas.bits/blob/main/README.md#getting-started).
 
@@ -1133,7 +1133,7 @@ See: [Notes for ATLAS users](https://github.com/bitsorg/atlas.bits/blob/main/REA
 
 ### How do I build the Key4hep stack with bits?
 
-Run `bits init key4hep.bits && cd key4hep.bits`, then `bits use build --docker --architecture x86_64-el9 --defaults key4hep::gcc15::opt --set release=LCG_110`, and `bits build key4hep` for the complete stack (`bits build --dry-run key4hep` first shows what would be reused). `bits enter key4hep/latest` opens a shell with it. A single package builds the same way, e.g. `bits build DD4hep`.
+Run `bits init key4hep.bits && cd key4hep.bits`, then `bits use --architecture x86_64-el9 --defaults key4hep::gcc15::opt` and `bits use build --docker --set release=LCG_110`, and `bits build key4hep` for the complete stack (`bits build --dry-run key4hep` first shows what would be reused). `bits enter key4hep/latest` opens a shell with it. A single package builds the same way, e.g. `bits build DD4hep`.
 
 See: [Getting started](https://github.com/bitsorg/key4hep.bits/blob/main/README.md#getting-started).
 
@@ -1157,7 +1157,7 @@ See: [Notes for Key4hep users](https://github.com/bitsorg/key4hep.bits/blob/main
 
 ### How do I build the LHCb externals with bits?
 
-Run `bits init lhcb.bits && cd lhcb.bits`, then `bits use build --docker --architecture x86_64-el9 --defaults lhcb::gcc14::opt --set release=LCG_110` and `bits build lcg-view`, which builds all LHCb externals, then the manifest and toolchain. `bits enter lcg-view/latest` opens a sub-shell with the externals loaded. To build only the externals, without manifest and toolchain, build `lcg-externals` instead.
+Run `bits init lhcb.bits && cd lhcb.bits`, then `bits use --architecture x86_64-el9 --defaults lhcb::gcc14::opt` and `bits use build --docker --set release=LCG_110`, then `bits build lcg-view`, which builds all LHCb externals, then the manifest and toolchain. `bits enter lcg-view/latest` opens a sub-shell with the externals loaded. To build only the externals, without manifest and toolchain, build `lcg-externals` instead.
 
 See: [Getting started](https://github.com/bitsorg/lhcb.bits/blob/main/README.md#getting-started).
 
@@ -1175,7 +1175,7 @@ See: [LHCb versions](https://github.com/bitsorg/lhcb.bits/blob/main/README.md#lh
 
 ### How do I build FairShip for SHiP?
 
-Run `bits init ship.bits && cd ship.bits`, then `bits use build --docker --architecture x86_64-el9 --defaults ship::gcc15::opt --set release=LCG_110` (on macOS leave out `--docker` and `--architecture`), `bits build FairShip` and `bits enter FairShip/latest`. The build architecture is `x86_64-el9-gcc15-opt`.
+Run `bits init ship.bits && cd ship.bits`, then `bits use --architecture x86_64-el9 --defaults ship::gcc15::opt` and `bits use build --docker --set release=LCG_110` (on macOS leave out `--docker` and `--architecture`), `bits build FairShip` and `bits enter FairShip/latest`. The build architecture is `x86_64-el9-gcc15-opt`.
 
 See: [Getting started](https://github.com/bitsorg/ship.bits/blob/main/README.md#getting-started).
 
@@ -1193,7 +1193,7 @@ See: [Notes for SHiP users](https://github.com/bitsorg/ship.bits/blob/main/READM
 
 ### How do I build ROOT from the LCG stack with bits?
 
-Build from stacks.bits: `bits init stacks.bits && cd stacks.bits`, then `bits use build --docker --architecture x86_64-el9 --defaults gcc14::opt --set release=LCG_110` (on macOS without `--docker` and `--architecture`), `bits build ROOT` and `bits enter ROOT/latest`. `bits build externals` builds every external and `bits build generators` the MC generators.
+Build from stacks.bits: `bits init stacks.bits && cd stacks.bits`, then `bits use --architecture x86_64-el9 --defaults gcc14::opt` and `bits use build --docker --set release=LCG_110` (on macOS without `--docker` and `--architecture`), `bits build ROOT` and `bits enter ROOT/latest`. `bits build externals` builds every external and `bits build generators` the MC generators.
 
 See: [Getting started](https://github.com/bitsorg/stacks.bits/blob/main/README.md#getting-started).
 

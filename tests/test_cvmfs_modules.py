@@ -172,6 +172,21 @@ class CvmfsModulesTest(unittest.TestCase):
                          cwd=self.work, env=self.env, capture_output=True, text=True)
       self.assertEqual(r.stdout.split(), ["S/1-1"], (arch, r.stderr))
 
+  def test_platform_with_defaults(self):
+    # -a PLATFORM --defaults D: the local or published tree it builds into.
+    for defaults, mods in (("gcc14::opt", ["A/1-1", "B/2-1", "E/5-1", "gcc/14-1"]),
+                           ("lhcb::gcc14", ["A/1-1", "B/2-1", "E/5-1", "gcc/14-1"]),
+                           ("gcc14::dbg", ["C/3-1", "gcc/14-1"]),
+                           ("gcc13", ["S/1-1"])):
+      r = subprocess.run([os.path.join(self.inst, "bits"), "q", "-a", "x86_64-el9",
+                          "--defaults", defaults], cwd=self.work, env=self.env,
+                         capture_output=True, text=True)
+      self.assertEqual(r.stdout.split(), mods, (defaults, r.stderr))
+    r = subprocess.run([os.path.join(self.inst, "bits"), "q", "-a", "x86_64-el9",
+                        "--defaults", "lcg"], cwd=self.work, env=self.env,
+                       capture_output=True, text=True)
+    self.assertIn("no single tree of x86_64-el9 for --defaults lcg", r.stderr)
+
   def test_cvmfs_only(self):
     roots = self._printenv("B")
     self.assertEqual(roots["B"], os.path.join(self.cvmfs, ARCH, "Packages", "B", "2-1"))

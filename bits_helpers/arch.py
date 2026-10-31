@@ -147,6 +147,38 @@ def compute_combined_arch(defaults_meta: dict, defaults_list: list, raw_arch: st
   return raw_arch + "-" + "-".join(qualifiers)
 
 
+def qualified_arch(platform: str, defaults, archs) -> "str | None":
+  """Of *archs* (install trees), the one *platform* builds into with *defaults*
+  (a list or "a::b"): *platform* itself when it is one, else the tree that is
+  *platform* plus ``-<name>`` qualifiers all named in the chain (``opt`` implied
+  when the chain names no build type); the most qualifiers wins. None when none
+  matches or the best ones tie."""
+  archs = set(archs)
+  if platform in archs:
+    return platform
+  names = [n for n in (defaults.split("::") if isinstance(defaults, str) else defaults) if n]
+  if not set(names) & {"opt", "dbg"}:
+    names.append("opt")
+  names.sort(key=len, reverse=True)            # o2-dataflow before o2
+  best, top, tie = None, -1, False
+  for a in sorted(archs):
+    rest, n = a[len(platform):], 0
+    if not a.startswith(platform + "-"):
+      continue
+    while rest:
+      q = next((q for q in names if rest == "-" + q or rest.startswith("-" + q + "-")), None)
+      if q is None:
+        break
+      rest, n = rest[len(q) + 1:], n + 1
+    if rest:
+      continue
+    if n > top:
+      best, top, tie = a, n, False
+    elif n == top:
+      tie = True
+  return None if tie else best
+
+
 def compute_own_hash_arch(defaults_meta: dict, defaults_list: list, raw_arch: str) -> str:
   """Store/deploy architecture for ``own_hash`` packages: the combined arch with the
   append_arch qualifiers a defaults profile marked ``own_hash_neutral`` removed.

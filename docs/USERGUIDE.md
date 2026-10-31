@@ -271,7 +271,8 @@ that names the CI's platform, uses its defaults and runs in its image:
 4. **Build**, and record the options once for this checkout:
 
    ```bash
-   bits use build --docker --architecture x86_64-el9 --defaults gcc15::opt
+   bits use --architecture x86_64-el9 --defaults gcc15::opt
+   bits use build --docker
    bits build ROOT
    ```
 
@@ -359,10 +360,10 @@ aliBuild build O2
 
 ## 4. Configuration
 
-Record per-directory settings once with `bits use`, so you do not repeat them on every command. They are kept in a `.bitsuse` file (see below for when it is ignored). `bits use` saves command-line options in a profile and inserts them into later commands. A leading section name says which command they belong to (`build`, `deps`, `publish`, …); without one they go to `[common]`, which is applied to every architecture-aware command, so keep it to options all of them accept (`--architecture`).
+Record per-directory settings once with `bits use`, so you do not repeat them on every command. They are kept in a `.bitsuse` file (see below for when it is ignored). `bits use` saves command-line options in a profile and inserts them into later commands. A leading section name says which command they belong to (`build`, `deps`, `publish`, …); without one they go to `[common]`, which is applied to every architecture-aware command: the platform and the defaults, which all of them accept. `bits build` installs into the tree they make (`x86_64-el9-gcc14-opt`); `bits q`, `enter`, `load`, `setenv`, `clean`, `prune`, `publish`, … use them to find that tree among those installed or published, so several compilers or build types can share a work directory.
 
 ```bash
-bits use --architecture x86_64-el9-gcc14-opt                 # [common]: every arch-aware command
+bits use --architecture x86_64-el9 --defaults gcc14::opt     # [common]: every arch-aware command
 bits use build --work-dir /path/to/sw --parallel 4 \
                --remote-store https://s3.cern.ch/swift/v1/mybucket   # [build]: bits build only
 bits use                                                     # show the active profile and where it lives
@@ -371,7 +372,7 @@ bits use --clear build                                       # clear one section
 
 Each `bits use SECTION …` replaces that whole section, so give all of a section's options in one call. Saved arguments are inserted before your own, so an explicit flag on the command line still wins. The flags of any command that reads the profile (`build`, `deps`, `doctor`, `status`, `clean`, `prune`, `publish`, `certify`, `sign`, `compliance`, `import`, `q`, `enter`, `load`, …) can be saved this way, e.g. `bits use build --docker --store-integrity` (SHA-256 verification of every recalled tarball). For a work directory shared by every command, including `bits enter` and `bits q`, set `$BITS_WORK_DIR` instead.
 
-`bits init` with configuration options and no PACKAGE writes the same profile for the settings it knows: `--architecture` to `[common]`; `--remote-store`, `--write-store`, `--defaults`, `-c/--config-dir`, `-w/--work-dir` and `--reference-sources` to `[build]` (replacing those sections, as `bits use` does). Add `--dry-run` to see what it would save:
+`bits init` with configuration options and no PACKAGE writes the same profile for the settings it knows: `--architecture` and `--defaults` to `[common]` (each keeps the other); `--remote-store`, `--write-store`, `-c/--config-dir`, `-w/--work-dir` and `--reference-sources` to `[build]` (replacing `[build]`, as `bits use` does). Add `--dry-run` to see what it would save:
 
 ```bash
 bits init --work-dir /path/to/sw --remote-store https://s3.cern.ch/swift/v1/mybucket

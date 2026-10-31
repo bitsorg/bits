@@ -401,5 +401,46 @@ class TestInitdotshWithCombinedArch(unittest.TestCase):
         self.assertNotEqual(combined, raw)
 
 
+class QualifiedArchTest(unittest.TestCase):
+    """qualified_arch: the tree a platform builds into with a defaults chain."""
+    TREES = ["x86_64-el9-gcc14-opt", "x86_64-el9-gcc15-opt", "x86_64-el9-gcc14",
+             "x86_64-el9-gcc14-dbg", "slc9_x86-64", "TARS", "MODULES"]
+
+    def test_chain_picks_the_tree(self):
+        from bits_helpers.arch import qualified_arch
+        for defaults, want in (("gcc14::opt", "x86_64-el9-gcc14-opt"),
+                               ("lhcb::gcc14", "x86_64-el9-gcc14-opt"),   # opt implied
+                               (["release", "gcc14", "dbg"], "x86_64-el9-gcc14-dbg"),
+                               ("gcc13::opt", None), ("lcg", None)):
+            self.assertEqual(qualified_arch("x86_64-el9", defaults, self.TREES), want, defaults)
+
+    def test_platform_without_qualifiers(self):
+        from bits_helpers.arch import qualified_arch
+        self.assertEqual(qualified_arch("slc9_x86-64", "alidist::o2", self.TREES), "slc9_x86-64")
+        self.assertEqual(qualified_arch("x86_64-el9-gcc14-opt", "gcc14::opt", self.TREES),
+                         "x86_64-el9-gcc14-opt")
+
+    def test_an_existing_tree_and_hyphenated_names(self):
+        from bits_helpers.arch import qualified_arch
+        trees = self.TREES + ["x86_64-el9-o2-dataflow-opt"]
+        self.assertEqual(qualified_arch("x86_64-el9-gcc14", "gcc14::opt", trees), "x86_64-el9-gcc14")
+        self.assertEqual(qualified_arch("x86_64-el9", "o2-dataflow", trees), "x86_64-el9-o2-dataflow-opt")
+
+    def test_clean_resolves_in_the_work_dir(self):
+        import os
+        import sys
+        import tempfile
+        from unittest import mock
+        from bits_helpers import args as bits_args
+        with tempfile.TemporaryDirectory() as wd:
+            for t in self.TREES:
+                os.makedirs(os.path.join(wd, t))
+            argv = ["bits", "clean", "-w", wd, "-a", "x86_64-el9", "--defaults", "gcc15::opt"]
+            with mock.patch.object(sys, "argv", argv):
+                parsed = bits_args.doParseArgs()
+        parsed = parsed[0] if isinstance(parsed, tuple) else parsed
+        self.assertEqual(parsed.architecture, "x86_64-el9-gcc15-opt")
+
+
 if __name__ == "__main__":
     unittest.main()

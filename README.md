@@ -138,10 +138,12 @@ S3 uploads are `bits store upload`. The old spellings `bits store-stats`,
 
 Record per-directory settings with `bits use`, so you do not repeat them on every
 command. Options after a section name apply to that command; without one they go to
-`[common]`, applied to every architecture-aware command:
+`[common]`, applied to every architecture-aware command: the platform and the defaults.
+`bits build` installs into the tree they make (`x86_64-el9-gcc14-opt`), and `bits q`,
+`enter`, `load`, `clean`, … use them to find it:
 
 ```bash
-bits use --architecture x86_64-el9-gcc14-opt
+bits use --architecture x86_64-el9 --defaults gcc14::opt
 bits use build --work-dir /path/to/sw --remote-store https://mybucket/builds --docker
 ```
 
@@ -153,8 +155,8 @@ by you. Profiles replace the retired `bits.rc` file.
 
 `bits init` with configuration options and no package
 (e.g. `bits init --work-dir /path/to/sw --remote-store URL`) writes the same profile:
-`--architecture` to `[common]`; the store, defaults, config-dir, work-dir and
-reference-sources options to `[build]`, replacing those sections.
+`--architecture` and `--defaults` to `[common]`, each keeping the other; the store,
+config-dir, work-dir and reference-sources options to `[build]`, replacing that section.
 
 Global settings come from environment variables:
 

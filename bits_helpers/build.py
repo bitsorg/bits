@@ -4558,10 +4558,11 @@ def doBuild(args, parser):
       # explicitly, otherwise it would look in the wrong sw/<arch>.
       if args.architecture != raw_architecture:
         _arch_flag = "-a %s " % args.architecture
+        _chain = "::".join(d for d in args.defaults if d != "release")
         _arch_note = (
             "\n\n(This build used the defaults-qualified architecture "
-            f"`{args.architecture}'; pass it with -a as above, or persist it "
-            f"with `export BITS_ARCHITECTURE={args.architecture}'.)")
+            f"`{args.architecture}'; pass it with -a as above, or record the platform "
+            f"and defaults with `bits use --architecture {raw_architecture} --defaults {_chain}'.)")
       else:
         _arch_flag, _arch_note = "", ""
       # A --docker build targets the container's OS: prefer_system deps

@@ -308,10 +308,10 @@ class ConfigModeWriteTest(unittest.TestCase):
         doInitConfig(_cfg_args(workDir="/opt/sw", _init_explicit={"w"}))
         self.assertEqual(self._profile().get("build"), ["--work-dir", "/opt/sw"])
 
-    def test_defaults_list_joined_with_double_colon(self):
+    def test_defaults_go_to_common_joined_with_double_colon(self):
         doInitConfig(_cfg_args(defaults=["release", "myproject"],
                                _init_explicit={"defaults"}))
-        self.assertEqual(self._profile().get("build"),
+        self.assertEqual(self._profile().get("common"),
                          ["--defaults", "release::myproject"])
 
     def test_only_explicit_keys_saved(self):
@@ -330,6 +330,15 @@ class ConfigModeWriteTest(unittest.TestCase):
         self.assertEqual(prof.get("common"), ["--architecture", "slc9_x86-64"])
         self.assertEqual(prof.get("build"),
                          ["--remote-store", "https://store.example.com"])
+
+    def test_common_keeps_the_other_of_architecture_and_defaults(self):
+        doInitConfig(_cfg_args(architecture="x86_64-el9", _init_explicit={"a"}))
+        doInitConfig(_cfg_args(defaults=["release", "gcc14", "opt"], _init_explicit={"defaults"}))
+        self.assertEqual(self._profile().get("common"),
+                         ["--architecture", "x86_64-el9", "--defaults", "release::gcc14::opt"])
+        doInitConfig(_cfg_args(architecture="aarch64-el9", _init_explicit={"a"}))
+        self.assertEqual(self._profile().get("common"),
+                         ["--defaults", "release::gcc14::opt", "--architecture", "aarch64-el9"])
 
     def test_organisation_is_env_only_not_saved(self):
         doInitConfig(_cfg_args(organisation="MYORG", _init_explicit={"organisation"}))

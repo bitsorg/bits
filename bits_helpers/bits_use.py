@@ -5,18 +5,17 @@
 commands stay short. The profile holds raw CLI tokens, structured by the
 command they apply to.
 
-A ``[common]`` section is injected into arch-aware commands (put only broadly
-accepted args here, i.e. ``--architecture``, which ``build`` AND ``q``/``enter``/
-``clean`` all take); a per-command section (``[build]``, ``[q]``, …) adds args
-that command accepts — e.g. ``--defaults`` belongs in ``[build]``, NOT
-``[common]``. Injected BEFORE the user's own args, so those override
-single-value options. Example::
+A ``[common]`` section is injected into arch-aware commands: the platform and
+the defaults (``--architecture``, ``--defaults``), which all of them take; ``q``,
+``enter``, ``clean``, … use the defaults to find the tree the platform builds into.
+A per-command section (``[build]``, ``[q]``, …) adds args that command accepts.
+Injected BEFORE the user's own args, so those override single-value options::
 
     [common]
-    --architecture x86_64-el9-gcc14-opt
+    --architecture x86_64-el9 --defaults gcc14::opt
 
     [build]
-    --defaults lcg::release::gcc14::opt --docker --sandbox off --reuse-from cvmfs::relaxed
+    --docker --sandbox off --reuse-from cvmfs::relaxed
 
 Storage (two-tier)
 ------------------
@@ -31,7 +30,7 @@ name and is still read as a fallback.
 
 Prototype — runs standalone::
 
-    python3 -m bits_helpers.bits_use common --architecture x86_64-el9-gcc14-opt
+    python3 -m bits_helpers.bits_use common --architecture x86_64-el9 --defaults gcc14::opt
     python3 -m bits_helpers.bits_use build  --docker --sandbox off
     python3 -m bits_helpers.bits_use            # show the active profile + source
     python3 -m bits_helpers.bits_use --clear [SECTION]
@@ -230,7 +229,7 @@ def merged_argv(command, user_args, path=None):
 TOP_FLAGS = {"-d", "--debug", "-n", "--dry-run"}
 
 # The profile is injected ONLY into arch-aware commands (they all accept
-# `--architecture`, the intended `[common]` content). Meta commands (use, cvmfs,
+# `--architecture` and `--defaults`, the `[common]` content). Meta commands (use, cvmfs,
 # store, version, help, cvmfs-stage/publish) and `verify` (accepts neither
 # --architecture nor --defaults) take a different option set and are excluded.
 INJECT_ACTIONS = {
@@ -287,10 +286,11 @@ usage: bits use [SECTION] ARGS...   save ARGS for SECTION (default: common)
 
 SECTION is a command (build, deps, publish, q, enter, ...): its ARGS are
 inserted into that command. [common] goes into every architecture-aware
-command, so keep it to options they all take (--architecture). Saving a
-section replaces it. Saved args come before your own, so a flag on the
-command line still wins. The profile is ./.bitsuse, or ~/.bits/use/ when
-the directory is not writeable."""
+command, so keep it to options they all take: the platform and the defaults
+(--architecture x86_64-el9 --defaults gcc14::opt). Saving a section replaces
+it. Saved args come before your own, so a flag on the command line still
+wins. The profile is ./.bitsuse, or ~/.bits/use/ when the directory is not
+writeable or not owned by you."""
 
 
 def _show():

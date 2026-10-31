@@ -1237,15 +1237,18 @@
   sources:
   - docs/REFERENCE.md#entering-a-qualified-architecture-build
   - docs/REFERENCE.md#cleaning-up
+  - docs/REFERENCE.md#bits-enter
   must:
-  - pass the combined architecture with -a
+  - give -a the platform and --defaults the chain
+  - or record them with bits use
   - the success banner prints the command
+  must_not:
   - export BITS_ARCHITECTURE for the session
-  must_not: []
-  answer: The module frontend auto-detects only the raw architecture, so pass the combined one, e.g. `bits
-    -a slc7_x86-64-dev-gcc13 enter MyPackage/1.2.3-1`; the success banner prints the exact command. You
-    can also `export BITS_ARCHITECTURE=slc7_x86-64-dev-gcc13` for the session. To clean such a tree, use
-    `bits clean -a <combined arch>`.
+  answer: The module frontend auto-detects only the raw architecture, so give it the platform and the
+    defaults the package was built with, e.g. `bits enter -a slc7_x86-64 --defaults dev::gcc13 MyPackage/1.2.3-1`,
+    or record them for the directory with `bits use --architecture slc7_x86-64 --defaults dev::gcc13`;
+    the combined architecture works too (`bits -a slc7_x86-64-dev-gcc13 enter ...`), and the success banner
+    prints that command. To clean such a tree, use `bits clean -a slc7_x86-64 --defaults dev::gcc13`.
 - id: drop-revision-suffix
   kind: docs
   question: How do I install CMSSW_13_0_0 without the -1 revision at the end of the path?
@@ -2126,17 +2129,20 @@
   - docs/USERGUIDE.md#4-configuration
   - docs/USERGUIDE.md#finding-a-platform-with-pre-built-binaries
   must:
-  - '`bits use build ...` saves options'
+  - platform and defaults go to [common]
+  - '`bits use build ...` saves options for bits build'
   - stored in ./.bitsuse
   - each call replaces the whole section
   - explicit command-line flags still win
   must_not:
   - edit bits.rc
-  answer: Record the options once per directory with `bits use`, e.g. `bits use build --docker --architecture
-    x86_64-el9 --defaults gcc15::opt`; options without a section name go to `[common]`, applied to every
-    architecture-aware command. The profile is saved in `./.bitsuse` and inserted before your own arguments,
-    so an explicit flag still wins. Each `bits use SECTION ...` replaces that whole section, `bits use`
-    alone shows the active profile and `bits use --clear [SECTION]` removes it.
+  answer: 'Record the options once per directory with `bits use`: the platform and the defaults without
+    a section name, e.g. `bits use --architecture x86_64-el9 --defaults gcc15::opt`, go to `[common]`,
+    applied to every architecture-aware command (`bits q` and `bits enter` use them to find the tree the
+    build installed into); `bits use build --docker` saves options for `bits build` only. The profile
+    is saved in `./.bitsuse` and inserted before your own arguments, so an explicit flag still wins. Each
+    `bits use SECTION ...` replaces that whole section, `bits use` alone shows the active profile and
+    `bits use --clear [SECTION]` removes it.'
 - id: bitsuse-not-honoured
   kind: docs
   question: My .bitsuse file seems to be ignored
@@ -2921,10 +2927,10 @@
   - bits build Athena builds the LCG base, AthenaExternals and Athena
   - --architecture x86_64-el9
   must_not: []
-  answer: Run `bits init atlas.bits && cd atlas.bits`, record the settings with `bits use build --docker
-    --architecture x86_64-el9 --defaults atlas::gcc15::opt --set release=LCG_110 --set athena_release=release/25.0.75`,
-    then `bits build Athena`, which builds the LCG base, AthenaExternals and Athena. `bits enter Athena/latest`
-    gives you a shell with it; the build architecture is `x86_64-el9-gcc15-opt`.
+  answer: Run `bits init atlas.bits && cd atlas.bits`, record the settings with `bits use --architecture
+    x86_64-el9 --defaults atlas::gcc15::opt` and `bits use build --docker --set release=LCG_110 --set
+    athena_release=release/25.0.75`, then `bits build Athena`, which builds the LCG base, AthenaExternals
+    and Athena. `bits enter Athena/latest` gives you a shell with it; the build architecture is `x86_64-el9-gcc15-opt`.
 - id: atlas-platforms
   kind: docs
   question: Which platforms have pre-built ATLAS binaries? Can I build Athena on Ubuntu?
@@ -2980,10 +2986,10 @@
   - bits build key4hep
   - bits enter key4hep/latest
   must_not: []
-  answer: Run `bits init key4hep.bits && cd key4hep.bits`, then `bits use build --docker --architecture
-    x86_64-el9 --defaults key4hep::gcc15::opt --set release=LCG_110`, and `bits build key4hep` for the
-    complete stack (`bits build --dry-run key4hep` first shows what would be reused). `bits enter key4hep/latest`
-    opens a shell with it. A single package builds the same way, e.g. `bits build DD4hep`.
+  answer: Run `bits init key4hep.bits && cd key4hep.bits`, then `bits use --architecture x86_64-el9 --defaults
+    key4hep::gcc15::opt` and `bits use build --docker --set release=LCG_110`, and `bits build key4hep`
+    for the complete stack (`bits build --dry-run key4hep` first shows what would be reused). `bits enter
+    key4hep/latest` opens a shell with it. A single package builds the same way, e.g. `bits build DD4hep`.
 - id: key4hep-platforms-reuse
   kind: docs
   question: I build Key4hep on my EL9 machine but nothing is reused from CI. Which platforms have binaries?
@@ -3035,11 +3041,11 @@
   - bits build lcg-view
   - lcg-externals for the externals only
   must_not: []
-  answer: Run `bits init lhcb.bits && cd lhcb.bits`, then `bits use build --docker --architecture x86_64-el9
-    --defaults lhcb::gcc14::opt --set release=LCG_110` and `bits build lcg-view`, which builds all LHCb
-    externals, then the manifest and toolchain. `bits enter lcg-view/latest` opens a sub-shell with the
-    externals loaded. To build only the externals, without manifest and toolchain, build `lcg-externals`
-    instead.
+  answer: Run `bits init lhcb.bits && cd lhcb.bits`, then `bits use --architecture x86_64-el9 --defaults
+    lhcb::gcc14::opt` and `bits use build --docker --set release=LCG_110`, then `bits build lcg-view`,
+    which builds all LHCb externals, then the manifest and toolchain. `bits enter lcg-view/latest` opens
+    a sub-shell with the externals loaded. To build only the externals, without manifest and toolchain,
+    build `lcg-externals` instead.
 - id: lhcb-build-projects
   kind: docs
   question: How do I build LHCb projects like Gaudi or LHCb against the bits-built externals?
@@ -3081,9 +3087,10 @@
   - bits build FairShip
   - on macOS without --docker and --architecture
   must_not: []
-  answer: Run `bits init ship.bits && cd ship.bits`, then `bits use build --docker --architecture x86_64-el9
-    --defaults ship::gcc15::opt --set release=LCG_110` (on macOS leave out `--docker` and `--architecture`),
-    `bits build FairShip` and `bits enter FairShip/latest`. The build architecture is `x86_64-el9-gcc15-opt`.
+  answer: Run `bits init ship.bits && cd ship.bits`, then `bits use --architecture x86_64-el9 --defaults
+    ship::gcc15::opt` and `bits use build --docker --set release=LCG_110` (on macOS leave out `--docker`
+    and `--architecture`), `bits build FairShip` and `bits enter FairShip/latest`. The build architecture
+    is `x86_64-el9-gcc15-opt`.
 - id: ship-root-rebuilt
   kind: docs
   question: Why does the SHiP build rebuild ROOT instead of reusing the LCG one?
@@ -3119,14 +3126,14 @@
   - stacks.bits/README.md#getting-started
   must:
   - build from stacks.bits
-  - --defaults gcc14::opt --set release=LCG_110
+  - --defaults gcc14::opt and --set release=LCG_110
   - bits build ROOT
   must_not:
   - clone lcg.bits and build in that directory
-  answer: 'Build from stacks.bits: `bits init stacks.bits && cd stacks.bits`, then `bits use build --docker
-    --architecture x86_64-el9 --defaults gcc14::opt --set release=LCG_110` (on macOS without `--docker`
-    and `--architecture`), `bits build ROOT` and `bits enter ROOT/latest`. `bits build externals` builds
-    every external and `bits build generators` the MC generators.'
+  answer: 'Build from stacks.bits: `bits init stacks.bits && cd stacks.bits`, then `bits use --architecture
+    x86_64-el9 --defaults gcc14::opt` and `bits use build --docker --set release=LCG_110` (on macOS without
+    `--docker` and `--architecture`), `bits build ROOT` and `bits enter ROOT/latest`. `bits build externals`
+    builds every external and `bits build generators` the MC generators.'
 - id: lcg-compose-defaults
   kind: docs
   question: How do --defaults profiles combine for the LCG stack? What does gcc14::opt mean?
