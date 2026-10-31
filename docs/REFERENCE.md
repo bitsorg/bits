@@ -2793,10 +2793,15 @@ The `(?NAME)` matcher reads from three merged sources:
 - a `variables:` entry in any active defaults file;
 - **predefined platform variables** derived from the architecture — on
   `osx_arm64` these are `osx`, `arm64`, and `aarch64` (the full set is `osx`,
-  `linux`, `arm64`, `aarch64`, `x86_64`; only those that apply are set). So
-  `pkg:(?osx)` is a macOS-only dependency and `pkg:(?linux)` its counterpart. Note
-  `pkg:(?!osx)` is a negative-lookahead **regex** matched against the architecture
-  string, *not* variable negation — there is no variable-negation atom.
+  `linux`, `arm64`, `aarch64`, `x86_64`; only those that apply are set).
+
+A dependency for one platform only:
+
+- `pkg:(?osx)`: only on macOS;
+- `pkg:(?linux)`: only on Linux;
+- `pkg:(?!osx)`: everywhere except macOS. This one is a negative-lookahead
+  **regex** matched against the architecture string, not a test of the `osx`
+  variable: there is no way to negate a variable.
 
 A defaults `variables:` entry is either a plain `name: value`, or a **gated**
 form that only takes effect when its own matcher (same grammar as above) holds:

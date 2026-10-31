@@ -3456,7 +3456,7 @@
   question: Which bits build option turns on link-time optimisation for every package?
   sources: []
   must:
-  - does not name an option the docs do not have
+  - says the docs describe no such option
   must_not:
   - --lto
   - --enable-lto
