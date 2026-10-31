@@ -236,6 +236,8 @@ def expand(conn, session, sources, errors, down, now, every_s, token=""):
         kept = json.loads(row["files"]) if row else {r[0]: r[1] for r in conn.execute(
             "SELECT source, blob FROM chat_sources WHERE substr(source, 1, ?) = ?",
             (len(src) + 1, src + "/"))}
+        # As SKIP is now: a file listed before it was skipped leaves the index too.
+        kept = {s: b for s, b in kept.items() if not SKIP.search(s)}
         host = host_of(src)
         if host in down or (row and now - row["ok_ms"] < 0.9 * every_s * 1000):
             out.update(kept)

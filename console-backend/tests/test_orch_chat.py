@@ -279,6 +279,22 @@ class RepoTest(_DB):
         chat_docs.refresh(self.conn, ["bitsorg/cvmfs-bits"], s, now=2 * 10 ** 10)
         self.assertEqual([u for u, _ in s.calls[n:]], [tree, raw("README.md")])
 
+    def test_a_file_skipped_since_its_listing_leaves_the_index(self):
+        tree, listing = self._gh()
+        raw = lambda p: chat_docs.RAW % ("bitsorg", "cvmfs-bits", p)
+        s = FakeSession({tree: listing, raw("README.md"): ("# R\n\nprepub\n", "e"),
+                         raw("docs/SETUP.md"): ("# Setup\n\ngateway\n", "e"),
+                         raw("C%23.md"): ("# C sharp\n\nquoted\n", "e")})
+        chat_docs.refresh(self.conn, ["bitsorg/cvmfs-bits"], s, now=1000)
+        old = "bitsorg/cvmfs-bits/AGENTS.md"          # as listed and indexed by an older bits
+        chat_docs._replace(self.conn, old, "# Agents\n\nrules\n", "", "", "b11", 1000)
+        files = dict(json.loads(self.conn.execute("SELECT files FROM chat_repos").fetchone()[0]), **{old: "b11"})
+        self.conn.execute("UPDATE chat_repos SET files = ?", (json.dumps(files),))
+        chat_docs.refresh(self.conn, ["bitsorg/cvmfs-bits"], s, now=10 ** 10)   # the tree: 304
+        got = [r[0] for r in self.conn.execute("SELECT source FROM chat_sources ORDER BY source")]
+        self.assertNotIn(old, got)
+        self.assertEqual(len(got), 3)
+
     def _files(self):
         return {"README.md": "b1", "docs/SETUP.md": "b2", "C#.md": "b7"}
 
