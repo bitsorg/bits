@@ -16,6 +16,7 @@ without jq. Prototype — runs standalone as::
 import argparse
 import json
 import os
+import re
 import sys
 
 try:
@@ -116,6 +117,12 @@ def _norm_machine(tok):
     return (tok or "").replace("-", "_")
 
 
+def _norm_os(tok):
+    """el<N> for the RHEL family under any of its names (slc9 is ALICE's el9)."""
+    m = re.match(r"(?:el|slc|alma|almalinux|rhel|rocky|centos)([0-9]+)$", tok or "")
+    return "el" + m.group(1) if m else (tok or "")
+
+
 def classify_platform(arch, host=None):
     """(state, note) with state in {native, container, incompatible}.
 
@@ -125,9 +132,9 @@ def classify_platform(arch, host=None):
     """
     host = host or (detectArchComponents() if detectArchComponents else {})
     h_machine = _norm_machine(host.get("_machine") or host.get("machine"))
-    h_os = host.get("os") or ""
+    h_os = _norm_os(host.get("os"))
     p_machine = _norm_machine(arch_machine_token(arch))
-    p_os = arch_distro_token(arch) or ""
+    p_os = _norm_os(arch_distro_token(arch))
     if p_machine and h_machine and p_machine != h_machine:
         return "incompatible", "needs %s (host is %s)" % (p_machine, h_machine)
     if p_os and h_os and p_os != h_os:

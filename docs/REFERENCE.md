@@ -75,16 +75,18 @@ bits  (Bash)
 
 ### Architecture string and the `architecture:` template
 
-The architecture string (e.g. `ubuntu2510_x86-64`) names install dirs, tarballs,
-store paths and Docker images. By default it is auto-detected
-as `%(os)s_%(machine)s`. A defaults file (typically `defaults-release.sh`) may
+The architecture string (e.g. `x86_64-el9`) names install dirs, tarballs,
+store paths and Docker images. By default it is auto-detected as
+`%(_machine)s-%(os)s` (`x86_64-el9`, `x86_64-ubuntu2404`), on macOS and with
+`BITS_LEGACY_ARCH=1` (the `aliBuild` wrapper) as `%(os)s_%(machine)s`
+(`osx_arm64`, `slc9_x86-64`). A defaults file (typically `defaults-release.sh`) may
 override the *layout* with an `architecture:` field — either a literal string or
 a template using these `%(...)s` keys (same substitution syntax as recipe
 sources):
 
 | key          | example     | notes                                  |
 | ------------ | ----------- | -------------------------------------- |
-| `%(os)s`     | `ubuntu2510`| distro + version (or `osx`)            |
+| `%(os)s`     | `ubuntu2510`| distro + version: `el9` for the RHEL family (`slc9` with `BITS_LEGACY_ARCH=1`), or `osx` |
 | `%(machine)s`| `x86-64`    | bits-canonical dashed CPU form         |
 | `%(_machine)s`| `x86_64`   | uname/underscore CPU form              |
 
@@ -3608,7 +3610,7 @@ A file in a later directory replaces the one of the same name, so an empty `10-C
 | Key | Use |
 |-----|-----|
 | `store.read` | Read store of `bits build`/`doctor` without `--remote-store` (after `system: remote_store`). |
-| `store.read_by_arch` | Architecture → read store, before `store.read` (matched by distribution and CPU). |
+| `store.read_by_arch` | Architecture → read store, before `store.read` (the architecture itself, or followed by `-` qualifiers such as `-gcc13`). |
 | `store.operations` | Store of `certify`, `compliance`, `gc`, `store-stats`, `publish` and `bits store` (after `$BITS_S3_STORE`). |
 | `store.s3_endpoint` | Endpoint of `b3://` stores (after `--s3-endpoint` and the environment); unset: boto3's default. |
 | `containers.registry`, `containers.tag`, `containers.legacy_image` | The default `--docker` image; see [§22](#22-docker-support). |
@@ -3680,7 +3682,7 @@ The `share/` segment replaces the architecture string throughout: in the install
 
 Every build script receives two architecture variables:
 
-- `$ARCHITECTURE` — the platform given with `--architecture` (e.g. `x86_64-el9`), or without it the name bits detects (e.g. `slc9_x86-64`); always present, unchanged.
+- `$ARCHITECTURE` — the platform given with `--architecture`, or without it the name bits detects (e.g. `x86_64-el9`; `slc9_x86-64` under the `aliBuild` wrapper); always present, unchanged.
 - `$EFFECTIVE_ARCHITECTURE` — `share` for shared packages; otherwise the architecture of the install tree, `$ARCHITECTURE` with the defaults' qualifiers (see [§18](#how-the-combined-architecture-is-used)).
 
 Use `$EFFECTIVE_ARCHITECTURE` wherever a path should end up in the shared tree. The existing `$ARCHITECTURE` variable is still available for platform-specific logic such as selecting compiler flags.
@@ -3763,7 +3765,7 @@ bits sets these variables in each package's build script before the recipe body 
 | `$PKGHASH` | Unique content-addressable build hash (hex string). |
 | `$PKGFAMILY` | Install family (empty string if no family is assigned). |
 | `$BUILD_FAMILY` | Full `build_family` string, which may include the defaults combination used. |
-| `$ARCHITECTURE` | The platform given with `--architecture` (e.g. `x86_64-el9`), or without it the name bits detects (e.g. `slc9_x86-64`). |
+| `$ARCHITECTURE` | The platform given with `--architecture`, or without it the name bits detects (e.g. `x86_64-el9`; `slc9_x86-64` under the `aliBuild` wrapper). |
 | `$EFFECTIVE_ARCHITECTURE` | `share` for shared packages; the build-type-neutral arch for `own_hash` packages; otherwise `$ARCHITECTURE` with the defaults' qualifiers (e.g. `x86_64-el9-gcc14-opt`). |
 | `$JOBS` | Parallel compilation jobs. Pass to `make -j$JOBS`, `cmake --build --parallel $JOBS`, etc. Already divided across `--parallel` and reduced by `mem_per_job` when memory is tight (see [Memory-aware parallelism](#memory-aware-parallelism)). |
 | `$COMMIT_HASH` | Commit checked out for the `source:` field, shortened to 10 characters (the ref as written if it could not be resolved to a commit). |
@@ -3835,6 +3837,7 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 | `BITS_DOCKER_REGISTRY` | site `containers.registry` | Registry of the default `--docker` builder image (wins over `system: docker_registry` in `defaults-release`). |
 | `BITS_DOCKER_TAG` | site `containers.tag` (`latest`) | Tag of the default builder image. |
 | `BITS_LEGACY_REGISTRY` | _(unset)_ | `1` selects the site's `containers.legacy_image` (the `aliBuild` wrapper sets it). |
+| `BITS_LEGACY_ARCH` | _(unset)_ | `1` makes bits detect ALICE's architecture names (`slc9_x86-64`, `ubuntu2404_x86-64`) instead of the platform names (`x86_64-el9`, `x86_64-ubuntu2404`); the `aliBuild` wrapper sets it. |
 | `BITS_SITE_DIR` | _(unset)_ | One more directory of [site configuration](#site-configuration) files, read last. |
 | `BITS_LEGACY_INITDOTSH` | _(unset)_ | `1` selects the legacy build-time `init.sh` (same as `--legacy-initdotsh`); the `aliBuild` wrapper sets it. |
 | `BITS_PROVIDERS` | `https://github.com/bitsorg/bits-providers` (empty under the `aliBuild` wrapper) | URL of the repository-provider set; an `@<tag>` suffix pins a snapshot. Environment only (no build flag). |
@@ -4384,7 +4387,7 @@ bits build --docker --docker-image alisw/slc9-builder:latest ROOT
 bits build --docker --docker-extra-args "--memory=8g --cpus=4" ROOT
 ```
 
-Without `--docker-image`, the image is derived from the architecture as `<registry>/<machine>-<distro>[-cuda]:<tag>`, for example `gitlab-registry.cern.ch/bits/containers/x86_64-el9:latest` for `x86_64-el9` (or `x86_64-el9-gcc15-opt`). The images [bits-containers](https://github.com/bitsorg/bits-containers) publishes are those of its `platforms.yaml` (`x86_64-el8/el9/el10`, `aarch64-el9`, `x86_64-ubuntu2204/2404/2604`); the name bits gives an EL9 host by default, `slc9_x86-64`, asks for `x86_64-slc9`, which it does not publish (see [USERGUIDE — Platforms](USERGUIDE.md#platforms)). Only the OS, the CPU and a `cuda` part of the architecture select the image; compiler and build-type parts do not. The registry is `$BITS_DOCKER_REGISTRY`, else `system: docker_registry` in `defaults-release` (a top-level `docker_registry:` is still read), else the [site configuration](#site-configuration)'s `containers.registry` (at CERN `gitlab-registry.cern.ch/bits/containers`). The tag is `$BITS_DOCKER_TAG`, else `system: docker_tag`, else `containers.tag` (`latest`). With `BITS_LEGACY_REGISTRY=1` (set by default by the `aliBuild` wrapper), or without a registry or when the architecture cannot be split into OS and CPU, the site's `containers.legacy_image` is used instead (at CERN `registry.cern.ch/alisw/<distro>-builder`); without one, `--docker-image` must be given. Images are pulled when missing.
+Without `--docker-image`, the image is derived from the architecture as `<registry>/<machine>-<distro>[-cuda]:<tag>`, for example `gitlab-registry.cern.ch/bits/containers/x86_64-el9:latest` for `x86_64-el9` (or `x86_64-el9-gcc15-opt`). The images [bits-containers](https://github.com/bitsorg/bits-containers) publishes are those of its `platforms.yaml` (`x86_64-el8/el9/el10`, `aarch64-el9`, `x86_64-ubuntu2204/2404/2604`); ALICE's name for an EL9 host, `slc9_x86-64` (detected under the `aliBuild` wrapper), asks for `x86_64-slc9`, which it does not publish (see [USERGUIDE — Platforms](USERGUIDE.md#platforms)). Only the OS, the CPU and a `cuda` part of the architecture select the image; compiler and build-type parts do not. The registry is `$BITS_DOCKER_REGISTRY`, else `system: docker_registry` in `defaults-release` (a top-level `docker_registry:` is still read), else the [site configuration](#site-configuration)'s `containers.registry` (at CERN `gitlab-registry.cern.ch/bits/containers`). The tag is `$BITS_DOCKER_TAG`, else `system: docker_tag`, else `containers.tag` (`latest`). With `BITS_LEGACY_REGISTRY=1` (set by default by the `aliBuild` wrapper), or without a registry or when the architecture cannot be split into OS and CPU, the site's `containers.legacy_image` is used instead (at CERN `registry.cern.ch/alisw/<distro>-builder`); without one, `--docker-image` must be given. Images are pulled when missing.
 
 Bits mounts into the container the work directory (read-write, except `SOURCES/`, which is read-only so a recipe cannot modify shared sources in place; `BITS_READONLY_SOURCES=0` turns this off), the recipe directory (read-only), the bits installation, and any `-v` volumes. `~/.ssh` is **not** mounted. When components deployed on CVMFS are reused (`--reuse-from`), `/cvmfs` is also mounted read-only.
 
@@ -4662,9 +4665,10 @@ bits verify --from-manifest bits-manifest-2026-01-15.json \
 2. Otherwise, the checkout's current `HEAD` commit is compared to the manifest's `commit` field. If `HEAD` cannot be read, the entry is **MISS**.
 
 **Architecture** — the manifest's `architecture` must begin with the architecture bits
-detects on the current host, so a defaults suffix (for example `slc9_x86-64-gcc13`)
-passes. A mismatch is a **FAIL** and counts toward the exit code. bits detects the older
-names (`slc9_x86-64` on EL9), so a manifest of an `x86_64-el9` build reports FAIL.
+detects on the current host, so a defaults suffix (for example `x86_64-el9-gcc15-opt`)
+passes. A mismatch is a **FAIL** and counts toward the exit code. bits detects
+`x86_64-el9` on EL9, and `slc9_x86-64` under the `aliBuild` wrapper, so a manifest of an
+ALICE build is verified with `aliBuild verify`.
 
 ### Search order
 

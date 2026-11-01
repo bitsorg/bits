@@ -239,14 +239,33 @@ class TestUtilities(unittest.TestCase):
   def test_osx(self) -> None:
     for payload in architecturePayloads:
       result, hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor = payload
-      self.assertEqual(result, doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor))
+      self.assertEqual(result, doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor, legacy=True))
+  def test_platform_names(self) -> None:
+    # Without the aliBuild wrapper's BITS_LEGACY_ARCH: the CI's platform names
+    # (macOS keeps osx_<cpu>); payloads by the legacy name they replace.
+    expected = {"slc5_x86-64": "x86_64-el5", "slc7_x86-64": "x86_64-el7", "slc8_x86-64": "x86_64-el8",
+                "slc9_x86-64": "x86_64-el9", "ubuntu1804_x86-64": "x86_64-ubuntu1804",
+                "ubuntu1404_x86-64": "x86_64-ubuntu1404", "sabayon2_x86-64": "x86_64-sabayon2",
+                "osx_arm64": "osx_arm64", "osx_x86-64": "osx_x86-64"}
+    for result, hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor in architecturePayloads:
+      if result in expected:
+        self.assertEqual(expected[result], doDetectArch(hasOsRelease, osReleaseLines, platformTuple,
+                                                        platformSystem, platformProcessor, legacy=False))
+  def test_legacy_from_environment(self) -> None:
+    alma9 = (True, ALMA_9_OS_RELEASE.split("\n"), ('AlmaLinux', '9.6', 'Sage Margay'), 'Linux', 'x86_64')
+    for value, want in (("1", "slc9_x86-64"), ("0", "x86_64-el9"), (None, "x86_64-el9")):
+      env = {k: v for k, v in os.environ.items() if k != "BITS_LEGACY_ARCH"}
+      if value is not None:
+        env["BITS_LEGACY_ARCH"] = value
+      with patch.dict(os.environ, env, clear=True):
+        self.assertEqual(want, doDetectArch(*alma9))
   # Test by mocking platform.processor
   def test_osx_mock(self) -> None:
     for payload in macOSArchitecturePayloads:
       result, hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor = payload
       with patch('platform.machine', return_value=platformProcessor):
         platformProcessor = None
-        self.assertEqual(result, doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, None))
+        self.assertEqual(result, doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, None, legacy=False))
   def test_Hasher(self) -> None:
     h = Hasher()
     h("foo")
@@ -754,12 +773,12 @@ class ArchTemplateTest(unittest.TestCase):
         c = self._comp()
         self.assertEqual(c, {"os": "ubuntu2510", "machine": "x86-64", "_machine": "x86_64"})
 
-    def test_default_layout_unchanged(self):
-        # The built-in template must reproduce today's string byte-for-byte.
-        from bits_helpers.arch import doDetectArch, DEFAULT_ARCH_TEMPLATE, apply_arch_template
-        self.assertEqual(DEFAULT_ARCH_TEMPLATE, "%(os)s_%(machine)s")
-        self.assertEqual(doDetectArch(True, [], self.UBUNTU, "Linux", "x86_64"), "ubuntu2510_x86-64")
-        self.assertEqual(apply_arch_template(DEFAULT_ARCH_TEMPLATE, self._comp()), "ubuntu2510_x86-64")
+    def test_default_layouts(self):
+        # Platform names by default; aliBuild's (legacy) byte-for-byte as before.
+        from bits_helpers.arch import doDetectArch, LEGACY_ARCH_TEMPLATE, apply_arch_template
+        self.assertEqual(doDetectArch(True, [], self.UBUNTU, "Linux", "x86_64", legacy=False), "x86_64-ubuntu2510")
+        self.assertEqual(doDetectArch(True, [], self.UBUNTU, "Linux", "x86_64", legacy=True), "ubuntu2510_x86-64")
+        self.assertEqual(apply_arch_template(LEGACY_ARCH_TEMPLATE, self._comp()), "ubuntu2510_x86-64")
 
     def test_three_layouts(self):
         from bits_helpers.arch import apply_arch_template

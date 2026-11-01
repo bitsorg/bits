@@ -1640,12 +1640,12 @@
   - docs/REFERENCE.md#22-docker-support
   must:
   - the image is derived from the architecture
-  - slc9_x86-64 maps to an unpublished x86_64-slc9 image
+  - slc9_x86-64 (ALICE's name) maps to an unpublished x86_64-slc9 image
   - use an architecture with a published image or --docker-image
   must_not:
   - the compiler part of the architecture selects the image
   answer: Without `--docker-image`, the image name is derived from the architecture (OS, CPU and any `cuda`
-    part). The default name bits gives an EL9 host, `slc9_x86-64`, asks for `x86_64-slc9`, which bits-containers
+    part). ALICE''s name for an EL9 host, `slc9_x86-64` (detected under the `aliBuild` wrapper), asks for `x86_64-slc9`, which bits-containers
     does not publish; it publishes `x86_64-el8/el9/el10`, `aarch64-el9` and `x86_64-ubuntu2204/2404/2604`.
     Use an architecture whose image exists (e.g. `x86_64-el9`) or pass `--docker-image` explicitly.
 - id: docker-ssh-keys-missing
@@ -1716,13 +1716,14 @@
   - docs/REFERENCE.md#what-is-checked
   must:
   - the manifest architecture must begin with the detected host name
-  - bits detects slc9_x86-64 on EL9, so an x86_64-el9 manifest FAILs
+  - bits detects x86_64-el9 on EL9 and slc9_x86-64 only under the aliBuild wrapper
   must_not:
   - a defaults suffix in the manifest architecture causes FAIL
   answer: The manifest's `architecture` must begin with the name bits detects on the host, so a defaults
-    suffix (for example `slc9_x86-64-gcc13`) passes. bits detects the older names (`slc9_x86-64` on EL9),
-    so a manifest of an `x86_64-el9` build reports FAIL even on an EL9 node. The FAIL counts toward the
-    exit code.
+    suffix (for example `x86_64-el9-gcc15-opt`) passes. bits detects `x86_64-el9` on EL9, and ALICE's
+    `slc9_x86-64` under the `aliBuild` wrapper, so an ALICE manifest is verified with `aliBuild verify`
+    and the others with `bits verify`; otherwise the architecture reports FAIL. The FAIL counts toward
+    the exit code.
 - id: d-verify-exit-codes
   kind: docs
   question: What do the bits verify exit codes mean? My CI job exits with 2.
@@ -1950,15 +1951,16 @@
   - docs/USERGUIDE.md#platforms
   - README.md#before-you-start-pick-the-platform-to-build-for
   must:
-  - slc9_x86-64 is the machine's default name, not a CI platform
+  - slc9_x86-64 is ALICE's name, detected under the aliBuild wrapper or with BITS_LEGACY_ARCH=1
   - a build under it reuses nothing from CI
   - use --docker --architecture x86_64-el9
   must_not:
   - slc9_x86-64 and x86_64-el9 are the same platform
-  answer: '`slc9_x86-64` (and `ubuntu2404_x86-64` on Ubuntu 24.04) is the name bits gives the machine
-    when no `--architecture` is given. These older names are not the CI''s, so a build under them reuses
-    nothing the CI built (ALICE is the exception). Build with `--docker --architecture x86_64-el9` and
-    the community''s defaults instead.'
+  answer: '`slc9_x86-64` (and `ubuntu2404_x86-64` on Ubuntu 24.04) is ALICE''s name for the machine,
+    which bits detects only under the `aliBuild` wrapper, or with `BITS_LEGACY_ARCH=1` in the environment;
+    otherwise it detects the platform name, `x86_64-el9`. ALICE''s names are not the other communities''
+    CI platforms, so a build under them reuses nothing their CI built. Unset `BITS_LEGACY_ARCH` and build
+    with `--docker --architecture x86_64-el9` and the community''s defaults.'
 - id: architecture-install-dir
   kind: docs
   question: I passed --architecture x86_64-el9 but stuff ends up in sw/x86_64-el9-gcc15-opt, is that right?
@@ -2902,13 +2904,14 @@
   - alice.bits/README.md#getting-started-with-native-bits
   must:
   - bits init alice.bits
-  - bits use build -c alice.bits --defaults alidist::o2
+  - bits use --architecture slc9_x86-64 --defaults alidist::o2
   - bits build O2Physics
   - alidist is fetched automatically
   must_not:
   - you must clone alidist yourself first
   answer: In an empty directory (e.g. `mkdir alice && cd alice`) run `bits init alice.bits`, record the
-    options once with `bits use build -c alice.bits --defaults alidist::o2`, then run `bits build O2Physics`;
+    options once with `bits use --architecture slc9_x86-64 --defaults alidist::o2` (ALICE's name for an
+    EL9 machine, which plain bits does not detect) and `bits use build -c alice.bits`, then run `bits build O2Physics`;
     alidist is fetched automatically. Afterwards `bits enter O2Physics/latest` opens a sub-shell with
     O2Physics loaded (leave with `exit`). `O2` builds the same way.
 - id: alice-architecture-names

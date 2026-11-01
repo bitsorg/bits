@@ -64,6 +64,9 @@ class SiteTest(unittest.TestCase):
     self.write(self.a, "00-x.yaml", "store:\n  read: plain\n  read_by_arch: {slc9_x86-64: alice}\n")
     self.assertEqual(site.read_store("slc9_x86-64"), "alice")
     self.assertEqual(site.read_store("x86_64-el9"), "plain")
+    self.assertEqual(site.read_store("slc9_x86-64-o2"), "alice")
+    self.write(self.a, "00-x.yaml", "store:\n  read: plain\n  read_by_arch: {ubuntu2404_x86-64: alice}\n")
+    self.assertEqual(site.read_store("x86_64-ubuntu2404"), "plain")   # not ALICE's name
 
 
 class ShippedTest(unittest.TestCase):

@@ -132,14 +132,16 @@ things for a platform:
 A platform name is the CPU and the OS (`x86_64-el9`). A build adds its compiler and
 build type from the defaults (`append_arch`): `--architecture x86_64-el9 --defaults
 gcc15::opt` installs under `sw/x86_64-el9-gcc15-opt/`. `bits architecture` prints the
-name bits gives this machine when no `--architecture` is given: `slc9_x86-64` for
-RHEL, AlmaLinux and Rocky 9, `ubuntu2404_x86-64` for Ubuntu 24.04. These older names
-are not the CI's, so a build under them reuses nothing the CI built.
+name bits gives this machine when no `--architecture` is given: `x86_64-el9` for
+RHEL, AlmaLinux and Rocky 9, `x86_64-ubuntu2404` for Ubuntu 24.04, `osx_arm64` on Apple
+silicon. To reuse what the CI built, build with `--docker` as well. Under the
+`aliBuild` wrapper (`BITS_LEGACY_ARCH=1`) it prints ALICE's names (below) instead.
 
 #### ALICE platforms and builder images
 
 ALICE is the exception: its platforms are built under these names (the last field of
 its `ui-config.yaml` platforms: `slc9_x86-64`, `slc9_aarch64`, `ubuntu2404_x86-64`, …),
+which the `aliBuild` wrapper detects,
 in its own images (`registry.cern.ch/alisw/<distro>-builder`), and read from ALICE's
 store. For ALICE, build with the `aliBuild` wrapper, which picks those images, or give
 `--docker-image registry.cern.ch/alisw/slc9-builder` (`--docker` alone would ask for
@@ -278,7 +280,7 @@ that names the CI's platform, uses its defaults and runs in its image:
 
 The store is the site's (at CERN `https://s3.cern.ch/lcgapp-bits-testing`, where the
 bits CI publishes; ALICE's architectures read ALICE's store); `--remote-store` names
-another. Outside ALICE, a native build, or one under the name bits gives the machine
+another. Outside ALICE, a native build, or one under ALICE's name for the machine
 (`slc9_x86-64`), hashes differently and builds everything.
 
 ### Installing Bits

@@ -114,12 +114,12 @@ def origin(key):
 
 def read_store(architecture, fallback=True):
   """The read store for *architecture* when none is given: store.read_by_arch
-  (matched by distribution and machine), else store.read (unless not
-  *fallback*), else ""."""
-  from bits_helpers.arch import normalise_arch_key
-  key = normalise_arch_key(architecture)
+  (the key is the architecture or its start before a "-" qualifier), else
+  store.read (unless not *fallback*), else "". Exact names: x86_64-ubuntu2404 is
+  not ALICE's ubuntu2404_x86-64."""
+  a = str(architecture or "")
   for arch, url in (get("store.read_by_arch") or {}).items():
-    if url and normalise_arch_key(str(arch)) == key:
+    if url and (a == str(arch) or a.startswith(str(arch) + "-")):
       return str(url)
   return str(get("store.read") or "") if fallback else ""
 

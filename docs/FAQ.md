@@ -117,7 +117,7 @@ See: [Before you start: pick the platform to build for](../README.md#before-you-
 
 ### bits architecture says slc9_x86-64 and my build rebuilds everything from scratch, why?
 
-`slc9_x86-64` (and `ubuntu2404_x86-64` on Ubuntu 24.04) is the name bits gives the machine when no `--architecture` is given. These older names are not the CI's, so a build under them reuses nothing the CI built (ALICE is the exception). Build with `--docker --architecture x86_64-el9` and the community's defaults instead.
+`slc9_x86-64` (and `ubuntu2404_x86-64` on Ubuntu 24.04) is ALICE's name for the machine, which bits detects only under the `aliBuild` wrapper, or with `BITS_LEGACY_ARCH=1` in the environment; otherwise it detects the platform name, `x86_64-el9`. ALICE's names are not the other communities' CI platforms, so a build under them reuses nothing their CI built. Unset `BITS_LEGACY_ARCH` and build with `--docker --architecture x86_64-el9` and the community's defaults.
 
 See: [Platforms](USERGUIDE.md#platforms), [Before you start: pick the platform to build for](../README.md#before-you-start-pick-the-platform-to-build-for).
 
@@ -145,7 +145,7 @@ See: [22.2 Cross-compilation via QEMU](REFERENCE.md#222-cross-compilation-via-qe
 
 Also asked as: *ALICE build with --docker fails pulling gitlab-registry.cern.ch/bits/containers/x86_64-slc9*
 
-Without `--docker-image`, the image name is derived from the architecture (OS, CPU and any `cuda` part). The default name bits gives an EL9 host, `slc9_x86-64`, asks for `x86_64-slc9`, which bits-containers does not publish; it publishes `x86_64-el8/el9/el10`, `aarch64-el9` and `x86_64-ubuntu2204/2404/2604`. Use an architecture whose image exists (e.g. `x86_64-el9`) or pass `--docker-image` explicitly. ALICE builds under the `slc9_x86-64` names in its own images: use the `aliBuild` wrapper, which picks them, or `--docker-image registry.cern.ch/alisw/slc9-builder`.
+Without `--docker-image`, the image name is derived from the architecture (OS, CPU and any `cuda` part). ALICE's name for an EL9 host, `slc9_x86-64` (detected under the `aliBuild` wrapper), asks for `x86_64-slc9`, which bits-containers does not publish; it publishes `x86_64-el8/el9/el10`, `aarch64-el9` and `x86_64-ubuntu2204/2404/2604`. Use an architecture whose image exists (e.g. `x86_64-el9`) or pass `--docker-image` explicitly. ALICE builds under the `slc9_x86-64` names in its own images: use the `aliBuild` wrapper, which picks them, or `--docker-image registry.cern.ch/alisw/slc9-builder`.
 
 See: [22. Docker Support](REFERENCE.md#22-docker-support), [Platforms](USERGUIDE.md#platforms).
 
@@ -943,7 +943,7 @@ See: [Exit codes](REFERENCE.md#exit-codes), [bits verify](REFERENCE.md#bits-veri
 
 ### bits verify says Architecture FAIL even though I'm on the right kind of node. Why?
 
-The manifest's `architecture` must begin with the name bits detects on the host, so a defaults suffix (for example `slc9_x86-64-gcc13`) passes. bits detects the older names (`slc9_x86-64` on EL9), so a manifest of an `x86_64-el9` build reports FAIL even on an EL9 node. The FAIL counts toward the exit code.
+The manifest's `architecture` must begin with the name bits detects on the host, so a defaults suffix (for example `x86_64-el9-gcc15-opt`) passes. bits detects `x86_64-el9` on EL9, and ALICE's `slc9_x86-64` under the `aliBuild` wrapper, so an ALICE manifest is verified with `aliBuild verify` and the others with `bits verify`; otherwise the architecture reports FAIL. The FAIL counts toward the exit code.
 
 See: [What is checked](REFERENCE.md#what-is-checked).
 
@@ -1091,7 +1091,7 @@ See: [Adding a provider](https://github.com/bitsorg/bits-providers/blob/main/REA
 
 ### How do I build O2Physics for ALICE with bits?
 
-In an empty directory (e.g. `mkdir alice && cd alice`) run `bits init alice.bits`, record the options once with `bits use build -c alice.bits --defaults alidist::o2`, then run `bits build O2Physics`; alidist is fetched automatically. Afterwards `bits enter O2Physics/latest` opens a sub-shell with O2Physics loaded (leave with `exit`). `O2` builds the same way.
+In an empty directory (e.g. `mkdir alice && cd alice`) run `bits init alice.bits`, record the options once with `bits use --architecture slc9_x86-64 --defaults alidist::o2` (ALICE's name for an EL9 machine, which plain bits does not detect) and `bits use build -c alice.bits`, then run `bits build O2Physics`; alidist is fetched automatically. Afterwards `bits enter O2Physics/latest` opens a sub-shell with O2Physics loaded (leave with `exit`). `O2` builds the same way.
 
 See: [Getting started with native bits](https://github.com/bitsorg/alice.bits/blob/main/README.md#getting-started-with-native-bits).
 
@@ -1103,7 +1103,7 @@ See: [Two ways to build ALICE software](https://github.com/bitsorg/alice.bits/bl
 
 ### Which --architecture do I use for ALICE on EL9? Is it x86_64-el9 like the other experiments?
 
-No. ALICE uses aliBuild-style names because the alidist recipes only recognise `slc*` and `ubuntu*` values of `$ARCHITECTURE`: `slc9_x86-64` (EL9 x86-64), `slc9_aarch64` (EL9 ARM64), `slc8_x86-64` (EL8 x86-64), `ubuntu2204_x86-64` and `ubuntu2404_x86-64`. On a matching host bits detects them itself. EL10 and Ubuntu 26.04 are not supported by alidist yet.
+No. ALICE uses aliBuild-style names because the alidist recipes only recognise `slc*` and `ubuntu*` values of `$ARCHITECTURE`: `slc9_x86-64` (EL9 x86-64), `slc9_aarch64` (EL9 ARM64), `slc8_x86-64` (EL8 x86-64), `ubuntu2204_x86-64` and `ubuntu2404_x86-64`. On a matching host the `aliBuild` wrapper detects them itself (it sets `BITS_LEGACY_ARCH=1`; plain `bits` detects `x86_64-el9`). EL10 and Ubuntu 26.04 are not supported by alidist yet.
 
 See: [Prerequisites](https://github.com/bitsorg/alice.bits/blob/main/README.md#prerequisites).
 
@@ -1139,7 +1139,7 @@ See: [Getting started](https://github.com/bitsorg/atlas.bits/blob/main/README.md
 
 ### Which platforms have pre-built ATLAS binaries? Can I build Athena on Ubuntu?
 
-The ATLAS CI builds `x86_64-el9` (ATLAS targets `x86_64-el9-gcc15-opt`), `x86_64-el8`, `x86_64-el10` and `aarch64-el9`; Ubuntu is not a supported Athena platform. Pass the platform as `--architecture`, because by itself bits names an EL9 machine `slc9_x86-64`, and build with `--docker`, the only way to reuse what the ATLAS CI built.
+The ATLAS CI builds `x86_64-el9` (ATLAS targets `x86_64-el9-gcc15-opt`), `x86_64-el8`, `x86_64-el10` and `aarch64-el9`; Ubuntu is not a supported Athena platform. Pass the platform as `--architecture` (on an EL9 machine bits detects `x86_64-el9` itself) and build with `--docker`, the only way to reuse what the ATLAS CI built.
 
 See: [Prerequisites](https://github.com/bitsorg/atlas.bits/blob/main/README.md#prerequisites).
 
@@ -1163,7 +1163,7 @@ See: [Getting started](https://github.com/bitsorg/key4hep.bits/blob/main/README.
 
 ### I build Key4hep on my EL9 machine but nothing is reused from CI. Which platforms have binaries?
 
-The Key4hep CI builds `x86_64-el8`, `x86_64-el9`, `x86_64-el10`, `aarch64-el9`, `x86_64-ubuntu2204`, `x86_64-ubuntu2404` and `x86_64-ubuntu2604`. Pass the platform as `--architecture` (by itself bits names an EL9 machine `slc9_x86-64`, which is not one of them) and build with `--docker`; without `--docker` bits uses this machine's compilers and reuses nothing the CI built.
+The Key4hep CI builds `x86_64-el8`, `x86_64-el9`, `x86_64-el10`, `aarch64-el9`, `x86_64-ubuntu2204`, `x86_64-ubuntu2404` and `x86_64-ubuntu2604`. Pass the platform as `--architecture` (on an EL9 machine bits detects `x86_64-el9` itself) and build with `--docker`; without `--docker` bits uses this machine's compilers and reuses nothing the CI built.
 
 See: [Prerequisites](https://github.com/bitsorg/key4hep.bits/blob/main/README.md#prerequisites), [Getting started](https://github.com/bitsorg/key4hep.bits/blob/main/README.md#getting-started).
 

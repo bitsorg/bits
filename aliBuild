@@ -26,6 +26,9 @@ export BITS_LEGACY_INITDOTSH="${BITS_LEGACY_INITDOTSH:-1}"
 # --docker without --docker-image keeps ALICE's alisw/<distro>-builder images
 # rather than the bits registry ones. Override with BITS_LEGACY_REGISTRY=0.
 export BITS_LEGACY_REGISTRY="${BITS_LEGACY_REGISTRY:-1}"
+# Detected architecture: aliBuild's names (slc9_x86-64), which alidist recipes
+# and ALICE's store expect, not the platform names (x86_64-el9) of plain bits.
+export BITS_LEGACY_ARCH="${BITS_LEGACY_ARCH:-1}"
 # Config-dir default: aliBuild keeps the legacy `alidist` convention (recipes in
 # a local alidist checkout), whereas plain `bits` defaults to the current
 # directory (you are normally inside a recipe repo). BITS_REPO_DIR seeds the

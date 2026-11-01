@@ -6,6 +6,7 @@ architecture-derived variables. Split out of utilities.py; pure logic plus the
 distro/platform probes used by detectArch. No other bits_helpers module imports
 from here except utilities (one-way), so this stays a leaf."""
 
+import os
 import platform
 import re
 
@@ -201,17 +202,26 @@ def compute_own_hash_arch(defaults_meta: dict, defaults_list: list, raw_arch: st
   return compute_combined_arch(defaults_meta, defaults_list, raw_arch)
 
 
-# Built-in architecture layout, used when no `architecture:` template is set in
-# the defaults.  Expressed with the same %(...)s substitution syntax bits uses
-# elsewhere (sources, tags).  Available keys: see arch_components().
-DEFAULT_ARCH_TEMPLATE = "%(os)s_%(machine)s"
+# Built-in layouts, used when no `architecture:` template is set in the defaults
+# (keys: see arch_components): the platform name the CI and the images use
+# (x86_64-el9), or aliBuild's (slc9_x86-64) with BITS_LEGACY_ARCH=1 and on macOS.
+DEFAULT_ARCH_TEMPLATE = "%(_machine)s-%(os)s"
+LEGACY_ARCH_TEMPLATE = "%(os)s_%(machine)s"
 
 
-def arch_components(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor):
+def legacy_arch():
+  """True when aliBuild's architecture names are wanted (BITS_LEGACY_ARCH=1,
+  which the aliBuild wrapper sets)."""
+  return os.environ.get("BITS_LEGACY_ARCH", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def arch_components(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor,
+                    legacy=None):
   """Return the substitution dict from which the architecture string is built.
 
   Keys:
-    os        -- distro+version token, e.g. "ubuntu2510" (or "osx")
+    os        -- distro+version token, e.g. "ubuntu2510", "el9" (or "osx"); the
+                 RHEL family is "slc9" when *legacy* (default: legacy_arch())
     machine   -- bits-canonical dashed CPU form, e.g. "x86-64" (or "arm64")
     _machine  -- uname/underscore CPU form, e.g. "x86_64"
 
@@ -251,7 +261,7 @@ def arch_components(hasOsRelease, osReleaseLines, platformTuple, platformSystem,
         distribution = "ubuntu"
         version = debian_ubuntu[version]
     elif distribution in ["redhat", "red hat enterprise linux", "centos", "almalinux", "rocky linux"]:
-      distribution = "slc"
+      distribution = "slc" if (legacy_arch() if legacy is None else legacy) else "el"
 
     processor = platformProcessor
     if not processor:
@@ -276,10 +286,13 @@ def apply_arch_template(template, components):
     raise ValueError("invalid architecture template %r: %s" % (template, exc))
 
 
-def doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor):
+def doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor,
+                 legacy=None):
+  legacy = legacy_arch() if legacy is None else legacy
+  c = arch_components(hasOsRelease, osReleaseLines, platformTuple, platformSystem,
+                      platformProcessor, legacy)
   return apply_arch_template(
-    DEFAULT_ARCH_TEMPLATE,
-    arch_components(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor))
+    LEGACY_ARCH_TEMPLATE if legacy or c["os"] == "osx" else DEFAULT_ARCH_TEMPLATE, c)
 
 
 # ── architecture token matching (order- and separator-independent) ──────────

@@ -216,7 +216,7 @@ def doVerify(args, parser) -> None:  # noqa: N802
 
     # ── Architecture check ────────────────────────────────────────────────────
     host_arch = detectArch()
-    # append_arch qualifiers extend the platform arch (slc9_x86-64-gcc13, …dbg)
+    # append_arch qualifiers extend the platform arch (x86_64-el9-gcc13, …dbg)
     arch_match = bool(host_arch) and arch.startswith(host_arch)
     arch_status = PASS if arch_match else FAIL
     if not arch_match:

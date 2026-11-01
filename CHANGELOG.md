@@ -1,6 +1,10 @@
 Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[Feature]**, **[Fix]**, **[Improvement]**, **[Change]**.
 
 ---
+# Unreleased
+
+- **[Change]** bits detects the platform name the CI and the builder images use: `x86_64-el9` on RHEL, AlmaLinux and Rocky 9, `x86_64-ubuntu2404` on Ubuntu 24.04 (macOS keeps `osx_arm64`). The `aliBuild` wrapper keeps ALICE's names (`slc9_x86-64`) by setting `BITS_LEGACY_ARCH=1`; native bits for ALICE records it with `bits use --architecture slc9_x86-64`. ALICE's store is read only for ALICE's names exactly (USERGUIDE "Platforms").
+
 # 0.7 — 2026-11-01
 
 ## Scheduled builds and CI on push

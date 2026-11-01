@@ -50,13 +50,13 @@ build in that platform's builder image with `--docker` and name the platform wit
 (the compiler and build type come from `--defaults`):
 
 ```bash
-bits architecture      # this machine's own name, e.g. slc9_x86-64 on AlmaLinux 9
+bits architecture      # this machine's platform, e.g. x86_64-el9 on AlmaLinux 9
 ```
 
 The CI platforms are `x86_64-el8`, `x86_64-el9`, `x86_64-el10`, `aarch64-el9`,
 `x86_64-ubuntu2204`, `x86_64-ubuntu2404` and `x86_64-ubuntu2604` (a community may
-build fewer; ALICE builds under the older names such as `slc9_x86-64`). The name
-bits gives an EL9 machine by itself, `slc9_x86-64`, is not one of them. See [Finding a platform with pre-built binaries](docs/USERGUIDE.md#finding-a-platform-with-pre-built-binaries).
+build fewer; ALICE builds under the older names such as `slc9_x86-64`, which the
+`aliBuild` wrapper detects). See [Finding a platform with pre-built binaries](docs/USERGUIDE.md#finding-a-platform-with-pre-built-binaries).
 
 ### Check out a community recipe repository, then build inside it
 

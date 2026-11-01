@@ -2188,22 +2188,12 @@ def _defaults_architecture_template(args):
     return None
 
 ARCHITECTURE_TABLE = """\
-On Linux, x86-64:
-   RHEL6 / SLC6 compatible: slc6_x86-64
-   RHEL7 / CC7 compatible: slc7_x86-64
-   RHEL8 / CC8 compatible: slc8_x86-64
-   RHEL9 / ALMA9 compatible: slc9_x86-64
-   Ubuntu 20.04 compatible: ubuntu2004_x86-64
-   Ubuntu 22.04 compatible: ubuntu2204_x86-64
-   Ubuntu 24.04 compatible: ubuntu2404_x86-64
-   Fedora 33 compatible: fedora33_x86-64
-   Fedora 34 compatible: fedora34_x86-64
-
-On Linux, ARM:
-   RHEL9 / ALMA9 compatible: slc9_aarch64
-
-On Linux, POWER8 / PPC64 (little endian):
-   RHEL7 / CC7 compatible: slc7_ppc64
+On Linux (what bits detects; the aliBuild wrapper detects the names in brackets):
+   RHEL / Alma / Rocky 8, 9, 10: x86_64-el8, x86_64-el9, x86_64-el10  (slc8_x86-64, slc9_x86-64)
+   RHEL / Alma / Rocky 9, ARM: aarch64-el9  (slc9_aarch64)
+   Ubuntu 22.04, 24.04, 26.04: x86_64-ubuntu2204, x86_64-ubuntu2404, x86_64-ubuntu2604
+                               (ubuntu2204_x86-64, ...)
+   Fedora 34: x86_64-fedora34  (fedora34_x86-64)
 
 On Mac, 1-2 latest supported OSX versions:
    Intel: osx_x86-64

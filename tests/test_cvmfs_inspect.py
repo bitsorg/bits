@@ -83,6 +83,7 @@ class CvmfsInspectTest(unittest.TestCase):
         self.assertEqual(I.classify_platform("x86_64-el9-gcc14-opt", host)[0], "native")
         # right machine, wrong OS -> needs a container
         self.assertEqual(I.classify_platform("x86_64-el8-gcc14-opt", host)[0], "container")
+        self.assertEqual(I.classify_platform("slc9_x86-64", host)[0], "native")   # ALICE's el9
         # wrong machine -> incompatible
         self.assertEqual(I.classify_platform("aarch64-el9-gcc14-opt", host)[0], "incompatible")
 
