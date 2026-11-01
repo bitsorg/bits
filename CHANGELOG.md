@@ -1,7 +1,7 @@
 Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[Feature]**, **[Fix]**, **[Improvement]**, **[Change]**.
 
 ---
-# Unreleased
+# 0.7 — 2026-11-01
 
 ## Scheduled builds and CI on push
 How to set them up: WORKFLOWS, Phase 4, steps 4 to 6. They need the build queue of the bits-console service (`BITS_ORCH_QUEUE=1`, below).
@@ -96,6 +96,7 @@ a SQLite database, upgraded automatically when the worker starts; after an upgra
 - **[Fix]** The `Python` recipe itself gets the `python_*` variables (its body still expanded softly); non-string recipe variables no longer crash (a float warns: quote versions such as `"3.10"`); `relocate-me.sh` no longer rewrites an install base that contains the build directory twice (from #125).
 - **[Improvement]** Faster build manifests (SBOMs): the tarball's sha256 is computed while it is packed (a `<tarball>.sha256` sidecar), so the manifest and the store upload do not read it again; a store object stamped with its sha256 by a server-side managed copy, which also works above 5 GB, so large legacy objects are no longer re-hashed on every publish.
 - **[Fix]** A provider's tag that names no branch, tag or commit stops the build with that (`Repository provider 'stacks.bits': no branch or tag 'LCG_110b' in …`); a tag newer than the local mirror is looked up upstream.
+- **[Fix]** A reused package's deployed `init.sh` no longer fails on a build-only dependency the build plan marked not needed: those are set aside while it is sourced, for the package's own dependencies only (#144, by Maria Folina, @m-fol).
 - **[Fix]** One bits at a time checks out a provider into the work area (others wait), and a checkout left unfinished by a failed or killed run is redone instead of stopping every later build.
 
 ## SBOM
@@ -128,12 +129,17 @@ a SQLite database, upgraded automatically when the worker starts; after an upgra
 - **[Fix]** `bits q/enter/load/setenv`: a community's CVMFS modules come from the trees of the given build type (and of none: the toolchain), never the other one; no build type is `-opt`; `bits q` notes the other build type when published.
 - **[Fix]** `bits q`, `enter`, `load`, `printenv` and `setenv` find packages installed under a `package_family` (`sw/<arch>/<family>/<pkg>/<version>`): they are listed, their modulefiles point at them, and `--dev` sources their `init.sh`.
 - **[Feature]** Without a work directory or Python: the community's CVMFS module trees (`$BITS_CVMFS_PREFIX` or a `cvmfs.yaml`), the architecture for this host's CPU and OS, `bits --community NAME` before the sub-command, a `bits use` profile read only when the directory has one. `bitsenv` is removed: `bits --community NAME setenv …` replaces it.
+- **[Feature]** `bits use --architecture x86_64-el9 --defaults gcc14::opt` keeps the platform and the defaults in `[common]`; with them `bits q`, `enter`, `load`, `setenv`, `clean`, `prune`, `import`, `publish`, `certify` and `sign` find the installed or published tree they build into (`x86_64-el9-gcc14-opt`). `bits init` saves both there; the hint after a build no longer suggests `BITS_ARCHITECTURE`, which nothing read.
 - **[Feature]** CVMFS trees by install directory (a modules template with `{install_dir}`, alice.bits), and `--archive` also searches `Modules/archive`, as alienv does.
 - **[Feature]** `bits overlay lcg --closure META`: the manifest lists only the packages of a view package's dependency closure, at their versions, not everything in the work dir; members not found under the arch are reported.
 
 ## Command line
 - **[Fix]** `bits <command> --help`, `bits version` and `bits architecture` no longer create an empty `sw/`; the work directory is created when a command runs, in its `-C` directory.
 - **[Improvement]** `bits -h` lists the common options and the commands by group; `bits help COMMAND` is `COMMAND --help`; usage names `bits`, help goes to stdout, and a mistake gets one line. `bits -n prune` is a dry run again (the `-n` was taken by bits and ignored).
+
+## Documentation
+- **[Improvement]** `docs/TASKS.md`, "Find what you need": the common tasks, each with links to where the docs explain it; the FAQ grouped by what you are doing, near-duplicates merged, with a contents list.
+- **[Improvement]** Sections open in their users' words, and `bits build`'s options are under headings by what they are for, so readers and the help chat's search find them; contradictions between the docs fixed (platform names, the default store, `$ARCHITECTURE`, `bits store gc`, …).
 
 ## Project
 - **[Improvement]** `AGENTS.md`: the project's rules for changes and builds (compatibility, hashing, signed reuse, portability, review, commits), with development and build validation guidance for agents (#138, by Juan Miguel Carceller, @jmcarcell).
