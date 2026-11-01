@@ -1187,9 +1187,9 @@ See: [Getting started](https://github.com/bitsorg/lhcb.bits/blob/main/README.md#
 
 ### How do I build LHCb projects like Gaudi or LHCb against the bits-built externals?
 
-After the usual LbEnv setup (`source /cvmfs/lhcb.cern.ch/lib/LbEnv`), run `source setupLHCb.sh` from lhcb.bits. It takes `sw/<arch>/lcg-view/latest`, or the newest `lcg-view` published on CVMFS when nothing is built locally, and sets `BINARY_TAG`, `LCG_VERSION`, `LCG_RELEASE_BASE` and `CMAKE_PREFIX_PATH`. Then build with LbDevTools or lb-stack-setup as usual, in native mode (`useDocker false`), not in its Docker container.
+Enter a published `lcg-view` with `bits --community lhcb enter -a x86_64-el9-gcc14-opt lcg-view/<version>` (`bits --community lhcb q lcg-view` lists them; a local build is `lcg-view/latest`), then `source setupLHCb.sh` in that sub-shell. The script comes with `lcg-view`; it sources LbEnv (`/cvmfs/lhcb.cern.ch/lib/LbEnv`) when needed, sets `BINARY_TAG`, `LCG_VERSION`, `LCG_RELEASE_BASE` and `CMAKE_PREFIX_PATH`, and prints the lb-stack-setup settings. Apply them with `utils/config.py` in the stack directory and run `make Gaudi`, in native mode (`useDocker false`), not in lb-stack-setup's Docker container.
 
-See: [Building LHCb software against the result](https://github.com/bitsorg/lhcb.bits/blob/main/README.md#building-lhcb-software-against-the-result).
+See: [Building Gaudi and the LHCb projects](https://github.com/bitsorg/lhcb.bits/blob/main/README.md#building-gaudi-and-the-lhcb-projects).
 
 ### Why don't the LHCb externals built with bits have the LCG_110 versions?
 
