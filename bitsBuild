@@ -50,7 +50,7 @@ try:
   from bits_helpers.brew import doBrew
   from bits_helpers.cvmfs_import_cmd import doImport
   from bits_helpers.doctor import doDoctor
-  from bits_helpers.init import doInit
+  from bits_helpers.init import doInit, is_group_checkout
   from bits_helpers.publish import doPublish
   from bits_helpers.verify import doVerify
   from bits_helpers.status import doStatus
@@ -104,8 +104,10 @@ def doMain(args, parser):
     sys.exit(0)
 
   # The work directory (-w, $BITS_WORK_DIR), created once a command runs, in the
-  # directory it runs in (-C): not for --help, which exits while parsing.
-  if getattr(args, "workDir", None):
+  # directory it runs in (-C): not for --help, which exits while parsing, nor for
+  # `bits init <group>.bits`, whose work dir belongs inside the checkout.
+  if getattr(args, "workDir", None) and not (
+      args.action == "init" and is_group_checkout(getattr(args, "pkgname", ""))):
     try:
       os.makedirs(args.workDir, exist_ok=True)
     except OSError as e:

@@ -35,6 +35,14 @@ CLONE_EVERYTHING = [
 
 
 class InitTestCase(unittest.TestCase):
+    def test_is_group_checkout(self) -> None:
+        from bits_helpers.init import is_group_checkout
+        self.assertTrue(is_group_checkout("stacks.bits"))
+        self.assertTrue(is_group_checkout("stacks.bits@main"))
+        self.assertFalse(is_group_checkout("zlib"))
+        self.assertFalse(is_group_checkout("stacks.bits,zlib"))
+        self.assertFalse(is_group_checkout(""))
+
     def test_packageDefinition(self) -> None:
       self.assertEqual(parsePackagesDefinition("AliRoot@v5-08-16,AliPhysics@v5-08-16-01"),
                        [{'ver': 'v5-08-16', 'name': 'AliRoot'},
@@ -65,10 +73,16 @@ class InitTestCase(unittest.TestCase):
         # `bits init alice.bits` resolves the group in the registry and clones it.
         mock_resolve.return_value = {"source": "bitsorg/alice.bits", "tag": "main"}
         mock_path.exists.return_value = False
-        args = Namespace(pkgname="alice.bits", develPrefix=".", dryRun=False, workDir="sw")
+        args = Namespace(pkgname="alice.bits", develPrefix=".", dryRun=False, workDir="sw",
+                         referenceSources="sw/MIRROR")
         doInit(args)
         dest = path.join(".", "alice.bits")
         mock_resolve.assert_called_once()
+        # The registry is read in a scratch work dir, not in ./sw.
+        lookup, _, work_dir = mock_resolve.call_args[0]
+        self.assertNotEqual(work_dir, "sw")
+        self.assertEqual(lookup.referenceSources, path.join(work_dir, "MIRROR"))
+        self.assertEqual(args.referenceSources, "sw/MIRROR")
         mock_git.assert_called_once_with(
             ["clone", "--origin", "upstream",
              "https://github.com/bitsorg/alice.bits", "-b", "main", dest])

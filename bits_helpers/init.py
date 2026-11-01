@@ -21,6 +21,12 @@ def parsePackagesDefinition(pkgname):
            for y in [ x+"@" for x in list(filter(lambda y: y, pkgname.split(","))) ] ]
 
 
+def is_group_checkout(pkgname):
+  """`bits init <group>.bits`: a recipe repository to check out, not a package."""
+  pkgs = parsePackagesDefinition(pkgname or "")
+  return len(pkgs) == 1 and pkgs[0]["name"].endswith(".bits")
+
+
 # Mapping: (argparse attribute, bits.rc key, short-flag alias or None)
 # Used by doInitConfig to decide which settings to persist.
 _INIT_RC_MAP = [
@@ -193,8 +199,15 @@ def _checkout_group_repo(args, group):
   """`bits init <group>.bits`: resolve *group* in the provider registry
   (bits-providers) and clone the repository it points to into $CWD, so packages
   can then be developed beside it (`bits init -c <group> <PACKAGE>`)."""
+  import copy
+  import tempfile
   from bits_helpers.repo_provider import resolve_registry_repo
-  reg_spec = resolve_registry_repo(args, group, getattr(args, "workDir", "sw"))
+  # The registry is read in a scratch work dir: the work dir belongs inside the
+  # checkout (cd <group>; bits build), not in $CWD.
+  with tempfile.TemporaryDirectory(prefix="bits-init-") as scratch:
+    lookup = copy.copy(args)
+    lookup.referenceSources = join(scratch, "MIRROR")
+    reg_spec = resolve_registry_repo(lookup, group, scratch)
   if not reg_spec:
     sys.exit(1)
   source = reg_spec["source"]
@@ -216,8 +229,8 @@ def _checkout_group_repo(args, group):
   cmd.append(dest)
   git(cmd)
   banner("Recipe repository '%s' checked out at %s.\n"
-         "Develop a package beside it with:  bits init -c %s <PACKAGE>\n"
-         "or build with:                     bits build -c %s <PACKAGE>",
+         "Build in it with:                  cd %s && bits build <PACKAGE>\n"
+         "or develop a package beside it:    bits init -c %s <PACKAGE>",
          group, dest, dest, dest)
 
 
@@ -231,7 +244,7 @@ def doInit(args):
   # An argument named like a recipe repository (the `.bits` convention) is a
   # request to check out that repository from the provider registry, rather than
   # to develop a package source.
-  if len(pkgs) == 1 and pkgs[0]["name"].endswith(".bits"):
+  if is_group_checkout(args.pkgname):
     return _checkout_group_repo(args, pkgs[0]["name"])
 
   # ── No PACKAGE given ────────────────────────────────────────────────────────
