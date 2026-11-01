@@ -44,6 +44,10 @@ class VersionTest(unittest.TestCase):
       self.assertEqual(v.version_line(v._from_package()),
                        "bits 0.6.dev199+g648dfe8.d20261002 "
                        "(commit 648dfe8, 2026-10-02, with local changes)")
+    for desc, line in (("0.7-3-g1a2b3c4", "bits 0.7-3-g1a2b3c4 (tag 0.7 +3, commit 1a2b3c4)"),
+                       ("0.7-0-g1a2b3c4", "bits 0.7 (tag 0.7, commit 1a2b3c4)")):
+      with mock.patch.dict("sys.modules", {"bits_helpers._version": mock.Mock(version=desc)}):
+        self.assertEqual(v.version_line(v._from_package()), line)
     self.assertEqual(v.version_line({}),
                      "bits unknown (neither an installed package nor a git checkout)")
 

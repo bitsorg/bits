@@ -57,6 +57,12 @@ def _from_package():
       version = get_version(root=_ROOT)
     except Exception:   # not installed, or no SCM metadata (LookupError)
       return None
+  m = _DESCRIBE_RE.match(version)
+  if m:   # git describe --tags --long, as a recipe writes it (bits.bits)
+    n = int(m.group("n"))
+    return {"version": m.group("tag") if n == 0 else version, "tag": m.group("tag"),
+            "distance": n, "commit": m.group("commit"), "date": "", "dirty": False,
+            "source": "package"}
   # setuptools_scm form: 0.6.dev199+g648dfe8[.d20261002]
   m = re.search(r"\+g([0-9a-f]+)", version)
   d = re.search(r"\.d([0-9]{4})([0-9]{2})([0-9]{2})$", version)
