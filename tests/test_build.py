@@ -763,6 +763,20 @@ class BuildTestCase(unittest.TestCase):
                              capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
         self.assertEqual((res.returncode, res.stdout.strip()), (0, "python=1 tools=unset"), res.stderr)
 
+    def test_initdotsh_reuse_not_needed_only_of_its_own_deps(self) -> None:
+        base = {"revision": "1", "hash": "h", "commit_hash": "c"}
+        specs = {
+            "App":   dict(base, package="App", version="1.0", requires=["Python"]),
+            "Python": dict(base, package="Python", version="3.13.11", requires=["Tools"],
+                           reuse_module_id="Python/3.13.11-1"),
+            "Tools": dict(base, package="Tools", version="0.0.32", requires=[], not_needed=True),
+            "Other": dict(base, package="Other", version="1", requires=[], not_needed=True),
+        }
+        out = generate_initdotsh("App", specs, "slc7_x86-64", post_build=True,
+                                 reuse_cvmfs_base="/cvmfs/x")
+        self.assertIn("TOOLS_REVISION=not-needed", out)
+        self.assertNotIn("OTHER_REVISION", out)
+
     def test_initdotsh_reuse_not_needed_kept_across_a_local_dep(self) -> None:
         base = {"revision": "1", "hash": "h", "commit_hash": "c"}
         specs = {

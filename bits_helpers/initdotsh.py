@@ -130,7 +130,15 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # (which would look on CVMFS where a local-only build does not exist).
     _req_set = set(_reqs)
     _order = [d for d in topological_sort(specs) if d in _req_set]
-    _not_needed = sorted(pkg_to_shell_id(d) for d in specs if specs[d].get("not_needed"))
+    # The not-needed packages of this package's own dependencies only: its init.sh
+    # must not depend on what else the build had.
+    _closure, _todo = set(), list(spec.get("requires", ()))
+    while _todo:
+      d = _todo.pop()
+      if d in specs and d not in _closure:
+        _closure.add(d)
+        _todo.extend(specs[d].get("requires", ()))
+    _not_needed = sorted(pkg_to_shell_id(d) for d in _closure if specs[d].get("not_needed"))
     _nn = "_bits_nn_" + pkg_to_shell_id(package)
     lines.extend('[ -n "${%s_REVISION}" ] || { %s_REVISION=not-needed; '
                  '%s="${%s:-} %s_REVISION"; }' % (v, v, _nn, _nn, v)
