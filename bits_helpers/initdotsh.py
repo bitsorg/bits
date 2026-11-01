@@ -130,11 +130,19 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # (which would look on CVMFS where a local-only build does not exist).
     _req_set = set(_reqs)
     _order = [d for d in topological_sort(specs) if d in _req_set]
+    _not_needed = sorted(pkg_to_shell_id(d) for d in specs if specs[d].get("not_needed"))
+    _nn = "_bits_nn_" + pkg_to_shell_id(package)
+    lines.extend('[ -n "${%s_REVISION}" ] || { %s_REVISION=not-needed; '
+                 '%s="${%s:-} %s_REVISION"; }' % (v, v, _nn, _nn, v)
+                 for v in _not_needed)
     for d in _order:
       if d in _reused_set:
         lines.extend(_reused_dep_lines(d))
       else:
         lines.append(_dep_init_path(d))
+    if _not_needed:
+      lines.append('for _bits_v in ${%s:-}; do unset "$_bits_v"; done; '
+                   'unset %s _bits_v' % (_nn, _nn))
     # A reused CVMFS package may ship a pkg-config .pc whose baked `prefix=` does
     # not match its deployed location (publish-time relocation can misplace it),
     # breaking find_package via pkg-config for a consumer (e.g. xrootd → Davix).

@@ -6,6 +6,8 @@ import os
 import os.path
 import platform
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -737,6 +739,64 @@ class BuildTestCase(unittest.TestCase):
         self.assertIn(cmake_line, out)
         self.assertLess(out.index(tools_line), out.index(cmake_line),
                         "local prerequisite Tools must be sourced before reused CMake")
+
+    def test_initdotsh_reuse_skips_not_needed_in_deployed_init(self) -> None:
+        base = {"revision": "1", "hash": "h", "commit_hash": "c"}
+        specs = {
+            "App":   dict(base, package="App", version="1.0", requires=["Python", "Tools"]),
+            "Python": dict(base, package="Python", version="3.13.11", requires=["Tools"]),
+            "Tools": dict(base, package="Tools", version="0.0.32", requires=[],
+                          not_needed=True),
+        }
+        specs["Python"]["reuse_module_id"] = "Python/3.13.11-1"
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        init = os.path.join(tmp, "Python/3.13.11-1/etc/profile.d/init.sh")
+        os.makedirs(os.path.dirname(init))
+        with open(init, "w") as fh:
+            fh.write('[ -n "${TOOLS_REVISION}" ] || . "$WORK_DIR/$BITS_ARCH_PREFIX"'
+                     '/Tools/0.0.32-1/etc/profile.d/init.sh\n'
+                     'export PYTHON_REVISION=1\n')
+        out = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False,
+                                 reuse_cvmfs_base=tmp)
+        res = subprocess.run(["bash", "-ec", out + '\necho "python=$PYTHON_REVISION tools=${TOOLS_REVISION-unset}"'],
+                             capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+        self.assertEqual((res.returncode, res.stdout.strip()), (0, "python=1 tools=unset"), res.stderr)
+
+    def test_initdotsh_reuse_not_needed_kept_across_a_local_dep(self) -> None:
+        base = {"revision": "1", "hash": "h", "commit_hash": "c"}
+        specs = {
+            "App":   dict(base, package="App", version="1.0",
+                          requires=["Lib", "Python", "Tools", "Zlib"]),
+            "Python": dict(base, package="Python", version="3.13.11", requires=["Lib", "Tools"]),
+            "Lib":   dict(base, package="Lib", version="1.0", requires=["Tools", "Zlib"]),
+            "Zlib":  dict(base, package="Zlib", version="1.3", requires=[]),
+            "Tools": dict(base, package="Tools", version="0.0.32", requires=[],
+                          not_needed=True),
+        }
+        specs["Python"]["reuse_module_id"] = "Python/3.13.11-1"
+        specs["Zlib"]["reuse_module_id"] = "Zlib/1.3-1"
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        cvmfs, local = os.path.join(tmp, "cvmfs"), os.path.join(tmp, "sw")
+        for path, text in (
+                ("cvmfs/Python/3.13.11-1", '[ -n "${TOOLS_REVISION}" ] || . "$WORK_DIR/$BITS_ARCH_PREFIX"'
+                                           '/Tools/0.0.32-1/etc/profile.d/init.sh\n'
+                                           'export PYTHON_REVISION=1\n'),
+                ("cvmfs/Zlib/1.3-1", 'export ZLIB_REVISION=1\n'),
+                ("sw/slc7_x86-64/Lib/1.0-1",
+                 generate_initdotsh("Lib", specs, "slc7_x86-64", workDir=local,
+                                    post_build=True, reuse_cvmfs_base=cvmfs))):
+            init = os.path.join(tmp, path, "etc/profile.d/init.sh")
+            os.makedirs(os.path.dirname(init))
+            with open(init, "w") as fh:
+                fh.write(text)
+        out = generate_initdotsh("App", specs, "slc7_x86-64", workDir=local,
+                                 post_build=False, reuse_cvmfs_base=cvmfs)
+        res = subprocess.run(["bash", "-ec", out + '\necho "python=$PYTHON_REVISION lib=$LIB_REVISION tools=${TOOLS_REVISION-unset}"'],
+                             capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+        self.assertEqual((res.returncode, res.stdout.strip()),
+                         (0, "python=1 lib=1 tools=unset"), res.stderr)
 
 
 class AfterRecipeTest(unittest.TestCase):

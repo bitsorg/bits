@@ -42,7 +42,7 @@ COVERED = (
 # existing deployments. The staging and post-install helpers are covered here.
 # grep -r: symlinks in a package are no longer listed for relocation; existing
 # tarballs stay valid, so BUILD_EPOCH is unchanged.
-COVERED_SHA256 = "9e75269258e86a7a0cff92018adebc9daef8946b85ce849c43e7c71ab7196d00"
+COVERED_SHA256 = "9e0790b39c902e18bee33a6f031d366ae427ce3f647f2d7d9746df19cbe00f18"
 
 
 def covered_sha256(root=None):
