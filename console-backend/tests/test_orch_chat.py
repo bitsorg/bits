@@ -559,6 +559,7 @@ class ContextTest(_DB):
         self.assertIn("Non-compatible flatbuffers version", ctx["record"])
         self.assertNotIn("hunter2", ctx["record"])
         self.assertIn("known cause (reviewed): Headers generated", ctx["record"])
+        self.assertIn("build host: bits-build-01 (the work directory", ctx["record"])
         self.assertEqual(ctx["cause"]["cause"][:7], "Headers")
         self.assertIn("flatbuffers", ctx["search"])
         self.assertIsNone(chat.build_context(self.conn, 99))
