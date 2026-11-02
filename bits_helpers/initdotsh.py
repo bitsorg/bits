@@ -13,6 +13,24 @@ from bits_helpers.log import dieOnError
 from bits_helpers.utilities import (asList, pkg_to_shell_id, resolve_spec_data,
                                     topological_sort, ver_rev)
 
+def _prerequisites_first(reqs, specs):
+  """*reqs* in their order, each after those of *reqs* it requires (transitively):
+  a dependency sourced first sets its _REVISION, so a later init.sh skips its stale copy."""
+  wanted, seen, out = set(reqs), set(), []
+
+  def visit(d):
+    if d in seen or d not in specs:
+      return
+    seen.add(d)
+    for r in specs[d].get("requires", ()):
+      visit(r)
+    if d in wanted:
+      out.append(d)
+  for d in reqs:
+    visit(d)
+  return out
+
+
 def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False,
                        from_modules=False, cmake_prefix_env=False,
                        reuse_cvmfs_base=None):
@@ -100,7 +118,11 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # on CVMFS. Per-DEPENDENCY, so a legacy-built package can consume a reused dep.
   # Needs /cvmfs mounted in the build container (no modulecmd required).
   # A not-needed dependency (build-only, of a reused package) is not installed.
-  _reqs = [d for d in spec.get("requires", ()) if not specs[d].get("not_needed")]
+
+  # An own_hash package (the toolchain) is shared across defaults: its installed
+  # init.sh must not name the defaults-release of the build that made it.
+  _reqs = [d for d in spec.get("requires", ()) if not specs[d].get("not_needed")
+           and not (post_build and spec.get("own_hash") and d == "defaults-release")]
   _reused_set = {d for d in _reqs
                  if reuse_cvmfs_base and specs[d].get("reuse_module_id")
                  and not specs[d].get("reuse_symlinked")}
@@ -180,7 +202,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       'unset _bits_rpc _bits_root _bits_pcd _bits_pc',
     ] if _reused_roots else [])
   else:
-    lines.extend(_dep_init_path(dep) for dep in _reqs)
+    lines.extend(_dep_init_path(dep) for dep in _prerequisites_first(_reqs, specs))
 
   if post_build:
     bigpackage = pkg_to_shell_id(package)

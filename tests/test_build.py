@@ -813,6 +813,45 @@ class BuildTestCase(unittest.TestCase):
                          (0, "python=1 lib=1 tools=unset"), res.stderr)
 
 
+class InitdotshDependencyOrderTest(unittest.TestCase):
+    """A shared toolchain's init.sh may name an older defaults-release: the
+    consumer sources defaults-release first, so the toolchain's line is skipped."""
+
+    def _specs(self):
+        def s(name, version, requires=(), **kw):
+            return dict(package=name, version=version, revision="2", hash=name + "h",
+                        commit_hash="c", requires=list(requires), **kw)
+        return {"defaults-release": s("defaults-release", "v1"),
+                "GCC-Toolchain": s("GCC-Toolchain", "v14", ["defaults-release"], own_hash=True),
+                "CMake": s("CMake", "3.30", ["GCC-Toolchain", "defaults-release"]),
+                "ninja": s("ninja", "1.11", ["GCC-Toolchain", "CMake", "defaults-release"])}
+
+    def test_prerequisites_first_and_runs_with_a_stale_toolchain(self):
+        specs = self._specs()
+        out = generate_initdotsh("ninja", specs, "el9", workDir="/sw", post_build=False)
+        sourced = [l.split("/")[-5] for l in out.splitlines() if "profile.d/init.sh" in l]
+        self.assertEqual(sourced, ["defaults-release", "GCC-Toolchain", "CMake"])
+        with tempfile.TemporaryDirectory() as tmp:
+            for pkg, text in (("defaults-release/v1-2", "export DEFAULTS_RELEASE_REVISION=2\n"),
+                              ("GCC-Toolchain/v14-2", '[ -n "${DEFAULTS_RELEASE_REVISION}" ] || '
+                               '. "$WORK_DIR/$BITS_ARCH_PREFIX"/defaults-release/v1-1/etc/profile.d/init.sh\n'),
+                              ("CMake/3.30-2", "export CMAKE_REVISION=2\n")):
+                init = os.path.join(tmp, "el9", pkg, "etc/profile.d/init.sh")
+                os.makedirs(os.path.dirname(init))
+                with open(init, "w") as fh:
+                    fh.write(text)
+            res = subprocess.run(["bash", "-ec", out + "\necho ok"], capture_output=True, text=True,
+                                 env={"PATH": os.environ["PATH"], "WORK_DIR": tmp})
+            self.assertEqual((res.returncode, res.stdout.strip()), (0, "ok"), res.stderr)
+
+    def test_own_hash_installed_initdotsh_names_no_defaults_release(self):
+        specs = self._specs()
+        installed = generate_initdotsh("GCC-Toolchain", specs, "el9", post_build=True)
+        self.assertNotIn("defaults-release", installed)
+        self.assertIn("defaults-release", generate_initdotsh("GCC-Toolchain", specs, "el9"))
+        self.assertIn("defaults-release", generate_initdotsh("CMake", specs, "el9", post_build=True))
+
+
 class AfterRecipeTest(unittest.TestCase):
     def test_the_error_after_a_successful_recipe_is_shown(self):
         from bits_helpers.build import _after_recipe
@@ -829,6 +868,15 @@ class AfterRecipeTest(unittest.TestCase):
             # No error line: the step and its last lines.
             quiet = ["+ make", "built", "bits:stage:package", "+ tar c x", "tar: x: Cannot stat", "+ exit 2"]
             self.assertEqual(_after_recipe(quiet, log.name), ["(in bits' package step)", "tar: x: Cannot stat"])
+
+    def test_a_failure_before_the_recipe_shows_its_own_lines(self):
+        from bits_helpers.build import _script_failure
+        out = ["bits:stage:prepare",
+               "/sw/GCC/etc/profile.d/init.sh: line 5: /sw/defaults-release/v1-1/etc/profile.d/init.sh: "
+               "No such file or directory", "bits: done building"]
+        self.assertEqual(_script_failure(out), [out[1]])
+        self.assertEqual(_script_failure(["bits:stage:prepare", "stopped"]),
+                         ["(in bits' prepare step)", "stopped"])
 
 class HashPolicyBuildFallbackTest(unittest.TestCase):
     """Exercise the remote-first hash-policy decision in build_one_package."""

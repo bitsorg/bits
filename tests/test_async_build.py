@@ -642,7 +642,8 @@ class WriteFailureSummaryTest(unittest.TestCase):
                         sched.log = MagicMock()
                         with patch.dict(os.environ, {"BITS_BUILD_WORK_DIR": override or args.workDir,
                                                      "BITS_DIST_HASH": "0123456789"}), \
-                             patch("bits_helpers.build.execute", return_value=7), \
+                             patch("bits_helpers.build.execute",
+                                   side_effect=lambda cmd, printer: printer("bits:stage:recipe") or 7), \
                              patch("bits_helpers.build.detectArch", return_value=ARCH), \
                              patch("bits_helpers.monitor.note_build"):
                             if builders == 1:
@@ -658,3 +659,31 @@ class WriteFailureSummaryTest(unittest.TestCase):
                                 self.assertEqual(sched.buildFailures[0]["log"], log_path)
                         self.assertIn("  " + log_path + "\n", message)
                         self.assertIn("error: fixture build failed", message)
+
+    def test_a_failure_before_the_recipe_shows_the_script_not_an_older_log(self):
+        from bits_helpers.build import runBuildCommand
+        args = Namespace(builders=2, workDir=self.dir, debug=False, resourceMonitoring=False,
+                         architecture=ARCH)
+        spec = dict(GOOD_SPEC, is_devel_pkg=False, requires=[])
+        os.makedirs(os.path.join(self.dir, "BUILD", "zlib-latest"))
+        with open(os.path.join(self.dir, "BUILD", "zlib-latest", "log"), "w") as log:
+            log.write("error: an older build's log\n")
+        printed = ["bits:stage:prepare", "init.sh: line 5: v1-1/init.sh: No such file or directory"]
+
+        def execute(cmd, printer):
+            for line in printed:
+                printer(line)
+            return 1
+        sched = self._Sched([], {})
+        sched.buildFailuresLock = threading.Lock()
+        sched.log = MagicMock()
+        with patch.dict(os.environ, {"BITS_BUILD_WORK_DIR": self.dir, "BITS_DIST_HASH": "0123456789"}), \
+             patch("bits_helpers.build.execute", side_effect=execute), \
+             patch("bits_helpers.build.detectArch", return_value=ARCH), \
+             patch("bits_helpers.monitor.note_build"):
+            message = runBuildCommand(sched, "zlib", {"zlib": spec}, args, "exit 1", None,
+                                      self.dir, self.dir, None)
+        self.assertNotIn("an older build's log", message)
+        self.assertIn("none: the build stopped before its recipe started", message)
+        self.assertIn("    " + printed[1] + "\n", message)
+        self.assertEqual(sched.buildFailures[0]["excerpt"], printed[1])

@@ -1376,14 +1376,18 @@ def _after_recipe(output, log_path, limit=8):
   start = max((i + 1 for i, ln in enumerate(output) if [ln] == last), default=None)
   if start is None:
     return []
-  rest = output[start:]
-  errs = [ln for ln in rest if not ln.startswith("+")
+  return _script_failure(output[start:], limit)
+
+
+def _script_failure(lines, limit=8):
+  """The error lines among the build script's output *lines*, else the step
+  bits was in and the last lines it printed there."""
+  errs = [ln for ln in lines if not ln.startswith("+")
           and (_ERROR_PATTERNS.search(ln) or re.search(r": line \d+: ", ln))]
   if errs:
     return errs[-limit:]
-  # No error line: the step bits was in, and the last lines it printed there.
-  stage = next((ln[len("bits:stage:"):] for ln in reversed(rest) if ln.startswith("bits:stage:")), "")
-  plain = [ln for ln in rest if ln.strip() and not ln.startswith(("+", "bits:stage:"))][-limit:]
+  stage = next((ln[len("bits:stage:"):] for ln in reversed(lines) if ln.startswith("bits:stage:")), "")
+  plain = [ln for ln in lines if ln.strip() and not ln.startswith(("+", "bits:stage:"))][-limit:]
   return (["(in bits' %s step)" % stage] if stage and plain else []) + plain
 
 
@@ -1557,9 +1561,13 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   from bits_helpers import monitor as _bits_monitor
   from collections import deque
   _output = deque(maxlen=400)        # the end of the build script's output
+  _recipe_ran = []                   # BUILD/<pkg>-latest/log is this run's once the recipe ran
 
   def _printer(fmt, *a):
-    _output.append(fmt % a if a else fmt)
+    line = fmt % a if a else fmt
+    _output.append(line)
+    if line.strip() in ("bits:stage:recipe", "bits:stage:incremental"):
+      _recipe_ran.append(True)
     progress(fmt, *a)
   _bits_monitor.note_build(p, getattr(args, "architecture", ""), True)
   try:
@@ -1591,6 +1599,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   # Determine paths
   devSuffix = "-" + args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else ""
   log_path = abspath(join(buildWorkDir, "BUILD", f"{spec['package']}-latest{devSuffix}", "log"))
+  log_is_current = bool(_recipe_ran)
   build_dir = f"{buildWorkDir}/BUILD/{spec['package']}-latest{devSuffix}/{spec['package']}"
   # Staging install prefix ($INSTALLROOT in the recipe): where the package's
   # files are installed before being tarred. Useful for inspecting a partial
@@ -1628,7 +1637,8 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   buildErrMsg += f"  {socket.gethostname()} (the paths below are on it)\n\n"
 
   buildErrMsg += f"{bold}Log File:{reset}\n"
-  buildErrMsg += f"  {log_path}\n\n"
+  buildErrMsg += (f"  {log_path}\n\n" if log_is_current
+                  else "  none: the build stopped before its recipe started\n\n")
 
   buildErrMsg += f"{bold}Build Directory:{reset}\n"
   buildErrMsg += f"  {build_dir}\n"
@@ -1639,7 +1649,13 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
 
   # Surface the proximate error so the user does not have to open the full log.
   excerpt = ""
-  if err:
+  if err and not log_is_current:
+    before = _script_failure(list(_output))
+    excerpt = "\n".join(before)
+    if before:
+      buildErrMsg += f"\n{bold}Before the recipe, bits' build script printed:{reset}\n"
+      buildErrMsg += "".join("    %s\n" % ln for ln in before)
+  elif err:
     excerpt = _extract_error_excerpt(log_path) or ""
     if excerpt:
       buildErrMsg += f"\n{bold}Error excerpt:{reset}\n"
@@ -1648,6 +1664,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     if after:
       buildErrMsg += f"\n{bold}After the recipe, bits' build script printed:{reset}\n"
       buildErrMsg += "".join("    %s\n" % ln for ln in after)
+  if err:
     from bits_helpers.sandbox import failure_hint
     hint = failure_hint(build_command)
     if hint:
@@ -1722,9 +1739,10 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
 
   # Add Next Steps section
   buildErrMsg += f"\n{bold}Next Steps:{reset}\n"
-  buildErrMsg += f"  • View error log:          cat {log_path}\n"
+  if log_is_current:
+    buildErrMsg += f"  • View error log:          cat {log_path}\n"
   if not args.debug:
-    buildErrMsg += f"  • Rebuild with debug:      bitsBuild build {spec['package']} --debug\n"
+    buildErrMsg += f"  • Rebuild with debug:      bits build {spec['package']} --debug\n"
   buildErrMsg += f"  • Please upload the full log to CERNBox/Dropbox if you intend to request support.\n"
 
   if err and args.builders>1:
@@ -1734,7 +1752,8 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       try:
         with scheduler.buildFailuresLock:
           fails.append({"package": "%s@%s" % (spec["package"], spec["version"]),
-                        "log": log_path, "install_root": install_root,
+                        "log": log_path if log_is_current else "none (stopped before the recipe)",
+                        "install_root": install_root,
                         "excerpt": excerpt})
       except Exception:  # pylint: disable=broad-except
         pass

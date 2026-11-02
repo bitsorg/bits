@@ -191,7 +191,7 @@ rm -fr "$WORK_DIR/INSTALLROOT/$PKGHASH"
 if [[ "$INCREMENTAL_BUILD_HASH" == 0 ]] && ! rm -rf "$BUILDROOT"; then
   # Golang installs stuff without write permissions for ourselves sometimes.
   # This makes the `rm -rf` above fail, so give ourselves write permission.
-  chmod -R o+w "$BUILDROOT" || :
+  chmod -R u+w "$BUILDROOT" || :
   rm -rf "$BUILDROOT"
 fi
 mkdir -p "$INSTALLROOT" "$BUILDROOT" "$BUILDDIR" "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
