@@ -1376,8 +1376,15 @@ def _after_recipe(output, log_path, limit=8):
   start = max((i + 1 for i, ln in enumerate(output) if [ln] == last), default=None)
   if start is None:
     return []
-  return [ln for ln in output[start:] if not ln.startswith("+")
-          and (_ERROR_PATTERNS.search(ln) or re.search(r": line \d+: ", ln))][-limit:]
+  rest = output[start:]
+  errs = [ln for ln in rest if not ln.startswith("+")
+          and (_ERROR_PATTERNS.search(ln) or re.search(r": line \d+: ", ln))]
+  if errs:
+    return errs[-limit:]
+  # No error line: the step bits was in, and the last lines it printed there.
+  stage = next((ln[len("bits:stage:"):] for ln in reversed(rest) if ln.startswith("bits:stage:")), "")
+  plain = [ln for ln in rest if ln.strip() and not ln.startswith(("+", "bits:stage:"))][-limit:]
+  return (["(in bits' %s step)" % stage] if stage and plain else []) + plain
 
 
 def write_failure_summary(work_dir, scheduler, arch):

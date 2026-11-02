@@ -826,6 +826,9 @@ class AfterRecipeTest(unittest.TestCase):
                              ["build.sh: line 534: rsync: command not found"])
             self.assertEqual(_after_recipe(["+ make", "built", "+ exit 2"], log.name), [])
             self.assertEqual(_after_recipe(out, log.name + ".missing"), [])
+            # No error line: the step and its last lines.
+            quiet = ["+ make", "built", "bits:stage:package", "+ tar c x", "tar: x: Cannot stat", "+ exit 2"]
+            self.assertEqual(_after_recipe(quiet, log.name), ["(in bits' package step)", "tar: x: Cannot stat"])
 
 class HashPolicyBuildFallbackTest(unittest.TestCase):
     """Exercise the remote-first hash-policy decision in build_one_package."""
