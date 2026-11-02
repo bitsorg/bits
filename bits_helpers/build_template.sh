@@ -280,13 +280,24 @@ function Run() { # dummy function
     true
 }
 
+# On top of the package's log: what it builds, and where (the machine, not a container).
+function _bits_log_header() {
+  local h=${BITS_BUILD_HOST:-$(uname -n)}
+  echo "=================================================================="
+  echo "  $PKGNAME $PKGVERSION ($EFFECTIVE_ARCHITECTURE) on build host $h"
+  [ "$h" = "$(uname -n)" ] || echo "  in container $(uname -n)"
+  echo "  started $(date -u '+%%Y-%%m-%%d %%H:%%M:%%S UTC')"
+  echo "=================================================================="
+}
+
 if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
   echo "bits:stage:recipe"
   set -o pipefail;
   # Keep DYLD_LIBRARY_PATH (set from dependencies by init.sh above) so build-time
   # tools on macOS find their dependencies' dylibs, mirroring LD_LIBRARY_PATH on
   # Linux. Inherited contamination was already cleared before init.sh ran.
-  { set -e
+  { _bits_log_header
+    set -e
     set -x
     source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
     if [[ $(type -t Run) == function ]]; then Run "$@"; fi
@@ -295,13 +306,14 @@ if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
     echo "bits:stage:incremental"
     set -o pipefail
-    (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log"
+    { _bits_log_header; (%(incremental_recipe)s); } 2>&1 | tee "$BUILDROOT/log"
     rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || exit "$rc"   # propagate the real recipe exit code (was masked to 1)
 elif [[ "$CACHED_TARBALL" == "" ]]; then
    echo "bits:stage:recipe"
    set -o pipefail;
    # Keep DYLD_LIBRARY_PATH (from dependencies via init.sh) — see note above.
-   { set -e
+   { _bits_log_header
+     set -e
      set -x
      source "$WORK_DIR/SPECS/$PKGPATH/$PKGNAME.sh"
      if [[ $(type -t Run) == function ]]; then Run "$@"; fi

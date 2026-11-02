@@ -44,7 +44,8 @@ COVERED = (
 # tarballs stay valid, so BUILD_EPOCH is unchanged.
 # init.sh: a reused package's not-needed dependencies are pre-set, then unset; only
 # builds that reuse change, existing tarballs stay valid, so BUILD_EPOCH is unchanged.
-COVERED_SHA256 = "2030b2093d65913105b1aca2c78c376a281a625460a8e6ba02644ddd6ecc9fcd"
+# The build host on top of a package's log: the log is not packaged; BUILD_EPOCH unchanged.
+COVERED_SHA256 = "a40d027b537ad74da97a5310e509fcf237578b7a0a8cf16ddb012202808dc980"
 
 
 def covered_sha256(root=None):

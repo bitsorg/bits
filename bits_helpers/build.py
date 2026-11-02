@@ -1595,15 +1595,17 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   except Exception:  # pylint: disable=broad-except
     install_root = None
 
-  # Use relative paths for the build and install directories, but keep the log
-  # path absolute so it can be opened directly from any working directory.
-  try:
-    from os.path import relpath
-    build_dir = relpath(build_dir, os.getcwd())
-    if install_root:
-      install_root = relpath(install_root, os.getcwd())
-  except (ValueError, OSError):
-    pass  # Keep absolute paths if relpath fails
+  # Relative paths for the build and install directories when they are under the
+  # working directory; else, and always for the log, absolute (../../home/... helps no one).
+  def _rel(p):
+    try:
+      r = os.path.relpath(p, os.getcwd())
+    except (ValueError, OSError):
+      return p
+    return p if r == ".." or r.startswith(".." + os.sep) else r
+  build_dir = _rel(build_dir)
+  if install_root:
+    install_root = _rel(install_root)
 
   # Color codes for error message (if TTY)
   bold = "\033[1m" if sys.stderr.isatty() else ""
@@ -1614,6 +1616,9 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   devel_note = " (development package)" if spec["is_devel_pkg"] else ""
   buildErrMsg = f"{red}{bold}BUILD FAILED:{reset} {spec['package']}@{spec['version']}{devel_note}\n"
   buildErrMsg += "=" * 70 + "\n\n"
+
+  buildErrMsg += f"{bold}Build Host:{reset}\n"
+  buildErrMsg += f"  {socket.gethostname()} (the paths below are on it)\n\n"
 
   buildErrMsg += f"{bold}Log File:{reset}\n"
   buildErrMsg += f"  {log_path}\n\n"
@@ -2988,6 +2993,8 @@ def build_one_package(p, ctx):
     # a write store is configured. The space is reclaimed after upload below.
     ("BITS_HAS_WRITE_STORE", "1" if getattr(syncHelper, "writeStore", "") else ""),
     ("COMMIT_HASH", short_commit_hash(spec)),
+    # The machine the build runs on (a container's hostname is not it): on top of the log.
+    ("BITS_BUILD_HOST", socket.gethostname()),
     ("DEPS_HASH", spec.get("deps_hash", "")),
     ("DEVEL_HASH", spec.get("devel_hash", "")),
     ("DEVEL_PREFIX", develPrefix),
@@ -3952,6 +3959,7 @@ def doBuild(args, parser):
   # branch override and the CVMFS path, so surfacing it prevents silent
   # mis-targeting from a copy-pasted command.
   _release = (defaultsMeta.get("variables") or {}).get("release")
+  banner("Build host: %s", socket.gethostname())
   banner("Release: %s", _release if _release else "<not set>")
   try:
     _bits_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
