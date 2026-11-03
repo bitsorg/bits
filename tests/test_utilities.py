@@ -949,6 +949,12 @@ class TestResolveTag(unittest.TestCase):
         spec = {"package": "lcg.bits", "tag": "%(release)s"}
         self.assertEqual(resolve_tag(spec, {"release": "main"}), "main")
 
+    def test_a_variable_naming_another(self):
+        # defaults-lhcb: lcg_branch defaults to release.
+        spec = {"package": "lcg.bits", "tag": "%(lcg_branch)s"}
+        self.assertEqual(resolve_tag(spec, {"release": "LCG_110", "lcg_branch": "%(release)s"}), "LCG_110")
+        self.assertEqual(resolve_tag(spec, {"release": "LCG_110", "lcg_branch": "pr-12"}), "pr-12")
+
     def test_recipe_variables_override_profile(self):
         spec = {"package": "p", "tag": "%(release)s",
                 "variables": {"release": "dev4"}}

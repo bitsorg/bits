@@ -309,7 +309,13 @@ def resolve_tag(spec, default_vars=None):
               **(default_vars or {}),
               **(spec.get("variables") or {})}
   try:
-    return spec["tag"] % all_vars
+    tag = spec["tag"] % all_vars
+    # A variable may name another (lcg_branch: "%(release)s"): expand until none is left.
+    for _ in range(10):
+      if "%(" not in tag:
+        break
+      tag = tag % all_vars
+    return tag
   except KeyError as e:
     dieOnError(True,
       "Unknown variable %s in tag field of recipe for '%s': %r\n"
