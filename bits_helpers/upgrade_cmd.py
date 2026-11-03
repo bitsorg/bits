@@ -729,11 +729,21 @@ def doUpgrade(args, parser):
             row.update(status="unchanged")
             continue
         held = ""
+        if name.lower() in holds and _numbers(old) is None:
+            row.update(status="edit by hand",
+                       detail="held, but %s is not a plain release version: no series to keep it in" % old)
+            continue
         if name.lower() in holds and not same_series(old, version):
-            newest = held_version(_release_versions(spec), old)
+            versions = _release_versions(spec)
+            newest = held_version(versions, old)
             held = "held in %s.x: %s asked for" % (".".join(old.split(".")[:2]), version)
             if not newest:
-                row.update(status="held", detail=held + "; no newer release in the series")
+                # No release in the series at all is a failed lookup (network, no PyPI
+                # name or git source, another project's releases), not "none newer".
+                found = any(same_series(old, v) for v in versions)
+                row.update(status="held" if found else "edit by hand",
+                           detail=held + ("; no newer release in the series" if found
+                                          else "; no releases of its series found upstream"))
                 continue
             version = row["to"] = newest
         pin = spec.get("pinned_by") or ""

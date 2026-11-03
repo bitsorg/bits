@@ -1762,7 +1762,9 @@ version numbers (Python 3.13.x, for frameworks built for one Python): a version
 beyond it is replaced by the newest release in the series (from PyPI for a
 `PythonPipRecipe`, else from its git source's tags), and the package is reported
 as held, with the version asked for; with no newer release in the series it is
-left as it is.
+left as it is. When no release of its series is found at all (offline, or neither a
+PyPI name nor a git source), it is left for a hand edit and the run exits 1. So is a package
+whose version is not a plain release (`7.3.0p1`): it has no series to keep it in.
 
 For each package, the file that sets its version is edited:
 

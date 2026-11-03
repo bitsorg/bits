@@ -428,9 +428,19 @@ class InPlaceTest(unittest.TestCase):
     self.assertFalse(os.path.exists(os.path.join(self.cfg, "patches")))
 
   def test_held_in_its_series(self):
-    out = self._upgrade("--to", "curl=9.0.0", "--hold", "curl")     # no release reachable here
-    self.assertIn("held in 8.18.x: 9.0.0 asked for; no newer release in the series", out)
+    out = self._upgrade("--to", "curl=9.0.0", "--hold", "curl", code=1)    # no release reachable here
+    self.assertIn("held in 8.18.x: 9.0.0 asked for; no releases of its series found upstream", out)
+    self.assertIn("Not edited: curl", out)
     self.assertFalse(os.path.exists(os.path.join(self.cfg, "curl.sh")))
+
+  def test_held_but_not_a_plain_release(self):
+    with open(os.path.join(self.cfg, "other.sh"), "w") as f:
+      f.write('package: other\nversion: "2.0p1"\n---\necho other\n')
+    out = self._upgrade("--to", "other=2.0p2", "--hold", "other", code=1)
+    self.assertIn("held, but 2.0p1 is not a plain release version: no series to keep it in", out)
+    self.assertIn("Not edited: other", out)
+    with open(os.path.join(self.cfg, "other.sh")) as f:
+      self.assertIn('version: "2.0p1"', f.read())
 
   def test_left_for_a_hand_edit(self):
     out = self._upgrade("--to", "nope=1", "--to", "zlib=1.3.2", code=1)
