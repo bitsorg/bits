@@ -240,7 +240,7 @@ def git_pin(source, tag):
 
 
 def hash_source(url, work_dir, sync_helper):
-  """``algo:hex`` of *url*, fetched through the download cache."""
+  """``algo:hex`` of *url*, fetched through the download cache (a file:// one, read in place)."""
   from bits_helpers.download import download
   return checksum_file(download(url, None, work_dir, sync_helper=sync_helper))
 

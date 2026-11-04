@@ -514,6 +514,20 @@ downloadHandlers = {
 }
 
 
+def _copy_local_source(source, dest, checksum, enforce_mode):
+    """A file:// source, copied as it is now (issue #147): a cache keyed by its URL
+    kept the first copy after an edit, and the remote store has no use for it."""
+    import shutil
+    path = source[len("file:/"):]
+    if not exists(path):
+        raise OSError("Unable to find local source {}".format(source))
+    check_file(path, basename(path), checksum, enforce_mode)
+    if dest is not None:
+        os.makedirs(dest, exist_ok=True)
+        shutil.copy(path, dest)
+    return path
+
+
 def download(source, dest, work_dir, checksum=None, enforce_mode="off",
              sync_helper=None, progress=None):
     """Download *source* into *dest*, optionally verifying its checksum.
@@ -526,7 +540,8 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
         before passing the URL here).
     dest:
         Directory into which the downloaded file is placed, or ``None`` to
-        leave it in the cache only.
+        leave it in the cache only. A ``file://`` source skips the cache and the
+        store: it is checked and copied as it is now.
     work_dir:
         Top-level work directory (used for the download cache).
     checksum:
@@ -554,6 +569,8 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
     noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
     isCmsdistGenerated = True if 'cmdist-generated=1' in source else False
     source = fixUrl(source)
+    if source.startswith("file:/"):
+        return _copy_local_source(source, dest, checksum, enforce_mode)
     url_checksum = getUrlChecksum(source)
 
     # Syntactic sugar to allow the following urls for tag collector:

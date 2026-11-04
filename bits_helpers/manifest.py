@@ -262,7 +262,7 @@ def _source_entries(spec: dict) -> list:
             continue
         url, checksum = parse_entry(raw)
         entry = {"url": url, "checksum": checksum}
-        if url and getUrlChecksum and _source_remote_path:
+        if url and not url.startswith("file:/") and getUrlChecksum and _source_remote_path:
             try:
                 entry["store_path"] = _source_remote_path(getUrlChecksum(url), basename(url))
             except Exception:  # noqa: BLE001

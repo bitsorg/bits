@@ -505,5 +505,69 @@ class DownloadSyncHelperTest(unittest.TestCase):
                          "remote store must be consulted before the upstream URL")
 
 
+class LocalFileSourceTest(unittest.TestCase):
+    """A file:// source is copied as it is now, never cached nor mirrored (#147)."""
+
+    def _download(self, tmp, helper=None):
+        src = os.path.join(tmp, "recipes", "local.txt")
+        dest = os.path.join(tmp, "dest")
+        return src, dest, download("file:/" + src, dest, os.path.join(tmp, "sw"),
+                                   sync_helper=helper)
+
+    def _write(self, path, text):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(text)
+
+    def test_an_edit_reaches_the_next_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "recipes", "local.txt")
+            self._write(src, "first")
+            self._download(tmp)
+            self._write(src, "edited")
+            _, dest, got = self._download(tmp)
+            with open(os.path.join(dest, "local.txt")) as fh:
+                self.assertEqual(fh.read(), "edited")
+            self.assertEqual(got, src)
+            self.assertFalse(os.path.exists(os.path.join(tmp, "sw", "SOURCES", "cache")))
+
+    def test_the_remote_store_is_not_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(os.path.join(tmp, "recipes", "local.txt"), "content")
+            helper = MagicMock()
+            self._download(tmp, helper)
+            helper.fetch_source.assert_not_called()
+            helper.upload_source.assert_not_called()
+
+    def test_without_dest_nothing_is_copied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "recipes", "local.txt")
+            self._write(src, "content")
+            self.assertEqual(download("file:/" + src, None, os.path.join(tmp, "sw")), src)
+            self.assertEqual(os.listdir(tmp), ["recipes"])
+
+    def test_its_checksum_is_checked_as_it_is_now(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "recipes", "local.txt")
+            self._write(src, "first")
+            first = "sha256:" + hashlib.sha256(b"first").hexdigest()
+            download("file:/" + src, None, tmp, checksum=first, enforce_mode="enforce")
+            self._write(src, "edited")
+            with self.assertRaises(SystemExit):
+                download("file:/" + src, None, tmp, checksum=first, enforce_mode="enforce")
+
+    def test_a_missing_file_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(OSError):
+                self._download(tmp)
+
+    def test_the_manifest_gives_it_no_store_path(self):
+        from bits_helpers.manifest import _source_entries
+        got = _source_entries({"sources": ["file:///recipes/local.txt", TEST_URL]})
+        self.assertNotIn("store_path", got[0])
+        self.assertIn("store_path", got[1])
+
+
 if __name__ == "__main__":
     unittest.main()

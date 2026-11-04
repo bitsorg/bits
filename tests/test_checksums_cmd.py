@@ -259,12 +259,23 @@ class TestHashSource(unittest.TestCase):
 
     def test_uses_the_download_cache(self):
         tmp = tempfile.mkdtemp()
+
+        def fetch(source, dest_dir, work_dir):   # stands in for the https download
+            with open(os.path.join(dest_dir, "x-1.tar.gz"), "wb") as fh:
+                fh.write(b"abc")
+        with patch.dict("bits_helpers.download.downloadHandlers", {"https": fetch}):
+            got = cc.hash_source("https://example.com/x-1.tar.gz", os.path.join(tmp, "sw"), None)
+        self.assertEqual(got, "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        self.assertTrue(os.path.isdir(os.path.join(tmp, "sw", "SOURCES", "cache")))
+
+    def test_reads_a_local_source_in_place(self):
+        tmp = tempfile.mkdtemp()
         src = os.path.join(tmp, "x-1.tar.gz")
         with open(src, "wb") as fh:
             fh.write(b"abc")
         got = cc.hash_source("file://" + src, os.path.join(tmp, "sw"), None)
         self.assertEqual(got, "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-        self.assertTrue(os.path.isdir(os.path.join(tmp, "sw", "SOURCES", "cache")))
+        self.assertFalse(os.path.exists(os.path.join(tmp, "sw", "SOURCES", "cache")))
 
 
 class TestReviewFollowUps(_Repos):

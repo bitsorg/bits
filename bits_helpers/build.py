@@ -322,8 +322,8 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None,
   if not sources:              # reused from the store: its sources are not needed
     return
   # --- Source archive prefetch ------------------------------------------------
-  # Warms the download cache (SOURCES/cache) only; checkout_sources copies from
-  # there. download() uses _acquire_download/_wait_for_sentinel internally, so
+  # Warms the download cache (SOURCES/cache) only, file:// sources aside; checkout_sources
+  # copies from there. download() uses _acquire_download/_wait_for_sentinel internally, so
   # concurrent prefetch threads coordinate automatically. The entries are
   # resolved exactly as checkout_sources resolves them ((arch)url gates,
   # $(...) expressions), for the raw build architecture it uses.
@@ -2013,8 +2013,9 @@ def _cached_sources(spec, work_dir, architecture):
     fixed = fixUrl(url)
     url_hash = getUrlChecksum(fixed)
     fname = fixed.rsplit("/", 1)[-1]
-    path = next((c for c in (join(work_dir, "SOURCES", "cache", url_hash[:2], url_hash, fname),
-                             join(src_dir, fname)) if exists(c)), None)
+    local = [fixed[len("file:/"):]] if fixed.startswith("file:/") else []   # never cached
+    path = next((c for c in local + [join(work_dir, "SOURCES", "cache", url_hash[:2], url_hash, fname),
+                                     join(src_dir, fname)] if exists(c)), None)
     out.append((url, path))
   return out
 
