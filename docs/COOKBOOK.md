@@ -431,7 +431,7 @@ After sourcing the recipe, `build_template.sh` calls `Run "$@"`; a recipe withou
 
 A recipe overrides a hook by defining a function with the same name **after** the `. $(bits-include …)` line; all other hooks keep their defaults. `bits-recipe-tools` must be listed as a `build_requires` of the recipe.
 
-`PythonRecipe` differs: its `PostInstall()` rewrites script shebangs (keep that logic if you override it), a `Preload` step follows, and its `Clean()` does nothing.
+`PythonRecipe` differs: its `PostInstall()` rewrites script shebangs (keep that logic if you override it), a `Preload` step follows, and its `Clean()` does nothing. It builds with `pip install --no-deps --no-build-isolation`, so the build backend, its tools and the package's runtime dependencies must all come from the recipe's requirements: for a meson-python package such as scikit-learn, `meson_python` in `requires` and `ninja` in `build_requires`.
 
 ### MODULE_OPTIONS — controlling modulefile generation
 
