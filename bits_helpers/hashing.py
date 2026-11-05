@@ -271,17 +271,17 @@ def storeHashes(package, specs, considerRelocation):
     from bits_helpers.checksum import parse_entry   # a ",algo:hex" is not in the path
     for src in spec["sources"]:
       if src.startswith("file://"):
-        with open(parse_entry(src)[0][len("file:/"):]) as ref:  # keeps the leading "/"
-          file_content = "".join(ref.readlines())
-          h_all(file_content)
+        with open(parse_entry(src)[0][len("file:/"):], "rb") as ref:  # keeps the leading "/"
+          for chunk in iter(lambda: ref.read(1 << 20), b""):   # bytes: an archive is not text
+            h_all(chunk)
       else:
         h_all(src)
   if "patches" in spec:
     for patch in spec["patches"]:
       h_all(patch)
-      with open(os.path.join(spec["pkgdir"], "patches", patch)) as ref:
-        patch_content = "".join(ref.readlines())
-        h_all(patch_content)
+      with open(os.path.join(spec["pkgdir"], "patches", patch), "rb") as ref:
+        for chunk in iter(lambda: ref.read(1 << 20), b""):
+          h_all(chunk)
   # A declared non-default patch strip level changes how a patch is applied
   # (which files), so fold it into the identity. Only when set, so recipes that
   # do not use it keep byte-identical hashes (no mass rebuild).

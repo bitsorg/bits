@@ -599,5 +599,48 @@ class LocalSourceChecksumEntryTest(unittest.TestCase):
             self.assertEqual(plain["remote_revision_hash"], checked["remote_revision_hash"])
 
 
+class FileContentHashTest(unittest.TestCase):
+    """A file:// source and a patch are hashed by their bytes: text as before, archives too."""
+
+    def _hash(self, tmp, **extra):
+        from collections import OrderedDict
+        from bits_helpers import hashing
+        spec = {"package": "zlib", "version": "1.3", "recipe": "make", "commit_hash": "v1.3",
+                "tag": "v1.3", "is_devel_pkg": False, "requires": [], "env": OrderedDict(),
+                "append_path": OrderedDict(), "prepend_path": OrderedDict(), "pkgdir": tmp}
+        spec.update(extra)
+        with patch.object(hashing, "BUILD_EPOCH", 0):
+            hashing.storeHashes("zlib", {"zlib": spec}, considerRelocation=False)
+        return spec["remote_revision_hash"]
+
+    def _write(self, path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(data)
+
+    def test_a_text_source_hashes_as_before(self):   # golden: the hash read as text
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "local.txt")
+            self._write(src, "line one\nline two \u2013 utf-8 \u2713\n".encode())
+            self.assertEqual(self._hash(tmp, sources=["file:/" + src]),
+                             "0b01811ea89ccf04109a9980a36cb4c2796f408d")
+
+    def test_a_patch_hashes_as_before(self):   # golden: the hash read as text
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(os.path.join(tmp, "patches", "fix.patch"),
+                        "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old \u2013\n+new \u2713\n".encode())
+            self.assertEqual(self._hash(tmp, patches=["fix.patch"]),
+                             "4beb70c09935f3e8008761c5fa597f5c81f6baa4")
+
+    def test_an_archive_source_is_hashed_and_an_edit_changes_it(self):
+        import gzip
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "local-1.0.tar.gz")
+            self._write(src, gzip.compress(b"first"))
+            first = self._hash(tmp, sources=["file:/" + src])
+            self._write(src, gzip.compress(b"edited"))
+            self.assertNotEqual(self._hash(tmp, sources=["file:/" + src]), first)
+
+
 if __name__ == "__main__":
     unittest.main()
