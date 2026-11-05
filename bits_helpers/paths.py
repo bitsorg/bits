@@ -3,7 +3,7 @@
 
 """Config- and recipe-file path resolution: locate recipe/defaults ``.sh`` files
 across the config dir and taps, and list the search paths. Split out of
-utilities.py as a leaf (depends only on the logger), so the recipe and defaults
+utilities.py as a leaf (depends only on the logger and checksum.parse_entry), so the recipe and defaults
 layers above it can share these without an import cycle."""
 
 import os
@@ -31,7 +31,10 @@ def resolveLocalPath(configDir, s):
     The resolved path.
   """
   if s.startswith("file://"):
-    return f"file:/" + os.path.abspath(resolveFilename({}, s[len("file://"):], configDir, {}, ext="")[0])
+    from bits_helpers.checksum import parse_entry   # keep a ",algo:hex" checksum after the path
+    url, checksum = parse_entry(s)
+    path = os.path.abspath(resolveFilename({}, url[len("file://"):], configDir, {}, ext="")[0])
+    return "file:/" + path + ("," + checksum if checksum else "")
   else:
     return s
 

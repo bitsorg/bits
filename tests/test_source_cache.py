@@ -569,5 +569,35 @@ class LocalFileSourceTest(unittest.TestCase):
         self.assertIn("store_path", got[1])
 
 
+class LocalSourceChecksumEntryTest(unittest.TestCase):
+    """A file:// source may carry a ",algo:hex" checksum like any other source."""
+
+    DIGEST = "sha256:" + "a" * 64
+
+    def _spec(self, sources):
+        from collections import OrderedDict
+        return {"package": "zlib", "version": "1.3", "recipe": "make", "commit_hash": "v1.3",
+                "tag": "v1.3", "is_devel_pkg": False, "requires": [], "env": OrderedDict(),
+                "append_path": OrderedDict(), "prepend_path": OrderedDict(), "sources": sources}
+
+    def test_the_path_is_resolved_and_the_checksum_kept(self):
+        from bits_helpers.paths import resolveLocalPath
+        with tempfile.TemporaryDirectory() as cfg:
+            open(os.path.join(cfg, "local.txt"), "w").close()
+            got = resolveLocalPath(cfg, "file://local.txt," + self.DIGEST)
+            self.assertEqual(got, "file:/" + os.path.join(cfg, "local.txt") + "," + self.DIGEST)
+
+    def test_the_hash_reads_the_file_not_the_checksum(self):
+        from bits_helpers.hashing import storeHashes
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "local.txt")
+            with open(src, "w") as fh:
+                fh.write("content")
+            plain, checked = self._spec(["file:/" + src]), self._spec(["file:/" + src + "," + self.DIGEST])
+            storeHashes("zlib", {"zlib": plain}, considerRelocation=False)
+            storeHashes("zlib", {"zlib": checked}, considerRelocation=False)
+            self.assertEqual(plain["remote_revision_hash"], checked["remote_revision_hash"])
+
+
 if __name__ == "__main__":
     unittest.main()

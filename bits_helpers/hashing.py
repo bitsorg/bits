@@ -268,9 +268,10 @@ def storeHashes(package, specs, considerRelocation):
       if "source" in spec:
         hasher(tag)
   if "sources" in spec:
+    from bits_helpers.checksum import parse_entry   # a ",algo:hex" is not in the path
     for src in spec["sources"]:
       if src.startswith("file://"):
-        with open(src[len("file:/"):]) as ref:  # keeps the leading "/"
+        with open(parse_entry(src)[0][len("file:/"):]) as ref:  # keeps the leading "/"
           file_content = "".join(ref.readlines())
           h_all(file_content)
       else:
