@@ -82,6 +82,9 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(r.json(), {"status": "ok"})
         self.assertIn("frame-ancestors 'none'", r.headers["content-security-policy"])
         self.assertEqual(r.headers["cache-control"], "no-store")
+        # no-referrer would make browsers send Origin: null on the sign-in form
+        self.assertEqual(r.headers["referrer-policy"], "same-origin")
+        self.assertEqual(self.login(self.state.code, origin="null").status_code, 403)
         self.assertNotIn(self.state.code, self.client.get("/").text)
 
     def test_bind(self):

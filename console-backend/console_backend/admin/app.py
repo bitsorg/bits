@@ -34,7 +34,9 @@ COOKIE = "bits_admin_session"
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
 HEADERS = {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
                                       "form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
-           "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
+           # same-origin, not no-referrer: with no-referrer a browser sends Origin: null
+           # even on the page's own form, and the Origin check would refuse it.
+           "X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin",
            "Cache-Control": "no-store", "X-Frame-Options": "DENY"}
 
 
