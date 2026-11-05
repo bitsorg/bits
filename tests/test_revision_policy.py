@@ -199,20 +199,36 @@ class RevisionPolicyReviewTest(unittest.TestCase):
         self.assertEqual(spec["hash"], spec["local_revision_hash"])
         self.assertEqual(spec["revision"], spec["local_revision_hash"])
 
-    def test_untracked_label_fatal_only_under_hash_policy(self):
+    def test_untracked_label_warns_and_never_stops(self):   # #140
         from bits_helpers import build
         specs = {"u": {}, "h": {"revision_policy": "hash"},
                  "ok": {"revision_policy": "hash", "force_revision": ""}}
         with patch.object(build, "warning") as warn, \
-             patch.object(build, "dieOnError") as die:
-            build.check_untracked_labels(specs, ["u", "ok"])
-            self.assertEqual(warn.call_count, 1)
-            self.assertFalse(any(c.args[0] for c in die.call_args_list))
-        with patch.object(build, "warning"), \
              patch.object(build, "dieOnError",
                           side_effect=lambda cond, msg: (_ for _ in ()).throw(SystemExit(msg)) if cond else None):
-            with self.assertRaises(SystemExit):
-                build.check_untracked_labels(specs, ["h"])
+            build.check_untracked_labels(specs, ["u", "h", "ok"])
+        self.assertEqual([c.args[1] for c in warn.call_args_list], ["u", "h"])
+
+    def test_untracked_dependency_is_named_by_its_build_time_revision(self):   # #140
+        import subprocess
+        from bits_helpers.initdotsh import generate_initdotsh
+        specs = {"libfoo": {"package": "libfoo", "version": "2.3", "revision": "1"},
+                 "app": {"package": "app", "version": "1", "revision": "1",
+                         "requires": ["libfoo"], "untracked_requires": ["libfoo"]}}
+        with tempfile.TemporaryDirectory() as work_dir:
+            script = generate_initdotsh("app", specs, self.ARCH, workDir=work_dir)
+            self.assertIn('[ -n "${LIBFOO_REVISION}" ] || . "$WORK_DIR/$BITS_ARCH_PREFIX"'
+                          '/libfoo/2.3-1/etc/profile.d/init.sh', script)
+            old = os.path.join(work_dir, self.ARCH, "libfoo", "2.3-1", "etc", "profile.d")
+            os.makedirs(old)
+            with open(os.path.join(old, "init.sh"), "w") as fh:
+                fh.write("echo old-libfoo\n")
+            base = {k: v for k, v in os.environ.items()
+                    if k not in ("WORK_DIR", "BITS_ARCH_PREFIX", "LIBFOO_REVISION")}
+            run = lambda env: subprocess.run(["bash", "-c", script], capture_output=True,
+                                             text=True, env=dict(base, **env)).stdout
+            self.assertIn("old-libfoo", run({}))                       # set up on its own
+            self.assertNotIn("old-libfoo", run({"LIBFOO_REVISION": "2"}))  # new one first
 
     def test_build_link_scan_parses_hash_labels(self):
         import re

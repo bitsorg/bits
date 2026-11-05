@@ -918,23 +918,14 @@ def tarball_target_regex(spec, arch):
 
 
 def check_untracked_labels(specs, targets):
-  """An untracked dependency needs a stable install label (force_revision): a
-  reused consumer references it by <pkg>/<version-revision>. Fatal under
-  revision_policy "hash", whose label is the hash and so moves on every
-  change; a warning otherwise."""
+  """A reused consumer's init.sh names an untracked dependency by the
+  <version-revision> it was built with (#140): without a fixed label
+  (force_revision) that path moves when the dependency changes."""
   for t in targets:
-    if specs[t].get("force_revision") is not None:
-      continue
-    dieOnError(specs[t].get("revision_policy") == "hash",
-               "Untracked dependency %s requires an explicit force_revision "
-               "under revision_policy: hash (for example, empty or a fixed "
-               "label)." % t)
-    warning("Untracked dependency %s has no stable install label "
-            "(force_revision): its install path moves when it changes, so "
-            "already-built consumers keep linking the previous build. Set "
-            "`force_revision: \"\"` (or a fixed label) on %s to keep "
-            "<%s>/<version-revision> stable.",
-            t, t, t)
+    if specs[t].get("force_revision") is None:
+      warning("Untracked dependency %s has no fixed install label "
+              "(force_revision): reused consumers keep the %s revision they "
+              "were built with unless the new one is set up first.", t, t)
 
 
 def create_version_link(spec, arch, work_dir):

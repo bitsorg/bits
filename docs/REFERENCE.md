@@ -2880,7 +2880,7 @@ define it in **both** `variables:` and `env:`.
 | `requires` | Runtime + build-time dependencies. |
 | `build_requires` | Build-time-only dependencies (e.g. `cmake`, `ninja`). |
 | `runtime_requires` | Not a recipe input: bits fills it from the resolved `requires:` list, so a value written in a recipe is ignored. |
-| `untracked_requires` | Runtime-linked dependencies **left out of this package's identity hash**: changing one rebuilds only the dependency itself (hashed normally), not this package or anything above it. Meant for iterating on a dependency you control. **You are responsible for ABI compatibility** — a reused consumer is not recompiled against the new dependency. Builds whose closure includes one are recorded as `provenance: loose` in `.meta.json` (still publishable). Give the dependency an explicit `force_revision` (`""` or a fixed label) to keep its install path stable; without one bits warns, and under `revision_policy: "hash"` it stops. |
+| `untracked_requires` | Runtime-linked dependencies **left out of this package's identity hash**: changing one rebuilds only the dependency itself (hashed normally), not this package or anything above it. Meant for iterating on a dependency you control. **You are responsible for ABI compatibility** — a reused consumer is not recompiled against the new dependency. Builds whose closure includes one are recorded as `provenance: loose` in `.meta.json` (still publishable). A reused consumer's `init.sh` names the dependency by the `<version>-<revision>` it was built with. With a fixed `force_revision` (`""` or a label) that path stays the same and reused consumers pick up the new build; without one bits warns, and a consumer set up on its own keeps its build-time revision unless the new one is set up first. |
 
 Each entry in `requires` / `build_requires` is a string in one of these forms:
 
@@ -3568,8 +3568,9 @@ Once a package's build hash is known, bits uses it as the revision when no
 `force_revision` is set.
 Explicit recipe values, per-package overrides, and the global `force_revision`
 fallback retain precedence, including `force_revision: ""`.
-An untracked dependency must have an explicit `force_revision`; the hash policy
-alone cannot supply its install label (the build stops otherwise). Development
+An untracked dependency without an explicit `force_revision` gets the hash as its
+label too, so each change gives it a new path (bits warns; see
+`untracked_requires`). Development
 packages keep counter (`localN`) revisions: they are built from a local checkout
 under their local hash.
 The hash includes tracked dependencies; this is the package build hash, not its

@@ -169,7 +169,7 @@ untracked_requires:
   - libfoo          # linked at runtime, but changes to it don't re-hash MyApp
 ```
 
-Give the dependency a **stable install label** so reused consumers keep finding it after it changes:
+A reused consumer's `init.sh` names the dependency by the `<version>-<revision>` it was built with. Give the dependency a **fixed install label** so that path stays the same and reused consumers pick up each new build:
 
 ```yaml
 package: libfoo
@@ -187,7 +187,7 @@ Only `libfoo` rebuilds; `MyApp` (and everything above it) keeps its identity has
 
 **Caveats.** The consumer is *neither recompiled nor relinked*, so this is valid only while your change keeps `libfoo` binary-compatible (same headers and library version). Any build that includes an untracked dependency is recorded as `provenance: loose` in `.meta.json`, meaning its hash does not cover everything it was built against; it is still publishable, but the compatibility decision is yours.
 
-Give each untracked dependency an explicit `force_revision` (`""` or a fixed label) so its install path stays stable; without one bits warns, and under `revision_policy: "hash"` it stops. The hash revision policy does not override an explicit value. See [`untracked_requires`](REFERENCE.md#dependencies) in the reference.
+Without a fixed label (bits warns), each change gives the dependency a new `<version>-<revision>`. A reused consumer set up on its own then keeps the revision it was built with, which must still be installed; it gets the new build only when that is set up first (its `<DEP>_REVISION` makes the consumer's `init.sh` skip the old path). A package that requires both, and tracks the dependency, sets the new one up first. The hash revision policy does not override an explicit `force_revision`. See [`untracked_requires`](REFERENCE.md#dependencies) in the reference.
 
 ## Versions, sources and recipe repositories
 
