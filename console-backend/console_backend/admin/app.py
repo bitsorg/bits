@@ -30,7 +30,7 @@ from . import passkeys
 HELPER_SOCKET = os.environ.get("BITS_ADMIN_HELPER_SOCKET", "/run/bits-admin-helper/helper.sock")
 CODE_FILE = os.environ.get("BITS_ADMIN_CODE_FILE", "/run/bits-admin/setup-code")
 ORIGINS = [o.strip().rstrip("/") for o in
-           os.environ.get("BITS_ADMIN_ORIGINS", "http://localhost:8800").split(",") if o.strip()]
+           os.environ.get("BITS_ADMIN_ORIGINS", "http://bits-admin.localhost:8800").split(",") if o.strip()]
 
 
 def _on(value):
