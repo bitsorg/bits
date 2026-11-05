@@ -175,8 +175,10 @@ def _keys_html(keys):
     choices = "".join("<option value=\"%s\">%s</option>" % (html.escape(k["id"]), html.escape(k["label"]))
                       for k in keys)
     return ("<table><tr><th>Label<th>Kind<th>Added<th>Id<th>Passphrase stored<th></tr>%s</table>"
-            "<h3>Store the signer's passphrase under a key</h3><form id=box><select id=box-key>%s</select> "
-            "<input type=password id=passphrase autocomplete=off size=30 placeholder=passphrase> "
+            "<h3>Store the signer's passphrase under a key</h3><p>The signer's passphrase, the one "
+            "<code>make unlock</code> asks for: typed once per key, after that Unlock and the key are "
+            "enough.</p><form id=box><select id=box-key>%s</select> "
+            "<input type=password id=passphrase autocomplete=off size=30 placeholder=\"signer passphrase\"> "
             "<button>Store</button></form>" % (rows, choices))
 
 
@@ -242,6 +244,12 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         keys = store.load()
         boxed = [k for k in keys if k.get("box") and not (keys_only and k.get("synced"))]
         unlock = ""
+        if status.get("signer") != "loaded" and keys and not boxed:
+            unlock = ("<h2>Unlock the signer</h2><p>%s</p>" % (
+                "Only security keys may unlock here (BITS_ADMIN_SECURITY_KEYS_ONLY): store the "
+                "signer's passphrase under one below." if any(k.get("box") for k in keys) else
+                "No key can unlock yet: store the signer's passphrase under one below, then "
+                "unlock here."))
         if status.get("signer") != "loaded" and boxed:
             unlock = ("<h2>Unlock the signer</h2><form id=unlock><select id=unlock-key>%s</select> "
                       "<button>Unlock</button></form>" % "".join(

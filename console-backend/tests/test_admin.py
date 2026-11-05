@@ -447,7 +447,10 @@ class AdminTest(unittest.TestCase):
         self.enrol()
         [key] = self.store.load()
         self.signer = "no key"
-        self.assertNotIn("Unlock the signer", self.client.get("/").text)
+        page = self.client.get("/").text
+        self.assertIn("No key can unlock yet", page)
+        self.assertNotIn("<form id=unlock>", page)
+        self.assertIn("<code>make unlock</code> asks for", page)
         options, _ = self.unlock(key["id"])
         self.assertIn("no passphrase is stored", options["error"])
         for path in ("/unlock/options", "/unlock/box", "/unlock"):
@@ -464,7 +467,9 @@ class AdminTest(unittest.TestCase):
         self.state.renew_code()
         strict.post("/login", content="code=" + self.state.code, headers={
             "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
-        self.assertNotIn("Unlock the signer", strict.get("/").text)
+        page = strict.get("/").text
+        self.assertNotIn("<form id=unlock>", page)
+        self.assertIn("Only security keys may unlock here", page)
         r = strict.post("/unlock/options", json={"id": key["id"]}, headers={"Origin": ORIGIN})
         self.assertIn("accepts security keys only", r.json()["error"])
 
