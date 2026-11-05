@@ -1,5 +1,5 @@
-// bits-admin's page: enrol a security key (WebAuthn, with the PRF extension), and
-// store the signer's passphrase encrypted with a key derived from its PRF output.
+// bits-admin's page: enrol a key, a security key or a synced passkey (WebAuthn with PRF),
+// and store the signer's passphrase encrypted with a key derived from its PRF output.
 "use strict";
 const enc = new TextEncoder();
 const SALT = enc.encode("bits-admin unlock v1");  // the same at every unlock
@@ -28,7 +28,7 @@ async function enrol(event) {
     o.user.id = unb64u(o.user.id);
     o.excludeCredentials = (o.excludeCredentials || []).map(c => Object.assign(c, { id: unb64u(c.id) }));
     o.extensions = { prf: {} };
-    say("Touch your security key…");
+    say("Confirm with your key (touch, fingerprint or face)…");
     const c = await navigator.credentials.create({ publicKey: o });
     await post("/passkeys", { credential: {
       id: c.id, rawId: b64u(c.rawId), type: c.type,
@@ -59,7 +59,7 @@ async function touch(optionsUrl, id) {
   o.challenge = unb64u(o.challenge);
   o.allowCredentials = (o.allowCredentials || []).map(c => Object.assign(c, { id: unb64u(c.id) }));
   o.extensions = { prf: { eval: { first: SALT } } };
-  say("Touch your security key…");
+  say("Confirm with your key (touch, fingerprint or face)…");
   const a = await navigator.credentials.get({ publicKey: o });
   const prf = a.getClientExtensionResults().prf;
   if (!prf || !prf.results || !prf.results.first) throw new Error("the key gave no PRF output");

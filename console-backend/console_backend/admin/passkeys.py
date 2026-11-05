@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""bits-admin's security keys (ADR bits-services 0001, section J): enrolment, and the
+"""bits-admin's keys (ADR bits-services 0001, section J): security keys and synced
+passkeys (Touch ID, Face ID; refused when the site wants security keys only), and the
 signer's passphrase encrypted by the browser with a key from each one's PRF output.
 Kept in passkeys.json under BITS_ADMIN_DATA (0600, the container's user); never a
 passphrase nor what decrypts one."""
@@ -25,7 +26,7 @@ LABEL_MAX = 64
 
 
 class Refused(Exception):
-    """A security key bits-admin does not accept; the message is for the admin."""
+    """A key bits-admin does not accept; the message is for the admin."""
 
 
 def rp_id(origins):
@@ -35,11 +36,11 @@ def rp_id(origins):
 
 def clean_label(text):
     text = "".join(c for c in str(text) if c.isprintable()).strip()[:LABEL_MAX]
-    return text or "security key"
+    return text or "key"
 
 
 class Store:
-    """passkeys.json: a list of {id, public_key, sign_count, label, added, aaguid} and,
+    """passkeys.json: a list of {id, public_key, sign_count, label, added, aaguid, synced},
     once stored, box: {iv, ct, stored}, the passphrase as the browser encrypted it."""
 
     def __init__(self, path=None):
@@ -70,7 +71,7 @@ class Store:
         with self.lock:
             keys = self.load()
             if any(k["id"] == key["id"] for k in keys):
-                raise Refused("this security key is already enrolled")
+                raise Refused("this key is already enrolled")
             self._save(keys + [key])
 
     def get(self, key_id):
@@ -108,20 +109,25 @@ def registration_options(rp, label, keys):
     return options_to_json(opts), opts.challenge
 
 
-def verify_registration(rp, origins, credential, challenge, label, now):
-    """The key to store, or Refused: a synced passkey (backup eligible) or one without
-    PRF cannot guard the passphrase. py_webauthn raises on any other mismatch."""
+def _synced(v):
+    """Backup eligible: the passkey can be copied to the owner's other devices."""
+    return v.credential_backed_up or v.credential_device_type == CredentialDeviceType.MULTI_DEVICE
+
+
+def verify_registration(rp, origins, credential, challenge, label, now, *, security_keys_only):
+    """The key to store, or Refused: one without PRF cannot guard the passphrase, nor a
+    synced one when the site wants security keys only. py_webauthn raises on the rest."""
     v = verify_registration_response(credential=credential, expected_challenge=challenge,
                                       expected_rp_id=rp, expected_origin=origins,
                                       require_user_verification=True)
-    if v.credential_backed_up or v.credential_device_type == CredentialDeviceType.MULTI_DEVICE:
-        raise Refused("this is a synced passkey (it can be copied to other devices); use a security key")
+    if security_keys_only and _synced(v):
+        raise Refused("this is a synced passkey and this site accepts security keys only")
     prf = ((credential.get("clientExtensionResults") or {}).get("prf") or {})
     if prf.get("enabled") is not True:
         raise Refused("this key or browser offers no PRF, so it could not unlock the signer")
     return {"id": bytes_to_base64url(v.credential_id),
             "public_key": bytes_to_base64url(v.credential_public_key),
-            "sign_count": v.sign_count, "label": label, "aaguid": v.aaguid,
+            "sign_count": v.sign_count, "label": label, "aaguid": v.aaguid, "synced": _synced(v),
             "added": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now))}
 
 
@@ -133,16 +139,16 @@ def authentication_options(rp, key):
     return options_to_json(opts), opts.challenge
 
 
-def verify_assertion(rp, origins, credential, challenge, key):
+def verify_assertion(rp, origins, credential, challenge, key, *, security_keys_only):
     """The key's new signature counter; py_webauthn raises on any mismatch."""
     if credential.get("id") != key["id"]:
-        raise Refused("the answer came from another security key")
+        raise Refused("the answer came from another key")
     v = verify_authentication_response(
         credential=credential, expected_challenge=challenge, expected_rp_id=rp,
         expected_origin=origins, credential_public_key=base64url_to_bytes(key["public_key"]),
         credential_current_sign_count=key["sign_count"], require_user_verification=True)
-    if v.credential_backed_up or v.credential_device_type == CredentialDeviceType.MULTI_DEVICE:
-        raise Refused("this key now says it is a synced passkey; remove it")
+    if security_keys_only and _synced(v):
+        raise Refused("this is a synced passkey and this site accepts security keys only")
     return v.new_sign_count
 
 

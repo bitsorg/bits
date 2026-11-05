@@ -3,7 +3,7 @@
 """bits-admin (ADR bits-services 0001): the site's admin page, reached only through an
 SSH tunnel to its unix socket: sign-in with a one-time setup code (a file only the
 bits-admin group reads), a session, /healthz, the host helper's status, and the
-security keys that will unlock the signer (passkeys.py).
+keys that unlock the signer (passkeys.py).
 
 A page from another site in the admin's browser cannot use the tunnel: requests must
 name an allowed Host (no DNS rebinding) and a POST an allowed Origin.
@@ -31,6 +31,15 @@ HELPER_SOCKET = os.environ.get("BITS_ADMIN_HELPER_SOCKET", "/run/bits-admin-help
 CODE_FILE = os.environ.get("BITS_ADMIN_CODE_FILE", "/run/bits-admin/setup-code")
 ORIGINS = [o.strip().rstrip("/") for o in
            os.environ.get("BITS_ADMIN_ORIGINS", "http://localhost:8800").split(",") if o.strip()]
+
+
+def _on(value):
+    """A setting is on unless empty, 0, false or no: an unknown value errs to strict."""
+    return (value or "").strip().lower() not in ("", "0", "false", "no")
+
+
+# Off by default: Touch ID, Face ID and other synced passkeys may unlock too.
+SECURITY_KEYS_ONLY = _on(os.environ.get("BITS_ADMIN_SECURITY_KEYS_ONLY"))
 CODE_TTL, SESSION_TTL, CHALLENGE_TTL = 1800, 12 * 3600, 300
 FAILURES, WINDOW = 20, 600  # wrong setup codes per window (seconds); a new code clears them
 COOKIE = "bits_admin_session"
@@ -155,16 +164,17 @@ def _page(title, body):
 def _keys_html(keys):
     if not keys:
         return "<p>None yet.</p>"
-    rows = "".join("<tr><td>%s</td><td>%s</td><td><code>%s</code></td><td>%s</td><td><form method=post "
-                   "action=/passkeys/delete><input type=hidden name=id value=\"%s\"><button>Remove"
-                   "</button></form></td></tr>" % (html.escape(k["label"]), html.escape(k["added"]),
-                                                    html.escape(k["id"][:8]),
+    rows = "".join("<tr><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td><td>%s</td><td><form "
+                   "method=post action=/passkeys/delete><input type=hidden name=id value=\"%s\"><button>Remove"
+                   "</button></form></td></tr>" % (html.escape(k["label"]),
+                                                    "synced passkey" if k.get("synced") else "device-bound",
+                                                    html.escape(k["added"]), html.escape(k["id"][:8]),
                                                     html.escape(k["box"]["stored"]) if k.get("box") else "–",
                                                     html.escape(k["id"]))
                    for k in keys)
     choices = "".join("<option value=\"%s\">%s</option>" % (html.escape(k["id"]), html.escape(k["label"]))
                       for k in keys)
-    return ("<table><tr><th>Label<th>Added<th>Id<th>Passphrase stored<th></tr>%s</table>"
+    return ("<table><tr><th>Label<th>Kind<th>Added<th>Id<th>Passphrase stored<th></tr>%s</table>"
             "<h3>Store the signer's passphrase under a key</h3><form id=box><select id=box-key>%s</select> "
             "<input type=password id=passphrase autocomplete=off size=30 placeholder=passphrase> "
             "<button>Store</button></form>" % (rows, choices))
@@ -182,8 +192,9 @@ async def _body(request, limit):
     return body
 
 
-def create_app(state=None, helper=ask_helper, origins=None, store=None):
+def create_app(state=None, helper=ask_helper, origins=None, store=None, security_keys_only=None):
     state = state or State()
+    keys_only = SECURITY_KEYS_ONLY if security_keys_only is None else security_keys_only
     store = store or passkeys.Store()
     origins = [o.rstrip("/") for o in (origins or ORIGINS)]
     rp = passkeys.rp_id(origins)
@@ -229,12 +240,14 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None):
                          "size=22 placeholder=XXXX-XXXX-XXXX-XXXX> <button>Sign in</button></form>")
         status = helper({"op": "status"})
         return _page("Site", "<p>Signed in with the setup code.</p><h2>Host helper</h2><pre>%s</pre>"
-                     "<h2>Security keys</h2>%s<form id=enrol><input id=label maxlength=%d size=30 "
-                     "placeholder=\"e.g. YubiKey 5C, Predrag\"> <button>Add security key</button>"
+                     "<h2>Keys</h2><p>%s</p>%s<form id=enrol><input id=label maxlength=%d size=30 "
+                     "placeholder=\"e.g. YubiKey 5C, MacBook Touch ID\"> <button>Add key</button>"
                      "</form><p id=status></p><form method=post action=/logout><button>Sign out"
                      "</button></form><script src=/admin.js></script>"
-                     % (html.escape(json.dumps(status, indent=1)), _keys_html(store.load()),
-                        passkeys.LABEL_MAX))
+                     % (html.escape(json.dumps(status, indent=1)),
+                        "Security keys only (BITS_ADMIN_SECURITY_KEYS_ONLY)." if keys_only else
+                        "Security keys (YubiKey) and synced passkeys (Touch ID, Face ID).",
+                        _keys_html(store.load()), passkeys.LABEL_MAX))
 
     @app.post("/login")
     async def login(request: Request):
@@ -278,12 +291,13 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None):
         challenge, label = started
         try:
             credential = json.loads(await _body(request, 16384))["credential"]
-            key = passkeys.verify_registration(rp, origins, credential, challenge, label, state.now())
+            key = passkeys.verify_registration(rp, origins, credential, challenge, label, state.now(),
+                                               security_keys_only=keys_only)
         except passkeys.Refused as e:
             return refuse(str(e))
         except Exception as e:  # py_webauthn raises several types, all a failed check
             print("bits-admin: enrolment refused (%s)" % type(e).__name__, file=sys.stderr, flush=True)
-            return refuse("the security key's answer did not verify")
+            return refuse("the key's answer did not verify")
         try:
             store.add(key)
         except passkeys.Refused as e:
@@ -291,7 +305,8 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None):
         except OSError as e:
             print("bits-admin: cannot save %s: %s" % (store.path, e), file=sys.stderr, flush=True)
             return refuse("bits-admin could not save the key (see its log)", 500)
-        print("bits-admin: security key %s (%s) enrolled" % (key["id"][:8], key["label"]),
+        kind = "synced passkey" if key["synced"] else "device-bound"
+        print("bits-admin: key %s (%s, %s) enrolled" % (key["id"][:8], key["label"], kind),
               file=sys.stderr, flush=True)
         return JSONResponse({"ok": True}, headers=HEADERS)
 
@@ -305,7 +320,9 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None):
         except (ValueError, AttributeError):
             return refuse("bad request")
         if not key:
-            return refuse("no such security key")
+            return refuse("no such key")
+        if keys_only and key.get("synced"):
+            return refuse("this is a synced passkey and this site accepts security keys only")
         options, challenge = passkeys.authentication_options(rp, key)
         state.put_challenge(token, "box", (challenge, key["id"]))
         return Response(options, media_type="application/json", headers=HEADERS)
@@ -330,13 +347,14 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None):
             return refuse("bad request")
         try:
             if not key:
-                raise passkeys.Refused("no such security key")
-            count = passkeys.verify_assertion(rp, origins, credential, challenge, key)
+                raise passkeys.Refused("no such key")
+            count = passkeys.verify_assertion(rp, origins, credential, challenge, key,
+                                              security_keys_only=keys_only)
         except passkeys.Refused as e:
             return refuse(str(e))
         except Exception as e:  # py_webauthn raises several types, all a failed check
             print("bits-admin: passphrase not stored (%s)" % type(e).__name__, file=sys.stderr, flush=True)
-            return refuse("the security key's answer did not verify")
+            return refuse("the key's answer did not verify")
         store.update(key_id, sign_count=count)
         checked = helper({"op": "check-signer-passphrase", "passphrase": passphrase})
         if not checked.get("ok"):
@@ -344,11 +362,11 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None):
         box["stored"] = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(state.now()))
         try:
             if not store.update(key_id, box=box):
-                return refuse("no such security key (removed meanwhile)")
+                return refuse("no such key (removed meanwhile)")
         except OSError as e:
             print("bits-admin: cannot save %s: %s" % (store.path, e), file=sys.stderr, flush=True)
             return refuse("bits-admin could not save it (see its log)", 500)
-        print("bits-admin: passphrase stored under security key %s" % key_id[:8], file=sys.stderr, flush=True)
+        print("bits-admin: passphrase stored under key %s" % key_id[:8], file=sys.stderr, flush=True)
         return JSONResponse({"ok": True}, headers=HEADERS)
 
     @app.post("/passkeys/delete")
@@ -360,7 +378,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None):
         except ValueError:
             return refuse("bad request")
         if store.remove(key_id):
-            print("bits-admin: security key %s removed" % key_id[:8], file=sys.stderr, flush=True)
+            print("bits-admin: key %s removed" % key_id[:8], file=sys.stderr, flush=True)
         return RedirectResponse("/", status_code=303, headers=HEADERS)
 
     @app.post("/logout")

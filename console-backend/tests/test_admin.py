@@ -195,9 +195,7 @@ class AdminTest(unittest.TestCase):
 
     def test_keys_that_cannot_guard_the_passphrase_are_refused(self):
         self.login(self.state.code)
-        for fake, said in (({"flags": UP | UV | AT | BE | BS}, "synced passkey"),
-                           ({"flags": UP | UV | AT | BE}, "synced passkey"),
-                           ({"prf": False}, "no PRF"), ({"prf": None}, "no PRF"),
+        for fake, said in (({"prf": False}, "no PRF"), ({"prf": None}, "no PRF"),
                            ({"flags": UP | AT}, "did not verify"),
                            ({"origin": "http://localhost:3000"}, "did not verify"),
                            ({"rp": "example.org"}, "did not verify")):
@@ -205,6 +203,45 @@ class AdminTest(unittest.TestCase):
             self.assertEqual(r.status_code, 400, fake)
             self.assertIn(said, r.json()["error"], fake)
         self.assertEqual(self.store.load(), [])
+
+    def test_synced_passkeys_unless_security_keys_only(self):
+        self.login(self.state.code)
+        _, r = self.enrol("Touch ID", flags=UP | UV | AT | BE | BS)
+        self.assertEqual(r.json(), {"ok": True})
+        [key] = self.store.load()
+        self.assertEqual(key["synced"], True)
+        self.assertIn("<td>synced passkey</td>", self.client.get("/").text)
+        _, r = self.enrol("not yet backed up", flags=UP | UV | AT | BE)
+        self.assertEqual(self.store.load()[1]["synced"], True)
+        self.store.remove(self.store.load()[1]["id"])
+        self.assertEqual(self.store_box(key["id"], flags=UP | UV | BE | BS).json(), {"ok": True})
+        strict = TestClient(admin.create_app(self.state, lambda r: {"ok": True}, [ORIGIN], self.store,
+                                             security_keys_only=True), base_url="http://localhost:8800")
+        self.state.renew_code()
+        strict.post("/login", content="code=" + self.state.code, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertIn("Security keys only", strict.get("/").text)
+        r = strict.post("/passkeys/box-options", json={"id": key["id"]}, headers={"Origin": ORIGIN})
+        self.assertIn("accepts security keys only", r.json()["error"])  # refused before the touch
+        self.store.update(key["id"], synced=False)  # recorded wrongly: the touch says it is synced
+        options = strict.post("/passkeys/box-options", json={"id": key["id"]}, headers={"Origin": ORIGIN}).json()
+        r = strict.post("/passkeys/box", headers={"Origin": ORIGIN}, json=dict(
+            BOX, passphrase="right-pass-9", credential=assertion(options, key["id"], flags=UP | UV | BE, counter=2)))
+        self.assertIn("accepts security keys only", r.json()["error"])
+        for flags in (UP | UV | AT | BE | BS, UP | UV | AT | BE):
+            options = strict.post("/passkeys/options", json={}, headers={"Origin": ORIGIN}).json()
+            r = strict.post("/passkeys", json={"credential": registration(options, flags=flags)},
+                            headers={"Origin": ORIGIN})
+            self.assertIn("accepts security keys only", r.json()["error"])
+        options = strict.post("/passkeys/options", json={}, headers={"Origin": ORIGIN}).json()
+        r = strict.post("/passkeys", json={"credential": registration(options)}, headers={"Origin": ORIGIN})
+        self.assertEqual(r.json(), {"ok": True})
+        self.assertEqual([k["synced"] for k in self.store.load()], [False, False])
+
+    def test_the_setting_errs_to_strict(self):
+        for value, on in ((None, False), ("", False), (" 0 ", False), ("No", False), ("false", False),
+                          ("1", True), ("yes", True), ("on", True), ("true ", True), ("enabled", True)):
+            self.assertEqual(admin._on(value), on, value)
 
     def test_the_same_key_twice_is_refused(self):
         self.login(self.state.code)
@@ -266,7 +303,7 @@ class AdminTest(unittest.TestCase):
         for path in ("/passkeys/options", "/passkeys", "/passkeys/delete"):
             self.assertEqual(self.client.post(path, json={}, headers={"Origin": ORIGIN}).status_code, 401)
             self.assertEqual(self.client.post(path, json={}).status_code, 403)  # no Origin
-        self.assertNotIn("Add security key", self.client.get("/").text)
+        self.assertNotIn("Add key", self.client.get("/").text)
 
     def test_the_script_is_served_and_allowed(self):
         r = self.client.get("/admin.js")
@@ -296,7 +333,7 @@ class AdminTest(unittest.TestCase):
         with contextlib.redirect_stderr(err):
             r = self.store_box(key["id"], counter=2)
         self.assertEqual(r.json(), {"ok": True})
-        self.assertIn("passphrase stored under security key", err.getvalue())
+        self.assertIn("passphrase stored under key", err.getvalue())
         self.assertNotIn("right-pass-9", err.getvalue())
         stored = self.store.get(key["id"])
         self.assertEqual((stored["box"]["iv"], stored["box"]["ct"], stored["sign_count"]),
@@ -314,7 +351,6 @@ class AdminTest(unittest.TestCase):
         checks = lambda: [a for a in self.asked if a.get("op") == "check-signer-passphrase"]
         self.store.update(first, sign_count=5)
         for fake, said in (({"flags": UP, "counter": 6}, "did not verify"),  # no user verification
-                           ({"flags": UP | UV | BE, "counter": 6}, "synced passkey"),
                            ({"origin": "http://localhost:3000", "counter": 6}, "did not verify"),
                            ({"counter": 3}, "did not verify")):  # not above the stored count
             r = self.store_box(first, **fake)
@@ -322,7 +358,7 @@ class AdminTest(unittest.TestCase):
         options = self.client.post("/passkeys/box-options", json={"id": first}, headers={"Origin": ORIGIN}).json()
         r = self.client.post("/passkeys/box", headers={"Origin": ORIGIN}, json=dict(
             BOX, passphrase="right-pass-9", credential=assertion(options, second, counter=6)))
-        self.assertIn("another security key", r.json()["error"])
+        self.assertIn("another key", r.json()["error"])
         for box in ({"iv": "short", "ct": BOX["ct"]}, {"iv": BOX["iv"], "ct": b64u(bytes(4))},
                     {"iv": BOX["iv"], "ct": b64u(bytes(len("right-pass-9") + 17))}):
             self.assertIn("malformed", self.store_box(first, box=box).json()["error"])
