@@ -20,7 +20,7 @@ from bits_helpers.log import dieOnError, debug, error, info, warning, ProgressPr
 from bits_helpers.build_progress import package_info, package_label
 from bits_helpers.download import download
 from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash, asList
-from bits_helpers.checksum import parse_entry, check_file as check_file_checksum
+from bits_helpers.checksum import parse_entry, check_file as check_file_checksum, checksum_file
 
 FETCH_LOG_NAME = "fetch-log.txt"
 
@@ -732,8 +732,33 @@ def _extract_source_archives(source_dir, expected_names=None):
                  "the package's sources: URL." % (entry, exc, filepath))
 
   strips_map = {entry: strip for entry, _, strip in archives}
+  digests = {entry: checksum_file(filepath) for entry, filepath, _ in archives}
   with open(sentinel, "w") as fh:
-    json.dump({"strips": strips_map}, fh)
+    json.dump({"strips": strips_map, "digests": digests}, fh)
+
+
+def _wipe_source_if_local_archive_changed(source_dir, entries):
+  """Remove source_dir when a file:// archive among *entries* is not the one it
+  was extracted from (#147): the tree is keyed by version, not by the archive."""
+  import json
+  sentinel = os.path.join(source_dir, ".bits_extracted")
+  if not os.path.exists(sentinel):
+    return
+  try:
+    with open(sentinel) as f:
+      recorded = json.loads(f.read()).get("digests") or {}
+  except (OSError, ValueError, AttributeError):
+    recorded = {}
+  for entry in entries:
+    url = parse_entry(entry)[0]
+    name = url.rsplit("/", 1)[-1]
+    if not url.startswith("file:/") or not name.lower().endswith(_TAR_EXTENSIONS + _ZIP_EXTENSIONS):
+      continue
+    path = url[len("file:/"):]
+    if os.path.isfile(path) and recorded.get(name) != checksum_file(path):
+      debug("Wiping %s: the local archive %s changed since it was extracted", source_dir, name)
+      shutil.rmtree(source_dir, ignore_errors=True)
+      return
 
 
 def checkout_sources(spec, work_dir, reference_sources, containerised_build,
@@ -789,6 +814,9 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
   # (Scoped to tarball sources; git checkouts handle their own working tree.)
   if spec.get("sources") and spec.get("patches") and os.path.isdir(source_dir):
     _wipe_source_if_patchset_changed(spec, source_dir)
+  _arch = architecture or os.environ.get("ARCHITECTURE", "")
+  if spec.get("sources") and os.path.isdir(source_dir):
+    _wipe_source_if_local_archive_changed(source_dir, active_source_entries(spec, _arch))
 
   if spec["commit_hash"] != spec["tag"]:
     symlink(spec["commit_hash"], os.path.join(source_parent_dir, spec["tag"].replace("/", "_")))
@@ -810,7 +838,6 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     # downloading.  ``architecture`` is passed in by the caller (build.py
     # knows raw_architecture); fall back to the env var for backwards
     # compatibility with tests and external callers, then to "".
-    _arch = architecture or os.environ.get("ARCHITECTURE", "")
     active_sources = active_source_entries(spec, _arch)
 
     # Fail early with a clear message when no source entry matched the current

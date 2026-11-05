@@ -386,6 +386,85 @@ class ParallelCheckoutSourcesTest(unittest.TestCase):
 # 6. _extract_source_archives()
 # ---------------------------------------------------------------------------
 
+class LocalArchiveCheckoutTest(unittest.TestCase):
+    """A changed file:// archive is extracted and patched again from scratch (#147)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.recipes = os.path.join(self.tmp, "recipes")
+        os.makedirs(os.path.join(self.recipes, "patches"))
+        self.archive = os.path.join(self.recipes, "local-1.0.tar.gz")
+        self.source_dir = os.path.join(self.tmp, "sw", "SOURCES", "mypkg", "1.0", "v1.0")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _make_archive(self, files):
+        import io
+        import tarfile
+        with tarfile.open(self.archive, "w:gz") as tf:
+            for name, text in files.items():
+                data = text.encode()
+                info = tarfile.TarInfo(name="local-1.0/" + name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+    def _checkout(self, patches=()):
+        from bits_helpers.workarea import checkout_sources
+        spec = {"package": "mypkg", "version": "1.0", "commit_hash": "v1.0", "tag": "v1.0",
+                "is_devel_pkg": False, "sources": ["file:/" + self.archive],
+                "scm": MagicMock(), "source_checksums": {}, "patch_checksums": {},
+                "pkgdir": self.recipes, "patches": list(patches)}
+        checkout_sources(spec, os.path.join(self.tmp, "sw"), os.path.join(self.tmp, "MIRROR"),
+                         containerised_build=False, architecture="x86_64")
+
+    def _read(self, name):
+        with open(os.path.join(self.source_dir, name)) as fh:
+            return fh.read()
+
+    def test_a_changed_archive_is_extracted_and_patched_again(self):
+        with open(os.path.join(self.recipes, "patches", "add.patch"), "w") as fh:
+            fh.write("--- /dev/null\n+++ b/added.txt\n@@ -0,0 +1 @@\n+added\n")
+        self._make_archive({"a.txt": "first\n", "old.txt": "gone later\n"})
+        self._checkout(["add.patch"])
+        self._make_archive({"a.txt": "edited\n"})
+        self._checkout(["add.patch"])
+        self.assertEqual(self._read("a.txt"), "edited\n")
+        self.assertFalse(os.path.exists(os.path.join(self.source_dir, "old.txt")))
+        self.assertEqual(self._read("added.txt"), "added\n")
+
+    def test_an_unchanged_archive_is_not_extracted_again(self):
+        self._make_archive({"a.txt": "first\n"})
+        self._checkout()
+        with open(os.path.join(self.source_dir, "built.o"), "w") as fh:
+            fh.write("kept")
+        self._checkout()
+        self.assertEqual(self._read("built.o"), "kept")
+
+    def test_a_tree_from_an_older_bits_is_extracted_once_more(self):
+        self._make_archive({"a.txt": "first\n"})
+        self._checkout()
+        with open(os.path.join(self.source_dir, ".bits_extracted"), "w") as fh:
+            fh.write('{"strips": {"local-1.0.tar.gz": 1}}')       # no digests
+        with open(os.path.join(self.source_dir, "built.o"), "w") as fh:
+            fh.write("stale")
+        self._checkout()
+        self.assertFalse(os.path.exists(os.path.join(self.source_dir, "built.o")))
+        self._checkout()
+        self.assertEqual(self._read("a.txt"), "first\n")
+
+    def test_a_downloaded_archive_is_not_hashed(self):
+        from bits_helpers.workarea import _wipe_source_if_local_archive_changed
+        os.makedirs(self.source_dir)
+        with open(os.path.join(self.source_dir, ".bits_extracted"), "w") as fh:
+            fh.write("{}")
+        with patch("bits_helpers.workarea.checksum_file") as mock_sum:
+            _wipe_source_if_local_archive_changed(
+                self.source_dir, ["https://example.com/foo-1.0.tar.gz"])
+            mock_sum.assert_not_called()
+        self.assertTrue(os.path.isdir(self.source_dir))
+
+
 class ExtractSourceArchivesTest(unittest.TestCase):
     """_extract_source_archives() unpacks archives found in source_dir."""
 
