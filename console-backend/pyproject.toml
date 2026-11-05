@@ -25,4 +25,4 @@ dependencies = [
 # pins as a submodule): the backend is part of bits, not released on its own.
 
 [tool.setuptools]
-packages = ["console_backend", "console_backend.orch"]
+packages = ["console_backend", "console_backend.orch", "console_backend.admin"]
