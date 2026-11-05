@@ -1396,13 +1396,21 @@ class Boto3RemoteSync(RemoteSync):
     from bits_helpers import rev_index
     key = rev_index.marker_key(effective_arch(spec, self.architecture),
                                spec["package"], spec["version"], rev)
+    recorded = None
     try:
       if self._s3_key_exists(key):
-        return
-      self.s3.put_object(Bucket=self.writeStore, Key=key,
-                         Body=spec["hash"].encode("utf-8"))
+        recorded = self.s3.get_object(Bucket=self.writeStore, Key=key)["Body"] \
+                       .read().decode("utf-8", "replace").strip()
+      else:
+        self.s3.put_object(Bucket=self.writeStore, Key=key,
+                           Body=spec["hash"].encode("utf-8"))
     except Exception as exc:
       debug("rev-index: could not write marker %s (%s)", key, exc)
+    # A fixed label (#146) that already names another package is not uploaded.
+    fixed = spec.get("force_revision") and not spec.get("_revision_policy_hash_injected")
+    dieOnError(bool(fixed and recorded) and recorded != spec["hash"],
+               rev_index.fixed_label_taken(spec["package"], spec["version"], rev,
+                                           recorded, spec["hash"]))
 
   def read_rev_markers(self, package, version, arch):
     """Return ``{revision: hash}`` from the rev-index markers for (arch, pkg,

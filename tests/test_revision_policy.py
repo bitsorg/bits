@@ -230,6 +230,24 @@ class RevisionPolicyReviewTest(unittest.TestCase):
             self.assertIn("old-libfoo", run({}))                       # set up on its own
             self.assertNotIn("old-libfoo", run({"LIBFOO_REVISION": "2"}))  # new one first
 
+    def test_fixed_label_of_another_package_stops_the_build(self):   # #146
+        from unittest.mock import MagicMock
+        from bits_helpers.build import check_fixed_label
+        def spec(**extra):
+            return dict({"package": "fftw", "version": "3.3.10", "revision": "dev",
+                         "remote_revision_hash": "new", "remote_hashes": ["new"]}, **extra)
+        helper = MagicMock()
+        helper.read_rev_markers.return_value = {"dev": "old"}
+        with self.assertRaises(SystemExit):
+            check_fixed_label(spec(), self.ARCH, helper, "b3://store")
+        helper.read_rev_markers.return_value = {"dev": "new"}
+        check_fixed_label(spec(), self.ARCH, helper, "b3://store")      # this package: reuse
+        helper.read_rev_markers.reset_mock()
+        check_fixed_label(spec(), self.ARCH, helper, "")                # no write store
+        check_fixed_label(spec(revision=""), self.ARCH, helper, "b3://store")
+        check_fixed_label(spec(_revision_policy_hash_injected=True), self.ARCH, helper, "b3://store")
+        helper.read_rev_markers.assert_not_called()
+
     def test_build_link_scan_parses_hash_labels(self):
         import re
         from bits_helpers.build import tarball_link_regex, tarball_target_regex

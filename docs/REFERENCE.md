@@ -3544,6 +3544,11 @@ overrides:
 
 When the regex matches a package name (case-insensitive), the package's revision is set to that value instead of a counter.
 
+A fixed label names one package: once the store records `<version>-<label>`, a changed
+package (another hash) needs a new label or version. With a write store, bits stops before
+building it (from the read store's record) and at upload (from the write store's), rather
+than publish two packages under one label.
+
 #### Global fallback
 
 Add a top-level `force_revision:` field to apply to every package not matched by an override:

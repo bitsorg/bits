@@ -81,6 +81,26 @@ class RevMarkerS3TestCase(unittest.TestCase):
         self._syncer(s3).write_rev_marker(_spec())
         self.assertEqual(s3.puts, {}, "must not overwrite an existing marker")
 
+    def test_fixed_label_naming_another_package_stops_the_upload(self):   # #146
+        key = ri.marker_key(ARCH, "fftw", "3.3.10", "dev")
+        s3 = FakeS3(existing={key}, objects={key: b"aa11" + b"0" * 36})
+        spec = dict(_spec(rev="dev"), force_revision="dev")
+        with self.assertRaises(SystemExit):
+            self._syncer(s3).write_rev_marker(spec)
+        self.assertEqual(s3.puts, {})
+
+    def test_fixed_label_naming_this_package_goes_ahead(self):
+        key = ri.marker_key(ARCH, "fftw", "3.3.10", "dev")
+        s3 = FakeS3(existing={key}, objects={key: b"bb22" + b"0" * 36})
+        self._syncer(s3).write_rev_marker(dict(_spec(rev="dev"), force_revision="dev"))
+        self.assertEqual(s3.puts, {})
+
+    def test_counter_revision_naming_another_package_is_left_alone(self):
+        key = ri.marker_key(ARCH, "fftw", "3.3.10", "2")
+        s3 = FakeS3(existing={key}, objects={key: b"aa11" + b"0" * 36})
+        self._syncer(s3).write_rev_marker(_spec())
+        self.assertEqual(s3.puts, {})
+
     def test_write_marker_noop_without_write_store(self):
         s3 = FakeS3()
         self._syncer(s3, writeStore="").write_rev_marker(_spec())

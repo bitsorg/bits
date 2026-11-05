@@ -928,6 +928,19 @@ def check_untracked_labels(specs, targets):
               "were built with unless the new one is set up first.", t, t)
 
 
+def check_fixed_label(spec, arch, sync_helper, write_store):
+  """A fixed force_revision labels one package (#146): reused for a changed one,
+  its write-once rev-index marker would keep naming the first. Stops the build."""
+  rev = spec.get("revision") or ""
+  if not write_store or not rev or spec.get("_revision_policy_hash_injected"):
+    return
+  recorded = sync_helper.read_rev_markers(spec["package"], spec["version"], arch).get(rev)
+  from bits_helpers.rev_index import fixed_label_taken
+  dieOnError(bool(recorded) and recorded not in spec["remote_hashes"],
+             fixed_label_taken(spec["package"], spec["version"], rev, recorded,
+                               spec["remote_revision_hash"]))
+
+
 def create_version_link(spec, arch, work_dir):
   """Rebuild the version link from the graph (no S3 fetch).
 
@@ -2349,6 +2362,8 @@ def build_one_package(p, ctx):
     # Keep the remote hash for lookup and reuse. A policy-injected label can
     # fall back to the local hash after the remote reuse attempt below.
     spec["hash"] = spec["remote_revision_hash"]
+    check_fixed_label(spec, effective_arch(spec, args.architecture), syncHelper,
+                      getattr(syncHelper, "writeStore", None))
   else:
     # Normal revision-counter logic: scan existing symlinks and find the
     # next free (or already-matching) revision number.

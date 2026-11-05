@@ -41,6 +41,13 @@ _REVISION_RE = re.compile(REVISION_TOKEN_PATTERN)
 # from a different version into (version -> {revision -> hash}).
 
 
+def fixed_label_taken(package, version, revision, recorded, this_hash):
+  """The message for a fixed revision label that already names another package."""
+  return ("%s %s-%s already names %s in the store; this build is %s. A changed "
+          "package needs a new force_revision or version."
+          % (package, version, revision, recorded, this_hash))
+
+
 def marker_prefix(arch, package, version):
   """S3 key prefix under which all revision markers for (arch, pkg, version) live.
 
