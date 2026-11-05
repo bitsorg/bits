@@ -1,9 +1,12 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""bits-admin: setup code, session, Host and Origin guards, helper status, enrolment."""
+"""bits-admin: setup code, session, Host and Origin guards, helper status, enrolment,
+the stored passphrase."""
 
 import base64
+import contextlib
 import hashlib
+import io
 import json
 import os
 import stat
@@ -12,6 +15,7 @@ import tempfile
 import unittest
 
 import cbor2
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
@@ -20,6 +24,7 @@ from console_backend.admin import passkeys
 
 ORIGIN = "http://localhost:8800"
 UP, UV, BE, BS, AT = 0x01, 0x04, 0x08, 0x10, 0x40
+PRIVATE = {}  # credential id (base64url) -> the fake authenticator's private key
 
 
 def b64u(data):
@@ -33,7 +38,8 @@ def unb64u(text):
 def registration(options, flags=UP | UV | AT, origin=ORIGIN, prf=True, cred_id=None, rp=None):
     """What a browser sends after navigator.credentials.create, attestation "none"."""
     cred_id = cred_id or os.urandom(16)
-    nums = ec.generate_private_key(ec.SECP256R1()).public_key().public_numbers()
+    private = PRIVATE[b64u(cred_id)] = ec.generate_private_key(ec.SECP256R1())
+    nums = private.public_key().public_numbers()
     cose = cbor2.dumps({1: 2, 3: -7, -1: 1, -2: nums.x.to_bytes(32, "big"), -3: nums.y.to_bytes(32, "big")})
     auth = (hashlib.sha256((rp or options["rp"]["id"]).encode()).digest() + bytes([flags]) + struct.pack(">I", 0)
             + bytes(16) + struct.pack(">H", len(cred_id)) + cred_id + cose)
@@ -44,12 +50,29 @@ def registration(options, flags=UP | UV | AT, origin=ORIGIN, prf=True, cred_id=N
                          "attestationObject": b64u(cbor2.dumps({"fmt": "none", "attStmt": {}, "authData": auth}))}}
 
 
+def assertion(options, cred_id, flags=UP | UV, origin=ORIGIN, counter=1):
+    """What a browser sends after navigator.credentials.get."""
+    auth = hashlib.sha256(options["rpId"].encode()).digest() + bytes([flags]) + struct.pack(">I", counter)
+    client = json.dumps({"type": "webauthn.get", "challenge": options["challenge"], "origin": origin}).encode()
+    signature = PRIVATE[cred_id].sign(auth + hashlib.sha256(client).digest(), ec.ECDSA(hashes.SHA256()))
+    return {"id": cred_id, "rawId": cred_id, "type": "public-key", "clientExtensionResults": {},
+            "response": {"clientDataJSON": b64u(client), "authenticatorData": b64u(auth),
+                         "signature": b64u(signature), "userHandle": None}}
+
+
+BOX = {"iv": b64u(bytes(12)), "ct": b64u(bytes(len("right-pass-9") + 16))}
+
+
 class AdminTest(unittest.TestCase):
     def setUp(self):
         self.t, self.said = [1000.0], []
         self.state = admin.State(now=lambda: self.t[0], write=self.said.append)
         self.asked = []
-        helper = lambda request: self.asked.append(request) or {"ok": True, "signer": "loaded"}
+        def helper(request):
+            self.asked.append(request)
+            if request.get("op") == "check-signer-passphrase" and request["passphrase"] != "right-pass-9":
+                return {"ok": False, "error": "wrong passphrase, or not an encrypted Ed25519 key"}
+            return {"ok": True, "signer": "loaded"}
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
         self.store = passkeys.Store(os.path.join(self.dir.name, "passkeys.json"))
@@ -250,6 +273,83 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(r.headers["content-type"].split(";")[0], "text/javascript")
         self.assertIn("navigator.credentials.create", r.text)
         self.assertIn("script-src 'self'", r.headers["content-security-policy"])
+
+    def store_box(self, key_id, passphrase="right-pass-9", box=BOX, **fake):
+        r = self.client.post("/passkeys/box-options", json={"id": key_id}, headers={"Origin": ORIGIN})
+        if r.status_code != 200:
+            return r
+        options = r.json()
+        self.assertEqual([c["id"] for c in options["allowCredentials"]], [key_id])
+        self.assertEqual(options["userVerification"], "required")
+        body = dict(box, passphrase=passphrase, credential=assertion(options, key_id, **fake))
+        return self.client.post("/passkeys/box", json=body, headers={"Origin": ORIGIN})
+
+    def test_the_passphrase_is_stored_once_checked(self):
+        self.login(self.state.code)
+        self.enrol()
+        [key] = self.store.load()
+        r = self.store_box(key["id"], passphrase="wrong-pass-7")
+        self.assertIn("not stored: wrong passphrase", r.json()["error"])
+        self.assertNotIn("box", self.store.get(key["id"]))
+        self.assertEqual(self.store.get(key["id"])["sign_count"], 1)  # the touch counted
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            r = self.store_box(key["id"], counter=2)
+        self.assertEqual(r.json(), {"ok": True})
+        self.assertIn("passphrase stored under security key", err.getvalue())
+        self.assertNotIn("right-pass-9", err.getvalue())
+        stored = self.store.get(key["id"])
+        self.assertEqual((stored["box"]["iv"], stored["box"]["ct"], stored["sign_count"]),
+                         (BOX["iv"], BOX["ct"], 2))
+        self.assertEqual(self.asked[-1], {"op": "check-signer-passphrase", "passphrase": "right-pass-9"})
+        with open(self.store.path) as f:
+            self.assertNotIn("right-pass-9", f.read())
+        self.assertIn(stored["box"]["stored"], self.client.get("/").text)
+
+    def test_a_bad_answer_stores_nothing(self):
+        self.login(self.state.code)
+        self.enrol()
+        self.enrol()
+        first, second = [k["id"] for k in self.store.load()]
+        checks = lambda: [a for a in self.asked if a.get("op") == "check-signer-passphrase"]
+        self.store.update(first, sign_count=5)
+        for fake, said in (({"flags": UP, "counter": 6}, "did not verify"),  # no user verification
+                           ({"flags": UP | UV | BE, "counter": 6}, "synced passkey"),
+                           ({"origin": "http://localhost:3000", "counter": 6}, "did not verify"),
+                           ({"counter": 3}, "did not verify")):  # not above the stored count
+            r = self.store_box(first, **fake)
+            self.assertIn(said, r.json()["error"], fake)
+        options = self.client.post("/passkeys/box-options", json={"id": first}, headers={"Origin": ORIGIN}).json()
+        r = self.client.post("/passkeys/box", headers={"Origin": ORIGIN}, json=dict(
+            BOX, passphrase="right-pass-9", credential=assertion(options, second, counter=6)))
+        self.assertIn("another security key", r.json()["error"])
+        for box in ({"iv": "short", "ct": BOX["ct"]}, {"iv": BOX["iv"], "ct": b64u(bytes(4))},
+                    {"iv": BOX["iv"], "ct": b64u(bytes(len("right-pass-9") + 17))}):
+            self.assertIn("malformed", self.store_box(first, box=box).json()["error"])
+        self.assertIn("no passphrase", self.store_box(first, passphrase="").json()["error"])
+        self.assertIn("1024 bytes", self.store_box(first, passphrase="é" * 600).json()["error"])
+        self.assertIn("bad request", self.store_box(first, box={"iv": BOX["iv"]}).json()["error"])  # no ct
+        self.assertIn("no such", self.store_box("bm9uZQ").json()["error"])
+        self.assertEqual(checks(), [])  # the helper was never asked
+        self.assertFalse(any("box" in k for k in self.store.load()))
+
+    def test_an_answer_is_used_once_and_a_removed_key_gets_nothing(self):
+        self.login(self.state.code)
+        self.enrol()
+        [key] = self.store.load()
+        options = self.client.post("/passkeys/box-options", json={"id": key["id"]}, headers={"Origin": ORIGIN}).json()
+        body = dict(BOX, passphrase="right-pass-9", credential=assertion(options, key["id"]))
+        self.assertEqual(self.client.post("/passkeys/box", json=body, headers={"Origin": ORIGIN}).json(), {"ok": True})
+        self.assertIn("expired", self.client.post("/passkeys/box", json=body, headers={"Origin": ORIGIN}).json()["error"])
+        options = self.client.post("/passkeys/box-options", json={"id": key["id"]}, headers={"Origin": ORIGIN}).json()
+        self.store.remove(key["id"])
+        body = dict(BOX, passphrase="right-pass-9", credential=assertion(options, key["id"], counter=2))
+        self.assertIn("no such", self.client.post("/passkeys/box", json=body, headers={"Origin": ORIGIN}).json()["error"])
+
+    def test_storing_needs_a_session(self):
+        for path in ("/passkeys/box-options", "/passkeys/box"):
+            self.assertEqual(self.client.post(path, json={}, headers={"Origin": ORIGIN}).status_code, 401)
+            self.assertEqual(self.client.post(path, json={}).status_code, 403)
 
     def test_helper_unreachable(self):
         self.assertEqual(admin.ask_helper({"op": "status"}, "/nonexistent/h.sock")["ok"], False)

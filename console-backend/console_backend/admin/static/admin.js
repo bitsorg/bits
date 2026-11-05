@@ -1,5 +1,8 @@
-// bits-admin's page: enrol a security key (WebAuthn, with the PRF extension).
+// bits-admin's page: enrol a security key (WebAuthn, with the PRF extension), and
+// store the signer's passphrase encrypted with a key derived from its PRF output.
 "use strict";
+const enc = new TextEncoder();
+const SALT = enc.encode("bits-admin unlock v1");  // the same at every unlock
 const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf)))
   .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
@@ -42,5 +45,59 @@ async function enrol(event) {
   }
 }
 
-const form = document.getElementById("enrol");
-if (form) form.addEventListener("submit", enrol);
+// AES-GCM key from the PRF output (HKDF-SHA-256); it never leaves the page.
+async function boxKey(prfOutput) {
+  const base = await crypto.subtle.importKey("raw", prfOutput, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32),
+                                   info: enc.encode("bits-admin passphrase") },
+                                 base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+
+// Asks the key (user verification, PRF); returns [assertion for the server, AES key].
+async function touch(optionsUrl, id) {
+  const o = await post(optionsUrl, { id });
+  o.challenge = unb64u(o.challenge);
+  o.allowCredentials = (o.allowCredentials || []).map(c => Object.assign(c, { id: unb64u(c.id) }));
+  o.extensions = { prf: { eval: { first: SALT } } };
+  say("Touch your security key…");
+  const a = await navigator.credentials.get({ publicKey: o });
+  const prf = a.getClientExtensionResults().prf;
+  if (!prf || !prf.results || !prf.results.first) throw new Error("the key gave no PRF output");
+  const assertion = { id: a.id, rawId: b64u(a.rawId), type: a.type, clientExtensionResults: {},
+    authenticatorAttachment: a.authenticatorAttachment,
+    response: { clientDataJSON: b64u(a.response.clientDataJSON),
+                authenticatorData: b64u(a.response.authenticatorData),
+                signature: b64u(a.response.signature),
+                userHandle: a.response.userHandle ? b64u(a.response.userHandle) : null } };
+  return [assertion, await boxKey(prf.results.first)];
+}
+
+async function storePassphrase(event) {
+  event.preventDefault();
+  const id = document.getElementById("box-key").value;
+  const input = document.getElementById("passphrase");
+  const button = event.target.querySelector("button");
+  if (!input.value) return say("Type the passphrase first.");
+  button.disabled = true;
+  try {
+    const [assertion, key] = await touch("/passkeys/box-options", id);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: enc.encode(id) },
+                                           key, enc.encode(input.value));
+    const back = await crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData: enc.encode(id) }, key, ct);
+    if (new TextDecoder().decode(back) !== input.value) throw new Error("encryption check failed; nothing stored");
+    say("Checking the passphrase…");
+    await post("/passkeys/box", { credential: assertion, passphrase: input.value, iv: b64u(iv), ct: b64u(ct) });
+    input.value = "";
+    location.reload();
+  } catch (e) {
+    say(e.name === "NotAllowedError" ? "Cancelled, timed out or not allowed: " + e.message : e.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+for (const [id, handler] of [["enrol", enrol], ["box", storePassphrase]]) {
+  const form = document.getElementById(id);
+  if (form) form.addEventListener("submit", handler);
+}

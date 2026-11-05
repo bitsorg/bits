@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""bits-admin's security keys (ADR bits-services 0001, section J): enrolment here;
-the encrypted passphrase each one unlocks comes later. Kept in passkeys.json under
-BITS_ADMIN_DATA (0600, the container's user); never a passphrase nor what decrypts one.
-"""
+"""bits-admin's security keys (ADR bits-services 0001, section J): enrolment, and the
+signer's passphrase encrypted by the browser with a key from each one's PRF output.
+Kept in passkeys.json under BITS_ADMIN_DATA (0600, the container's user); never a
+passphrase nor what decrypts one."""
 
 import json
 import os
@@ -13,7 +13,8 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-from webauthn import generate_registration_options, options_to_json, verify_registration_response
+from webauthn import (generate_authentication_options, generate_registration_options, options_to_json,
+                      verify_authentication_response, verify_registration_response)
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 from webauthn.helpers.structs import (AttestationConveyancePreference, AuthenticatorSelectionCriteria,
                                        CredentialDeviceType, PublicKeyCredentialDescriptor,
@@ -38,7 +39,8 @@ def clean_label(text):
 
 
 class Store:
-    """passkeys.json: a list of {id, public_key, sign_count, label, added, aaguid}."""
+    """passkeys.json: a list of {id, public_key, sign_count, label, added, aaguid} and,
+    once stored, box: {iv, ct, stored}, the passphrase as the browser encrypted it."""
 
     def __init__(self, path=None):
         self.path = path or os.path.join(DATA_DIR, "passkeys.json")
@@ -70,6 +72,19 @@ class Store:
             if any(k["id"] == key["id"] for k in keys):
                 raise Refused("this security key is already enrolled")
             self._save(keys + [key])
+
+    def get(self, key_id):
+        return next((k for k in self.load() if k["id"] == key_id), None)
+
+    def update(self, key_id, **fields):
+        with self.lock:
+            keys = self.load()
+            for k in keys:
+                if k["id"] == key_id:
+                    k.update(fields)
+                    self._save(keys)
+                    return True
+            return False
 
     def remove(self, key_id):
         with self.lock:
@@ -108,3 +123,38 @@ def verify_registration(rp, origins, credential, challenge, label, now):
             "public_key": bytes_to_base64url(v.credential_public_key),
             "sign_count": v.sign_count, "label": label, "aaguid": v.aaguid,
             "added": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now))}
+
+
+def authentication_options(rp, key):
+    """Options for navigator.credentials.get with this one key (the page adds PRF)."""
+    opts = generate_authentication_options(
+        rp_id=rp, allow_credentials=[PublicKeyCredentialDescriptor(id=base64url_to_bytes(key["id"]))],
+        user_verification=UserVerificationRequirement.REQUIRED)
+    return options_to_json(opts), opts.challenge
+
+
+def verify_assertion(rp, origins, credential, challenge, key):
+    """The key's new signature counter; py_webauthn raises on any mismatch."""
+    if credential.get("id") != key["id"]:
+        raise Refused("the answer came from another security key")
+    v = verify_authentication_response(
+        credential=credential, expected_challenge=challenge, expected_rp_id=rp,
+        expected_origin=origins, credential_public_key=base64url_to_bytes(key["public_key"]),
+        credential_current_sign_count=key["sign_count"], require_user_verification=True)
+    if v.credential_backed_up or v.credential_device_type == CredentialDeviceType.MULTI_DEVICE:
+        raise Refused("this key now says it is a synced passkey; remove it")
+    return v.new_sign_count
+
+
+def check_box(passphrase, iv, ct):
+    """The box to store, {iv, ct} in canonical base64url: a 12-byte AES-GCM nonce and
+    the passphrase's ciphertext (its length plus a 16-byte tag), or Refused."""
+    if not isinstance(passphrase, str) or not 0 < len(passphrase.encode()) <= 1024:
+        raise Refused("no passphrase, or longer than 1024 bytes")
+    try:
+        iv, ct = base64url_to_bytes(iv), base64url_to_bytes(ct)
+    except (TypeError, ValueError):
+        raise Refused("the encrypted passphrase is malformed")
+    if len(iv) != 12 or len(ct) != len(passphrase.encode()) + 16:
+        raise Refused("the encrypted passphrase is malformed")
+    return {"iv": bytes_to_base64url(iv), "ct": bytes_to_base64url(ct)}

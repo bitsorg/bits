@@ -155,12 +155,19 @@ def _page(title, body):
 def _keys_html(keys):
     if not keys:
         return "<p>None yet.</p>"
-    rows = "".join("<tr><td>%s</td><td>%s</td><td><code>%s</code></td><td><form method=post "
+    rows = "".join("<tr><td>%s</td><td>%s</td><td><code>%s</code></td><td>%s</td><td><form method=post "
                    "action=/passkeys/delete><input type=hidden name=id value=\"%s\"><button>Remove"
                    "</button></form></td></tr>" % (html.escape(k["label"]), html.escape(k["added"]),
-                                                    html.escape(k["id"][:8]), html.escape(k["id"]))
+                                                    html.escape(k["id"][:8]),
+                                                    html.escape(k["box"]["stored"]) if k.get("box") else "–",
+                                                    html.escape(k["id"]))
                    for k in keys)
-    return "<table><tr><th>Label<th>Added<th>Id<th></tr>%s</table>" % rows
+    choices = "".join("<option value=\"%s\">%s</option>" % (html.escape(k["id"]), html.escape(k["label"]))
+                      for k in keys)
+    return ("<table><tr><th>Label<th>Added<th>Id<th>Passphrase stored<th></tr>%s</table>"
+            "<h3>Store the signer's passphrase under a key</h3><form id=box><select id=box-key>%s</select> "
+            "<input type=password id=passphrase autocomplete=off size=30 placeholder=passphrase> "
+            "<button>Store</button></form>" % (rows, choices))
 
 
 async def _body(request, limit):
@@ -286,6 +293,62 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None):
             return refuse("bits-admin could not save the key (see its log)", 500)
         print("bits-admin: security key %s (%s) enrolled" % (key["id"][:8], key["label"]),
               file=sys.stderr, flush=True)
+        return JSONResponse({"ok": True}, headers=HEADERS)
+
+    @app.post("/passkeys/box-options")
+    async def box_options(request: Request):
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        try:
+            key = store.get(json.loads(await _body(request, 1024)).get("id"))
+        except (ValueError, AttributeError):
+            return refuse("bad request")
+        if not key:
+            return refuse("no such security key")
+        options, challenge = passkeys.authentication_options(rp, key)
+        state.put_challenge(token, "box", (challenge, key["id"]))
+        return Response(options, media_type="application/json", headers=HEADERS)
+
+    @app.post("/passkeys/box")
+    async def box_store(request: Request):
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        started = state.take_challenge(token, "box")
+        if not started:
+            return refuse("this expired; start again")
+        challenge, key_id = started
+        key = store.get(key_id)
+        try:
+            body = json.loads(await _body(request, 8192))
+            passphrase, credential = body["passphrase"], body["credential"]
+            box = passkeys.check_box(passphrase, body["iv"], body["ct"])
+        except passkeys.Refused as e:
+            return refuse(str(e))
+        except (ValueError, TypeError, KeyError):
+            return refuse("bad request")
+        try:
+            if not key:
+                raise passkeys.Refused("no such security key")
+            count = passkeys.verify_assertion(rp, origins, credential, challenge, key)
+        except passkeys.Refused as e:
+            return refuse(str(e))
+        except Exception as e:  # py_webauthn raises several types, all a failed check
+            print("bits-admin: passphrase not stored (%s)" % type(e).__name__, file=sys.stderr, flush=True)
+            return refuse("the security key's answer did not verify")
+        store.update(key_id, sign_count=count)
+        checked = helper({"op": "check-signer-passphrase", "passphrase": passphrase})
+        if not checked.get("ok"):
+            return refuse("not stored: %s" % checked.get("error", "the host helper refused"))
+        box["stored"] = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(state.now()))
+        try:
+            if not store.update(key_id, box=box):
+                return refuse("no such security key (removed meanwhile)")
+        except OSError as e:
+            print("bits-admin: cannot save %s: %s" % (store.path, e), file=sys.stderr, flush=True)
+            return refuse("bits-admin could not save it (see its log)", 500)
+        print("bits-admin: passphrase stored under security key %s" % key_id[:8], file=sys.stderr, flush=True)
         return JSONResponse({"ok": True}, headers=HEADERS)
 
     @app.post("/passkeys/delete")
