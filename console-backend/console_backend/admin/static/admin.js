@@ -1,5 +1,5 @@
 // bits-admin's page: enrol a key, a security key or a synced passkey (WebAuthn with PRF),
-// and store the signer's passphrase encrypted with a key derived from its PRF output.
+// store the signer's passphrase encrypted with a key derived from its PRF output, unlock.
 "use strict";
 const enc = new TextEncoder();
 const SALT = enc.encode("bits-admin unlock v1");  // the same at every unlock
@@ -97,7 +97,34 @@ async function storePassphrase(event) {
   }
 }
 
-for (const [id, handler] of [["enrol", enrol], ["box", storePassphrase]]) {
+// Touch, fetch the stored copy, decrypt it here, send the passphrase on to the helper.
+async function unlock(event) {
+  event.preventDefault();
+  const id = document.getElementById("unlock-key").value;
+  const button = event.target.querySelector("button");
+  button.disabled = true;
+  try {
+    const [assertion, key] = await touch("/unlock/options", id);
+    const box = await post("/unlock/box", { credential: assertion });
+    let plain;
+    try {
+      plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64u(box.iv), additionalData: enc.encode(id) },
+                                          key, unb64u(box.ct));
+    } catch (e) {
+      throw new Error("the copy stored under this key does not decrypt; store the passphrase again");
+    }
+    say("Unlocking…");
+    const r = await post("/unlock", { passphrase: new TextDecoder().decode(plain) });
+    say("Unlocked: signing key " + r.key_id16);
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    say(e.name === "NotAllowedError" ? "Cancelled, timed out or not allowed: " + e.message : e.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+for (const [id, handler] of [["enrol", enrol], ["box", storePassphrase], ["unlock", unlock]]) {
   const form = document.getElementById(id);
   if (form) form.addEventListener("submit", handler);
 }

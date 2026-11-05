@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bits-admin (ADR bits-services 0001): the site's admin page, reached only through an
 SSH tunnel to its unix socket: sign-in with a one-time setup code (a file only the
-bits-admin group reads), a session, /healthz, the host helper's status, and the
-keys that unlock the signer (passkeys.py).
+bits-admin group reads), a session, /healthz, the host helper's status, the keys
+(passkeys.py) and, with one of them, unlocking the signer through the host helper.
 
 A page from another site in the admin's browser cannot use the tunnel: requests must
 name an allowed Host (no DNS rebinding) and a POST an allowed Origin.
@@ -40,7 +40,7 @@ def _on(value):
 
 # Off by default: Touch ID, Face ID and other synced passkeys may unlock too.
 SECURITY_KEYS_ONLY = _on(os.environ.get("BITS_ADMIN_SECURITY_KEYS_ONLY"))
-CODE_TTL, SESSION_TTL, CHALLENGE_TTL = 1800, 12 * 3600, 300
+CODE_TTL, SESSION_TTL, CHALLENGE_TTL, GRANT_TTL = 1800, 12 * 3600, 300, 60
 FAILURES, WINDOW = 20, 600  # wrong setup codes per window (seconds); a new code clears them
 COOKIE = "bits_admin_session"
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
@@ -131,9 +131,9 @@ class State:
             for key in [k for k in self.challenges if k[0] == token]:
                 del self.challenges[key]
 
-    def put_challenge(self, token, purpose, value):
+    def put_challenge(self, token, purpose, value, ttl=CHALLENGE_TTL):
         with self.lock:
-            self.challenges[(token, purpose)] = (value, self.now() + CHALLENGE_TTL)
+            self.challenges[(token, purpose)] = (value, self.now() + ttl)
 
     def take_challenge(self, token, purpose):
         with self.lock:
@@ -239,15 +239,23 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                          "<form method=post action=/login><input name=code autocomplete=off autofocus "
                          "size=22 placeholder=XXXX-XXXX-XXXX-XXXX> <button>Sign in</button></form>")
         status = helper({"op": "status"})
-        return _page("Site", "<p>Signed in with the setup code.</p><h2>Host helper</h2><pre>%s</pre>"
+        keys = store.load()
+        boxed = [k for k in keys if k.get("box") and not (keys_only and k.get("synced"))]
+        unlock = ""
+        if status.get("signer") != "loaded" and boxed:
+            unlock = ("<h2>Unlock the signer</h2><form id=unlock><select id=unlock-key>%s</select> "
+                      "<button>Unlock</button></form>" % "".join(
+                          "<option value=\"%s\">%s</option>" % (html.escape(k["id"]), html.escape(k["label"]))
+                          for k in boxed))
+        return _page("Site", "<p>Signed in with the setup code.</p><h2>Host helper</h2><pre>%s</pre>%s"
                      "<h2>Keys</h2><p>%s</p>%s<form id=enrol><input id=label maxlength=%d size=30 "
                      "placeholder=\"e.g. YubiKey 5C, MacBook Touch ID\"> <button>Add key</button>"
                      "</form><p id=status></p><form method=post action=/logout><button>Sign out"
                      "</button></form><script src=/admin.js></script>"
-                     % (html.escape(json.dumps(status, indent=1)),
+                     % (html.escape(json.dumps(status, indent=1)), unlock,
                         "Security keys only (BITS_ADMIN_SECURITY_KEYS_ONLY)." if keys_only else
                         "Security keys (YubiKey) and synced passkeys (Touch ID, Face ID).",
-                        _keys_html(store.load()), passkeys.LABEL_MAX))
+                        _keys_html(keys), passkeys.LABEL_MAX))
 
     @app.post("/login")
     async def login(request: Request):
@@ -368,6 +376,73 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return refuse("bits-admin could not save it (see its log)", 500)
         print("bits-admin: passphrase stored under key %s" % key_id[:8], file=sys.stderr, flush=True)
         return JSONResponse({"ok": True}, headers=HEADERS)
+
+    @app.post("/unlock/options")
+    async def unlock_options(request: Request):
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        try:
+            key = store.get(json.loads(await _body(request, 1024)).get("id"))
+        except (ValueError, AttributeError):
+            return refuse("bad request")
+        if not key or not key.get("box"):
+            return refuse("no passphrase is stored under this key")
+        if keys_only and key.get("synced"):
+            return refuse("this is a synced passkey and this site accepts security keys only")
+        options, challenge = passkeys.authentication_options(rp, key)
+        state.put_challenge(token, "unlock", (challenge, key["id"]))
+        return Response(options, media_type="application/json", headers=HEADERS)
+
+    @app.post("/unlock/box")
+    async def unlock_box(request: Request):
+        """After a verified touch, the stored copy for the browser to decrypt, and one
+        minute to send the passphrase on."""
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        started = state.take_challenge(token, "unlock")
+        if not started:
+            return refuse("this expired; start again")
+        challenge, key_id = started
+        key = store.get(key_id)
+        try:
+            credential = json.loads(await _body(request, 8192))["credential"]
+            if not key or not key.get("box"):
+                raise passkeys.Refused("no passphrase is stored under this key")
+            count = passkeys.verify_assertion(rp, origins, credential, challenge, key,
+                                              security_keys_only=keys_only)
+        except passkeys.Refused as e:
+            return refuse(str(e))
+        except Exception as e:  # py_webauthn raises several types, all a failed check
+            print("bits-admin: unlock refused (%s)" % type(e).__name__, file=sys.stderr, flush=True)
+            return refuse("the key's answer did not verify")
+        store.update(key_id, sign_count=count)
+        state.put_challenge(token, "unlock-grant", key_id, GRANT_TTL)
+        return JSONResponse({"iv": key["box"]["iv"], "ct": key["box"]["ct"]}, headers=HEADERS)
+
+    @app.post("/unlock")
+    async def unlock(request: Request):
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        try:  # before the grant is taken: a bad request does not use it up
+            passphrase = json.loads(await _body(request, 2048))["passphrase"]
+            if not isinstance(passphrase, str) or not 0 < len(passphrase.encode()) <= 1024:
+                raise ValueError("no passphrase")
+        except (ValueError, TypeError, KeyError):
+            return refuse("bad request")
+        key_id = state.take_challenge(token, "unlock-grant")
+        if not key_id:
+            return refuse("touch the key first (or it was more than a minute ago)")
+        answer = helper({"op": "unlock-signer", "passphrase": passphrase})
+        if not answer.get("ok"):
+            print("bits-admin: unlock with key %s refused: %s" % (key_id[:8], answer.get("error")),
+                  file=sys.stderr, flush=True)
+            return refuse("not unlocked: %s" % answer.get("error", "the host helper refused"))
+        print("bits-admin: signer unlocked with key %s (signing key %s)" % (key_id[:8], answer.get("key_id16")),
+              file=sys.stderr, flush=True)
+        return JSONResponse({"ok": True, "key_id16": answer.get("key_id16", "")}, headers=HEADERS)
 
     @app.post("/passkeys/delete")
     async def passkey_delete(request: Request):

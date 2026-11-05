@@ -67,12 +67,17 @@ class AdminTest(unittest.TestCase):
     def setUp(self):
         self.t, self.said = [1000.0], []
         self.state = admin.State(now=lambda: self.t[0], write=self.said.append)
-        self.asked = []
+        self.asked, self.signer = [], "loaded"
+
         def helper(request):
             self.asked.append(request)
-            if request.get("op") == "check-signer-passphrase" and request["passphrase"] != "right-pass-9":
+            op, right = request.get("op"), request.get("passphrase") == "right-pass-9"
+            if op in ("check-signer-passphrase", "unlock-signer") and not right:
                 return {"ok": False, "error": "wrong passphrase, or not an encrypted Ed25519 key"}
-            return {"ok": True, "signer": "loaded"}
+            if op == "unlock-signer":
+                self.signer = "loaded"
+                return {"ok": True, "key_id16": "43fd71705f29a075"}
+            return {"ok": True, "signer": self.signer}
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
         self.store = passkeys.Store(os.path.join(self.dir.name, "passkeys.json"))
@@ -381,6 +386,87 @@ class AdminTest(unittest.TestCase):
         self.store.remove(key["id"])
         body = dict(BOX, passphrase="right-pass-9", credential=assertion(options, key["id"], counter=2))
         self.assertIn("no such", self.client.post("/passkeys/box", json=body, headers={"Origin": ORIGIN}).json()["error"])
+
+    def ready_to_unlock(self):
+        self.login(self.state.code)
+        self.enrol()
+        [key] = self.store.load()
+        self.store_box(key["id"])
+        self.signer = "no key"
+        return key["id"]
+
+    def unlock(self, key_id, passphrase="right-pass-9", **fake):
+        options = self.client.post("/unlock/options", json={"id": key_id}, headers={"Origin": ORIGIN}).json()
+        if "error" in options:
+            return options, None
+        box = self.client.post("/unlock/box", json={"credential": assertion(options, key_id, **fake)},
+                               headers={"Origin": ORIGIN}).json()
+        if "error" in box:
+            return box, None
+        return box, self.client.post("/unlock", json={"passphrase": passphrase}, headers={"Origin": ORIGIN}).json()
+
+    def test_unlock_with_a_touch(self):
+        key_id = self.ready_to_unlock()
+        page = self.client.get("/").text
+        self.assertIn("Unlock the signer", page)
+        box, done = self.unlock(key_id, counter=2)
+        stored = self.store.get(key_id)["box"]
+        self.assertEqual(box, {"iv": stored["iv"], "ct": stored["ct"]})
+        self.assertEqual(done, {"ok": True, "key_id16": "43fd71705f29a075"})
+        self.assertEqual(self.asked[-1], {"op": "unlock-signer", "passphrase": "right-pass-9"})
+        self.assertEqual(self.store.get(key_id)["sign_count"], 2)
+        self.assertNotIn("Unlock the signer", self.client.get("/").text)  # loaded now
+
+    def test_unlock_needs_a_fresh_verified_touch(self):
+        key_id = self.ready_to_unlock()
+        unlocks = lambda: [a for a in self.asked if a.get("op") == "unlock-signer"]
+        r = self.client.post("/unlock", json={"passphrase": "right-pass-9"}, headers={"Origin": ORIGIN})
+        self.assertIn("touch the key first", r.json()["error"])               # no touch at all
+        for fake in ({"flags": UP, "counter": 2}, {"origin": "http://localhost:3000", "counter": 2},
+                     {"counter": 0}):
+            box, _ = self.unlock(key_id, **fake)
+            self.assertIn("did not verify", box["error"], fake)               # no box handed out
+        box, done = self.unlock(key_id, passphrase="wrong-pass-7", counter=3)
+        self.assertIn("not unlocked: wrong passphrase", done["error"])
+        r = self.client.post("/unlock", json={"passphrase": "right-pass-9"}, headers={"Origin": ORIGIN})
+        self.assertIn("touch the key first", r.json()["error"])               # the grant was used
+        options = self.client.post("/unlock/options", json={"id": key_id}, headers={"Origin": ORIGIN}).json()
+        answer = {"credential": assertion(options, key_id, counter=4)}
+        self.assertIn("ct", self.client.post("/unlock/box", json=answer, headers={"Origin": ORIGIN}).json())
+        replay = self.client.post("/unlock/box", json=answer, headers={"Origin": ORIGIN}).json()
+        self.assertIn("expired", replay["error"])                             # one box per touch
+        r = self.client.post("/unlock", json={"passphrase": ""}, headers={"Origin": ORIGIN})
+        self.assertIn("bad request", r.json()["error"])                       # keeps the grant...
+        self.t[0] += admin.GRANT_TTL + 1
+        r = self.client.post("/unlock", json={"passphrase": "right-pass-9"}, headers={"Origin": ORIGIN})
+        self.assertIn("touch the key first", r.json()["error"])               # ...for a minute at most
+        self.assertEqual([u["passphrase"] for u in unlocks()], ["wrong-pass-7"])
+
+    def test_unlock_only_keys_with_a_stored_passphrase(self):
+        self.login(self.state.code)
+        self.enrol()
+        [key] = self.store.load()
+        self.signer = "no key"
+        self.assertNotIn("Unlock the signer", self.client.get("/").text)
+        options, _ = self.unlock(key["id"])
+        self.assertIn("no passphrase is stored", options["error"])
+        for path in ("/unlock/options", "/unlock/box", "/unlock"):
+            self.assertEqual(TestClient(self.client.app, base_url="http://localhost:8800").post(
+                path, json={}, headers={"Origin": ORIGIN}).status_code, 401)
+
+    def test_security_keys_only_refuses_a_synced_unlock(self):
+        self.login(self.state.code)
+        self.enrol("Touch ID", flags=UP | UV | AT | BE | BS)
+        [key] = self.store.load()
+        self.store_box(key["id"], flags=UP | UV | BE | BS)
+        strict = TestClient(admin.create_app(self.state, lambda r: {"ok": True, "signer": "no key"}, [ORIGIN],
+                                             self.store, security_keys_only=True), base_url="http://localhost:8800")
+        self.state.renew_code()
+        strict.post("/login", content="code=" + self.state.code, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertNotIn("Unlock the signer", strict.get("/").text)
+        r = strict.post("/unlock/options", json={"id": key["id"]}, headers={"Origin": ORIGIN})
+        self.assertIn("accepts security keys only", r.json()["error"])
 
     def test_storing_needs_a_session(self):
         for path in ("/passkeys/box-options", "/passkeys/box"):
