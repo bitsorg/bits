@@ -1,17 +1,47 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""bits-admin skeleton: setup code, session, Host and Origin guards, helper status."""
+"""bits-admin: setup code, session, Host and Origin guards, helper status, enrolment."""
 
+import base64
+import hashlib
+import json
 import os
 import stat
+import struct
 import tempfile
 import unittest
 
+import cbor2
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
 from console_backend.admin import app as admin
+from console_backend.admin import passkeys
 
 ORIGIN = "http://localhost:8800"
+UP, UV, BE, BS, AT = 0x01, 0x04, 0x08, 0x10, 0x40
+
+
+def b64u(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def unb64u(text):
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def registration(options, flags=UP | UV | AT, origin=ORIGIN, prf=True, cred_id=None, rp=None):
+    """What a browser sends after navigator.credentials.create, attestation "none"."""
+    cred_id = cred_id or os.urandom(16)
+    nums = ec.generate_private_key(ec.SECP256R1()).public_key().public_numbers()
+    cose = cbor2.dumps({1: 2, 3: -7, -1: 1, -2: nums.x.to_bytes(32, "big"), -3: nums.y.to_bytes(32, "big")})
+    auth = (hashlib.sha256((rp or options["rp"]["id"]).encode()).digest() + bytes([flags]) + struct.pack(">I", 0)
+            + bytes(16) + struct.pack(">H", len(cred_id)) + cred_id + cose)
+    client = json.dumps({"type": "webauthn.create", "challenge": options["challenge"], "origin": origin})
+    return {"id": b64u(cred_id), "rawId": b64u(cred_id), "type": "public-key",
+            "clientExtensionResults": {"prf": {"enabled": prf}} if prf is not None else {},
+            "response": {"clientDataJSON": b64u(client.encode()),
+                         "attestationObject": b64u(cbor2.dumps({"fmt": "none", "attStmt": {}, "authData": auth}))}}
 
 
 class AdminTest(unittest.TestCase):
@@ -20,7 +50,10 @@ class AdminTest(unittest.TestCase):
         self.state = admin.State(now=lambda: self.t[0], write=self.said.append)
         self.asked = []
         helper = lambda request: self.asked.append(request) or {"ok": True, "signer": "loaded"}
-        self.client = TestClient(admin.create_app(self.state, helper, [ORIGIN]),
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.store = passkeys.Store(os.path.join(self.dir.name, "passkeys.json"))
+        self.client = TestClient(admin.create_app(self.state, helper, [ORIGIN], self.store),
                                  base_url="http://localhost:8800")
 
     def login(self, code, origin=ORIGIN):
@@ -110,6 +143,113 @@ class AdminTest(unittest.TestCase):
                 self.assertEqual(f.read(), "ABCD-EFGH-JKLM-NPQR\n")
             self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o640)
             self.assertEqual(os.listdir(d), ["setup-code"])
+
+    def enrol(self, label="YubiKey 5C", **fake):
+        r = self.client.post("/passkeys/options", json={"label": label}, headers={"Origin": ORIGIN})
+        self.assertEqual(r.status_code, 200, r.text)
+        options = r.json()
+        return options, self.client.post("/passkeys", json={"credential": registration(options, **fake)},
+                                         headers={"Origin": ORIGIN})
+
+    def test_a_security_key_is_enrolled(self):
+        self.login(self.state.code)
+        options, r = self.enrol("YubiKey <5C>")
+        self.assertEqual((r.status_code, r.json()), (200, {"ok": True}))
+        self.assertEqual(options["rp"]["id"], "localhost")
+        self.assertEqual(options["authenticatorSelection"]["userVerification"], "required")
+        self.assertEqual(options["authenticatorSelection"]["residentKey"], "discouraged")
+        [key] = self.store.load()
+        self.assertEqual(key["label"], "YubiKey <5C>")
+        self.assertEqual(stat.S_IMODE(os.stat(self.store.path).st_mode), 0o600)
+        page = self.client.get("/").text
+        self.assertIn("YubiKey &lt;5C&gt;", page)
+        self.assertIn("<script src=/admin.js>", page)
+        again = self.client.post("/passkeys", json={"credential": registration(options)},
+                                 headers={"Origin": ORIGIN})  # the challenge is used up
+        self.assertIn("expired", again.json()["error"])
+        options, _ = self.enrol("second")
+        self.assertEqual([c["id"] for c in options["excludeCredentials"]], [key["id"]])
+
+    def test_keys_that_cannot_guard_the_passphrase_are_refused(self):
+        self.login(self.state.code)
+        for fake, said in (({"flags": UP | UV | AT | BE | BS}, "synced passkey"),
+                           ({"flags": UP | UV | AT | BE}, "synced passkey"),
+                           ({"prf": False}, "no PRF"), ({"prf": None}, "no PRF"),
+                           ({"flags": UP | AT}, "did not verify"),
+                           ({"origin": "http://localhost:3000"}, "did not verify"),
+                           ({"rp": "example.org"}, "did not verify")):
+            _, r = self.enrol(**fake)
+            self.assertEqual(r.status_code, 400, fake)
+            self.assertIn(said, r.json()["error"], fake)
+        self.assertEqual(self.store.load(), [])
+
+    def test_the_same_key_twice_is_refused(self):
+        self.login(self.state.code)
+        self.enrol(cred_id=b"k" * 16)
+        _, r = self.enrol(cred_id=b"k" * 16)
+        self.assertIn("already enrolled", r.json()["error"])
+        self.assertEqual(len(self.store.load()), 1)
+
+    def test_a_challenge_is_for_one_session_and_five_minutes(self):
+        self.login(self.state.code)
+        options = self.client.post("/passkeys/options", json={}, headers={"Origin": ORIGIN}).json()
+        other = TestClient(self.client.app, base_url="http://localhost:8800")
+        self.state.renew_code()
+        other.post("/login", content="code=" + self.state.code, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        r = other.post("/passkeys", json={"credential": registration(options)}, headers={"Origin": ORIGIN})
+        self.assertIn("expired", r.json()["error"])
+        self.t[0] += admin.CHALLENGE_TTL + 1
+        r = self.client.post("/passkeys", json={"credential": registration(options)}, headers={"Origin": ORIGIN})
+        self.assertIn("expired", r.json()["error"])
+        self.assertEqual(self.store.load(), [])
+
+    def test_large_bodies_and_storage_failures(self):
+        self.login(self.state.code)
+        r = self.client.post("/passkeys/options", content=b"{" + b" " * 2000 + b"}",
+                             headers={"Origin": ORIGIN, "Content-Type": "application/json"})
+        self.assertEqual(r.status_code, 400)
+        self.store.path = os.path.join(self.dir.name, "missing", "passkeys.json")
+        _, r = self.enrol()
+        self.assertEqual(r.status_code, 500)
+        self.assertIn("could not save", r.json()["error"])
+
+    def test_the_origins_name_the_rp_id(self):
+        app = admin.create_app(self.state, lambda r: {}, ["http://bits-admin.localhost:8800"], self.store)
+        client = TestClient(app, base_url="http://bits-admin.localhost:8800")
+        self.state.renew_code()
+        client.post("/login", content="code=" + self.state.code, headers={
+            "Origin": "http://bits-admin.localhost:8800", "Content-Type": "application/x-www-form-urlencoded"})
+        options = client.post("/passkeys/options", json={},
+                              headers={"Origin": "http://bits-admin.localhost:8800"}).json()
+        self.assertEqual(options["rp"]["id"], "bits-admin.localhost")
+        r = client.post("/passkeys", json={"credential": registration(
+            options, origin="http://bits-admin.localhost:8800")},
+            headers={"Origin": "http://bits-admin.localhost:8800"})
+        self.assertEqual(r.json(), {"ok": True})
+        with self.assertRaises(ValueError):
+            admin.create_app(self.state, lambda r: {}, ["http://bits-admin.localhost:8800",
+                                                         "http://localhost:8800"], self.store)
+
+    def test_a_key_is_removed(self):
+        self.login(self.state.code)
+        self.enrol()
+        [key] = self.store.load()
+        r = self.client.post("/passkeys/delete", content="id=" + key["id"], follow_redirects=False,
+                             headers={"Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertEqual((r.status_code, self.store.load()), (303, []))
+
+    def test_enrolment_needs_a_session(self):
+        for path in ("/passkeys/options", "/passkeys", "/passkeys/delete"):
+            self.assertEqual(self.client.post(path, json={}, headers={"Origin": ORIGIN}).status_code, 401)
+            self.assertEqual(self.client.post(path, json={}).status_code, 403)  # no Origin
+        self.assertNotIn("Add security key", self.client.get("/").text)
+
+    def test_the_script_is_served_and_allowed(self):
+        r = self.client.get("/admin.js")
+        self.assertEqual(r.headers["content-type"].split(";")[0], "text/javascript")
+        self.assertIn("navigator.credentials.create", r.text)
+        self.assertIn("script-src 'self'", r.headers["content-security-policy"])
 
     def test_helper_unreachable(self):
         self.assertEqual(admin.ask_helper({"op": "status"}, "/nonexistent/h.sock")["ok"], False)

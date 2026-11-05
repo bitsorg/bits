@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bits-admin (ADR bits-services 0001): the site's admin page, reached only through an
-SSH tunnel to its unix socket. This first part: sign-in with a one-time setup code
-(a file only the bits-admin group reads), a session, /healthz, the host helper's status.
+SSH tunnel to its unix socket: sign-in with a one-time setup code (a file only the
+bits-admin group reads), a session, /healthz, the host helper's status, and the
+security keys that will unlock the signer (passkeys.py).
 
 A page from another site in the admin's browser cannot use the tunnel: requests must
 name an allowed Host (no DNS rebinding) and a POST an allowed Origin.
@@ -24,15 +25,20 @@ from urllib.parse import parse_qs, urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from . import passkeys
+
 HELPER_SOCKET = os.environ.get("BITS_ADMIN_HELPER_SOCKET", "/run/bits-admin-helper/helper.sock")
 CODE_FILE = os.environ.get("BITS_ADMIN_CODE_FILE", "/run/bits-admin/setup-code")
 ORIGINS = [o.strip().rstrip("/") for o in
            os.environ.get("BITS_ADMIN_ORIGINS", "http://localhost:8800").split(",") if o.strip()]
-CODE_TTL, SESSION_TTL = 1800, 12 * 3600
+CODE_TTL, SESSION_TTL, CHALLENGE_TTL = 1800, 12 * 3600, 300
 FAILURES, WINDOW = 20, 600  # wrong setup codes per window (seconds); a new code clears them
 COOKIE = "bits_admin_session"
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
+with open(os.path.join(os.path.dirname(__file__), "static", "admin.js")) as _f:
+    SCRIPT = _f.read()
 HEADERS = {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
+                                      "script-src 'self'; connect-src 'self'; "
                                       "form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
            # same-origin, not no-referrer: with no-referrer a browser sends Origin: null
            # even on the page's own form, and the Origin check would refuse it.
@@ -70,6 +76,7 @@ class State:
 
     def __init__(self, now=time.time, write=write_code):
         self.now, self.write, self.sessions, self.failures = now, write, {}, []
+        self.challenges = {}  # (session, purpose) -> (value, until), each used once
         self.lock = threading.Lock()
         self.renew_code()
 
@@ -104,12 +111,25 @@ class State:
             until = self.sessions.get(token or "")
             if until is None or until < self.now():
                 self.sessions.pop(token or "", None)
+                for key in [k for k in self.challenges if k[0] == token]:
+                    del self.challenges[key]
                 return False
             return True
 
     def close_session(self, token):
         with self.lock:
             self.sessions.pop(token or "", None)
+            for key in [k for k in self.challenges if k[0] == token]:
+                del self.challenges[key]
+
+    def put_challenge(self, token, purpose, value):
+        with self.lock:
+            self.challenges[(token, purpose)] = (value, self.now() + CHALLENGE_TTL)
+
+    def take_challenge(self, token, purpose):
+        with self.lock:
+            value, until = self.challenges.pop((token, purpose), (None, 0))
+            return value if until >= self.now() else None
 
 
 def ask_helper(request, path=HELPER_SOCKET):
@@ -132,9 +152,36 @@ def _page(title, body):
         "</style><h1>bits-admin</h1>%s" % (html.escape(title), body), headers=HEADERS)
 
 
-def create_app(state=None, helper=ask_helper, origins=None):
+def _keys_html(keys):
+    if not keys:
+        return "<p>None yet.</p>"
+    rows = "".join("<tr><td>%s</td><td>%s</td><td><code>%s</code></td><td><form method=post "
+                   "action=/passkeys/delete><input type=hidden name=id value=\"%s\"><button>Remove"
+                   "</button></form></td></tr>" % (html.escape(k["label"]), html.escape(k["added"]),
+                                                    html.escape(k["id"][:8]), html.escape(k["id"]))
+                   for k in keys)
+    return "<table><tr><th>Label<th>Added<th>Id<th></tr>%s</table>" % rows
+
+
+async def _body(request, limit):
+    """The request body, or ValueError when it is larger than limit (chunked too)."""
+    if int(request.headers.get("content-length") or 0) > limit:
+        raise ValueError("too large")
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > limit:
+            raise ValueError("too large")
+    return body
+
+
+def create_app(state=None, helper=ask_helper, origins=None, store=None):
     state = state or State()
+    store = store or passkeys.Store()
     origins = [o.rstrip("/") for o in (origins or ORIGINS)]
+    rp = passkeys.rp_id(origins)
+    if any(urlsplit(o).hostname != rp for o in origins):
+        raise ValueError("BITS_ADMIN_ORIGINS must all have the host %s (the passkeys' rp_id)" % rp)
     hosts = {urlsplit(o).netloc.lower() for o in origins} | {"localhost"}
     app = FastAPI(title="bits-admin", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -151,9 +198,20 @@ def create_app(state=None, helper=ask_helper, origins=None):
     def signed_in(request):
         return state.signed_in(request.cookies.get(COOKIE))
 
+    def session(request):
+        token = request.cookies.get(COOKIE)
+        return token if state.signed_in(token) else None
+
+    def refuse(message, status=400):
+        return JSONResponse({"error": message}, status_code=status, headers=HEADERS)
+
     @app.get("/healthz")
     def healthz():
         return JSONResponse({"status": "ok"}, headers=HEADERS)
+
+    @app.get("/admin.js")
+    def script():
+        return Response(SCRIPT, media_type="text/javascript", headers=HEADERS)
 
     @app.get("/")
     def index(request: Request):
@@ -164,8 +222,12 @@ def create_app(state=None, helper=ask_helper, origins=None):
                          "size=22 placeholder=XXXX-XXXX-XXXX-XXXX> <button>Sign in</button></form>")
         status = helper({"op": "status"})
         return _page("Site", "<p>Signed in with the setup code.</p><h2>Host helper</h2><pre>%s</pre>"
-                     "<form method=post action=/logout><button>Sign out</button></form>"
-                     % html.escape(json.dumps(status, indent=1)))
+                     "<h2>Security keys</h2>%s<form id=enrol><input id=label maxlength=%d size=30 "
+                     "placeholder=\"e.g. YubiKey 5C, Predrag\"> <button>Add security key</button>"
+                     "</form><p id=status></p><form method=post action=/logout><button>Sign out"
+                     "</button></form><script src=/admin.js></script>"
+                     % (html.escape(json.dumps(status, indent=1)), _keys_html(store.load()),
+                        passkeys.LABEL_MAX))
 
     @app.post("/login")
     async def login(request: Request):
@@ -184,6 +246,59 @@ def create_app(state=None, helper=ask_helper, origins=None):
         r.set_cookie(COOKIE, state.open_session(), max_age=SESSION_TTL, httponly=True,
                      samesite="strict", path="/")
         return r
+
+    @app.post("/passkeys/options")
+    async def passkey_options(request: Request):
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        try:
+            label = passkeys.clean_label(json.loads(await _body(request, 1024)).get("label", ""))
+        except (ValueError, AttributeError):
+            return refuse("bad request")
+        options, challenge = passkeys.registration_options(rp, label, store.load())
+        state.put_challenge(token, "enrol", (challenge, label))
+        return Response(options, media_type="application/json", headers=HEADERS)
+
+    @app.post("/passkeys")
+    async def passkey_add(request: Request):
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        started = state.take_challenge(token, "enrol")
+        if not started:
+            return refuse("the enrolment expired; start again")
+        challenge, label = started
+        try:
+            credential = json.loads(await _body(request, 16384))["credential"]
+            key = passkeys.verify_registration(rp, origins, credential, challenge, label, state.now())
+        except passkeys.Refused as e:
+            return refuse(str(e))
+        except Exception as e:  # py_webauthn raises several types, all a failed check
+            print("bits-admin: enrolment refused (%s)" % type(e).__name__, file=sys.stderr, flush=True)
+            return refuse("the security key's answer did not verify")
+        try:
+            store.add(key)
+        except passkeys.Refused as e:
+            return refuse(str(e))
+        except OSError as e:
+            print("bits-admin: cannot save %s: %s" % (store.path, e), file=sys.stderr, flush=True)
+            return refuse("bits-admin could not save the key (see its log)", 500)
+        print("bits-admin: security key %s (%s) enrolled" % (key["id"][:8], key["label"]),
+              file=sys.stderr, flush=True)
+        return JSONResponse({"ok": True}, headers=HEADERS)
+
+    @app.post("/passkeys/delete")
+    async def passkey_delete(request: Request):
+        if not session(request):
+            return refuse("not signed in", 401)
+        try:
+            key_id = (parse_qs((await _body(request, 1024)).decode(errors="replace")).get("id") or [""])[0]
+        except ValueError:
+            return refuse("bad request")
+        if store.remove(key_id):
+            print("bits-admin: security key %s removed" % key_id[:8], file=sys.stderr, flush=True)
+        return RedirectResponse("/", status_code=303, headers=HEADERS)
 
     @app.post("/logout")
     def logout(request: Request):
