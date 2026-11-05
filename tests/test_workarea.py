@@ -409,6 +409,10 @@ class GitSourcePatchTest(unittest.TestCase):
     def test_fresh_clone_is_patched(self):
         self.assertEqual(self._checkout(), "hello patched\n")
 
+    def test_existing_checkout_is_patched_again(self):
+        self._checkout()
+        self.assertEqual(self._checkout(), "hello patched\n")
+
 
 class SourceCheckoutValidityTest(unittest.TestCase):
     """_is_valid_source_checkout: a git source dir with no .git is not usable."""
