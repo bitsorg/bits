@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from . import passkeys
+from . import events, passkeys
 
 HELPER_SOCKET = os.environ.get("BITS_ADMIN_HELPER_SOCKET", "/run/bits-admin-helper/helper.sock")
 CODE_FILE = os.environ.get("BITS_ADMIN_CODE_FILE", "/run/bits-admin/setup-code")
@@ -279,14 +279,24 @@ def take_reset(path, owner=0):
 
 
 def create_app(state=None, helper=ask_helper, origins=None, store=None, security_keys_only=None,
-               reset_file=RESET_FILE, reset_owner=0):
+               reset_file=RESET_FILE, reset_owner=0, chain=None):
     state = state or State()
+    chain = chain or events.Chain()
+
+    def audit(actor, kind, subject, **payload):
+        """One event in the chain; a failure is logged and does not undo the action."""
+        try:
+            chain.append(kind, subject, actor or "-", payload)
+        except (OSError, ValueError) as e:
+            print("bits-admin: cannot record %s: %s" % (kind, e), file=sys.stderr, flush=True)
+
     reset_until = 0
     if take_reset(reset_file, reset_owner):
         state.renew_code()
         reset_until = state.now() + CODE_TTL
         print("bits-admin: reset: the setup code works for %d minutes" % (CODE_TTL // 60),
               file=sys.stderr, flush=True)
+        audit("root", "admin.reset", "setup code", minutes=CODE_TTL // 60)
     keys_only = SECURITY_KEYS_ONLY if security_keys_only is None else security_keys_only
     store = store or passkeys.Store()
     origins = [o.rstrip("/") for o in (origins or ORIGINS)]
@@ -357,8 +367,17 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             "<input type=hidden name=name value=\"%s\"><button>Cancel</button></form></li>"
             % (html.escape(n), html.escape(by), time.strftime("%H:%M", time.gmtime(until)), html.escape(n))
             for n, until, by in state.pending_invites())
+        try:
+            trail = "".join("<tr><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td></tr>" % (
+                time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(e["ts_ms"] / 1000)), html.escape(e["actor_id"]),
+                html.escape(e["kind"]), html.escape(e["subject"][:24])) for e in reversed(chain.rows()[-20:]))
+        except Exception:  # never the whole page for it
+            trail = ("<tr><td colspan=4>unreadable: run <code>python3 -m console_backend.admin.events "
+                     "verify</code></td></tr>")
         return ("<h2>Admins</h2><ul>%s%s</ul><form method=post action=/invites><input name=name maxlength=40 "
-                "size=20 placeholder=\"their name\"> <button>Invite an admin</button></form>" % (rows, pending))
+                "size=20 placeholder=\"their name\"> <button>Invite an admin</button></form>"
+                "<h2>Recent events</h2><table><tr><th>UTC<th>Who<th>What<th>Subject</tr>%s</table>"
+                % (rows, pending, trail))
 
     @app.get("/")
     def index(request: Request):
@@ -435,6 +454,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         if not state.check_code(code):
             return _page("Sign in", "<p>Wrong or expired code.</p><p><a href=/>Again</a></p>")
         print("bits-admin: %s: signed in with the setup code" % name, file=sys.stderr, flush=True)
+        audit(name, "admin.signed_in", name, how="setup code")
         try:
             claimed = store.claim_unowned(name)
         except (OSError, ValueError) as e:  # still signed in: the code is used up
@@ -443,6 +463,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         if claimed:
             print("bits-admin: %s: %d key(s) without an owner are now theirs" % (name, claimed),
                   file=sys.stderr, flush=True)
+            audit(name, "admin.keys_claimed", name, keys=claimed)
         r = RedirectResponse("/", status_code=303, headers=HEADERS)
         r.set_cookie(COOKIE, state.open_session(name, "setup code"), max_age=SESSION_TTL,
                      httponly=True, samesite="strict", path="/")
@@ -462,6 +483,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return _page("Invite", "<p>Give a name that is not an admin's or invited already (at most "
                          "%d invites open).</p><p><a href=/>Back</a></p>" % INVITES)
         log(request, "invited %s" % name)
+        audit(state.who(request.cookies.get(COOKIE)), "admin.invited", name)
         return _page("Invite", "<p>Give %s this invite, valid for an hour and usable once:</p><pre>%s</pre>"
                      "<p>They open bits-admin through their own SSH tunnel (they need the host's "
                      "<code>bits-admin</code> group) and enter it under \"Invited?\".</p><p><a href=/>Back"
@@ -477,6 +499,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return refuse("bad request")
         state.cancel_invite(name)
         log(request, "cancelled the invite of %s" % name)
+        audit(state.who(request.cookies.get(COOKIE)), "admin.invite_cancelled", name)
         return RedirectResponse("/", status_code=303, headers=HEADERS)
 
     @app.post("/admins/remove")
@@ -495,6 +518,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         state.close_sessions_of(name)  # first: none of theirs can add a key or sign in meanwhile
         removed = store.remove_owner(name)
         log(request, "removed admin %s (%d key%s)" % (name, removed, "" if removed == 1 else "s"))
+        audit(state.who(request.cookies.get(COOKIE)), "admin.removed", name, keys=removed)
         return RedirectResponse("/", status_code=303, headers=HEADERS)
 
     @app.post("/invite")
@@ -509,6 +533,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return _page("Sign in", "<p>Wrong, used or expired invite.</p><p><a href=/>Again</a></p>")
         name, by = got
         print("bits-admin: %s: signed in with an invite from %s" % (name, by), file=sys.stderr, flush=True)
+        audit(name, "admin.signed_in", name, how="invite", invited_by=by)
         token = state.open_session(name, "invite", INVITE_TTL)
         state.invited_by[token] = by
         r = RedirectResponse("/", status_code=303, headers=HEADERS)
@@ -553,6 +578,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         store.update(key["id"], sign_count=count)
         print("bits-admin: %s: signed in with key %s" % (key["owner"], key["id"][:8]),
               file=sys.stderr, flush=True)
+        audit(key["owner"], "admin.signed_in", key["owner"], how="key", key=key["id"])
         r = JSONResponse({"ok": True}, headers=HEADERS)
         r.set_cookie(COOKIE, state.open_session(key["owner"], "key " + key["label"]),
                      max_age=SESSION_TTL, httponly=True, samesite="strict", path="/")
@@ -601,6 +627,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return refuse("bits-admin could not save the key (see its log)", 500)
         kind = "synced passkey" if key["synced"] else "device-bound"
         log(request, "key %s (%s, %s) enrolled" % (key["id"][:8], key["label"], kind))
+        audit(key["owner"], "admin.key_added", key["id"], label=key["label"], synced=key["synced"])
         if state.how(token) == "invite":  # done: from now on they sign in with the key
             state.close_session(token)
         return JSONResponse({"ok": True}, headers=HEADERS)
@@ -662,6 +689,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             log(request, "cannot save %s: %s" % (store.path, e))
             return refuse("bits-admin could not save it (see its log)", 500)
         log(request, "passphrase stored under key %s" % key_id[:8])
+        audit(state.who(token), "admin.passphrase_stored", key_id)
         return JSONResponse({"ok": True}, headers=HEADERS)
 
     @app.post("/unlock/options")
@@ -725,9 +753,16 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         answer = helper({"op": "unlock-signer", "passphrase": passphrase})
         if not answer.get("ok"):
             log(request, "unlock with key %s refused: %s" % (key_id[:8], answer.get("error")))
+            error = str(answer.get("error", ""))  # kept forever: a reason, not the helper's text
+            reason = ("locked out" if "too many" in error else
+                      "wrong passphrase" if "wrong passphrase" in error else
+                      "already loaded" if "already holds" in error else "refused")
+            audit(state.who(token), "admin.unlock_refused", "signer", key=key_id, reason=reason)
             return refuse("not unlocked: %s" % answer.get("error", "the host helper refused"))
         log(request, "signer unlocked with key %s (signing key %s)"
             % (key_id[:8], answer.get("key_id16")))
+        audit(state.who(token), "admin.signer_unlocked", "signer", key=key_id,
+              key_id16=str(answer.get("key_id16", "")))
         return JSONResponse({"ok": True, "key_id16": answer.get("key_id16", "")}, headers=HEADERS)
 
     @app.post("/passkeys/delete")
@@ -740,6 +775,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return refuse("bad request")
         if store.remove(key_id):
             log(request, "key %s removed" % key_id[:8])
+            audit(state.who(request.cookies.get(COOKIE)), "admin.key_removed", key_id)
         return RedirectResponse("/", status_code=303, headers=HEADERS)
 
     @app.post("/logout")

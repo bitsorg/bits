@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
 from console_backend.admin import app as admin
-from console_backend.admin import passkeys
+from console_backend.admin import events, passkeys
 
 ORIGIN = "http://localhost:8800"
 UP, UV, BE, BS, AT = 0x01, 0x04, 0x08, 0x10, 0x40
@@ -83,8 +83,10 @@ class AdminTest(unittest.TestCase):
         self.addCleanup(self.dir.cleanup)
         self.store = passkeys.Store(os.path.join(self.dir.name, "passkeys.json"))
         self.helper, self.reset = helper, os.path.join(self.dir.name, "reset")
+        self.chain = events.Chain(os.path.join(self.dir.name, "events.jsonl"), now_ms=lambda: int(self.t[0] * 1000))
         self.client = TestClient(admin.create_app(self.state, helper, [ORIGIN], self.store,
-                                                  reset_file=self.reset), base_url="http://localhost:8800")
+                                                  reset_file=self.reset, chain=self.chain),
+                                 base_url="http://localhost:8800")
 
     def login(self, code, origin=ORIGIN):
         return self.client.post("/login", content="name=Predrag&code=" + code, follow_redirects=False,
@@ -364,7 +366,7 @@ class AdminTest(unittest.TestCase):
         self.assertNotIn("Signed in as Alice", alice.get("/").text)  # her session ended too
         self.assertIn("Signed in as Predrag", self.client.get("/").text)
         self.assertNotIn("Welcome, Eve", eve.get("/").text)  # her invites went with her
-        self.assertNotIn("Mallory", self.client.get("/").text)
+        self.assertNotIn("Mallory, invited by", self.client.get("/").text)
         self.assertEqual(alice.post("/signin/options", json={}, headers={"Origin": ORIGIN}).json()[
             "allowCredentials"], [{"id": mine["id"], "type": "public-key"}])
 
@@ -404,6 +406,74 @@ class AdminTest(unittest.TestCase):
             self.use_invite(other, "AAAA-AAAA-AAAA-AAAA")
         _, code = self.invite("Bob")
         self.assertIn("Too many wrong codes", self.use_invite(other, code).text)
+
+    def test_what_admins_do_is_chained(self):
+        key_id = self.ready_to_unlock()
+        self.unlock(key_id, counter=2)
+        _, code = self.invite("Alice")
+        self.client.post("/invites/cancel", content="name=Alice", headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        rows = self.chain.rows()
+        self.assertEqual([(r["kind"], r["actor_id"]) for r in rows], [
+            ("admin.signed_in", "Predrag"), ("admin.key_added", "Predrag"),
+            ("admin.passphrase_stored", "Predrag"), ("admin.signer_unlocked", "Predrag"),
+            ("admin.invited", "Predrag"), ("admin.invite_cancelled", "Predrag")])
+        self.assertEqual(json.loads(rows[3]["payload"]), {"key": key_id, "key_id16": "43fd71705f29a075"})
+        with open(self.chain.path) as f:
+            text = f.read()
+        for secret in ("right-pass-9", code, BOX["ct"]):
+            self.assertNotIn(secret, text)
+        self.assertEqual(self.chain.verify(), (6, None))
+        self.assertIn("admin.signer_unlocked", self.client.get("/").text)
+        self.assertEqual(stat.S_IMODE(os.stat(self.chain.path).st_mode), 0o600)
+
+    def test_a_changed_event_breaks_the_chain(self):
+        for n in range(3):
+            self.chain.append("admin.signed_in", "Predrag", "Predrag", {"how": "key"})
+        with open(self.chain.path) as f:
+            lines = f.readlines()
+        lines[1] = lines[1].replace('"Predrag"', '"Mallory"', 1)
+        with open(self.chain.path, "w") as f:
+            f.writelines(lines)
+        self.assertEqual(events.Chain(self.chain.path).verify(), (2, 2))
+        with open(self.chain.path, "w") as f:
+            f.writelines([lines[0], lines[2]])  # one removed
+        self.assertEqual(events.Chain(self.chain.path).verify(), (2, 2))
+        with open(self.chain.path, "a") as f:
+            f.write("not json\n")
+        self.assertEqual(events.Chain(self.chain.path).verify(), (2, 2))
+
+    def test_the_chain_continues_after_a_restart_and_a_torn_write(self):
+        for n in range(2):
+            self.chain.append("admin.signed_in", "Predrag", "Predrag")
+        with open(self.chain.path, "a") as f:
+            f.write('{"seq":3,"ts_')  # a crash mid-write
+        again = events.Chain(self.chain.path)
+        self.assertEqual(again.verify(), (2, None))  # the torn tail is not an event
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(again.append("admin.signed_in", "Predrag", "Predrag")["seq"], 3)
+        self.assertIn("cutting off a torn last line", err.getvalue())
+        self.assertEqual(events.Chain(self.chain.path).verify(), (3, None))
+
+    def test_a_failed_sync_does_not_fork_the_chain(self):
+        self.chain.append("admin.signed_in", "Predrag", "Predrag")
+        real = os.fsync
+        os.fsync = lambda fd: (_ for _ in ()).throw(OSError("disk"))
+        try:
+            with self.assertRaises(OSError):
+                self.chain.append("admin.signed_in", "Predrag", "Predrag")  # written, not synced
+        finally:
+            os.fsync = real
+        self.assertEqual(self.chain.append("admin.signed_in", "Predrag", "Predrag")["seq"], 3)
+        self.assertEqual(self.chain.verify(), (3, None))
+
+    def test_a_failed_record_does_not_stop_the_action(self):
+        self.chain.path = os.path.join(self.dir.name, "missing", "events.jsonl")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.login(self.state.code).status_code, 303)
+        self.assertIn("cannot record admin.signed_in", err.getvalue())
 
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):
