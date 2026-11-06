@@ -15,6 +15,7 @@ Routes, by what they are for (their names in the proxy's config):
     gitlab-ops     pipeline actions, CI variables, pipeline variables
     gitlab-read    pipelines, jobs, logs, artifacts, repository archives
     gitlab-groups  admin group membership (the admin policy)
+    github-read    GitHub's API, with the public-read token (under /github/)
     s3             the store
 
 A GitLab route is matched by its PRIVATE-TOKEN header, so a client keeps
@@ -113,6 +114,24 @@ def gitlab(settings, kind):
         return base + path, token
     token = _env_token(settings, kind)
     return (settings.gitlab_api_url, token) if token else ("", "")
+
+
+GITHUB_API = "https://api.github.com"
+
+
+def github(settings):
+    """``(api_url, authorization)`` for GitHub's API: through the proxy's github-read
+    route when the proxy is configured and has it, else straight, with
+    BITS_GITHUB_TOKEN ('' for none: unauthenticated, 60/hr). Raises Unavailable
+    (an OSError) when the proxy cannot be reached."""
+    if proxied(settings):
+        try:
+            base, token = endpoint(settings, "github-read")
+            return base + "/github", "Bearer " + token
+        except NoRoute:
+            pass  # this proxy does not carry it (yet): as before
+    token = settings.github_token
+    return GITHUB_API, ("Bearer " + token if token else "")
 
 
 def segment(settings, value):

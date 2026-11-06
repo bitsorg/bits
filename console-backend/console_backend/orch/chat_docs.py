@@ -43,7 +43,8 @@ DEFAULT_SOURCES = ["bitsorg/" + r for r in (
     "testbed.bits")]
 RAW = "https://raw.githubusercontent.com/%s/%s/HEAD/%s"
 WEB = "https://github.com/%s/%s/blob/HEAD/%s"
-GITHUB_TREE = "https://api.github.com/repos/%s/%s/git/trees/HEAD?recursive=1"
+GITHUB_API = "https://api.github.com"
+GITHUB_TREE = GITHUB_API + "/repos/%s/%s/git/trees/HEAD?recursive=1"
 MAX_SECTION = 4000        # characters of one indexed section; longer ones are split
 MAX_FILE = 2 * 1024 * 1024
 MAX_LISTING = 32 * 1024 * 1024
@@ -184,11 +185,18 @@ def _markdown(paths):
     return sorted(md, key=lambda x: (x[0].count("/"), x[0]))[:MAX_FILES]
 
 
-def _list_github(session, repo, etag, token):
-    """(files {source: blob} or None when unchanged, etag)."""
+def _direct(token):
+    return lambda: (GITHUB_API, "Bearer " + token if token else "")
+
+
+def _list_github(session, repo, etag, github):
+    """(files {source: blob} or None when unchanged, etag); github: () -> (api_url,
+    Authorization value or ""), as credproxy.github."""
     owner, name = repo.split("/")
-    headers = {"Authorization": "Bearer " + token} if token else {}
-    st, body, h = _get(session, GITHUB_TREE % (owner, name), etag, headers, MAX_LISTING)
+    api, authorization = github()
+    headers = {"Authorization": authorization} if authorization else {}
+    url = api + (GITHUB_TREE % (owner, name))[len(GITHUB_API):]
+    st, body, h = _get(session, url, etag, headers, MAX_LISTING)
     if st == 304:
         return None, etag
     if st != 200:
@@ -223,7 +231,7 @@ def _list_gitlab(session, repo):
     return {"%s/-/raw/%s/%s" % (repo, q(branch), q(p)): b for p, b in _markdown(paths)}
 
 
-def expand(conn, session, sources, errors, down, now, every_s, token=""):
+def expand(conn, session, sources, errors, down, now, every_s, token="", github=None):
     """{file source: blob} of *sources* (blob '' for a file named itself). A repository
     listed less than *every_s* ago, or that cannot be listed now, gives its files as
     last listed (or as indexed, before its first listing)."""
@@ -244,7 +252,7 @@ def expand(conn, session, sources, errors, down, now, every_s, token=""):
             continue
         try:
             if host == "github.com":
-                files, etag = _list_github(session, src, row["etag"] if row else "", token)
+                files, etag = _list_github(session, src, row["etag"] if row else "", github or _direct(token))
                 files = kept if files is None else files
             else:
                 files, etag = _list_gitlab(session, src), ""
@@ -344,7 +352,7 @@ def _replace(conn, source, text, etag, sha, blob, now):
     return len(secs)
 
 
-def refresh(conn, sources, session=None, every_s=3600, now=None, token=""):
+def refresh(conn, sources, session=None, every_s=3600, now=None, token="", github=None):
     """When due, list the repositories and read the files that changed; returns how
     many were indexed again. Files and repositories no longer listed leave the
     index. Errors are reported (RuntimeError) after the rest is done, and the next
@@ -361,7 +369,7 @@ def refresh(conn, sources, session=None, every_s=3600, now=None, token=""):
     session = session or requests.Session()
     changed, errors, down = 0, [], set()
     try:
-        files = expand(conn, session, sources, errors, down, now, every_s, token)
+        files = expand(conn, session, sources, errors, down, now, every_s, token, github)
         with db.transaction(conn):
             for (gone,) in conn.execute("SELECT source FROM chat_sources").fetchall():
                 if gone not in files:

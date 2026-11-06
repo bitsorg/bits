@@ -82,6 +82,18 @@ class CredProxyTest(_Proxy):
         self.assertFalse(credproxy.has(s, "groups"))
         self.assertTrue(credproxy.has(self.settings, "groups"))
 
+    def test_github_through_the_proxy_or_straight(self):
+        self.agent.routes.add("github-read")
+        self.assertEqual(credproxy.github(self.settings), ("http://credentials-proxy:4711/github", "Bearer gate-github-read"))
+        self.agent.routes.discard("github-read")
+        credproxy._cache.clear()
+        self.settings.github_token = "ght"
+        self.assertEqual(credproxy.github(self.settings), ("https://api.github.com", "Bearer ght"))  # no such route
+        self.assertEqual(credproxy.github(config.Settings(env={})), ("https://api.github.com", ""))
+        self.settings.cred_proxy_agent_socket = os.path.join(self.dir, "none.sock")
+        with self.assertRaises(OSError):
+            credproxy.github(self.settings)                                     # an outage, not a fallback
+
     def test_a_missing_proxy_or_route_is_an_outage(self):
         self.agent.routes.discard("gitlab-groups")
         with self.assertRaises(credproxy.Unavailable) as e:

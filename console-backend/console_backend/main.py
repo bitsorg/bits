@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials,
+from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials, credproxy,
                forge_ops, identity, session, signproxy, webauthn_rp)
 from fastapi.responses import RedirectResponse
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
@@ -46,8 +46,9 @@ enroll_grants = session.EnrollmentGrantStore()
 reg_challenges = session.RegChallengeStore()
 oidc_states = session.OidcStateStore()
 sessions = session.SessionStore(ttl_seconds=settings.session_ttl)
-catalog_cache = catalog.CatalogCache(token=settings.github_token,
-                                     owners=settings.catalog_owners,
+catalog_cache = catalog.CatalogCache(token=settings.github_token, owners=settings.catalog_owners,
+                                     github=(lambda: credproxy.github(settings))
+                                     if settings.cred_proxy_agent_socket else None,
                                      ttl=settings.catalog_ttl)
 
 app = FastAPI(title="bits-console backend", version="0.1.0")

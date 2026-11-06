@@ -99,6 +99,17 @@ class TestCache(unittest.TestCase):
         self.assertEqual(c.fetch("/repos/o/r/tags")[:2], (200, b'BODY'))
 
     @patch("console_backend.catalog.requests.get")
+    def test_through_the_credentials_proxy(self, gget):
+        gget.return_value = FakeResp(200, b"BODY")
+        c = catalog.CatalogCache(ttl=0, github=lambda: ("http://credentials-proxy:4711/github", "Bearer gate"))
+        c.fetch("/repos/o/r")
+        self.assertEqual(gget.call_args.args[0], "http://credentials-proxy:4711/github/repos/o/r")
+        self.assertEqual(gget.call_args.kwargs["headers"]["Authorization"], "Bearer gate")
+        c._github = lambda: (_ for _ in ()).throw(OSError("credentials proxy agent socket is not there"))
+        self.assertEqual(c.fetch("/repos/o/r")[:2], (200, b"BODY"))            # stale while it is down
+        self.assertEqual(c.fetch("/repos/o/r/tags")[0], 502)                     # nothing cached: a 502
+
+    @patch("console_backend.catalog.requests.get")
     def test_token_sent_when_configured(self, gget):
         gget.return_value = FakeResp(200, b"{}")
         catalog.CatalogCache(token="ght", ttl=300).fetch("/repos/o/r")

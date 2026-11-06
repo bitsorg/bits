@@ -279,6 +279,26 @@ class RepoTest(_DB):
         chat_docs.refresh(self.conn, ["bitsorg/cvmfs-bits"], s, now=2 * 10 ** 10)
         self.assertEqual([u for u, _ in s.calls[n:]], [tree, raw("README.md")])
 
+    def test_a_github_listing_through_the_credentials_proxy(self):
+        tree, listing = self._gh()
+        proxied = "http://credentials-proxy:4711/github" + tree[len(chat_docs.GITHUB_API):]
+        seen = []
+
+        class Session(FakeSession):
+            def get(self, url, headers=None, **kw):
+                seen.append((url, (headers or {}).get("Authorization")))
+                return super().get(url, headers=headers, **kw)
+        s = Session({proxied: listing})
+        with self.assertRaises(RuntimeError):                                  # its files are not here
+            chat_docs.refresh(self.conn, ["bitsorg/cvmfs-bits"], s, now=1000,
+                              github=lambda: ("http://credentials-proxy:4711/github", "Bearer gate"))
+        self.assertEqual(seen[0], (proxied, "Bearer gate"))
+        self.assertTrue(all("gate" not in (a or "") for u, a in seen[1:]))     # raw files: no token
+        down = lambda: (_ for _ in ()).throw(OSError("credentials proxy agent socket is not there"))
+        with self.assertRaises(RuntimeError) as e:                             # reported, not raised as is
+            chat_docs.refresh(self.conn, ["bitsorg/cvmfs-bits"], s, now=10 ** 10, github=down)
+        self.assertIn("not listed", str(e.exception))
+
     def test_a_file_skipped_since_its_listing_leaves_the_index(self):
         tree, listing = self._gh()
         raw = lambda p: chat_docs.RAW % ("bitsorg", "cvmfs-bits", p)

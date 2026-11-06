@@ -29,6 +29,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
+from .. import credproxy
 from . import chat_docs, db, failures, phases, reconcile
 
 log = logging.getLogger("bits_orchestrator.chat")
@@ -765,7 +766,7 @@ def step(conn, settings, session=None):
     errors, n = [], 0
     try:
         n = chat_docs.refresh(conn, chat_docs.sources_of(settings), session=session,
-                              every_s=settings.chat_docs_refresh_s, token=settings.github_token)
+                              every_s=settings.chat_docs_refresh_s, github=lambda: credproxy.github(settings))
     except RuntimeError as e:
         errors.append(str(e))
     if settings.chat_embed_model:

@@ -39,8 +39,10 @@ _SHAPES = re.compile(r"^/repos/[^/]+/[^/]+(?:|/git/trees/.+|/git/blobs/.+|/tags|
 
 class CatalogCache:
     def __init__(self, token="", owners=(), ttl=300, timeout=10,
-                 max_entries=2048, max_bytes=32 * 1024 * 1024):
-        self._token = token or ""
+                 max_entries=2048, max_bytes=32 * 1024 * 1024, github=None):
+        # github: () -> (api_url, Authorization value or ""), e.g. through the
+        # credentials proxy (credproxy.github); else straight, with *token*.
+        self._github = github or (lambda: (_GITHUB, "Bearer " + token if token else ""))
         self._owners = {o.lower() for o in owners}
         self._ttl = int(ttl)
         self._timeout = timeout
@@ -48,7 +50,7 @@ class CatalogCache:
         self._max_bytes = max_bytes
         self._lock = threading.Lock()
         self._store = {}   # full-path(+query) -> {etag, body(bytes), ctype, ts}
-        if not self._token:
+        if not github and not token:
             _log.warning("catalog proxy has no GitHub token: upstream reads are "
                          "unauthenticated (shared 60/hr). Set BITS_GITHUB_TOKEN "
                          "(public-read) to raise the limit to 5000/hr.")
@@ -61,10 +63,10 @@ class CatalogCache:
         owner = path.split("/")[2].lower()
         return (not self._owners) or (owner in self._owners)
 
-    def _headers(self, etag=None):
+    def _headers(self, etag=None, authorization=""):
         h = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if self._token:
-            h["Authorization"] = "Bearer " + self._token
+        if authorization:
+            h["Authorization"] = authorization
         if etag:
             h["If-None-Match"] = etag
         return h
@@ -92,12 +94,13 @@ class CatalogCache:
                 ent["ts"] = now                       # LRU: recency on hit
                 return 200, ent["body"], ent["ctype"]
         try:
-            r = requests.get(_GITHUB + full, headers=self._headers(ent.get("etag") if ent else None),
+            api, authorization = self._github()
+            r = requests.get(api + full, headers=self._headers(ent.get("etag") if ent else None, authorization),
                              timeout=self._timeout, allow_redirects=False, stream=True)
-        except requests.RequestException:
+        except OSError:  # a network error, or the credentials proxy is down
             if ent:
                 return 200, ent["body"], ent["ctype"]   # stale on network error
-            raise
+            return 502, b'{"message":"catalog: GitHub cannot be reached now"}', "application/json"
         try:
             code = r.status_code
             if code == 304 and ent:

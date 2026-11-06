@@ -13,6 +13,7 @@ SLOTS = (("gitlab-read", "read_api token: pipelines, jobs, logs, bits-manifests"
          ("gitlab-ops", "the project token for pipeline actions and variables"),
          ("gitlab-groups", "read_api token that can read the admin groups' members"),
          ("gitlab-mirror", "bits-manifests token that may push to main (the mirror)"),
+         ("github-read", "a public-read GitHub token (no scopes): the catalog and the chat's docs"),
          ("s3-access-<bucket>", "the store's access key id"),
          ("s3-secret-<bucket>", "the store's secret key"))
 
