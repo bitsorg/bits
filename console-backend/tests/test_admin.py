@@ -827,7 +827,10 @@ class AdminTest(unittest.TestCase):
         form = lambda text: client.post("/settings/plan", content="base=h0&" + urlencode({"profile": text}), headers={
             "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"}).text
         self.assertIn("Nothing to load", form(" \r\n"))
-        self.assertIn('id=profile-file', client.get("/settings").text)
+        page = client.get("/settings").text
+        self.assertLess(page.index("id=profile-file"), page.index("<h2>Facts"))  # near the top
+        self.assertLess(page.index("<button>Plan</button>", page.index("</details>")), page.index("<h2>Facts"))
+        self.assertEqual(page.count("<script src=/admin.js>"), 1)
         page = form("# ours\r\nenv:\r\n  VM_RETENTION: '30'\r\n")
         planned = [a for a in self.asked if a["op"] == "settings-plan"]
         self.assertEqual([p["changes"] for p in planned], [{"profile": "# ours\nenv:\n  VM_RETENTION: '30'\n"}])

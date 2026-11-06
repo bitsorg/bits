@@ -135,8 +135,14 @@ def render(answer):
            "its value in <code>.env</code> or its default, and what <code>.env.example</code> says of it. "
            "Secrets show only as set or missing. Change values below, then Plan. "
            "<a href=/settings/site-profile.yaml>Download site-profile.yaml</a> (no secrets).</p>"
+           "<details><summary><b>Load a site-profile.yaml</b></summary><form method=post action=/settings/plan>"
+           "<input type=hidden name=base value=\"%s\"><p class=doc>The .env it implies replaces this one; "
+           "secrets stay as they are. Plan shows the change first.</p><p><input type=file id=profile-file "
+           "accept=\".yaml,.yml\"></p><textarea name=profile id=profile rows=12 cols=80 "
+           "placeholder=\"or paste it here\"></textarea><p><button>Plan</button></p></form></details>"
            "<form method=post action=/settings/plan><input type=hidden name=base value=\"%s\">"
-           % (CSS, _s(answer.get("base"))),
+           "<p><button>Plan</button> (nothing changes before Apply)</p>"
+           % (CSS, _s(answer.get("base")), _s(answer.get("base"))),
            "<h2>Facts</h2><p class=doc>What the derived settings follow; one left empty keeps its value.</p><table class=set>%s</table>" % "".join(
                "<tr><td class=k>%s</td><td><input name=\"fact:%s\" value=\"%s\" size=38></td></tr>"
                % (_s(k), _s(k), _s(facts.get(k, ""))) for k in FACTS)]
@@ -162,13 +168,7 @@ def render(answer):
             for s in sorted(groups[name], key=lambda s: s["key"]))
         out.append("<details open><summary><b>%s</b> (%d)</summary><table class=set><tr><th>Setting<th>Value"
                    "<th>Where from<th>Used by<th>About</tr>%s</table></details>" % (_s(name), len(groups[name]), rows))
-    out.append("<p><button>Plan</button> (nothing changes before Apply)</p></form>")
-    out.append("<h2>Load a site-profile.yaml</h2><form method=post action=/settings/plan>"
-               "<input type=hidden name=base value=\"%s\"><p class=doc>The .env it implies replaces this one; "
-               "secrets stay as they are. Plan shows the change first.</p><p><input type=file id=profile-file "
-               "accept=\".yaml,.yml\"></p><textarea name=profile id=profile rows=12 cols=80 "
-               "placeholder=\"or paste it here\"></textarea><p><button>Plan</button></p></form>"
-               "<script src=/admin.js></script>" % _s(answer.get("base")))
+    out.append("<p><button>Plan</button> (nothing changes before Apply)</p></form><script src=/admin.js></script>")
     return "".join(out)
 
 
