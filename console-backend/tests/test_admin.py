@@ -85,7 +85,7 @@ class AdminTest(unittest.TestCase):
                                  base_url="http://localhost:8800")
 
     def login(self, code, origin=ORIGIN):
-        return self.client.post("/login", content="code=" + code, follow_redirects=False,
+        return self.client.post("/login", content="name=Predrag&code=" + code, follow_redirects=False,
                                 headers={"Origin": origin, "Content-Type": "application/x-www-form-urlencoded"})
 
     def test_the_code_signs_in_once(self):
@@ -102,6 +102,48 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(self.asked, [{"op": "status"}])
         self.assertEqual(self.said, [code, self.state.code])  # used: a new one is written
         self.assertNotEqual(self.login(code).status_code, 303)
+
+    def test_the_name_comes_with_the_code(self):
+        code = self.state.code
+        r = self.client.post("/login", content="code=" + code, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertIn("Give your name", r.text)
+        self.assertEqual(self.state.code, code)  # not used up
+        self.assertEqual(self.login(code).status_code, 303)
+        self.assertIn("Signed in as Predrag (setup code)", self.client.get("/").text)
+
+    def test_keys_have_owners(self):
+        self.store.add({"id": "b2xk", "public_key": "", "sign_count": 0, "label": "before owners",
+                        "added": "2026-11-05 23:18 UTC"})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.login(self.state.code)
+            self.enrol("Touch ID")
+        old, new = self.store.load()
+        self.assertEqual((old["owner"], new["owner"]), ("Predrag", "Predrag"))
+        self.assertIn("Predrag: 1 key(s) without an owner are now theirs", err.getvalue())
+        self.assertIn("Predrag: key %s (Touch ID, device-bound) enrolled" % new["id"][:8], err.getvalue())
+        self.assertIn("<td>Predrag</td>", self.client.get("/").text)
+        self.state.renew_code()
+        other = TestClient(self.client.app, base_url="http://localhost:8800")
+        other.post("/login", content="name=Someone&code=" + self.state.code, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertEqual([k["owner"] for k in self.store.load()], ["Predrag", "Predrag"])  # not taken
+
+    def test_names_are_cleaned(self):
+        code = self.state.code
+        for blank in ("%20%20", "%0A%1B"):
+            r = self.client.post("/login", content="name=%s&code=%s" % (blank, code), headers={
+                "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+            self.assertIn("Give your name", r.text)
+        self.assertEqual(self.state.code, code)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.client.post("/login", content="name=%3Cscript%3Ex%0A%1B%5B31m&code=" + code, headers={
+                "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertIn("Signed in as &lt;script&gt;x[31m", self.client.get("/").text)
+        self.assertIn("bits-admin: <script>x[31m: signed in", err.getvalue())
+        self.assertNotIn("\x1b", err.getvalue())
 
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):
@@ -134,7 +176,7 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(self.login(self.state.code, origin="http://evil.example").status_code, 403)
         self.assertEqual(self.login(self.state.code, origin="http://localhost:3000").status_code, 403)
         self.assertEqual(self.client.put("/login", headers={"Origin": "http://localhost:3000"}).status_code, 403)
-        self.assertEqual(self.client.post("/login", content="code=" + self.state.code).status_code, 403)
+        self.assertEqual(self.client.post("/login", content="name=Predrag&code=" + self.state.code).status_code, 403)
         rebound = TestClient(admin.create_app(self.state, lambda r: {}, [ORIGIN]), base_url="http://evil.example:8800")
         self.assertEqual(rebound.get("/").status_code, 421)
 
@@ -223,7 +265,7 @@ class AdminTest(unittest.TestCase):
         strict = TestClient(admin.create_app(self.state, lambda r: {"ok": True}, [ORIGIN], self.store,
                                              security_keys_only=True), base_url="http://localhost:8800")
         self.state.renew_code()
-        strict.post("/login", content="code=" + self.state.code, headers={
+        strict.post("/login", content="name=Predrag&code=" + self.state.code, headers={
             "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
         self.assertIn("Security keys only", strict.get("/").text)
         r = strict.post("/passkeys/box-options", json={"id": key["id"]}, headers={"Origin": ORIGIN})
@@ -260,7 +302,7 @@ class AdminTest(unittest.TestCase):
         options = self.client.post("/passkeys/options", json={}, headers={"Origin": ORIGIN}).json()
         other = TestClient(self.client.app, base_url="http://localhost:8800")
         self.state.renew_code()
-        other.post("/login", content="code=" + self.state.code, headers={
+        other.post("/login", content="name=Predrag&code=" + self.state.code, headers={
             "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
         r = other.post("/passkeys", json={"credential": registration(options)}, headers={"Origin": ORIGIN})
         self.assertIn("expired", r.json()["error"])
@@ -283,7 +325,7 @@ class AdminTest(unittest.TestCase):
         app = admin.create_app(self.state, lambda r: {}, ["http://bits-admin.localhost:8800"], self.store)
         client = TestClient(app, base_url="http://bits-admin.localhost:8800")
         self.state.renew_code()
-        client.post("/login", content="code=" + self.state.code, headers={
+        client.post("/login", content="name=Predrag&code=" + self.state.code, headers={
             "Origin": "http://bits-admin.localhost:8800", "Content-Type": "application/x-www-form-urlencoded"})
         options = client.post("/passkeys/options", json={},
                               headers={"Origin": "http://bits-admin.localhost:8800"}).json()
@@ -465,7 +507,7 @@ class AdminTest(unittest.TestCase):
         strict = TestClient(admin.create_app(self.state, lambda r: {"ok": True, "signer": "no key"}, [ORIGIN],
                                              self.store, security_keys_only=True), base_url="http://localhost:8800")
         self.state.renew_code()
-        strict.post("/login", content="code=" + self.state.code, headers={
+        strict.post("/login", content="name=Predrag&code=" + self.state.code, headers={
             "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
         page = strict.get("/").text
         self.assertNotIn("<form id=unlock>", page)

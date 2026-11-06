@@ -34,13 +34,18 @@ def rp_id(origins):
     return urlsplit(origins[0]).hostname
 
 
+def clean_name(text):
+    """An admin's name as given at sign-in: printable, at most 40 characters, or ""."""
+    return "".join(c for c in str(text) if c.isprintable()).strip()[:40]
+
+
 def clean_label(text):
     text = "".join(c for c in str(text) if c.isprintable()).strip()[:LABEL_MAX]
     return text or "key"
 
 
 class Store:
-    """passkeys.json: a list of {id, public_key, sign_count, label, added, aaguid, synced},
+    """passkeys.json: a list of {id, owner, public_key, sign_count, label, added, aaguid, synced},
     once stored, box: {iv, ct, stored}, the passphrase as the browser encrypted it."""
 
     def __init__(self, path=None):
@@ -73,6 +78,17 @@ class Store:
             if any(k["id"] == key["id"] for k in keys):
                 raise Refused("this key is already enrolled")
             self._save(keys + [key])
+
+    def claim_unowned(self, owner):
+        """Keys enrolled before keys had owners become *owner*'s; how many."""
+        with self.lock:
+            keys = self.load()
+            unowned = [k for k in keys if not k.get("owner")]
+            for k in unowned:
+                k["owner"] = owner
+            if unowned:
+                self._save(keys)
+            return len(unowned)
 
     def get(self, key_id):
         return next((k for k in self.load() if k["id"] == key_id), None)

@@ -109,21 +109,25 @@ class State:
             self.failures.append(self.now())
             return False
 
-    def open_session(self):
+    def open_session(self, name):
         token = secrets.token_urlsafe(32)
         with self.lock:
-            self.sessions[token] = self.now() + SESSION_TTL
+            self.sessions[token] = (self.now() + SESSION_TTL, name)
         return token
 
-    def signed_in(self, token):
+    def who(self, token):
+        """The signed-in admin's name, or None (an expired session is dropped)."""
         with self.lock:
-            until = self.sessions.get(token or "")
+            until, name = self.sessions.get(token or "", (None, None))
             if until is None or until < self.now():
                 self.sessions.pop(token or "", None)
                 for key in [k for k in self.challenges if k[0] == token]:
                     del self.challenges[key]
-                return False
-            return True
+                return None
+            return name
+
+    def signed_in(self, token):
+        return self.who(token) is not None
 
     def close_session(self, token):
         with self.lock:
@@ -164,9 +168,9 @@ def _page(title, body):
 def _keys_html(keys):
     if not keys:
         return "<p>None yet.</p>"
-    rows = "".join("<tr><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td><td>%s</td><td><form "
-                   "method=post action=/passkeys/delete><input type=hidden name=id value=\"%s\"><button>Remove"
-                   "</button></form></td></tr>" % (html.escape(k["label"]),
+    rows = "".join("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td><td>%s</td><td>"
+                   "<form method=post action=/passkeys/delete><input type=hidden name=id value=\"%s\"><button>"
+                   "Remove</button></form></td></tr>" % (html.escape(k.get("owner") or "–"), html.escape(k["label"]),
                                                     "synced passkey" if k.get("synced") else "device-bound",
                                                     html.escape(k["added"]), html.escape(k["id"][:8]),
                                                     html.escape(k["box"]["stored"]) if k.get("box") else "–",
@@ -174,7 +178,7 @@ def _keys_html(keys):
                    for k in keys)
     choices = "".join("<option value=\"%s\">%s</option>" % (html.escape(k["id"]), html.escape(k["label"]))
                       for k in keys)
-    return ("<table><tr><th>Label<th>Kind<th>Added<th>Id<th>Passphrase stored<th></tr>%s</table>"
+    return ("<table><tr><th>Owner<th>Label<th>Kind<th>Added<th>Id<th>Passphrase stored<th></tr>%s</table>"
             "<h3>Store the signer's passphrase under a key</h3><p>The signer's passphrase, the one "
             "<code>make unlock</code> asks for: typed once per key, after that Unlock and the key are "
             "enough.</p><form id=box><select id=box-key>%s</select> "
@@ -222,6 +226,10 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         token = request.cookies.get(COOKIE)
         return token if state.signed_in(token) else None
 
+    def log(request, text):
+        print("bits-admin: %s: %s" % (state.who(request.cookies.get(COOKIE)) or "-", text),
+              file=sys.stderr, flush=True)
+
     def refuse(message, status=400):
         return JSONResponse({"error": message}, status_code=status, headers=HEADERS)
 
@@ -236,10 +244,12 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
     @app.get("/")
     def index(request: Request):
         if not signed_in(request):
-            return _page("Sign in", "<p>Enter the setup code: <code>make admin-code</code> on the "
-                         "host prints it. Each code signs in once.</p>"
-                         "<form method=post action=/login><input name=code autocomplete=off autofocus "
-                         "size=22 placeholder=XXXX-XXXX-XXXX-XXXX> <button>Sign in</button></form>")
+            return _page("Sign in", "<p>Enter your name and the setup code: <code>make admin-code"
+                         "</code> on the host prints it. Each code signs in once.</p>"
+                         "<form method=post action=/login><input name=name autocomplete=username "
+                         "autofocus size=20 maxlength=40 placeholder=\"your name\"> <input name=code "
+                         "autocomplete=off size=22 placeholder=XXXX-XXXX-XXXX-XXXX> <button>Sign in"
+                         "</button></form>")
         status = helper({"op": "status"})
         keys = store.load()
         boxed = [k for k in keys if k.get("box") and not (keys_only and k.get("synced"))]
@@ -255,12 +265,13 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                       "<button>Unlock</button></form>" % "".join(
                           "<option value=\"%s\">%s</option>" % (html.escape(k["id"]), html.escape(k["label"]))
                           for k in boxed))
-        return _page("Site", "<p>Signed in with the setup code.</p><h2>Host helper</h2><pre>%s</pre>%s"
+        return _page("Site", "<p>Signed in as %s (setup code).</p><h2>Host helper</h2><pre>%s</pre>%s"
                      "<h2>Keys</h2><p>%s</p>%s<form id=enrol><input id=label maxlength=%d size=30 "
                      "placeholder=\"e.g. YubiKey 5C, MacBook Touch ID\"> <button>Add key</button>"
                      "</form><p id=status></p><form method=post action=/logout><button>Sign out"
                      "</button></form><script src=/admin.js></script>"
-                     % (html.escape(json.dumps(status, indent=1)), unlock,
+                     % (html.escape(state.who(request.cookies.get(COOKIE)) or ""),
+                        html.escape(json.dumps(status, indent=1)), unlock,
                         "Security keys only (BITS_ADMIN_SECURITY_KEYS_ONLY)." if keys_only else
                         "Security keys (YubiKey) and synced passkeys (Touch ID, Face ID).",
                         _keys_html(keys), passkeys.LABEL_MAX))
@@ -275,11 +286,23 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         body = await request.body()
         if len(body) > 1024:
             return _page("Sign in", "<p>Wrong or expired code.</p><p><a href=/>Again</a></p>")
-        code = (parse_qs(body.decode(errors="replace")).get("code") or [""])[0]
+        form = parse_qs(body.decode(errors="replace"))
+        code, name = (form.get("code") or [""])[0], passkeys.clean_name((form.get("name") or [""])[0])
+        if not name:  # checked first, so a missing name does not use up the code
+            return _page("Sign in", "<p>Give your name with the code.</p><p><a href=/>Again</a></p>")
         if not state.check_code(code):
             return _page("Sign in", "<p>Wrong or expired code.</p><p><a href=/>Again</a></p>")
+        print("bits-admin: %s: signed in with the setup code" % name, file=sys.stderr, flush=True)
+        try:
+            claimed = store.claim_unowned(name)
+        except (OSError, ValueError) as e:  # still signed in: the code is used up
+            print("bits-admin: cannot give keys an owner: %s" % e, file=sys.stderr, flush=True)
+            claimed = 0
+        if claimed:
+            print("bits-admin: %s: %d key(s) without an owner are now theirs" % (name, claimed),
+                  file=sys.stderr, flush=True)
         r = RedirectResponse("/", status_code=303, headers=HEADERS)
-        r.set_cookie(COOKIE, state.open_session(), max_age=SESSION_TTL, httponly=True,
+        r.set_cookie(COOKIE, state.open_session(name), max_age=SESSION_TTL, httponly=True,
                      samesite="strict", path="/")
         return r
 
@@ -309,21 +332,23 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             credential = json.loads(await _body(request, 16384))["credential"]
             key = passkeys.verify_registration(rp, origins, credential, challenge, label, state.now(),
                                                security_keys_only=keys_only)
+            key["owner"] = state.who(token)
+            if not key["owner"]:
+                return refuse("not signed in", 401)
         except passkeys.Refused as e:
             return refuse(str(e))
         except Exception as e:  # py_webauthn raises several types, all a failed check
-            print("bits-admin: enrolment refused (%s)" % type(e).__name__, file=sys.stderr, flush=True)
+            log(request, "enrolment refused (%s)" % type(e).__name__)
             return refuse("the key's answer did not verify")
         try:
             store.add(key)
         except passkeys.Refused as e:
             return refuse(str(e))
         except OSError as e:
-            print("bits-admin: cannot save %s: %s" % (store.path, e), file=sys.stderr, flush=True)
+            log(request, "cannot save %s: %s" % (store.path, e))
             return refuse("bits-admin could not save the key (see its log)", 500)
         kind = "synced passkey" if key["synced"] else "device-bound"
-        print("bits-admin: key %s (%s, %s) enrolled" % (key["id"][:8], key["label"], kind),
-              file=sys.stderr, flush=True)
+        log(request, "key %s (%s, %s) enrolled" % (key["id"][:8], key["label"], kind))
         return JSONResponse({"ok": True}, headers=HEADERS)
 
     @app.post("/passkeys/box-options")
@@ -369,7 +394,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         except passkeys.Refused as e:
             return refuse(str(e))
         except Exception as e:  # py_webauthn raises several types, all a failed check
-            print("bits-admin: passphrase not stored (%s)" % type(e).__name__, file=sys.stderr, flush=True)
+            log(request, "passphrase not stored (%s)" % type(e).__name__)
             return refuse("the key's answer did not verify")
         store.update(key_id, sign_count=count)
         checked = helper({"op": "check-signer-passphrase", "passphrase": passphrase})
@@ -380,9 +405,9 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             if not store.update(key_id, box=box):
                 return refuse("no such key (removed meanwhile)")
         except OSError as e:
-            print("bits-admin: cannot save %s: %s" % (store.path, e), file=sys.stderr, flush=True)
+            log(request, "cannot save %s: %s" % (store.path, e))
             return refuse("bits-admin could not save it (see its log)", 500)
-        print("bits-admin: passphrase stored under key %s" % key_id[:8], file=sys.stderr, flush=True)
+        log(request, "passphrase stored under key %s" % key_id[:8])
         return JSONResponse({"ok": True}, headers=HEADERS)
 
     @app.post("/unlock/options")
@@ -423,7 +448,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         except passkeys.Refused as e:
             return refuse(str(e))
         except Exception as e:  # py_webauthn raises several types, all a failed check
-            print("bits-admin: unlock refused (%s)" % type(e).__name__, file=sys.stderr, flush=True)
+            log(request, "unlock refused (%s)" % type(e).__name__)
             return refuse("the key's answer did not verify")
         store.update(key_id, sign_count=count)
         state.put_challenge(token, "unlock-grant", key_id, GRANT_TTL)
@@ -445,11 +470,10 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return refuse("touch the key first (or it was more than a minute ago)")
         answer = helper({"op": "unlock-signer", "passphrase": passphrase})
         if not answer.get("ok"):
-            print("bits-admin: unlock with key %s refused: %s" % (key_id[:8], answer.get("error")),
-                  file=sys.stderr, flush=True)
+            log(request, "unlock with key %s refused: %s" % (key_id[:8], answer.get("error")))
             return refuse("not unlocked: %s" % answer.get("error", "the host helper refused"))
-        print("bits-admin: signer unlocked with key %s (signing key %s)" % (key_id[:8], answer.get("key_id16")),
-              file=sys.stderr, flush=True)
+        log(request, "signer unlocked with key %s (signing key %s)"
+            % (key_id[:8], answer.get("key_id16")))
         return JSONResponse({"ok": True, "key_id16": answer.get("key_id16", "")}, headers=HEADERS)
 
     @app.post("/passkeys/delete")
@@ -461,7 +485,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         except ValueError:
             return refuse("bad request")
         if store.remove(key_id):
-            print("bits-admin: key %s removed" % key_id[:8], file=sys.stderr, flush=True)
+            log(request, "key %s removed" % key_id[:8])
         return RedirectResponse("/", status_code=303, headers=HEADERS)
 
     @app.post("/logout")
