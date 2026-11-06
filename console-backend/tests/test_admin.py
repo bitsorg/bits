@@ -605,6 +605,25 @@ class AdminTest(unittest.TestCase):
         self.assertEqual((r.status_code, r.headers["location"], asked), (303, "/", []))  # signed in only
         client.post("/login", content="name=Predrag&code=" + self.state.code, headers={
             "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        answer["up"] = {"targets": [
+            {"job": "prepub", "instance": "cvmfs-bits-01.cern.ch:8080", "up": 0, "last_up": 1762000000.0},
+            {"job": "cvmfs-prepub", "instance": "relabelled", "up": 1, "last_up": None}]}
+        page = client.get("/hosts").text
+        self.assertIn("<span class=bad-s>down</span> (last answered 2025-11-01 12:26 UTC)", page)
+        self.assertIn('<details class="card bad"><summary>cvmfs-bits-01.cern.ch</summary>', page)
+        self.assertIn("monitoring job cvmfs-prepub &middot; <span class=ok-s>up</span>", page)  # by its job
+        self.assertIn("not monitored", page)  # gitlab.cern.ch: nobody scrapes it
+        answer["scrape"].append({"job": "prepub", "host": "bits-build-01.cern.ch", "port": 8080, "labels": {}})
+        page = client.get("/hosts").text  # prepub has two hosts now: one target is not the other's
+        self.assertIn('<details class="card "><summary>bits-build-01.cern.ch</summary><p class=tag>reached from '
+                      'bits&lt;1&gt;; no data from monitoring', page)
+        answer["up"]["targets"][0]["last_up"] = float("nan")
+        self.assertIn("down</span> (not in the past day)", client.get("/hosts").text)
+        answer["up"] = {"targets": []}
+        self.assertIn("monitoring has no targets now", client.get("/hosts").text)
+        answer["up"] = {"error": "VictoriaMetrics did not answer (OSError)"}
+        self.assertIn("Health of other hosts: VictoriaMetrics did not answer", client.get("/hosts").text)
+        del answer["up"]
         page = client.get("/hosts").text
         self.assertIn("<meta http-equiv=refresh content=60>", page)
         self.assertIn("bits&lt;1&gt;", page)
