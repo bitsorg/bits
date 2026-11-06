@@ -9,6 +9,7 @@ import time
 from html import escape
 
 LOOPBACK = {"localhost", "127.0.0.1", "::1"}  # a container's own, not the host's
+
 GOOD = {"healthy", "running"}
 CSS = ("body{max-width:72rem!important}.card.wide{grid-column:1/-1}.hosts{display:grid;grid-template-columns:repeat(auto-fill,minmax(20rem,1fr));gap:.8rem}"
        ".card{border:1px solid #d1d5db;border-left:6px solid #9ca3af;border-radius:6px;padding:.5rem .8rem}"
@@ -16,6 +17,11 @@ CSS = ("body{max-width:72rem!important}.card.wide{grid-column:1/-1}.hosts{displa
        ".card summary{cursor:pointer;font-weight:600}.card table{width:100%;border-collapse:collapse;"
        "font-size:13px}.card td,.card th{text-align:left;padding:.15rem .3rem;vertical-align:top}"
        ".ok-s{color:#16a34a}.bad-s{color:#dc2626}.off-s{color:#6b7280}.tag{font-size:12px;color:#6b7280}")
+
+
+def _loopback(host):
+    """Loopback, or a *.localhost name: e.g. bits-admin's own address at the tunnel's laptop end."""
+    return host in LOOPBACK or host.endswith(".localhost")
 
 
 def _s(value):
@@ -145,14 +151,14 @@ def render(answer, status, checks=None, at=None):
             internal.add((_s(l.get("service", "?")), "%s:%s" % (_s(h), _s(l.get("port")))))
         elif h in here:
             on_host.add((_s(l.get("port")), escape(who)))
-        elif h not in LOOPBACK:
+        elif not _loopback(h):
             out.setdefault(h, set()).add((str(l.get("port")), who, ""))
     for t in scrape:
         h, who = str(t["host"]).lower(), "vmagent (job %s)" % t.get("job", "?")
         health = look(t.get("job"), h, t.get("port"))
         if h in here:
             on_host.add((_s(t.get("port")), "monitoring job " + _s(t.get("job", "?")) + _said(health)))
-        elif h not in services and h not in LOOPBACK:
+        elif h not in services and not _loopback(h):
             out.setdefault(h, set()).add((str(t.get("port")), who, _said(health)))
             scraped.add(h)
             if health is not None:

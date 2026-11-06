@@ -592,7 +592,9 @@ class AdminTest(unittest.TestCase):
                   "links": [{"service": "bits-console-backend", "key": "GITLAB_API_URL", "host": "gitlab.cern.ch",
                              "port": 443, "scheme": "https"},
                             {"service": "bits-admin", "key": "BITS_ADMIN_AUDIT_URL", "host": "audit-log",
-                             "port": 8443, "scheme": "http"}],
+                             "port": 8443, "scheme": "http"},
+                            {"service": "bits-admin", "key": "BITS_ADMIN_ORIGINS", "host": "bits-admin.localhost",
+                             "port": 8800, "scheme": "http"}],
                   "scrape": [{"job": "prepub", "host": "cvmfs-bits-01.cern.ch", "port": 8080, "labels": {}},
                              {"job": "cvmfs-prepub", "host": "host.docker.internal", "port": 8080, "labels": {}}]}
         asked = []
@@ -640,6 +642,7 @@ class AdminTest(unittest.TestCase):
         self.assertIn("monitoring job cvmfs-prepub", page)
         self.assertIn("<td>bits-admin</td><td>&rarr; audit-log:8443</td>", page)
         self.assertIn("(profile admin)", page)
+        self.assertNotIn("bits-admin.localhost", page)  # the tunnel's laptop end is no host to reach
         self.assertNotIn("<summary>audit-log</summary>", page)  # a service here, not another host
         self.assertIn("<b>Also on this host, outside Docker</b>", page)
         evil = "<x onload=1>"
