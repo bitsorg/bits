@@ -578,6 +578,70 @@ class AdminTest(unittest.TestCase):
         self.login(self.state.code)
         self.assertIn("Its copy in audit-log: off.", self.client.get("/").text)
 
+    def test_the_hosts_page(self):
+        answer = {"ok": True, "host": "bits<1>", "networks": {"audit-net": True, "services-net": False},
+                  "services": {
+                      "bits-console-backend": {"state": "healthy", "networks": ["services-net"], "profiles": [],
+                                               "ports": [{"host_ip": "", "published": "8443", "target": 8443}]},
+                      "victoriametrics": {"state": "running", "networks": ["monitoring-net"], "profiles": [],
+                                          "ports": [{"host_ip": "127.0.0.1", "published": "8428", "target": 8428}]},
+                      "security-proxy": {"state": "unhealthy", "networks": ["audit-net"], "profiles": []},
+                      "audit-log": {"state": "healthy", "networks": ["audit-net"], "profiles": []},
+                      "bits-admin": {"state": "not running", "network_mode": "", "profiles": ["admin"],
+                                     "networks": ["admin-audit-net"]}},
+                  "links": [{"service": "bits-console-backend", "key": "GITLAB_API_URL", "host": "gitlab.cern.ch",
+                             "port": 443, "scheme": "https"},
+                            {"service": "bits-admin", "key": "BITS_ADMIN_AUDIT_URL", "host": "audit-log",
+                             "port": 8443, "scheme": "http"}],
+                  "scrape": [{"job": "prepub", "host": "cvmfs-bits-01.cern.ch", "port": 8080, "labels": {}},
+                             {"job": "cvmfs-prepub", "host": "host.docker.internal", "port": 8080, "labels": {}}]}
+        asked = []
+        def helper(request):
+            asked.append(request["op"])
+            return answer if request["op"] == "hosts" else {"ok": True, "signer": "no key"}
+        client = TestClient(admin.create_app(self.state, helper, [ORIGIN], self.store, reset_file=self.reset,
+                                             chain=self.chain), base_url="http://localhost:8800")
+        r = client.get("/hosts", follow_redirects=False)
+        self.assertEqual((r.status_code, r.headers["location"], asked), (303, "/", []))  # signed in only
+        client.post("/login", content="name=Predrag&code=" + self.state.code, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        page = client.get("/hosts").text
+        self.assertIn("<meta http-equiv=refresh content=60>", page)
+        self.assertIn("bits&lt;1&gt;", page)
+        self.assertNotIn("bits<1>", page)
+        self.assertIn("8443&rarr;8443 published", page)
+        self.assertIn("8428&rarr;8428 localhost", page)
+        self.assertIn("audit-net (internal)", page)
+        self.assertIn("<b>no key</b>: unlock on the main page", page)
+        self.assertIn('class="card wide bad" open', page)  # the unhealthy signer turns its host red
+        self.assertIn("<td>8443/tcp</td><td>clients of bits-console-backend</td>", page)
+        self.assertIn("<td>22/tcp</td>", page)
+        self.assertIn("gitlab.cern.ch:443", page)
+        self.assertIn("<summary>cvmfs-bits-01.cern.ch</summary>", page)
+        self.assertIn("monitoring job cvmfs-prepub", page)
+        self.assertIn("<td>bits-admin</td><td>&rarr; audit-log:8443</td>", page)
+        self.assertIn("(profile admin)", page)
+        self.assertNotIn("<summary>audit-log</summary>", page)  # a service here, not another host
+        self.assertIn("<b>Also on this host, outside Docker</b>", page)
+        evil = "<x onload=1>"
+        answer = {"ok": True, "host": evil, "networks": {evil: True},
+                  "services": {evil: {"state": evil, "networks": [evil], "profiles": [evil],
+                                      "ports": [{"host_ip": evil, "published": evil, "target": evil,
+                                                 "protocol": evil}, {"published": None}, "odd"]},
+                               "plain": {"state": None, "ports": [{"host_ip": "10.0.0.5", "published": 8080,
+                                                                   "target": 80}]}},
+                  "links": [{"service": evil, "key": evil, "host": evil, "port": evil}, {"host": None},
+                            {"service": "plain", "key": "K", "host": "ext.example", "port": None},
+                            {"service": "plain", "key": "K", "host": "host.docker.internal", "port": 9000}],
+                  "scrape": [{"job": evil, "host": "other.example", "port": evil}, {"host": "localhost", "port": 1},
+                             "odd"]}
+        page = client.get("/hosts").text
+        self.assertNotIn("<x", page)
+        self.assertIn("8080/tcp (on 10.0.0.5)", page)   # bound to one address: still to open
+        self.assertIn("<td>9000</td>", page)            # host.docker.internal is this host
+        answer = {"ok": False, "error": "docker compose config failed; see the helper's journal"}
+        self.assertIn("could not say: docker compose config failed", client.get("/hosts").text)
+
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):
             self.assertNotEqual(self.login("AAAA-AAAA-AAAA-AAAA").status_code, 303)

@@ -26,6 +26,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from . import events, passkeys
+from . import hosts as hosts_page_view
 
 HELPER_SOCKET = os.environ.get("BITS_ADMIN_HELPER_SOCKET", "/run/bits-admin-helper/helper.sock")
 CODE_FILE = os.environ.get("BITS_ADMIN_CODE_FILE", "/run/bits-admin/setup-code")
@@ -216,12 +217,12 @@ def ask_helper(request, path=HELPER_SOCKET):
         return {"ok": False, "error": "the host helper is not reachable (%s)" % type(e).__name__}
 
 
-def _page(title, body):
+def _page(title, body, head=""):
     return HTMLResponse(
-        "<!doctype html><meta charset=utf-8><title>%s</title>"
+        "<!doctype html><meta charset=utf-8>%s<title>%s</title>"
         "<style>body{font:15px system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}"
         "pre{background:#f3f4f6;padding:1rem;overflow:auto}input,button{font:inherit;padding:.3rem .6rem}"
-        "</style><h1>bits-admin</h1>%s" % (html.escape(title), body), headers=HEADERS)
+        "</style><h1>bits-admin</h1>%s" % (head, html.escape(title), body), headers=HEADERS)
 
 
 def _keys_html(keys):
@@ -434,7 +435,8 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                       "<button>Unlock</button></form>" % "".join(
                           "<option value=\"%s\">%s</option>" % (html.escape(k["id"]), html.escape(k["label"]))
                           for k in boxed))
-        return _page("Site", "<p>Signed in as %s (%s).</p><h2>Host helper</h2><pre>%s</pre>%s"
+        return _page("Site", "<p>Signed in as %s (%s). <a href=/hosts>Hosts</a></p>"
+                     "<h2>Host helper</h2><pre>%s</pre>%s"
                      "<h2>Keys</h2><p>%s</p>%s<form id=enrol><input id=label maxlength=%d size=30 "
                      "placeholder=\"e.g. YubiKey 5C, MacBook Touch ID\"> <button>Add key</button>"
                      "</form><p id=status></p>%s<form method=post action=/logout><button>Sign out"
@@ -445,6 +447,17 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                         "Security keys only (BITS_ADMIN_SECURITY_KEYS_ONLY)." if keys_only else
                         "Security keys (YubiKey) and synced passkeys (Touch ID, Face ID).",
                         _keys_html(keys), passkeys.LABEL_MAX, admins_html(state.who(token))))
+
+    @app.get("/hosts")
+    def hosts_page(request: Request):
+        if not session(request):
+            return RedirectResponse("/", status_code=303, headers=HEADERS)
+        answer = helper({"op": "hosts"})
+        if not answer.get("ok"):
+            body = "<p>The host helper could not say: %s</p>" % html.escape(str(answer.get("error", "")))
+        else:
+            body = hosts_page_view.render(answer, helper({"op": "status"}))
+        return _page("Hosts", "<p><a href=/>Back</a></p>" + body, head="<meta http-equiv=refresh content=60>")
 
     @app.post("/login")
     async def login(request: Request):
