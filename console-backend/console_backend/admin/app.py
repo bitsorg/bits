@@ -9,6 +9,7 @@ A page from another site in the admin's browser cannot use the tunnel: requests 
 name an allowed Host (no DNS rebinding) and a POST an allowed Origin.
 """
 
+import hashlib
 import hmac
 import html
 import json
@@ -199,6 +200,11 @@ class State:
     def open_challenges(self, purpose):
         with self.lock:
             return sum(p == purpose and until >= self.now() for (_, p), (_, until) in self.challenges.items())
+
+    def peek_challenge(self, token, purpose):
+        with self.lock:
+            value, until = self.challenges.get((token, purpose), (None, 0))
+            return value if until >= self.now() else None
 
     def take_challenge(self, token, purpose):
         with self.lock:
@@ -469,6 +475,86 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         else:
             body = settings_page_view.render(answer)
         return _page("Settings", "<p><a href=/>Back</a></p>" + body)
+
+    @app.post("/settings/plan")
+    async def settings_plan(request: Request):
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        try:
+            form = {k: v[0] for k, v in parse_qs((await _body(request, 131072)).decode(errors="replace"),
+                                                 keep_blank_values=True).items()}  # emptied: to unset
+        except ValueError:
+            return refuse("bad request")
+        answer = helper({"op": "settings"})
+        if not answer.get("ok"):
+            return _page("Settings", "<p>The host helper could not say: %s</p>" % html.escape(str(answer.get("error"))))
+        stale = _page("Settings", "<p>.env changed since you opened this page. "
+                      "<a href=/settings>Open it again</a> and redo your changes.</p>")
+        if not answer.get("base") or form.get("base") != answer["base"]:  # it would undo what changed since
+            return stale
+        changes = settings_page_view.changes_from(form, answer)
+        planned = helper({"op": "settings-plan", "changes": changes})
+        if not planned.get("ok"):
+            return _page("Settings", "<p>Not possible: %s</p><p><a href=/settings>Back</a></p>"
+                         % html.escape(str(planned.get("error", ""))))
+        if planned.get("base") != answer["base"]:  # changed between the two questions
+            return stale
+        plan_id = hashlib.sha256(json.dumps([planned.get("base"), changes], sort_keys=True).encode()).hexdigest()[:16]
+        state.put_challenge(token, "settings", {"changes": changes, "base": planned.get("base"), "id": plan_id})
+        return _page("Settings", settings_page_view.plan_html(planned, plan_id))
+
+    def own_keys(token):
+        who = state.who(token)
+        return [k for k in store.load() if k.get("owner") == who and not (keys_only and k.get("synced"))]
+
+    @app.post("/settings/apply/options")
+    def settings_apply_options(request: Request):
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        keys = own_keys(token)
+        if not keys:
+            return refuse("you have no key to confirm with")
+        options, challenge = passkeys.authentication_options(rp, keys)
+        state.put_challenge(token, "settings-apply", challenge)
+        return Response(options, media_type="application/json", headers=HEADERS)
+
+    @app.post("/settings/apply")
+    async def settings_apply(request: Request):
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        try:
+            body = json.loads(await _body(request, 8192))
+            credential, plan_id = body["credential"], str(body.get("plan", ""))
+            key = next((k for k in own_keys(token) if k["id"] == credential.get("id")), None)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return refuse("bad request")
+        challenge, planned = state.take_challenge(token, "settings-apply"), state.peek_challenge(token, "settings")
+        if not challenge or not planned:
+            return refuse("this expired; plan again")
+        if planned["id"] != plan_id:  # planned again elsewhere since
+            return refuse("this is not your latest plan; plan again")
+        if not key:
+            return refuse("confirm with one of your own keys")
+        try:
+            count = passkeys.verify_assertion(rp, origins, credential, challenge, key, security_keys_only=keys_only)
+        except passkeys.Refused as e:
+            return refuse(str(e))
+        except Exception as e:  # py_webauthn raises several types, all a failed check
+            log(request, "settings apply refused (%s)" % type(e).__name__)
+            return refuse("the key's answer did not verify")
+        store.update(key["id"], sign_count=count)
+        if state.take_challenge(token, "settings") is not planned:
+            return refuse("this expired; plan again")
+        done = helper({"op": "settings-apply", "changes": planned["changes"], "base": planned["base"]})
+        if not done.get("ok"):
+            return refuse("not applied: %s" % done.get("error", "the host helper refused"))
+        keys = [str(k) for k in done.get("keys") or []]
+        log(request, "applied settings: %s" % (", ".join(keys) or "nothing changed"))
+        audit(state.who(token), "admin.settings_applied", ".env", keys=keys, key=key["id"])
+        return JSONResponse({"ok": True, "keys": keys, "backup": done.get("backup")}, headers=HEADERS)
 
     @app.get("/settings/site-profile.yaml")
     def settings_download(request: Request):

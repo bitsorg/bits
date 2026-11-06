@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import stat
 import struct
 import tempfile
@@ -715,11 +716,14 @@ class AdminTest(unittest.TestCase):
         self.assertIn("<a href=/settings>Settings</a>", client.get("/").text)
         page = client.get("/settings").text
         self.assertNotIn("<x", page)
-        self.assertIn('<td class=k>VM_RETENTION</td><td><code>24</code></td><td class="o-set">set in .env</td>', page)
+        self.assertIn('<td class=k>VM_RETENTION</td><td><input name="set:VM_RETENTION" value="24" '
+                      'placeholder="default 13" size=38></td><td class="o-set">set in .env</td>', page)
+        self.assertNotIn('name="set:BITS_GITHUB_TOKEN"', page)  # secrets and withheld: not here
+        self.assertNotIn('name="set:HOOK_URL"', page)
         self.assertIn('<td class=k>HOOK_URL</td><td><span class=sec>withheld</span>', page)
         self.assertIn("<span class=sec>secret: missing</span>", page)
-        self.assertIn("the facts imply <code>https://gitlab.example.org</code>", page)
-        self.assertIn("default <code>300</code>", page)
+        self.assertIn("the facts imply <code>https://gitlab.example.org</code>; empty follows them", page)
+        self.assertIn('placeholder="default 300"', page)
         self.assertIn("<li>differs: BITS_OIDC_ISSUER</li>", page)
         answer["settings"][0]["doc"] = "word " * 60
         self.assertIn("<details><summary>word word", client.get("/settings").text)
@@ -729,6 +733,89 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(yaml.safe_load(r.text), answer["profile"])
         self.assertTrue(r.text.startswith("# site-profile.yaml of this bits-services site"))
         self.assertIn("set them by hand:\n#   HOOK_URL\n", r.text)
+
+    def settings_client(self):
+        answer = {"ok": True, "base": "h0", "facts": {"gitlab_url": "https://gitlab.example.org"}, "settings": [
+            {"key": "VM_RETENTION", "value": "24", "origin": "set", "default": "13"},
+            {"key": "BITS_CATALOG_TTL", "value": None, "origin": "default", "default": "300"},
+            {"key": "OLD_KEY", "value": "x", "origin": "set"},
+            {"key": "BITS_OIDC_ISSUER", "value": "https://other.example", "origin": "overridden",
+             "derived": "https://gitlab.example.org"},
+            {"key": "BITS_GITHUB_TOKEN", "secret": True, "set": True, "origin": "set", "value": None}]}
+        self.asked, self.base = [], "h0"
+
+        def helper(request):
+            self.asked.append(request)
+            if request["op"] == "settings":
+                return answer
+            if request["op"] == "settings-plan":
+                return {"ok": True, "base": self.base, "diff": [{"key": "VM_RETENTION", "old": "24", "new": "30"}]}
+            if request["op"] == "settings-apply":
+                return {"ok": True, "written": True, "backup": ".env.bak-1", "keys": ["VM_RETENTION"]}
+            return {"ok": True}
+        client = TestClient(admin.create_app(self.state, helper, [ORIGIN], self.store, reset_file=self.reset,
+                                             chain=self.chain), base_url="http://localhost:8800")
+        self.client = client
+        self.login(self.state.code)
+        return client
+
+    def test_settings_are_planned_from_the_form(self):
+        client = self.settings_client()
+        page = client.post("/settings/plan", content="base=h9&set:VM_RETENTION=30", headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"}).text
+        self.assertIn("changed since you opened this page", page)
+        self.assertEqual([a for a in self.asked if a["op"] == "settings-plan"], [])
+        self.assertIn('name=base value="h0"', client.get("/settings").text)
+        self.base = "h2"  # .env changed between the page's question and the plan's
+        page = client.post("/settings/plan", content="base=h0&set:VM_RETENTION=30", headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"}).text
+        self.assertIn("changed since you opened this page", page)
+        self.base = "h0"
+        form = ("base=h0&fact:gitlab_url=https://gl.example.net&set:VM_RETENTION=30&set:BITS_CATALOG_TTL="
+                "&set:OLD_KEY=&set:BITS_OIDC_ISSUER=&set:BITS_GITHUB_TOKEN=leak")
+        page = client.post("/settings/plan", content=form, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"}).text
+        planned = [a for a in self.asked if a["op"] == "settings-plan"][-1]["changes"]
+        self.assertEqual(planned, {"facts": {"gitlab_url": "https://gl.example.net"},
+                                   "set": {"VM_RETENTION": "30"}, "unset": ["OLD_KEY"],
+                                   "follow": ["BITS_OIDC_ISSUER"]})  # a secret is not taken from the form
+        self.assertIn("<td class=k>VM_RETENTION</td><td><code>24</code></td><td><code>30</code></td>", page)
+        self.assertRegex(page, "<button id=apply data-plan=\"[0-9a-f]{16}\">Apply with your key</button>")
+        self.assertIn("comments and the order of its lines are not kept", page)
+
+    def test_settings_apply_needs_your_own_key(self):
+        client = self.settings_client()
+        self.enrol("mine")
+        [mine] = self.store.load()
+        post = lambda path, body: client.post(path, json=body, headers={"Origin": ORIGIN}).json()
+        plan = lambda form: re.search("data-plan=\"([0-9a-f]+)\"", client.post("/settings/plan", content=form, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"}).text).group(1)
+        self.assertIn("expired", post("/settings/apply", {"credential": {"id": mine["id"]}})["error"])  # no plan
+        first, latest = plan("base=h0&set:VM_RETENTION=31"), plan("base=h0&set:VM_RETENTION=30")  # two tabs
+        options = post("/settings/apply/options", {})
+        self.assertEqual([c["id"] for c in options["allowCredentials"]], [mine["id"]])
+        self.assertIn("not your latest plan", post("/settings/apply", {
+            "credential": assertion(options, mine["id"], counter=4), "plan": first})["error"])
+        # someone else's key's answer does not confirm my plan, nor use it up
+        options = post("/settings/apply/options", {})
+        self.store.update(mine["id"], owner="Alice")
+        self.assertIn("your own keys", post("/settings/apply", {
+            "credential": assertion(options, mine["id"], counter=5), "plan": latest})["error"])
+        self.store.update(mine["id"], owner=mine["owner"])
+        options = post("/settings/apply/options", {})
+        done = post("/settings/apply", {"credential": assertion(options, mine["id"], counter=5), "plan": latest})
+        self.assertEqual(done, {"ok": True, "keys": ["VM_RETENTION"], "backup": ".env.bak-1"})
+        applied = [a for a in self.asked if a["op"] == "settings-apply"]
+        self.assertEqual(applied, [{"op": "settings-apply", "base": "h0", "changes": {
+            "facts": {}, "set": {"VM_RETENTION": "30"}, "unset": [], "follow": []}}])
+        self.assertEqual(self.chain.rows()[-1]["kind"], "admin.settings_applied")
+        options = post("/settings/apply/options", {})
+        self.assertIn("expired", post("/settings/apply", {
+            "credential": assertion(options, mine["id"], counter=6), "plan": latest})["error"])
+        # someone else's key does not confirm my plan
+        self.store.update(mine["id"], owner="Alice")
+        plan("base=h0&set:VM_RETENTION=30")
+        self.assertIn("no key to confirm with", post("/settings/apply/options", {})["error"])
 
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):

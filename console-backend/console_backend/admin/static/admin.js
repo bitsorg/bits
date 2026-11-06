@@ -149,7 +149,28 @@ async function unlock(event) {
   }
 }
 
+// The settings planned on this page are written once a touch of the admin's own key says so.
+async function applySettings(event) {
+  const button = event.target;
+  button.disabled = true;
+  try {
+    const o = await post("/settings/apply/options", {});
+    o.challenge = unb64u(o.challenge);
+    o.allowCredentials = (o.allowCredentials || []).map(c => Object.assign(c, { id: unb64u(c.id) }));
+    say("Confirm with your key (touch, fingerprint or face)…");
+    const a = await navigator.credentials.get({ publicKey: o });
+    const r = await post("/settings/apply", { credential: assertionBody(a), plan: button.dataset.plan });
+    say(r.keys.length ? "Applied: " + r.keys.join(", ") + (r.backup ? " (the old .env is kept as " + r.backup + ")" : "") +
+        ". On the host, run make up for the services to pick it up." : "Nothing changed.");
+  } catch (e) {
+    say(e.name === "NotAllowedError" ? "Cancelled, timed out or not allowed: " + e.message : e.message);
+    button.disabled = false;
+  }
+}
+
 for (const [id, handler] of [["signin", signIn], ["enrol", enrol], ["box", storePassphrase], ["unlock", unlock]]) {
   const form = document.getElementById(id);
   if (form) form.addEventListener("submit", handler);
 }
+const applyButton = document.getElementById("apply");
+if (applyButton) applyButton.addEventListener("click", applySettings);
