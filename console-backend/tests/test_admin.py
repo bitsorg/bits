@@ -475,6 +475,109 @@ class AdminTest(unittest.TestCase):
             self.assertEqual(self.login(self.state.code).status_code, 303)
         self.assertIn("cannot record admin.signed_in", err.getvalue())
 
+    def test_the_copy_in_audit_log_follows(self):
+        held, posts = [], []
+
+        def remote(method, path, body=None):  # audit-log's rules, in short
+            if method == "GET":
+                return 200, {"seq": len(held), "hash": held[-1]["hash"] if held else events.GENESIS}
+            posts.append(len(body["events"]))
+            for r in body["events"]:
+                if r["seq"] != len(held) + 1 or r["prev_hash"] != (held[-1]["hash"] if held else events.GENESIS):
+                    return 409, {"error": "does not link"}
+                held.append(r)
+            return 200, {"head": {"seq": len(held)}}
+        for n in range(5):
+            self.chain.append("admin.signed_in", "Predrag", "Predrag")
+        outside = events.Outside(self.chain, "http://audit-log:8443", "t", call=remote, batch=2)
+        self.assertEqual(outside.sync()["state"], "in step")
+        self.assertEqual((held, posts), (self.chain.rows(), [2, 2, 1]))
+        self.assertEqual({k: v for k, v in outside.sync().items() if k != "checked"},
+                         {"state": "in step", "seq": 5, "error": ""})
+        self.assertEqual(posts, [2, 2, 1])  # nothing new, nothing sent
+        held[4] = dict(held[4], hash="f" * 64)  # its copy is not ours
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.chain.append("admin.signed_in", "Predrag", "Predrag")
+            self.assertEqual(outside.sync()["state"], "diverged")
+        self.assertIn("audit-log copy: diverged: its event 5 is not this one", err.getvalue())
+        self.assertEqual(len(held), 5)  # never written to then
+        held.extend([held[0]] * 3)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(outside.sync()["error"], "it holds 8 events, here 6")
+
+    def test_the_copy_waits_when_audit_log_is_away(self):
+        def away(method, path, body=None):
+            raise OSError("connection refused")
+        self.chain.append("admin.signed_in", "Predrag", "Predrag")
+        outside = events.Outside(self.chain, "http://audit-log:8443", "t", call=away)
+        with contextlib.redirect_stderr(io.StringIO()):
+            got = outside.sync()
+        self.assertEqual((got["state"], got["seq"], got["error"]), ("unreachable", None, "connection refused"))
+        refusing = lambda method, path, body=None: (200, {"seq": 0, "hash": events.GENESIS}) \
+            if method == "GET" else (409, {"error": "expected seq 1"})
+        outside.call = refusing
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(outside.sync()["state"], "diverged")
+
+    def test_hostile_answers_do_not_stop_or_spin_it(self):
+        for n in range(3):
+            self.chain.append("admin.signed_in", "Predrag", "Predrag")
+        cases = [
+            (lambda m, p, b=None: (200, {"seq": -1, "hash": "x"}), "diverged"),
+            (lambda m, p, b=None: (200, {"seq": "2", "hash": "x"}), "diverged"),
+            (lambda m, p, b=None: (200, {"seq": 0, "hash": events.GENESIS}) if m == "GET"
+             else (200, {"head": {"seq": 0}}), "diverged"),                     # does not advance
+            (lambda m, p, b=None: (500, ["not", "an", "object"]), "unreachable"),
+            (lambda m, p, b=None: (200, {"seq": 0, "hash": events.GENESIS}) if m == "GET"
+             else (409, {"error": "no\nbits-admin: forged line"}), "diverged"),
+        ]
+        for call, state in cases:
+            outside = events.Outside(self.chain, "http://audit-log:8443", "t", call=call)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(outside.sync()["state"], state)
+            self.assertNotIn("\nbits-admin: forged", err.getvalue())
+        boom = events.Outside(self.chain, "http://audit-log:8443", "t",
+                              call=lambda m, p, b=None: (_ for _ in ()).throw(RuntimeError("odd")))
+        boom.wake.wait = lambda timeout: (_ for _ in ()).throw(SystemExit)  # one pass only
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            boom.run()
+        self.assertEqual((boom.status["state"], boom.status["error"]), ("unreachable", "RuntimeError: odd"))
+
+    def test_the_copy_is_set_up_from_the_environment(self):
+        token = os.path.join(self.dir.name, "token")
+        env = {"BITS_ADMIN_AUDIT_URL": "", "BITS_ADMIN_AUDIT_TOKEN_FILE": token}
+        old = {k: os.environ.get(k) for k in env}
+        try:
+            os.environ.update(env)
+            self.assertIsNone(events.outside_from_env(self.chain))
+            os.environ["BITS_ADMIN_AUDIT_URL"] = "http://audit-log:8443/"
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertIsNone(events.outside_from_env(self.chain))
+            self.assertIn("make audit-token", err.getvalue())
+            with open(token, "w") as f:
+                f.write("t0k\n")
+            outside = events.outside_from_env(self.chain)
+            self.assertEqual((outside.base, outside.token), ("http://audit-log:8443/v1/chains/bits-admin", "t0k"))
+        finally:
+            for k, v in old.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+    def test_the_page_shows_the_copy(self):
+        outside = events.Outside(self.chain, "http://audit-log:8443", "t",
+                                 call=lambda m, p, b=None: (200, {"seq": 0, "hash": events.GENESIS}))
+        client = TestClient(admin.create_app(self.state, self.helper, [ORIGIN], self.store, reset_file=self.reset,
+                                             chain=self.chain, outside=outside), base_url="http://localhost:8800")
+        client.post("/login", content="name=Predrag&code=" + self.state.code, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertTrue(outside.wake.is_set())  # the sign-in woke it
+        self.assertIn("Its copy in audit-log: not checked yet.", client.get("/").text)
+        outside.status = {"state": "diverged", "seq": 3, "error": "x", "checked": None}
+        self.assertIn("<b>DIVERGED</b> at event 3: x", client.get("/").text)
+        self.state.renew_code()
+        self.login(self.state.code)
+        self.assertIn("Its copy in audit-log: off.", self.client.get("/").text)
+
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):
             self.assertNotEqual(self.login("AAAA-AAAA-AAAA-AAAA").status_code, 303)

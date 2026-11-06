@@ -279,7 +279,7 @@ def take_reset(path, owner=0):
 
 
 def create_app(state=None, helper=ask_helper, origins=None, store=None, security_keys_only=None,
-               reset_file=RESET_FILE, reset_owner=0, chain=None):
+               reset_file=RESET_FILE, reset_owner=0, chain=None, outside=None):
     state = state or State()
     chain = chain or events.Chain()
 
@@ -289,6 +289,8 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             chain.append(kind, subject, actor or "-", payload)
         except (OSError, ValueError) as e:
             print("bits-admin: cannot record %s: %s" % (kind, e), file=sys.stderr, flush=True)
+        if outside:
+            outside.wake.set()  # its copy in audit-log follows now
 
     reset_until = 0
     if take_reset(reset_file, reset_owner):
@@ -374,10 +376,20 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         except Exception:  # never the whole page for it
             trail = ("<tr><td colspan=4>unreadable: run <code>python3 -m console_backend.admin.events "
                      "verify</code></td></tr>")
+        if outside is None:
+            copy = "Its copy in audit-log: off."
+        else:
+            st = outside.status
+            copy = "Its copy in audit-log: %s%s%s%s." % (
+                "<b>DIVERGED</b>" if st["state"] == "diverged" else html.escape(st["state"]),
+                "" if not isinstance(st["seq"], int) else " at event %d" % st["seq"],
+                ": " + html.escape(st["error"]) if st["error"] else "",
+                "" if not st.get("checked") else
+                " (checked %s UTC)" % time.strftime("%H:%M:%S", time.gmtime(st["checked"])))
         return ("<h2>Admins</h2><ul>%s%s</ul><form method=post action=/invites><input name=name maxlength=40 "
                 "size=20 placeholder=\"their name\"> <button>Invite an admin</button></form>"
-                "<h2>Recent events</h2><table><tr><th>UTC<th>Who<th>What<th>Subject</tr>%s</table>"
-                % (rows, pending, trail))
+                "<h2>Recent events</h2><p>%s</p><table><tr><th>UTC<th>Who<th>What<th>Subject</tr>%s</table>"
+                % (rows, pending, copy, trail))
 
     @app.get("/")
     def index(request: Request):
@@ -810,4 +822,9 @@ def main():
     path = os.environ.get("BITS_ADMIN_SOCKET", "/run/bits-admin/admin.sock")
     sock = bind(path)
     print("bits-admin listening on %s for %s" % (path, ", ".join(ORIGINS)), file=sys.stderr, flush=True)
-    uvicorn.run(create_app(), fd=sock.fileno(), server_header=False, proxy_headers=False)
+    chain = events.Chain()
+    outside = events.outside_from_env(chain)
+    if outside:
+        threading.Thread(target=outside.run, daemon=True).start()
+    uvicorn.run(create_app(chain=chain, outside=outside), fd=sock.fileno(), server_header=False,
+                proxy_headers=False)
