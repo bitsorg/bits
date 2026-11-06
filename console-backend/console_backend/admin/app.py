@@ -29,6 +29,8 @@ from . import passkeys
 
 HELPER_SOCKET = os.environ.get("BITS_ADMIN_HELPER_SOCKET", "/run/bits-admin-helper/helper.sock")
 CODE_FILE = os.environ.get("BITS_ADMIN_CODE_FILE", "/run/bits-admin/setup-code")
+# Left by sudo make admin-reset: at start, the setup code works again for CODE_TTL.
+RESET_FILE = os.environ.get("BITS_ADMIN_RESET_FILE", "/run/bits-admin/reset")
 ORIGINS = [o.strip().rstrip("/") for o in
            os.environ.get("BITS_ADMIN_ORIGINS", "http://bits-admin.localhost:8800").split(",") if o.strip()]
 
@@ -210,8 +212,36 @@ async def _body(request, limit):
     return body
 
 
-def create_app(state=None, helper=ask_helper, origins=None, store=None, security_keys_only=None):
+RESET_MAX_AGE = 600  # an older reset file is left from a failed admin-reset
+
+
+def take_reset(path, owner=0):
+    """True once for a fresh reset file of *owner* (root), which is removed; any other
+    file there is removed and ignored. Not removable: ignored, or every start would reopen."""
+    try:
+        st = os.lstat(path)
+        os.unlink(path)
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        print("bits-admin: reset ignored, cannot remove %s: %s" % (path, e), file=sys.stderr, flush=True)
+        return False
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != owner or time.time() - st.st_mtime > RESET_MAX_AGE:
+        print("bits-admin: reset ignored: %s is not a fresh file of uid %d" % (path, owner),
+              file=sys.stderr, flush=True)
+        return False
+    return True
+
+
+def create_app(state=None, helper=ask_helper, origins=None, store=None, security_keys_only=None,
+               reset_file=RESET_FILE, reset_owner=0):
     state = state or State()
+    reset_until = 0
+    if take_reset(reset_file, reset_owner):
+        state.renew_code()
+        reset_until = state.now() + CODE_TTL
+        print("bits-admin: reset: the setup code works for %d minutes" % (CODE_TTL // 60),
+              file=sys.stderr, flush=True)
     keys_only = SECURITY_KEYS_ONLY if security_keys_only is None else security_keys_only
     store = store or passkeys.Store()
     origins = [o.rstrip("/") for o in (origins or ORIGINS)]
@@ -253,16 +283,24 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
     def script():
         return Response(SCRIPT, media_type="text/javascript", headers=HEADERS)
 
+    def signers():
+        return [k for k in store.load() if k.get("owner") and not (keys_only and k.get("synced"))]
+
+    def code_allowed():
+        """The setup code: while no admin key can sign in, or for a while after a reset."""
+        return not signers() or state.now() < reset_until
+
     @app.get("/")
     def index(request: Request):
-        signers = [k for k in store.load() if k.get("owner") and not (keys_only and k.get("synced"))]
-        if not signed_in(request) and signers:
+        if not signed_in(request) and signers():
+            code = ("<p>Or with the setup code (after <code>sudo make admin-reset</code>):</p>"
+                    "<form method=post action=/login><input name=name autocomplete=username size=20 "
+                    "maxlength=40 placeholder=\"your name\"> <input name=code autocomplete=off size=22 "
+                    "placeholder=XXXX-XXXX-XXXX-XXXX> <button>Sign in</button></form>" if code_allowed() else
+                    "<p>Lost your keys? On the host: <code>sudo make admin-reset</code>, then "
+                    "<code>make admin-code</code>.</p>")
             return _page("Sign in", "<form id=signin><button>Sign in with your key</button></form>"
-                         "<p id=status></p><p>Or, at bootstrap or after <code>sudo make admin-reset</code>, "
-                         "with the setup code:</p><form method=post action=/login><input name=name "
-                         "autocomplete=username size=20 maxlength=40 placeholder=\"your name\"> "
-                         "<input name=code autocomplete=off size=22 placeholder=XXXX-XXXX-XXXX-XXXX> "
-                         "<button>Sign in</button></form><script src=/admin.js></script>")
+                         "<p id=status></p>%s<script src=/admin.js></script>" % code)
         if not signed_in(request):
             return _page("Sign in", "<p>Enter your name and the setup code: <code>make admin-code"
                          "</code> on the host prints it. Each code signs in once.</p>"
@@ -309,6 +347,9 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return _page("Sign in", "<p>Wrong or expired code.</p><p><a href=/>Again</a></p>")
         form = parse_qs(body.decode(errors="replace"))
         code, name = (form.get("code") or [""])[0], passkeys.clean_name((form.get("name") or [""])[0])
+        if not code_allowed():
+            return _page("Sign in", "<p>The setup code is off: an admin has a key. Sign in with it, "
+                         "or on the host <code>sudo make admin-reset</code>.</p><p><a href=/>Back</a></p>")
         if not name:  # checked first, so a missing name does not use up the code
             return _page("Sign in", "<p>Give your name with the code.</p><p><a href=/>Again</a></p>")
         if not state.check_code(code):

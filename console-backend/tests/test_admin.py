@@ -12,6 +12,7 @@ import os
 import stat
 import struct
 import tempfile
+import time
 import unittest
 
 import cbor2
@@ -81,8 +82,9 @@ class AdminTest(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
         self.store = passkeys.Store(os.path.join(self.dir.name, "passkeys.json"))
-        self.client = TestClient(admin.create_app(self.state, helper, [ORIGIN], self.store),
-                                 base_url="http://localhost:8800")
+        self.helper, self.reset = helper, os.path.join(self.dir.name, "reset")
+        self.client = TestClient(admin.create_app(self.state, helper, [ORIGIN], self.store,
+                                                  reset_file=self.reset), base_url="http://localhost:8800")
 
     def login(self, code, origin=ORIGIN):
         return self.client.post("/login", content="name=Predrag&code=" + code, follow_redirects=False,
@@ -227,6 +229,68 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(r.status_code, 429)
         self.t[0] += admin.CHALLENGE_TTL + 1
         self.assertIn("ticket", self.client.post("/signin/options", json={}, headers={"Origin": ORIGIN}).json())
+
+    def code_login(self, client):
+        self.state.renew_code()
+        code = self.state.code
+        r = client.post("/login", content="name=Someone&code=" + code, follow_redirects=False, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        return r, code
+
+    def test_the_code_is_off_once_an_admin_has_a_key(self):
+        self.login(self.state.code)
+        self.enrol()
+        fresh = TestClient(self.client.app, base_url="http://localhost:8800")
+        page = fresh.get("/").text
+        self.assertIn("sudo make admin-reset", page)
+        self.assertNotIn("action=/login", page)
+        r, code = self.code_login(fresh)
+        self.assertIn("The setup code is off", r.text)
+        self.assertEqual(self.state.code, code)  # not used up
+
+    def test_a_reset_opens_the_code_for_a_while(self):
+        self.login(self.state.code)
+        self.enrol()
+        open(self.reset, "w").close()
+        app = admin.create_app(self.state, self.helper, [ORIGIN], self.store, reset_file=self.reset,
+                               reset_owner=os.getuid())
+        self.assertFalse(os.path.exists(self.reset))  # used once
+        client = TestClient(app, base_url="http://localhost:8800")
+        self.assertIn("action=/login", client.get("/").text)
+        r, _ = self.code_login(client)
+        self.assertEqual(r.status_code, 303)
+        self.t[0] += admin.CODE_TTL + 1
+        r, _ = self.code_login(TestClient(app, base_url="http://localhost:8800"))
+        self.assertIn("The setup code is off", r.text)
+        os.mkdir(self.reset)  # cannot be removed: no reset, not one at every start
+        app = admin.create_app(self.state, self.helper, [ORIGIN], self.store, reset_file=self.reset,
+                               reset_owner=os.getuid())
+        r, _ = self.code_login(TestClient(app, base_url="http://localhost:8800"))
+        self.assertIn("The setup code is off", r.text)
+        os.rmdir(self.reset)
+
+    def test_only_a_fresh_reset_file_of_root_counts(self):
+        self.login(self.state.code)
+        self.enrol()
+        for owner, age in ((os.getuid() + 1, 0), (os.getuid(), admin.RESET_MAX_AGE + 60)):
+            open(self.reset, "w").close()
+            os.utime(self.reset, (time.time() - age, time.time() - age))
+            app = admin.create_app(self.state, self.helper, [ORIGIN], self.store, reset_file=self.reset,
+                                   reset_owner=owner)
+            self.assertFalse(os.path.exists(self.reset))  # removed all the same
+            r, _ = self.code_login(TestClient(app, base_url="http://localhost:8800"))
+            self.assertIn("The setup code is off", r.text, (owner, age))
+
+    def test_the_code_stays_while_no_key_can_sign_in(self):
+        self.login(self.state.code)
+        self.enrol("Touch ID", flags=UP | UV | AT | BE | BS)
+        strict = TestClient(admin.create_app(self.state, self.helper, [ORIGIN], self.store, security_keys_only=True,
+                                             reset_file=self.reset), base_url="http://localhost:8800")
+        r, _ = self.code_login(strict)
+        self.assertEqual(r.status_code, 303)
+        self.enrol("YubiKey")  # an owned security key: the code is off, strict or not
+        r, _ = self.code_login(TestClient(strict.app, base_url="http://localhost:8800"))
+        self.assertIn("The setup code is off", r.text)
 
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):
