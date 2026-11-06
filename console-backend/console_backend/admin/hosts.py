@@ -81,8 +81,29 @@ def _said(health):
     return " &middot; <span class=bad-s>down</span> (%s)" % when
 
 
-def render(answer, status):
-    """The page body for the helper's *answer* (hosts) and *status* (signer, health)."""
+def _checks_html(checks, at):
+    rows = "".join("<tr><td>%s</td><td>%s</td><td class=%s>%s</td><td>%s</td></tr>" % (
+        _s(c.get("target")), _s(c.get("probe")), "ok-s" if c.get("ok") is True else "bad-s",
+        _s(c.get("said")), "" if c.get("ms") is None else "%s ms" % _s(c.get("ms")))
+        for c in checks if isinstance(c, dict))
+    ok = isinstance(at, (int, float)) and math.isfinite(at)
+    when = time.strftime("%H:%M:%S UTC", time.gmtime(at)) if ok else "?"
+    return ("<h2>Check, %s</h2><p class=tag>Results are kept 30 s: a second click within that shows the same."
+            "</p><table><tr><th>Target<th>Probe<th>Result<th>Time</tr>%s</table>"
+            % (when, rows or "<tr><td colspan=4>nothing to check</td></tr>"))
+
+
+def render(answer, status, checks=None, at=None):
+    """The page body for the helper's *answer* (hosts), *status* (signer, health) and,
+    after a Check, its results."""
+    checked = {str(c.get("target")).lower(): c for c in checks or [] if isinstance(c, dict)}
+
+    def said(host, port):
+        c = checked.get(("%s:%s" % (host, port)).lower())
+        if c is None:
+            return ""
+        return " &middot; check: <span class=%s>%s</span>" % ("ok-s" if c.get("ok") is True else "bad-s",
+                                                              _s(c.get("said")))
     host = str(answer.get("host") or "this host")
     me = escape(host)
     here = {host.lower(), "host.docker.internal"}  # this host itself, outside Docker
@@ -145,14 +166,15 @@ def render(answer, status):
     if on_host:
         table += "<p><b>Also on this host, outside Docker</b></p><table>%s</table>" % "".join(
             "<tr><td>%s</td><td>%s</td></tr>" % pair for pair in on_host)
-    connects = [("%s:%s" % (escape(h), escape(port)), escape(who) + said)
-                for h in sorted(out) for port, who, said in sorted(out[h])]
+    connects = [("%s:%s" % (escape(h), escape(port)), escape(who) + health + said(h, port))
+                for h in sorted(out) for port, who, health in sorted(out[h])]
     cards = [_card("Admins' computers", "<p>They reach this host over SSH; bits-admin through the tunnel "
                    "to its socket.</p>", [("%s:22" % me, "ssh")], [], "ok"),
              _card("%s <span class=tag>bits services host</span>" % me, table, connects, inbound,
                    "wide bad" if bad else "wide ok", note="%d services" % len(services))]
     for h in sorted(out):
-        reached = [("%s/tcp" % escape(port), escape(who) + said) for port, who, said in sorted(out[h])]
+        reached = [("%s/tcp" % escape(port), escape(who) + health + said(h, port))
+                   for port, who, health in sorted(out[h])]
         health = "" if h not in seen else "bad" if not all(seen[h]) else "ok"
         cards.append(_card(escape(h), "", [], reached, health,
                            note="reached from %s%s" % (me, "" if h in seen else "; no data from monitoring"
@@ -164,5 +186,6 @@ def render(answer, status):
     else:
         monitoring = "<p class=tag>Health of other hosts: VictoriaMetrics' up, as monitoring last scraped it.</p>"
     return ("<style>%s</style><p>Where the site's services run and how they are reached. Open a card "
-            "for its services and the connections to allow. Refreshed every minute.</p>%s"
-            "<div class=hosts>%s</div>" % (CSS, monitoring, "".join(cards)))
+            "for its services and the connections to allow. Refreshed every minute.</p>%s%s"
+            "<div class=hosts>%s</div>" % (CSS, monitoring, "" if checks is None else _checks_html(checks, at),
+                                           "".join(cards)))

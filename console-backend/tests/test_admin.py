@@ -625,7 +625,7 @@ class AdminTest(unittest.TestCase):
         self.assertIn("Health of other hosts: VictoriaMetrics did not answer", client.get("/hosts").text)
         del answer["up"]
         page = client.get("/hosts").text
-        self.assertIn("<meta http-equiv=refresh content=60>", page)
+        self.assertIn('<meta http-equiv=refresh content="60;url=/hosts">', page)
         self.assertIn("bits&lt;1&gt;", page)
         self.assertNotIn("bits<1>", page)
         self.assertIn("8443&rarr;8443 published", page)
@@ -660,6 +660,32 @@ class AdminTest(unittest.TestCase):
         self.assertIn("<td>9000</td>", page)            # host.docker.internal is this host
         answer = {"ok": False, "error": "docker compose config failed; see the helper's journal"}
         self.assertIn("could not say: docker compose config failed", client.get("/hosts").text)
+
+    def test_the_hosts_check(self):
+        answer = {"ok": True, "host": "bits", "services": {}, "networks": {},
+                  "links": [{"service": "b", "key": "GITLAB_API_URL", "host": "gitlab.cern.ch", "port": 443}],
+                  "scrape": []}
+        results = [{"target": "gitlab.cern.ch:443", "probe": "TCP connect", "ok": False, "said": "refused", "ms": 3},
+                   {"target": "127.0.0.1:8443", "probe": "GET /healthz", "ok": True, "said": "<b>HTTP 200", "ms": 9}]
+        asked = []
+        def helper(request):
+            asked.append(request["op"])
+            if request["op"] == "check":
+                return {"ok": True, "results": results, "at": 1762000000}
+            return answer if request["op"] == "hosts" else {"ok": True}
+        client = TestClient(admin.create_app(self.state, helper, [ORIGIN], self.store, reset_file=self.reset,
+                                             chain=self.chain), base_url="http://localhost:8800")
+        self.assertEqual(client.post("/hosts/check", headers={"Origin": ORIGIN}).status_code, 401)
+        self.assertNotIn("check", asked)
+        client.post("/login", content="name=Predrag&code=" + self.state.code, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertIn("Check the connections", client.get("/hosts").text)
+        self.assertNotIn("<h2>Check,", client.get("/hosts").text)
+        page = client.post("/hosts/check", headers={"Origin": ORIGIN}).text
+        self.assertIn("<h2>Check, 12:26:40 UTC</h2>", page)  # when the probes ran
+        self.assertIn("<td>127.0.0.1:8443</td><td>GET /healthz</td><td class=ok-s>&lt;b&gt;HTTP 200</td>", page)
+        self.assertIn("check: <span class=bad-s>refused</span>", page)  # on the connection too
+        self.assertEqual(client.post("/hosts/check").status_code, 403)  # no Origin
 
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):

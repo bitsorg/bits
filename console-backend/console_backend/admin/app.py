@@ -448,16 +448,31 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                         "Security keys (YubiKey) and synced passkeys (Touch ID, Face ID).",
                         _keys_html(keys), passkeys.LABEL_MAX, admins_html(state.who(token))))
 
-    @app.get("/hosts")
-    def hosts_page(request: Request):
-        if not session(request):
-            return RedirectResponse("/", status_code=303, headers=HEADERS)
+    def show_hosts(checks=None, at=None):
         answer = helper({"op": "hosts"})
         if not answer.get("ok"):
             body = "<p>The host helper could not say: %s</p>" % html.escape(str(answer.get("error", "")))
         else:
-            body = hosts_page_view.render(answer, helper({"op": "status"}))
-        return _page("Hosts", "<p><a href=/>Back</a></p>" + body, head="<meta http-equiv=refresh content=60>")
+            body = hosts_page_view.render(answer, helper({"op": "status"}), checks, at)
+        return _page("Hosts", "<p><a href=/>Back</a> &middot; <form method=post action=/hosts/check "
+                     "style=display:inline><button>Check the connections</button></form></p>" + body,
+                     head="<meta http-equiv=refresh content=\"60;url=/hosts\">")
+
+    @app.get("/hosts")
+    def hosts_page(request: Request):
+        if not session(request):
+            return RedirectResponse("/", status_code=303, headers=HEADERS)
+        return show_hosts()
+
+    @app.post("/hosts/check")
+    def hosts_check(request: Request):
+        if not session(request):
+            return refuse("not signed in", 401)
+        answer = helper({"op": "check"})
+        if not answer.get("ok"):
+            return _page("Hosts", "<p>The check failed: %s</p><p><a href=/hosts>Back</a></p>"
+                         % html.escape(str(answer.get("error", ""))))
+        return show_hosts(answer.get("results") or [], answer.get("at"))
 
     @app.post("/login")
     async def login(request: Request):
