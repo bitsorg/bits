@@ -122,6 +122,17 @@ async function storePassphrase(event) {
   }
 }
 
+// The passphrase stored under key *id*, decrypted here with the key's PRF output.
+async function openBox(key, box, id) {
+  try {
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64u(box.iv), additionalData: enc.encode(id) },
+                                              key, unb64u(box.ct));
+    return new TextDecoder().decode(plain);
+  } catch (e) {
+    throw new Error("the copy stored under this key does not decrypt; store the passphrase again");
+  }
+}
+
 // Touch, fetch the stored copy, decrypt it here, send the passphrase on to the helper.
 async function unlock(event) {
   event.preventDefault();
@@ -131,15 +142,9 @@ async function unlock(event) {
   try {
     const [assertion, key] = await touch("/unlock/options", id);
     const box = await post("/unlock/box", { credential: assertion });
-    let plain;
-    try {
-      plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64u(box.iv), additionalData: enc.encode(id) },
-                                          key, unb64u(box.ct));
-    } catch (e) {
-      throw new Error("the copy stored under this key does not decrypt; store the passphrase again");
-    }
+    const passphrase = await openBox(key, box, id);
     say("Unlocking…");
-    const r = await post("/unlock", { passphrase: new TextDecoder().decode(plain) });
+    const r = await post("/unlock", { passphrase });
     say("Unlocked: signing key " + r.key_id16);
     setTimeout(() => location.reload(), 1500);
   } catch (e) {
@@ -169,7 +174,55 @@ async function applySettings(event) {
   }
 }
 
-for (const [id, handler] of [["signin", signIn], ["enrol", enrol], ["box", storePassphrase], ["unlock", unlock]]) {
+// One step on the service secrets: touch, open the passphrase here, send it with the step.
+async function secretsStep(button, action, slot, value) {
+  button.disabled = true;
+  try {
+    const id = document.getElementById("secrets-key").value;
+    const [assertion, key] = await touch("/secrets/options", id);
+    const box = await post("/secrets/box", { credential: assertion });
+    say("Asking the host helper…");
+    const r = await post("/secrets", { passphrase: await openBox(key, box, id), action, slot, value });
+    showSlots(r.slots);
+    say(action === "list" ? "These are set." : (action === "set" ? "Set " : "Removed ") + slot +
+        (r.push_error ? "; not pushed yet: " + r.push_error : action === "set" ? ", and pushed." :
+         "; a running proxy may hold it until it restarts."));
+    return r;
+  } catch (e) {
+    say(e.name === "NotAllowedError" ? "Cancelled, timed out or not allowed: " + e.message : e.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function showSlots(slots) {
+  const list = document.getElementById("slot-list");
+  list.replaceChildren(...slots.map(slot => {
+    const item = document.createElement("li"), remove = document.createElement("button");
+    item.append(slot + " ");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => secretsStep(remove, "remove", slot));
+    item.append(remove);
+    return item;
+  }));
+  if (!slots.length) list.textContent = "none";
+}
+
+async function setSecret(event) {
+  event.preventDefault();
+  const slot = document.getElementById("secret-slot"), value = document.getElementById("secret-value");
+  if (!slot.value || !value.value) return say("Give the slot and its value.");
+  if (await secretsStep(event.target.querySelector("button"), "set", slot.value.trim(), value.value)) value.value = "";
+}
+
+async function listSecrets(event) {
+  event.preventDefault();
+  await secretsStep(event.target.querySelector("button"), "list");
+}
+
+for (const [id, handler] of [["signin", signIn], ["enrol", enrol], ["box", storePassphrase], ["unlock", unlock],
+                             ["secret-set", setSecret], ["secrets-list", listSecrets]]) {
   const form = document.getElementById(id);
   if (form) form.addEventListener("submit", handler);
 }

@@ -28,6 +28,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from . import events, passkeys
 from . import hosts as hosts_page_view
+from . import service_secrets as secrets_page_view
 from . import settings as settings_page_view
 
 HELPER_SOCKET = os.environ.get("BITS_ADMIN_HELPER_SOCKET", "/run/bits-admin-helper/helper.sock")
@@ -442,7 +443,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                       "<button>Unlock</button></form>" % "".join(
                           "<option value=\"%s\">%s</option>" % (html.escape(k["id"]), html.escape(k["label"]))
                           for k in boxed))
-        return _page("Site", "<p>Signed in as %s (%s). <a href=/hosts>Hosts</a> &middot; <a href=/settings>Settings</a></p>"
+        return _page("Site", "<p>Signed in as %s (%s). <a href=/hosts>Hosts</a> &middot; <a href=/settings>Settings</a> &middot; <a href=/secrets>Secrets</a></p>"
                      "<h2>Host helper</h2><pre>%s</pre>%s"
                      "<h2>Keys</h2><p>%s</p>%s<form id=enrol><input id=label maxlength=%d size=30 "
                      "placeholder=\"e.g. YubiKey 5C, MacBook Touch ID\"> <button>Add key</button>"
@@ -852,8 +853,9 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         audit(state.who(token), "admin.passphrase_stored", key_id)
         return JSONResponse({"ok": True}, headers=HEADERS)
 
-    @app.post("/unlock/options")
-    async def unlock_options(request: Request):
+    async def box_options(request, purpose, own=False):
+        """Options to touch a key that holds the passphrase, for *purpose*; own: one of the
+        signed-in admin's own keys."""
         token = session(request)
         if not token:
             return refuse("not signed in", 401)
@@ -863,20 +865,21 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return refuse("bad request")
         if not key or not key.get("box"):
             return refuse("no passphrase is stored under this key")
+        if own and key.get("owner") != state.who(token):
+            return refuse("use one of your own keys")
         if keys_only and key.get("synced"):
             return refuse("this is a synced passkey and this site accepts security keys only")
         options, challenge = passkeys.authentication_options(rp, [key])
-        state.put_challenge(token, "unlock", (challenge, key["id"]))
+        state.put_challenge(token, purpose, (challenge, key["id"]))
         return Response(options, media_type="application/json", headers=HEADERS)
 
-    @app.post("/unlock/box")
-    async def unlock_box(request: Request):
+    async def box_open(request, purpose):
         """After a verified touch, the stored copy for the browser to decrypt, and one
-        minute to send the passphrase on."""
+        minute (the <purpose>-grant) to send the passphrase on."""
         token = session(request)
         if not token:
             return refuse("not signed in", 401)
-        started = state.take_challenge(token, "unlock")
+        started = state.take_challenge(token, purpose)
         if not started:
             return refuse("this expired; start again")
         challenge, key_id = started
@@ -890,11 +893,73 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         except passkeys.Refused as e:
             return refuse(str(e))
         except Exception as e:  # py_webauthn raises several types, all a failed check
-            log(request, "unlock refused (%s)" % type(e).__name__)
+            log(request, "%s refused (%s)" % (purpose, type(e).__name__))
             return refuse("the key's answer did not verify")
         store.update(key_id, sign_count=count)
-        state.put_challenge(token, "unlock-grant", key_id, GRANT_TTL)
+        state.put_challenge(token, purpose + "-grant", key_id, GRANT_TTL)
         return JSONResponse({"iv": key["box"]["iv"], "ct": key["box"]["ct"]}, headers=HEADERS)
+
+    @app.post("/unlock/options")
+    async def unlock_options(request: Request):
+        return await box_options(request, "unlock")
+
+    @app.post("/unlock/box")
+    async def unlock_box(request: Request):
+        return await box_open(request, "unlock")
+
+    @app.get("/secrets")
+    def secrets_page(request: Request):
+        token = session(request)
+        if not token:
+            return RedirectResponse("/", status_code=303, headers=HEADERS)
+        keys = [k for k in store.load() if k.get("owner") == state.who(token) and k.get("box")
+                and not (keys_only and k.get("synced"))]
+        return _page("Secrets", "<p><a href=/>Back</a></p>" + secrets_page_view.render(keys))
+
+    @app.post("/secrets/options")
+    async def secrets_options(request: Request):
+        return await box_options(request, "secrets", own=True)
+
+    @app.post("/secrets/box")
+    async def secrets_box(request: Request):
+        return await box_open(request, "secrets")
+
+    @app.post("/secrets")
+    async def secrets_change(request: Request):
+        """One step on the service secrets, with the passphrase the browser opened."""
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        try:  # before the grant is taken: a bad request does not use it up
+            body = json.loads(await _body(request, 16384))
+            passphrase, action = body["passphrase"], body.get("action")
+            if not isinstance(passphrase, str) or not 0 < len(passphrase.encode()) <= 1024 \
+                    or action not in secrets_page_view.ACTIONS:
+                raise ValueError("no passphrase or no such step")
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return refuse("bad request")
+        problem = secrets_page_view.step_problem(action, body.get("slot"), body.get("value"))
+        if problem:
+            return refuse(problem)
+        key_id = state.take_challenge(token, "secrets-grant")
+        if not key_id:
+            return refuse("touch the key first (or it was more than a minute ago)")
+        ask = {"op": secrets_page_view.ACTIONS[action], "passphrase": passphrase}
+        if action != "list":
+            ask["slot"] = body["slot"]
+        if action == "set":
+            ask["value"] = body.get("value")
+        answer = helper(ask)
+        if not answer.get("ok"):
+            log(request, "secrets %s refused: %s" % (action, answer.get("error")))
+            return refuse(str(answer.get("error", "the host helper refused")))
+        if action != "list":
+            log(request, "secret %s %s with key %s%s" % (ask["slot"], "set" if action == "set" else "removed",
+                                                         key_id[:8], "; not pushed" if answer.get("push_error") else ""))
+            audit(state.who(token), "admin.secret_set" if action == "set" else "admin.secret_removed",
+                  "service-secrets", slot=ask["slot"], key=key_id, pushed=not answer.get("push_error"))
+        return JSONResponse({"ok": True, "slots": [str(s) for s in answer.get("slots") or []],
+                             "push_error": answer.get("push_error")}, headers=HEADERS)
 
     @app.post("/unlock")
     async def unlock(request: Request):

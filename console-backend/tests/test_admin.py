@@ -80,6 +80,9 @@ class AdminTest(unittest.TestCase):
             if op == "unlock-signer":
                 self.signer = "loaded"
                 return {"ok": True, "key_id16": "43fd71705f29a075"}
+            if op in ("secrets-list", "secret-set", "secret-remove"):
+                return ({"ok": True, "slots": ["gitlab-ops", "gitlab-read"], "pushed": {}} if right else
+                        {"ok": False, "error": "wrong passphrase, or secrets/service-secrets.enc is damaged"})
             return {"ok": True, "signer": self.signer}
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
@@ -1183,6 +1186,65 @@ class AdminTest(unittest.TestCase):
         self.assertIn("touch the key first", r.json()["error"])               # ...for a minute at most
         self.assertEqual([u["passphrase"] for u in unlocks()], ["wrong-pass-7"])
 
+    def secrets_step(self, key_id, action, counter, **fields):
+        post = lambda path, body: self.client.post(path, json=body, headers={"Origin": ORIGIN}).json()
+        options = post("/secrets/options", {"id": key_id})
+        if "error" in options:
+            return options
+        box = post("/secrets/box", {"credential": assertion(options, key_id, counter=counter)})
+        if "error" in box:
+            return box
+        return post("/secrets", dict({"passphrase": "right-pass-9", "action": action}, **fields))
+
+    def secrets_box(self, key_id, counter):
+        options = self.client.post("/secrets/options", json={"id": key_id}, headers={"Origin": ORIGIN}).json()
+        return self.client.post("/secrets/box", json={"credential": assertion(options, key_id, counter=counter)},
+                                headers={"Origin": ORIGIN}).json()
+
+    def test_service_secrets_with_a_touch(self):
+        key_id = self.ready_to_unlock()
+        self.assertIn("<a href=/secrets>Secrets</a>", self.client.get("/").text)
+        self.assertIn("<select id=secrets-key>", self.client.get("/secrets").text)
+        done = self.secrets_step(key_id, "set", 2, slot="gitlab-ops", value="glpat-o")
+        self.assertEqual(done, {"ok": True, "slots": ["gitlab-ops", "gitlab-read"], "push_error": None})
+        self.assertEqual(self.asked[-1], {"op": "secret-set", "passphrase": "right-pass-9", "slot": "gitlab-ops",
+                                          "value": "glpat-o"})
+        row = self.chain.rows()[-1]
+        self.assertEqual((row["kind"], json.loads(row["payload"])["slot"]), ("admin.secret_set", "gitlab-ops"))
+        self.assertNotIn("glpat-o", json.dumps(self.chain.rows()))            # names only
+        self.assertEqual(self.secrets_step(key_id, "list", 3)["slots"], ["gitlab-ops", "gitlab-read"])
+        self.assertEqual(self.asked[-1], {"op": "secrets-list", "passphrase": "right-pass-9"})
+        r = self.client.post("/secrets", json={"passphrase": "right-pass-9", "action": "list"}, headers={"Origin": ORIGIN})
+        self.assertIn("touch the key first", r.json()["error"])               # one step per touch
+        self.assertIn("bad request", self.secrets_step(key_id, "drop", 4)["error"])
+        r = self.client.post("/secrets", json={"passphrase": "right-pass-9", "action": "list"}, headers={"Origin": ORIGIN})
+        self.assertTrue(r.json()["ok"])                                        # a bad request kept the grant
+        for fields, said in (({"slot": "gitlab-read\n", "value": "x"}, "a slot is a name"),
+                             ({"slot": "gitlab-read", "value": "a\nb"}, "one line")):
+            r = self.client.post("/secrets", json=dict(fields, passphrase="right-pass-9", action="set"),
+                                 headers={"Origin": ORIGIN})
+            self.assertIn(said, r.json()["error"])                             # before the grant is used
+        unlock_options = self.client.post("/unlock/options", json={"id": key_id}, headers={"Origin": ORIGIN}).json()
+        self.assertIn("ct", self.client.post("/unlock/box", json={"credential": assertion(
+            unlock_options, key_id, counter=5)}, headers={"Origin": ORIGIN}).json())       # an unlock grant now
+        r = self.client.post("/secrets", json={"passphrase": "right-pass-9", "action": "list"}, headers={"Origin": ORIGIN})
+        self.assertIn("touch the key first", r.json()["error"])               # an unlock grant is not one
+        self.assertEqual([a["op"] for a in self.asked if a.get("op") == "secrets-list"], ["secrets-list"] * 2)
+        self.client.post("/unlock", json={"passphrase": "right-pass-9"}, headers={"Origin": ORIGIN})
+        self.assertIn("ct", self.secrets_box(key_id, 6))
+        r = self.client.post("/unlock", json={"passphrase": "right-pass-9"}, headers={"Origin": ORIGIN})
+        self.assertIn("touch the key first", r.json()["error"])               # nor the reverse
+        self.client.post("/secrets", json={"passphrase": "right-pass-9", "action": "list"}, headers={"Origin": ORIGIN})
+        self.assertIn("wrong passphrase", self.secrets_step(key_id, "remove", 7, slot="gitlab-ops",
+                                                            passphrase="wrong-pass-7")["error"])
+        self.assertEqual([r["kind"] for r in self.chain.rows() if r["kind"].startswith("admin.secret")],
+                         ["admin.secret_set"])                                 # nothing removed
+        owner = self.store.get(key_id)["owner"]
+        self.store.update(key_id, owner="Alice")                               # someone else's key
+        self.assertIn("your own keys", self.secrets_step(key_id, "list", 8)["error"])
+        self.assertIn("None of your keys holds the passphrase", self.client.get("/secrets").text)
+        self.store.update(key_id, owner=owner)
+
     def test_unlock_only_keys_with_a_stored_passphrase(self):
         self.login(self.state.code)
         self.enrol()
@@ -1194,7 +1256,7 @@ class AdminTest(unittest.TestCase):
         self.assertIn("<code>make unlock</code> asks for", page)
         options, _ = self.unlock(key["id"])
         self.assertIn("no passphrase is stored", options["error"])
-        for path in ("/unlock/options", "/unlock/box", "/unlock"):
+        for path in ("/unlock/options", "/unlock/box", "/unlock", "/secrets/options", "/secrets/box", "/secrets"):
             self.assertEqual(TestClient(self.client.app, base_url="http://localhost:8800").post(
                 path, json={}, headers={"Origin": ORIGIN}).status_code, 401)
 
