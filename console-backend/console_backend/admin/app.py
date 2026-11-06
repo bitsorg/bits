@@ -91,6 +91,7 @@ class State:
         self.now, self.write, self.sessions, self.failures = now, write, {}, []
         self.challenges = {}  # (session, purpose) -> (value, until), each used once
         self.invites = {}  # code -> (name, until, invited by), each used once
+        self.invited_by = {}  # an invite's session -> who invited
         self.lock = threading.Lock()
         self.renew_code()
 
@@ -130,6 +131,13 @@ class State:
     def pending_invites(self):
         with self.lock:
             return sorted((v for v in self.invites.values() if v[1] >= self.now()), key=lambda v: v[1])
+
+    def close_sessions_of(self, name):
+        """*name*'s sessions, and every invite they made, used or not."""
+        with self.lock:
+            self.invites = {c: v for c, v in self.invites.items() if v[2] != name}
+            gone = {t for t, v in self.sessions.items() if v[1] == name or self.invited_by.get(t) == name}
+            self.sessions = {t: v for t, v in self.sessions.items() if t not in gone}
 
     def cancel_invite(self, name):
         """The invite of *name*, and its session if it was used but no key added yet."""
@@ -335,13 +343,15 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         """The setup code: while no admin key can sign in, or for a while after a reset."""
         return not signers() or state.now() < reset_until
 
-    def admins_html():
+    def admins_html(me):
         owners = {}
         for k in store.load():
             if k.get("owner"):
                 owners[k["owner"]] = owners.get(k["owner"], 0) + 1
-        rows = "".join("<li>%s (%d key%s)</li>" % (html.escape(n), c, "" if c == 1 else "s")
-                       for n, c in sorted(owners.items()))
+        rows = "".join("<li>%s (%d key%s)%s</li>" % (
+            html.escape(n), c, "" if c == 1 else "s", "" if n == me else
+            " <form method=post action=/admins/remove style=display:inline><input type=hidden name=name "
+            "value=\"%s\"><button>Remove</button></form>" % html.escape(n)) for n, c in sorted(owners.items()))
         pending = "".join(
             "<li>%s, invited by %s, until %s UTC <form method=post action=/invites/cancel style=display:inline>"
             "<input type=hidden name=name value=\"%s\"><button>Cancel</button></form></li>"
@@ -403,7 +413,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                         html.escape(json.dumps(status, indent=1)), unlock,
                         "Security keys only (BITS_ADMIN_SECURITY_KEYS_ONLY)." if keys_only else
                         "Security keys (YubiKey) and synced passkeys (Touch ID, Face ID).",
-                        _keys_html(keys), passkeys.LABEL_MAX, admins_html()))
+                        _keys_html(keys), passkeys.LABEL_MAX, admins_html(state.who(token))))
 
     @app.post("/login")
     async def login(request: Request):
@@ -469,6 +479,24 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         log(request, "cancelled the invite of %s" % name)
         return RedirectResponse("/", status_code=303, headers=HEADERS)
 
+    @app.post("/admins/remove")
+    async def admin_remove(request: Request):
+        if not session(request):
+            return refuse("not signed in", 401)
+        try:
+            name = passkeys.clean_name((await form(request)).get("name", ""))
+        except ValueError:
+            return refuse("bad request")
+        if name == state.who(request.cookies.get(COOKIE)):
+            return _page("Admins", "<p>You cannot remove yourself; another admin can.</p><p><a href=/>Back"
+                         "</a></p>")
+        if not any(k.get("owner") == name for k in store.load()):
+            return _page("Admins", "<p>No such admin.</p><p><a href=/>Back</a></p>")
+        state.close_sessions_of(name)  # first: none of theirs can add a key or sign in meanwhile
+        removed = store.remove_owner(name)
+        log(request, "removed admin %s (%d key%s)" % (name, removed, "" if removed == 1 else "s"))
+        return RedirectResponse("/", status_code=303, headers=HEADERS)
+
     @app.post("/invite")
     async def invite_use(request: Request):
         if state.locked_out():
@@ -481,9 +509,10 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return _page("Sign in", "<p>Wrong, used or expired invite.</p><p><a href=/>Again</a></p>")
         name, by = got
         print("bits-admin: %s: signed in with an invite from %s" % (name, by), file=sys.stderr, flush=True)
+        token = state.open_session(name, "invite", INVITE_TTL)
+        state.invited_by[token] = by
         r = RedirectResponse("/", status_code=303, headers=HEADERS)
-        r.set_cookie(COOKIE, state.open_session(name, "invite", INVITE_TTL), max_age=INVITE_TTL,
-                     httponly=True, samesite="strict", path="/")
+        r.set_cookie(COOKIE, token, max_age=INVITE_TTL, httponly=True, samesite="strict", path="/")
         return r
 
     @app.post("/signin/options")

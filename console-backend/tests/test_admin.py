@@ -331,6 +331,43 @@ class AdminTest(unittest.TestCase):
         self.assertIn("Wrong, used or expired invite", self.use_invite(
             TestClient(self.client.app, base_url="http://localhost:8800"), code).text)
 
+    def test_an_admin_is_removed_with_their_keys(self):
+        self.login(self.state.code)
+        self.enrol("YubiKey")
+        _, code = self.invite("Alice")
+        alice = TestClient(self.client.app, base_url="http://localhost:8800")
+        self.use_invite(alice, code)
+        options = alice.post("/passkeys/options", json={}, headers={"Origin": ORIGIN}).json()
+        alice.post("/passkeys", json={"credential": registration(options)}, headers={"Origin": ORIGIN})
+        [mine, hers] = self.store.load()
+        self.key_signin(alice, hers["id"], counter=2)
+        self.assertIn("Signed in as Alice", alice.get("/").text)
+        remove = lambda client, n: client.post("/admins/remove", content="name=" + n, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertIn("cannot remove yourself", remove(alice, "Alice").text)
+        self.assertIn("No such admin", remove(self.client, "Nobody").text)
+        invite = lambda n: alice.post("/invites", content="name=" + n, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        invite("Mallory")                  # Alice's invites: one open, one used
+        r = invite("Eve")
+        eve = TestClient(self.client.app, base_url="http://localhost:8800")
+        self.use_invite(eve, r.text.split("<pre>")[1].split("</pre>")[0])
+        self.assertEqual(remove(eve, "Predrag").status_code, 401)  # an invite's session cannot remove
+        page = self.client.get("/").text
+        self.assertIn("Alice (1 key) <form method=post action=/admins/remove", page)
+        self.assertNotIn("Predrag (1 key) <form", page)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(remove(self.client, "Alice").status_code, 200)  # followed to the page
+        self.assertIn("Predrag: removed admin Alice (1 key)", err.getvalue())
+        self.assertEqual([k["owner"] for k in self.store.load()], ["Predrag"])
+        self.assertNotIn("Signed in as Alice", alice.get("/").text)  # her session ended too
+        self.assertIn("Signed in as Predrag", self.client.get("/").text)
+        self.assertNotIn("Welcome, Eve", eve.get("/").text)  # her invites went with her
+        self.assertNotIn("Mallory", self.client.get("/").text)
+        self.assertEqual(alice.post("/signin/options", json={}, headers={"Origin": ORIGIN}).json()[
+            "allowCredentials"], [{"id": mine["id"], "type": "public-key"}])
+
     def test_invites_expire_and_are_checked(self):
         self.login(self.state.code)
         self.enrol("YubiKey")

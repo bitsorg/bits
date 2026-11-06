@@ -103,6 +103,15 @@ class Store:
                     return True
             return False
 
+    def remove_owner(self, owner):
+        """All of *owner*'s keys; how many."""
+        with self.lock:
+            keys = self.load()
+            rest = [k for k in keys if k.get("owner") != owner]
+            if len(rest) != len(keys):
+                self._save(rest)
+            return len(keys) - len(rest)
+
     def remove(self, key_id):
         with self.lock:
             keys = self.load()
