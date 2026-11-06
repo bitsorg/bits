@@ -147,10 +147,10 @@ def verify_registration(rp, origins, credential, challenge, label, now, *, secur
             "added": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now))}
 
 
-def authentication_options(rp, key):
-    """Options for navigator.credentials.get with this one key (the page adds PRF)."""
+def authentication_options(rp, keys):
+    """Options for navigator.credentials.get with these keys (the page adds PRF when needed)."""
     opts = generate_authentication_options(
-        rp_id=rp, allow_credentials=[PublicKeyCredentialDescriptor(id=base64url_to_bytes(key["id"]))],
+        rp_id=rp, allow_credentials=[PublicKeyCredentialDescriptor(id=base64url_to_bytes(k["id"])) for k in keys],
         user_verification=UserVerificationRequirement.REQUIRED)
     return options_to_json(opts), opts.challenge
 

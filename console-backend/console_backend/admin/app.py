@@ -41,6 +41,7 @@ def _on(value):
 # Off by default: Touch ID, Face ID and other synced passkeys may unlock too.
 SECURITY_KEYS_ONLY = _on(os.environ.get("BITS_ADMIN_SECURITY_KEYS_ONLY"))
 CODE_TTL, SESSION_TTL, CHALLENGE_TTL, GRANT_TTL = 1800, 12 * 3600, 300, 60
+SIGNINS = 32  # sign-ins in progress at once; anyone at the socket may start one
 FAILURES, WINDOW = 20, 600  # wrong setup codes per window (seconds); a new code clears them
 COOKIE = "bits_admin_session"
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
@@ -109,16 +110,21 @@ class State:
             self.failures.append(self.now())
             return False
 
-    def open_session(self, name):
+    def open_session(self, name, how):
         token = secrets.token_urlsafe(32)
         with self.lock:
-            self.sessions[token] = (self.now() + SESSION_TTL, name)
+            self.sessions[token] = (self.now() + SESSION_TTL, name, how)
         return token
+
+    def how(self, token):
+        """How the session signed in: "setup code" or "key <label>"."""
+        with self.lock:
+            return self.sessions.get(token or "", (0, None, ""))[2]
 
     def who(self, token):
         """The signed-in admin's name, or None (an expired session is dropped)."""
         with self.lock:
-            until, name = self.sessions.get(token or "", (None, None))
+            until, name, _ = self.sessions.get(token or "", (None, None, None))
             if until is None or until < self.now():
                 self.sessions.pop(token or "", None)
                 for key in [k for k in self.challenges if k[0] == token]:
@@ -137,7 +143,13 @@ class State:
 
     def put_challenge(self, token, purpose, value, ttl=CHALLENGE_TTL):
         with self.lock:
+            for key in [k for k, (_, until) in self.challenges.items() if until < self.now()]:
+                del self.challenges[key]  # abandoned sign-ins would pile up otherwise
             self.challenges[(token, purpose)] = (value, self.now() + ttl)
+
+    def open_challenges(self, purpose):
+        with self.lock:
+            return sum(p == purpose and until >= self.now() for (_, p), (_, until) in self.challenges.items())
 
     def take_challenge(self, token, purpose):
         with self.lock:
@@ -243,6 +255,14 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
 
     @app.get("/")
     def index(request: Request):
+        signers = [k for k in store.load() if k.get("owner") and not (keys_only and k.get("synced"))]
+        if not signed_in(request) and signers:
+            return _page("Sign in", "<form id=signin><button>Sign in with your key</button></form>"
+                         "<p id=status></p><p>Or, at bootstrap or after <code>sudo make admin-reset</code>, "
+                         "with the setup code:</p><form method=post action=/login><input name=name "
+                         "autocomplete=username size=20 maxlength=40 placeholder=\"your name\"> "
+                         "<input name=code autocomplete=off size=22 placeholder=XXXX-XXXX-XXXX-XXXX> "
+                         "<button>Sign in</button></form><script src=/admin.js></script>")
         if not signed_in(request):
             return _page("Sign in", "<p>Enter your name and the setup code: <code>make admin-code"
                          "</code> on the host prints it. Each code signs in once.</p>"
@@ -265,12 +285,13 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                       "<button>Unlock</button></form>" % "".join(
                           "<option value=\"%s\">%s</option>" % (html.escape(k["id"]), html.escape(k["label"]))
                           for k in boxed))
-        return _page("Site", "<p>Signed in as %s (setup code).</p><h2>Host helper</h2><pre>%s</pre>%s"
+        return _page("Site", "<p>Signed in as %s (%s).</p><h2>Host helper</h2><pre>%s</pre>%s"
                      "<h2>Keys</h2><p>%s</p>%s<form id=enrol><input id=label maxlength=%d size=30 "
                      "placeholder=\"e.g. YubiKey 5C, MacBook Touch ID\"> <button>Add key</button>"
                      "</form><p id=status></p><form method=post action=/logout><button>Sign out"
                      "</button></form><script src=/admin.js></script>"
                      % (html.escape(state.who(request.cookies.get(COOKIE)) or ""),
+                        html.escape(state.how(request.cookies.get(COOKIE))),
                         html.escape(json.dumps(status, indent=1)), unlock,
                         "Security keys only (BITS_ADMIN_SECURITY_KEYS_ONLY)." if keys_only else
                         "Security keys (YubiKey) and synced passkeys (Touch ID, Face ID).",
@@ -302,8 +323,51 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             print("bits-admin: %s: %d key(s) without an owner are now theirs" % (name, claimed),
                   file=sys.stderr, flush=True)
         r = RedirectResponse("/", status_code=303, headers=HEADERS)
-        r.set_cookie(COOKIE, state.open_session(name), max_age=SESSION_TTL, httponly=True,
-                     samesite="strict", path="/")
+        r.set_cookie(COOKIE, state.open_session(name, "setup code"), max_age=SESSION_TTL,
+                     httponly=True, samesite="strict", path="/")
+        return r
+
+    @app.post("/signin/options")
+    def signin_options():
+        keys = [k for k in store.load() if k.get("owner") and not (keys_only and k.get("synced"))]
+        if not keys:
+            return refuse("no key can sign in yet; use the setup code")
+        if state.open_challenges("signin") >= SIGNINS:
+            return refuse("too many sign-ins in progress; try again in a few minutes", 429)
+        options, challenge = passkeys.authentication_options(rp, keys)
+        ticket = secrets.token_urlsafe(24)  # stands for the session not yet open
+        state.put_challenge(ticket, "signin", challenge)
+        return JSONResponse(dict(json.loads(options), ticket=ticket), headers=HEADERS)
+
+    @app.post("/signin")
+    async def signin(request: Request):
+        try:
+            body = json.loads(await _body(request, 8192))
+            ticket, credential = str(body["ticket"]), body["credential"]
+            key = store.get(credential["id"])
+        except (ValueError, TypeError, KeyError):
+            return refuse("bad request")
+        challenge = state.take_challenge(ticket, "signin")
+        if not challenge:
+            return refuse("this expired; start again")
+        if not key or not key.get("owner"):
+            return refuse("this key is not enrolled here")
+        if keys_only and key.get("synced"):
+            return refuse("this is a synced passkey and this site accepts security keys only")
+        try:
+            count = passkeys.verify_assertion(rp, origins, credential, challenge, key,
+                                              security_keys_only=keys_only)
+        except passkeys.Refused as e:
+            return refuse(str(e))
+        except Exception as e:  # py_webauthn raises several types, all a failed check
+            print("bits-admin: sign-in refused (%s)" % type(e).__name__, file=sys.stderr, flush=True)
+            return refuse("the key's answer did not verify")
+        store.update(key["id"], sign_count=count)
+        print("bits-admin: %s: signed in with key %s" % (key["owner"], key["id"][:8]),
+              file=sys.stderr, flush=True)
+        r = JSONResponse({"ok": True}, headers=HEADERS)
+        r.set_cookie(COOKIE, state.open_session(key["owner"], "key " + key["label"]),
+                     max_age=SESSION_TTL, httponly=True, samesite="strict", path="/")
         return r
 
     @app.post("/passkeys/options")
@@ -364,7 +428,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return refuse("no such key")
         if keys_only and key.get("synced"):
             return refuse("this is a synced passkey and this site accepts security keys only")
-        options, challenge = passkeys.authentication_options(rp, key)
+        options, challenge = passkeys.authentication_options(rp, [key])
         state.put_challenge(token, "box", (challenge, key["id"]))
         return Response(options, media_type="application/json", headers=HEADERS)
 
@@ -423,7 +487,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return refuse("no passphrase is stored under this key")
         if keys_only and key.get("synced"):
             return refuse("this is a synced passkey and this site accepts security keys only")
-        options, challenge = passkeys.authentication_options(rp, key)
+        options, challenge = passkeys.authentication_options(rp, [key])
         state.put_challenge(token, "unlock", (challenge, key["id"]))
         return Response(options, media_type="application/json", headers=HEADERS)
 

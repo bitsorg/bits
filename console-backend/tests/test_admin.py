@@ -145,6 +145,89 @@ class AdminTest(unittest.TestCase):
         self.assertIn("bits-admin: <script>x[31m: signed in", err.getvalue())
         self.assertNotIn("\x1b", err.getvalue())
 
+    def key_signin(self, client, cred_id, **fake):
+        options = client.post("/signin/options", json={}, headers={"Origin": ORIGIN}).json()
+        body = {"ticket": options.get("ticket", ""), "credential": assertion(options, cred_id, **fake)}
+        return options, client.post("/signin", json=body, headers={"Origin": ORIGIN})
+
+    def test_sign_in_with_a_key(self):
+        self.login(self.state.code)
+        self.enrol("YubiKey 5C")
+        [key] = self.store.load()
+        fresh = TestClient(self.client.app, base_url="http://localhost:8800")
+        self.assertIn("Sign in with your key", fresh.get("/").text)
+        options, r = self.key_signin(fresh, key["id"], counter=7)
+        self.assertEqual([c["id"] for c in options["allowCredentials"]], [key["id"]])
+        self.assertEqual(options["userVerification"], "required")
+        self.assertEqual(r.json(), {"ok": True})
+        self.assertIn("httponly", r.headers["set-cookie"].lower())
+        self.assertIn("Signed in as Predrag (key YubiKey 5C)", fresh.get("/").text)
+        self.assertEqual(self.store.get(key["id"])["sign_count"], 7)
+        replay = fresh.post("/signin", headers={"Origin": ORIGIN}, json={
+            "ticket": options["ticket"], "credential": assertion(options, key["id"], counter=8)})
+        self.assertIn("expired", replay.json()["error"])
+
+    def test_a_bad_sign_in_opens_no_session(self):
+        self.login(self.state.code)
+        self.enrol("YubiKey 5C")
+        self.enrol("ownerless")
+        key, ownerless = self.store.load()
+        self.store.update(ownerless["id"], owner="")
+        for fake, said in (({"flags": UP, "counter": 2}, "did not verify"),
+                           ({"origin": "http://localhost:3000", "counter": 2}, "did not verify"),
+                           ({"counter": 0}, "did not verify")):
+            fresh = TestClient(self.client.app, base_url="http://localhost:8800")
+            self.store.update(key["id"], sign_count=1)
+            options, r = self.key_signin(fresh, key["id"], **fake)
+            self.assertIn(said, r.json()["error"], fake)
+            self.assertNotIn("set-cookie", r.headers)
+            self.assertNotIn("Signed in as", fresh.get("/").text)
+        retry = fresh.post("/signin", headers={"Origin": ORIGIN}, json={
+            "ticket": options["ticket"], "credential": assertion(options, key["id"], counter=9)})
+        self.assertIn("expired", retry.json()["error"])  # a failed answer used the ticket up
+        self.assertEqual(self.store.get(key["id"])["sign_count"], 1)
+        self.assertNotIn(ownerless["id"], [c["id"] for c in options["allowCredentials"]])
+        _, r = self.key_signin(fresh, ownerless["id"], counter=3)
+        self.assertIn("not enrolled here", r.json()["error"])
+        r = fresh.post("/signin", json={"ticket": "made-up", "credential": {"id": key["id"]}},
+                       headers={"Origin": ORIGIN})
+        self.assertIn("expired", r.json()["error"])
+        self.assertEqual(fresh.post("/signin", json={"credential": "x"}, headers={"Origin": ORIGIN}).json(),
+                         {"error": "bad request"})
+        self.assertEqual(fresh.post("/signin/options", json={}).status_code, 403)  # no Origin
+
+    def test_security_keys_only_signs_in_no_synced_passkey(self):
+        self.login(self.state.code)
+        self.enrol("Touch ID", flags=UP | UV | AT | BE | BS)
+        [key] = self.store.load()
+        strict = TestClient(admin.create_app(self.state, lambda r: {"ok": True}, [ORIGIN], self.store,
+                                             security_keys_only=True), base_url="http://localhost:8800")
+        self.assertNotIn("Sign in with your key", strict.get("/").text)
+        r = strict.post("/signin/options", json={}, headers={"Origin": ORIGIN})
+        self.assertIn("no key can sign in", r.json()["error"])
+        self.enrol("YubiKey")  # with a security key there, the synced one still cannot sign in
+        options, r = self.key_signin(strict, key["id"], flags=UP | UV, counter=2)
+        self.assertIn("accepts security keys only", r.json()["error"])
+
+    def test_abandoned_challenges_are_dropped(self):
+        for n in range(50):
+            self.state.put_challenge("ticket%d" % n, "signin", b"c")
+        self.t[0] += admin.CHALLENGE_TTL - 10
+        self.state.put_challenge("session", "box", b"c")
+        self.t[0] += 11
+        self.state.put_challenge("last", "signin", b"c")
+        self.assertEqual(sorted(self.state.challenges), [("last", "signin"), ("session", "box")])
+
+    def test_sign_ins_in_progress_are_capped(self):
+        self.login(self.state.code)
+        self.enrol()
+        for _ in range(admin.SIGNINS):
+            self.assertIn("ticket", self.client.post("/signin/options", json={}, headers={"Origin": ORIGIN}).json())
+        r = self.client.post("/signin/options", json={}, headers={"Origin": ORIGIN})
+        self.assertEqual(r.status_code, 429)
+        self.t[0] += admin.CHALLENGE_TTL + 1
+        self.assertIn("ticket", self.client.post("/signin/options", json={}, headers={"Origin": ORIGIN}).json())
+
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):
             self.assertNotEqual(self.login("AAAA-AAAA-AAAA-AAAA").status_code, 303)

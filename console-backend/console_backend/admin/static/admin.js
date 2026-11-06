@@ -63,13 +63,38 @@ async function touch(optionsUrl, id) {
   const a = await navigator.credentials.get({ publicKey: o });
   const prf = a.getClientExtensionResults().prf;
   if (!prf || !prf.results || !prf.results.first) throw new Error("the key gave no PRF output");
-  const assertion = { id: a.id, rawId: b64u(a.rawId), type: a.type, clientExtensionResults: {},
+  return [assertionBody(a), await boxKey(prf.results.first)];
+}
+
+// What the server checks; never the PRF output.
+function assertionBody(a) {
+  return { id: a.id, rawId: b64u(a.rawId), type: a.type, clientExtensionResults: {},
     authenticatorAttachment: a.authenticatorAttachment,
     response: { clientDataJSON: b64u(a.response.clientDataJSON),
                 authenticatorData: b64u(a.response.authenticatorData),
                 signature: b64u(a.response.signature),
                 userHandle: a.response.userHandle ? b64u(a.response.userHandle) : null } };
-  return [assertion, await boxKey(prf.results.first)];
+}
+
+async function signIn(event) {
+  event.preventDefault();
+  const button = event.target.querySelector("button");
+  button.disabled = true;
+  try {
+    const o = await post("/signin/options", {});
+    const ticket = o.ticket;
+    delete o.ticket;
+    o.challenge = unb64u(o.challenge);
+    o.allowCredentials = (o.allowCredentials || []).map(c => Object.assign(c, { id: unb64u(c.id) }));
+    say("Confirm with your key (touch, fingerprint or face)…");
+    const a = await navigator.credentials.get({ publicKey: o });
+    await post("/signin", { ticket, credential: assertionBody(a) });
+    location.reload();
+  } catch (e) {
+    say(e.name === "NotAllowedError" ? "Cancelled, timed out or not allowed: " + e.message : e.message);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function storePassphrase(event) {
@@ -124,7 +149,7 @@ async function unlock(event) {
   }
 }
 
-for (const [id, handler] of [["enrol", enrol], ["box", storePassphrase], ["unlock", unlock]]) {
+for (const [id, handler] of [["signin", signIn], ["enrol", enrol], ["box", storePassphrase], ["unlock", unlock]]) {
   const form = document.getElementById(id);
   if (form) form.addEventListener("submit", handler);
 }
