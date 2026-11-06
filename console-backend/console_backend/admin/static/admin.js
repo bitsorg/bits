@@ -160,8 +160,9 @@ async function applySettings(event) {
     say("Confirm with your key (touch, fingerprint or face)…");
     const a = await navigator.credentials.get({ publicKey: o });
     const r = await post("/settings/apply", { credential: assertionBody(a), plan: button.dataset.plan });
+    const saved = r.profile ? " Saved " + r.profile + "." : r.profile_error ? " " + r.profile_error + "." : "";
     say(r.keys.length ? "Applied: " + r.keys.join(", ") + (r.backup ? " (the old .env is kept as " + r.backup + ")" : "") +
-        ". On the host, run make up for the services to pick it up." : "Nothing changed.");
+        "." + saved + " On the host, run make up for the services to pick it up." : "Nothing changed." + saved);
   } catch (e) {
     say(e.name === "NotAllowedError" ? "Cancelled, timed out or not allowed: " + e.message : e.message);
     button.disabled = false;
@@ -172,5 +173,10 @@ for (const [id, handler] of [["signin", signIn], ["enrol", enrol], ["box", store
   const form = document.getElementById(id);
   if (form) form.addEventListener("submit", handler);
 }
+// A chosen site-profile.yaml goes into the text box, then is planned like a paste.
+const profileFile = document.getElementById("profile-file");
+if (profileFile) profileFile.addEventListener("change", async () => {
+  if (profileFile.files[0]) document.getElementById("profile").value = await profileFile.files[0].text();
+});
 const applyButton = document.getElementById("apply");
 if (applyButton) applyButton.addEventListener("click", applySettings);

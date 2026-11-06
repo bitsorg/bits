@@ -15,6 +15,7 @@ import struct
 import tempfile
 import time
 import unittest
+from urllib.parse import urlencode
 
 import cbor2
 from cryptography.hazmat.primitives import hashes
@@ -751,7 +752,8 @@ class AdminTest(unittest.TestCase):
             if request["op"] == "settings-plan":
                 return {"ok": True, "base": self.base, "diff": [{"key": "VM_RETENTION", "old": "24", "new": "30"}]}
             if request["op"] == "settings-apply":
-                return {"ok": True, "written": True, "backup": ".env.bak-1", "keys": ["VM_RETENTION"]}
+                return {"ok": True, "written": True, "backup": ".env.bak-1", "keys": ["VM_RETENTION"],
+                        "profile": "site-profile.yaml" if "profile" in request["changes"] else None}
             return {"ok": True}
         client = TestClient(admin.create_app(self.state, helper, [ORIGIN], self.store, reset_file=self.reset,
                                              chain=self.chain), base_url="http://localhost:8800")
@@ -804,7 +806,8 @@ class AdminTest(unittest.TestCase):
         self.store.update(mine["id"], owner=mine["owner"])
         options = post("/settings/apply/options", {})
         done = post("/settings/apply", {"credential": assertion(options, mine["id"], counter=5), "plan": latest})
-        self.assertEqual(done, {"ok": True, "keys": ["VM_RETENTION"], "backup": ".env.bak-1"})
+        self.assertEqual(done, {"ok": True, "keys": ["VM_RETENTION"], "backup": ".env.bak-1", "profile": None,
+                                "profile_error": None})
         applied = [a for a in self.asked if a["op"] == "settings-apply"]
         self.assertEqual(applied, [{"op": "settings-apply", "base": "h0", "changes": {
             "facts": {}, "set": {"VM_RETENTION": "30"}, "unset": [], "follow": []}}])
@@ -816,6 +819,27 @@ class AdminTest(unittest.TestCase):
         self.store.update(mine["id"], owner="Alice")
         plan("base=h0&set:VM_RETENTION=30")
         self.assertIn("no key to confirm with", post("/settings/apply/options", {})["error"])
+
+    def test_a_site_profile_is_planned_and_applied(self):
+        client = self.settings_client()
+        self.enrol("mine")
+        [mine] = self.store.load()
+        form = lambda text: client.post("/settings/plan", content="base=h0&" + urlencode({"profile": text}), headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"}).text
+        self.assertIn("Nothing to load", form(" \r\n"))
+        self.assertIn('id=profile-file', client.get("/settings").text)
+        page = form("# ours\r\nenv:\r\n  VM_RETENTION: '30'\r\n")
+        planned = [a for a in self.asked if a["op"] == "settings-plan"]
+        self.assertEqual([p["changes"] for p in planned], [{"profile": "# ours\nenv:\n  VM_RETENTION: '30'\n"}])
+        self.assertIn("the settings it does not name go", page)
+        plan_id = re.search("data-plan=\"([0-9a-f]+)\"", page).group(1)
+        post = lambda path, body: client.post(path, json=body, headers={"Origin": ORIGIN}).json()
+        options = post("/settings/apply/options", {})
+        done = post("/settings/apply", {"credential": assertion(options, mine["id"], counter=5), "plan": plan_id})
+        self.assertEqual(done["profile"], "site-profile.yaml")
+        row = self.chain.rows()[-1]
+        self.assertEqual((row["kind"], json.loads(row["payload"])["profile_sha256"]), ("admin.settings_applied",
+                         hashlib.sha256(b"# ours\nenv:\n  VM_RETENTION: '30'\n").hexdigest()))
 
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):

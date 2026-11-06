@@ -89,19 +89,23 @@ def changes_from(form, answer):
     return {"facts": facts, "set": sets, "unset": unsets, "follow": follows}
 
 
-def plan_html(planned, plan_id):
+def plan_html(planned, plan_id, profile=False):
     rows = "".join("<tr><td class=k>%s</td><td><code>%s</code></td><td><code>%s</code></td></tr>" % (
         _s(d.get("key")), "<i>unset</i>" if d.get("old") is None else _s(d.get("old")),
         "<i>unset</i>" if d.get("new") is None else _s(d.get("new")))
         for d in planned.get("diff") or [] if isinstance(d, dict))
-    if not rows:
+    notes = "".join("<li>%s</li>" % _s(n) for n in planned.get("notes") or [])
+    if not rows and not profile:
         return "<p>Nothing would change.</p><p><a href=/settings>Back</a></p>"
-    return ("<style>%s</style><h2>Plan</h2><p>This is what <code>.env</code> would become. It is written "
+    source = ("<p>From the site-profile.yaml you gave: the settings it does not name go, and it is saved as "
+              "<code>site-profile.yaml</code> (the old one kept as a dated copy).</p>" if profile else "")
+    return ("<style>%s</style><h2>Plan</h2>%s<p>This is what <code>.env</code> would become. It is written "
             "afresh: its comments and the order of its lines are not kept, but the old file is, as a dated "
-            "<code>.env.bak-&hellip;</code>. Apply needs a touch of your key.</p><table class=set><tr><th>Setting"
+            "<code>.env.bak-&hellip;</code>. Apply needs a touch of your key.</p>%s<table class=set><tr><th>Setting"
             "<th>Now<th>Then</tr>%s</table><p><button id=apply data-plan=\"%s\">Apply with your key</button> "
             "<a href=/settings>Back</a></p><p id=status></p><script src=/admin.js></script>"
-            % (CSS, rows, _s(plan_id)))
+            % (CSS, source, "<ul>%s</ul>" % notes if notes else "",
+               rows or "<tr><td colspan=3>.env would not change</td></tr>", _s(plan_id)))
 
 
 def _value(s):
@@ -159,6 +163,12 @@ def render(answer):
         out.append("<details open><summary><b>%s</b> (%d)</summary><table class=set><tr><th>Setting<th>Value"
                    "<th>Where from<th>Used by<th>About</tr>%s</table></details>" % (_s(name), len(groups[name]), rows))
     out.append("<p><button>Plan</button> (nothing changes before Apply)</p></form>")
+    out.append("<h2>Load a site-profile.yaml</h2><form method=post action=/settings/plan>"
+               "<input type=hidden name=base value=\"%s\"><p class=doc>The .env it implies replaces this one; "
+               "secrets stay as they are. Plan shows the change first.</p><p><input type=file id=profile-file "
+               "accept=\".yaml,.yml\"></p><textarea name=profile id=profile rows=12 cols=80 "
+               "placeholder=\"or paste it here\"></textarea><p><button>Plan</button></p></form>"
+               "<script src=/admin.js></script>" % _s(answer.get("base")))
     return "".join(out)
 
 

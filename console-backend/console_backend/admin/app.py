@@ -493,7 +493,14 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                       "<a href=/settings>Open it again</a> and redo your changes.</p>")
         if not answer.get("base") or form.get("base") != answer["base"]:  # it would undo what changed since
             return stale
-        changes = settings_page_view.changes_from(form, answer)
+        if "profile" in form:  # a site-profile.yaml, chosen or pasted
+            text = form["profile"].replace("\r\n", "\n")
+            if not text.strip():
+                return _page("Settings", "<p>Nothing to load: choose or paste a site-profile.yaml.</p>"
+                             "<p><a href=/settings>Back</a></p>")
+            changes = {"profile": text}
+        else:
+            changes = settings_page_view.changes_from(form, answer)
         planned = helper({"op": "settings-plan", "changes": changes})
         if not planned.get("ok"):
             return _page("Settings", "<p>Not possible: %s</p><p><a href=/settings>Back</a></p>"
@@ -502,7 +509,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return stale
         plan_id = hashlib.sha256(json.dumps([planned.get("base"), changes], sort_keys=True).encode()).hexdigest()[:16]
         state.put_challenge(token, "settings", {"changes": changes, "base": planned.get("base"), "id": plan_id})
-        return _page("Settings", settings_page_view.plan_html(planned, plan_id))
+        return _page("Settings", settings_page_view.plan_html(planned, plan_id, profile="profile" in changes))
 
     def own_keys(token):
         who = state.who(token)
@@ -551,10 +558,15 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         done = helper({"op": "settings-apply", "changes": planned["changes"], "base": planned["base"]})
         if not done.get("ok"):
             return refuse("not applied: %s" % done.get("error", "the host helper refused"))
-        keys = [str(k) for k in done.get("keys") or []]
-        log(request, "applied settings: %s" % (", ".join(keys) or "nothing changed"))
-        audit(state.who(token), "admin.settings_applied", ".env", keys=keys, key=key["id"])
-        return JSONResponse({"ok": True, "keys": keys, "backup": done.get("backup")}, headers=HEADERS)
+        keys, profile = [str(k) for k in done.get("keys") or []], planned["changes"].get("profile")
+        log(request, "applied settings%s: %s%s" % (" from a site-profile.yaml" if profile else "",
+                                                    ", ".join(keys) or "nothing changed",
+                                                    "; " + str(done["profile_error"]) if done.get("profile_error") else ""))
+        audit(state.who(token), "admin.settings_applied", ".env", keys=keys, key=key["id"],
+              profile_sha256=hashlib.sha256(profile.encode()).hexdigest() if profile else None,
+              profile_saved=not done.get("profile_error") if profile else None)
+        return JSONResponse({"ok": True, "keys": keys, "backup": done.get("backup"), "profile": done.get("profile"),
+                             "profile_error": done.get("profile_error")}, headers=HEADERS)
 
     @app.get("/settings/site-profile.yaml")
     def settings_download(request: Request):
