@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from . import events, passkeys
 from . import hosts as hosts_page_view
+from . import settings as settings_page_view
 
 HELPER_SOCKET = os.environ.get("BITS_ADMIN_HELPER_SOCKET", "/run/bits-admin-helper/helper.sock")
 CODE_FILE = os.environ.get("BITS_ADMIN_CODE_FILE", "/run/bits-admin/setup-code")
@@ -435,7 +436,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                       "<button>Unlock</button></form>" % "".join(
                           "<option value=\"%s\">%s</option>" % (html.escape(k["id"]), html.escape(k["label"]))
                           for k in boxed))
-        return _page("Site", "<p>Signed in as %s (%s). <a href=/hosts>Hosts</a></p>"
+        return _page("Site", "<p>Signed in as %s (%s). <a href=/hosts>Hosts</a> &middot; <a href=/settings>Settings</a></p>"
                      "<h2>Host helper</h2><pre>%s</pre>%s"
                      "<h2>Keys</h2><p>%s</p>%s<form id=enrol><input id=label maxlength=%d size=30 "
                      "placeholder=\"e.g. YubiKey 5C, MacBook Touch ID\"> <button>Add key</button>"
@@ -457,6 +458,27 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         return _page("Hosts", "<p><a href=/>Back</a> &middot; <form method=post action=/hosts/check "
                      "style=display:inline><button>Check the connections</button></form></p>" + body,
                      head="<meta http-equiv=refresh content=\"60;url=/hosts\">")
+
+    @app.get("/settings")
+    def settings_page(request: Request):
+        if not session(request):
+            return RedirectResponse("/", status_code=303, headers=HEADERS)
+        answer = helper({"op": "settings"})
+        if not answer.get("ok"):
+            body = "<p>The host helper could not say: %s</p>" % html.escape(str(answer.get("error", "")))
+        else:
+            body = settings_page_view.render(answer)
+        return _page("Settings", "<p><a href=/>Back</a></p>" + body)
+
+    @app.get("/settings/site-profile.yaml")
+    def settings_download(request: Request):
+        if not session(request):
+            return RedirectResponse("/", status_code=303, headers=HEADERS)
+        answer = helper({"op": "settings"})
+        if not answer.get("ok"):
+            return refuse("the host helper could not say", 502)
+        return Response(settings_page_view.profile_yaml(answer), media_type="text/yaml",
+                        headers=dict(HEADERS, **{"Content-Disposition": "attachment; filename=site-profile.yaml"}))
 
     @app.get("/hosts")
     def hosts_page(request: Request):

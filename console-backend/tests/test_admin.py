@@ -690,6 +690,46 @@ class AdminTest(unittest.TestCase):
         self.assertIn("check: <span class=bad-s>refused</span>", page)  # on the connection too
         self.assertEqual(client.post("/hosts/check").status_code, 403)  # no Origin
 
+    def test_the_settings_page(self):
+        evil = "<x onload=1>"
+        answer = {"ok": True, "facts": {"gitlab_url": "https://gitlab.example.org"},
+                  "settings": [
+                      {"key": "VM_RETENTION", "value": "24", "origin": "set", "default": "13", "set": True,
+                       "services": ["victoriametrics"], "section": "monitoring", "doc": "Retention in months."},
+                      {"key": "BITS_GITHUB_TOKEN", "secret": True, "set": False, "origin": "unset", "value": None},
+                      {"key": "BITS_OIDC_ISSUER", "value": "https://other.example", "origin": "overridden",
+                       "derived": "https://gitlab.example.org", "services": ["bits-console-backend"]},
+                      {"key": "BITS_CATALOG_TTL", "origin": "default", "default": "300", "value": None},
+                      {"key": "HOOK_URL", "origin": "withheld", "value": None, "set": True},
+                      {"key": evil, "value": evil, "origin": evil, "doc": evil, "section": evil, "services": [evil]}],
+                  "profile": {"facts": {"gitlab_url": "https://gitlab.example.org"},
+                              "overrides": {"BITS_OIDC_ISSUER": "https://other.example"}, "env": {"VM_RETENTION": "24"}},
+                  "profile_file": {"diffs": ["differs: BITS_OIDC_ISSUER"], "notes": []}, "withheld": ["HOOK_URL"]}
+        helper = lambda request: answer if request["op"] == "settings" else {"ok": True}
+        client = TestClient(admin.create_app(self.state, helper, [ORIGIN], self.store, reset_file=self.reset,
+                                             chain=self.chain), base_url="http://localhost:8800")
+        for path in ("/settings", "/settings/site-profile.yaml"):
+            self.assertEqual(client.get(path, follow_redirects=False).status_code, 303)
+        client.post("/login", content="name=Predrag&code=" + self.state.code, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertIn("<a href=/settings>Settings</a>", client.get("/").text)
+        page = client.get("/settings").text
+        self.assertNotIn("<x", page)
+        self.assertIn('<td class=k>VM_RETENTION</td><td><code>24</code></td><td class="o-set">set in .env</td>', page)
+        self.assertIn('<td class=k>HOOK_URL</td><td><span class=sec>withheld</span>', page)
+        self.assertIn("<span class=sec>secret: missing</span>", page)
+        self.assertIn("the facts imply <code>https://gitlab.example.org</code>", page)
+        self.assertIn("default <code>300</code>", page)
+        self.assertIn("<li>differs: BITS_OIDC_ISSUER</li>", page)
+        answer["settings"][0]["doc"] = "word " * 60
+        self.assertIn("<details><summary>word word", client.get("/settings").text)
+        r = client.get("/settings/site-profile.yaml")
+        self.assertEqual(r.headers["content-disposition"], "attachment; filename=site-profile.yaml")
+        import yaml
+        self.assertEqual(yaml.safe_load(r.text), answer["profile"])
+        self.assertTrue(r.text.startswith("# site-profile.yaml of this bits-services site"))
+        self.assertIn("set them by hand:\n#   HOOK_URL\n", r.text)
+
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):
             self.assertNotEqual(self.login("AAAA-AAAA-AAAA-AAAA").status_code, 303)
