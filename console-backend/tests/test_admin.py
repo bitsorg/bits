@@ -292,6 +292,82 @@ class AdminTest(unittest.TestCase):
         r, _ = self.code_login(TestClient(strict.app, base_url="http://localhost:8800"))
         self.assertIn("The setup code is off", r.text)
 
+    def invite(self, name="Alice"):
+        r = self.client.post("/invites", content="name=" + name, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        codes = [line for line in r.text.split("<pre>")[1:]]
+        return r, codes[0].split("</pre>")[0] if codes else None
+
+    def use_invite(self, client, code):
+        return client.post("/invite", content="code=" + code, follow_redirects=False, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+
+    def test_an_invite_adds_one_admin(self):
+        self.login(self.state.code)
+        self.enrol("YubiKey")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            r, code = self.invite("Alice")
+        self.assertIn("Give Alice this invite", r.text)
+        self.assertIn("Predrag: invited Alice", err.getvalue())
+        self.assertNotIn(code, err.getvalue())  # never logged
+        self.assertIn("Alice, invited by Predrag", self.client.get("/").text)
+        alice = TestClient(self.client.app, base_url="http://localhost:8800")
+        self.assertIn("Invited?", alice.get("/").text)
+        self.assertEqual(self.use_invite(alice, code.lower()).status_code, 303)
+        page = alice.get("/").text
+        self.assertIn("Welcome, Alice", page)
+        self.assertNotIn("Host helper", page)
+        for path in ("/passkeys/box-options", "/unlock/options", "/invites", "/invites/cancel", "/passkeys/delete"):
+            self.assertEqual(alice.post(path, json={}, headers={"Origin": ORIGIN}).status_code, 401, path)
+        options = alice.post("/passkeys/options", json={"label": "Alice's key"}, headers={"Origin": ORIGIN}).json()
+        r = alice.post("/passkeys", json={"credential": registration(options)}, headers={"Origin": ORIGIN})
+        self.assertEqual(r.json(), {"ok": True})
+        self.assertEqual([k["owner"] for k in self.store.load()], ["Predrag", "Alice"])
+        self.assertIn("Sign in with your key", alice.get("/").text)  # the invite's session is over
+        again = alice.post("/passkeys/options", json={}, headers={"Origin": ORIGIN})
+        self.assertEqual(again.status_code, 401)  # one key per invite
+        self.assertNotIn("Alice, invited", self.client.get("/").text)
+        self.assertIn("Wrong, used or expired invite", self.use_invite(
+            TestClient(self.client.app, base_url="http://localhost:8800"), code).text)
+
+    def test_invites_expire_and_are_checked(self):
+        self.login(self.state.code)
+        self.enrol("YubiKey")
+        self.assertIn("not an admin's", self.invite("Predrag")[0].text)
+        self.assertIn("not an admin's", self.invite("%20")[0].text)
+        _, code = self.invite("Alice")
+        self.assertIn("invited already", self.invite("Alice")[0].text)
+        _, bob = self.invite("Bob")
+        bobs = TestClient(self.client.app, base_url="http://localhost:8800")
+        self.use_invite(bobs, bob)
+        self.t[0] += admin.INVITE_TTL + 1
+        self.assertIn("Wrong, used or expired invite", self.use_invite(
+            TestClient(self.client.app, base_url="http://localhost:8800"), code).text)
+        self.assertNotIn("Alice, invited", self.client.get("/").text)
+        self.assertNotIn("Welcome, Bob", bobs.get("/").text)  # an invite's session lasts an hour
+
+    def test_an_invite_is_cancelled_and_wrong_ones_count(self):
+        self.login(self.state.code)
+        self.enrol("YubiKey")
+        _, code = self.invite("Alice")
+        cancel = lambda n: self.client.post("/invites/cancel", content="name=" + n, headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"})
+        cancel("Alice")
+        other = TestClient(self.client.app, base_url="http://localhost:8800")
+        self.assertIn("Wrong, used or expired", self.use_invite(other, code).text)
+        _, code = self.invite("Carol")
+        carol = TestClient(self.client.app, base_url="http://localhost:8800")
+        self.use_invite(carol, code)  # used, no key yet: the name stays taken
+        self.assertIn("invited already", self.invite("Carol")[0].text)
+        cancel("Carol")  # ends that session too, e.g. if the invite leaked
+        self.assertNotIn("Welcome, Carol", carol.get("/").text)
+        self.assertIn("this invite", self.invite("Carol")[0].text)
+        for _ in range(admin.FAILURES):
+            self.use_invite(other, "AAAA-AAAA-AAAA-AAAA")
+        _, code = self.invite("Bob")
+        self.assertIn("Too many wrong codes", self.use_invite(other, code).text)
+
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):
             self.assertNotEqual(self.login("AAAA-AAAA-AAAA-AAAA").status_code, 303)

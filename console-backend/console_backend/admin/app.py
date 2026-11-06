@@ -44,6 +44,7 @@ def _on(value):
 SECURITY_KEYS_ONLY = _on(os.environ.get("BITS_ADMIN_SECURITY_KEYS_ONLY"))
 CODE_TTL, SESSION_TTL, CHALLENGE_TTL, GRANT_TTL = 1800, 12 * 3600, 300, 60
 SIGNINS = 32  # sign-ins in progress at once; anyone at the socket may start one
+INVITE_TTL, INVITES = 3600, 10  # an invite adds one admin's first key, within an hour
 FAILURES, WINDOW = 20, 600  # wrong setup codes per window (seconds); a new code clears them
 COOKIE = "bits_admin_session"
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
@@ -89,6 +90,7 @@ class State:
     def __init__(self, now=time.time, write=write_code):
         self.now, self.write, self.sessions, self.failures = now, write, {}, []
         self.challenges = {}  # (session, purpose) -> (value, until), each used once
+        self.invites = {}  # code -> (name, until, invited by), each used once
         self.lock = threading.Lock()
         self.renew_code()
 
@@ -112,10 +114,45 @@ class State:
             self.failures.append(self.now())
             return False
 
-    def open_session(self, name, how):
+    def add_invite(self, name, by, admins):
+        """A new invite's code; None if *name* is an admin's, invited or mid-enrolment
+        already, or too many are open."""
+        code = new_code()
+        with self.lock:
+            self.invites = {c: v for c, v in self.invites.items() if v[1] >= self.now()}
+            busy = {v[0] for v in self.invites.values()} | {
+                n for until, n, how in self.sessions.values() if how == "invite" and until >= self.now()}
+            if name in set(admins) | busy or len(self.invites) >= INVITES:
+                return None
+            self.invites[_plain(code)] = (name, self.now() + INVITE_TTL, by)
+        return code
+
+    def pending_invites(self):
+        with self.lock:
+            return sorted((v for v in self.invites.values() if v[1] >= self.now()), key=lambda v: v[1])
+
+    def cancel_invite(self, name):
+        """The invite of *name*, and its session if it was used but no key added yet."""
+        with self.lock:
+            self.invites = {c: v for c, v in self.invites.items() if v[0] != name}
+            self.sessions = {t: v for t, v in self.sessions.items() if not (v[1] == name and v[2] == "invite")}
+
+    def take_invite(self, given):
+        """(name, invited by) of a valid invite, which is used up; a miss counts as a
+        wrong code towards the lockout."""
+        with self.lock:
+            for code, (name, until, by) in list(self.invites.items()):
+                if hmac.compare_digest(_plain(given), code):
+                    del self.invites[code]
+                    if until >= self.now():
+                        return name, by
+            self.failures.append(self.now())
+            return None
+
+    def open_session(self, name, how, ttl=SESSION_TTL):
         token = secrets.token_urlsafe(32)
         with self.lock:
-            self.sessions[token] = (self.now() + SESSION_TTL, name, how)
+            self.sessions[token] = (self.now() + ttl, name, how)
         return token
 
     def how(self, token):
@@ -265,8 +302,16 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         return state.signed_in(request.cookies.get(COOKIE))
 
     def session(request):
+        """A full session; an invite's may only add its key (enrol_session)."""
+        token = request.cookies.get(COOKIE)
+        return token if state.signed_in(token) and state.how(token) != "invite" else None
+
+    def enrol_session(request):
         token = request.cookies.get(COOKIE)
         return token if state.signed_in(token) else None
+
+    async def form(request):
+        return {k: v[0] for k, v in parse_qs((await _body(request, 1024)).decode(errors="replace")).items()}
 
     def log(request, text):
         print("bits-admin: %s: %s" % (state.who(request.cookies.get(COOKIE)) or "-", text),
@@ -290,8 +335,30 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         """The setup code: while no admin key can sign in, or for a while after a reset."""
         return not signers() or state.now() < reset_until
 
+    def admins_html():
+        owners = {}
+        for k in store.load():
+            if k.get("owner"):
+                owners[k["owner"]] = owners.get(k["owner"], 0) + 1
+        rows = "".join("<li>%s (%d key%s)</li>" % (html.escape(n), c, "" if c == 1 else "s")
+                       for n, c in sorted(owners.items()))
+        pending = "".join(
+            "<li>%s, invited by %s, until %s UTC <form method=post action=/invites/cancel style=display:inline>"
+            "<input type=hidden name=name value=\"%s\"><button>Cancel</button></form></li>"
+            % (html.escape(n), html.escape(by), time.strftime("%H:%M", time.gmtime(until)), html.escape(n))
+            for n, until, by in state.pending_invites())
+        return ("<h2>Admins</h2><ul>%s%s</ul><form method=post action=/invites><input name=name maxlength=40 "
+                "size=20 placeholder=\"their name\"> <button>Invite an admin</button></form>" % (rows, pending))
+
     @app.get("/")
     def index(request: Request):
+        token = request.cookies.get(COOKIE)
+        if signed_in(request) and state.how(token) == "invite":
+            return _page("Welcome", "<p>Welcome, %s. Add your key: a passkey on this device, your phone "
+                         "(the browser shows a QR code), or a security key. Then sign in with it.</p>"
+                         "<form id=enrol><input id=label maxlength=%d size=30 placeholder=\"e.g. YubiKey "
+                         "5C, MacBook Touch ID\"> <button>Add key</button></form><p id=status></p>"
+                         "<script src=/admin.js></script>" % (html.escape(state.who(token)), passkeys.LABEL_MAX))
         if not signed_in(request) and signers():
             code = ("<p>Or with the setup code (after <code>sudo make admin-reset</code>):</p>"
                     "<form method=post action=/login><input name=name autocomplete=username size=20 "
@@ -299,8 +366,11 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                     "placeholder=XXXX-XXXX-XXXX-XXXX> <button>Sign in</button></form>" if code_allowed() else
                     "<p>Lost your keys? On the host: <code>sudo make admin-reset</code>, then "
                     "<code>make admin-code</code>.</p>")
+            invite = ("<p>Invited? Enter the invite:</p><form method=post action=/invite><input name=code "
+                      "autocomplete=off size=22 placeholder=XXXX-XXXX-XXXX-XXXX> <button>Use the invite</button>"
+                      "</form>")
             return _page("Sign in", "<form id=signin><button>Sign in with your key</button></form>"
-                         "<p id=status></p>%s<script src=/admin.js></script>" % code)
+                         "<p id=status></p>%s%s<script src=/admin.js></script>" % (invite, code))
         if not signed_in(request):
             return _page("Sign in", "<p>Enter your name and the setup code: <code>make admin-code"
                          "</code> on the host prints it. Each code signs in once.</p>"
@@ -326,14 +396,14 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         return _page("Site", "<p>Signed in as %s (%s).</p><h2>Host helper</h2><pre>%s</pre>%s"
                      "<h2>Keys</h2><p>%s</p>%s<form id=enrol><input id=label maxlength=%d size=30 "
                      "placeholder=\"e.g. YubiKey 5C, MacBook Touch ID\"> <button>Add key</button>"
-                     "</form><p id=status></p><form method=post action=/logout><button>Sign out"
+                     "</form><p id=status></p>%s<form method=post action=/logout><button>Sign out"
                      "</button></form><script src=/admin.js></script>"
                      % (html.escape(state.who(request.cookies.get(COOKIE)) or ""),
                         html.escape(state.how(request.cookies.get(COOKIE))),
                         html.escape(json.dumps(status, indent=1)), unlock,
                         "Security keys only (BITS_ADMIN_SECURITY_KEYS_ONLY)." if keys_only else
                         "Security keys (YubiKey) and synced passkeys (Touch ID, Face ID).",
-                        _keys_html(keys), passkeys.LABEL_MAX))
+                        _keys_html(keys), passkeys.LABEL_MAX, admins_html()))
 
     @app.post("/login")
     async def login(request: Request):
@@ -365,6 +435,54 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                   file=sys.stderr, flush=True)
         r = RedirectResponse("/", status_code=303, headers=HEADERS)
         r.set_cookie(COOKIE, state.open_session(name, "setup code"), max_age=SESSION_TTL,
+                     httponly=True, samesite="strict", path="/")
+        return r
+
+    @app.post("/invites")
+    async def invite_create(request: Request):
+        if not session(request):
+            return refuse("not signed in", 401)
+        try:
+            name = passkeys.clean_name((await form(request)).get("name", ""))
+        except ValueError:
+            return refuse("bad request")
+        code = name and state.add_invite(name, state.who(request.cookies.get(COOKIE)),
+                                         [k.get("owner") for k in store.load()])
+        if not code:
+            return _page("Invite", "<p>Give a name that is not an admin's or invited already (at most "
+                         "%d invites open).</p><p><a href=/>Back</a></p>" % INVITES)
+        log(request, "invited %s" % name)
+        return _page("Invite", "<p>Give %s this invite, valid for an hour and usable once:</p><pre>%s</pre>"
+                     "<p>They open bits-admin through their own SSH tunnel (they need the host's "
+                     "<code>bits-admin</code> group) and enter it under \"Invited?\".</p><p><a href=/>Back"
+                     "</a></p>" % (html.escape(name), code))
+
+    @app.post("/invites/cancel")
+    async def invite_cancel(request: Request):
+        if not session(request):
+            return refuse("not signed in", 401)
+        try:
+            name = passkeys.clean_name((await form(request)).get("name", ""))
+        except ValueError:
+            return refuse("bad request")
+        state.cancel_invite(name)
+        log(request, "cancelled the invite of %s" % name)
+        return RedirectResponse("/", status_code=303, headers=HEADERS)
+
+    @app.post("/invite")
+    async def invite_use(request: Request):
+        if state.locked_out():
+            return _page("Sign in", "<p>Too many wrong codes: try again in 10 minutes.</p>")
+        try:
+            got = state.take_invite((await form(request)).get("code", ""))
+        except ValueError:
+            got = None
+        if not got:
+            return _page("Sign in", "<p>Wrong, used or expired invite.</p><p><a href=/>Again</a></p>")
+        name, by = got
+        print("bits-admin: %s: signed in with an invite from %s" % (name, by), file=sys.stderr, flush=True)
+        r = RedirectResponse("/", status_code=303, headers=HEADERS)
+        r.set_cookie(COOKIE, state.open_session(name, "invite", INVITE_TTL), max_age=INVITE_TTL,
                      httponly=True, samesite="strict", path="/")
         return r
 
@@ -413,7 +531,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
 
     @app.post("/passkeys/options")
     async def passkey_options(request: Request):
-        token = session(request)
+        token = enrol_session(request)
         if not token:
             return refuse("not signed in", 401)
         try:
@@ -426,7 +544,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
 
     @app.post("/passkeys")
     async def passkey_add(request: Request):
-        token = session(request)
+        token = enrol_session(request)
         if not token:
             return refuse("not signed in", 401)
         started = state.take_challenge(token, "enrol")
@@ -454,6 +572,8 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
             return refuse("bits-admin could not save the key (see its log)", 500)
         kind = "synced passkey" if key["synced"] else "device-bound"
         log(request, "key %s (%s, %s) enrolled" % (key["id"][:8], key["label"], kind))
+        if state.how(token) == "invite":  # done: from now on they sign in with the key
+            state.close_session(token)
         return JSONResponse({"ok": True}, headers=HEADERS)
 
     @app.post("/passkeys/box-options")
