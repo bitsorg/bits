@@ -1372,7 +1372,14 @@ class Boto3RemoteSync(RemoteSync):
       return sha
     import hashlib
     digest = hashlib.sha256()
-    body = self.s3.get_object(Bucket=self.writeStore, Key=key)["Body"]
+    try:
+      body = self.s3.get_object(Bucket=self.writeStore, Key=key)["Body"]
+    except ClientError as err:
+      if err.response["Error"]["Code"] in ("404", "NoSuchKey"):
+        warning("%s: the store lists it but cannot return its data; replacing it "
+                "with the local tarball", key)
+        return None
+      raise
     try:
       for chunk in iter(lambda: body.read(1 << 20), b""):
         digest.update(chunk)
@@ -1388,6 +1395,21 @@ class Boto3RemoteSync(RemoteSync):
     except Exception as exc:  # pylint: disable=broad-except
       debug("could not stamp sha256 metadata on %s: %s", key, exc)
     return sha
+
+  def _s3_readable(self, key):
+    """Whether the store returns *key*'s data: its last byte, by a ranged GET.
+
+    Ceph RGW has listed and HEADed objects whose data was gone (NoSuchKey on
+    GET); such an object is replaced rather than kept.
+    """
+    from botocore.exceptions import ClientError
+    try:
+      self.s3.get_object(Bucket=self.writeStore, Key=key, Range="bytes=-1")["Body"].close()
+    except ClientError as err:
+      if err.response["Error"]["Code"] in ("404", "NoSuchKey"):
+        return False
+      raise
+    return True
 
   def write_rev_marker(self, spec):
     """Record this build's revision in the rev-index.
@@ -1608,10 +1630,14 @@ class Boto3RemoteSync(RemoteSync):
     local_file = os.path.join(self.workdir, tar_path)
     remote_sha = self._s3_remote_tarball_sha256(tar_path)
     if remote_sha is not None:
-      spec["store_tarball_sha256"] = remote_sha
-      debug("%s exists in the store — keeping the stored object and recording "
-            "its sha256", tarball)
-      return
+      if self._s3_readable(tar_path):
+        spec["store_tarball_sha256"] = remote_sha
+        debug("%s exists in the store — keeping the stored object and recording "
+              "its sha256", tarball)
+        return
+      warning("%s: the store lists it but cannot return its data; replacing it with "
+              "the local tarball. BOMs recording %s need certifying again.",
+              tar_path, remote_sha)
 
     debug("Uploading content tarball for %s %s-%s (%s) to S3",
           spec["package"], spec["version"], spec["revision"], spec["hash"])

@@ -305,7 +305,7 @@ class Boto3TestCase(unittest.TestCase):
             self.assertNotIn(NONEXISTENT_HASH, Key, "tried to fetch missing tarball")
             self.assertNotIn(BAD_HASH, Key, "tried to follow bad symlink")
 
-        def get_object(Bucket, Key):
+        def get_object(Bucket, Key, Range=None):
             if Key.endswith(".manifest"):
                 return {"Body": MagicMock(iter_lines=lambda: [
                     tarball_name(GOOD_SPEC).encode("utf-8") + b"\t...from manifest\n",
@@ -417,11 +417,37 @@ class Boto3TestCase(unittest.TestCase):
         good_spec = dict(GOOD_SPEC)
         b3sync.s3.head_object = lambda Bucket, Key: {
             "Metadata": {"Sha256": remote_sha}}
-        b3sync.s3.get_object = MagicMock(side_effect=AssertionError("streamed"))
+        b3sync.s3.get_object = lambda Bucket, Key, Range=None: (
+            {"Body": MagicMock()} if Range else self.fail("streamed"))
         b3sync.s3.upload_file.reset_mock()
         b3sync.upload_symlinks_and_tarball(good_spec)
         b3sync.s3.upload_file.assert_not_called()
         self.assertEqual(good_spec["store_tarball_sha256"], remote_sha)
+
+        # Listed and HEADed, but its data cannot be read (Ceph RGW, NoSuchKey on
+        # GET): replaced with the local tarball, whose sha256 is then recorded.
+        from botocore.exceptions import ClientError
+        def gone(Bucket, Key, Range=None):
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        for head in ({"Metadata": {"Sha256": remote_sha}}, {}):   # recorded, legacy
+            good_spec = dict(GOOD_SPEC)
+            b3sync.s3.head_object = lambda Bucket, Key, head=head: head
+            b3sync.s3.get_object = gone
+            b3sync.s3.upload_file.reset_mock()
+            b3sync.upload_symlinks_and_tarball(good_spec)
+            b3sync.s3.upload_file.assert_called_once()
+            self.assertEqual(good_spec["store_tarball_sha256"], shas[GOOD_SPEC["hash"]])
+
+        # Any other error on that read (throttling, access) fails the package
+        # and never leads to an overwrite.
+        def busy(Bucket, Key, Range=None):
+            raise ClientError({"Error": {"Code": "SlowDown"}}, "GetObject")
+        b3sync.s3.head_object = lambda Bucket, Key: {"Metadata": {"Sha256": remote_sha}}
+        b3sync.s3.get_object = busy
+        b3sync.s3.upload_file.reset_mock()
+        with self.assertRaises(ClientError):
+            b3sync.upload_symlinks_and_tarball(dict(GOOD_SPEC))
+        b3sync.s3.upload_file.assert_not_called()
 
         # Legacy object with no recorded checksum: stream it once, record the
         # digest of the STORED bytes, stamp it back via a metadata self-copy,
@@ -431,7 +457,7 @@ class Boto3TestCase(unittest.TestCase):
         chunks = [stored_bytes, b""]
         good_spec = dict(GOOD_SPEC)
         b3sync.s3.head_object = lambda Bucket, Key: {}
-        b3sync.s3.get_object = lambda Bucket, Key: {
+        b3sync.s3.get_object = lambda Bucket, Key, Range=None: {
             "Body": MagicMock(read=lambda n=None: chunks.pop(0))}
         b3sync.s3.copy = MagicMock()
         b3sync.s3.upload_file.reset_mock()
