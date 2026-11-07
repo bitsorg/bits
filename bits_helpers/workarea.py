@@ -825,7 +825,9 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
   _source_checksums = spec.get("source_checksums") or {}
   _patch_checksums = spec.get("patch_checksums") or {}
 
-  if spec.get("patches"):
+  def _stage_patches():
+    if not spec.get("patches"):
+      return
     os.makedirs(source_dir, exist_ok=True)
     for patch_entry in spec["patches"]:
       patch_name, inline_checksum = parse_entry(patch_entry)
@@ -833,7 +835,9 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
       dst = os.path.join(source_dir, patch_name)
       shutil.copyfile(os.path.join(spec["pkgdir"], 'patches', patch_name), dst)
       check_file_checksum(dst, patch_name, patch_checksum, enforce_mode)
+
   if spec.get("sources"):
+    _stage_patches()
     # Resolve arch-conditional / bash-evaluated source entries before
     # downloading.  ``architecture`` is passed in by the caller (build.py
     # knows raw_architecture); fall back to the env var for backwards
@@ -897,6 +901,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     # present in the JSON but an empty string.
     package_info("%s: No sources to fetch", package_label(spec))
     os.makedirs(source_dir, exist_ok=True)
+    _stage_patches()
   elif spec["is_devel_pkg"]:
     report_source("local directory " + spec["source"])
     shutil.rmtree(source_dir, ignore_errors=True)
@@ -917,6 +922,10 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
       scm_exec(scm.fetchCmd(spec["source"], tag_ref), source_dir)
       scm_exec(scm.checkoutCmd(spec["tag"]), source_dir)
     _verify_commit_pin(scm, spec, source_dir, enforce_mode)
+    for sentinel in (".bits_patched", ".bits_applied_patches"):
+      if os.path.exists(os.path.join(source_dir, sentinel)):
+        os.remove(os.path.join(source_dir, sentinel))
+    _stage_patches()
     _apply_patches(spec, source_dir)
   else:
     # source_dir either doesn't exist yet, OR exists but is not a valid checkout
@@ -948,4 +957,5 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     scm_exec(scm.setWriteUrlCmd(spec.get("write_repo", spec["source"])), source_dir)
     scm_exec(scm.checkoutCmd(spec["tag"]), source_dir)
     _verify_commit_pin(scm, spec, source_dir, enforce_mode)
+    _stage_patches()
     _apply_patches(spec, source_dir)
