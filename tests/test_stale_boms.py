@@ -124,6 +124,12 @@ class TestStoreLookup(unittest.TestCase):
         look(rec)
         self.assertEqual(s3.heads.count(_key(rec)), 1)   # memoised
 
+    def test_recorded_sha_found_whatever_its_case(self):
+        e = _pkg("A", "h1", "x")
+        s3 = FakeS3({_key(e): (b"a", "sha256:aa")})
+        s3.head_object = lambda Bucket, Key: {"Metadata": {"Sha256": "sha256:aa"}}
+        self.assertEqual(sb.store_lookup(s3, "bkt")(e), "sha256:aa")   # Ceph RGW's case
+
     def test_404_with_other_tarball_in_hash_dir_is_stale(self):
         old, new = _pkg("A", "h1", "sha256:aa"), _pkg("A", "h1", "sha256:bb", revision="2")
         s3 = FakeS3({_key(new): (b"n", "sha256:bb")})

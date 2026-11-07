@@ -140,6 +140,16 @@ def source_sync_for(spec, sync_helper):
 _SHA256_META = "sha256"
 
 
+def recorded_sha256(head):
+  """The sha256 recorded on a store object, from a ``head_object`` reply, or "".
+
+  Ceph RGW returns user metadata names capitalised (``Sha256``) and boto3 keeps
+  the case, so the name is matched without it.
+  """
+  return next((v for k, v in (head.get("Metadata") or {}).items()
+               if k.lower() == _SHA256_META), "")
+
+
 def _load_aws_keys_file(path, bucket=None):
   """Read S3 credentials from a private key file (default ~/.bits/s3keys).
 
@@ -1357,7 +1367,7 @@ class Boto3RemoteSync(RemoteSync):
       if err.response["Error"]["Code"] == "404":
         return None
       raise
-    sha = (head.get("Metadata") or {}).get(_SHA256_META, "")
+    sha = recorded_sha256(head)
     if sha:
       return sha
     import hashlib

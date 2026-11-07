@@ -413,6 +413,16 @@ class Boto3TestCase(unittest.TestCase):
         b3sync.s3.put_object.assert_not_called()
         self.assertEqual(good_spec["store_tarball_sha256"], remote_sha)
 
+        # Ceph RGW returns the name as "Sha256": still found, nothing streamed.
+        good_spec = dict(GOOD_SPEC)
+        b3sync.s3.head_object = lambda Bucket, Key: {
+            "Metadata": {"Sha256": remote_sha}}
+        b3sync.s3.get_object = MagicMock(side_effect=AssertionError("streamed"))
+        b3sync.s3.upload_file.reset_mock()
+        b3sync.upload_symlinks_and_tarball(good_spec)
+        b3sync.s3.upload_file.assert_not_called()
+        self.assertEqual(good_spec["store_tarball_sha256"], remote_sha)
+
         # Legacy object with no recorded checksum: stream it once, record the
         # digest of the STORED bytes, stamp it back via a metadata self-copy,
         # and still never re-upload.

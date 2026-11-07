@@ -92,7 +92,7 @@ def store_lookup(s3, bucket, deep=False):
     recorded sha256 unless *deep* asks to hash the object itself.
     """
     from botocore.exceptions import ClientError
-    from bits_helpers.sync import _SHA256_META
+    from bits_helpers.sync import recorded_sha256
     from bits_helpers.utilities import resolve_store_path
     cache = {}
 
@@ -102,7 +102,7 @@ def store_lookup(s3, bucket, deep=False):
         if key not in cache:
             try:
                 head = s3.head_object(Bucket=bucket, Key=key)
-                sha = (head.get("Metadata") or {}).get(_SHA256_META) or None
+                sha = recorded_sha256(head) or None
                 if sha is None and deep:
                     digest = hashlib.sha256()
                     body = s3.get_object(Bucket=bucket, Key=key)["Body"]
