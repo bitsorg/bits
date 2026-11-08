@@ -86,7 +86,8 @@ its next pass.
 **The build queue** (`orch/build_queue.py`, with `BITS_ORCH_QUEUE=1`): the
 console queues its builds (`POST /ops/queue {community, ref?, builds[]}`, each
 checked as `/ops/build` checks one) instead of starting them, and the worker
-starts them, oldest first, at most one per build host, so a long build never
+starts them, re-runs first (a build with `rerun_of`, a build pipeline of the
+same community it re-runs: someone is debugging), then oldest first, at most one per build host, so a long build never
 waits in GitLab (where its pending jobs count against the project's job limit)
 nor shares a host. The hosts are the build project's runners in GitLab (its own
 and its groups', not the instance's shared ones): one tagged `bits-host-<name>` is

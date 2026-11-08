@@ -9,8 +9,8 @@ A build names its host (BITS_RUNNER_TAG bits-host-<name>) or an architecture
 (bits-build-<arch>). The hosts are the build project's runners in GitLab: one
 tagged bits-host-<name> is host <name>, of the architecture of its
 bits-build-<arch> tag; a runner of no architecture takes only builds pinned to it.
-Each pass (`dispatch`) starts, oldest first, every build that has a free host,
-pinned to that host. A host is busy while a build pipeline runs on it: one the
+Each pass (`dispatch`) starts every build that has a free host, pinned to that
+host: re-runs of an earlier pipeline first (someone is debugging), then oldest first. A host is busy while a build pipeline runs on it: one the
 queue started there, one pinned to it, or one with a job its runner took. A
 running pipeline routed by architecture and not on a runner yet will take a
 host of that architecture, so it holds one. A host whose runner GitLab does not
@@ -45,6 +45,7 @@ PAUSE_MS = 5 * 60 * 1000           # GitLab refusing pipelines: none started for
 HOSTS_TTL_S = 300
 HOST_GONE_MS = 3600 * 1000         # a build's host or arch not in GitLab this long: refused
 MAX_BUILDS = 64                    # in one request (the console's matrix cap)
+DISPATCH_ORDER = " ORDER BY rerun_of IS NULL, id"   # re-runs first, then oldest first
 _JOB_DONE = {"success", "failed", "canceled", "skipped", "manual"}
 _STUCK = {"stuck_or_timeout_failure", "no_matching_runner"}   # GitLab dropped it, unstarted
 
@@ -83,8 +84,9 @@ def check_target(variables):
 # --- requests ---------------------------------------------------------------
 
 def add(conn, community, user, ref, builds):
-    """Queue *builds* ([(name, variables)], checked by the API) for *user*.
-    Returns (batch, [ids])."""
+    """Queue *builds* ([(name, variables[, rerun_of])], checked by the API) for
+    *user*; rerun_of is the build pipeline of this community a build re-runs (kept
+    only if the orchestrator knows it as one). Returns (batch, [ids])."""
     with db.transaction(conn):
         return add_in(conn, community, user, ref, builds, events.Actor("person", user))
 
@@ -94,14 +96,20 @@ def add_in(conn, community, requested_by, ref, builds, actor, batch=None):
     if not 0 < len(builds) <= MAX_BUILDS:
         raise ValueError("1 to %d builds in one request" % MAX_BUILDS)
     batch, now, ids = batch or secrets.token_hex(8), db.now_ms(), []
-    for name, variables in builds:
+    for b in builds:
+        name, variables = b[0], b[1]
+        rerun = b[2] if len(b) > 2 else None
+        if rerun is not None and not conn.execute(
+                "SELECT 1 FROM pipelines WHERE id = ? AND is_build = 1 AND lower(community) = ?",
+                (rerun, community.lower())).fetchone():
+            rerun = None
         cur = conn.execute(
             "INSERT INTO build_queue (batch, community, requested_by, ref, name, variables,"
-            " digest, target, certify, state, created_ms, updated_ms)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+            " digest, target, certify, state, created_ms, updated_ms, rerun_of)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
             (batch, community, requested_by, ref, name or "", json.dumps(variables),
              digest(ref, name, variables), check_target(variables),
-             int(certifies(variables)), now, now))
+             int(certifies(variables)), now, now, rerun))
         ids.append(cur.lastrowid)
     events.append(conn, "queue.requested", "queue:%s" % batch, actor,
                   {"batch": batch, "community": community, "entries": ids})
@@ -128,7 +136,8 @@ def get(conn, entry_id):
 def public(r, ahead=None):
     v = _vars(json.loads(r["variables"]))
     d = {k: r[k] for k in ("id", "batch", "community", "requested_by", "name", "target", "state",
-                           "reason", "host", "pipeline_id", "created_ms", "dispatched_ms")}
+                           "reason", "host", "pipeline_id", "created_ms", "dispatched_ms",
+                           "rerun_of")}
     d.update(certify=bool(r["certify"]), package=v.get("PACKAGE", ""),
              version=v.get("VERSION", ""), platform=v.get("PLATFORM", ""))
     if ahead is not None:
@@ -148,7 +157,7 @@ def listing(conn, communities=None, limit=200):
         args.extend(names)
     rows = conn.execute(q + " ORDER BY id DESC LIMIT ?", args + [max(1, min(int(limit), 500))]).fetchall()
     waiting = [r["id"] for r in conn.execute("SELECT id FROM build_queue WHERE state = 'queued'"
-                                             " ORDER BY id")]
+                                             + DISPATCH_ORDER)]
     place = {i: n for n, i in enumerate(waiting)}
     return [public(r, place.get(r["id"])) for r in rows]
 
@@ -488,7 +497,7 @@ def dispatch(conn, forge, hs, then=None):
     def free(arch):
         return [h for h in hs if h["arch"] == arch and h["name"] not in busy | offline]
     n = 0
-    for r in conn.execute("SELECT * FROM build_queue WHERE state = 'queued' ORDER BY id").fetchall():
+    for r in conn.execute("SELECT * FROM build_queue WHERE state = 'queued'" + DISPATCH_ORDER).fetchall():
         if r["target"].startswith(HOST_TAG):
             if r["target"] not in by_tag:
                 _wait_or_refuse(conn, r, "%s is not a build host (no runner of the project has"

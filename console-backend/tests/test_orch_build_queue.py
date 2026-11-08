@@ -87,6 +87,11 @@ class _Queue(unittest.TestCase):
                               " jobs, first_seen_ms) VALUES (?, 1, ?, ?, ?, 0)",
                               (pid, outcome, json.dumps(v), json.dumps(list(jobs))))
 
+    def _known(self, pid, community):
+        with db.transaction(self.conn):
+            self.conn.execute("INSERT INTO pipelines (id, is_build, community, first_seen_ms)"
+                              " VALUES (?, 1, ?, 0)", (pid, community))
+
     def _unpause(self):
         with db.transaction(self.conn):
             self.conn.execute("DELETE FROM kv WHERE key = 'queue.pause'")
@@ -149,6 +154,18 @@ class QueueTest(_Queue):
         self.assertEqual(bq.dispatch(self.conn, self.forge, self.hosts), 1)
         self.assertEqual(self._states()[2], (c, "dispatched", "pc", 103))
         self.assertEqual([h["busy"] for h in bq.host_status(self.conn)], [False, True, False])
+
+    def test_a_rerun_starts_before_older_builds(self):
+        a, b = self._queue(_build("bits-host-bits", pkg="A"), _build("bits-host-bits", pkg="B"))
+        self._known(4242, "lcg")
+        self._known(4343, "atlas")
+        name, variables = _build("bits-host-bits", pkg="C")
+        c, d = self._queue((name, variables, 4242), (name, variables, 4343))   # another community's
+        self.assertEqual([(e["id"], e["ahead"], e["rerun_of"]) for e in bq.listing(self.conn)],
+                         [(d, 3, None), (c, 0, 4242), (b, 2, None), (a, 1, None)])
+        bq.dispatch(self.conn, self.forge, self.hosts)
+        self.assertEqual([s[:2] for s in self._states()],
+                         [(a, "queued"), (b, "queued"), (c, "dispatched"), (d, "queued")])
 
     def test_a_pinned_build_waits_for_its_host_only(self):
         a, b = self._queue(_build("bits-host-bits", pkg="A"), _build("bits-host-bits", pkg="B"))
@@ -479,7 +496,22 @@ class ApiTest(unittest.TestCase):
         # Without certify_groups, or no build that certifies: no challenge.
         self.assertIsNone(self._post("alice", "/ops/queue", self._body()).json()["approval"])
 
+    def test_a_rerun_is_queued_as_one(self):
+        with db.transaction(self.conn):
+            self.conn.execute("INSERT INTO pipelines (id, is_build, community, first_seen_ms)"
+                              " VALUES (4242, 1, 'lcg', 0)")
+        body = self._body()
+        body["builds"][0]["rerun_of"] = 4242
+        eid, = self._post("alice", "/ops/queue", body).json()["entries"]
+        self.assertEqual(bq.get(self.conn, eid)["rerun_of"], 4242)
+        listed = self._get("alice", "/ops/queue").json()["entries"]
+        self.assertEqual([(e["id"], e["rerun_of"]) for e in listed], [(eid, 4242)])
+
     def test_requests_are_checked(self):
+        for bad in (0, -1, "4242", True, 1.5, 2**63):
+            body = self._body()
+            body["builds"][0]["rerun_of"] = bad
+            self.assertEqual(self._post("alice", "/ops/queue", body).status_code, 400, bad)
         for body in (self._body(tag="self-hosted"), self._body(pkg=""),
                      {"community": "lcg", "builds": []}, dict(self._body(), ref="evil"),
                      dict(self._body(), community="atlas")):

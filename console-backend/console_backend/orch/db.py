@@ -679,6 +679,11 @@ MIGRATIONS = [
         # a publishing run's trigger: time, commit or manual (fired_by: publish)
         "ALTER TABLE schedule_runs ADD COLUMN trigger TEXT NOT NULL DEFAULT ''",
     ],
+    # 27: a queued build that re-runs an earlier pipeline (the console's Re-run):
+    # started before the others, for whoever is debugging it.
+    [
+        "ALTER TABLE build_queue ADD COLUMN rerun_of INTEGER",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

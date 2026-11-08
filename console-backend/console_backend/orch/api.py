@@ -53,7 +53,7 @@
     GET  /ops/certified?group=&arch=&build=&removed=&limit=   the certified set (the groups
                                        the caller administers), its version and summary
     GET  /ops/certified/bom/{sha256}   one certified BOM, its exact bytes
-    POST /ops/queue                    {community, ref?, builds: [{name?, variables[]}],
+    POST /ops/queue                    {community, ref?, builds: [{name?, variables[], rerun_of?}],
                                        certify_groups?[]}: queue builds, started one per
                                        build host; with certify_groups, a passkey challenge
                                        over the builds that certify
@@ -957,9 +957,12 @@ async def queue_builds(request: Request):
         keys = [str(v.get("key", "")) for v in variables if isinstance(v, dict)]
         if len(keys) != len(set(keys)) or len(keys) != len(variables):
             raise HTTPException(400, "each variable is a {key, value}, every key once")
-        checked.append((name, variables))
+        rerun = b.get("rerun_of")
+        if rerun is not None and (type(rerun) is not int or not 0 < rerun < 2**63):
+            raise HTTPException(400, "rerun_of is the id of the pipeline a build re-runs")
+        checked.append((name, variables, rerun))
 
-    digests = [build_queue.digest(ref, n, v) for n, v in checked
+    digests = [build_queue.digest(ref, n, v) for n, v, _ in checked
                if build_queue.certifies(v)]
     # Without a passkey the builds are queued all the same; certifying them
     # waits for a pre-approval of each pipeline (the Certifications page).
