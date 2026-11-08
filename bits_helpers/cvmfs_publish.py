@@ -278,6 +278,11 @@ def prepub_replace_allowed(ctx):
     return bool(_prepub_health(session, ctx["prepub_url"]).get("replace_allowed"))
 
 
+# Publish paths on which prepub runs `cvmfs_server ingest` with the tar itself;
+# ingest-batch lets prepub commit several such packages at once.
+INGEST_PATHS = ("ingest", "ingest-batch")
+
+
 def _identity_fields(identity_path, identity_hash, replace):
     """The identity fields of a submission: the path whose presence means the
     content is published, the hash it must carry, and whether to replace
@@ -295,7 +300,7 @@ def _identity_fields(identity_path, identity_hash, replace):
 def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
                   direct_s3=False, bearer_auth=False, no_verify_tls=False,
                   identity_path="", identity_hash="", object_list=False,
-                  prewarm=False, replace=False):
+                  prewarm=False, replace=False, publish_path="ingest"):
     """POST /api/v1/jobs for the INGEST path: the raw tar IS the payload (prepub's
     gateway does the chunk/compress/upload). Mirrors the CI's `_post_tar` ingest
     branch — sends the tar plus its sha256, and SIGNS tar_sha256 so prepub can
@@ -322,7 +327,7 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
     # The signed set MUST equal the fields prepub parses, or the digest differs
     # and the publish 401s (reads as auth failure). tar itself is not signed —
     # its sha256 is, and prepub re-hashes the upload to bind them.
-    signed_fields = {"repo": repo, "path": path, "publish_path": "ingest",
+    signed_fields = {"repo": repo, "path": path, "publish_path": publish_path,
                      "tar_sha256": tar_sha256}
     if build_id:
         signed_fields["build_id"] = build_id
@@ -346,7 +351,7 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
     fields = {
         "repo":         (None, repo),
         "path":         (None, path),
-        "publish_path": (None, "ingest"),
+        "publish_path": (None, publish_path),
         "tar_sha256":   (None, tar_sha256),
     }
     if build_id:
@@ -561,7 +566,7 @@ def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash="",
     identity is the path whose presence means this content is published, and
     identity_hash the hash it carries there; replace asks prepub to replace
     another build's content at that path (it then needs both)."""
-    ingest = ctx.get("publish_path") == "ingest"
+    ingest = ctx.get("publish_path") in INGEST_PATHS
     submit = ctx.get("submit", True)
     try:
         if ingest:
@@ -573,7 +578,8 @@ def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash="",
                                  bearer_auth=ctx.get("bearer_auth", False),
                                  no_verify_tls=ctx.get("no_verify_tls", False),
                                  identity_path=identity,
-                                 identity_hash=identity_hash, replace=replace)
+                                 identity_hash=identity_hash, replace=replace,
+                                 publish_path=ctx["publish_path"])
                    if submit else (fp or ""))
         else:
             prefix, catalog = stage_tar(
@@ -811,7 +817,7 @@ def publish_links(ctx, root, links, label):
     while *root* is new."""
     import shutil
     tar = build_view_tar(links, root, ctx["tmp_dir"])
-    tries = ["ingest"] + ([ctx["publish_path"]] if ctx.get("publish_path") != "ingest" else [])
+    tries = ["ingest"] + ([ctx["publish_path"]] if ctx.get("publish_path") not in INGEST_PATHS else [])
     errs = []
     try:
         for how in tries:
@@ -1338,7 +1344,7 @@ def publish_one(spec, ctx):
             elif not publish_once:
                 # No packages template: staged publishes over it, as before; ingest
                 # cannot, and prepub replaces only by a packages template's identity.
-                if ctx.get("publish_path") == "ingest":
+                if ctx.get("publish_path") in INGEST_PATHS:
                     raise SystemExit(
                         "%s@%s: %s is already published by another build (hash %s, this "
                         "build %s); the ingest path cannot publish over it" % (
@@ -1617,9 +1623,11 @@ def main(argv=None):
                     help="ingest with --object-list only: prepub announces the "
                          "stored objects so the Stratum 1s pull them right after "
                          "the commit")
-    ap.add_argument("--publish-path", choices=("staged", "ingest"), default="ingest",
+    ap.add_argument("--publish-path", choices=("staged",) + INGEST_PATHS, default="ingest",
                     help="ingest (default): POST the tar itself and let prepub's "
-                         "gateway chunk it (the tar IS the payload). staged: "
+                         "gateway chunk it (the tar IS the payload). ingest-batch: "
+                         "the same, and prepub may commit several packages at once "
+                         "(the prepub must offer that path). staged: "
                          "prepare objects here with cvmfs-stage and submit a light "
                          "job. Both order biggest-first and run concurrently at "
                          "N>1; ingest ignores the cvmfs-stage flags below.")
@@ -1659,8 +1667,8 @@ def main(argv=None):
                          "so the catalog hash can be checked without a graft")
     a = ap.parse_args(argv)
     # prepub refuses these combinations with a 400; say so before any upload.
-    if a.object_list and not (a.publish_path == "ingest" and a.direct_s3):
-        ap.error("--object-list requires --publish-path ingest and --direct-s3")
+    if a.object_list and not (a.publish_path in INGEST_PATHS and a.direct_s3):
+        ap.error("--object-list requires --publish-path ingest or ingest-batch, and --direct-s3")
     if a.prewarm and not a.object_list:
         ap.error("--prewarm requires --object-list")
 

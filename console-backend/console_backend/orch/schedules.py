@@ -45,7 +45,7 @@ _TIME = _RE(r"([01][0-9]|2[0-3]):[0-5][0-9]")
 MAX_PLATFORMS = 32
 MAX_VARIANTS = 16
 MAX_CELLS = 64                     # platforms x variants: the builds of one night
-PUBLISH_PATHS = ("", "ingest", "staged")   # "": the build job's default, ingest
+PUBLISH_PATHS = ("", "ingest", "ingest-batch", "staged")   # "": the build job's default, ingest
 ON_COMMIT = ("", "build", "publish")        # what a commit to a followed branch does
 SCENARIO_FIELDS = ("nightly", "on_commit", "publish", "publish_days", "publish_time", "release_view")
 MAX_CHAIN = 160                    # a variant::defaults, leaving room for a community's overlay
@@ -176,13 +176,13 @@ def check(p, community):
     # job's default (ingest) and the community's direct-S3 default.
     s["publish_path"] = "" if p.get("publish_path") is None else p["publish_path"]
     if s["publish_path"] not in PUBLISH_PATHS:
-        raise Invalid("publish_path: ingest or staged, or empty for the default (ingest)")
+        raise Invalid("publish_path: ingest, ingest-batch or staged, or empty for the default (ingest)")
     d3 = "" if p.get("direct_s3") is None else p["direct_s3"]
     d3 = ("true" if d3 else "false") if isinstance(d3, bool) else d3
     if d3 not in ("", "true", "false"):
         raise Invalid("direct_s3: true, false, or empty for the community's default")
     if d3 == "true" and s["publish_path"] == "staged":
-        raise Invalid("direct_s3: only on the ingest path")
+        raise Invalid("direct_s3: only on the ingest paths (ingest, ingest-batch)")
     s["direct_s3"] = d3
     groups = p.get("certify_groups") or [s["community"]]
     if not isinstance(groups, list) or not 0 < len(groups) <= 8 or not all(

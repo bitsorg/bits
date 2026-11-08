@@ -524,6 +524,12 @@ class TestMainThreadsReplaceOnConflict(unittest.TestCase):
     def test_off_by_default(self):
         self.assertFalse(self._run_capture_ctx([]).get("replace_on_conflict"))
 
+    def test_ingest_batch_path_reaches_ctx(self):
+        ctx = self._run_capture_ctx(["--publish-path", "ingest-batch", "--direct-s3", "--object-list"])
+        self.assertEqual(ctx["publish_path"], "ingest-batch")
+        with self.assertRaises(SystemExit):     # the object list stays an ingest-paths option
+            self._run_capture_ctx(["--publish-path", "staged", "--direct-s3", "--object-list"])
+
     def test_on_when_flag_passed(self):
         self.assertTrue(self._run_capture_ctx(
             ["--replace-on-conflict"]).get("replace_on_conflict"))
@@ -1808,6 +1814,38 @@ class TestSubmitIngest(unittest.TestCase):
         self.assertNotIn("direct_s3", cap["files"])          # off by default
         self.assertNotIn("direct_s3", cap["signed"])
 
+    def test_ingest_batch_path_sent_and_signed(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        import bits_helpers.prepub as pp
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        tarf = os.path.join(t, "p.tar"); Path(tarf).write_bytes(b"z")
+        cap = {}
+
+        class Resp:
+            status_code = 200; text = ""
+            def json(self): return {"job_id": "J"}
+
+        class Sess:
+            def post(self, url, data=None, headers=None, timeout=None):
+                cap["files"] = data.fields; return Resp()
+
+        def fake_auth(token, method, uri, fields=None, body_hash=None,
+                      bearer_auth=False, no_verify_tls=False):
+            cap["signed"] = fields; return {}
+
+        with mock.patch.object(pp, "_make_session", lambda *a, **k: Sess()), \
+             mock.patch.object(pp, "_signed_uri", lambda u: u), \
+             mock.patch.object(pp, "_auth_headers", fake_auth):
+            cp.submit_ingest("http://p", "t", "r", "el9/x", tarf)
+        self.assertEqual(cap["signed"]["publish_path"], "ingest")    # the default stays ingest
+        with mock.patch.object(pp, "_make_session", lambda *a, **k: Sess()), \
+             mock.patch.object(pp, "_signed_uri", lambda u: u), \
+             mock.patch.object(pp, "_auth_headers", fake_auth):
+            cp.submit_ingest("http://p", "t", "r", "el9/x", tarf, publish_path="ingest-batch")
+        self.assertEqual(cap["files"]["publish_path"], (None, "ingest-batch"))
+        self.assertEqual(cap["signed"]["publish_path"], "ingest-batch")
+
     def test_direct_s3_sent_and_signed_when_enabled(self):
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
@@ -2056,6 +2094,17 @@ class TestPublishTar(unittest.TestCase):
                  "repo": "r", "submit": True}, "el9/p", tarf, "p@1(pkg)")
         self.assertEqual(jid, "IJID")
         self.assertFalse(os.path.exists(tarf))                 # tar removed
+
+    def test_ingest_batch_posts_tar_on_its_path(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tarf = self._tar(); seen = {}
+        with mock.patch.object(cp, "submit_ingest", lambda *a, **k: seen.update(k) or "BJID"), \
+             mock.patch.object(cp, "stage_tar", _boom):
+            jid = cp._publish_tar(
+                {"publish_path": "ingest-batch", "prepub_url": "u", "token": "t",
+                 "repo": "r", "submit": True}, "el9/p", tarf, "p@1(pkg)")
+        self.assertEqual((jid, seen.get("publish_path")), ("BJID", "ingest-batch"))
 
     def test_staged_stages_then_submits(self):
         from unittest import mock

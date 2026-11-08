@@ -2409,6 +2409,12 @@ A store tarball's file times are zero (it is reproducible, see the Pack step of 
 the build recorded the package instead (its manifest `completed_at`), so CVMFS
 shows when it was built (a reused package: when the build reused it), not 1970.
 
+`--publish-path` chooses how prepub receives each package: `ingest` (default) sends
+the tar and prepub commits it alone; `ingest-batch` sends the same tar and lets
+prepub commit packages that wait at the same time together (the prepub must offer
+that path, `ingest_batch_max`); `staged` prepares the package here and sends prepub
+the result to graft.
+
 `{day}` is a nightly path slot: when a template uses it, bits fills in the UTC
 weekday (`Mon` … `Sun`); `bits build --day DAY` (or `day:` under `system:`) sets
 it, and an empty value collapses the segment. It is layout only — never hashed,

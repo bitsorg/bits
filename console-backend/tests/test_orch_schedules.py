@@ -64,6 +64,8 @@ class CheckTest(unittest.TestCase):
         s = sch.check(_p(publish_path="ingest", direct_s3=False), "lcg")
         self.assertEqual((s["publish_path"], s["direct_s3"]), ("ingest", "false"))
         self.assertEqual(sch.check(_p(direct_s3="true"), "lcg")["direct_s3"], "true")
+        s2 = sch.check(_p(publish_path="ingest-batch", direct_s3="true"), "lcg")
+        self.assertEqual((s2["publish_path"], s2["direct_s3"]), ("ingest-batch", "true"))
         self.assertEqual(sch.content_sha256(s), sch.content_sha256(sch.check(_p(), "lcg")))   # not in the hash
         for bad in ({"publish_path": "prepub"}, {"publish_path": 1}, {"direct_s3": "yes"},
                     {"publish_path": False}, {"direct_s3": 0}, {"direct_s3": []},
