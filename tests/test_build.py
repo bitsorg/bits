@@ -777,6 +777,32 @@ class BuildTestCase(unittest.TestCase):
         self.assertIn("TOOLS_REVISION=not-needed", out)
         self.assertNotIn("OTHER_REVISION", out)
 
+    def test_initdotsh_local_reuse_skips_not_needed(self) -> None:
+        # A package reused from the local install whose init.sh still sources a
+        # build-only dependency that is not needed, and not installed (O2/abseil/ninja).
+        base = {"revision": "1", "hash": "h", "commit_hash": "c"}
+        specs = {
+            "App":   dict(base, package="App", version="1.0", requires=["Python"]),
+            "Python": dict(base, package="Python", version="3.13.11", requires=["Tools"]),
+            "Tools": dict(base, package="Tools", version="0.0.32", requires=[],
+                          not_needed=True),
+        }
+        local = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, local)
+        init = os.path.join(local, "slc7_x86-64/Python/3.13.11-1/etc/profile.d/init.sh")
+        os.makedirs(os.path.dirname(init))
+        with open(init, "w") as fh:
+            fh.write('[ -n "${TOOLS_REVISION}" ] || . "$WORK_DIR/$BITS_ARCH_PREFIX"'
+                     '/Tools/0.0.32-1/etc/profile.d/init.sh\n'
+                     'export PYTHON_REVISION=1\n')
+        out = generate_initdotsh("App", specs, "slc7_x86-64", workDir=local, post_build=False)
+        res = subprocess.run(["bash", "-ec", out + '\necho "python=$PYTHON_REVISION tools=${TOOLS_REVISION-unset}"'],
+                             capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+        self.assertEqual((res.returncode, res.stdout.strip()), (0, "python=1 tools=unset"), res.stderr)
+        specs["Tools"]["not_needed"] = False   # needed: sourced as before (and missing here)
+        out = generate_initdotsh("App", specs, "slc7_x86-64", workDir=local, post_build=False)
+        self.assertNotIn("not-needed", out)
+
     def test_initdotsh_reuse_not_needed_kept_across_a_local_dep(self) -> None:
         base = {"revision": "1", "hash": "h", "commit_hash": "c"}
         specs = {

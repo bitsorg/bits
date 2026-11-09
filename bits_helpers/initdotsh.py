@@ -144,6 +144,22 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       'unset _bits_swd _bits_sap',
     ]
 
+  # The not-needed packages of this package's own dependencies only (its init.sh
+  # must not depend on what else the build had): marked as set up, so a reused
+  # dependency's init.sh, local or deployed, does not source what is not there.
+  _closure, _todo = set(), list(spec.get("requires", ()))
+  while _todo:
+    d = _todo.pop()
+    if d in specs and d not in _closure:
+      _closure.add(d)
+      _todo.extend(specs[d].get("requires", ()))
+  _not_needed = sorted(pkg_to_shell_id(d) for d in _closure if specs[d].get("not_needed"))
+  _nn = "_bits_nn_" + pkg_to_shell_id(package)
+  _nn_skip = ['[ -n "${%s_REVISION}" ] || { %s_REVISION=not-needed; '
+              '%s="${%s:-} %s_REVISION"; }' % (v, v, _nn, _nn, v) for v in _not_needed]
+  _nn_unset = ['for _bits_v in ${%s:-}; do unset "$_bits_v"; done; '
+               'unset %s _bits_v' % (_nn, _nn)] if _not_needed else []
+
   if _reused_set or any(specs[d].get("reuse_symlinked") for d in _reqs):
     # Emit deps in topological order (prerequisites first) so a dep set up
     # before a reused dep whose deployed init.sh transitively references it —
@@ -152,27 +168,13 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # (which would look on CVMFS where a local-only build does not exist).
     _req_set = set(_reqs)
     _order = [d for d in topological_sort(specs) if d in _req_set]
-    # The not-needed packages of this package's own dependencies only: its init.sh
-    # must not depend on what else the build had.
-    _closure, _todo = set(), list(spec.get("requires", ()))
-    while _todo:
-      d = _todo.pop()
-      if d in specs and d not in _closure:
-        _closure.add(d)
-        _todo.extend(specs[d].get("requires", ()))
-    _not_needed = sorted(pkg_to_shell_id(d) for d in _closure if specs[d].get("not_needed"))
-    _nn = "_bits_nn_" + pkg_to_shell_id(package)
-    lines.extend('[ -n "${%s_REVISION}" ] || { %s_REVISION=not-needed; '
-                 '%s="${%s:-} %s_REVISION"; }' % (v, v, _nn, _nn, v)
-                 for v in _not_needed)
+    lines.extend(_nn_skip)
     for d in _order:
       if d in _reused_set:
         lines.extend(_reused_dep_lines(d))
       else:
         lines.append(_dep_init_path(d))
-    if _not_needed:
-      lines.append('for _bits_v in ${%s:-}; do unset "$_bits_v"; done; '
-                   'unset %s _bits_v' % (_nn, _nn))
+    lines.extend(_nn_unset)
     # A reused CVMFS package may ship a pkg-config .pc whose baked `prefix=` does
     # not match its deployed location (publish-time relocation can misplace it),
     # breaking find_package via pkg-config for a consumer (e.g. xrootd → Davix).
@@ -202,7 +204,9 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       'unset _bits_rpc _bits_root _bits_pcd _bits_pc',
     ] if _reused_roots else [])
   else:
+    lines.extend(_nn_skip)
     lines.extend(_dep_init_path(dep) for dep in _prerequisites_first(_reqs, specs))
+    lines.extend(_nn_unset)
 
   if post_build:
     bigpackage = pkg_to_shell_id(package)
