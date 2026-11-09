@@ -619,6 +619,7 @@ bits prune [options]
 | `--min-free GIB` | _(none)_ | Evict packages until at least `GiB` GiB of free disk space is available: the day last used longest ago first, the biggest first within a day. |
 | `--all-architectures` | — | Evict from every architecture under `.packages`, as one list (instead of `-a`'s). A host building for several platforms, `--docker` ones included, needs it: their packages are not under the host's own architecture. |
 | `--keep-recent DAYS` | `2.0` | Disk pressure never evicts a package used in the last `DAYS` days; it stops short of `--min-free` instead, with a warning. `0` for none. |
+| `--leftovers` | — | First remove what failed builds and jobs left behind: `BUILD/<hash>` and `INSTALLROOT/<hash>` whose build (its `BUILD/<hash>/log`) has not run, and `tmp/` entries not written, in `--keep-recent` days (1 at least: a CI job runs 24 hours at most). A successful build removes its own; installed packages, `SOURCES/` and `TARS/` are untouched. |
 | `--disk-pressure-only` | — | Run only the disk-pressure eviction pass; skip age-based eviction. |
 | `--retain` | — | Manifest-rooted sweep over all architectures: keep the packages of the newest `--keep-builds N` (default 2) build manifests and anything certified but not yet on CVMFS; evict what is safely upstream (stored, in the verified signed manifest and published to CVMFS). Signed manifests come from `--remote-store` and/or `--trust-manifest`; an architecture whose manifest cannot be verified is skipped. |
 | `--grace-days DAYS` | `1.0` | With `--retain`: never evict anything modified more recently than DAYS days ago. |
@@ -630,7 +631,7 @@ bits prune [options]
 
 ```bash
 # Pre-build: free space if below 200 GiB, the packages of every platform used longest ago first
-bits prune --all-architectures --min-free 200 --disk-pressure-only || true
+bits prune --all-architectures --leftovers --min-free 200 --disk-pressure-only || true
 
 # Nightly cron: evict packages not used in 7 days
 bits prune --max-age 7

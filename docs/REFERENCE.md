@@ -1988,6 +1988,7 @@ bits prune [options]
 | `--min-free GIB` | _(none)_ | Evict packages until `GIB` GiB are free on the workDir filesystem: the day last used longest ago first, the biggest first within a day. |
 | `--all-architectures` | — | Evict from every architecture under `.packages`, as one list (instead of `-a`'s). |
 | `--keep-recent DAYS` | `2.0` | Disk pressure never evicts a package used in the last `DAYS` days: it stops short of `--min-free` instead, with a warning. `0` for none. |
+| `--leftovers` | — | First remove what failed builds and jobs left behind: `BUILD/<hash>` and `INSTALLROOT/<hash>` whose build (its `BUILD/<hash>/log`) has not run, and `tmp/` entries not written, in `--keep-recent` days (1 at least: a CI job runs 24 hours at most). A successful build removes its own; installed packages, `SOURCES/` and `TARS/` are untouched. |
 | `--disk-pressure-only` | — | Run only the disk-pressure pass; skip age-based eviction. |
 | `--retain` | off | Retention sweep over **all** architectures. Keeps the packages of the newest `--keep-builds` local build manifests per arch, and certified packages not yet on CVMFS. Evicts what is safe upstream (in the store, in the verified signed manifest **and** recorded as published to CVMFS), plus superseded attempts, orphan store tarballs, `BUILD/` dirs and dangling links. An arch whose signed manifest cannot be verified is skipped entirely. |
 | `--keep-builds N` | `2` | With `--retain`: build manifests to keep per architecture. |

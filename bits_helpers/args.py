@@ -370,6 +370,11 @@ def add_prune_arguments(subparsers, ctx):
                               default=False,
                               help=("Evict from every architecture under WORKDIR/.packages, as one "
                                     "list (instead of -a's)."))
+  cleanup_parser.add_argument("--leftovers", dest="leftovers", action="store_true", default=False,
+                              help=("First remove what failed builds and jobs left: BUILD/<hash> and "
+                                    "INSTALLROOT/<hash> whose build has not run, and tmp/ entries not "
+                                    "written, in --keep-recent days (1 at least). Installed packages "
+                                    "are untouched."))
   cleanup_parser.add_argument("--keep-recent", dest="keepRecentDays", type=float, default=2.0,
                               metavar="DAYS",
                               help=("Disk pressure never evicts a package used in the last DAYS days; "

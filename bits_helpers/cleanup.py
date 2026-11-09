@@ -39,7 +39,9 @@ supported without any "one job at a time" restriction.
 """
 
 import fcntl
+import glob
 import os
+import re
 import shutil
 import sys
 import time
@@ -250,6 +252,101 @@ def _pressure_order(entries: List[_SentinelEntry], keep_recent_days: float,
     now = now or time.time()
     old = [e for e in entries if e.mtime < now - keep_recent_days * 86400]
     return sorted(old, key=lambda e: (-int((now - e.mtime) // 86400), -(e.size_bytes or 0)))
+
+
+# ---------------------------------------------------------------------------
+# Leftovers: what failed builds and jobs left behind
+# ---------------------------------------------------------------------------
+
+_HASH = re.compile(r"[0-9a-f]{40}")
+LEFTOVER_MIN_DAYS = 1.0     # a CI job runs 24 h at most: older is no running job's
+_DOOMED = re.compile(r"[0-9a-f]{40}\.bits-prune-\d+")   # a removal cut short
+
+
+def _newest_mtime(path: str, depth: int = 2) -> Optional[float]:
+    """The newest mtime of *path* and what lies *depth* levels below it."""
+    try:
+        newest = os.lstat(path).st_mtime
+    except OSError:
+        return None
+    if depth and os.path.isdir(path) and not os.path.islink(path):
+        try:
+            names = os.listdir(path)
+        except OSError:
+            return newest
+        for name in names:
+            t = _newest_mtime(join(path, name), depth - 1)
+            if t is not None and t > newest:
+                newest = t
+    return newest
+
+
+def _leftovers(work_dir: str, keep_recent_days: float, now: Optional[float] = None):
+    """[(last written, path)], oldest first: the BUILD/<hash> and INSTALLROOT/<hash>
+    a failed build kept and the tmp/ entries of jobs, none written in *keep_recent_days*
+    (a build's activity is its BUILD/<hash>/log)."""
+    root = abspath(work_dir)
+    cutoff = (now or time.time()) - keep_recent_days * 86400
+    out = []
+    for sub in ("BUILD", "INSTALLROOT", "tmp"):
+        top = join(root, sub)
+        try:
+            names = os.listdir(top)
+        except OSError:
+            continue
+        for name in names:
+            path = join(top, name)
+            if os.path.islink(path) or not os.path.isdir(path):
+                continue
+            if _DOOMED.fullmatch(name):
+                out.append((0.0, path))
+                continue
+            if sub != "tmp" and not _HASH.fullmatch(name):
+                continue
+            t = _newest_mtime(path)
+            log = join(root, "BUILD", name, "log")
+            if sub != "tmp" and exists(log):
+                t = max(t or 0.0, os.path.getmtime(log))
+            if t is not None and t < cutoff:
+                out.append((t, path))
+    return sorted(out)
+
+
+def _remove_leftovers(work_dir: str, keep_recent_days: float, dry_run: bool) -> int:
+    """Remove _leftovers(), never one written in the last LEFTOVER_MIN_DAYS. Each is
+    renamed first, then checked again: one a build began on since is put back."""
+    root = os.path.realpath(work_dir)
+    removed = 0
+    for t, path in _leftovers(root, max(keep_recent_days, LEFTOVER_MIN_DAYS)):
+        what = os.path.relpath(path, root)
+        days = (time.time() - t) / 86400 if t else 0
+        if dry_run:
+            info("dry-run: would remove %s  (%.0f days old)", what, days)
+            removed += 1
+            continue
+        doomed = path if _DOOMED.fullmatch(basename(path)) else "%s.bits-prune-%d" % (path, os.getpid())
+        try:
+            if doomed != path:
+                os.rename(path, doomed)
+        except OSError:
+            continue
+        if t and (_newest_mtime(doomed) or 0.0) > t:
+            try:
+                os.rename(doomed, path)       # a build began on it: give it back
+            except OSError:
+                warning("%s was written while being removed; left as %s", what, doomed)
+            continue
+        info("Removing %s  (%.0f days old)", what, days)
+        shutil.rmtree(doomed, ignore_errors=True)
+        removed += 1
+    if not dry_run:
+        for link in glob.glob(join(root, "BUILD", "*-latest*")):
+            if os.path.islink(link) and not exists(link):
+                try:
+                    os.unlink(link)
+                except OSError:
+                    pass
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +824,12 @@ def doCleanup(args, parser):
 
     all_archs = getattr(args, "allArchitectures", False)
     keep_recent = max(0.0, getattr(args, "keepRecentDays", 2.0) or 0.0)
+    if getattr(args, "leftovers", False):
+        before = _free_bytes(work_dir)
+        n = _remove_leftovers(work_dir, keep_recent, dry_run)
+        info("Leftovers of failed builds and jobs: %d %s, %.1f GiB freed", n,
+             "would be removed (dry-run)" if dry_run else "removed",
+             (_free_bytes(work_dir) - before) / 1024 ** 3)
     entries = _list_all_sentinels(work_dir) if all_archs else _list_sentinels(work_dir, arch)
     if not entries:
         info("No package sentinels found under %s/.packages/%s", work_dir,

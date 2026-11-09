@@ -23,6 +23,7 @@ from argparse import Namespace
 from unittest.mock import MagicMock, call, patch
 
 from bits_helpers.cleanup import (
+    _leftovers,
     _list_all_sentinels,
     _list_sentinels,
     _pressure_order,
@@ -445,6 +446,89 @@ class AllArchitecturesTest(unittest.TestCase):
             doCleanup(self._args(dry_run=True), parser=None)
         self.assertEqual(len(self._left()), 4)
         warn.assert_not_called()
+
+
+class LeftoversTest(unittest.TestCase):
+    """--leftovers: a failed build's BUILD/<hash> and INSTALLROOT/<hash>, and jobs'
+    tmp/ entries, once not written for --keep-recent days; nothing else."""
+    OLD, NEW, BARE = "a" * 40, "b" * 40, "c" * 40
+
+    def setUp(self):
+        self.wd = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.wd, True)
+        self.old = time.time() - 10 * 86400
+        self._dir("BUILD/%s/Rec" % self.OLD, self.old, log=self.old)
+        self._dir("BUILD/%s/Moore" % self.NEW, self.old, log=time.time())   # running now
+        self._dir("INSTALLROOT/%s/x86_64-el9/Rec" % self.OLD, self.old)
+        self._dir("INSTALLROOT/%s/x86_64-el9/Moore" % self.NEW, self.old)  # its log is new
+        self._dir("INSTALLROOT/%s/x86_64-el9/Gaudi" % self.BARE, self.old)
+        self._dir("BUILD/not-a-hash", self.old)
+        self._dir("tmp/bits-pub.old", self.old)
+        self._dir("tmp/bits-pub.new", time.time())
+        self._dir("x86_64-el9/Rec/v1-1", self.old)                          # installed
+        os.symlink(self.OLD, os.path.join(self.wd, "BUILD", "Rec-latest"))
+        os.symlink(self.NEW, os.path.join(self.wd, "BUILD", "Moore-latest"))
+
+    def _dir(self, rel, mtime, log=None):
+        path = os.path.join(self.wd, rel)
+        os.makedirs(path)
+        if log is not None:
+            top = os.path.join(self.wd, *rel.split("/")[:2])
+            with open(os.path.join(top, "log"), "w") as fh:
+                fh.write("x")
+            os.utime(os.path.join(top, "log"), (log, log))
+        while path != self.wd:
+            os.utime(path, (mtime, mtime))
+            path = os.path.dirname(path)
+
+    def _run(self, dry_run=False, keep_recent=2.0):
+        args = Namespace(workDir=self.wd, architecture="x86_64-el9", maxAgeDays=None, minFreeGb=None,
+                         dryRun=dry_run, diskPressureOnly=True, allArchitectures=True,
+                         keepRecentDays=keep_recent, leftovers=True)
+        with self.assertRaises(SystemExit):          # no package sentinels: it ends there
+            doCleanup(args, parser=None)
+
+    def _there(self):
+        return sorted("%s/%s" % (d, n)
+                      for d in ("BUILD", "INSTALLROOT", "tmp")
+                      for n in os.listdir(os.path.join(self.wd, d)))
+
+    def test_what_goes_and_what_stays(self):
+        self._run()
+        self.assertEqual(self._there(), [
+            "BUILD/Moore-latest", "BUILD/%s" % self.NEW, "BUILD/not-a-hash",
+            "INSTALLROOT/%s" % self.NEW, "tmp/bits-pub.new"])
+        self.assertTrue(os.path.isdir(os.path.join(self.wd, "x86_64-el9", "Rec", "v1-1")))
+
+    def test_dry_run_removes_nothing(self):
+        before = self._there()
+        self._run(dry_run=True)
+        self.assertEqual(self._there(), before)
+
+    def test_keep_recent_longer_than_their_age(self):
+        before = self._there()
+        self._run(keep_recent=30)
+        self.assertEqual(self._there(), before)
+
+    def test_never_younger_than_a_day(self):
+        self._dir("INSTALLROOT/%s/x" % ("e" * 40), time.time() - 3600)
+        self._run(keep_recent=0)
+        self.assertIn("INSTALLROOT/%s" % ("e" * 40), self._there())
+
+    def test_a_build_started_since_is_left(self):
+        real = _leftovers
+        def stale(wd, days, now=None):
+            got = real(wd, days, now)
+            os.utime(os.path.join(self.wd, "INSTALLROOT", self.BARE), None)   # a build began
+            return got
+        with patch("bits_helpers.cleanup._leftovers", side_effect=stale):
+            self._run()
+        self.assertIn("INSTALLROOT/%s" % self.BARE, self._there())             # given back
+
+    def test_a_removal_cut_short_is_finished(self):
+        self._dir("BUILD/%s.bits-prune-123/x" % ("d" * 40), time.time())
+        self._run(keep_recent=30)
+        self.assertNotIn("BUILD/%s.bits-prune-123" % ("d" * 40), self._there())
 
 
 class AcquireBuildLockTest(unittest.TestCase):
