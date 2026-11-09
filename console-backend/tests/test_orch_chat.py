@@ -219,6 +219,16 @@ class IndexTest(_DB):
         (intro,) = chat_docs.search(self.conn, "intro text", limit=1)
         self.assertEqual((intro["body"], intro["also"]), ("Intro text about bits.", []))
 
+    def test_the_parts_of_a_long_section_are_one_source(self):
+        doc = "# T\n\n## Big\n\nzebra %s\n\nzebra zebra zebra %s\n\n## Other\n\nzebra\n" % ("x " * 1900, "y " * 1900)
+        chat_docs.refresh(self.conn, [SRC], FakeSession({RAW: (doc, "e1")}), now=1000)
+        got = chat_docs.search(self.conn, "zebra")
+        big = [d for d in got if d["url"].endswith("#big")]
+        self.assertEqual(len(big), 1)
+        self.assertEqual(len(got), len({d["url"] for d in got}))
+        self.assertEqual(big[0]["title"], "GUIDE › T › Big")
+        self.assertLess(big[0]["body"].index("x x"), big[0]["body"].index("y y"))
+
     def test_a_part_left_out_of_a_short_section_is_still_found(self):
         doc = "# T\n\n## Short\n\nA few words.\n\n### Long\n\n%s\n\n%s zebra\n" % ("x " * 1900, "y " * 1500)
         chat_docs.refresh(self.conn, [SRC], FakeSession({RAW: (doc, "e1")}), now=1000)

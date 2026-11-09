@@ -599,19 +599,26 @@ def search(conn, text, limit=6, budget=24000, community="", near=None):
                      and repo[:-5] not in words)
             return 2 if other else 1
         rows = sorted(rows, key=rank)          # stable: the search's order within each
-    out, used, shown = [], 0, set()        # shown: rowids given, or brought along
+    out, used, shown, at = [], 0, set(), {}  # shown: rowids given, or brought along
     for r in rows:
-        if len(out) >= limit:
-            break
         if r["rowid"] in shown:
             continue
+        doc = at.get(r["url"])             # another part of a long section: one source
+        if doc is None and len(out) >= limit:
+            break
         body, got = _subsections(conn, r, shown)
         if out and used + len(body) > budget:
             break
-        out.append({"title": r["title"], "url": r["url"], "body": body,
-                    "also": list(dict.fromkeys(u for _, u in got))})
+        if doc is None:
+            doc = at[r["url"]] = {"title": r["title"], "url": r["url"], "parts": [], "also": []}
+            out.append(doc)
+        doc["parts"].append((r["rowid"], r["title"], body))
+        doc["also"] = list(dict.fromkeys(doc["also"] + [u for _, u in got]))
         shown.update([r["rowid"]] + [i for i, _ in got])
         used += len(body)
+    for doc in out:                        # the parts in the section's own order
+        parts = sorted(doc.pop("parts"))
+        doc["title"], doc["body"] = parts[0][1], "\n\n".join(b for _, _, b in parts)
     return out
 
 
