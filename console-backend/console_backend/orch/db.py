@@ -684,6 +684,23 @@ MIGRATIONS = [
     [
         "ALTER TABLE build_queue ADD COLUMN rerun_of INTEGER",
     ],
+    # 28: the help chat's questions the docs did not answer (chat.py), without who
+    # asked, kept CHAT_GAPS_DAYS for whoever improves the docs.
+    [
+        """CREATE TABLE chat_gaps (
+            id          INTEGER PRIMARY KEY,
+            reason      TEXT NOT NULL,
+            question    TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            answer      TEXT NOT NULL,
+            sources     TEXT NOT NULL DEFAULT '[]',
+            community   TEXT NOT NULL DEFAULT '',
+            pipeline_id INTEGER,
+            model       TEXT NOT NULL DEFAULT '',
+            created_ms  INTEGER NOT NULL
+        )""",
+        "CREATE INDEX chat_gaps_created ON chat_gaps (created_ms)",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

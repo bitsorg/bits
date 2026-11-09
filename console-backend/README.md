@@ -343,9 +343,13 @@ as Ollama's `OLLAMA_CONTEXT_LENGTH` too), `BITS_CHAT_ANSWER_TOKENS` (1500) and
 (`BITS_CHAT_EXPLAIN_THINK`, on, when the model can and the context is 8192 or more;
 twice the time) or with `BITS_CHAT_THINK=1`. Nothing of a chat is kept except a vote (`POST
 /ops/chat/feedback`), with its question, answer and sources, for 90 days (migration 24;
-`GET /ops/chat/feedback` for overall admins; 50 a user a day; the worker's `chat_votes`
-step expires them, chat on or off). `GET /ops/chat` says whether it is on and whether
-Ollama has the model. `chat-eval/run.py` measures the search on `chat-eval/cases.yaml` and,
+`GET /ops/chat/feedback` for overall admins; 50 a user a day), and a question the docs did
+not answer, without who asked, for 90 days (migration 28; 500 a day): none of the sections
+found, or an answer starting "The documentation does not cover this" (`not_covered`) or ending with "The
+documentation does not cover:" (`partly`). `GET /ops/chat/gaps?after=<id>&community=` lists
+them oldest first for overall admins, so whoever improves the docs keeps the last id it read.
+The worker's `chat_kept` step expires both, chat on or off. `GET /ops/chat` says whether it
+is on and whether Ollama has the model. `chat-eval/run.py` measures the search on `chat-eval/cases.yaml` and,
 with `--model` (and `--judge`, `--judge-model` for another model to check them), the answers;
 in the service's container it searches the docs index of `$BITS_ORCH_DB`, without the FAQ.
 

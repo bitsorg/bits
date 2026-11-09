@@ -67,8 +67,8 @@ class Worker:
             # Which build published each CVMFS path (bits trace).
             ("trace", lambda: trace.step(self.conn, settings.orch_prepub_urls)),
             ("ship", lambda: outside.ship(self.conn, self.outside)),
-            # The help chat's votes older than 90 days, chat on or off.
-            ("chat_votes", lambda: chat.expire_votes(self.conn)),
+            # The help chat's votes and unanswered questions older than 90 days, chat on or off.
+            ("chat_kept", lambda: chat.expire(self.conn)),
             ("backup", self._backup),
         ]
         if settings.orch_certify:

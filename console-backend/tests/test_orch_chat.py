@@ -826,6 +826,91 @@ class ApiTest(_DB):
             self.assertEqual(chat.expire_votes(self.conn), 2)
         self.assertEqual(get("carol").json()["feedback"], [])
 
+    # --- the questions the docs did not answer
+
+    def _ask(self, question, *pieces, community=""):
+        async def says(settings, msgs, deadline=None, think=None):
+            for piece in pieces:
+                yield piece
+        with patch.object(chat, "ollama_stream", says):
+            return _events(self._post("dave", {"question": question, "community": community}).text)
+
+    def _gaps(self, user="carol", query=""):
+        return self.client.get("/ops/chat/gaps" + query, headers={"Authorization": "Bearer %s" % user})
+
+    def test_the_questions_the_docs_did_not_answer(self):
+        self._ask("Which builder images are there?", "Use ", "`x86_64-el9` [1].")
+        self._ask("Which builder images run arm?", "The documentation does not ", "cover this.",
+                  community="LCG")
+        self._ask("Which Platforms are there, and on GPUs?", "`x86_64-el9` [1]. The documentation "
+                  "does not cover: GPUs.")
+        self._ask("zzqx wobble?", "I cannot say.")
+        got = self._gaps().json()["gaps"]
+        self.assertEqual([(g["reason"], g["community"]) for g in got],
+                         [("not_covered", "lcg"), ("partly", ""), ("no_sections", "")])
+        g = got[0]
+        self.assertEqual((g["question"], g["answer"], g["model"]),
+                         ("Which builder images run arm?", "The documentation does not cover this.",
+                          "gemma4:12b"))
+        self.assertTrue(g["sources"][0].endswith("#platforms"))
+        self.assertEqual(got[2]["sources"], [])
+        self.assertNotIn("user", g)
+        self.assertNotIn("dave", json.dumps(got))
+
+    def test_who_reads_them_and_from_where(self):
+        for q in ("Which builder images run arm?", "Which builder images run riscv?"):
+            self._ask(q, "The documentation does not cover this.", community="LCG")
+        first, second = self._gaps().json()["gaps"]
+        self.assertEqual(self._gaps(query="?after=%d" % first["id"]).json()["gaps"], [second])
+        self.assertEqual(self._gaps(query="?community=LCG").json()["gaps"], [first, second])
+        self.assertEqual(self._gaps(query="?community=alice").json()["gaps"], [])
+        self.assertEqual(self._gaps(query="?community=a%20b").status_code, 400)
+        self.assertEqual(self._gaps(query="?after=%d" % 2 ** 70).json()["gaps"], [])
+        self.assertEqual(self._gaps("alice").status_code, 403)
+        self.assertEqual(self._gaps("dave").status_code, 403)
+
+    def test_the_same_question_however_written(self):
+        self.assertEqual(chat.question_fingerprint("How do I sign a build?"),
+                         chat.question_fingerprint("  how do i SIGN a build "))
+        self.assertNotEqual(chat.question_fingerprint("How do I sign a build?"),
+                            chat.question_fingerprint("How do I sign a package?"))
+
+    def test_what_counts_as_not_covered(self):
+        docs = [{"url": "https://x#a"}]
+        for text, why in (("The documentation does not cover this.", "not_covered"),
+                          ("**The documentation does not cover this.**", "not_covered"),
+                          ("Use x [1]. The documentation does not cover: GPUs.", "partly"),
+                          ("Use x [1]; the documentation does not cover this aspect.", "partly"),
+                          ("Use x [1].", None)):
+            self.assertEqual(chat.gap_reason(text, docs), why, text)
+        self.assertEqual(chat.gap_reason("Use x.", []), "no_sections")
+
+    def test_at_most_so_many_a_day(self):
+        with patch.object(chat, "GAPS_A_DAY", 1):
+            for q in ("Which builder images run arm?", "Which builder images run riscv?"):
+                self.assertEqual(self._ask(q, "The documentation does not cover this.")[-1][0], "done")
+        self.assertEqual(len(self._gaps().json()["gaps"]), 1)
+
+    def test_an_unfinished_answer_is_not_kept(self):
+        async def broken(settings, msgs, deadline=None, think=None):
+            yield "The documentation does not cover this."
+            raise chat.ChatError("the model stopped")
+        with patch.object(chat, "ollama_stream", broken):
+            ev = _events(self._post("dave", {"question": "platforms?"}).text)
+        self.assertEqual(ev[-1][0], "error")
+        self.assertEqual(self._gaps().json()["gaps"], [])
+
+    def test_a_failed_record_leaves_the_answer(self):
+        with patch.object(chat, "record_gap", side_effect=OSError("disk full")):
+            ev = self._ask("Which builder images run arm?", "The documentation does not cover this.")
+        self.assertEqual(ev[-1][0], "done")
+
+    def test_they_expire(self):
+        self._ask("Which builder images run arm?", "The documentation does not cover this.")
+        with patch.object(db, "now_ms", return_value=db.now_ms() + 91 * 86400 * 1000):
+            self.assertEqual(chat.expire(self.conn), 1)
+        self.assertEqual(self._gaps().json()["gaps"], [])
+
 
 class OllamaTest(unittest.TestCase):
     """The client against Ollama's /api/chat and /api/tags, through a mock transport."""
@@ -913,9 +998,9 @@ class WorkerTest(_DB):
     def test_the_docs_step_only_with_the_chat(self):
         names = lambda env: [n for n, _ in worker.Worker(self.conn, config.Settings(env=env)).steps]
         self.assertNotIn("chat_docs", names({}))
-        self.assertIn("chat_votes", names({}))                # the votes expire, chat or not
+        self.assertIn("chat_kept", names({}))                 # votes and gaps expire, chat or not
         got = names({"BITS_CHAT_URL": "http://127.0.0.1:11434"})
-        self.assertEqual(got[-4:], ["ship", "chat_docs", "chat_votes", "backup"])
+        self.assertEqual(got[-4:], ["ship", "chat_docs", "chat_kept", "backup"])
 
 
 
