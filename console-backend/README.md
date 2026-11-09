@@ -77,7 +77,10 @@ publishing to CVMFS) in
 (read_api) when set. `GET /ops/builds` and `GET /ops/builds/{pipeline}` serve
 what it recorded: to admins for their communities, and to any signed-in user,
 read-only, for the community named (`?community=`; without who approved a
-certification, a build without its variables and events). A build job may
+certification, a build without its variables and events). `GET
+/ops/builds/{pipeline}/jobs/{job}/log?file=trace|bits-build.log|bits-publish.log&bytes=`
+gives the end (1 MiB, at most 4 MiB) of one of its jobs' log or bits logs, cleaned and
+redacted, to the build's community's admins; GitLab must still have the job. A build job may
 send a hint (`POST /ops/ci/published|failed {pipeline}`) with a CI ID token for
 the audience `BITS_ORCH_CI_AUDIENCE` (default `bits-orchestrator`), from the
 build project on a protected ref; the worker then looks at that pipeline on
@@ -359,7 +362,8 @@ with instead of a GitLab token, `bitsread.v1.<payload>.<signature>`, signed (HMA
 `BITS_READ_TOKEN_KEY` (32 characters at least, e.g. `openssl rand -hex 32`; unset, no token is
 accepted; a new key voids every token). A token is good while its row in `read_tokens`
 (migration 29) is unrevoked and unexpired (90 days at most). It reads only by GET, only
-`/ops/failures`, `/ops/builds/{pipeline}`, `/ops/chat/gaps` and `/ops/chat/feedback`, and only
+`/ops/failures`, `/ops/builds/{pipeline}`, its jobs' logs (`/ops/builds/{pipeline}/jobs/{job}/log`),
+`/ops/chat/gaps` and `/ops/chat/feedback`, and only
 its communities: a community's token reads that community's failures and builds (403 for
 another), a token for `*` every community and the chat's records, as an overall admin.
 Everything else answers 403; the console's other routes do not take it, and it is never

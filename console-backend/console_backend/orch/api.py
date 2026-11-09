@@ -556,7 +556,9 @@ async def get_job_log(pipeline: int, job_id: int, request: Request, file: str = 
         log.warning("log of job %d: %s", job_id, said)
         raise HTTPException(502, "GitLab did not give the log: %s" % said)
     if raw is None:
-        raise HTTPException(404, "job %d has no %s" % (job_id, "log" if file == "trace" else file))
+        raise HTTPException(404, "GitLab no longer has the log of job %d (its pipeline deleted?)"
+                            % job_id if file == "trace" else
+                            "job %d has no %s (not written, or its pipeline deleted)" % (job_id, file))
     if data.get("read_token"):
 
         def record():
