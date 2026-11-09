@@ -366,6 +366,15 @@ def add_prune_arguments(subparsers, ctx):
                               help=("When free space on the workDir filesystem is below GIB gibibytes, "
                                     "evict least-recently-used packages until the threshold is met. "
                                     "Disabled by default; set a value to enable disk-pressure eviction."))
+  cleanup_parser.add_argument("--all-architectures", dest="allArchitectures", action="store_true",
+                              default=False,
+                              help=("Evict from every architecture under WORKDIR/.packages, as one "
+                                    "list (instead of -a's)."))
+  cleanup_parser.add_argument("--keep-recent", dest="keepRecentDays", type=float, default=2.0,
+                              metavar="DAYS",
+                              help=("Disk pressure never evicts a package used in the last DAYS days; "
+                                    "it stops short of --min-free instead, with a warning. "
+                                    "Default: %(default)s; 0 for none."))
   cleanup_parser.add_argument("--disk-pressure-only", dest="diskPressureOnly", action="store_true",
                               default=False,
                               help="Run only disk-pressure eviction; skip age-based eviction.")

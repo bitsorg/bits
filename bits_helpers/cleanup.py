@@ -230,6 +230,28 @@ def _list_sentinels(work_dir: str, architecture: str) -> List[_SentinelEntry]:
     return entries
 
 
+def _list_all_sentinels(work_dir: str) -> List[_SentinelEntry]:
+    """Every architecture's packages under .packages, oldest first."""
+    root = join(abspath(work_dir), ".packages")
+    try:
+        archs = sorted(d for d in os.listdir(root) if os.path.isdir(join(root, d)))
+    except OSError:
+        return []
+    entries = [e for arch in archs for e in _list_sentinels(work_dir, arch)]
+    entries.sort(key=lambda e: e.mtime)
+    return entries
+
+
+def _pressure_order(entries: List[_SentinelEntry], keep_recent_days: float,
+                    now: Optional[float] = None) -> List[_SentinelEntry]:
+    """What disk pressure may evict, in order: not used in *keep_recent_days*; the
+    most whole days since last use first and, within as many, the biggest first
+    (the recorded size; a legacy sentinel without one counts as 0)."""
+    now = now or time.time()
+    old = [e for e in entries if e.mtime < now - keep_recent_days * 86400]
+    return sorted(old, key=lambda e: (-int((now - e.mtime) // 86400), -(e.size_bytes or 0)))
+
+
 # ---------------------------------------------------------------------------
 # Eviction
 # ---------------------------------------------------------------------------
@@ -266,12 +288,14 @@ def _try_evict(entry: _SentinelEntry, dry_run: bool) -> Optional[int]:
         size_bytes = _resolve_size(entry)
         size_mib = size_bytes / 1e6
         if dry_run:
-            info("dry-run: would evict %s/%s  (%.1f MiB, %.0f days old)",
-                 pkg_name, pkg_ver, size_mib, age_days)
+            info("dry-run: would evict %s/%s/%s  (%.1f MiB, %.0f days old)",
+                 basename(dirname(dirname(entry.sentinel_path))), pkg_name, pkg_ver,
+                 size_mib, age_days)
             return size_bytes
 
-        info("Evicting %s/%s  (%.1f MiB, %.0f days old)",
-             pkg_name, pkg_ver, size_mib, age_days)
+        info("Evicting %s/%s/%s  (%.1f MiB, %.0f days old)",
+             basename(dirname(dirname(entry.sentinel_path))), pkg_name, pkg_ver,
+             size_mib, age_days)
         if exists(entry.pkg_dir):
             shutil.rmtree(entry.pkg_dir, ignore_errors=True)
         # Remove sentinel; ignore errors (e.g. raced with another cleanup).
@@ -701,9 +725,12 @@ def doCleanup(args, parser):
     if getattr(args, "retain", False):
         sys.exit(retention_sweep(args, parser))
 
-    entries = _list_sentinels(work_dir, arch)
+    all_archs = getattr(args, "allArchitectures", False)
+    keep_recent = max(0.0, getattr(args, "keepRecentDays", 2.0) or 0.0)
+    entries = _list_all_sentinels(work_dir) if all_archs else _list_sentinels(work_dir, arch)
     if not entries:
-        info("No package sentinels found under %s/.packages/%s", work_dir, arch)
+        info("No package sentinels found under %s/.packages/%s", work_dir,
+             "*" if all_archs else arch)
         sys.exit(0)
 
     evicted = 0
@@ -716,15 +743,21 @@ def doCleanup(args, parser):
         if free < threshold:
             info("Disk pressure: %.1f GiB free < %.1f GiB threshold — "
                  "evicting LRU packages", free / 1e9, min_free_gb)
-            remaining = list(entries)
-            for entry in remaining:
-                if _free_bytes(work_dir) >= threshold:
+            for entry in _pressure_order(entries, keep_recent):
+                free = _free_bytes(work_dir)
+                if free >= threshold:
                     break
                 freed_bytes = _try_evict(entry, dry_run)
                 if freed_bytes is not None:
                     evicted += 1
                     freed += freed_bytes
                     entries.remove(entry)
+            else:
+                free = _free_bytes(work_dir)
+            if free < threshold and not dry_run:
+                warning("Disk pressure: %.1f GiB free, short of %.1f GiB; packages used in the "
+                        "last %g day(s) (--keep-recent) and those a running build holds are kept",
+                        free / 1024 ** 3, min_free_gb, keep_recent)
         else:
             debug("Disk OK: %.1f GiB free (threshold %.1f GiB)",
                   free / 1e9, min_free_gb)

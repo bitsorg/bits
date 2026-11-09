@@ -372,9 +372,10 @@ This ensures PR builds benefit from the shared cache without polluting the produ
 # Evict packages not used in the last 14 days
 bits prune --max-age 14
 
-# Free space until at least 50 GiB is available, removing least-recently-used packages first
+# Free space until at least 50 GiB is available, removing the packages used longest ago first,
+# of every platform on the host; never those used in the last 2 days (--keep-recent)
 # (--max-age defaults to 7 days; --disk-pressure-only turns the age limit off)
-bits prune --min-free 50 --disk-pressure-only
+bits prune --all-architectures --min-free 50 --disk-pressure-only
 
 # Dry run: show what would be removed without deleting anything
 bits prune --max-age 7 --min-free 100 -n

@@ -1985,7 +1985,9 @@ bits prune [options]
 | `-w DIR`, `--work-dir DIR` | `sw` | workDir to manage. |
 | `-a ARCH`, `--architecture ARCH` | auto-detected | Architecture to evict packages for. |
 | `--max-age DAYS` | `7.0` | Evict packages not touched in more than `DAYS` days. Set to `0` to disable age-based eviction. |
-| `--min-free GIB` | _(none)_ | Evict LRU packages until `GIB` GiB are free on the workDir filesystem. |
+| `--min-free GIB` | _(none)_ | Evict packages until `GIB` GiB are free on the workDir filesystem: the day last used longest ago first, the biggest first within a day. |
+| `--all-architectures` | — | Evict from every architecture under `.packages`, as one list (instead of `-a`'s). |
+| `--keep-recent DAYS` | `2.0` | Disk pressure never evicts a package used in the last `DAYS` days: it stops short of `--min-free` instead, with a warning. `0` for none. |
 | `--disk-pressure-only` | — | Run only the disk-pressure pass; skip age-based eviction. |
 | `--retain` | off | Retention sweep over **all** architectures. Keeps the packages of the newest `--keep-builds` local build manifests per arch, and certified packages not yet on CVMFS. Evicts what is safe upstream (in the store, in the verified signed manifest **and** recorded as published to CVMFS), plus superseded attempts, orphan store tarballs, `BUILD/` dirs and dangling links. An arch whose signed manifest cannot be verified is skipped entirely. |
 | `--keep-builds N` | `2` | With `--retain`: build manifests to keep per architecture. |

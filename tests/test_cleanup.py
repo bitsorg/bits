@@ -23,7 +23,9 @@ from argparse import Namespace
 from unittest.mock import MagicMock, call, patch
 
 from bits_helpers.cleanup import (
+    _list_all_sentinels,
     _list_sentinels,
+    _pressure_order,
     _try_evict,
     acquire_build_lock,
     doCleanup,
@@ -375,6 +377,74 @@ class DoCleanupDiskPressureTest(unittest.TestCase):
         spath = sentinel_path(self.tmpdir, ARCH, "ancient", "1.0-1")
         self.assertTrue(os.path.exists(spath),
                         "age-based eviction should not run in disk-pressure-only mode")
+
+
+class AllArchitecturesTest(unittest.TestCase):
+    """--all-architectures: one list, oldest day first, biggest first within it,
+    nothing used in the last --keep-recent days."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+        day = 86400
+        self.t30 = (time.time() // day - 30) * day + 3600     # one day, 30 days ago
+        self._make("x86_64-ubuntu2604-gcc15-dbg", "Rec", time.time() - day, 5000)
+        self._make("slc8_x86-64", "small", self.t30, 1)
+        self._make("x86_64-el9", "big", self.t30, 900)
+        self._make("slc8_x86-64", "mid", time.time() - 10 * day, 50)
+
+    def _make(self, arch, package, mtime, size):
+        touch_sentinel(self.tmpdir, arch, package, "1-1")
+        spath = sentinel_path(self.tmpdir, arch, package, "1-1")
+        with open(spath, "w") as fh:
+            fh.write("%d\n" % size)
+        os.utime(spath, (mtime, mtime))
+        os.makedirs(os.path.join(self.tmpdir, arch, package, "1-1"), exist_ok=True)
+
+    def _left(self):
+        return sorted(e.sentinel_path.split("/.packages/")[1] for e in _list_all_sentinels(self.tmpdir))
+
+    def _args(self, keep_recent=2.0, dry_run=False):
+        return Namespace(workDir=self.tmpdir, architecture="x86_64-el9", maxAgeDays=None,
+                         minFreeGb=50, dryRun=dry_run, diskPressureOnly=True,
+                         allArchitectures=True, keepRecentDays=keep_recent)
+
+    def test_the_order(self):
+        got = [e.sentinel_path.split("/.packages/")[1]
+               for e in _pressure_order(_list_all_sentinels(self.tmpdir), 2.0)]
+        self.assertEqual(got, ["x86_64-el9/big/1-1", "slc8_x86-64/small/1-1", "slc8_x86-64/mid/1-1"])
+
+    def test_it_stops_at_the_target(self):
+        with patch("bits_helpers.cleanup._free_bytes", side_effect=[0, 0, 60 * 1024**3]):
+            doCleanup(self._args(), parser=None)
+        self.assertEqual(self._left(), ["slc8_x86-64/mid/1-1", "slc8_x86-64/small/1-1",
+                                        "x86_64-ubuntu2604-gcc15-dbg/Rec/1-1"])
+
+    def test_recent_packages_stay_and_it_says_so(self):
+        with patch("bits_helpers.cleanup._free_bytes", return_value=0), \
+             patch("bits_helpers.cleanup.warning") as warn:
+            doCleanup(self._args(), parser=None)
+        self.assertEqual(self._left(), ["x86_64-ubuntu2604-gcc15-dbg/Rec/1-1"])
+        self.assertIn("--keep-recent", warn.call_args[0][0])
+
+    def test_keep_recent_zero(self):
+        with patch("bits_helpers.cleanup._free_bytes", return_value=0):
+            doCleanup(self._args(keep_recent=0), parser=None)
+        self.assertEqual(self._left(), [])
+
+    def test_a_held_package_stays(self):
+        fh = acquire_build_lock(self.tmpdir, "x86_64-el9", "big", "1-1")
+        self.addCleanup(fh.close)
+        with patch("bits_helpers.cleanup._free_bytes", return_value=0):
+            doCleanup(self._args(keep_recent=0), parser=None)
+        self.assertEqual(self._left(), ["x86_64-el9/big/1-1"])
+
+    def test_dry_run(self):
+        with patch("bits_helpers.cleanup._free_bytes", return_value=0), \
+             patch("bits_helpers.cleanup.warning") as warn:
+            doCleanup(self._args(dry_run=True), parser=None)
+        self.assertEqual(len(self._left()), 4)
+        warn.assert_not_called()
 
 
 class AcquireBuildLockTest(unittest.TestCase):

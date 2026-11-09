@@ -616,7 +616,9 @@ bits prune [options]
 | `-w DIR`, `--work-dir DIR` | `$BITS_WORK_DIR` (or `$ALICE_WORK_DIR`), else `sw` | workDir to manage. |
 | `-a ARCH`, `--architecture ARCH` | auto-detected | Architecture to evict packages for. |
 | `--max-age DAYS` | `7.0` | Evict packages whose sentinel has not been touched in more than `DAYS` days. Set to `0` to disable age-based eviction. |
-| `--min-free GIB` | _(none)_ | Evict the least-recently-used packages until at least `GiB` GiB of free disk space is available. |
+| `--min-free GIB` | _(none)_ | Evict packages until at least `GiB` GiB of free disk space is available: the day last used longest ago first, the biggest first within a day. |
+| `--all-architectures` | — | Evict from every architecture under `.packages`, as one list (instead of `-a`'s). A host building for several platforms, `--docker` ones included, needs it: their packages are not under the host's own architecture. |
+| `--keep-recent DAYS` | `2.0` | Disk pressure never evicts a package used in the last `DAYS` days; it stops short of `--min-free` instead, with a warning. `0` for none. |
 | `--disk-pressure-only` | — | Run only the disk-pressure eviction pass; skip age-based eviction. |
 | `--retain` | — | Manifest-rooted sweep over all architectures: keep the packages of the newest `--keep-builds N` (default 2) build manifests and anything certified but not yet on CVMFS; evict what is safely upstream (stored, in the verified signed manifest and published to CVMFS). Signed manifests come from `--remote-store` and/or `--trust-manifest`; an architecture whose manifest cannot be verified is skipped. |
 | `--grace-days DAYS` | `1.0` | With `--retain`: never evict anything modified more recently than DAYS days ago. |
@@ -627,8 +629,8 @@ bits prune [options]
 **Typical usage patterns:**
 
 ```bash
-# Pre-build: free space if below 50 GiB, evicting LRU packages first
-bits prune --min-free 50 --disk-pressure-only || true
+# Pre-build: free space if below 200 GiB, the packages of every platform used longest ago first
+bits prune --all-architectures --min-free 200 --disk-pressure-only || true
 
 # Nightly cron: evict packages not used in 7 days
 bits prune --max-age 7
