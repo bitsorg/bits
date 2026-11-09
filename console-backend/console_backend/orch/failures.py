@@ -70,6 +70,34 @@ _SECRETS = [
 ]
 
 
+_PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+
+
+def redacted_tail(raw, cut=False):
+    """A log's tail as lines, cleaned and redacted as a whole (a secret across a
+    line break is still found), without a private key the tail cut in two: its end
+    at the start, or from its start at the end. *cut*: the tail began mid-line, whose
+    rest (perhaps a secret without its name) is left out."""
+    raw = raw or b""
+    if cut:
+        raw = raw[raw.find(b"\n") + 1:] if b"\n" in raw else b""
+    lines = redact("\n".join(clean(raw))).split("\n")
+    for i, ln in enumerate(lines):
+        if _PEM_BEGIN.search(ln):
+            break
+        if _PEM_END.search(ln):
+            lines = lines[i + 1:]
+            break
+    for i in range(len(lines) - 1, -1, -1):
+        if _PEM_END.search(lines[i]):
+            break
+        if _PEM_BEGIN.search(lines[i]):
+            lines = lines[:i] + ["[a private key, left out]"]
+            break
+    return lines
+
+
 def redact(text):
     """The text with credentials replaced: tokens of the known forms, auth
     headers, URL user:password, key=value secrets, private keys."""

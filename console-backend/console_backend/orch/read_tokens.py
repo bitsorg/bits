@@ -24,6 +24,7 @@ USED_EVERY_MS = 60 * 1000    # last_used_ms is written at most this often
 ROUTES = frozenset((
     "/ops/failures",
     "/ops/builds/{pipeline}",
+    "/ops/builds/{pipeline}/jobs/{job_id}/log",
     "/ops/chat/gaps",
     "/ops/chat/feedback",
 ))

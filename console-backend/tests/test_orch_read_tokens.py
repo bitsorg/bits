@@ -15,7 +15,7 @@ from test_orch_failures import _DB, bits_failure
 KEY = "k" * 40
 
 
-class ReadTokenTest(_DB):
+class _Tokens(_DB):
     ENV = {"GITLAB_API_URL": "https://gl/api/v4", "BITS_ADMINS_POLICY": "lcg @alice\n* @carol",
            "BITS_FORGE_PROJECT": "42", "BITS_READ_TOKEN_KEY": KEY}
 
@@ -37,6 +37,9 @@ class ReadTokenTest(_DB):
 
     def _get(self, token, path):
         return self.client.get(path, headers={"Authorization": ("Bearer %s" % token).encode("latin-1")})
+
+
+class ReadTokenTest(_Tokens):
 
     def _pipelines(self, token, query=""):
         r = self._get(token, "/ops/failures" + query)
@@ -110,6 +113,76 @@ class ReadTokenTest(_DB):
         self.assertEqual(used(), 0)
         self._get(token, "/ops/failures")
         self.assertGreater(used(), 0)
+
+
+class JobLogTest(_Tokens):
+    """GET /ops/builds/{pipeline}/jobs/{job}/log: a job's log or bits log, redacted,
+    for the build's community's admins and read tokens of it."""
+
+    def setUp(self):
+        super().setUp()
+        self.gl.artifacts[10] = "bits: building arrow\npassword=hunter2 token: abc123\n"
+        p = patch("console_backend.orch.kinds.Deps.reader", lambda deps: self.gl)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_for_the_communitys_admins(self):
+        r = self._get("alice", "/ops/builds/1/jobs/10/log")
+        self.assertEqual((r.status_code, r.headers["content-type"]), (200, "text/plain; charset=utf-8"))
+        self.assertIn("BUILD FAILED", r.text)
+        self.assertNotIn("hunter2", r.text)
+        self.assertEqual(self._get("carol", "/ops/builds/2/jobs/20/log").status_code, 200)
+        self.assertEqual(self._get("alice", "/ops/builds/2/jobs/20/log").status_code, 403)
+        self.assertEqual(self._get("dave", "/ops/builds/1/jobs/10/log").status_code, 403)
+
+    def test_the_bits_logs_and_what_is_not_there(self):
+        r = self._get("carol", "/ops/builds/1/jobs/10/log?file=bits-build.log")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("building arrow", r.text)
+        self.assertNotIn("hunter2", r.text)
+        self.assertNotIn("abc123", r.text)
+        self.assertEqual(self._get("carol", "/ops/builds/2/jobs/20/log?file=bits-publish.log").status_code, 404)
+        self.assertEqual(self._get("carol", "/ops/builds/1/jobs/10/log?file=../etc").status_code, 400)
+        self.assertEqual(self._get("carol", "/ops/builds/1/jobs/20/log").status_code, 404)   # not its job
+        self.assertEqual(self._get("carol", "/ops/builds/99/jobs/10/log").status_code, 404)
+
+    def test_how_much_is_read(self):
+        asked = []
+        real = self.gl.job_log_tail
+        self.gl.job_log_tail = lambda job, n: asked.append(n) or real(job, n)
+        for n in (10, 10 ** 9, ""):
+            self._get("carol", "/ops/builds/1/jobs/10/log" + ("?bytes=%s" % n if n != "" else ""))
+        self.assertEqual(asked, [1024, 4 << 20, 1 << 20])
+
+    def test_a_gitlab_error_is_said(self):
+        def broken(job, n):
+            raise RuntimeError("GitLab is down: https://oauth2:glpat-abcdefghij0123456789@gl/x")
+        self.gl.job_log_tail = broken
+        r = self._get("carol", "/ops/builds/1/jobs/10/log")
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("GitLab is down", r.text)
+        self.assertNotIn("glpat-abcdefghij0123456789", r.text)
+
+    def test_a_secret_the_tail_cut_from_its_name_is_left_out(self):
+        log = "x" * 2000 + "\npassword=hunter2hunter2\n" + "y" * 1500 + "\nthe end\n"
+        self.gl.job_log_tail = lambda job, n: log.encode()[-n:]
+        r = self._get("carol", "/ops/builds/1/jobs/10/log?bytes=%d" % (len(log) - log.index("hunter2")))
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("the end", r.text)
+        self.assertNotIn("hunter2", r.text)
+        whole = self._get("carol", "/ops/builds/1/jobs/10/log?bytes=4096")
+        self.assertIn("xxx", whole.text)                  # not cut: the first line is kept
+
+    def test_a_read_token_reads_its_communitys_logs_and_it_is_recorded(self):
+        token = self._mint(["lcg"])
+        self.assertEqual(self._get(token, "/ops/builds/1/jobs/10/log?file=bits-build.log").status_code, 200)
+        self.assertEqual(self._get(token, "/ops/builds/2/jobs/20/log").status_code, 404)
+        rows = self.conn.execute("SELECT subject, actor_kind, actor_id, payload FROM events"
+                                 " WHERE kind = 'log.read'").fetchall()
+        self.assertEqual(len(rows), 1)
+        subject, kind, who, payload = rows[0]
+        self.assertEqual((subject, kind, who, json.loads(payload)["file"]),
+                         ("pipeline:1", "person", "read-token:claude", "bits-build.log"))
 
 
 if __name__ == "__main__":

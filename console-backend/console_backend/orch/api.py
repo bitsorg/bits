@@ -513,6 +513,63 @@ async def get_build(pipeline: int, request: Request):
     return JSONResponse(b, headers={"Cache-Control": "no-store"})
 
 
+LOG_FILES = ("trace", "bits-build.log", "bits-publish.log")
+LOG_BYTES, LOG_BYTES_MAX = 1 << 20, 4 << 20
+
+
+@router.get("/ops/builds/{pipeline}/jobs/{job_id}/log")
+async def get_job_log(pipeline: int, job_id: int, request: Request, file: str = "trace",
+                      size: int = Query(LOG_BYTES, alias="bytes")):
+    """The end of one of the build's jobs' log, or of a bits log it kept
+    (bits-build.log, bits-publish.log), cleaned and redacted, as text: for the
+    admins of the build's community (a read token: of its communities)."""
+    data = await _caller(request)
+    if file not in LOG_FILES:
+        raise HTTPException(400, "file is one of %s" % ", ".join(LOG_FILES))
+    size = max(1024, min(int(size), LOG_BYTES_MAX))
+    mine = await _scope(data)
+
+    def build():
+        with _open() as conn:
+            return reconcile.get_build(conn, pipeline)
+    b = await run_in_threadpool(build)
+    if b is None:
+        raise HTTPException(404, "no such build")
+    if not (mine is None or str(b["community"]).lower() in mine):
+        if data.get("read_token"):
+            raise HTTPException(404, "no such build")
+        raise HTTPException(403, "a build's logs are for its community's admins")
+    if not any(str(j.get("id")) == str(job_id) for j in b.get("jobs") or ()):
+        raise HTTPException(404, "no such job in pipeline %d" % pipeline)
+
+    def read():
+        reader = kinds.Deps(_m().settings).reader()
+        if file == "trace":
+            return reader.job_log_tail(job_id, size)
+        return reader.job_artifact_tail(job_id, file, size)
+    try:
+        raw = await run_in_threadpool(read)
+    except kinds.NotConfigured as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:                  # GitLab: say so, not a 500
+        said = failures.redact(str(e))[:200]
+        log.warning("log of job %d: %s", job_id, said)
+        raise HTTPException(502, "GitLab did not give the log: %s" % said)
+    if raw is None:
+        raise HTTPException(404, "job %d has no %s" % (job_id, "log" if file == "trace" else file))
+    if data.get("read_token"):
+
+        def record():
+            with _open() as conn, db.transaction(conn):
+                events.append(conn, "log.read", "pipeline:%d" % pipeline,
+                              events.Actor("person", data["user"]),
+                              {"job": job_id, "file": file, "jti": data["read_token"]["jti"]})
+        await run_in_threadpool(record)
+    lines = failures.redacted_tail(raw, cut=len(raw) >= size)
+    return Response("\n".join(lines) + "\n",
+                    media_type="text/plain; charset=utf-8", headers={"Cache-Control": "no-store"})
+
+
 @router.get("/ops/trace")
 async def trace_path(request: Request, repo: str = "", path: str = "", build_id: str = ""):
     """Who built and who approved what is at *path* (repo-relative) on CVMFS, and

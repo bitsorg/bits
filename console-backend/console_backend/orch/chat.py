@@ -171,27 +171,11 @@ def what_changed(conn, b, admin):
                      ["nothing recorded changed since then (the recipes or sources may have)"])
 
 
-_PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
-_PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
-
-
 def _tail(raw, drop_runner=True):
     """The last LOG_LINES lines of a log's tail, cleaned and redacted as a whole
     before it is cut (a secret across the cut is still found), without the runner's
     own lines, and without the end of a key whose start the tail cut off."""
-    lines = failures.redact("\n".join(failures.clean(raw or b""))).split("\n")
-    for i, ln in enumerate(lines):
-        if _PEM_BEGIN.search(ln):
-            break
-        if _PEM_END.search(ln):
-            lines = lines[i + 1:]
-            break
-    for i in range(len(lines) - 1, -1, -1):  # a key whose end the tail has not: from it on
-        if _PEM_END.search(lines[i]):
-            break
-        if _PEM_BEGIN.search(lines[i]):
-            lines = lines[:i] + ["[a private key, left out]"]
-            break
+    lines = failures.redacted_tail(raw)
     lines = [ln for ln in lines if ln.strip() and not (drop_runner and failures._RUNNER.match(ln))]
     return "\n".join(lines[-LOG_LINES:])
 
