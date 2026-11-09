@@ -701,6 +701,21 @@ MIGRATIONS = [
         )""",
         "CREATE INDEX chat_gaps_created ON chat_gaps (created_ms)",
     ],
+    # 29: read tokens (read_tokens.py): a token is good only while its row is here,
+    # unrevoked and unexpired.
+    [
+        """CREATE TABLE read_tokens (
+            jti          TEXT PRIMARY KEY,
+            sub          TEXT NOT NULL,
+            communities  TEXT NOT NULL,
+            exp_ms       INTEGER NOT NULL,
+            issued_by    TEXT NOT NULL,
+            created_ms   INTEGER NOT NULL,
+            last_used_ms INTEGER NOT NULL DEFAULT 0,
+            revoked_ms   INTEGER NOT NULL DEFAULT 0,
+            revoked_by   TEXT NOT NULL DEFAULT ''
+        )""",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

@@ -121,6 +121,9 @@ class Settings:
         # migrates and owns it) and this API (requests, approvals). Empty = the
         # /ops/actions and /ops/events endpoints answer 503.
         self.orch_db = e.get("BITS_ORCH_DB", "")
+        # The key read tokens are signed with (orch/read_tokens.py); unset or shorter
+        # than 32 characters: no read token is accepted.
+        self.read_token_key = e.get("BITS_READ_TOKEN_KEY", "")
         self.orch_interval = float(e.get("BITS_ORCH_INTERVAL", "30") or "30")
         # How often (s) the worker reads the heads of the branches schedules follow (30 at least).
         self.orch_watch_s = max(30.0, float(e.get("BITS_ORCH_WATCH_S", "120") or "120"))

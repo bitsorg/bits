@@ -353,6 +353,17 @@ is on and whether Ollama has the model. `chat-eval/run.py` measures the search o
 with `--model` (and `--judge`, `--judge-model` for another model to check them), the answers;
 in the service's container it searches the docs index of `$BITS_ORCH_DB`, without the FAQ.
 
+**Read tokens** (`orch/read_tokens.py`): what a script or an agent reads the orchestrator
+with instead of a GitLab token, `bitsread.v1.<payload>.<signature>`, signed (HMAC-SHA256) with
+`BITS_READ_TOKEN_KEY` (32 characters at least, e.g. `openssl rand -hex 32`; unset, no token is
+accepted; a new key voids every token). A token is good while its row in `read_tokens`
+(migration 29) is unrevoked and unexpired (90 days at most). It reads only by GET, only
+`/ops/failures`, `/ops/builds/{pipeline}`, `/ops/chat/gaps` and `/ops/chat/feedback`, and only
+its communities: a community's token reads that community's failures and builds (403 for
+another), a token for `*` every community and the chat's records, as an overall admin.
+Everything else answers 403; the console's other routes do not take it, and it is never
+sent to GitLab.
+
 **Nightly schedules** (`orch/schedules.py`, ADR bits 0007): a schedule builds
 one package at one version, with one defaults chain and recipe repositories, on
 several platforms, on given weekdays at a time of the bits instance's time zone

@@ -26,6 +26,7 @@ from fastapi.responses import RedirectResponse
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
 from .orch import approvals as orch_approvals
+from .orch import read_tokens as orch_read_tokens
 
 try:  # bits_helpers is provided by the surrounding bits repo (on PYTHONPATH).
     from bits_helpers import trust
@@ -588,8 +589,8 @@ def _current(request: Request):
     if not auth.startswith("Bearer "):
         return None
     token = auth[len("Bearer "):].strip()
-    if not token:
-        return None
+    if not token or token.startswith(orch_read_tokens.PREFIX):
+        return None                       # a read token is the orchestrator's, never GitLab's
     # Phase 2: a backend session bearer takes precedence — identity + e-groups come
     # from it, and no GitLab token is involved. `token` is None so callers know there
     # is no GitLab credential to act with (authz uses the session's groups: P2.2).

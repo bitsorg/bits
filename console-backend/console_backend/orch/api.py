@@ -105,8 +105,9 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, hosts, kinds, outside, phases, reconcile, sbom_history, sbom_licences, sbom_plan,
-               nightlies, sbom_scan, schedules, shadow, trace, vuln_triage, watches)
+               failures, hosts, kinds, nightlies, outside, phases, read_tokens, reconcile,
+               sbom_history, sbom_licences, sbom_plan, sbom_scan, schedules, shadow, trace,
+               vuln_triage, watches)
 
 log = logging.getLogger("bits_orchestrator.api")
 router = APIRouter()
@@ -133,7 +134,26 @@ def _open():
         conn.close()
 
 
+def _read_token_caller(request, token):
+    """The caller of a read token: only GET of its ROUTES, only its communities."""
+    with _open() as conn:
+        got = read_tokens.verify(conn, _m().settings, token)
+    if not got:
+        raise HTTPException(401, "not authenticated")
+    route = getattr(request.scope.get("route"), "path", "")
+    if request.method != "GET" or route not in read_tokens.ROUTES:
+        raise HTTPException(403, "a read token reads only %s" % ", ".join(sorted(read_tokens.ROUTES)))
+    asked = request.query_params.get("community", "").strip().lower()
+    if asked and got["communities"] is not None and asked not in got["communities"]:
+        raise HTTPException(403, "this read token is not for %s" % asked)
+    return {"user": "read-token:%s" % got["sub"], "token": None, "read_token": got}
+
+
 async def _caller(request):
+    auth = request.headers.get("authorization", "")
+    bearer = auth[len("Bearer "):].strip() if auth.startswith("Bearer ") else ""
+    if bearer.startswith(read_tokens.PREFIX):
+        return await run_in_threadpool(_read_token_caller, request, bearer)
     data = await _m()._current_async(request)
     if not data:
         raise HTTPException(401, "not authenticated")
@@ -384,7 +404,10 @@ async def outside_status(request: Request):
 
 async def _scope(data):
     """None for an overall admin (every community), else the communities the
-    caller administers (lowercase)."""
+    caller administers (lowercase); for a read token, its communities."""
+    if data.get("read_token"):
+        mine = data["read_token"]["communities"]
+        return None if mine is None else set(mine)
     overall, groups = await run_in_threadpool(lambda: authz.admin_groups(data["user"], _policy(data)))
     return None if overall else {g.lower() for g in groups}
 
@@ -477,6 +500,8 @@ async def get_build(pipeline: int, request: Request):
             if b is None:
                 return None
             admin = mine is None or str(b["community"]).lower() in mine
+            if not admin and data.get("read_token"):
+                return None                   # a read token reads its communities only
             if not admin:
                 b.pop("variables", None)
                 b.pop("events", None)
