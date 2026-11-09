@@ -885,6 +885,16 @@ Use `bits certify`: it uploads what the store is missing, gets a passkey approva
 
 See: [bits certify / bits sign](REFERENCE.md#bits-certify--bits-sign), [bits publish](REFERENCE.md#bits-publish).
 
+### How do I sign a build from the command line (CLI)?
+
+Run `bits certify` where the build was made (`bits sign` is the manifests CI's step, not a user command). It needs the store's write keys (`~/.bits/s3keys`), the group (`--group` or `system: certify_group:`), the bits-console URL (`https://bits.cern.ch` at CERN; `--console-cafile` if the host does not trust its CA), and a passkey enrolled on bits-console's Signing tab whose owner is an admin of the group. bits prints a code, a QR code and a link; open the link on your phone, check the code, and approve with the passkey within 10 minutes. Where bits-orchestrator owns the store's certified set it then signs the build (see the Certifications tab); otherwise bits opens the certification merge request, which needs a GitLab token in `~/.bits/gitlab-token`.
+
+```bash
+bits certify --group lhcb
+```
+
+See: [Sign a build from the command line: prerequisites](USERGUIDE.md#sign-a-build-from-the-command-line-cli-prerequisites) and [procedure](USERGUIDE.md#sign-a-build-from-the-command-line-cli-procedure).
+
 ## CVMFS
 
 ### Should I use bits publish or bits cvmfs publish?

@@ -676,10 +676,47 @@ Pass the same `--set` / `--day` values as the build so `{release}` and `{day}` r
 ### Make a build trusted: `bits certify` vs `bits sign`
 
 ```bash
-bits certify            # latest build: upload what is missing, approve with a passkey, open the MR
+bits certify            # latest build: upload what is missing, approve with a passkey, certify
 ```
 
-`bits certify` is what a user runs: it uploads anything still missing from the store, asks bits-console for a passkey approval (scan the QR code, compare the code, approve on your phone) and then opens the certification merge request in the manifests repository. Where bits-orchestrator owns the store's certified set (`MANIFESTS/orchestrator.json` in the store), it stops after the approval: the orchestrator certifies the build as soon as it is in the store, and `bits sign` refuses that store. `bits sign` — the command formerly called `certify` — is run by the manifests-repo CI to merge the approved build manifests into the signed common manifest. Group, manifests repo and console URL default from the defaults' `system:` block. See [REFERENCE.md — Publishing and certifying a build](REFERENCE.md#publishing-and-certifying-a-build--bits-publish-bits-certify) and [Signing — bits sign](REFERENCE.md#signing--bits-sign).
+`bits certify` is what a user runs to sign (certify) a build, so that other builds reuse its binaries. `bits sign`, the command formerly called `certify`, is run by the manifests-repo CI to merge the approved build manifests into the signed common manifest; it is not a user command. See [REFERENCE.md — Publishing and certifying a build](REFERENCE.md#publishing-and-certifying-a-build--bits-publish-bits-certify) and [Signing — bits sign](REFERENCE.md#signing--bits-sign).
+
+#### Sign a build from the command line (CLI): prerequisites
+
+Run `bits certify` where the build was made. It needs:
+
+| What | Where it comes from |
+|---|---|
+| The build | A finished `bits build`: `bits certify` takes the newest build manifest under `<work dir>/MANIFESTS/` (`-w DIR` for another work directory, `--manifest FILE` for another manifest). |
+| Write keys for the store | `~/.bits/s3keys` (chmod 600) or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, for the store given by `--remote-store`, else `$BITS_S3_STORE`, else the site's default store. |
+| The group | `--group GROUP`, or `system: certify_group:` in the defaults. |
+| bits-console | `--console URL`, else `$BITS_CONSOLE_URL`, `system: console_url:`, then the site's (`https://bits.cern.ch` at CERN). When the host's Python does not trust the console's CA (the CERN CA, outside CERN machines), add `--console-cafile PEM`. |
+| A passkey | Enrolled on bits-console's **Signing** tab (**Enrol / add a passkey**), on a phone or any device that can open a link. Your first passkey needs an enrolment grant from a bits admin; another one needs step-up with an existing passkey. |
+| An approver | The passkey's owner must be an admin of the group in bits-console: you, or another admin of the group. |
+| Only when an MR is opened | Where bits-orchestrator does not own the store's certified set: a GitLab token that may open merge requests in the manifests repository (`~/.bits/gitlab-token`, chmod 600, `$BITS_CERTIFIER_TOKEN` or `--gitlab-token`) and the repository (`--manifests-remote` or `system: manifests_remote:`). |
+
+bits checks the group, the console URL and (for an MR) the token before it asks for an approval, and stops naming what is missing.
+
+#### Sign a build from the command line (CLI): procedure
+
+```bash
+bits certify --group lhcb      # or `bits certify` when the defaults set certify_group
+```
+
+1. bits uploads whatever the store does not have yet (harmless after `bits publish`).
+2. It prints the build, the group and the number of packages, a six-character code to compare, a QR code and the approve link, then waits (`Waiting for approval (Ctrl-C to cancel)`).
+3. Open the link (or scan the QR code) on the device with your passkey. Check that the code on the page is the one in the terminal and that the packages are those you built, then approve with the passkey. Approve within 10 minutes; after that the request expires and `bits certify` must be run again.
+4. The terminal prints `pre-approved by <user>`, and then:
+   - where bits-orchestrator owns the store's certified set (the store has `MANIFESTS/orchestrator.json`), `Build … is pre-approved: … certifies it into … (no merge request)`. The orchestrator signs the build as soon as it is in the store; follow it on bits-console's **Certifications** tab. No GitLab token or manifests repository is needed.
+   - otherwise, `Certification MR opened on …` with its link. The manifests CI checks the approval and the MR author, and signs the build (`bits sign`) once the MR is merged.
+
+When it stops:
+
+- The approve page says `… is not a community admin for: GROUP` and the terminal `pre-approval was refused`: the passkey's owner is not an admin of the group; run `bits certify` again and approve with the passkey of an admin of the group.
+- `timed out waiting for pre-approval` or `the pre-approval request expired or is unknown`: nothing was certified; run `bits certify` again.
+- `build … is already pre-approved — continuing`: the build was approved before (in bits-console or by an earlier run); bits goes on.
+- A certificate error when bits reaches the console: pass `--console-cafile` with the console's CA.
+- `WebAuthn is not configured`: the console cannot take passkey approvals; ask its administrators.
 
 ### Export an SBOM
 
