@@ -281,10 +281,12 @@ def _newest_mtime(path: str, depth: int = 2) -> Optional[float]:
     return newest
 
 
-def _leftovers(work_dir: str, keep_recent_days: float, now: Optional[float] = None):
+def _leftovers(work_dir: str, keep_recent_days: float, now: Optional[float] = None,
+               assume_stored: bool = False):
     """[(last written, path)], oldest first: the BUILD/<hash> and INSTALLROOT/<hash>
-    a failed build kept and the tmp/ entries of jobs, none written in *keep_recent_days*
-    (a build's activity is its BUILD/<hash>/log)."""
+    a failed build kept, the tmp/ entries of jobs and the TARS/<arch>/store/<h2>/<hash>
+    of no installed package, none written in *keep_recent_days* (a build's activity is
+    its BUILD/<hash>/log)."""
     root = abspath(work_dir)
     cutoff = (now or time.time()) - keep_recent_days * 86400
     out = []
@@ -309,15 +311,32 @@ def _leftovers(work_dir: str, keep_recent_days: float, now: Optional[float] = No
                 t = max(t or 0.0, os.path.getmtime(log))
             if t is not None and t < cutoff:
                 out.append((t, path))
+    installed = None
+    for path in glob.glob(join(root, "TARS", "*", "store", "*", "*")):
+        name = basename(path)
+        if os.path.islink(path) or not os.path.isdir(path):
+            continue
+        if _DOOMED.fullmatch(name):
+            out.append((0.0, path))
+            continue
+        if not _HASH.fullmatch(name):
+            continue
+        if installed is None:
+            installed = _installed_hashes(root)
+        t = _newest_mtime(path)
+        if name not in installed and t is not None and t < cutoff and _stored(path, assume_stored):
+            out.append((t, path))               # a stored tarball whose package is not installed
     return sorted(out)
 
 
-def _remove_leftovers(work_dir: str, keep_recent_days: float, dry_run: bool) -> int:
+def _remove_leftovers(work_dir: str, keep_recent_days: float, dry_run: bool,
+                      assume_stored: bool = False) -> int:
     """Remove _leftovers(), never one written in the last LEFTOVER_MIN_DAYS. Each is
     renamed first, then checked again: one a build began on since is put back."""
     root = os.path.realpath(work_dir)
     removed = 0
-    for t, path in _leftovers(root, max(keep_recent_days, LEFTOVER_MIN_DAYS)):
+    for t, path in _leftovers(root, max(keep_recent_days, LEFTOVER_MIN_DAYS),
+                              assume_stored=assume_stored):
         what = os.path.relpath(path, root)
         days = (time.time() - t) / 86400 if t else 0
         if dry_run:
@@ -340,12 +359,8 @@ def _remove_leftovers(work_dir: str, keep_recent_days: float, dry_run: bool) -> 
         shutil.rmtree(doomed, ignore_errors=True)
         removed += 1
     if not dry_run:
-        for link in glob.glob(join(root, "BUILD", "*-latest*")):
-            if os.path.islink(link) and not exists(link):
-                try:
-                    os.unlink(link)
-                except OSError:
-                    pass
+        _unlink_dangling(join(root, "BUILD", "*-latest*"))
+        _unlink_dangling(join(root, "TARS", "*", "*", "*"))
     return removed
 
 
@@ -353,13 +368,75 @@ def _remove_leftovers(work_dir: str, keep_recent_days: float, dry_run: bool) -> 
 # Eviction
 # ---------------------------------------------------------------------------
 
+def _work_dir_of(entry: _SentinelEntry) -> str:
+    """WORK of WORK/.packages/<arch>/<pkg>/<ver>."""
+    return dirname(dirname(dirname(dirname(entry.sentinel_path))))
+
+
+IN_STORE = ".in-store"       # in a TARS/<arch>/store/<h2>/<hash>/: the write store has it
+
+
+def mark_in_store(work_dir: str, architecture: str, spec_hash: str) -> None:
+    """After an upload to the write store (or its finding the tarball there)."""
+    d = join(abspath(work_dir), "TARS", architecture, "store", spec_hash[:2], spec_hash)
+    if os.path.isdir(d):
+        try:
+            with open(join(d, IN_STORE), "w"):
+                pass
+        except OSError:
+            pass
+
+
+def _stored(d: str, assume_stored: bool) -> bool:
+    return assume_stored or exists(join(d, IN_STORE))
+
+
+def _package_tarballs(entry: _SentinelEntry, assume_stored: bool = False) -> List[str]:
+    """TARS/<arch>/store/<h2>/<hash> of the installed package (its .build-hash) that
+    the store has: one only here is kept."""
+    try:
+        with open(join(entry.pkg_dir, ".build-hash")) as fh:
+            h = fh.read().split()[0]
+    except (OSError, IndexError):
+        return []
+    if not _HASH.fullmatch(h):
+        return []
+    return [d for d in glob.glob(join(_work_dir_of(entry), "TARS", "*", "store", h[:2], h))
+            if os.path.isdir(d) and not os.path.islink(d) and _stored(d, assume_stored)]
+
+
+def _unlink_dangling(pattern: str) -> None:
+    for link in glob.glob(pattern):
+        if os.path.islink(link) and not exists(link):
+            try:
+                os.unlink(link)
+            except OSError:
+                pass
+
+
+def _installed_hashes(root: str) -> set:
+    """The .build-hash of every install tree in the work dir."""
+    got = set()
+    for arch in _on_disk_arches(root):
+        archdir = join(root, arch)
+        if not os.path.isdir(archdir):
+            continue
+        for d in _iter_install_dirs(archdir):
+            try:
+                with open(join(d, ".build-hash")) as fh:
+                    got.update(fh.read().split()[:1])
+            except OSError:
+                pass
+    return got
+
+
 def _free_bytes(path: str) -> int:
     """Return available bytes on the filesystem containing *path*."""
     st = os.statvfs(path)
     return st.f_frsize * st.f_bavail
 
 
-def _try_evict(entry: _SentinelEntry, dry_run: bool) -> Optional[int]:
+def _try_evict(entry: _SentinelEntry, dry_run: bool, assume_stored: bool = False) -> Optional[int]:
     """Attempt to evict a single package.
 
     Tries an exclusive non-blocking flock on the sentinel.  Returns the number
@@ -382,7 +459,8 @@ def _try_evict(entry: _SentinelEntry, dry_run: bool) -> Optional[int]:
         pkg_name = basename(dirname(entry.sentinel_path))
         pkg_ver  = basename(entry.sentinel_path)
         age_days = (time.time() - entry.mtime) / 86400
-        size_bytes = _resolve_size(entry)
+        tars = _package_tarballs(entry, assume_stored)
+        size_bytes = _resolve_size(entry) + sum(_du(t) for t in tars)
         size_mib = size_bytes / 1e6
         if dry_run:
             info("dry-run: would evict %s/%s/%s  (%.1f MiB, %.0f days old)",
@@ -395,6 +473,10 @@ def _try_evict(entry: _SentinelEntry, dry_run: bool) -> Optional[int]:
              size_mib, age_days)
         if exists(entry.pkg_dir):
             shutil.rmtree(entry.pkg_dir, ignore_errors=True)
+        for t in tars:                       # the store has it; the local copy goes too
+            shutil.rmtree(t, ignore_errors=True)
+        if tars:
+            _unlink_dangling(join(_work_dir_of(entry), "TARS", "*", pkg_name, "*"))
         # Remove sentinel; ignore errors (e.g. raced with another cleanup).
         try:
             os.unlink(entry.sentinel_path)
@@ -824,9 +906,10 @@ def doCleanup(args, parser):
 
     all_archs = getattr(args, "allArchitectures", False)
     keep_recent = max(0.0, getattr(args, "keepRecentDays", 2.0) or 0.0)
+    assume_stored = getattr(args, "assumeStored", False)
     if getattr(args, "leftovers", False):
         before = _free_bytes(work_dir)
-        n = _remove_leftovers(work_dir, keep_recent, dry_run)
+        n = _remove_leftovers(work_dir, keep_recent, dry_run, assume_stored)
         info("Leftovers of failed builds and jobs: %d %s, %.1f GiB freed", n,
              "would be removed (dry-run)" if dry_run else "removed",
              (_free_bytes(work_dir) - before) / 1024 ** 3)
@@ -850,7 +933,7 @@ def doCleanup(args, parser):
                 free = _free_bytes(work_dir)
                 if free >= threshold:
                     break
-                freed_bytes = _try_evict(entry, dry_run)
+                freed_bytes = _try_evict(entry, dry_run, assume_stored)
                 if freed_bytes is not None:
                     evicted += 1
                     freed += freed_bytes
@@ -871,7 +954,7 @@ def doCleanup(args, parser):
         for entry in list(entries):
             if entry.mtime >= cutoff:
                 break   # list is sorted oldest-first; nothing older follows
-            freed_bytes = _try_evict(entry, dry_run)
+            freed_bytes = _try_evict(entry, dry_run, assume_stored)
             if freed_bytes is not None:
                 evicted += 1
                 freed += freed_bytes

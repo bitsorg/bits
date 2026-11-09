@@ -375,6 +375,10 @@ def add_prune_arguments(subparsers, ctx):
                                     "INSTALLROOT/<hash> whose build has not run, and tmp/ entries not "
                                     "written, in --keep-recent days (1 at least). Installed packages "
                                     "are untouched."))
+  cleanup_parser.add_argument("--assume-stored", dest="assumeStored", action="store_true", default=False,
+                              help=("Take every local store tarball as in the write store, also those "
+                                    "bits has not marked so (from before it marked them): for a host whose "
+                                    "builds always upload. Otherwise one only here is never removed."))
   cleanup_parser.add_argument("--keep-recent", dest="keepRecentDays", type=float, default=2.0,
                               metavar="DAYS",
                               help=("Disk pressure never evicts a package used in the last DAYS days; "

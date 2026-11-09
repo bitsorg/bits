@@ -1909,6 +1909,10 @@ def doFinalSync(spec, specs, args, syncHelper):
                    spec.get("redistributable"))
   elif not spec["revision"].startswith("local") and not is_virtual_package(spec):
     syncHelper.upload_symlinks_and_tarball(spec)
+    if getattr(syncHelper, "writeStore", ""):     # the store has it: prune may drop the local copy
+      from bits_helpers.arch import effective_arch as _store_arch
+      from bits_helpers.cleanup import mark_in_store
+      mark_in_store(args.workDir, _store_arch(spec, args.architecture), spec["hash"])
     # Log (info level) that a freshly built tarball was pushed to the write store.
     # Reused packages (cachedTarball) are already there and were marked
     # "[from store]" at build time, so they are skipped here.

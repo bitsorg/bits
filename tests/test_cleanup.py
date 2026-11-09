@@ -14,6 +14,7 @@ Covers:
   - acquire_build_lock returns a file handle that prevents exclusive lock
 """
 import fcntl
+import glob
 import os
 import shutil
 import tempfile
@@ -29,6 +30,7 @@ from bits_helpers.cleanup import (
     _pressure_order,
     _try_evict,
     acquire_build_lock,
+    mark_in_store,
     doCleanup,
     sentinel_path,
     touch_sentinel,
@@ -517,8 +519,8 @@ class LeftoversTest(unittest.TestCase):
 
     def test_a_build_started_since_is_left(self):
         real = _leftovers
-        def stale(wd, days, now=None):
-            got = real(wd, days, now)
+        def stale(wd, days, now=None, **kw):
+            got = real(wd, days, now, **kw)
             os.utime(os.path.join(self.wd, "INSTALLROOT", self.BARE), None)   # a build began
             return got
         with patch("bits_helpers.cleanup._leftovers", side_effect=stale):
@@ -529,6 +531,119 @@ class LeftoversTest(unittest.TestCase):
         self._dir("BUILD/%s.bits-prune-123/x" % ("d" * 40), time.time())
         self._run(keep_recent=30)
         self.assertNotIn("BUILD/%s.bits-prune-123" % ("d" * 40), self._there())
+
+
+class TarballsTest(unittest.TestCase):
+    """A package's store tarball goes with it; one of no installed package is a leftover."""
+    ARCH, H1, H2, H3 = "x86_64-el9", "1" * 40, "2" * 40, "3" * 40
+
+    def setUp(self):
+        self.wd = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.wd, True)
+        self.old = time.time() - 10 * 86400
+        self._package("ROOT", self.H1)
+        self._package("Gaudi", self.H2)
+        self._tarball("ROOT", self.H1)
+        self._tarball("Gaudi", self.H2)
+        self._tarball("Moore", self.H3)                  # its package is not installed
+
+    def _package(self, pkg, h):
+        touch_sentinel(self.wd, self.ARCH, pkg, "1-1")
+        spath = sentinel_path(self.wd, self.ARCH, pkg, "1-1")
+        os.utime(spath, (self.old, self.old))
+        d = os.path.join(self.wd, self.ARCH, pkg, "1-1")
+        os.makedirs(d)
+        with open(os.path.join(d, ".build-hash"), "w") as fh:
+            fh.write(h + "\n")
+
+    def _tarball(self, pkg, h, mtime=None, stored=True):
+        d = os.path.join(self.wd, "TARS", self.ARCH, "store", h[:2], h)
+        os.makedirs(d)
+        if stored:
+            mark_in_store(self.wd, self.ARCH, h)
+        name = "%s-1-1.%s.tar.gz" % (pkg, self.ARCH)
+        with open(os.path.join(d, name), "w") as fh:
+            fh.write("x" * 100)
+        links = os.path.join(self.wd, "TARS", self.ARCH, pkg)
+        os.makedirs(links)
+        os.symlink("../../%s/store/%s/%s/%s" % (self.ARCH, h[:2], h, name), os.path.join(links, name))
+        for p in [os.path.join(d, n) for n in os.listdir(d)] + [d]:
+            os.utime(p, (mtime or self.old,) * 2)
+
+    def _stored(self):
+        return sorted(os.path.basename(d) for d in
+                      glob.glob(os.path.join(self.wd, "TARS", "*", "store", "*", "*")))
+
+    def _links(self):
+        return sorted(os.path.relpath(p, os.path.join(self.wd, "TARS")) for p in
+                      glob.glob(os.path.join(self.wd, "TARS", self.ARCH, "*", "*.tar.gz")))
+
+    def _args(self, **kw):
+        a = dict(workDir=self.wd, architecture=self.ARCH, maxAgeDays=None, minFreeGb=None, dryRun=False,
+                 diskPressureOnly=True, allArchitectures=True, keepRecentDays=2.0, leftovers=False)
+        a.update(kw)
+        return Namespace(**a)
+
+    def test_an_evicted_package_takes_its_tarball(self):
+        with patch("bits_helpers.cleanup._free_bytes", side_effect=[0, 0, 50 * 1024**3]):
+            doCleanup(self._args(minFreeGb=10), parser=None)
+        self.assertEqual(len(_list_all_sentinels(self.wd)), 1)        # one evicted
+        gone = ({self.H1, self.H2} - set(self._stored())).pop()
+        self.assertEqual(self._stored(), sorted({self.H1, self.H2, self.H3} - {gone}))
+        self.assertEqual(len(self._links()), 2)                      # its link went too
+
+    def test_a_tarball_of_no_installed_package_is_a_leftover(self):
+        self._tarball("Rec", "4" * 40, mtime=time.time())             # recent: stays
+        doCleanup(self._args(leftovers=True), parser=None)
+        self.assertEqual(self._stored(), [self.H1, self.H2, "4" * 40])
+        self.assertNotIn("x86_64-el9/Moore/Moore-1-1.x86_64-el9.tar.gz", self._links())
+
+    def test_a_tarball_only_here_stays(self):
+        self._package("Rec", "5" * 40)
+        self._tarball("Rec", "5" * 40, stored=False)
+        self._tarball("Allen", "6" * 40, stored=False)               # not installed either
+        with patch("bits_helpers.cleanup._free_bytes", return_value=0):
+            doCleanup(self._args(minFreeGb=10, keepRecentDays=0, leftovers=True), parser=None)
+        self.assertEqual(_list_all_sentinels(self.wd), [])           # every package evicted
+        self.assertEqual(self._stored(), ["5" * 40, "6" * 40])        # not their unstored tarballs
+
+    def test_assume_stored(self):
+        self._tarball("Allen", "6" * 40, stored=False)
+        doCleanup(self._args(leftovers=True, assumeStored=True), parser=None)
+        self.assertNotIn("6" * 40, self._stored())
+
+    def test_dry_run_counts_the_tarball(self):
+        entry = [e for e in _list_all_sentinels(self.wd) if "ROOT" in e.sentinel_path][0]
+        self.assertGreaterEqual(_try_evict(entry, dry_run=True), 100)
+        self.assertIn(self.H1, self._stored())
+
+
+class MarkInStoreTest(unittest.TestCase):
+    """doFinalSync marks a tarball the write store has, so prune may drop the local copy."""
+
+    def _sync(self, write_store):
+        from bits_helpers import build
+        wd = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, wd, True)
+        h = "ab" + "c" * 38
+        d = os.path.join(wd, "TARS", ARCH, "store", h[:2], h)
+        os.makedirs(d)
+        spec = {"package": "A", "version": "1", "revision": "1", "hash": h, "requires": [],
+                "full_requires": [], "full_runtime_requires": []}
+        args = Namespace(workDir=wd, architecture=ARCH, manifest=None, aggressiveCleanup=False,
+                         storeIntegrity=False)
+        helper = MagicMock(writeStore=write_store)
+        with patch.object(build, "createDistLinks"), patch.object(build, "package_info"), \
+             patch("bits_helpers.cleanup.touch_sentinel"):
+            build.doFinalSync(spec, {"A": spec}, args, helper)
+        helper.upload_symlinks_and_tarball.assert_called_once()
+        return os.path.exists(os.path.join(d, ".in-store"))
+
+    def test_with_a_write_store(self):
+        self.assertTrue(self._sync("b3://store"))
+
+    def test_without_one(self):
+        self.assertFalse(self._sync(""))
 
 
 class AcquireBuildLockTest(unittest.TestCase):
