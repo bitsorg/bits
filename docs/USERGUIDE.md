@@ -207,6 +207,7 @@ sudo apt-get install -y --no-install-recommends \
   bison flex make autoconf automake libtool libtool-bin patch perl libperl-dev tar gzip \
   unzip texinfo gettext autopoint m4 swig pkg-config gcc g++ gfortran strace \
   environment-modules git rsync hostname libcap-dev python3 python3-venv \
+  curl ca-certificates xz-utils bzip2 file \
   libkrb5-dev uuid-dev libssl-dev zlib1g-dev libbz2-dev liblzma-dev libpng-dev \
   libfreetype-dev libxml2-dev liblz4-dev libncurses-dev libreadline-dev libx11-dev \
   libmotif-dev libxpm-dev libxext-dev libxft-dev libglu1-mesa-dev libxcursor-dev \
@@ -215,6 +216,10 @@ sudo apt-get install -y --no-install-recommends \
   libuv1-dev libunwind-dev
 sudo apt-get install -y linux-tools-generic     # perf, for the recipes that check for it
 ```
+
+`curl` (with `ca-certificates` for https), `xz-utils`, `bzip2` and `file` are listed
+for Ubuntu because its minimal base has none of them and recipes download and unpack
+at build time; the AlmaLinux base has `curl` already.
 
 Debian is not a builder platform: the Ubuntu list mostly applies (perf is
 `linux-perf` there), and nothing pre-built is reused.

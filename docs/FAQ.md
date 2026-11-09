@@ -53,7 +53,7 @@ See: [Building natively: what to install](USERGUIDE.md#building-natively-what-to
 
 ### Ubuntu 24.04 native build - which apt packages?
 
-Run `sudo apt-get update` and then the `sudo apt-get install -y --no-install-recommends ...` list from the guide (build tools such as bison, flex, make, gcc, g++, gfortran, environment-modules, git, python3-venv and `-dev` libraries such as libkrb5-dev, uuid-dev, libssl-dev and the X11/GL ones). Also install `linux-tools-generic` for perf, which some recipes check for. The same list applies to Ubuntu 22.04, 24.04 and 26.04.
+Run `sudo apt-get update` and then the `sudo apt-get install -y --no-install-recommends ...` list from the guide (build tools such as bison, flex, make, gcc, g++, gfortran, environment-modules, git, curl, python3-venv and `-dev` libraries such as libkrb5-dev, uuid-dev, libssl-dev and the X11/GL ones). Also install `linux-tools-generic` for perf, which some recipes check for. The same list applies to Ubuntu 22.04, 24.04 and 26.04.
 
 See: [Building natively: what to install](USERGUIDE.md#building-natively-what-to-install).
 
