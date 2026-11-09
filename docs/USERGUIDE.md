@@ -196,7 +196,7 @@ sudo dnf install -y \
   libXt-devel motif-devel libXpm-devel libXext-devel libXft-devel mesa-libGLU-devel \
   libXcursor-devel libXrandr-devel libXinerama-devel libXi-devel libXrender-devel \
   apr-devel apr-util-devel cyrus-sasl-devel subversion-devel elfutils-devel snappy-devel \
-  xerces-c-devel sqlite-devel libuv-devel libunwind-devel libtirpc-devel
+  xerces-c-devel sqlite-devel libuv-devel libunwind-devel libtirpc-devel libffi-devel
 ```
 
 **Ubuntu 22.04, 24.04 and 26.04:**
@@ -213,7 +213,7 @@ sudo apt-get install -y --no-install-recommends \
   libmotif-dev libxpm-dev libxext-dev libxft-dev libglu1-mesa-dev libxcursor-dev \
   libxrandr-dev libxinerama-dev libxi-dev libxrender-dev libapr1-dev libaprutil1-dev \
   libsasl2-dev libsvn-dev libdw-dev libsnappy-dev libxerces-c-dev libsqlite3-dev \
-  libuv1-dev libunwind-dev
+  libuv1-dev libunwind-dev libffi-dev
 sudo apt-get install -y linux-tools-generic     # perf, for the recipes that check for it
 ```
 
