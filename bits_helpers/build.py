@@ -1497,6 +1497,14 @@ def report_failure_summary(work_dir, scheduler, arch):
   info("=" * 70)
 
 
+def failure_os_lines(args, detected_arch):
+  """The OS lines of a failure report: a --docker build names host and container."""
+  image = getattr(args, "docker", False) and getattr(args, "dockerImage", None)
+  if image:
+    return ["Host OS: %s" % detected_arch, "Container: %s" % image]
+  return ["OS: %s" % detected_arch]
+
+
 def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scriptDir, workDir, syncHelper):
   spec = specs[p]
   debug("Build command: %s", build_command)
@@ -1715,7 +1723,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
     args_str = " ".join(cli_args)
 
     buildErrMsg += f"\n{bold}Environment:{reset}\n"
-    buildErrMsg += f"  OS: {detected_arch}\n"
+    buildErrMsg += "".join(f"  {line}\n" for line in failure_os_lines(args, detected_arch))
     buildErrMsg += f"  bits: {__version__ or 'unknown'} (bits@{os.environ['BITS_DIST_HASH'][:10]})\n"
 
     if detected_arch.startswith("osx"):
@@ -1787,9 +1795,8 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       }
       args_str = " ".join(f"--{k}={v}" for k, v in vars(args).items() if v and k in safe_args)
       detected_arch = detectArch()
-      buildErrMsg += dedent(f"""
-      Build info:
-      OS: {detected_arch}
+      buildErrMsg += "\nBuild info:\n" + "".join(
+        line + "\n" for line in failure_os_lines(args, detected_arch)) + dedent(f"""\
       Using BITS from bits@{__version__ or "unknown"} recipes in bits@{os.environ["BITS_DIST_HASH"][:10]}
       Build arguments: {args_str}
       """)
