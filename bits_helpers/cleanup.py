@@ -282,15 +282,16 @@ def _newest_mtime(path: str, depth: int = 2) -> Optional[float]:
 
 
 def _leftovers(work_dir: str, keep_recent_days: float, now: Optional[float] = None,
-               assume_stored: bool = False):
+               assume_stored: bool = False, builds: bool = True, stored_tarballs: bool = False):
     """[(last written, path)], oldest first: the BUILD/<hash> and INSTALLROOT/<hash>
     a failed build kept, the tmp/ entries of jobs and the TARS/<arch>/store/<h2>/<hash>
-    of no installed package, none written in *keep_recent_days* (a build's activity is
-    its BUILD/<hash>/log)."""
+    of no installed package (with *stored_tarballs*, of any), none written in
+    *keep_recent_days* (a build's activity is its BUILD/<hash>/log); only tarballs the
+    store has, and without *builds* only tarballs."""
     root = abspath(work_dir)
     cutoff = (now or time.time()) - keep_recent_days * 86400
     out = []
-    for sub in ("BUILD", "INSTALLROOT", "tmp"):
+    for sub in ("BUILD", "INSTALLROOT", "tmp") if builds else ():
         top = join(root, sub)
         try:
             names = os.listdir(top)
@@ -322,21 +323,23 @@ def _leftovers(work_dir: str, keep_recent_days: float, now: Optional[float] = No
         if not _HASH.fullmatch(name):
             continue
         if installed is None:
-            installed = _installed_hashes(root)
+            installed = set() if stored_tarballs else _installed_hashes(root)
         t = _newest_mtime(path)
         if name not in installed and t is not None and t < cutoff and _stored(path, assume_stored):
-            out.append((t, path))               # a stored tarball whose package is not installed
+            out.append((t, path))               # a stored tarball (of no installed package)
     return sorted(out)
 
 
 def _remove_leftovers(work_dir: str, keep_recent_days: float, dry_run: bool,
-                      assume_stored: bool = False) -> int:
+                      assume_stored: bool = False, builds: bool = True,
+                      stored_tarballs: bool = False) -> int:
     """Remove _leftovers(), never one written in the last LEFTOVER_MIN_DAYS. Each is
     renamed first, then checked again: one a build began on since is put back."""
     root = os.path.realpath(work_dir)
     removed = 0
     for t, path in _leftovers(root, max(keep_recent_days, LEFTOVER_MIN_DAYS),
-                              assume_stored=assume_stored):
+                              assume_stored=assume_stored, builds=builds,
+                              stored_tarballs=stored_tarballs):
         what = os.path.relpath(path, root)
         days = (time.time() - t) / 86400 if t else 0
         if dry_run:
@@ -940,10 +943,14 @@ def doCleanup(args, parser):
     all_archs = getattr(args, "allArchitectures", False)
     keep_recent = max(0.0, getattr(args, "keepRecentDays", 2.0) or 0.0)
     assume_stored = getattr(args, "assumeStored", False)
-    if getattr(args, "leftovers", False):
+    leftovers = getattr(args, "leftovers", False)
+    stored_tarballs = getattr(args, "storedTarballs", False)
+    if leftovers or stored_tarballs:
         before = _free_bytes(work_dir)
-        n = _remove_leftovers(work_dir, keep_recent, dry_run, assume_stored)
-        info("Leftovers of failed builds and jobs: %d %s, %.1f GiB freed", n,
+        n = _remove_leftovers(work_dir, keep_recent, dry_run, assume_stored, leftovers,
+                              stored_tarballs)
+        info("Leftovers%s: %d %s, %.1f GiB freed",
+             " and stored tarballs" if stored_tarballs else " of failed builds and jobs", n,
              "would be removed (dry-run)" if dry_run else "removed",
              (_free_bytes(work_dir) - before) / 1024 ** 3)
         if not dry_run:

@@ -375,6 +375,12 @@ def add_prune_arguments(subparsers, ctx):
                                     "INSTALLROOT/<hash> whose build has not run, and tmp/ entries not "
                                     "written, in --keep-recent days (1 at least). Installed packages "
                                     "are untouched."))
+  cleanup_parser.add_argument("--stored-tarballs", dest="storedTarballs", action="store_true",
+                              default=False,
+                              help=("Remove every local store tarball the write store has (see "
+                                    "--assume-stored), its package installed or not, once not used in "
+                                    "--keep-recent days (1 at least): the installed tree and the store "
+                                    "serve without it."))
   cleanup_parser.add_argument("--assume-stored", dest="assumeStored", action="store_true", default=False,
                               help=("Take every local store tarball as in the write store, also those "
                                     "bits has not marked so (from before it marked them): for a host whose "

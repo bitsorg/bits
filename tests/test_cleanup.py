@@ -638,6 +638,19 @@ class TarballsTest(unittest.TestCase):
         doCleanup(self._args(leftovers=True, assumeStored=True), parser=None)
         self.assertNotIn("6" * 40, self._stored())
 
+    def test_stored_tarballs_also_of_installed_packages(self):
+        self._tarball("Rec", "5" * 40, stored=False)                  # only here: stays
+        self._tarball("Allen", "6" * 40, mtime=time.time())           # recent: stays
+        build = os.path.join(self.wd, "BUILD", "7" * 40)
+        os.makedirs(build)
+        os.utime(build, (self.old, self.old))                          # not asked for: stays
+        doCleanup(self._args(storedTarballs=True), parser=None)
+        self.assertEqual(self._stored(), ["5" * 40, "6" * 40])
+        self.assertEqual(len(_list_all_sentinels(self.wd)), 2)        # the packages stay
+        self.assertTrue(os.path.isdir(build))
+        self.assertEqual(self._links(), ["x86_64-el9/Allen/Allen-1-1.x86_64-el9.tar.gz",
+                                         "x86_64-el9/Rec/Rec-1-1.x86_64-el9.tar.gz"])
+
     def test_dry_run_counts_the_tarball(self):
         entry = [e for e in _list_all_sentinels(self.wd) if "ROOT" in e.sentinel_path][0]
         self.assertGreaterEqual(_try_evict(entry, dry_run=True), 100)

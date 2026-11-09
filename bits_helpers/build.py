@@ -2807,6 +2807,15 @@ def build_one_package(p, ctx):
           pass
     spec["cachedTarball"] = _select_cached_tarball(
       tarballs, spec, effective_arch(spec, args.architecture))
+    if spec["cachedTarball"]:
+      try:
+        os.utime(tar_hash_dir)        # in use: bits prune keeps one touched within a day
+      except OSError:                 # pruned this moment: from the store again (and its gate)
+        syncHelper.fetch_tarball(spec)
+        tarballs = [t for t in glob(os.path.join(tar_hash_dir, "*gz")) if os.path.isfile(t)]
+        _preFetchTars, _remote_tars = set(), set(tarballs)
+        spec["cachedTarball"] = _select_cached_tarball(
+          tarballs, spec, effective_arch(spec, args.architecture))
     debug("Found tarball in %s" % spec["cachedTarball"]
           if spec["cachedTarball"] else "No cache tarballs found")
     # Verify the recalled tarball against the local integrity ledger.
