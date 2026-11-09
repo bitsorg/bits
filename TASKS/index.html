@@ -1,0 +1,975 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The bits build system — documentation">
+      
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+    
+    
+      
+        <title>Find what you need - bits</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#find-what-you-need" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="bits" class="md-header__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            bits
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Find what you need
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="bits" class="md-nav__button md-logo" aria-label="bits" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    bits
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../USERGUIDE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../COOKBOOK/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cookbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../WORKFLOWS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REFERENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#getting-started" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Getting started
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Getting started">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#install-bits-and-check-my-machine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Install bits and check my machine
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#choose-the-platform-to-build-for-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose the platform to build for (--architecture)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build-my-communitys-software" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build my community's software
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#use-what-i-built-load-its-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Use what I built (load its environment)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stop-repeating-the-same-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stop repeating the same options
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Building">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#see-what-will-be-built-or-downloaded-before-building" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See what will be built or downloaded, before building
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#understand-why-a-package-is-rebuilt-or-reused" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Understand why a package is rebuilt (or reused)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build-faster-or-several-packages-at-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build faster, or several packages at once
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build-for-another-linux-or-for-arm-docker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build for another Linux, or for ARM (--docker)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#debug-a-failed-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debug a failed build
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#work-on-a-packages-source-or-on-a-local-copy-of-recipes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Work on a package's source, or on a local copy of recipes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#free-disk-space" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Free disk space
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recipes-and-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipes and defaults
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Recipes and defaults">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#write-a-recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write a recipe
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build-another-version-without-editing-the-recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build another version without editing the recipe
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#choose-compiler-and-build-type-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose compiler and build type (--defaults)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#choose-which-experiments-recipes-bits-uses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choose which experiment's recipes bits uses
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#make-source-downloads-reproducible-checksums" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Make source downloads reproducible (checksums)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#binary-stores" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Binary stores
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Binary stores">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#reuse-pre-built-binaries-or-share-mine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reuse pre-built binaries, or share mine
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#upload-my-builds-to-my-own-bucket" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upload my builds to my own bucket
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#check-that-downloaded-tarballs-are-not-tampered-with" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Check that downloaded tarballs are not tampered with
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cvmfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CVMFS
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CVMFS">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#publish-to-cvmfs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publish to CVMFS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#try-publishing-without-touching-production" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Try publishing without touching production
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#check-a-deployment-against-its-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Check a deployment against its build
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-console-and-ci" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The console and CI
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The console and CI">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#build-and-publish-from-bits-console" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build and publish from bits-console
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#define-a-schedule-build-every-night-or-on-each-push" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Define a schedule: build every night, or on each push
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#publish-the-latest-version-automatically-in-its-final-destination" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publish the latest version automatically, in its final destination
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#find-out-why-a-build-failed-in-the-console" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Find out why a build failed in the console
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#add-or-configure-a-community-in-the-console" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Add or configure a community in the console
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="find-what-you-need">Find what you need<a class="headerlink" href="#find-what-you-need" title="Permanent link">&para;</a></h1>
+<p>What people most often want to do with bits, and where the docs explain it. The
+<a href="../FAQ/">FAQ</a> has short answers to more specific questions.</p>
+<h2 id="getting-started">Getting started<a class="headerlink" href="#getting-started" title="Permanent link">&para;</a></h2>
+<h3 id="install-bits-and-check-my-machine">Install bits and check my machine<a class="headerlink" href="#install-bits-and-check-my-machine" title="Permanent link">&para;</a></h3>
+<p>Install bits, then let <code>bits doctor</code> check the machine and say what is missing.
+See: <a href="../USERGUIDE/#installing-bits">Installing bits</a>,
+<a href="../USERGUIDE/#building-natively-what-to-install">Building natively: what to install</a>,
+<a href="../REFERENCE/#bits-doctor">bits doctor</a>.</p>
+<h3 id="choose-the-platform-to-build-for-architecture">Choose the platform to build for (<code>--architecture</code>)<a class="headerlink" href="#choose-the-platform-to-build-for-architecture" title="Permanent link">&para;</a></h3>
+<p>Pass a platform name such as <code>x86_64-el9</code>; the compiler and build type come from
+<code>--defaults</code>. Pick one with pre-built binaries to reuse them.
+See: <a href="../README.md#before-you-start-pick-the-platform-to-build-for">Before you start: pick the platform to build for</a>,
+<a href="../USERGUIDE/#platforms">Platforms</a>,
+<a href="../USERGUIDE/#finding-a-platform-with-pre-built-binaries">Finding a platform with pre-built binaries</a>.</p>
+<h3 id="build-my-communitys-software">Build my community's software<a class="headerlink" href="#build-my-communitys-software" title="Permanent link">&para;</a></h3>
+<p>Check out your community's recipe repository and build inside it. Each community's
+README has the exact commands.
+See: <a href="../USERGUIDE/#1-check-out-your-communitys-recipe-repository">Check out your community's recipe repos</a>,
+<a href="../USERGUIDE/#2-check-then-build">Check, then build</a>,
+<a href="https://github.com/bitsorg/alice.bits#getting-started-with-native-bits">ALICE</a>,
+<a href="https://github.com/bitsorg/stacks.bits#getting-started">the LCG stack</a>,
+<a href="https://github.com/bitsorg/atlas.bits#readme">ATLAS</a>,
+<a href="https://github.com/bitsorg/lhcb.bits#readme">LHCb</a>,
+<a href="https://github.com/bitsorg/key4hep.bits#readme">Key4hep</a>,
+<a href="https://github.com/bitsorg/ship.bits#readme">SHiP</a>.</p>
+<h3 id="use-what-i-built-load-its-environment">Use what I built (load its environment)<a class="headerlink" href="#use-what-i-built-load-its-environment" title="Permanent link">&para;</a></h3>
+<p><code>bits enter</code> opens a shell with the packages loaded; <code>bits load</code> changes the current
+shell (with <code>eval</code>, or the shell helper); <code>bits setenv</code> runs one command.
+See: <a href="../COOKBOOK/#use-the-built-environment">Use the built environment</a>,
+<a href="../USERGUIDE/#enter-a-sub-shell-with-modules-loaded">Enter a sub-shell with modules loaded</a>,
+<a href="../USERGUIDE/#load--unload-in-the-current-shell">Load / unload in the current shell</a>.</p>
+<h3 id="stop-repeating-the-same-options">Stop repeating the same options<a class="headerlink" href="#stop-repeating-the-same-options" title="Permanent link">&para;</a></h3>
+<p><code>bits use</code> records options such as the platform, defaults and store, so later
+commands take them.
+See: <a href="../USERGUIDE/#4-configuration">Configuration</a>,
+<a href="../REFERENCE/#config-mode--record-persistent-settings-with-bits-use">Config mode — record persistent settings with bits use</a>,
+<a href="../USERGUIDE/#where-defaults-come-from">Where defaults come from</a>.</p>
+<h2 id="building">Building<a class="headerlink" href="#building" title="Permanent link">&para;</a></h2>
+<h3 id="see-what-will-be-built-or-downloaded-before-building">See what will be built or downloaded, before building<a class="headerlink" href="#see-what-will-be-built-or-downloaded-before-building" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../USERGUIDE/#previewing-a-build---dry-run">Previewing a build: --dry-run</a>,
+<a href="../REFERENCE/#bits-status">bits status</a>,
+<a href="../WORKFLOWS/#preview-what-will-rebuild">Preview what will rebuild</a>.</p>
+<h3 id="understand-why-a-package-is-rebuilt-or-reused">Understand why a package is rebuilt (or reused)<a class="headerlink" href="#understand-why-a-package-is-rebuilt-or-reused" title="Permanent link">&para;</a></h3>
+<p>A package is reused when its hash matches: the hash covers its recipe, sources,
+dependencies and settings.
+See: <a href="../USERGUIDE/#how-bits-works">How bits works</a>,
+<a href="../REFERENCE/#hashing-and-reproducibility">Hashing and reproducibility</a>.</p>
+<h3 id="build-faster-or-several-packages-at-once">Build faster, or several packages at once<a class="headerlink" href="#build-faster-or-several-packages-at-once" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../USERGUIDE/#building-several-packages-at-once">Building several packages at once</a>,
+<a href="../COOKBOOK/#speed-up-large-builds">Speed up large builds</a>,
+<a href="../COOKBOOK/#build-memory-hungry-packages-without-exhausting-ram">Build memory-hungry packages without exhausting RAM</a>.</p>
+<h3 id="build-for-another-linux-or-for-arm-docker">Build for another Linux, or for ARM (<code>--docker</code>)<a class="headerlink" href="#build-for-another-linux-or-for-arm-docker" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../USERGUIDE/#building-in-a-container">Building in a container</a>,
+<a href="../COOKBOOK/#build-for-a-different-os-or-architecture-docker">Build for a different OS or architecture (Docker)</a>,
+<a href="../REFERENCE/#222-cross-compilation-via-qemu">Cross-compilation via QEMU</a>.</p>
+<h3 id="debug-a-failed-build">Debug a failed build<a class="headerlink" href="#debug-a-failed-build" title="Permanent link">&para;</a></h3>
+<p>The failed build's directory and its full log are kept.
+See: <a href="../COOKBOOK/#debug-a-failed-build">Debug a failed build</a>,
+<a href="../COOKBOOK/#error-handling-in-recipes--how-failures-are-detected">Error handling in recipes — how failures are detected</a>.</p>
+<h3 id="work-on-a-packages-source-or-on-a-local-copy-of-recipes">Work on a package's source, or on a local copy of recipes<a class="headerlink" href="#work-on-a-packages-source-or-on-a-local-copy-of-recipes" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../COOKBOOK/#develop-and-iterate-on-a-single-package">Develop and iterate on a single package</a>,
+<a href="../WORKFLOWS/#build-with-the-local-checkout">Build with the local checkout</a>,
+<a href="../COOKBOOK/#check-out-a-recipe-repository-and-develop-against-it">Check out a recipe repository and develop against it</a>.</p>
+<h3 id="free-disk-space">Free disk space<a class="headerlink" href="#free-disk-space" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../USERGUIDE/#7-cleaning-up">Cleaning up</a>,
+<a href="../COOKBOOK/#evict-old-packages-to-free-disk-space">Evict old packages to free disk space</a>.</p>
+<h2 id="recipes-and-defaults">Recipes and defaults<a class="headerlink" href="#recipes-and-defaults" title="Permanent link">&para;</a></h2>
+<h3 id="write-a-recipe">Write a recipe<a class="headerlink" href="#write-a-recipe" title="Permanent link">&para;</a></h3>
+<p>A recipe is <code>&lt;package&gt;.sh</code>, in lower case: a YAML header, a line with <code>---</code>, then the
+build script.
+See: <a href="../REFERENCE/#12-writing-recipes">Writing Recipes</a>,
+<a href="../REFERENCE/#minimal-recipe">Minimal recipe</a>,
+<a href="../REFERENCE/#17-recipe-format-reference">Recipe Format Reference</a>,
+<a href="../COOKBOOK/#writing-recipes-with-bits-recipe-tools">Writing Recipes with bits-recipe-tools</a>.</p>
+<h3 id="build-another-version-without-editing-the-recipe">Build another version without editing the recipe<a class="headerlink" href="#build-another-version-without-editing-the-recipe" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../COOKBOOK/#override-a-package-version-without-editing-the-recipe">Override a package version without editing the recipe</a>,
+<a href="../REFERENCE/#18-defaults-profiles">Defaults Profiles</a>.</p>
+<h3 id="choose-compiler-and-build-type-defaults">Choose compiler and build type (<code>--defaults</code>)<a class="headerlink" href="#choose-compiler-and-build-type-defaults" title="Permanent link">&para;</a></h3>
+<p>Defaults profiles (<code>defaults-&lt;name&gt;.sh</code>) are chained with <code>::</code>, on top of <code>release</code>.
+See: <a href="../REFERENCE/#18-defaults-profiles">Defaults Profiles</a>,
+<a href="https://github.com/bitsorg/stacks.bits#composing-profiles">Composing profiles (LCG)</a>.</p>
+<h3 id="choose-which-experiments-recipes-bits-uses">Choose which experiment's recipes bits uses<a class="headerlink" href="#choose-which-experiments-recipes-bits-uses" title="Permanent link">&para;</a></h3>
+<p>Recipe repositories come through repository providers, listed in bits-providers.
+See: <a href="https://github.com/bitsorg/bits-providers#how-bits-uses-this-repository">How bits uses this repository</a>,
+<a href="../REFERENCE/#13-repository-provider-feature">Repository Provider Feature</a>,
+<a href="../REFERENCE/#defining-a-repository-provider">Defining a repository provider</a>.</p>
+<h3 id="make-source-downloads-reproducible-checksums">Make source downloads reproducible (checksums)<a class="headerlink" href="#make-source-downloads-reproducible-checksums" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../COOKBOOK/#enforce-reproducible-source-downloads-with-checksums">Enforce reproducible source downloads with checksums</a>,
+<a href="../REFERENCE/#checksum-verification">Checksum verification</a>,
+<a href="../REFERENCE/#bits-checksums">bits checksums</a>.</p>
+<h2 id="binary-stores">Binary stores<a class="headerlink" href="#binary-stores" title="Permanent link">&para;</a></h2>
+<h3 id="reuse-pre-built-binaries-or-share-mine">Reuse pre-built binaries, or share mine<a class="headerlink" href="#reuse-pre-built-binaries-or-share-mine" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../USERGUIDE/#sharing-binaries-through-a-store">Sharing binaries through a store</a>,
+<a href="../COOKBOOK/#set-up-a-project-with-a-persistent-binary-store">Set up a project with a persistent binary store</a>,
+<a href="../REFERENCE/#21-remote-binary-store-backends">Remote Binary Store Backends</a>.</p>
+<h3 id="upload-my-builds-to-my-own-bucket">Upload my builds to my own bucket<a class="headerlink" href="#upload-my-builds-to-my-own-bucket" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../COOKBOOK/#share-pre-built-artifacts-over-s3">Share pre-built artifacts over S3</a>,
+<a href="../REFERENCE/#publishing-an-existing-local-build-to-s3-bits-publish">Publishing an existing local build to S3</a>.</p>
+<h3 id="check-that-downloaded-tarballs-are-not-tampered-with">Check that downloaded tarballs are not tampered with<a class="headerlink" href="#check-that-downloaded-tarballs-are-not-tampered-with" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../REFERENCE/#store-integrity-verification">Store integrity verification</a>,
+<a href="../REFERENCE/#enabling-store-integrity-verification">Enabling store integrity verification</a>.</p>
+<h2 id="cvmfs">CVMFS<a class="headerlink" href="#cvmfs" title="Permanent link">&para;</a></h2>
+<h3 id="publish-to-cvmfs">Publish to CVMFS<a class="headerlink" href="#publish-to-cvmfs" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../USERGUIDE/#publish-to-cvmfs">Publish to CVMFS</a>,
+<a href="../USERGUIDE/#find-where-a-package-will-land-on-cvmfs">Find where a package will land on CVMFS</a>,
+<a href="../REFERENCE/#26-cvmfs-publishing-pipeline">CVMFS Publishing Pipeline</a>.</p>
+<h3 id="try-publishing-without-touching-production">Try publishing without touching production<a class="headerlink" href="#try-publishing-without-touching-production" title="Permanent link">&para;</a></h3>
+<p>See: <a href="https://github.com/bitsorg/testbed.bits#getting-started-trying-the-overlay-locally">testbed.bits: trying the overlay locally</a>.</p>
+<h3 id="check-a-deployment-against-its-build">Check a deployment against its build<a class="headerlink" href="#check-a-deployment-against-its-build" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../COOKBOOK/#verify-a-live-deployment-against-a-build-manifest">Verify a live deployment against a build manifest</a>,
+<a href="../WORKFLOWS/#phase-5--verify-the-deployment">Verify the deployment</a>.</p>
+<h2 id="the-console-and-ci">The console and CI<a class="headerlink" href="#the-console-and-ci" title="Permanent link">&para;</a></h2>
+<h3 id="build-and-publish-from-bits-console">Build and publish from bits-console<a class="headerlink" href="#build-and-publish-from-bits-console" title="Permanent link">&para;</a></h3>
+<p>See: <a href="../WORKFLOWS/#step-1--connect-to-bits-console">Connect to bits-console</a>,
+<a href="../WORKFLOWS/#step-2--browse-and-trigger-a-build">Browse and trigger a build</a>,
+<a href="https://gitlab.cern.ch/buncic/bits-console/-/blob/main/README.md#getting-access">Getting access</a>.</p>
+<h3 id="define-a-schedule-build-every-night-or-on-each-push">Define a schedule: build every night, or on each push<a class="headerlink" href="#define-a-schedule-build-every-night-or-on-each-push" title="Permanent link">&para;</a></h3>
+<p>A slot on the console's Schedules tab builds a package at its nightly time, on each
+commit to the branches it follows, or both.
+See: <a href="../WORKFLOWS/#step-4--schedule-nightly-builds">Schedule nightly builds</a>,
+<a href="../WORKFLOWS/#step-5--build-on-each-push-ci">Build on each push (CI)</a>,
+<a href="https://gitlab.cern.ch/buncic/bits-console/-/blob/main/README.md#defining-a-slot-how-to-set-up-a-schedule">Defining a slot</a>.</p>
+<h3 id="publish-the-latest-version-automatically-in-its-final-destination">Publish the latest version automatically, in its final destination<a class="headerlink" href="#publish-the-latest-version-automatically-in-its-final-destination" title="Permanent link">&para;</a></h3>
+<p>A slot can also publish where a Production build goes, not in a per-day nightly
+directory: on each commit, at its own time, or by Publish now (e.g. bits itself).
+See: <a href="../WORKFLOWS/#step-6--publish-the-latest-version-to-its-final-destination">Publish the latest version to its final destination</a>,
+<a href="https://gitlab.cern.ch/buncic/bits-console/-/blob/main/README.md#publishing-the-latest-version-to-its-final-destination">Publishing the latest version</a>.</p>
+<h3 id="find-out-why-a-build-failed-in-the-console">Find out why a build failed in the console<a class="headerlink" href="#find-out-why-a-build-failed-in-the-console" title="Permanent link">&para;</a></h3>
+<p>The console's Failures page and <strong>Explain</strong> on a failed build say what went wrong.
+See: <a href="../COOKBOOK/#debug-a-failed-build">Debug a failed build</a>,
+<a href="https://gitlab.cern.ch/buncic/bits-console/-/blob/main/README.md#builds-certification-and-sboms">Builds, certification and SBOMs</a>.</p>
+<h3 id="add-or-configure-a-community-in-the-console">Add or configure a community in the console<a class="headerlink" href="#add-or-configure-a-community-in-the-console" title="Permanent link">&para;</a></h3>
+<p>See: <a href="https://gitlab.cern.ch/buncic/bits-console/-/blob/main/README.md#adding-a-new-community-bitsadmins-only">Adding a new community</a>,
+<a href="https://gitlab.cern.ch/buncic/bits-console/-/blob/main/README.md#configuring-a-community-group-admins">Configuring a community</a>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
+      
+    
+  </body>
+</html>
