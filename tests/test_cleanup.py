@@ -567,8 +567,22 @@ class TarballsTest(unittest.TestCase):
         links = os.path.join(self.wd, "TARS", self.ARCH, pkg)
         os.makedirs(links)
         os.symlink("../../%s/store/%s/%s/%s" % (self.ARCH, h[:2], h, name), os.path.join(links, name))
+        self._dist(pkg, pkg, h)
         for p in [os.path.join(d, n) for n in os.listdir(d)] + [d]:
             os.utime(p, (mtime or self.old,) * 2)
+
+    def _dist(self, pkg, dep, h):
+        """TARS/<arch>/dist/<pkg>/<pkg>-1-1/ links to its own and its dependencies' tarballs."""
+        d = os.path.join(self.wd, "TARS", self.ARCH, "dist", pkg, "%s-1-1" % pkg)
+        os.makedirs(d, exist_ok=True)
+        name = "%s-1-1.%s.tar.gz" % (dep, self.ARCH)
+        os.symlink("../../../store/%s/%s/%s" % (h[:2], h, name), os.path.join(d, name))
+
+    def _dist_links(self):
+        top = os.path.join(self.wd, "TARS", self.ARCH, "dist")
+        return sorted(os.path.relpath(os.path.join(r, n), top)
+                      for r, ds, fs in os.walk(top) for n in fs + ds
+                      if os.path.islink(os.path.join(r, n)))
 
     def _stored(self):
         return sorted(os.path.basename(d) for d in
@@ -585,18 +599,30 @@ class TarballsTest(unittest.TestCase):
         return Namespace(**a)
 
     def test_an_evicted_package_takes_its_tarball(self):
+        self._dist("ROOT", "Gaudi", self.H2)                         # ROOT's dist names Gaudi
         with patch("bits_helpers.cleanup._free_bytes", side_effect=[0, 0, 50 * 1024**3]):
-            doCleanup(self._args(minFreeGb=10), parser=None)
-        self.assertEqual(len(_list_all_sentinels(self.wd)), 1)        # one evicted
-        gone = ({self.H1, self.H2} - set(self._stored())).pop()
-        self.assertEqual(self._stored(), sorted({self.H1, self.H2, self.H3} - {gone}))
-        self.assertEqual(len(self._links()), 2)                      # its link went too
+            doCleanup(self._args(minFreeGb=10), parser=None)          # Gaudi goes (first by name)
+        self.assertEqual(len(_list_all_sentinels(self.wd)), 1)
+        self.assertEqual(self._stored(), [self.H1, self.H3])
+        self.assertEqual(self._links(), ["x86_64-el9/Moore/Moore-1-1.x86_64-el9.tar.gz",
+                                         "x86_64-el9/ROOT/ROOT-1-1.x86_64-el9.tar.gz"])
+        self.assertEqual(self._dist_links(), ["Moore/Moore-1-1/Moore-1-1.x86_64-el9.tar.gz",
+                                              "ROOT/ROOT-1-1/ROOT-1-1.x86_64-el9.tar.gz"])
+        self.assertFalse(os.path.exists(os.path.join(self.wd, "TARS", self.ARCH, "dist", "Gaudi")))
+
+    def test_an_empty_directory_a_build_just_made_stays(self):
+        fresh = os.path.join(self.wd, "TARS", self.ARCH, "dist", "Allen", "Allen-1-1")
+        os.makedirs(fresh)
+        doCleanup(self._args(leftovers=True), parser=None)
+        self.assertTrue(os.path.isdir(fresh))
 
     def test_a_tarball_of_no_installed_package_is_a_leftover(self):
         self._tarball("Rec", "4" * 40, mtime=time.time())             # recent: stays
         doCleanup(self._args(leftovers=True), parser=None)
         self.assertEqual(self._stored(), [self.H1, self.H2, "4" * 40])
         self.assertNotIn("x86_64-el9/Moore/Moore-1-1.x86_64-el9.tar.gz", self._links())
+        self.assertFalse(os.path.exists(os.path.join(self.wd, "TARS", self.ARCH, "dist", "Moore")))
+        self.assertTrue(os.path.isdir(os.path.join(self.wd, "TARS", self.ARCH, "store")))
 
     def test_a_tarball_only_here_stays(self):
         self._package("Rec", "5" * 40)

@@ -360,7 +360,6 @@ def _remove_leftovers(work_dir: str, keep_recent_days: float, dry_run: bool,
         removed += 1
     if not dry_run:
         _unlink_dangling(join(root, "BUILD", "*-latest*"))
-        _unlink_dangling(join(root, "TARS", "*", "*", "*"))
     return removed
 
 
@@ -403,6 +402,48 @@ def _package_tarballs(entry: _SentinelEntry, assume_stored: bool = False) -> Lis
         return []
     return [d for d in glob.glob(join(_work_dir_of(entry), "TARS", "*", "store", h[:2], h))
             if os.path.isdir(d) and not os.path.islink(d) and _stored(d, assume_stored)]
+
+
+def _remove_dangling_tarball_links(work_dir: str) -> int:
+    """Symlinks under TARS (version links, dist trees) to tarballs no longer there, and
+    the directories only that emptied (never one a build just made); store/ is not walked."""
+    tars = join(abspath(work_dir), "TARS")
+    removed = 0
+    for arch in (os.listdir(tars) if os.path.isdir(tars) else []):
+        archdir = join(tars, arch)
+        if os.path.islink(archdir) or not os.path.isdir(archdir):
+            continue
+        emptied = set()
+        for sub in os.listdir(archdir):
+            top = join(archdir, sub)
+            if sub == "store":
+                continue
+            if os.path.islink(top):
+                if not exists(top):
+                    _unlink_quiet(top)
+                    removed += 1
+                continue
+            for root, dirs, files in os.walk(top):
+                for n in files + dirs:
+                    p = join(root, n)
+                    if os.path.islink(p) and not exists(p):
+                        _unlink_quiet(p)
+                        emptied.add(root)
+                        removed += 1
+        for d in sorted(emptied, key=len, reverse=True):
+            while d != archdir:                 # up to <arch>, while each is empty
+                try:
+                    os.rmdir(d)
+                except OSError:
+                    break
+                d = dirname(d)
+    return removed
+
+
+def _report_dangling(work_dir: str) -> None:
+    n = _remove_dangling_tarball_links(work_dir)
+    if n:
+        info("Removed %d link(s) under TARS to tarballs no longer there", n)
 
 
 def _unlink_dangling(pattern: str) -> None:
@@ -475,8 +516,6 @@ def _try_evict(entry: _SentinelEntry, dry_run: bool, assume_stored: bool = False
             shutil.rmtree(entry.pkg_dir, ignore_errors=True)
         for t in tars:                       # the store has it; the local copy goes too
             shutil.rmtree(t, ignore_errors=True)
-        if tars:
-            _unlink_dangling(join(_work_dir_of(entry), "TARS", "*", pkg_name, "*"))
         # Remove sentinel; ignore errors (e.g. raced with another cleanup).
         try:
             os.unlink(entry.sentinel_path)
@@ -854,14 +893,8 @@ def retention_sweep(args, parser):
             _rm(p, "build dir")
 
     # 7. Dangling symlinks under TARS (version links, dist-link trees).
-    for root, dirs, files in os.walk(tars) if exists(tars) else []:
-        if os.sep + "store" in root:
-            dirs[:] = []
-            continue
-        for n in files + dirs:
-            p = join(root, n)
-            if os.path.islink(p) and not exists(p):
-                _unlink_quiet(p)
+    if not dry_run:
+        _remove_dangling_tarball_links(work_dir)
 
     # 8. Sentinels whose install dir is gone.
     pkroot = join(work_dir, ".packages")
@@ -913,6 +946,8 @@ def doCleanup(args, parser):
         info("Leftovers of failed builds and jobs: %d %s, %.1f GiB freed", n,
              "would be removed (dry-run)" if dry_run else "removed",
              (_free_bytes(work_dir) - before) / 1024 ** 3)
+        if not dry_run:
+            _report_dangling(work_dir)
     entries = _list_all_sentinels(work_dir) if all_archs else _list_sentinels(work_dir, arch)
     if not entries:
         info("No package sentinels found under %s/.packages/%s", work_dir,
@@ -959,6 +994,8 @@ def doCleanup(args, parser):
                 evicted += 1
                 freed += freed_bytes
 
+    if evicted and not dry_run:
+        _report_dangling(work_dir)
     if evicted:
         info("Evicted %d package(s), freed %.1f MiB%s",
              evicted, freed / 1e6, " (dry-run)" if dry_run else "")
