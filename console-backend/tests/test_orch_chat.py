@@ -894,6 +894,12 @@ class ApiTest(_DB):
                           ("Use x [1].", None)):
             self.assertEqual(chat.gap_reason(text, docs), why, text)
         self.assertEqual(chat.gap_reason("Use x.", []), "no_sections")
+        for text in ("This question is not about bits.", "**This question is not about bits.**"):
+            self.assertEqual(chat.gap_reason(text, []), "off_topic", text)
+            self.assertEqual(chat.gap_reason(text, docs), "off_topic", text)
+        self.assertEqual(chat.gap_reason("Use x [1]; this question is not about bits only.", docs), None)
+        self.assertEqual(chat.gap_reason("This question is not about bits-console but x [1]. The "
+                                         "documentation does not cover: y.", docs), "partly")
 
     def test_at_most_so_many_a_day(self):
         with patch.object(chat, "GAPS_A_DAY", 1):

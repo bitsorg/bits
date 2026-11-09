@@ -346,7 +346,8 @@ twice the time) or with `BITS_CHAT_THINK=1`. Nothing of a chat is kept except a 
 `GET /ops/chat/feedback` for overall admins; 50 a user a day), and a question the docs did
 not answer, without who asked, for 90 days (migration 28; 500 a day): none of the sections
 found, or an answer starting "The documentation does not cover this" (`not_covered`) or ending with "The
-documentation does not cover:" (`partly`). `GET /ops/chat/gaps?after=<id>&community=` lists
+documentation does not cover:" (`partly`); a question not about bits is kept as `off_topic`, not
+for the docs. `GET /ops/chat/gaps?after=<id>&community=` lists
 them oldest first for overall admins, so whoever improves the docs keeps the last id it read.
 The worker's `chat_kept` step expires both, chat on or off. `GET /ops/chat` says whether it
 is on and whether Ollama has the model. `chat-eval/run.py` measures the search on `chat-eval/cases.yaml` and,
