@@ -644,12 +644,18 @@ class TarballsTest(unittest.TestCase):
         build = os.path.join(self.wd, "BUILD", "7" * 40)
         os.makedirs(build)
         os.utime(build, (self.old, self.old))                          # not asked for: stays
-        doCleanup(self._args(storedTarballs=True), parser=None)
+        doCleanup(self._args(storedTarballs=-1.0), parser=None)
         self.assertEqual(self._stored(), ["5" * 40, "6" * 40])
         self.assertEqual(len(_list_all_sentinels(self.wd)), 2)        # the packages stay
         self.assertTrue(os.path.isdir(build))
         self.assertEqual(self._links(), ["x86_64-el9/Allen/Allen-1-1.x86_64-el9.tar.gz",
                                          "x86_64-el9/Rec/Rec-1-1.x86_64-el9.tar.gz"])
+
+    def test_stored_tarballs_by_their_own_age(self):
+        self._tarball("Rec", "5" * 40, mtime=time.time() - 5 * 86400)   # 5 days
+        doCleanup(self._args(storedTarballs=7.0, keepRecentDays=14.0), parser=None)
+        self.assertEqual(self._stored(), ["5" * 40])                    # only the 10-day ones went
+        self.assertEqual(len(_list_all_sentinels(self.wd)), 2)
 
     def test_dry_run_counts_the_tarball(self):
         entry = [e for e in _list_all_sentinels(self.wd) if "ROOT" in e.sentinel_path][0]

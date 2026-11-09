@@ -340,6 +340,17 @@ def add_clean_arguments(subparsers, ctx):
   return clean_parser
 
 
+def _days(text):
+  """A number of days, 0 or more."""
+  try:
+    v = float(text)
+  except ValueError:
+    v = -1.0
+  if not v >= 0 or v == float("inf"):          # also nan
+    raise argparse.ArgumentTypeError("%r is not a number of days" % text)
+  return v
+
+
 def add_prune_arguments(subparsers, ctx):
   """`bits prune` — evict stale packages from a persistent workDir."""
   cleanup_parser = subparsers.add_parser(
@@ -375,12 +386,12 @@ def add_prune_arguments(subparsers, ctx):
                                     "INSTALLROOT/<hash> whose build has not run, and tmp/ entries not "
                                     "written, in --keep-recent days (1 at least). Installed packages "
                                     "are untouched."))
-  cleanup_parser.add_argument("--stored-tarballs", dest="storedTarballs", action="store_true",
-                              default=False,
+  cleanup_parser.add_argument("--stored-tarballs", dest="storedTarballs", type=_days, nargs="?",
+                              const=-1.0, default=None, metavar="DAYS",
                               help=("Remove every local store tarball the write store has (see "
                                     "--assume-stored), its package installed or not, once not used in "
-                                    "--keep-recent days (1 at least): the installed tree and the store "
-                                    "serve without it."))
+                                    "DAYS days (without DAYS, --keep-recent's; 1 at least): the installed "
+                                    "tree and the store serve without it."))
   cleanup_parser.add_argument("--assume-stored", dest="assumeStored", action="store_true", default=False,
                               help=("Take every local store tarball as in the write store, also those "
                                     "bits has not marked so (from before it marked them): for a host whose "
