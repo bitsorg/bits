@@ -679,6 +679,99 @@ class TestPublishOneLayout(unittest.TestCase):
         self.assertGreaterEqual(cp._publish_mtime({"completed_at": "bad"}, {}), before)
 
 
+class TestCompressedTars(unittest.TestCase):
+    """--compress: package tars sent gzip-compressed on the ingest paths."""
+
+    def test_submit_ingest_sends_and_signs_the_encoding(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        import bits_helpers.prepub as pp
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        tarf = os.path.join(t, "p.tar.gz"); Path(tarf).write_bytes(b"\x1f\x8bz")
+        cap = {}
+
+        class Resp:
+            status_code = 200; text = ""
+            def json(self): return {"job_id": "J"}
+
+        class Sess:
+            def post(self, url, data=None, headers=None, timeout=None):
+                cap["files"] = data.fields; return Resp()
+
+        def fake_auth(token, method, uri, fields=None, body_hash=None,
+                      bearer_auth=False, no_verify_tls=False):
+            cap["signed"] = fields; return {}
+
+        for enc in ("gzip", ""):
+            with mock.patch.object(pp, "_make_session", lambda *a, **k: Sess()), \
+                 mock.patch.object(pp, "_signed_uri", lambda u: u), \
+                 mock.patch.object(pp, "_auth_headers", fake_auth):
+                cp.submit_ingest("http://p", "t", "r", "el9/x", tarf, tar_encoding=enc)
+            if enc:
+                self.assertEqual(cap["files"]["tar_encoding"], (None, "gzip"))
+                self.assertEqual(cap["signed"]["tar_encoding"], "gzip")
+                self.assertEqual(cap["files"]["tar"][0], "pkg.tar.gz")
+            else:
+                self.assertNotIn("tar_encoding", cap["files"])
+                self.assertNotIn("tar_encoding", cap["signed"])
+                self.assertEqual(cap["files"]["tar"][0], "pkg.tar")
+
+    def test_compressor_only_when_everything_is_there(self):
+        import io
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        ctx = {"prepub_url": "http://p"}
+        for path, pigz, takes, want, said in (
+                ("staged", "/bin/pigz", True, None, "takes no compressed tar"),
+                ("ingest", None, True, None, "pigz is not installed"),
+                ("ingest-batch", "/bin/pigz", False, None, "prepub does not take gzip"),
+                ("ingest-batch", "/bin/pigz", True, "/bin/pigz", "gzip (pigz -1)")):
+            out = io.StringIO()
+            with mock.patch("shutil.which", lambda name, p=pigz: p if name == "pigz" else None), \
+                 mock.patch.object(cp, "prepub_takes_gzip", lambda c, t=takes: t):
+                self.assertEqual(cp.compressor(ctx, path, sink=out), want, path)
+            self.assertIn(said, out.getvalue())
+
+    def test_the_package_tar_is_written_compressed(self):
+        import subprocess
+        import tarfile
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        if "GNU tar" not in subprocess.run(["tar", "--version"], capture_output=True,
+                                           text=True).stdout:
+            self.skipTest("publish packs with GNU tar --hard-dereference (not bsdtar)")
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        src = os.path.join(t, "src"); root = os.path.join(src, "el9", "zlib", "1.3-1")
+        os.makedirs(os.path.join(root, "lib"))
+        Path(root, "lib", "libz.so").write_text("z" * 1000)
+        Path(root, ".meta.json").write_text("{}")
+        tar = os.path.join(t, "zlib-1.3-1.el9.tar.gz")
+        subprocess.run(["tar", "-czf", tar, "-C", src, "el9"], check=True)
+        ctx = {"repo": "r", "tars_root": t, "arch": "el9", "tmpl_prefix": "",
+               "templates": {"prefix": "/cvmfs/r", "path": "{prefix}/{pkg}/{version}"},
+               "prefix_fallback": "/cvmfs/r", "tmp_dir": t,
+               "compress": shutil.which("gzip")}   # pigz's stand-in: same -1, same output
+        spec = {"package": "zlib", "version": "1.3", "revision": "1"}
+        seen = {}
+        def publish(c, p, tarfn, label, encoding="", **k):
+            with tarfile.open(tarfn, "r:gz") as tf:
+                seen[label] = (encoding, tarfn.endswith(".tar.gz"),
+                               sorted(m.name for m in tf.getmembers() if m.isfile()))
+            return "J"
+        with mock.patch.object(cp, "tar_path", lambda s, r, a: tar), \
+             mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+             mock.patch.object(cp, "_publish_tar", publish):
+            cp.publish_one(spec, ctx)
+        self.assertEqual(seen["zlib@1.3-1(pkg)"], ("gzip", True, ["./.meta.json", "./lib/libz.so"]))
+        # A failing compressor fails the package rather than sending a short tar.
+        ctx["compress"] = shutil.which("false")
+        with mock.patch.object(cp, "tar_path", lambda s, r, a: tar), \
+             mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+             mock.patch.object(cp, "_publish_tar", publish):
+            with self.assertRaises(subprocess.CalledProcessError):
+                cp.publish_one(spec, ctx)
+
+
 def cp_tar_path(spec, ctx):
     import bits_helpers.cvmfs_publish as cp
     return cp.tar_path(spec, ctx["tars_root"], ctx["arch"])

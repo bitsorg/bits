@@ -278,6 +278,29 @@ def prepub_replace_allowed(ctx):
     return bool(_prepub_health(session, ctx["prepub_url"]).get("replace_allowed"))
 
 
+def prepub_takes_gzip(ctx):
+    """Whether prepub takes gzip-compressed tars (its health lists "gzip" in
+    tar_encodings). False for an older prepub, or one that cannot be asked."""
+    from bits_helpers import prepub as _pp
+    session = _pp._make_session(ctx.get("no_verify_tls", False),
+                                signed=not ctx.get("bearer_auth", False))
+    return "gzip" in (_prepub_health(session, ctx["prepub_url"]).get("tar_encodings") or ())
+
+
+def compressor(ctx, publish_path, sink=sys.stderr):
+    """pigz's path when the package tars are to be sent gzip-compressed (--compress):
+    on an ingest path, with pigz installed and prepub taking gzip; else None, and
+    why is said. Single-threaded gzip is slower than the link it would relieve."""
+    import shutil
+    why = ("--publish-path %s takes no compressed tar" % publish_path
+           if publish_path not in INGEST_PATHS else
+           "pigz is not installed" if not shutil.which("pigz") else
+           "prepub does not take gzip" if not prepub_takes_gzip(ctx) else "")
+    sink.write("[publish] compression: %s\n" % (
+        "gzip (pigz -1)" if not why else "off, %s: tars are sent as they are" % why))
+    return None if why else shutil.which("pigz")
+
+
 # Publish paths on which prepub runs `cvmfs_server ingest` with the tar itself;
 # ingest-batch lets prepub commit several such packages at once.
 INGEST_PATHS = ("ingest", "ingest-batch")
@@ -300,7 +323,8 @@ def _identity_fields(identity_path, identity_hash, replace):
 def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
                   direct_s3=False, bearer_auth=False, no_verify_tls=False,
                   identity_path="", identity_hash="", object_list=False,
-                  prewarm=False, replace=False, publish_path="ingest"):
+                  prewarm=False, replace=False, publish_path="ingest",
+                  tar_encoding=""):
     """POST /api/v1/jobs for the INGEST path: the raw tar IS the payload (prepub's
     gateway does the chunk/compress/upload). Mirrors the CI's `_post_tar` ingest
     branch — sends the tar plus its sha256, and SIGNS tar_sha256 so prepub can
@@ -309,8 +333,10 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
     object_list=True (needs direct_s3) has the publisher report the objects it
     stored; prewarm=True (needs object_list) lets prepub announce them to the
     Stratum 1s. replace=True (needs identity_path == path and identity_hash)
-    asks prepub to replace content another build published at path. Signed by
-    default; bearer puts the token on the request instead. Returns the job id."""
+    asks prepub to replace content another build published at path.
+    tar_encoding="gzip": tar_file is gzip-compressed (prepub decompresses it into
+    the ingest). Signed by default; bearer puts the token on the request
+    instead. Returns the job id."""
     import requests
     from bits_helpers import prepub as _pp
     url = "%s/api/v1/jobs" % prepub_url.rstrip("/")
@@ -337,6 +363,8 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         signed_fields["object_list"] = "true"
     if prewarm:
         signed_fields["prewarm"] = "true"
+    if tar_encoding:
+        signed_fields["tar_encoding"] = tar_encoding
     # identity_path: prepub re-checks it just before committing and finishes a
     # job whose content appeared meanwhile (a rerun queued behind the original).
     identity = _identity_fields(identity_path, identity_hash, replace)
@@ -362,9 +390,12 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         fields["object_list"] = (None, "true")
     if prewarm:
         fields["prewarm"] = (None, "true")
+    if tar_encoding:
+        fields["tar_encoding"] = (None, tar_encoding)
     for k, v in identity.items():
         fields[k] = (None, v)
-    fields["tar"] = ("pkg.tar", tar_file, "application/octet-stream")
+    fields["tar"] = ("pkg.tar.gz" if tar_encoding else "pkg.tar", tar_file,
+                     "application/octet-stream")
     with _pp.MultipartFile(fields) as body:   # streamed: the tar is not held in memory
         headers["Content-Type"] = body.content_type
         try:
@@ -556,8 +587,21 @@ def relocate_dependencies(pkgroot, targets):
     return leftover
 
 
+def _pack_compressed(tar_cmd, pigz, out):
+    """Run tar_cmd (writing to stdout) through `pigz -1` into out; fail on either."""
+    with open(out, "wb") as fh:
+        tar_p = subprocess.Popen(tar_cmd, stdout=subprocess.PIPE)
+        try:
+            gz_rc = subprocess.run([pigz, "-1"], stdin=tar_p.stdout, stdout=fh).returncode
+        finally:
+            tar_p.stdout.close()
+            tar_rc = tar_p.wait()
+    if gz_rc or tar_rc:   # pigz first: its failure also kills tar (SIGPIPE)
+        raise subprocess.CalledProcessError(gz_rc or tar_rc, [pigz, "-1"] if gz_rc else tar_cmd)
+
+
 def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash="",
-                 replace=False):
+                 replace=False, encoding=""):
     """Publish ONE prepared tar via the configured path; return its job id and
     remove the tar. INGEST (default): POST the tar itself with submit_ingest — the
     gateway chunks it. STAGED: cvmfs-stage the tar to an S3 prefix (always, so
@@ -565,7 +609,8 @@ def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash="",
     nothing. A non-None fp prints the mtime-independent FINGERPRINT (verify hook).
     identity is the path whose presence means this content is published, and
     identity_hash the hash it carries there; replace asks prepub to replace
-    another build's content at that path (it then needs both)."""
+    another build's content at that path (it then needs both). encoding is
+    "gzip" for a compressed tar (ingest paths only)."""
     ingest = ctx.get("publish_path") in INGEST_PATHS
     submit = ctx.get("submit", True)
     try:
@@ -579,7 +624,7 @@ def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash="",
                                  no_verify_tls=ctx.get("no_verify_tls", False),
                                  identity_path=identity,
                                  identity_hash=identity_hash, replace=replace,
-                                 publish_path=ctx["publish_path"])
+                                 publish_path=ctx["publish_path"], tar_encoding=encoding)
                    if submit else (fp or ""))
         else:
             prefix, catalog = stage_tar(
@@ -1439,15 +1484,21 @@ def publish_one(spec, ctx):
         mtime = _publish_mtime(spec, ctx)   # the time its published files get
 
         if not skip_pkg:
-            _tfd, pkg_tar = tempfile.mkstemp(suffix=".tar", dir=ctx.get("tmp_dir") or None)
+            gz = ctx.get("compress")   # pigz: the tar is written compressed, never plain
+            _tfd, pkg_tar = tempfile.mkstemp(suffix=".tar.gz" if gz else ".tar",
+                                             dir=ctx.get("tmp_dir") or None)
             os.close(_tfd)
-            subprocess.run(["tar", "-cf", pkg_tar, "--hard-dereference",
-                            "--mtime=@%d" % mtime,
-                            "-C", pkgroot, "."], check=True)
+            _tar = ["tar", "-cf", "-" if gz else pkg_tar, "--hard-dereference",
+                    "--mtime=@%d" % mtime, "-C", pkgroot, "."]
+            if gz:
+                _pack_compressed(_tar, gz, pkg_tar)
+            else:
+                subprocess.run(_tar, check=True)
             _lbl = "%s@%s(pkg)" % (pkg, vdir)
             jid = _publish_tar(ctx, path, pkg_tar, _lbl, fp=_fp,
                                identity=path if publish_once else "",
-                               identity_hash=spec.get("hash", ""), replace=replace)
+                               identity_hash=spec.get("hash", ""), replace=replace,
+                               encoding="gzip" if gz else "")
             jobs.append((jid, _lbl))
 
         # Modulefile: a package that ships etc/modulefiles/<pkg> publishes it as
@@ -1662,6 +1713,9 @@ def main(argv=None):
                          "before the release); a job that fails fails the command")
     ap.add_argument("--wait-timeout", type=int, default=3600,
                     help="seconds to wait for each job with --wait (default 3600)")
+    ap.add_argument("--compress", action="store_true",
+                    help="send each package's tar gzip-compressed (pigz -1) on the ingest "
+                         "paths, when prepub takes it; else sent as it is, and said why")
     ap.add_argument("--dry-run", action="store_true",
                     help="stage but do NOT submit — prints DRYRUN(prefix|hashC), "
                          "so the catalog hash can be checked without a graft")
@@ -1730,6 +1784,8 @@ def main(argv=None):
            "submit": not a.dry_run, "tmp_dir": os.path.join(
                os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
     os.makedirs(ctx["tmp_dir"], exist_ok=True)
+    if a.compress:
+        ctx["compress"] = compressor(ctx, ctx["publish_path"])
 
     from bits_helpers.utilities import is_virtual_package
     from bits_helpers.sync import binary_redistributable

@@ -2418,7 +2418,10 @@ shows when it was built (a reused package: when the build reused it), not 1970.
 the tar and prepub commits it alone; `ingest-batch` sends the same tar and lets
 prepub commit packages that wait at the same time together (the prepub must offer
 that path, `ingest_batch_max`); `staged` prepares the package here and sends prepub
-the result to graft.
+the result to graft. On the ingest paths `--compress` writes each package's tar
+straight through `pigz -1` and sends it gzip-compressed (prepub decompresses it into
+`cvmfs_server ingest`), when `pigz` is installed and prepub lists `gzip` in its
+health's `tar_encodings`; otherwise the tar is sent as it is and the log says why.
 
 `{day}` is a nightly path slot: when a template uses it, bits fills in the UTC
 weekday (`Mon` … `Sun`); `bits build --day DAY` (or `day:` under `system:`) sets
