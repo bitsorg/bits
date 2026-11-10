@@ -302,6 +302,19 @@ class NeededTest(unittest.TestCase):
     self.assertNotIn("not checked", b.call_args[0][0] % b.call_args[0][1:])
 
 
+  def test_with_the_legacy_init_sh_a_missing_build_require_is_needed(self):
+    # O2 built on a reused abseil whose init.sh sources ninja: ninja gone, ninja needed.
+    specs = self._specs()
+    states = dict.fromkeys(self.ORDER, plan.INSTALLED)
+    states.update(app=plan.BUILD, gcc=plan.INSTALLED, **{"gcc-prerequisites": plan.REMOTE})
+    need = plan.needed(self.ORDER, specs, states, ["app"])
+    self.assertNotIn("gcc-prerequisites", need)
+    got = plan.sourced_needed(self.ORDER, specs, states, need)
+    self.assertEqual(got - need, {"gcc-prerequisites"})       # rocm-sources: installed, kept out
+    states["rocm-sources"] = plan.BUILD
+    self.assertEqual(plan.sourced_needed(self.ORDER, specs, states, need) - need,
+                     {"gcc-prerequisites", "rocm-sources"})
+
   def test_what_defaults_and_development_packages_require_is_needed(self):
     specs = self._specs()
     specs["defaults-release"]["requires"] = ["zlib"]
@@ -320,6 +333,12 @@ class NeededTest(unittest.TestCase):
         _, _, need = plan.decide(self.ORDER, specs, None, "/sw", None, "", cfg, None,
                                  targets=["app"])
       self.assertEqual(set(self.ORDER) - need, not_needed)
+    for modules, not_needed in ((True, {"cmake", "gcc-prerequisites", "rocm-sources"}), (False, set())):
+      cfg, args = SimpleNamespace(fetch_build_requires=False), SimpleNamespace(initdotshFromModules=modules)
+      with patch.object(plan, "plan", return_value=(states, set(), True)), \
+           patch.object(plan, "banner"):
+        _, _, need = plan.decide(self.ORDER, specs, args, "/sw", None, "", cfg, None, targets=["app"])
+      self.assertEqual(set(self.ORDER) - need, not_needed)   # legacy: none installed, all needed
 
   def test_not_needed_packages_adopt_the_planned_hash(self):
     specs, planned = self._specs(), self._specs()

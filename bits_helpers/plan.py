@@ -202,6 +202,14 @@ def needed(build_order, specs, states, targets, build_targets=()):
   return out
 
 
+def sourced_needed(build_order, specs, states, need):
+  """*need* and, with the legacy init.sh, every not-needed package that is not installed:
+  a reused package's init.sh sources its build_requires (as aliBuild's does), so they
+  must be there for a build that sources it."""
+  missing = [p for p in build_order if p not in need and states.get(p) != INSTALLED]
+  return need | needed(build_order, specs, states, missing) if missing else need
+
+
 def adopt(specs, planned, packages):
   """Give the not-needed *packages* the hash and revision the plan found for them
   in *planned*: the reused packages that build with them fold those in. Marked
@@ -464,6 +472,8 @@ def decide(build_order, specs, args, work_dir, sync_helper, raw_architecture, cf
     need = set(build_order)
   else:
     need = needed(build_order, specs, states, targets or build_order[-1:], build_targets)
+    if not getattr(args, "initdotshFromModules", True):
+      need = sourced_needed(build_order, specs, states, need)
   rows = plan_rows(build_order, specs, states, need, unuploadable, source)
   print_plan(rows, can_list, *([title] if title else []))
   return rows, states, need
