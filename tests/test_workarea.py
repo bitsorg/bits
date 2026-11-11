@@ -363,6 +363,70 @@ class ApplyPatchesTest(unittest.TestCase):
                          ".bits_patched must not exist after a failed patch application")
 
 
+@unittest.skipUnless(shutil.which("git") and shutil.which("patch"), "needs git and patch")
+@patch("bits_helpers.workarea.debug", new=MagicMock())
+class GitSourcePatchTest(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = os.path.join(self.tmp, "upstream")
+        self.work_dir = os.path.join(self.tmp, "sw")
+        self.pkgdir = os.path.join(self.tmp, "recipes")
+        os.makedirs(self.repo)
+        os.makedirs(os.path.join(self.pkgdir, "patches"))
+        with open(os.path.join(self.repo, "hello.txt"), "w") as fh:
+            fh.write("hello\n")
+        git = ["git", "-C", self.repo, "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run(["git", "init", "-q", self.repo], check=True)
+        subprocess.run(git + ["add", "hello.txt"], check=True)
+        subprocess.run(git + ["commit", "-q", "-m", "init"], check=True)
+        subprocess.run(git + ["tag", "v1.0"], check=True)
+        with open(os.path.join(self.pkgdir, "patches", "hello.patch"), "w") as fh:
+            fh.write("--- a/hello.txt\n+++ b/hello.txt\n@@ -1 +1 @@\n-hello\n+hello patched\n")
+        with open(os.path.join(self.pkgdir, "patches", "new.patch"), "w") as fh:
+            fh.write("--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _checkout(self, patches=("hello.patch",)):
+        from bits_helpers.workarea import checkout_sources
+        from bits_helpers.utilities import short_commit_hash
+        spec = OrderedDict((
+            ("package", "mylib"),
+            ("version", "1.0"),
+            ("source", self.repo),
+            ("tag", "v1.0"),
+            ("commit_hash", "v1.0"),
+            ("scm", Git()),
+            ("is_devel_pkg", False),
+            ("pkgdir", self.pkgdir),
+            ("patches", list(patches)),
+        ))
+        checkout_sources(spec, self.work_dir, None, False)
+        return os.path.join(self.work_dir, "SOURCES", "mylib", "1.0", short_commit_hash(spec))
+
+    def _read(self, source_dir, name):
+        with open(os.path.join(source_dir, name)) as fh:
+            return fh.read()
+
+    def test_fresh_clone_is_patched(self):
+        self.assertEqual(self._read(self._checkout(), "hello.txt"), "hello patched\n")
+
+    def test_existing_checkout_is_patched_again(self):
+        self._checkout()
+        self.assertEqual(self._read(self._checkout(), "hello.txt"), "hello patched\n")
+
+    def test_a_file_a_patch_creates_stays_on_every_build(self):
+        for _ in range(3):
+            self.assertEqual(self._read(self._checkout(["new.patch"]), "new.txt"), "new\n")
+
+    def test_a_file_from_a_dropped_patch_is_removed(self):
+        self._checkout(["hello.patch", "new.patch"])
+        source_dir = self._checkout(["hello.patch"])
+        self.assertFalse(os.path.exists(os.path.join(source_dir, "new.txt")))
+
+
 class SourceCheckoutValidityTest(unittest.TestCase):
     """_is_valid_source_checkout: a git source dir with no .git is not usable."""
 

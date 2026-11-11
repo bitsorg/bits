@@ -52,6 +52,9 @@ class Sapling(SCM):
   def listRefsCmd(self, repository):
     return ["bookmark", "--list", "--remote", "-R", repository]
 
+  def cleanCmd(self):
+    return ["clean", "--all"]
+
   def diffCmd(self, directory):
     return "cd %s && sl diff && sl status" % directory
 
