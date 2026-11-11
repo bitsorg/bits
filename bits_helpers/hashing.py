@@ -12,7 +12,7 @@ import time
 from collections import OrderedDict
 
 from bits_helpers.build_epoch import BUILD_EPOCH
-from bits_helpers.log import debug
+from bits_helpers.log import debug, dieOnError
 from bits_helpers.utilities import Hasher
 
 
@@ -330,7 +330,10 @@ def storeHashes(package, specs, considerRelocation):
     # If this package is a dev package, and it depends on another dev pkg, then
     # this package's hash shouldn't change if the other dev package was
     # changed, so that we can just rebuild this one incrementally.
-    h_all(specs[dep]["hash"] if spec["is_devel_pkg"] else hash_and_devel_hash)
+    if specs[dep].get("_consumer_hash"):
+      h_all(specs[dep]["_consumer_hash"])
+    else:
+      h_all(specs[dep]["hash"] if spec["is_devel_pkg"] else hash_and_devel_hash)
     # The deps_hash should always change, however, so we actually rebuild the
     # dependent package (even if incrementally).
     dh(hash_and_devel_hash)
@@ -364,3 +367,29 @@ def storeHashes(package, specs, considerRelocation):
   spec["local_hashes"] = [spec["local_revision_hash"]] + \
     list({h.hexdigest() for _, _, h, in h_alternatives} - {spec["local_revision_hash"]})
   _apply_revision_policy(spec)
+  _store_consumer_hash(package, specs, considerRelocation)
+
+
+def _store_consumer_hash(package, specs, considerRelocation):
+  """consumer_hash_as: {version, tag}: dependents fold this package's remote hash
+  as it was at that version and git tag, so bumping it does not rebuild them.
+  Not applied to a development checkout, whose edits must reach dependents."""
+  spec = specs[package]
+  if "consumer_hash_as" not in spec:
+    return
+  pin = spec["consumer_hash_as"]
+  dieOnError(not (isinstance(pin, dict) and isinstance(pin.get("version"), str)
+                  and isinstance(pin.get("tag"), str) and pin["version"] and pin["tag"]),
+             "%s: consumer_hash_as needs a quoted version and tag" % package)
+  dieOnError("source" not in spec or "sources" in spec,
+             "%s: consumer_hash_as needs a git source: and no sources:" % package)
+  tag, refs = pin["tag"], spec.get("scm_refs") or {}
+  dieOnError(refs and "refs/tags/" + tag not in refs,
+             "%s: consumer_hash_as tag %s is not a tag of the source" % (package, tag))
+  if spec.get("is_devel_pkg"):
+    return
+  alias = {k: v for k, v in spec.items() if k not in ("consumer_hash_as", "force_rebuild",
+    "remote_revision_hash", "local_revision_hash", "force_revision")}
+  alias.update(version=pin["version"], tag=tag, commit_hash=tag)  # a tag is its own commit_hash
+  storeHashes(package, dict(specs, **{package: alias}), considerRelocation)
+  spec["_consumer_hash"] = alias["remote_revision_hash"]
