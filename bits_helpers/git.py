@@ -70,6 +70,9 @@ class Git(SCM):
   def checkoutCmd(self, tag):
     return ["checkout", "-f", tag]
 
+  def cleanCmd(self):
+    return ["clean", "-fdxq"]
+
   def fetchCmd(self, remote, *refs):
     return ["fetch", "-f", "--prune"] + clone_speedup_options() + [remote, *refs]
 
