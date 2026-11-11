@@ -282,8 +282,12 @@ class Settings:
         self.store_token_issuer = e.get("BITS_STORE_TOKEN_ISSUER", "")
         self.store_token_audience = e.get("BITS_STORE_TOKEN_AUDIENCE", "")
         self.store_token_ttl = int(e.get("BITS_STORE_TOKEN_TTL", "28800") or "28800")
-        if not 60 <= self.store_token_ttl <= 7 * 86400:
-            raise ValueError("BITS_STORE_TOKEN_TTL: 60 seconds to 7 days")
+        # ... and a token `bits login` gets (approved with a passkey): a day.
+        self.store_cli_token_ttl = int(e.get("BITS_STORE_CLI_TOKEN_TTL", "86400") or "86400")
+        for name, v in (("BITS_STORE_TOKEN_TTL", self.store_token_ttl),
+                        ("BITS_STORE_CLI_TOKEN_TTL", self.store_cli_token_ttl)):
+            if not 60 <= v <= 7 * 86400:
+                raise ValueError("%s: 60 seconds to 7 days" % name)
 
     def store_tokens_configured(self) -> bool:
         return bool(self.store_token_key and self.store_token_kid

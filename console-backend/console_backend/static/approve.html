@@ -42,6 +42,17 @@
   <button id="approveBtn" onclick="approve()">Approve &amp; sign</button>
 </section>
 
+<section id="storeSec" class="hidden">
+  <p>A terminal asks for a store token: it will read and write this
+  group's builds and manifests in the store <b>as you</b>, for <span id="storeHours"></span>
+  hours. Approve only if <b>your own terminal</b> shows this code; if not, close this page.</p>
+  <p class="code" id="storeCode"></p>
+  <p style="margin:.2rem 0"><span class="muted">Group:</span> <span id="storeGroup"></span></p>
+  <p style="margin:.2rem 0"><span class="muted">Requested from (as the terminal says, not
+  verified):</span> <span id="storeFrom"></span></p>
+  <button id="storeBtn" onclick="approve()">Give the terminal a store token</button>
+</section>
+
 <section id="preSec" class="hidden">
   <div class="muted">Approve signing for this build. First check that the code
     below is the one shown in <b>your</b> terminal — if not, do not approve.</div>
@@ -66,12 +77,17 @@
 // Same-origin backend (this page is served BY the backend), so fetches are relative
 // and need no bearer — the passkey assertion is the authorization.
 const $ = id => document.getElementById(id);
-// Two modes: ?approve=<id> signs a manifest (/sign/cli); ?preapprove=<id>
-// pre-approves a build for later signing by the manifests CI (/preapprove/cli).
+// Three modes: ?approve=<id> signs a manifest (/sign/cli); ?preapprove=<id>
+// pre-approves a build for later signing by the manifests CI (/preapprove/cli);
+// ?store=<id> gives `bits login` a store token (/store/cli).
 const params = new URLSearchParams(location.search);
 const PRE = params.has('preapprove');
-const reqId = PRE ? params.get('preapprove') : params.get('approve');
-const API = PRE ? '/preapprove/cli/' : '/sign/cli/';
+const STORE = !PRE && params.has('store');
+const reqId = PRE ? params.get('preapprove') : STORE ? params.get('store') : params.get('approve');
+const API = PRE ? '/preapprove/cli/' : STORE ? '/store/cli/' : '/sign/cli/';
+// A refused pre-approval or store token is final (the passkey response was spent).
+const FINAL = PRE || STORE;
+const SEC = PRE ? 'preSec' : STORE ? 'storeSec' : 'reqSec';
 
 const log = (msg, cls) => {
   const line = document.createElement('div');
@@ -116,21 +132,33 @@ async function load() {
   if (!reqId) { setStatus('No request id in the link.', 'err'); return; }
   let r;
   if (PRE) { document.title = 'bits — approve build'; $('title').textContent = 'Approve build signing'; }
+  if (STORE) { document.title = 'bits — store token'; $('title').textContent = 'Approve a store token'; }
   try { r = await fetch(API + encodeURIComponent(reqId)); }
   catch (e) { setStatus('Cannot reach the signing backend. On CERN Wi-Fi/VPN?', 'err'); return; }
   if (!r.ok) { setStatus('Cannot load request: ' + await errText(r), 'err'); return; }
   const req = await r.json();
   if (req.status !== 'pending') {
-    const done = req.status === 'signed' || req.status === 'approved';
+    const done = ['signed', 'approved', 'delivered'].includes(req.status);
     setStatus('This request is ' + req.status + '.', done ? 'ok' : 'err'); return;
   }
   REQ = req;
   if (PRE) { showPre(req); return; }
+  if (STORE) { showStore(req); return; }
   $('groups').textContent = (req.groups || []).join(', ') || '(none)';
   $('digest').textContent = req.digest;
   $('manifest').textContent = req.manifest;
   setStatus('Ready to approve.', '');
   $('reqSec').classList.remove('hidden');
+}
+
+function showStore(req) {
+  $('storeCode').textContent = req.code;
+  $('storeGroup').textContent = req.group;
+  $('storeHours').textContent = String(req.hours);
+  const rb = req.requested_by || {};
+  $('storeFrom').textContent = [rb.user, rb.host].filter(Boolean).join(' @ ') || '(not given)';
+  setStatus('Ready to approve.', '');
+  $('storeSec').classList.remove('hidden');
 }
 
 function showPre(req) {
@@ -153,7 +181,7 @@ function showPre(req) {
 }
 
 async function approve() {
-  const btn = $(PRE ? 'preBtn' : 'approveBtn'); btn.disabled = true;
+  const btn = $(PRE ? 'preBtn' : STORE ? 'storeBtn' : 'approveBtn'); btn.disabled = true;
   try {
     log('Approve with your passkey…');
     // Decode a FRESH copy each attempt: decodeRequestOptions rewrites challenge/
@@ -166,14 +194,14 @@ async function approve() {
         body: JSON.stringify({ assertion: packAssertion(asr) }) });
     if (!r.ok) {
       log('Approve failed: ' + await errText(r), 'err');
-      // A refused pre-approval is final (the passkey response was spent).
-      const st = PRE ? ((await (await fetch(API + encodeURIComponent(reqId))).json()).status || 'expired') : 'pending';
+      const st = FINAL ? ((await (await fetch(API + encodeURIComponent(reqId))).json()).status || 'expired') : 'pending';
       if (st === 'pending') btn.disabled = false; else setStatus('This request is ' + st + '.', 'err');
       return;
     }
-    log(PRE ? 'Pre-approved ✓ — the terminal will continue.' : 'Signed ✓ — the terminal will pick it up.', 'ok');
-    setStatus((PRE ? 'Pre-approved' : 'Signed') + ' ✓ — you can close this.', 'ok');
-    $(PRE ? 'preSec' : 'reqSec').classList.add('hidden');
+    log(PRE ? 'Pre-approved ✓ — the terminal will continue.' : STORE ? 'Approved ✓ — the terminal will pick up its token.'
+        : 'Signed ✓ — the terminal will pick it up.', 'ok');
+    setStatus((PRE ? 'Pre-approved' : STORE ? 'Approved' : 'Signed') + ' ✓ — you can close this.', 'ok');
+    $(SEC).classList.add('hidden');
   } catch (e) { log('Approve error: ' + e, 'err'); btn.disabled = false; }
 }
 

@@ -10,6 +10,7 @@ frontend is a separate origin (GitLab Pages), allowed via CORS.
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -43,6 +44,7 @@ cli_signs = session.CliSignStore()
 # set (they survive a restart; grants and uses are audit events), else in memory.
 preapprovals = orch_approvals.Preapprovals(lambda: settings)
 cli_preapprovals = session.CliSignStore(max_entries=32)   # pending CLI pre-approvals
+cli_store_tokens = session.CliSignStore(max_entries=32)   # pending `bits login`s
 enroll_grants = session.EnrollmentGrantStore()
 reg_challenges = session.RegChallengeStore()
 oidc_states = session.OidcStateStore()
@@ -794,6 +796,12 @@ async def store_token_issue(request: Request):
     if not authz.is_admin_for(user, group, await run_in_threadpool(_resolved_policy, data["token"])):
         audit.record("store_token_denied", user=user, group=group, principal="human")
         raise HTTPException(403, "%s is not an admin for community %s" % (user, group))
+    out = _sign_store_token(user, group, caps, settings.store_token_ttl)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+def _sign_store_token(user, group, caps, ttl, **audit_extra):
+    """Sign and audit a store token: {token, group, expires, capabilities}."""
     try:
         signer = store_token.StoreTokenSigner.from_seed(
             settings.store_token_kid, settings.store_token_key,
@@ -803,14 +811,123 @@ async def store_token_issue(request: Request):
     jti = secrets.token_urlsafe(16)
     now = int(time.time())
     try:
-        tok = signer.sign(user, group, caps, settings.store_token_ttl, now=now, jti=jti)
+        tok = signer.sign(user, group, caps, ttl, now=now, jti=jti)
     except ValueError as exc:    # e.g. a user name the token format reserves
         raise HTTPException(500, "store token not signed: %s" % exc)
-    audit.record("store_token", user=user, group=group, jti=jti,
-                 exp=now + settings.store_token_ttl, principal="human")
-    return JSONResponse({"token": tok, "group": group, "expires": now + settings.store_token_ttl,
-                         "capabilities": [{"m": m, "p": p} for m, p in caps]},
-                        headers={"Cache-Control": "no-store"})
+    audit.record("store_token", user=user, group=group, jti=jti, exp=now + ttl,
+                 principal="human", **audit_extra)
+    return {"token": tok, "group": group, "expires": now + ttl,
+            "capabilities": [{"m": m, "p": p} for m, p in caps]}
+
+
+def _require_store_cli():
+    if not (settings.store_tokens_configured() and settings.webauthn_configured()):
+        raise HTTPException(503, "store tokens or WebAuthn are not configured")
+
+
+@app.post("/store/cli/request")
+async def store_cli_request(request: Request):
+    """`bits login`, step 1: a terminal asks for a group's store token; an admin
+    approves on another device with a passkey. Unauthenticated, as /preapprove/cli:
+    the approval is the authorization. The token is a secret, so the terminal
+    polls with its own `poll` secret, never the request id in the approval link."""
+    _require_store_cli()
+    try:
+        payload = json.loads(await _read_capped(request, 4096))
+        group = payload["group"]
+        store_token.admin_capabilities(group)
+        shown = {k: _shown(payload.get(k)) for k in ("host", "user")}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise HTTPException(400, "expected {group, host?, user?}")
+    req_id, poll = secrets.token_urlsafe(24), secrets.token_urlsafe(32)
+    code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(6))
+    digest = hashlib.sha256(json.dumps(["store-token", group, req_id]).encode()).digest()
+    cli_store_tokens.put(req_id, {"group": group, "code": code, "shown": shown,
+                                  "poll": hashlib.sha256(poll.encode()).digest(),
+                                  "challenge": _new_challenge(digest), "status": "pending",
+                                  "token": None})
+    return {"request_id": req_id, "poll": poll, "code": code, "group": group}
+
+
+@app.get("/store/cli/{req_id}")
+def store_cli_pending(req_id: str):
+    """Approver: the pending request and its WebAuthn challenge."""
+    _require_store_cli()
+    req = cli_store_tokens.get(req_id)
+    if not req:
+        raise HTTPException(404, "no such request")
+    if req["status"] != "pending":
+        return {"status": req["status"], "group": req["group"]}
+    options = json.loads(webauthn_rp.authentication_options(settings, req["challenge"], []))
+    return {"status": "pending", "group": req["group"], "code": req["code"],
+            "requested_by": req["shown"], "hours": settings.store_cli_token_ttl / 3600,
+            "publicKey": options}
+
+
+@app.post("/store/cli/{req_id}/approve")
+async def store_cli_approve(req_id: str, request: Request):
+    """Approver: verify the passkey assertion; if its user administers the group,
+    sign the token and keep it for the terminal. A verified assertion is spent:
+    any refusal after it ends the request."""
+    _require_store_cli()
+    raw = await _read_capped(request, _APPROVE_MAX)
+    try:
+        assertion = json.loads(raw)["assertion"]
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "expected {assertion}")
+    req = cli_store_tokens.get(req_id)
+    if not req or req["status"] != "pending":
+        raise HTTPException(400, "unknown or already-handled request")
+    cred_id = (assertion.get("rawId") or assertion.get("id")
+               if isinstance(assertion, dict) else None)
+    found = credstore.user_for(cred_id)
+    if not found:
+        raise HTTPException(400, "unknown credential")
+    user, cred = found
+    req["status"] = "approving"     # claimed before the first await, as cli_approve
+    try:
+        new_count = await run_in_threadpool(
+            webauthn_rp.verify_authentication, settings, json.dumps(assertion),
+            req["challenge"], cred)
+    except Exception:
+        req["status"] = "pending"
+        audit.record("store_token_denied", user=user, group=req["group"],
+                     reason="approval_failed", principal="human", via="cli")
+        raise HTTPException(403, "approval verification failed")
+    except BaseException:          # e.g. client disconnect: don't strand the claim
+        req["status"] = "pending"
+        raise
+    try:
+        credstore.update_sign_count(user, cred_id, new_count)
+        group = req["group"]
+        if not authz.is_admin_for(user, group, await run_in_threadpool(_resolved_policy, None)):
+            audit.record("store_token_denied", user=user, group=group, principal="human", via="cli")
+            raise HTTPException(403, "%s is not an admin for community %s" % (user, group))
+        req["token"] = dict(_sign_store_token(
+            user, group, store_token.admin_capabilities(group), settings.store_cli_token_ttl,
+            via="cli", requested_by=req["shown"]), user=user)
+    except BaseException:
+        req["status"] = "refused"
+        raise
+    req["status"] = "approved"
+    return {"status": "approved", "group": group}
+
+
+@app.post("/store/cli/{req_id}/result")
+async def store_cli_result(req_id: str, request: Request):
+    """Terminal: poll with {poll}. The token is handed over once, then forgotten."""
+    try:
+        poll = json.loads(await _read_capped(request, 1024))["poll"]
+        poll_h = hashlib.sha256(poll.encode()).digest()
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise HTTPException(400, "expected {poll}")
+    req = cli_store_tokens.get(req_id)
+    if not req or not hmac.compare_digest(req["poll"], poll_h):
+        raise HTTPException(404, "no such request")
+    if req["status"] == "approved" and req["token"]:
+        out, req["token"], req["status"] = req["token"], None, "delivered"
+        return JSONResponse(dict(out, status="approved"), headers={"Cache-Control": "no-store"})
+    return {"status": req["status"]}
 
 
 @app.post("/sign")
