@@ -1510,6 +1510,10 @@ def add_build_arguments(subparsers, ctx):
                    help=("Build as if on the specified architecture. When used with --docker, build "
                          "inside a Docker image for the specified architecture. Default is the current "
                          "system architecture, which is '%(default)s'."))
+  build_parser.add_argument("--run-tests", dest="runTests", action="store_true", default=None,
+                            help="Run the top package's UnitTest() (bits-recipe-tools) and report "
+                                 "its result; a test failure does not fail the build. Default: "
+                                 "run_tests under the defaults' system:.")
   build_parser.add_argument("--day", dest="day", metavar="DAY", default=None,
                             help="Value for the {day} nightly path slot (e.g. Fri). "
                                  "Default: bits auto-fills the UTC weekday when a "

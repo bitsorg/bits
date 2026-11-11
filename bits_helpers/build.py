@@ -3068,6 +3068,9 @@ def build_one_package(p, ctx):
                 else args.builders),
       oversubscribe=cfg.oversubscribe,
       default_mem_per_job=cfg.mem_per_job_default))),
+    # bits-recipe-tools run UnitTest() for the top package only (TestRecipe).
+    ("BITS_RUN_TESTS", "1" if getattr(args, "runTests", False) and spec["package"] == mainPackage else ""),
+    ("BITS_TEST_RUN_ID", getattr(args, "testRunId", "") if spec["package"] == mainPackage else ""),
     ("PKGFAMILY", spec.get("pkg_family", "")),
     ("PKGHASH", spec["hash"]),
     ("PKGNAME", spec["package"]),
@@ -3694,6 +3697,10 @@ def doBuild(args, parser):
                                 bool(getattr(args, "docker", False)))
   # The cache of sources builds download themselves (issue #129), if any.
   args.fetchCache = fetch_cache.cache_name(_system_opt("fetch_cache", None))
+  # Tests of the top package (--run-tests, or run_tests: under system:). Not hashed.
+  if getattr(args, "runTests", None) is None:
+    args.runTests = str(_system_opt("run_tests", "")).strip().lower() in ("1", "true", "yes", "on")
+  args.testRunId = "%d-%d" % (time.time(), os.getpid())   # ties a result to this run
   if getattr(args, "sandboxNetwork", None) is None:
     _dn = _system_opt("sandbox_network", "on")
     if isinstance(_dn, bool):
@@ -4665,6 +4672,10 @@ def doBuild(args, parser):
   if untrackedFilesDirectories:
     banner("Untracked files in the following directories resulted in a rebuild of "
            "the associated package and its dependencies:\n%s\n\nPlease commit or remove them to avoid useless rebuilds.", "\n".join(untrackedFilesDirectories))
+
+  if getattr(args, "runTests", False):
+    from bits_helpers.test_results import report_tests
+    report_tests(args.workDir, specs[mainPackage], args.testRunId)
 
   # Finalise the build manifest.
   if getattr(args, "manifest", None) is not None:
