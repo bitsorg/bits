@@ -95,3 +95,15 @@ class StoreTokenSigner:
         if len(tok) > MAX_LEN:
             raise ValueError("token of %d bytes: at most %d" % (len(tok), MAX_LEN))
         return tok
+
+
+_GROUP = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+
+def admin_capabilities(group):
+    """What a group's admin may do in the store (ADR 0004 B): read and write the
+    group's builds and manifests, read the sources."""
+    if not isinstance(group, str) or not _GROUP.fullmatch(group):
+        raise ValueError("group %r: a lower-case community name" % (group,))
+    return [(m, "/%s/%s/**" % (kind, group)) for kind in ("store", "manifests")
+            for m in METHODS] + [("GET", "/sources/**")]

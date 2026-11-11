@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials, credproxy,
-               forge_ops, identity, session, signproxy, webauthn_rp)
+               forge_ops, identity, session, signproxy, store_token, webauthn_rp)
 from fastapi.responses import RedirectResponse
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
@@ -773,6 +773,44 @@ async def _do_sign(body, groups, signer, principal):
     audit.record("sign", signer=signer, groups=groups, digest=digest,
                  key_id=envelope["key_id"], **principal)
     return {"envelope": envelope, "groups": groups, "signed_by": signer, "digest": digest}
+
+
+@app.post("/store/token")
+async def store_token_issue(request: Request):
+    """A store token for a group, to read and write the store without storage keys
+    (bits-store). Community admins only for now; members follow with the store's
+    own roles. Body: {group}."""
+    if not settings.store_tokens_configured():
+        raise HTTPException(503, "store tokens are not configured")
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    try:
+        group = json.loads(await _read_capped(request, 4096))["group"]
+        caps = store_token.admin_capabilities(group)
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "expected {group}, a community name")
+    user = data["user"]
+    if not authz.is_admin_for(user, group, await run_in_threadpool(_resolved_policy, data["token"])):
+        audit.record("store_token_denied", user=user, group=group, principal="human")
+        raise HTTPException(403, "%s is not an admin for community %s" % (user, group))
+    try:
+        signer = store_token.StoreTokenSigner.from_seed(
+            settings.store_token_kid, settings.store_token_key,
+            settings.store_token_issuer, settings.store_token_audience)
+    except ValueError as exc:
+        raise HTTPException(503, "store tokens: %s" % exc)
+    jti = secrets.token_urlsafe(16)
+    now = int(time.time())
+    try:
+        tok = signer.sign(user, group, caps, settings.store_token_ttl, now=now, jti=jti)
+    except ValueError as exc:    # e.g. a user name the token format reserves
+        raise HTTPException(500, "store token not signed: %s" % exc)
+    audit.record("store_token", user=user, group=group, jti=jti,
+                 exp=now + settings.store_token_ttl, principal="human")
+    return JSONResponse({"token": tok, "group": group, "expires": now + settings.store_token_ttl,
+                         "capabilities": [{"m": m, "p": p} for m, p in caps]},
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.post("/sign")

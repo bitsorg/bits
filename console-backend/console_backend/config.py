@@ -274,6 +274,21 @@ class Settings:
         self.chat_explain_think = (e.get("BITS_CHAT_EXPLAIN_THINK", "1") or "").strip().lower() in (
             "1", "true", "yes")
 
+        # Store tokens (bits-store docs/TOKEN.md): the signing key's base64url seed,
+        # its id in bits-store's config, bits-store's issuer and audience, and how long
+        # a token lasts. Off until all four are set.
+        self.store_token_key = e.get("BITS_STORE_TOKEN_KEY", "")
+        self.store_token_kid = e.get("BITS_STORE_TOKEN_KID", "")
+        self.store_token_issuer = e.get("BITS_STORE_TOKEN_ISSUER", "")
+        self.store_token_audience = e.get("BITS_STORE_TOKEN_AUDIENCE", "")
+        self.store_token_ttl = int(e.get("BITS_STORE_TOKEN_TTL", "28800") or "28800")
+        if not 60 <= self.store_token_ttl <= 7 * 86400:
+            raise ValueError("BITS_STORE_TOKEN_TTL: 60 seconds to 7 days")
+
+    def store_tokens_configured(self) -> bool:
+        return bool(self.store_token_key and self.store_token_kid
+                    and self.store_token_issuer and self.store_token_audience)
+
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks
         # endpoints are DISCOVERED from the issuer's well-known doc (the explicit
