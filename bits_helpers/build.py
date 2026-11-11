@@ -3640,7 +3640,7 @@ def doBuild(args, parser):
   # recipe prefix is only a local-dev fallback. The recipe still owns the LAYOUT.
   from bits_helpers.cvmfs_layout import (
       resolve_cvmfs_templates, resolve_release, path_release, bake_release,
-      resolve_day, bake_day)
+      resolve_day, bake_day, bake_variables)
   args.cvmfsTemplates = resolve_cvmfs_templates(
       defaultsMeta, os.environ.get("BITS_CVMFS_PREFIX") or None)
   # {release} is a build-level constant — the release LABEL resolved from the same
@@ -3670,7 +3670,14 @@ def doBuild(args, parser):
     for _k in _tmpl_keys:
       if args.cvmfsTemplates.get(_k):
         _t = bake_release(args.cvmfsTemplates[_k], _release_path)
-        args.cvmfsTemplates[_k] = bake_day(_t, _day) if _day is not None else _t
+        _t = bake_day(_t, _day) if _day is not None else _t
+        # Defaults variables as path slots, e.g. {root_release}; --set ones included.
+        # Not in the prefixes: those are the authorization boundary.
+        try:
+          args.cvmfsTemplates[_k] = _t if _k in ("prefix", "user_prefix") else \
+            bake_variables(_t, defaultsMeta.get("variables"))
+        except ValueError as exc:
+          dieOnError(True, "CVMFS %s template: %s" % (_k, exc))
     # The release (path form, "" on the main line): a release view needs one.
     args.cvmfsTemplates["release"] = _release_path
 

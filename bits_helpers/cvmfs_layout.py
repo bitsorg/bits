@@ -304,6 +304,35 @@ def bake_day(template, day):
                     .replace("{day}", ""))
 
 
+_SLOT = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_SEGMENT_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+
+
+def bake_variables(template, variables):
+    """Fill {name} for each defaults variable a template uses (e.g. {root_release}),
+    like {release}. A value must be one path segment; an empty one drops its slot,
+    which must then be a whole segment. Raises ValueError, also for a {name} that is
+    neither a defaults variable nor a token bits fills itself."""
+    from bits_helpers.cvmfs_publish import _TOKENS   # the per-package tokens
+    if not template:
+        return template
+    variables = variables or {}
+    for name in sorted(set(_SLOT.findall(template)) - set(_TOKENS) - {"prefix", "release", "day"}):
+        if name not in variables:
+            raise ValueError("{%s} is neither a defaults variable nor a template token" % name)
+        value = "" if variables[name] is None else str(variables[name]).strip()
+        if value and not _SEGMENT_VALUE.fullmatch(value):
+            raise ValueError("variable %s=%r is not a single path segment" % (name, value))
+        slot = "{%s}" % name
+        if value:
+            template = template.replace(slot, value)
+        elif re.search(r"[^/]%s|%s[^/]" % (re.escape(slot), re.escape(slot)), template):
+            raise ValueError("variable %s is empty but {%s} is part of a segment" % (name, name))
+        else:
+            template = template.replace(slot + "/", "").replace("/" + slot, "").replace(slot, "")
+    return template
+
+
 def swap_repository(path, repository):
     """Replace the leading /cvmfs/<repo> of an absolute path with
     /cvmfs/<repository>. Template-relative values ({prefix}/...) and an empty

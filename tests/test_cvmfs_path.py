@@ -159,6 +159,16 @@ class CvmfsPathHandlerTest(unittest.TestCase):
         self.assertEqual(self._run(admin=True, prefix="/cvmfs/test.cvmfs.io"),
                          "/cvmfs/test.cvmfs.io/lhcb/releases/GENIE/R-3_06_02")
 
+    def test_defaults_variable_as_slot(self):
+        CP.parseDefaults = lambda *a, **k: ("", {}, {}, {
+            "variables": {"root_release": "master"},
+            "system": {"prefix": "/cvmfs/g", "cvmfs_releases_template": "{prefix}/n/{day}/{root_release}/{pkg}"}})
+        self.assertEqual(self._run(admin=True, day="Wed"), "/cvmfs/g/n/Wed/master/GENIE")
+        self.assertEqual(self._run(admin=True, day="Wed", flavours={"root_release": "v6-36-02"}),
+                         "/cvmfs/g/n/Wed/v6-36-02/GENIE")
+        with self.assertRaises(SystemExit):
+            self._run(admin=True, flavours={"root_release": "a/b"})
+
     def test_unknown_token_aborts(self):
         CP.parseDefaults = lambda *a, **k: ("", {}, {}, {"system": {
             "prefix": "/cvmfs/g", "cvmfs_releases_template": "{prefix}/{pkg}/{nope}"}})

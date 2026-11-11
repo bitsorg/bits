@@ -2407,7 +2407,10 @@ the release view, it merges into an existing directory and so needs prepub's
 ingest path; two publishes adding the same links at the same time make the
 second one fail (the next publish finds them there). Template tokens: `{pkg} {version} {revision} {tag}`
 (version-revision) `{family} {platform}` (console platform, e.g. `x86_64-el9`)
-`{arch}` (build arch, e.g. `x86_64-el9-gcc15-opt`) `{release}` `{day}`.
+`{arch}` (build arch, e.g. `x86_64-el9-gcc15-opt`) `{release}` `{day}`, and any
+variable of the defaults as `{name}` (e.g. `{root_release}`, also from `--set`),
+filled for the whole build like `{release}`: an empty value drops its segment, and a
+value must be one path segment (letters, digits, `._+-`).
 
 A store tarball's file times are zero (it is reproducible, see the Pack step of the
 [build lifecycle](#build-lifecycle-with-a-store)); the published files get the time
