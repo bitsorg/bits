@@ -73,6 +73,7 @@ Trust and compliance:
 
 Binary store:
   store SUBCOMMAND        ls, cat, verify, stats, upload, rm, gc
+  login --group GROUP     a bits-store token for GROUP (passkey approval)
 
 Documentation: https://github.com/bitsorg/bits/tree/main/docs
 EoF
@@ -742,6 +743,13 @@ fi
 if [[ "${1:-}" == "trace" ]]; then
   shift
   BITS_SELF="${BITSDIR}" exec "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.trace import main; sys.exit(main())' "$@"
+fi
+
+# `bits login --group G`: a bits-store token from the console backend, written to
+# ~/.bits/token. No work dir: it talks to the backend only.
+if [[ "${1:-}" == "login" ]]; then
+  shift
+  BITS_SELF="${BITSDIR}" exec "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.store_login import main; sys.exit(main())' "$@"
 fi
 
 # `bits cvmfs {platforms,show,summary,stage,publish} …` → the CVMFS group.

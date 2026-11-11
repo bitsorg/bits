@@ -1567,6 +1567,33 @@ It authenticates with your GitLab token, as `bits certify` does (`~/.bits/gitlab
 
 ---
 
+### bits login
+
+A bits-store token for a group, written to `~/.bits/token` (mode 0600), so the
+store can be read and written without storage keys.
+
+```bash
+bits login --group lcg
+```
+
+It shows a link (and QR code) to the console's approve page and a code. A
+community admin of the group opens the link, checks the code matches, and approves
+with their passkey; the token is then issued in their name, for a day
+(`BITS_STORE_CLI_TOKEN_TTL` on the console), with read and write on the group's
+store and manifests and read on the sources. Only this terminal can collect it:
+the link alone does not give it out.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--group GROUP` | (required) | The group (community). |
+| `--console URL` | `$BITS_CONSOLE_URL`, else site `console.backend_url` | The console backend. |
+| `--token-file FILE` | `~/.bits/token` | Where the token is written. |
+| `--timeout SECONDS` | 600 | How long to wait for the approval. |
+| `--console-cafile FILE` | system | CA bundle for the console's certificate. |
+| `--console-insecure` | off | Allow `http://` and skip TLS verification (a trusted testbed only). |
+
+---
+
 ### bits sbom
 
 Export a build manifest as a Software Bill of Materials: CycloneDX 1.6 JSON
