@@ -375,6 +375,69 @@ class SbomIndexTest(Fixture):
                           ("CVE-P-tool", ["perf@1"], "not_affected"),
                           ("CVE-P-tool-only", ["elfutils@system", "bpf@1"], "not_affected")])
 
+    def test_a_development_head_has_the_fixes_of_its_releases(self):
+        from console_backend.orch import sbom_history, sbom_plan, schedules
+        for vuln, sev, fixed in (("CVE-R1", "high", ["6.32.02"]), ("CVE-R2", "critical", [])):
+            for bid in ("b-1", "b-3"):
+                self.conn.execute("INSERT INTO sbom_findings (build_id, vuln_id, ref, severity, fixed_in)"
+                                  " VALUES (?, ?, 'ROOT@1', ?, ?)", (bid, vuln, sev, json.dumps(fixed)))
+        self.conn.execute("UPDATE sbom_packages SET version = 'master' WHERE build_id = 'b-1'"
+                          " AND ref = 'ROOT@1'")
+        slot = schedules.create(self.conn, schedules.check(
+            {"name": "ROOT master", "package": "root", "platforms": ["x86_64-el9"], "time": "02:00"},
+            "atlas"), "ann")
+        self.conn.execute("INSERT INTO schedule_runs (schedule_id, night, platform, state, content_sha256,"
+                          " build_id, created_ms, updated_ms) VALUES (?, 'n', 'x86_64-el9', 'ok', '', ?,"
+                          " 0, 0)", (slot["id"], "b-1"))
+        self.conn.commit()
+        rows = lambda: {r["build_id"]: r for r in sbom_scan.listing(self.conn)}
+        before = rows()["b-1"]
+        self.assertEqual((before["effective"]["high"], before["effective"]["critical"]), (3, 1))
+        self.assertEqual(sbom_scan.head_claims(self.conn, "b-1"), {})        # a slot without head
+        self.conn.execute("UPDATE schedules SET head = 1")
+        self.conn.commit()
+        after = rows()
+        self.assertEqual((after["b-1"]["effective"]["high"], after["b-1"]["effective"]["critical"],
+                          after["b-1"]["suppressed"]), (2, 1, 1))     # CVE-R2: no release fixes it
+        self.assertEqual(after["b-3"]["effective"]["high"], 3)         # not fired by the slot
+        (root,) = [r for r in sbom_scan.packages(self.conn, "ROOT") if r["build_id"] == "b-1"]
+        self.assertEqual({f["id"]: f["suppressed"] for f in root["findings"]},
+                         {"CVE-R1": "head", "CVE-R2": None})
+        self.assertEqual({r["build_id"]: r["suppressed"] for r in sbom_scan.affected(self.conn, "CVE-R1")},
+                         {"b-1": "head", "b-3": None})
+        self.assertEqual({r["build_id"]: r["suppressed"] for r in sbom_scan.affected(self.conn, "CVE-A")
+                          if r["name"] == "libxml2"}, dict.fromkeys(("b-1", "b-2", "b-3")))   # not the head
+        claims = sbom_scan.head_claims(self.conn, "b-1")
+        self.assertEqual(list(claims), [("cve-r1", "ROOT@1")])
+        self.assertIn("slot ROOT master", claims[("cve-r1", "ROOT@1")])
+        two = {**claims, ("cve-r1", "ROOT@2"): "fixed in 6.30.08"}       # one entry for both
+        out = vuln_triage.annotate([{"id": "CVE-R1", "affects": [{"ref": r} for r in ("ROOT@1", "ROOT@2", "x@1")]}],
+                                   {}, vuln_triage.Rules([]), "atlas", {"x@1": "tool"}, two)
+        self.assertEqual([(v["bom-ref"], len(v["affects"]), v["analysis"]["state"], v["properties"][0]["name"])
+                          for v in out], [("CVE-R1-head", 2, "not_affected", "bits:head"),
+                                          ("CVE-R1-tool", 1, "not_affected", "bits:not_shipped")])
+        self.assertIn("; fixed in 6.30.08", out[0]["analysis"]["detail"])
+        self.assertEqual(sbom_history.counts(self.conn, {"b-1": "atlas"})["b-1"]["high"], 2)
+        plan = sbom_plan.plan(self.conn, {"atlas"})
+        upgrades = [e["name"] for p in plan["releases"] if p["build_id"] == "b-1"
+                    for w in p["waves"] for e in w["packages"]]
+        self.assertNotIn("ROOT", upgrades)
+        self.assertEqual([ln["build_id"] for c in plan["converged"] if c["name"] == "ROOT"
+                          for ln in c["releases"]], ["b-3"])          # the head is not told to upgrade
+        rid = vuln_triage.add(self.conn, "atlas", "CVE-R1", "will_not_fix", "accepted", "ann")
+        self.assertEqual({r["build_id"]: r["suppressed"] for r in sbom_scan.affected(self.conn, "CVE-R1")},
+                         {"b-1": rid, "b-3": rid})                     # a rule comes first
+        vuln_triage.revoke(self.conn, rid, "ann")
+        self.conn.execute("UPDATE sbom_packages SET version = '6.32.0' WHERE build_id = 'b-1'"
+                          " AND ref = 'ROOT@1'")                        # a release version: no head
+        self.conn.commit()
+        self.assertEqual(rows()["b-1"]["effective"]["high"], 3)
+        self.conn.execute("UPDATE sbom_packages SET version = 'master' WHERE build_id = 'b-1'"
+                          " AND ref = 'ROOT@1'")
+        self.conn.execute("UPDATE schedules SET deleted_ms = 1")       # a deleted slot claims nothing
+        self.conn.commit()
+        self.assertEqual(rows()["b-1"]["effective"]["high"], 3)
+
     def test_without_a_release_root_only_tools_are_left_out(self):
         doc = dict(SBOM, metadata={}, components=SBOM["components"] + [
             component("perf@1", "perf", "6.1", bits_sbom="tool")])

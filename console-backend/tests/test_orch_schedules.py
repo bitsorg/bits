@@ -54,6 +54,10 @@ class CheckTest(unittest.TestCase):
                                                                 watch="https://x.org/y@main"), "lcg")))
         for more in (dict(publish=True), dict(release_view=True)):
             self.assertNotEqual(plain, sch.content_sha256(sch.check(_p(**more), "lcg")), more)
+        head = sch.check(_p(head=True), "lcg")             # a claim about scans, not what is built
+        self.assertEqual((s["head"], head["head"], sch.content_sha256(head)), (False, True, plain))
+        with self.assertRaises(sch.Invalid):
+            sch.check(_p(head="yes"), "lcg")
         self.assertEqual(sch.next_run_ms(bits, _ms(2026, 11, 2, 1, 0), ZURICH), None)        # no nightly
         self.assertEqual(sch.next_run_ms(bits, _ms(2026, 11, 2, 1, 0), ZURICH, publish=True),
                          _ms(2026, 11, 2, 5, 30, ZURICH))

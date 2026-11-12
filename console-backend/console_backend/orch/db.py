@@ -716,6 +716,10 @@ MIGRATIONS = [
             revoked_by   TEXT NOT NULL DEFAULT ''
         )""",
     ],
+    # 30: a schedule that builds its package's development head (schedules.head).
+    [
+        "ALTER TABLE schedules ADD COLUMN head INTEGER NOT NULL DEFAULT 0",
+    ],
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

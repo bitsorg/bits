@@ -22,7 +22,8 @@ with none is not scannable, and its zero findings say nothing. The findings the
 admins' triage covers (vuln_triage) are left out of the effective counts, as are
 those of components not shipped with the stack (not_shipped): host tools (a
 recipe's `sbom: tool`), what only they use, and system packages nothing the
-release asks for uses at run time. Each
+release asks for uses at run time, nor those a slot's development-head claim
+covers (head_fix). Each
 package's licence, redistribution, runtime links and whether the release asks
 for it (top) are kept for the licence analysis (sbom_licences)."""
 
@@ -369,22 +370,77 @@ def _in(column, values):
     return "%s IN (%s)" % (column, ",".join("?" * len(values))), sorted(values)
 
 
+def heads(conn, build_ids):
+    """{build id: (package, slot name)} of the builds fired by a slot that builds
+    its package's development head (schedules.head)."""
+    out, ids = {}, sorted(set(build_ids) - {""})
+    for i in range(0, len(ids), 500):              # under SQLite's variable limit
+        cond, vals = _in("r.build_id", ids[i:i + 500])
+        for r in conn.execute("SELECT r.build_id, s.package, s.name FROM schedule_runs r"
+                              " JOIN schedules s ON s.id = r.schedule_id"
+                              " WHERE s.head = 1 AND s.deleted_ms = 0 AND " + cond + " ORDER BY r.id", vals):
+            out[r["build_id"]] = (r["package"], r["name"])
+    return out
+
+
+def is_head(heads, bid, name, alias, top, version):
+    """Is the component a development head: the slot's package, a top package of
+    the build, at a branch (master), not a release version?"""
+    h = heads.get(bid)
+    return bool(h and top and h[0].lower() in {str(n).lower() for n in (name, alias) if n}
+                and not re.match(r"v?[0-9]", str(version or "")))
+
+
+def head_fix(heads, bid, name, alias, top, version, fixed_in):
+    """The versions fixing a finding of a development head (is_head): the head
+    has those fixes. [] if not one."""
+    if not is_head(heads, bid, name, alias, top, version):
+        return []
+    try:
+        fixed = json.loads(fixed_in or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [x for x in fixed if isinstance(x, str)] if isinstance(fixed, list) else []
+
+
+def head_claims(conn, bid):
+    """{(vuln id lowercase, ref): why} of build *bid*'s findings head_fix covers."""
+    hd = heads(conn, [bid])
+    if not hd:
+        return {}
+    out = {}
+    for f in conn.execute("SELECT f.vuln_id, f.ref, f.fixed_in, p.name, p.alias, p.top, p.version"
+                          " FROM sbom_findings f"
+                          " JOIN sbom_packages p ON p.build_id = f.build_id AND p.ref = f.ref"
+                          " WHERE f.build_id = ?", (bid,)):
+        fixed = head_fix(hd, bid, f["name"], f["alias"], f["top"], f["version"], f["fixed_in"])
+        if fixed:
+            out[(f["vuln_id"].lower(), f["ref"])] = (
+                "built from the development head by slot %s, which has the fix released in %s"
+                % (hd[bid][1], ", ".join(fixed)))
+    return out
+
+
 def _findings(conn, community, rules):
     """Findings of the builds of *community* ({build id: its community}) as dicts,
-    each with the triage rule covering it (None if none), its package, version and
-    why it is not shipped ('' if it is)."""
+    each with the triage rule covering it (None if none), its package, version,
+    why it is not shipped ('' if it is) and whether head_fix covers it (head)."""
     if not community:
         return []
     cond, vals = _in("f.build_id", community)
     rows = conn.execute(
-        "SELECT f.build_id, f.vuln_id, f.ref, f.severity, f.risk, p.name, p.alias, p.version,"
-        " p.not_shipped FROM sbom_findings f JOIN sbom_packages p ON p.build_id = f.build_id AND p.ref = f.ref"
+        "SELECT f.build_id, f.vuln_id, f.ref, f.severity, f.risk, f.fixed_in, p.name, p.alias,"
+        " p.version, p.top, p.not_shipped FROM sbom_findings f"
+        " JOIN sbom_packages p ON p.build_id = f.build_id AND p.ref = f.ref"
         " WHERE " + cond, vals).fetchall()
+    hd = heads(conn, community)
     out = []
     for r in rows:
         d = dict(r)
         d["rule"] = rules.rule(community[d["build_id"]], d["vuln_id"], d["name"], d["version"],
                                d["alias"])
+        d["head"] = bool(head_fix(hd, d["build_id"], d["name"], d["alias"], d["top"], d["version"],
+                                  d["fixed_in"]))
         out.append(d)
     return out
 
@@ -425,7 +481,7 @@ def listing(conn, communities=None, flagged=False, limit=200, now=None):
                               if r["build_id"] in indexed}, rules):
         if f["not_shipped"]:
             not_shipped[f["build_id"]] += 1
-        elif f["rule"]:
+        elif f["rule"] or f["head"]:
             suppressed[f["build_id"]] += 1
         else:
             effective[f["build_id"]][f["severity"]] += 1
@@ -490,7 +546,7 @@ def packages(conn, name, version="", communities=None, limit=500, now=None):
     for f in _findings(conn, {r["build_id"]: r["community"] for r in rows}, rules):
         by.setdefault((f["build_id"], f["ref"]), []).append(
             {"id": f["vuln_id"], "severity": f["severity"],
-             "suppressed": f["rule"]["id"] if f["rule"] else None})
+             "suppressed": f["rule"]["id"] if f["rule"] else "head" if f["head"] else None})
     for r in rows:
         r["system"] = bool(r["system"])
         r["findings"] = sorted(by.get((r["build_id"], r["ref"]), []),
@@ -524,7 +580,7 @@ def affected(conn, vuln_id, communities=None, limit=500, now=None):
         where.append(cond)
         args += vals
     rows = [dict(r) for r in conn.execute(
-        "SELECT f.build_id, f.vuln_id, f.ref, f.severity, p.name, p.alias,"
+        "SELECT f.build_id, f.vuln_id, f.ref, f.severity, f.fixed_in, p.name, p.alias, p.top,"
         " p.version AS component_version,"
         " p.system, p.not_shipped, b.community, MAX(b.pipeline_id) AS pipeline_id, pl.package,"
         " pl.version, pl.platform, MAX(b.published_at) AS published_at"
@@ -534,9 +590,12 @@ def affected(conn, vuln_id, communities=None, limit=500, now=None):
         " GROUP BY f.build_id, f.ref ORDER BY published_at DESC, f.build_id DESC LIMIT ?",
         args + [int(limit)])]
     rules = vuln_triage.Rules.load(conn, {r["community"] for r in rows}, now=now)
+    hd = heads(conn, {r["build_id"] for r in rows})
     for r in rows:
         rule = rules.rule(r["community"], r["vuln_id"], r["name"], r["component_version"],
                           r["alias"])
+        head = head_fix(hd, r["build_id"], r["name"], r["alias"], r.pop("top"),
+                        r["component_version"], r.pop("fixed_in"))
         r["system"] = bool(r["system"])
-        r["suppressed"] = rule["id"] if rule else None
+        r["suppressed"] = rule["id"] if rule else "head" if head else None
     return rows

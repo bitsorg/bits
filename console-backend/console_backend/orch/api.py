@@ -676,7 +676,8 @@ async def _with_findings(data, pipeline, bid, body):
                 (bid,))}
             doc["vulnerabilities"] = vuln_triage.annotate(
                 vulns, {c.get("bom-ref"): c for c in comps if isinstance(c, dict)},
-                vuln_triage.Rules.load(conn, {community}), community, unshipped)
+                vuln_triage.Rules.load(conn, {community}), community, unshipped,
+                sbom_scan.head_claims(conn, bid))
         if not isinstance(doc.get("metadata"), dict):
             doc["metadata"] = {}
         props = doc["metadata"].get("properties")

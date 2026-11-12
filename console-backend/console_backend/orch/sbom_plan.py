@@ -5,7 +5,8 @@ which version and in which order, to remove the most security risk.
 
 A release line is a community's build of one release name on one platform; its
 plan is made from its newest indexed build. For each package with open findings
-(not covered by the triage; a component the stack does not ship has none), the
+(not covered by the triage, nor by a slot's development-head claim, which counts
+as triaged; a component the stack does not ship has none), the
 target is the smallest stable version newer than the current one that the
 scanner names as fixing each of them. The packages fall
 into waves, each meant as one set of version bumps and one rebuild, so the
@@ -26,7 +27,7 @@ import functools
 import json
 import re
 
-from . import vuln_triage
+from . import sbom_scan, vuln_triage
 
 # A finding's risk when the scan has none of grype's (0-100): by severity alone.
 SEVERITY_RISK = {"critical": 50.0, "high": 25.0, "medium": 10.0, "low": 2.0, "other": 0.5}
@@ -130,6 +131,7 @@ def plan_release(conn, rel, rules):
         except (TypeError, ValueError):
             on = []
         packages[r["ref"]] = dict(r, depends_on=on, findings=[], triaged=0, unshipped=0)
+    hd = sbom_scan.heads(conn, [bid])
     for f in conn.execute("SELECT * FROM sbom_findings WHERE build_id = ?", (bid,)):
         p = packages.get(f["ref"])
         if p is None:
@@ -137,7 +139,8 @@ def plan_release(conn, rel, rules):
         if p["not_shipped"]:                       # a host tool, what only tools use, build-only
             p["unshipped"] += 1
             continue
-        if rules.rule(community, f["vuln_id"], p["name"], p["version"], p["alias"]):
+        if rules.rule(community, f["vuln_id"], p["name"], p["version"], p["alias"]) or \
+                sbom_scan.head_fix(hd, bid, p["name"], p["alias"], p["top"], p["version"], f["fixed_in"]):
             p["triaged"] += 1
             continue
         try:
@@ -148,6 +151,8 @@ def plan_release(conn, rel, rules):
                               "epss": f["epss"], "need": _need(fixed, p["version"]),
                               "risk": f["risk"] or SEVERITY_RISK.get(f["severity"], 0.1)})
     users = _dependents(packages)
+    head = {ref for ref, p in packages.items()
+            if sbom_scan.is_head(hd, bid, p["name"], p["alias"], p["top"], p["version"])}
     items, host, unfixed = [], [], []
     for ref, p in packages.items():
         if not p["findings"]:
@@ -187,7 +192,7 @@ def plan_release(conn, rel, rules):
         rebuilt |= refs
         waves.append({"wave": w, "title": title, "packages": ws, "rebuild": len(refs),
                       "risk_removed": round(removed, 2), "risk_left": round(max(left_risk, 0), 2)})
-    return dict(rel, components=len(packages), risk=round(total, 2), waves=waves,
+    return dict(rel, _head=head, components=len(packages), risk=round(total, 2), waves=waves,
                 host=sorted(host, key=lambda e: -e["risk_removed"]),
                 unfixed=sorted(unfixed, key=lambda e: -e["risk_left"]),
                 findings=sum(len(p["findings"]) for p in packages.values()),
@@ -207,6 +212,8 @@ def converge(conn, plans):
         for r in conn.execute("SELECT ref, name, alias, version, system, pinned_by FROM sbom_packages"
                               " WHERE build_id = ? AND system = 0 AND not_shipped = ''",
                               (pl["build_id"],)):
+            if r["ref"] in pl.get("_head", ()):      # a development head: no version to converge
+                continue
             seen.setdefault((r["alias"] or r["name"]).lower(), []).append((pl, dict(r), entries.get(r["ref"])))
     out = []
     for key, uses in seen.items():
@@ -255,4 +262,5 @@ def plan(conn, communities=None, now=None):
     converged = converge(conn, plans)
     for pl in plans:
         pl.pop("_open", None)
+        pl.pop("_head", None)
     return {"releases": plans, "converged": converged}

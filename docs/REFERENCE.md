@@ -1673,6 +1673,11 @@ So are, with no rule, the findings of components the stack does not ship
 tools use at run time, and system packages outside the runtime closure of what
 the release asks for (only `build_requires` reach them); the served SBOM marks them
 `not_affected` with `bits:not_shipped`, and the upgrade plans skip them.
+A slot with *Development head* (`head`) builds its package's development branch:
+in the builds it fired, while that package's version is a branch (`master`, not
+a release), its findings a release fixes are left out too (counted with the
+triage's), served `not_affected` with `bits:head` and the slot's name, and not
+planned as upgrades; those no release fixes stay open.
 
 `GET /ops/sbom/plan?community=` plans upgrades from them. For each release line
 (a community's release on one platform, from its newest scanned build), each

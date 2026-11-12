@@ -68,7 +68,7 @@ def counts(conn, builds, now=None):
     ids = sorted(builds)
     for i in range(0, len(ids), 500):              # under SQLite's variable limit
         for f in sbom_scan._findings(conn, {b: builds[b] for b in ids[i:i + 500]}, rules):
-            if f["not_shipped"] or f["rule"]:
+            if f["not_shipped"] or f["rule"] or f["head"]:
                 continue
             c, risk = out[f["build_id"]], f["risk"] or SEVERITY_RISK.get(f["severity"], 0.5)
             c[f["severity"]] += 1

@@ -169,12 +169,14 @@ NOT_SHIPPED = {"tool": "a host tool, run but not shipped with the stack (sbom: t
                "build-only": "a system package only the build needs, not shipped with the stack"}
 
 
-def annotate(vulns, components, rules, community, not_shipped=None):
+def annotate(vulns, components, rules, community, not_shipped=None, head=None):
     """CycloneDX *vulns* with the rules of *community*: a vulnerability's affected
     components a rule covers move to a copy of it with that rule's analysis (and
     bits:triage:* properties); those *not_shipped* ({ref: why}) to one marked
-    not_affected (bits:not_shipped). *components* maps a bom-ref to its component."""
-    out, not_shipped = [], not_shipped or {}
+    not_affected (bits:not_shipped), as do those of a development head no rule
+    covers (*head*: {(vuln id lowercase, ref): why}, bits:head). *components* maps
+    a bom-ref to its component."""
+    out, not_shipped, head = [], not_shipped or {}, head or {}
     for v in vulns or []:
         if not isinstance(v, dict):
             continue
@@ -191,6 +193,12 @@ def annotate(vulns, components, rules, community, not_shipped=None):
                           and p.get("name") == "bits:package"), "") if isinstance(props, list) else ""
             r = rules.rule(community, v.get("id"), str(c.get("name") or ""),
                            str(c.get("version") or ""), str(alias or ""))
+            why = head.get((str(v.get("id")).lower(), ref)) if r is None else None
+            if why:
+                g = groups.setdefault(("head", ""), (set(), []))
+                g[0].add(why)
+                g[1].append(a)
+                continue
             groups.setdefault(r["id"] if r else None, (r, []))[1].append(a)
         if list(groups) == [None] or not groups:
             out.append(v)
@@ -198,7 +206,12 @@ def annotate(vulns, components, rules, community, not_shipped=None):
         for key, (r, affects) in sorted(groups.items(), key=lambda g: (
                 isinstance(g[0], tuple), g[0] if isinstance(g[0], tuple) else g[0] or 0)):
             entry = dict(v, affects=affects)
-            if isinstance(key, tuple):
+            if isinstance(key, tuple) and key[0] == "head":
+                entry["bom-ref"] = "%s-head" % (v.get("bom-ref") or v.get("id"))
+                entry["analysis"] = {"state": "not_affected", "justification": "code_not_present",
+                                     "detail": "; ".join(sorted(r))}
+                entry["properties"] = [{"name": "bits:head", "value": "fixed"}]
+            elif isinstance(key, tuple):
                 entry["bom-ref"] = "%s-%s" % (v.get("bom-ref") or v.get("id"), key[1])
                 entry["analysis"] = {"state": "not_affected",
                                      "detail": NOT_SHIPPED.get(key[1], "not shipped with the stack")}

@@ -17,6 +17,10 @@ hash covers what is built and where it goes, not when: a standing approval is
 bound to it (approvals.standing_subject("schedule:<id>", sha256)), so moving a
 nightly to another time keeps its approval and adding a platform needs a new one.
 Every change is an event with what it was before and after.
+
+A schedule with head builds its package's development head (master): the scans
+take its findings that a release fixes as not affecting it (sbom_scan.head_fix).
+It is a claim about the scans, not what is built, so not in the content hash.
 """
 
 import datetime as dt
@@ -169,6 +173,7 @@ def check(p, community):
     s["publish_days"] = pdays if s["publish"] else 0
     s["publish_time"] = _text(p, "publish_time", _TIME, "HH:MM") if s["publish_days"] else ""
     s["release_view"] = _flag(p, "release_view")
+    s["head"] = _flag(p, "head")
     if not (s["nightly"] or s["on_commit"] or s["publish"]):
         raise Invalid("nightly, on_commit, publish: turn on at least one")
     s["certify"], s["cvmfs"] = _flag(p, "certify"), _flag(p, "cvmfs")
@@ -284,7 +289,8 @@ def _row(r):
     d = dict(r)
     for k in ("set", "platforms", "certify_groups", "variants"):
         d[k] = json.loads(d.pop("set_vars") if k == "set" else d[k])
-    for k in ("rebuild", "debug", "certify", "cvmfs", "enabled", "nightly", "publish", "release_view"):
+    for k in ("rebuild", "debug", "certify", "cvmfs", "enabled", "nightly", "publish", "release_view",
+              "head"):
         d[k] = bool(d[k])
     return d
 
@@ -315,14 +321,14 @@ def _store(conn, s, sid=None):
             "platforms", "rebuild", "debug", "jobs", "extra_build_args", "days", "time", "certify",
             "cvmfs", "certify_groups", "enabled", "variants", "watch", "content_sha256",
             "publish_path", "direct_s3", "nightly", "on_commit", "publish", "publish_days",
-            "publish_time", "release_view")
+            "publish_time", "release_view", "head")
     vals = (s["community"], s["community_dir"], s["name"], s["package"], s["version"], s["defaults"], s["extra_repos"],
             json.dumps(s["set"]), json.dumps(s["platforms"]), int(s["rebuild"]), int(s["debug"]),
             s["jobs"], s["extra_build_args"], s["days"], s["time"], int(s["certify"]),
             int(s["cvmfs"]), json.dumps(s["certify_groups"]), int(s["enabled"]),
             json.dumps(s["variants"]), s["watch"], content_sha256(s),
             s["publish_path"], s["direct_s3"], int(s["nightly"]), s["on_commit"], int(s["publish"]),
-            s["publish_days"], s["publish_time"], int(s["release_view"]))
+            s["publish_days"], s["publish_time"], int(s["release_view"]), int(s["head"]))
     return cols, vals
 
 
