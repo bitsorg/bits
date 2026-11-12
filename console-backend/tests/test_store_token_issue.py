@@ -6,6 +6,7 @@ with the configured key; nobody else does."""
 import base64
 import hashlib
 import unittest
+import unittest.mock
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -66,6 +67,32 @@ class StoreTokenIssueTest(unittest.TestCase):
         self.assertEqual(self._post("alice", {"group": "lcg"}).status_code, 503)
         with self.assertRaises(ValueError):
             _configure(BITS_STORE_TOKEN_TTL="30")
+
+    def test_signed_by_the_security_proxy(self):
+        from bits_helpers import trust
+        key, seen = Ed25519PrivateKey.from_private_bytes(SEED), []
+
+        def call(settings, fn, data, route=None, prefix=None):
+            seen.append((fn, route, prefix))
+            return trust.sign_bytes(data, key)               # what the proxy's route returns
+        _configure(BITS_STORE_TOKEN_KEY="", BITS_STORE_TOKEN_SIGN_ROUTE="bits-store-token-sign",
+                   BITS_SIGN_PROXY_AGENT_SOCKET="/run/security-proxy/agent.sock")
+        with unittest.mock.patch.object(main.signproxy, "call", call):
+            r = self._post("alice", {"group": "lcg"})
+        self.assertEqual(r.status_code, 200, r.text)
+        jwt.decode(r.json()["token"], key.public_key(), algorithms=["EdDSA"],
+                   audience="example-site/store", issuer="https://bits.example.org")
+        self.assertEqual(seen, [(trust.sign_bytes_via_proxy, "bits-store-token-sign", "/sign/store")])
+
+        def down(*a, **kw):
+            raise RuntimeError("sign proxy unreachable")
+        with unittest.mock.patch.object(main.signproxy, "call", down):
+            self.assertEqual(self._post("alice", {"group": "lcg"}).status_code, 502)
+        for odd in ({"sig": "not base64!"}, {"sig": "AAAA"}, {}):
+            with unittest.mock.patch.object(main.signproxy, "call", lambda *a, **kw: odd):
+                self.assertEqual(self._post("alice", {"group": "lcg"}).status_code, 502, odd)
+        _configure(BITS_STORE_TOKEN_KEY="", BITS_STORE_TOKEN_SIGN_ROUTE="bits-store-token-sign")
+        self.assertEqual(self._post("alice", {"group": "lcg"}).status_code, 503)   # no agent socket
 
     def test_capabilities(self):
         self.assertEqual(admin_capabilities("lcg"), [

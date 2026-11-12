@@ -796,16 +796,33 @@ async def store_token_issue(request: Request):
     if not authz.is_admin_for(user, group, await run_in_threadpool(_resolved_policy, data["token"])):
         audit.record("store_token_denied", user=user, group=group, principal="human")
         raise HTTPException(403, "%s is not an admin for community %s" % (user, group))
-    out = _sign_store_token(user, group, caps, settings.store_token_ttl)
+    out = await run_in_threadpool(_sign_store_token, user, group, caps, settings.store_token_ttl)
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+def _store_token_signature(data):
+    """Ed25519 signature of *data* by the security proxy's store-token route."""
+    if trust is None:
+        raise signproxy.Unavailable("bits_helpers is not installed")
+    env = signproxy.call(settings, trust.sign_bytes_via_proxy, data,
+                         route=settings.store_token_sign_route, prefix=settings.store_token_sign_prefix)
+    try:
+        sig = base64.b64decode(env["sig"], validate=True)
+    except (KeyError, TypeError, ValueError):
+        sig = b""
+    if len(sig) != 64:                      # the proxy's fault: 502, not ours
+        raise RuntimeError("the sign proxy returned no Ed25519 signature")
+    return sig
 
 
 def _sign_store_token(user, group, caps, ttl, **audit_extra):
     """Sign and audit a store token: {token, group, expires, capabilities}."""
+    args = (settings.store_token_issuer, settings.store_token_audience)
     try:
-        signer = store_token.StoreTokenSigner.from_seed(
-            settings.store_token_kid, settings.store_token_key,
-            settings.store_token_issuer, settings.store_token_audience)
+        signer = (store_token.StoreTokenSigner(settings.store_token_kid, _store_token_signature, *args)
+                  if settings.store_token_sign_route else
+                  store_token.StoreTokenSigner.from_seed(settings.store_token_kid,
+                                                         settings.store_token_key, *args))
     except ValueError as exc:
         raise HTTPException(503, "store tokens: %s" % exc)
     jti = secrets.token_urlsafe(16)
@@ -814,6 +831,10 @@ def _sign_store_token(user, group, caps, ttl, **audit_extra):
         tok = signer.sign(user, group, caps, ttl, now=now, jti=jti)
     except ValueError as exc:    # e.g. a user name the token format reserves
         raise HTTPException(500, "store token not signed: %s" % exc)
+    except signproxy.Unavailable as exc:
+        raise HTTPException(503, "store tokens: %s" % exc)
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(502, "store token not signed: %s" % exc)
     audit.record("store_token", user=user, group=group, jti=jti, exp=now + ttl,
                  principal="human", **audit_extra)
     return {"token": tok, "group": group, "expires": now + ttl,
@@ -903,9 +924,9 @@ async def store_cli_approve(req_id: str, request: Request):
         if not authz.is_admin_for(user, group, await run_in_threadpool(_resolved_policy, None)):
             audit.record("store_token_denied", user=user, group=group, principal="human", via="cli")
             raise HTTPException(403, "%s is not an admin for community %s" % (user, group))
-        req["token"] = dict(_sign_store_token(
-            user, group, store_token.admin_capabilities(group), settings.store_cli_token_ttl,
-            via="cli", requested_by=req["shown"]), user=user)
+        req["token"] = dict(await run_in_threadpool(
+            _sign_store_token, user, group, store_token.admin_capabilities(group),
+            settings.store_cli_token_ttl, via="cli", requested_by=req["shown"]), user=user)
     except BaseException:
         req["status"] = "refused"
         raise

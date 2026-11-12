@@ -49,6 +49,16 @@ class StoreTokenTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 StoreTokenSigner.from_seed("test-1", bad, ISS, AUD)
 
+    def test_a_signer_elsewhere(self):
+        key = Ed25519PrivateKey.from_private_bytes(SEED)       # the security proxy's, say
+        s = StoreTokenSigner("test-1", key.sign, ISS, AUD)
+        self.assertEqual(s.sign("alice", "lhcb", CAPS, 4200, now=NOW - 600, jti="t-1"), VECTOR)
+        for bad in (lambda b: b"x" * 63, lambda b: "x" * 64):
+            with self.assertRaises(ValueError):
+                StoreTokenSigner("test-1", bad, ISS, AUD).sign("alice", "lhcb", CAPS, 60)
+        with self.assertRaises(ValueError):
+            StoreTokenSigner("test-1", "not a key", ISS, AUD)
+
     def test_claims_and_header(self):
         tok = signer().sign("alice", "lhcb", CAPS[:1], 3600)
         pub = Ed25519PrivateKey.from_private_bytes(SEED).public_key()

@@ -274,9 +274,12 @@ class Settings:
         self.chat_explain_think = (e.get("BITS_CHAT_EXPLAIN_THINK", "1") or "").strip().lower() in (
             "1", "true", "yes")
 
-        # Store tokens (bits-store docs/TOKEN.md): the signing key's base64url seed,
-        # its id in bits-store's config, bits-store's issuer and audience, and how long
-        # a token lasts. Off until all four are set.
+        # Store tokens (bits-store docs/TOKEN.md): signed by the security proxy's route
+        # (its key never here), else with a base64url seed (tests, development); the
+        # key's id in bits-store's config, its issuer and audience, and how long a
+        # token lasts. Off until a route or seed, and the other three, are set.
+        self.store_token_sign_route = e.get("BITS_STORE_TOKEN_SIGN_ROUTE", "")
+        self.store_token_sign_prefix = e.get("BITS_STORE_TOKEN_SIGN_PREFIX", "/sign/store")
         self.store_token_key = e.get("BITS_STORE_TOKEN_KEY", "")
         self.store_token_kid = e.get("BITS_STORE_TOKEN_KID", "")
         self.store_token_issuer = e.get("BITS_STORE_TOKEN_ISSUER", "")
@@ -290,7 +293,7 @@ class Settings:
                 raise ValueError("%s: 60 seconds to 7 days" % name)
 
     def store_tokens_configured(self) -> bool:
-        return bool(self.store_token_key and self.store_token_kid
+        return bool((self.store_token_sign_route or self.store_token_key) and self.store_token_kid
                     and self.store_token_issuer and self.store_token_audience)
 
     def oidc_login_configured(self) -> bool:

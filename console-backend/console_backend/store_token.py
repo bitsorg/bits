@@ -6,11 +6,11 @@ signer makes is one bits-store accepts; anything it would refuse is refused here
 """
 
 import base64
+import json
 import re
 import secrets
 import time
 
-import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 TYP = "bits-store+jwt"
@@ -36,15 +36,20 @@ def check_pattern(p):
             raise ValueError("pattern %r: bad segment %r" % (p, s))
 
 
+def _b64(b):
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
 class StoreTokenSigner:
     """Signs store tokens with one Ed25519 key, known to bits-store by *kid* with
-    *signer* 'user' (bits-console) or 'build' (the orchestrator)."""
+    *signer* 'user' (bits-console) or 'build' (the orchestrator). *key*: the private
+    key, or a function signing bytes with it elsewhere (the security proxy)."""
 
     def __init__(self, kid, key, issuer, audience, signer="user", max_lifetime=MAX_LIFETIME):
         if not all(isinstance(v, str) and v for v in (kid, issuer, audience)):
             raise ValueError("kid, issuer and audience must be non-empty strings")
-        if signer not in ("user", "build") or not isinstance(key, Ed25519PrivateKey):
-            raise ValueError("signer is 'user' or 'build', key an Ed25519 private key")
+        if signer not in ("user", "build") or not (isinstance(key, Ed25519PrivateKey) or callable(key)):
+            raise ValueError("signer is 'user' or 'build', key an Ed25519 private key or a signer")
         if not (isinstance(max_lifetime, int) and 60 <= max_lifetime <= MAX_LIFETIME):
             raise ValueError("max_lifetime: 60 to %d seconds, as the verifier's" % MAX_LIFETIME)
         self.kid, self.key, self.issuer, self.audience = kid, key, issuer, audience
@@ -90,8 +95,13 @@ class StoreTokenSigner:
         claims = {"iss": self.issuer, "aud": self.audience, "sub": sub, "grp": grp,
                   "iat": iat, "exp": iat + lifetime, "jti": jti or secrets.token_urlsafe(16),
                   "cap": [{"m": m, "p": p} for m, p in caps]}
-        tok = jwt.encode(claims, self.key, algorithm="EdDSA",
-                         headers={"kid": self.kid, "typ": TYP})
+        head = {"alg": "EdDSA", "kid": self.kid, "typ": TYP}
+        si = "%s.%s" % (_b64(json.dumps(head, separators=(",", ":"), sort_keys=True).encode()),
+                        _b64(json.dumps(claims, separators=(",", ":")).encode()))
+        sig = (self.key.sign if isinstance(self.key, Ed25519PrivateKey) else self.key)(si.encode())
+        if not isinstance(sig, bytes) or len(sig) != 64:
+            raise ValueError("the signer did not return an Ed25519 signature")
+        tok = si + "." + _b64(sig)
         if len(tok) > MAX_LEN:
             raise ValueError("token of %d bytes: at most %d" % (len(tok), MAX_LEN))
         return tok

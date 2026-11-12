@@ -35,7 +35,7 @@ class FakeAgent:
             with conn:
                 route = conn.makefile().readline().strip()
                 self.asked.append(route)
-                if route == "bits-manifest-sign":
+                if route in ("bits-manifest-sign", "bits-store-token-sign"):
                     resp = {"port": self.port, "host": "127.0.0.1",
                             "service": route, "token": self.token}
                 else:
@@ -68,6 +68,17 @@ class TestSignProxy(unittest.TestCase):
         self.assertEqual(signproxy.endpoint(self.s)[1], "t1")      # cached
         self.assertEqual(signproxy.endpoint(self.s, refresh=True)[1], "t2")
         self.assertEqual(self.agent.asked, ["bits-manifest-sign"] * 2)
+
+    def test_another_route(self):
+        self.assertEqual(signproxy.endpoint(self.s, route="bits-store-token-sign", prefix="/sign/store"),
+                         ("http://security-proxy:40001/sign/store", "t1"))
+        self.assertEqual(signproxy.endpoint(self.s), ("http://security-proxy:40001/sign/bits", "t1"))
+        self.assertEqual(self.agent.asked, ["bits-store-token-sign", "bits-manifest-sign"])
+        static = config.Settings(env={"BITS_SIGN_PROXY_URL": "http://p/sign/bits"})
+        with patch.dict(os.environ, {static.sign_proxy_token_env: "t"}):
+            self.assertEqual(signproxy.endpoint(static)[0], "http://p/sign/bits")
+            with self.assertRaises(signproxy.Unavailable):          # the agent socket only
+                signproxy.endpoint(static, route="bits-store-token-sign", prefix="/sign/store")
 
     def test_call_refreshes_and_retries_after_restart(self):
         signproxy.endpoint(self.s)                     # cache port 40001 / t1
