@@ -22,6 +22,15 @@ class ModulesTest(unittest.TestCase):
       self.assertEqual(ds.check_modules(ds._MODULES, FAIL)[0], PASS)
 
 
+  def test_no_qrcode_is_a_warning(self):
+    with patch("bits_helpers.doctor_setup.importlib.util.find_spec", return_value=None):
+      status, detail = ds.check_qrcode()
+    self.assertEqual(status, WARN)
+    self.assertIn("python3-qrcode", detail)
+    with patch("bits_helpers.doctor_setup.importlib.util.find_spec", return_value=object()):
+      self.assertEqual(ds.check_qrcode()[0], PASS)
+
+
 class RootTest(unittest.TestCase):
   def test_root_warns(self):
     with patch("bits_helpers.doctor_setup.os.geteuid", return_value=0):
@@ -117,6 +126,7 @@ class RunSetupTest(unittest.TestCase):
          patch("bits_helpers.doctor_setup.check_s3_store", return_value=(FAIL, "x")):
       got = {n: s for n, s, _ in ds.run_setup_checks(A())}
       self.assertEqual(got["python modules (b3:// store)"], WARN)
+      self.assertEqual(got["python modules (login QR code)"], PASS)
       A.writeStore = "s3://bucket"      # s3cmd store: boto3 not needed
       with patch("bits_helpers.doctor_setup.check_s3cmd_store", return_value=(PASS, "x")):
         got = {n: s for n, s, _ in ds.run_setup_checks(A())}

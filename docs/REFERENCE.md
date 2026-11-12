@@ -1329,7 +1329,7 @@ bits doctor --runner [options]               # runner environment validation
 bits doctor --check-store PACKAGE ...        # pre-build store availability report
 ```
 
-**Setup mode** (no `PACKAGE`) checks the machine itself: the Python bits runs with and its modules (boto3 is required when a `b3://` store is given), running as root, git, a C++ compiler, the container engine behind `docker` (for rootless podman: delegated cgroup controllers, `/etc/subuid`/`/etc/subgid` ranges, storage not on AFS/NFS, SELinux), disk space, and each `--remote-store`/`--write-store` (reachability; for `b3://`, credentials and bucket access; for `s3://`, s3cmd and `~/.s3cfg`). Each check is PASS / WARN / FAIL / SKIP with a one-line fix; any FAIL gives exit code 1. `--json` is supported.
+**Setup mode** (no `PACKAGE`) checks the machine itself: the Python bits runs with and its modules (boto3 is required when a `b3://` store is given; qrcode, for the QR code `bits login` shows, is optional), running as root, git, a C++ compiler, the container engine behind `docker` (for rootless podman: delegated cgroup controllers, `/etc/subuid`/`/etc/subgid` ranges, storage not on AFS/NFS, SELinux), disk space, and each `--remote-store`/`--write-store` (reachability; for `b3://`, credentials and bucket access; for `s3://`, s3cmd and `~/.s3cfg`). Each check is PASS / WARN / FAIL / SKIP with a one-line fix; any FAIL gives exit code 1. `--json` is supported.
 
 **Recipe-check mode** (with `PACKAGE`) evaluates each package's `system_requirement` and `prefer_system` snippets in the dependency tree and reports which packages can be satisfied by the host and which will be built by bits. The `PACKAGE` positional argument is required in this mode.
 

@@ -60,6 +60,15 @@ def check_modules(modules, missing_status):
       sys.executable, ", ".join(missing), _pip_hint(missing))
 
 
+def check_qrcode():
+  """qrcode draws the QR code of bits login and approvals; without it they show the link."""
+  if importlib.util.find_spec("qrcode") is not None:
+    return PASS, "present: qrcode"
+  return WARN, ("missing for %s: qrcode (optional: the link works without it); install into "
+                "that Python, e.g. apt install python3-qrcode for a Debian/Ubuntu system Python, "
+                "else pip install qrcode" % sys.executable)
+
+
 def check_site():
   """The site configuration files in effect, and where the main values come from."""
   from bits_helpers import site
@@ -224,6 +233,7 @@ def run_setup_checks(args):
     ("python modules", *check_modules(_MODULES, FAIL)),
     ("python modules (signing)", *check_modules(_SIGNING_MODULES, WARN)),
     ("python modules (b3:// store)", *check_modules(_B3_MODULES, FAIL if b3 else WARN)),
+    ("python modules (login QR code)", *check_qrcode()),
     ("site configuration", *check_site()),
     ("user", *check_root()),
     ("git", *_check_host_tool("git")),
