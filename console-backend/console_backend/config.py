@@ -280,6 +280,10 @@ class Settings:
         # token lasts. Off until a route or seed, and the other three, are set.
         self.store_token_sign_route = e.get("BITS_STORE_TOKEN_SIGN_ROUTE", "")
         self.store_token_sign_prefix = e.get("BITS_STORE_TOKEN_SIGN_PREFIX", "/sign/store")
+        # ... the proxy holding only that key (bits-services' store-token-signer):
+        # its agent socket and host; no socket: the manifest signer, at its host.
+        self.store_token_sign_socket = e.get("BITS_STORE_TOKEN_SIGN_SOCKET", "")
+        self.store_token_sign_host = e.get("BITS_STORE_TOKEN_SIGN_HOST", "")
         self.store_token_key = e.get("BITS_STORE_TOKEN_KEY", "")
         self.store_token_kid = e.get("BITS_STORE_TOKEN_KID", "")
         self.store_token_issuer = e.get("BITS_STORE_TOKEN_ISSUER", "")

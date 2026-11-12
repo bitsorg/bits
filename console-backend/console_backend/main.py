@@ -805,7 +805,9 @@ def _store_token_signature(data):
     if trust is None:
         raise signproxy.Unavailable("bits_helpers is not installed")
     env = signproxy.call(settings, trust.sign_bytes_via_proxy, data,
-                         route=settings.store_token_sign_route, prefix=settings.store_token_sign_prefix)
+                         route=settings.store_token_sign_route, prefix=settings.store_token_sign_prefix,
+                         agent_socket=settings.store_token_sign_socket or None,
+                         host=(settings.store_token_sign_host or None) if settings.store_token_sign_socket else None)
     try:
         sig = base64.b64decode(env["sig"], validate=True)
     except (KeyError, TypeError, ValueError):

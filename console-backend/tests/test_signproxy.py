@@ -74,6 +74,11 @@ class TestSignProxy(unittest.TestCase):
                          ("http://security-proxy:40001/sign/store", "t1"))
         self.assertEqual(signproxy.endpoint(self.s), ("http://security-proxy:40001/sign/bits", "t1"))
         self.assertEqual(self.agent.asked, ["bits-store-token-sign", "bits-manifest-sign"])
+        # another proxy's socket and host: the store tokens' own signer
+        other = config.Settings(env={"BITS_SIGN_PROXY_URL": "http://p/sign/bits"})
+        self.assertEqual(signproxy.endpoint(other, route="bits-store-token-sign", prefix="/sign/store",
+                                            agent_socket=self.sock, host="store-token-signer"),
+                         ("http://store-token-signer:40001/sign/store", "t1"))
         static = config.Settings(env={"BITS_SIGN_PROXY_URL": "http://p/sign/bits"})
         with patch.dict(os.environ, {static.sign_proxy_token_env: "t"}):
             self.assertEqual(signproxy.endpoint(static)[0], "http://p/sign/bits")

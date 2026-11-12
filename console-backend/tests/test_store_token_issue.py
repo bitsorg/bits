@@ -72,17 +72,19 @@ class StoreTokenIssueTest(unittest.TestCase):
         from bits_helpers import trust
         key, seen = Ed25519PrivateKey.from_private_bytes(SEED), []
 
-        def call(settings, fn, data, route=None, prefix=None):
-            seen.append((fn, route, prefix))
+        def call(settings, fn, data, route=None, prefix=None, agent_socket=None, host=None):
+            seen.append((fn, route, prefix, agent_socket, host))
             return trust.sign_bytes(data, key)               # what the proxy's route returns
         _configure(BITS_STORE_TOKEN_KEY="", BITS_STORE_TOKEN_SIGN_ROUTE="bits-store-token-sign",
-                   BITS_SIGN_PROXY_AGENT_SOCKET="/run/security-proxy/agent.sock")
+                   BITS_STORE_TOKEN_SIGN_SOCKET="/run/store-token-signer/agent.sock",
+                   BITS_STORE_TOKEN_SIGN_HOST="store-token-signer")
         with unittest.mock.patch.object(main.signproxy, "call", call):
             r = self._post("alice", {"group": "lcg"})
         self.assertEqual(r.status_code, 200, r.text)
         jwt.decode(r.json()["token"], key.public_key(), algorithms=["EdDSA"],
                    audience="example-site/store", issuer="https://bits.example.org")
-        self.assertEqual(seen, [(trust.sign_bytes_via_proxy, "bits-store-token-sign", "/sign/store")])
+        self.assertEqual(seen, [(trust.sign_bytes_via_proxy, "bits-store-token-sign", "/sign/store",
+                                 "/run/store-token-signer/agent.sock", "store-token-signer")])
 
         def down(*a, **kw):
             raise RuntimeError("sign proxy unreachable")
