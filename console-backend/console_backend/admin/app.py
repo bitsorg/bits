@@ -516,8 +516,8 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         who = state.who(token)
         return [k for k in store.load() if k.get("owner") == who and not (keys_only and k.get("synced"))]
 
-    @app.post("/settings/apply/options")
-    def settings_apply_options(request: Request):
+    def apply_options(request, purpose):
+        """The options for the touch that confirms the admin's latest *purpose* plan."""
         token = session(request)
         if not token:
             return refuse("not signed in", 401)
@@ -525,37 +525,50 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         if not keys:
             return refuse("you have no key to confirm with")
         options, challenge = passkeys.authentication_options(rp, keys)
-        state.put_challenge(token, "settings-apply", challenge)
+        state.put_challenge(token, purpose + "-apply", challenge)
         return Response(options, media_type="application/json", headers=HEADERS)
 
-    @app.post("/settings/apply")
-    async def settings_apply(request: Request):
+    async def confirmed(request, purpose):
+        """(None, token, key, plan) once the admin's own key confirmed their latest *purpose*
+        plan, which is then used up; else (the refusal, None, None, None)."""
+        no = lambda message, status=400: (refuse(message, status), None, None, None)
         token = session(request)
         if not token:
-            return refuse("not signed in", 401)
+            return no("not signed in", 401)
         try:
             body = json.loads(await _body(request, 8192))
             credential, plan_id = body["credential"], str(body.get("plan", ""))
             key = next((k for k in own_keys(token) if k["id"] == credential.get("id")), None)
         except (ValueError, TypeError, KeyError, AttributeError):
-            return refuse("bad request")
-        challenge, planned = state.take_challenge(token, "settings-apply"), state.peek_challenge(token, "settings")
+            return no("bad request")
+        challenge, planned = state.take_challenge(token, purpose + "-apply"), state.peek_challenge(token, purpose)
         if not challenge or not planned:
-            return refuse("this expired; plan again")
+            return no("this expired; plan again")
         if planned["id"] != plan_id:  # planned again elsewhere since
-            return refuse("this is not your latest plan; plan again")
+            return no("this is not your latest plan; plan again")
         if not key:
-            return refuse("confirm with one of your own keys")
+            return no("confirm with one of your own keys")
         try:
             count = passkeys.verify_assertion(rp, origins, credential, challenge, key, security_keys_only=keys_only)
         except passkeys.Refused as e:
-            return refuse(str(e))
+            return no(str(e))
         except Exception as e:  # py_webauthn raises several types, all a failed check
-            log(request, "settings apply refused (%s)" % type(e).__name__)
-            return refuse("the key's answer did not verify")
+            log(request, "%s apply refused (%s)" % (purpose, type(e).__name__))
+            return no("the key's answer did not verify")
         store.update(key["id"], sign_count=count)
-        if state.take_challenge(token, "settings") is not planned:
-            return refuse("this expired; plan again")
+        if state.take_challenge(token, purpose) is not planned:
+            return no("this expired; plan again")
+        return None, token, key, planned
+
+    @app.post("/settings/apply/options")
+    def settings_apply_options(request: Request):
+        return apply_options(request, "settings")
+
+    @app.post("/settings/apply")
+    async def settings_apply(request: Request):
+        refusal, token, key, planned = await confirmed(request, "settings")
+        if refusal:
+            return refusal
         done = helper({"op": "settings-apply", "changes": planned["changes"], "base": planned["base"]})
         if not done.get("ok"):
             return refuse("not applied: %s" % done.get("error", "the host helper refused"))
