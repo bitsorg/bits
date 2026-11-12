@@ -154,17 +154,23 @@ async function unlock(event) {
   }
 }
 
-// The settings planned on this page are written once a touch of the admin's own key says so.
+// What was planned on this page (Settings, Store) is written once a touch of the admin's own key says so.
 async function applySettings(event) {
-  const button = event.target;
+  const button = event.target, path = button.dataset.path || "/settings";
   button.disabled = true;
   try {
-    const o = await post("/settings/apply/options", {});
+    const o = await post(path + "/apply/options", {});
     o.challenge = unb64u(o.challenge);
     o.allowCredentials = (o.allowCredentials || []).map(c => Object.assign(c, { id: unb64u(c.id) }));
     say("Confirm with your key (touch, fingerprint or face)…");
     const a = await navigator.credentials.get({ publicKey: o });
-    const r = await post("/settings/apply", { credential: assertionBody(a), plan: button.dataset.plan });
+    const r = await post(path + "/apply", { credential: assertionBody(a), plan: button.dataset.plan });
+    if (path === "/store") {
+      say((r.written ? "Applied; the store reloads it within seconds" + (r.backup ? " (the old one is kept as " +
+          r.backup + ")" : "") : "config.json unchanged") + (r.credentials.length ? "; keys set: " +
+          r.credentials.join(", ") : "") + (r.restart ? ". On the host, run make store-up for the new keys." : "."));
+      return;
+    }
     const saved = r.profile ? " Saved " + r.profile + "." : r.profile_error ? " " + r.profile_error + "." : "";
     say(r.keys.length ? "Applied: " + r.keys.join(", ") + (r.backup ? " (the old .env is kept as " + r.backup + ")" : "") +
         "." + saved + " On the host, run make up for the services to pick it up." : "Nothing changed." + saved);

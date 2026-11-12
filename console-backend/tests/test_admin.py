@@ -847,6 +847,94 @@ class AdminTest(unittest.TestCase):
         self.assertEqual((row["kind"], json.loads(row["payload"])["profile_sha256"]), ("admin.settings_applied",
                          hashlib.sha256(b"# ours\nenv:\n  VM_RETENTION: '30'\n").hexdigest()))
 
+    def store_client(self, config=None, console_key="C" * 43):
+        self.asked, self.base, self.plan_base = [], "s0", None
+        config = config if config is not None else {
+            "issuer": "https://bits-store.testbed", "audience": "testbed/store", "keys": {},
+            "volumes": {"v": {"endpoint": "http://minio:9000", "bucket": "b", "region": "us-east-1",
+                              "access_key_env": "BITS_STORE_V_AK", "secret_key_env": "BITS_STORE_V_SK"}},
+            "bindings": [{"prefix": "/store", "volume": "v", "key_prefix": "TARS"}]}
+
+        def helper(request):
+            self.asked.append(request)
+            if request["op"] == "store":
+                return {"ok": True, "config": config or None, "path": "config/bits-store/config.json", "base": self.base,
+                        "credentials": ["BITS_STORE_V_AK"], "console_key": console_key}
+            if request["op"] == "store-plan":
+                if request["config"].get("issuer") == "refused":
+                    return {"ok": False, "error": "bits-store refuses it: issuer"}
+                return {"ok": True, "base": self.plan_base or self.base, "diff": ["--- config.json", "+  \"console-1\": {"],
+                        "credentials": {n: "will set" for n in request["credentials"]},
+                        "restart": bool(request["credentials"])}
+            if request["op"] == "store-apply":
+                return {"ok": True, "written": True, "backup": "config.json.bak-1",
+                        "credentials": sorted(request["credentials"]), "restart": bool(request["credentials"])}
+            return {"ok": True}
+        self.client = TestClient(admin.create_app(self.state, helper, [ORIGIN], self.store, reset_file=self.reset,
+                                                  chain=self.chain), base_url="http://localhost:8800")
+        self.login(self.state.code)
+        return self.client
+
+    def test_the_store_page(self):
+        page = self.store_client().get("/store").text
+        self.assertIn('name=base value="s0"', page)
+        self.assertIn("&quot;bucket&quot;: &quot;b&quot;", page)                 # the config, as JSON
+        self.assertIn("<td class=k>BITS_STORE_V_AK</td><td>set</td>", page)
+        self.assertIn("<td class=k>BITS_STORE_V_SK</td><td><b>missing</b></td>", page)
+        self.assertIn("name=trust_console value=1 checked", page)
+        self.assertIn("did not answer", self.store_client(console_key=None).get("/store").text)
+        trusted = {"x": "C" * 43, "signer": "user"}
+        page = self.store_client(config={"keys": {"console-1": trusted}, "volumes": {}, "bindings": []}).get("/store").text
+        self.assertIn("The store trusts the console", page)
+        self.assertIn("this is a template", self.store_client(config=False).get("/store").text)
+
+    def test_the_store_is_planned_and_applied_with_your_key(self):
+        client = self.store_client()
+        self.enrol("mine")
+        [mine] = self.store.load()
+        config = json.loads(re.search(r"<textarea[^>]*>(.*?)</textarea>", client.get("/store").text, re.S)
+                            .group(1).replace("&quot;", '"'))
+        form = lambda **f: client.post("/store/plan", content=urlencode(f), headers={
+            "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"}).text
+        self.assertIn("changed since you opened", form(base="s9", config=json.dumps(config)))
+        self.plan_base = "s2"                  # config.json changed between the page's question and the plan's
+        self.assertIn("changed since you opened", form(base="s0", config=json.dumps(config)))
+        self.plan_base = None
+        form(base="s0", config=json.dumps(config))                      # trust_console not ticked
+        self.assertEqual([a for a in self.asked if a["op"] == "store-plan"][-1]["config"]["keys"], {})
+        self.assertIn("not JSON", form(base="s0", config="{"))
+        self.assertIn("bits-store refuses it: issuer", form(base="s0", config=json.dumps(dict(config, issuer="refused"))))
+        page = form(**{"base": "s0", "config": json.dumps(config), "trust_console": "1",
+                       "key:BITS_STORE_V_SK": "secret-value", "key:BITS_STORE_V_AK": "",
+                       "new_key_name": "BITS_STORE_W_AK", "new_key_value": "w"})
+        planned = [a for a in self.asked if a["op"] == "store-plan"][-1]
+        self.assertEqual(planned["config"]["keys"], {"console-1": {"x": "C" * 43, "signer": "user"}})
+        self.assertEqual(planned["credentials"], {"BITS_STORE_V_SK": "secret-value", "BITS_STORE_W_AK": "w"})
+        self.assertNotIn("secret-value", page)
+        self.assertIn("make store-up", page)
+        plan_id = re.search('data-plan="([0-9a-f]+)"', page).group(1)
+        self.assertIn('data-path=/store', page)
+        post = lambda path, body: client.post(path, json=body, headers={"Origin": ORIGIN}).json()
+        options = post("/settings/apply/options", {})                  # a store plan is not a settings one
+        self.assertIn("expired", post("/settings/apply", {
+            "credential": assertion(options, mine["id"], counter=3), "plan": plan_id})["error"])
+        options = post("/store/apply/options", {})
+        self.assertIn("not your latest plan", post("/store/apply", {
+            "credential": assertion(options, mine["id"], counter=4), "plan": "0" * 16})["error"])
+        options = post("/store/apply/options", {})
+        done = post("/store/apply", {"credential": assertion(options, mine["id"], counter=5), "plan": plan_id})
+        self.assertEqual(done, {"ok": True, "written": True, "backup": "config.json.bak-1",
+                                "credentials": ["BITS_STORE_V_SK", "BITS_STORE_W_AK"], "restart": True})
+        applied = [a for a in self.asked if a["op"] == "store-apply"]
+        self.assertEqual((len(applied), applied[0]["base"], applied[0]["credentials"]["BITS_STORE_V_SK"]),
+                         (1, "s0", "secret-value"))
+        row = self.chain.rows()[-1]
+        self.assertEqual(row["kind"], "admin.store_applied")
+        self.assertNotIn("secret-value", json.dumps(row))
+        options = post("/store/apply/options", {})                     # used up
+        self.assertIn("expired", post("/store/apply", {
+            "credential": assertion(options, mine["id"], counter=6), "plan": plan_id})["error"])
+
     def test_wrong_codes_lock_out(self):
         for _ in range(admin.FAILURES):
             self.assertNotEqual(self.login("AAAA-AAAA-AAAA-AAAA").status_code, 303)

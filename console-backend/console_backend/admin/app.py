@@ -30,6 +30,7 @@ from . import events, passkeys
 from . import hosts as hosts_page_view
 from . import service_secrets as secrets_page_view
 from . import settings as settings_page_view
+from . import store as store_page_view
 
 HELPER_SOCKET = os.environ.get("BITS_ADMIN_HELPER_SOCKET", "/run/bits-admin-helper/helper.sock")
 CODE_FILE = os.environ.get("BITS_ADMIN_CODE_FILE", "/run/bits-admin/setup-code")
@@ -443,7 +444,8 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
                       "<button>Unlock</button></form>" % "".join(
                           "<option value=\"%s\">%s</option>" % (html.escape(k["id"]), html.escape(k["label"]))
                           for k in boxed))
-        return _page("Site", "<p>Signed in as %s (%s). <a href=/hosts>Hosts</a> &middot; <a href=/settings>Settings</a> &middot; <a href=/secrets>Secrets</a></p>"
+        return _page("Site", "<p>Signed in as %s (%s). <a href=/hosts>Hosts</a> &middot; <a href=/settings>Settings</a> &middot; <a href=/store>Store</a> &middot; "
+                     "<a href=/secrets>Secrets</a></p>"
                      "<h2>Host helper</h2><pre>%s</pre>%s"
                      "<h2>Keys</h2><p>%s</p>%s<form id=enrol><input id=label maxlength=%d size=30 "
                      "placeholder=\"e.g. YubiKey 5C, MacBook Touch ID\"> <button>Add key</button>"
@@ -581,6 +583,68 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
               profile_saved=not done.get("profile_error") if profile else None)
         return JSONResponse({"ok": True, "keys": keys, "backup": done.get("backup"), "profile": done.get("profile"),
                              "profile_error": done.get("profile_error")}, headers=HEADERS)
+
+    @app.get("/store")
+    def store_page(request: Request):
+        if not session(request):
+            return RedirectResponse("/", status_code=303, headers=HEADERS)
+        answer = helper({"op": "store"})
+        if not answer.get("ok"):
+            return _page("Store", "<p>The host helper could not say: %s</p>" % html.escape(str(answer.get("error", ""))))
+        return _page("Store", "<p><a href=/>Back</a></p>" + store_page_view.render(answer))
+
+    @app.post("/store/plan")
+    async def store_plan(request: Request):
+        token = session(request)
+        if not token:
+            return refuse("not signed in", 401)
+        try:
+            form = {k: v[0] for k, v in parse_qs((await _body(request, 262144)).decode(errors="replace")).items()}
+        except ValueError:
+            return refuse("bad request")
+        back = "<p><a href=/store>Back</a></p>"
+        answer = helper({"op": "store"})
+        if not answer.get("ok"):
+            return _page("Store", "<p>The host helper could not say: %s</p>%s" % (html.escape(str(answer.get("error"))), back))
+        if not answer.get("base") or form.get("base") != answer["base"]:  # it would undo what changed since
+            return _page("Store", "<p>The store's configuration changed since you opened this page. "
+                         "<a href=/store>Open it again</a> and redo your changes.</p>")
+        config, why = store_page_view.config_from(form, answer.get("console_key"))
+        if why:
+            return _page("Store", "<p>Not possible: %s</p>%s" % (html.escape(why), back))
+        credentials = store_page_view.credentials_from(form)
+        planned = helper({"op": "store-plan", "config": config, "credentials": credentials})
+        if not planned.get("ok"):
+            return _page("Store", "<p>Not possible: %s</p>%s" % (html.escape(str(planned.get("error", ""))), back))
+        if planned.get("base") != answer["base"]:  # changed between the two questions
+            return _page("Store", "<p>The store's configuration changed since you opened this page. "
+                         "<a href=/store>Open it again</a> and redo your changes.</p>")
+        plan_id = secrets.token_hex(8)  # random, not a hash of the plan: it holds the keys' values
+        state.put_challenge(token, "store", {"config": config, "credentials": credentials,
+                                             "base": planned.get("base"), "id": plan_id})
+        return _page("Store", store_page_view.plan_html(planned, plan_id))
+
+    @app.post("/store/apply/options")
+    def store_apply_options(request: Request):
+        return apply_options(request, "store")
+
+    @app.post("/store/apply")
+    async def store_apply(request: Request):
+        refusal, token, key, planned = await confirmed(request, "store")
+        if refusal:
+            return refusal
+        done = helper({"op": "store-apply", "config": planned["config"], "credentials": planned["credentials"],
+                       "base": planned["base"]})
+        if not done.get("ok"):
+            return refuse("not applied: %s" % done.get("error", "the host helper refused"))
+        names = [str(n) for n in done.get("credentials") or []]
+        log(request, "applied the store's configuration: config.json %s; keys %s" % (
+            "written" if done.get("written") else "unchanged", ", ".join(names) or "unchanged"))
+        audit(state.who(token), "admin.store_applied", "bits-store", key=key["id"], keys=names,
+              written=bool(done.get("written")),
+              config_sha256=hashlib.sha256(json.dumps(planned["config"], sort_keys=True).encode()).hexdigest())
+        return JSONResponse({"ok": True, "written": bool(done.get("written")), "backup": done.get("backup"),
+                             "credentials": names, "restart": bool(done.get("restart"))}, headers=HEADERS)
 
     @app.get("/settings/site-profile.yaml")
     def settings_download(request: Request):
