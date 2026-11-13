@@ -123,10 +123,35 @@ class SourceUploadGate:
     debug("NOT archiving source %s to the remote store: the recipe forbids "
           "source redistribution (redistributable: binaries|none)", filename)
 
+  def fetch_source_from(self, url_checksum, filename, dest_dir, source):
+    # nor may a store be asked to fetch it: what it fetches it serves
+    return self._inner.fetch_source_from(url_checksum, filename, dest_dir, None)
+
+
+class SourceStoreSync:
+  """Sync-helper proxy that asks bits-store's sources binding (source_store) for a
+  source archive before the wrapped helper does. Everything else delegates."""
+
+  def __init__(self, inner, store):
+    self._inner, self._store = inner, store
+    self.remoteStore = store.base       # the store asked first, for progress lines
+
+  def __getattr__(self, name):
+    return getattr(self._inner, name)
+
+  def fetch_source_from(self, url_checksum, filename, dest_dir, source):
+    return (self._store.fetch(url_checksum, filename, dest_dir, source)
+            or self._inner.fetch_source_from(url_checksum, filename, dest_dir, source))
+
 
 def source_sync_for(spec, sync_helper):
-  """Return *sync_helper*, wrapped to drop source uploads when *spec* forbids
-  source redistribution. None passes through."""
+  """Return *sync_helper* for *spec*'s sources: behind the site's sources store,
+  if there is one (source_store), and dropping source uploads and store fetches
+  when *spec* forbids source redistribution. None passes through without a store."""
+  from bits_helpers import source_store
+  store = source_store.configured()
+  if store is not None:
+    sync_helper = SourceStoreSync(sync_helper or NoRemoteSync(), store)
   if sync_helper is None or sources_redistributable(spec):
     return sync_helper
   return SourceUploadGate(sync_helper)
@@ -427,6 +452,10 @@ class RemoteSync:
   def probe_url(self):
     """An http(s) URL that answers when the read store is reachable, or None."""
     return None
+
+  def fetch_source_from(self, url_checksum, filename, dest_dir, source):
+    """fetch_source, knowing the archive's *source* URL (None: not to be told)."""
+    return self.fetch_source(url_checksum, filename, dest_dir)
 
   def list_store_tarballs(self, *args, **kwargs):
     """Store tarball object names for an (architecture, hash), or []."""

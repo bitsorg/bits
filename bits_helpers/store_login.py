@@ -20,7 +20,7 @@ import urllib.parse
 
 from bits_helpers import sign_console
 
-TOKEN_FILE = os.path.join(os.path.expanduser("~"), ".bits", "token")
+from bits_helpers.source_store import TOKEN_FILE
 
 
 def login(console, group, token_file=TOKEN_FILE, timeout=600, cafile=None, insecure=False):

@@ -75,7 +75,7 @@ def check_site():
   found = site.files()
   if not found:
     return WARN, "no site configuration files (bits' own site.d is missing)"
-  keys = ("store.read", "store.operations", "store.s3_endpoint", "containers.registry",
+  keys = ("store.read", "store.operations", "store.s3_endpoint", "store.sources", "containers.registry",
           "containers.tag", "providers.url")
   values = ["%s=%s [%s]" % (k, site.get(k), os.path.basename(site.origin(k) or "?"))
             for k in keys if site.get(k) is not None]

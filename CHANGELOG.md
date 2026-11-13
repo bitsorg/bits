@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** A site's sources store (bits-store, site key `store.sources` or `$BITS_SOURCE_STORE`) is asked first for source archives. With a store token (`bits login`) bits passes the archive's URL and the store fetches a missing one, unless the recipe forbids redistributing its sources; otherwise, or on any other answer, the download goes on as before (REFERENCE "The site's sources store").
 - **[Change]** bits detects the platform name the CI and the builder images use: `x86_64-el9` on RHEL, AlmaLinux and Rocky 9, `x86_64-ubuntu2404` on Ubuntu 24.04 (macOS keeps `osx_arm64`). The `aliBuild` wrapper keeps ALICE's names (`slc9_x86-64`) by setting `BITS_LEGACY_ARCH=1`; native bits for ALICE records it with `bits use --architecture slc9_x86-64`. ALICE's store is read only for ALICE's names exactly (USERGUIDE "Platforms").
 - **[Fix]** `bits init stacks.bits` (any `<group>.bits`) no longer creates `sw` in the current directory: the work dir belongs inside the checkout, where you then build.
 - **[Improvement]** `bits --version` of an installed bits whose `_version.py` holds `git describe` (as bits.bits writes it) shows the tag, the commits since and the commit, e.g. `bits 0.7-3-g1a2b3c4 (tag 0.7 +3, commit 1a2b3c4)`.

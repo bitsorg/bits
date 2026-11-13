@@ -418,7 +418,7 @@ class DownloadSyncHelperTest(unittest.TestCase):
 
             download(TEST_URL, os.path.join(tmp, "dest"), tmp, sync_helper=mock_helper)
 
-            mock_helper.fetch_source.assert_not_called()
+            mock_helper.fetch_source_from.assert_not_called()
             mock_helper.upload_source.assert_not_called()
 
     @patch("bits_helpers.download.check_file", return_value=None)
@@ -432,18 +432,18 @@ class DownloadSyncHelperTest(unittest.TestCase):
 
             mock_helper = MagicMock()
 
-            def fake_fetch(u_hash, fname, dest_dir):
+            def fake_fetch(u_hash, fname, dest_dir, source):
                 # Simulate the remote store writing the file to local cache.
                 with open(os.path.join(dest_dir, fname), "wb") as fh:
                     fh.write(b"from remote store")
                 return True
 
-            mock_helper.fetch_source.side_effect = fake_fetch
+            mock_helper.fetch_source_from.side_effect = fake_fetch
 
             download(TEST_URL, os.path.join(tmp, "dest"), tmp, sync_helper=mock_helper)
 
-            mock_helper.fetch_source.assert_called_once_with(
-                TEST_URL_HASH, TEST_FILENAME, cache_dir,
+            mock_helper.fetch_source_from.assert_called_once_with(
+                TEST_URL_HASH, TEST_FILENAME, cache_dir, TEST_URL,
             )
             # Already in the store — must not re-upload.
             mock_helper.upload_source.assert_not_called()
@@ -458,7 +458,7 @@ class DownloadSyncHelperTest(unittest.TestCase):
             expected_cached_file = os.path.join(cache_dir, TEST_FILENAME)
 
             mock_helper = MagicMock()
-            mock_helper.fetch_source.return_value = False  # remote store miss
+            mock_helper.fetch_source_from.return_value = False  # remote store miss
 
             with patch.dict("bits_helpers.download.downloadHandlers",
                             {"https": self._fake_download_handler(TEST_FILENAME)}):
@@ -466,7 +466,7 @@ class DownloadSyncHelperTest(unittest.TestCase):
                          sync_helper=mock_helper)
 
             # fetch_source was tried
-            mock_helper.fetch_source.assert_called_once()
+            mock_helper.fetch_source_from.assert_called_once()
             # upload_source was called with the locally-cached file
             mock_helper.upload_source.assert_called_once_with(
                 expected_cached_file, TEST_URL_HASH, TEST_FILENAME,
@@ -482,7 +482,7 @@ class DownloadSyncHelperTest(unittest.TestCase):
             cache_dir = self._cache_dir_for(tmp, TEST_URL_HASH)
             os.makedirs(cache_dir, exist_ok=True)
 
-            def tracking_fetch(u_hash, fname, dest_dir):
+            def tracking_fetch(u_hash, fname, dest_dir, source):
                 call_order.append("remote_store")
                 # Return False so that the upstream handler is also called.
                 return False
@@ -494,7 +494,7 @@ class DownloadSyncHelperTest(unittest.TestCase):
                 return True
 
             mock_helper = MagicMock()
-            mock_helper.fetch_source.side_effect = tracking_fetch
+            mock_helper.fetch_source_from.side_effect = tracking_fetch
 
             with patch.dict("bits_helpers.download.downloadHandlers",
                             {"https": tracking_upstream}):
@@ -536,7 +536,7 @@ class LocalFileSourceTest(unittest.TestCase):
             self._write(os.path.join(tmp, "recipes", "local.txt"), "content")
             helper = MagicMock()
             self._download(tmp, helper)
-            helper.fetch_source.assert_not_called()
+            helper.fetch_source_from.assert_not_called()
             helper.upload_source.assert_not_called()
 
     def test_without_dest_nothing_is_copied(self):

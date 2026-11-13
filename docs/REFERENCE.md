@@ -3679,6 +3679,7 @@ A file in a later directory replaces the one of the same name, so an empty `10-C
 | `store.read_by_arch` | Architecture → read store, before `store.read` (the architecture itself, or followed by `-` qualifiers such as `-gcc13`). |
 | `store.operations` | Store of `certify`, `compliance`, `gc`, `store-stats`, `publish` and `bits store` (after `$BITS_S3_STORE`). |
 | `store.s3_endpoint` | Endpoint of `b3://` stores (after `--s3-endpoint` and the environment); unset: boto3's default. |
+| `store.sources` | bits-store's `sources` binding, asked first for source archives (after `$BITS_SOURCE_STORE`); see [The site's sources store](#the-sites-sources-store-bits-store). |
 | `containers.registry`, `containers.tag`, `containers.legacy_image` | The default `--docker` image; see [§22](#22-docker-support). |
 | `providers.url` | The always-on providers repository (after `$BITS_PROVIDERS`). |
 | `sbom.namespace` | SPDX document namespace base. |
@@ -4239,6 +4240,17 @@ bits build --remote-store b3://mybucket/bits-cache::rw ROOT
 ```
 
 Without a write store (an `http(s)://` store alone is read-only), bits still fetches source archives from the store but does not upload them — the same as for build tarballs.
+
+#### The site's sources store (bits-store)
+
+A site running bits-store names its `sources` binding in the [site configuration](#site-configuration) (`store.sources`, e.g. `https://store.example.org/sources/archives`) or in `$BITS_SOURCE_STORE`. bits asks it for an archive before the remote store and the upstream URL:
+
+- With a store token (`bits login`, `~/.bits/token`, sent over https only) bits passes the archive's URL, and the store fetches a missing archive itself. The download waits while the store answers `202` (up to 8 minutes), then takes the archive from it. A token the store does not take reads as anyone (said once).
+- Without a token the read is anyone's: a missing archive is downloaded from the upstream URL as before.
+- bits never passes the URL of a recipe whose `redistributable` forbids sources (what the store fetches, it serves), nor a URL with credentials or of another scheme than http(s). An archive whose file name the store cannot hold (outside `A-Z a-z 0-9 . _ - ~ + ! @ = , :`, e.g. a URL with a query) is not asked for.
+- Any other answer, or an unreachable store, leaves the download to the remote store and the upstream URL.
+
+An archive from the sources store is not uploaded to the write store: it is already stored. The recipe's checksum is checked on it as on any download (see [Checksum verification](#checksum-verification)).
 
 ### Store integrity verification
 

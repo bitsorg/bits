@@ -199,7 +199,7 @@ class SourceProgressTest(unittest.TestCase):
     def test_archive_origin_reports_upstream_store_fallback_and_local_cache(self):
         url = "https://example.com/demo-1.tar.gz"
         messages = []
-        helper = Namespace(remoteStore="b3://cache", fetch_source=lambda *args: False,
+        helper = Namespace(remoteStore="b3://cache", fetch_source_from=lambda *args: False,
                            upload_source=lambda *args: None)
 
         def fetch(source, directory, work_dir):
@@ -217,10 +217,10 @@ class SourceProgressTest(unittest.TestCase):
         url = "https://example.com/demo-1.tar.gz"
         messages = []
 
-        def fetch(url_hash, filename, directory):
+        def fetch(url_hash, filename, directory, source):
             Path(directory, filename).write_bytes(b"cached source archive")
 
-        helper = Namespace(remoteStore="https://cache.example.com", fetch_source=fetch)
+        helper = Namespace(remoteStore="https://cache.example.com", fetch_source_from=fetch)
         with tempfile.TemporaryDirectory() as tmp:
             download(url, None, tmp, sync_helper=helper, progress=messages.append)
         self.assertEqual(messages, ["https://cache.example.com (source: {})".format(url)])

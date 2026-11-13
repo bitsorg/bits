@@ -554,7 +554,7 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
         Optional sync-backend instance (any class from ``bits_helpers.sync``).
         When provided:
 
-        * A cache miss first attempts ``sync_helper.fetch_source()`` before
+        * A cache miss first attempts ``sync_helper.fetch_source_from()`` before
           hitting the upstream URL, so the remote store acts as a mirror
           that survives upstream disappearance.
         * A successful upstream download is immediately archived via
@@ -572,6 +572,7 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
     if source.startswith("file:/"):
         return _copy_local_source(source, dest, checksum, enforce_mode)
     url_checksum = getUrlChecksum(source)
+    keyed_url = source    # the URL url_checksum is of, for a store to fetch
 
     # Syntactic sugar to allow the following urls for tag collector:
     #
@@ -659,7 +660,7 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
                 debug("Trying remote store for source file: %s", filename)
                 if progress and getattr(sync_helper, "remoteStore", ""):
                     progress("{} (source: {})".format(sync_helper.remoteStore, source))
-                sync_helper.fetch_source(url_checksum, filename, downloadDir)
+                sync_helper.fetch_source_from(url_checksum, filename, downloadDir, keyed_url)
 
             if not exists(realFile):
                 debug("Trying to fetch source file: %s", source)
