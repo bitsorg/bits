@@ -48,15 +48,7 @@ class SourceStore:
     self.timeout = timeout
 
   def _token(self):
-    """The store token, if any, and only over https or to this host itself."""
-    u = urllib.parse.urlsplit(self.base)
-    if u.scheme != "https" and u.hostname not in ("localhost", "127.0.0.1", "::1"):
-      return None
-    try:
-      with open(os.path.expanduser(self.token_file)) as f:
-        return f.read().strip() or None
-    except OSError:
-      return None
+    return store_token(self.base, self.token_file)
 
   def fetch(self, url_checksum, filename, dest_dir, source=None):
     """Put the stored archive in *dest_dir*/*filename*: True if it is there. With
@@ -114,6 +106,19 @@ class SourceStore:
         if os.path.exists(tmp):
           os.unlink(tmp)
     return True
+
+
+def store_token(base, token_file=None):
+  """The store token for bits-store at *base*, if any: only over https or to this
+  host itself."""
+  u = urllib.parse.urlsplit(base)
+  if u.scheme != "https" and u.hostname not in ("localhost", "127.0.0.1", "::1"):
+    return None
+  try:
+    with open(os.path.expanduser(token_file or TOKEN_FILE)) as f:
+      return f.read().strip() or None
+  except OSError:
+    return None
 
 
 def _fetchable(source):

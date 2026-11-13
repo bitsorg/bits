@@ -1180,7 +1180,7 @@ Reuse pre-built tarballs from a binary store, upload what you build to your own 
 
 | Option | Description |
 |--------|-------------|
-| `--remote-store URL` | Binary store to fetch pre-built tarballs from; several, comma-separated, are tried in order (e.g. production, then the PR store). Append `::rw` to also upload to a single store (cannot be combined with `--write-store`). Without it, the [site configuration](#site-configuration)'s `store.read_by_arch` / `store.read` is the default (at CERN `https://s3.cern.ch/lcgapp-bits-testing`, where the bits CI builds publish, and ALICE's public store for ALICE's architectures; with `--write-store` alone, or under the aliBuild wrapper, only the latter); a `remote_store:` entry in the defaults `system:` block replaces that default. |
+| `--remote-store URL` | Binary store to fetch pre-built tarballs from; several, comma-separated, are tried in order (e.g. production, then the PR store). A store behind the site's bits-store is `bits-store+https://host/store` (read only for now; see [The site's package store](#the-sites-package-store-bits-store)). Append `::rw` to also upload to a single store (cannot be combined with `--write-store`). Without it, the [site configuration](#site-configuration)'s `store.read_by_arch` / `store.read` is the default (at CERN `https://s3.cern.ch/lcgapp-bits-testing`, where the bits CI builds publish, and ALICE's public store for ALICE's architectures; with `--write-store` alone, or under the aliBuild wrapper, only the latter); a `remote_store:` entry in the defaults `system:` block replaces that default. |
 | `--write-store URL` | Binary store to upload built tarballs to; several, comma-separated, all receive every built package (an upload failure to any fails the package). Revision numbers are chosen from the markers of every read and write store, so the stores never disagree on one. Given alone (no `--remote-store`), it is also the read store, except where a default remote store applies (then use `--remote-store URL::rw`). |
 | `--no-remote-store` | Disable the default remote store; a `--write-store` is still read from. Without it, an http(s):// or b3:// read store that does not answer (an offline laptop) is noticed once at the start, and the build goes on without it, with a warning. Not when a write store is set. |
 | `--insecure` | Do not validate TLS certificates of an `https://` store. |
@@ -4240,6 +4240,12 @@ bits build --remote-store b3://mybucket/bits-cache::rw ROOT
 ```
 
 Without a write store (an `http(s)://` store alone is read-only), bits still fetches source archives from the store but does not upload them — the same as for build tarballs.
+
+#### The site's package store (bits-store)
+
+`--remote-store bits-store+https://store.example.org/store` reads pre-built packages through bits-store's `tarballs` binding: bits asks for a build by its hash (`<arch>/<hash>`) and bits-store redirects to it, naming its file; bits never lists the store. The store token (`bits login`, `~/.bits/token`; over https, or plain http to this host only; never to the redirect) goes with every request; a token the store does not take is said once and dropped, and bits reads as anyone. A request that fails or gets a 5xx is tried 3 times; a download that fails is said, and the package built. It is read only for now: as a `--write-store` it is refused. The files are laid out as in any other store, so bits-store can serve an existing bucket as it is.
+
+Signed reuse reads the signed common manifests from the service's root: `https://store.example.org/MANIFESTS/common-manifest-<arch>.json`, which bits-store serves from a binding `/MANIFESTS` (key prefix `MANIFESTS`, the same bucket). Without one, or with bits-store under a path of a proxy (`https://host/bits/store`), give `--trust-manifest`.
 
 #### The site's sources store (bits-store)
 

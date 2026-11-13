@@ -352,6 +352,8 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
   # fall through to NoRemoteSync below and nothing would be uploaded.
   dieOnError(any(w.startswith("cvmfs://") for w in writes),
              "Cannot use a cvmfs:// store as a --write-store: CVMFS is read-only.")
+  dieOnError(any(w.startswith("bits-store+") for w in writes),
+             "A bits-store+ store takes no uploads yet: it is read only.")
   reads = reads or list(writes)
   # For S3-backed stores, resolve + export the connection config before any S3
   # backend is built, so boto3 and the upload subprocess share one
@@ -364,7 +366,7 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
   # Several stores, a read-only reader (http) with a writer, or two b3:// buckets
   # (each with its own credentials): one helper per store.
   if len(reads) > 1 or len(writes) > 1 or (write_url and (
-      read_url.startswith("http") or (read_url.startswith("b3://") and read_url != write_url))):
+      read_url.startswith(("http", "bits-store+")) or (read_url.startswith("b3://") and read_url != write_url))):
     readers = [_reader_from_url(u, architecture, work_dir, insecure) for u in reads]
     writers = [_writer_from_url(w, architecture, work_dir) for w in writes]
     if len(readers) == 1 and len(writers) == 1:
@@ -372,6 +374,9 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
     return MultiRemoteSync(readers, writers)
   if read_url.startswith("http"):
     return HttpRemoteSync(read_url, architecture, work_dir, insecure)
+  if read_url.startswith("bits-store+"):
+    from bits_helpers.bits_store_sync import BitsStoreSync
+    return BitsStoreSync(read_url, architecture, work_dir, insecure)
   if read_url.startswith("s3://"):
     return S3RemoteSync(read_url, write_url, architecture, work_dir)
   if read_url.startswith("b3://"):
@@ -394,6 +399,9 @@ def _reader_from_url(url, architecture, work_dir, insecure):
   """A read-only helper for one store of a MultiRemoteSync."""
   if url.startswith("http"):
     return HttpRemoteSync(url, architecture, work_dir, insecure)
+  if url.startswith("bits-store+"):
+    from bits_helpers.bits_store_sync import BitsStoreSync
+    return BitsStoreSync(url, architecture, work_dir, insecure)
   if url.startswith("s3://"):
     return S3RemoteSync(url, "", architecture, work_dir)
   if url.startswith("b3://"):

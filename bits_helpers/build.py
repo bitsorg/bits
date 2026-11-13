@@ -58,6 +58,7 @@ import importlib
 import json
 import socket
 import os
+import urllib.parse
 import re
 import shutil
 import shlex
@@ -694,6 +695,9 @@ def _store_container_root(store, endpoint=None):
   store = str(store or "")
   if store.startswith(("http://", "https://")):
     return store.rstrip("/")
+  if store.startswith("bits-store+"):          # the service's root: its /MANIFESTS binding
+    u = urllib.parse.urlsplit(store[len("bits-store+"):])
+    return "%s://%s" % (u.scheme, u.netloc) if u.scheme in ("http", "https") and u.netloc else None
   if store.startswith(("b3://", "s3://")):
     bucket = store.split("://", 1)[1].split("/", 1)[0].split("::", 1)[0]
     if bucket:
