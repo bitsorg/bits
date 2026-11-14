@@ -800,12 +800,14 @@ async def store_token_issue(request: Request):
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
-def _store_token_signature(data):
-    """Ed25519 signature of *data* by the security proxy's store-token route."""
+def _store_token_signature(data, build=False):
+    """Ed25519 signature of *data* by the security proxy's store-token route (the
+    build tokens' with *build*)."""
     if trust is None:
         raise signproxy.Unavailable("bits_helpers is not installed")
-    env = signproxy.call(settings, trust.sign_bytes_via_proxy, data,
-                         route=settings.store_token_sign_route, prefix=settings.store_token_sign_prefix,
+    route, prefix = ((settings.store_build_token_sign_route, settings.store_build_token_sign_prefix)
+                     if build else (settings.store_token_sign_route, settings.store_token_sign_prefix))
+    env = signproxy.call(settings, trust.sign_bytes_via_proxy, data, route=route, prefix=prefix,
                          agent_socket=settings.store_token_sign_socket or None,
                          host=(settings.store_token_sign_host or None) if settings.store_token_sign_socket else None)
     try:
@@ -817,14 +819,17 @@ def _store_token_signature(data):
     return sig
 
 
-def _sign_store_token(user, group, caps, ttl, **audit_extra):
-    """Sign and audit a store token: {token, group, expires, capabilities}."""
+def _sign_store_token(user, group, caps, ttl, build=False, **audit_extra):
+    """Sign and audit a store token: {token, group, expires, capabilities}; with
+    *build*, a build job's (*user* build:<job>) with the build key."""
     args = (settings.store_token_issuer, settings.store_token_audience)
+    kid, route, key = ((settings.store_build_token_kid, settings.store_build_token_sign_route,
+                        settings.store_build_token_key) if build else
+                       (settings.store_token_kid, settings.store_token_sign_route, settings.store_token_key))
+    kind = {"signer": "build" if build else "user"}
     try:
-        signer = (store_token.StoreTokenSigner(settings.store_token_kid, _store_token_signature, *args)
-                  if settings.store_token_sign_route else
-                  store_token.StoreTokenSigner.from_seed(settings.store_token_kid,
-                                                         settings.store_token_key, *args))
+        signer = (store_token.StoreTokenSigner(kid, lambda d: _store_token_signature(d, build), *args, **kind)
+                  if route else store_token.StoreTokenSigner.from_seed(kid, key, *args, **kind))
     except ValueError as exc:
         raise HTTPException(503, "store tokens: %s" % exc)
     jti = secrets.token_urlsafe(16)
@@ -838,7 +843,7 @@ def _sign_store_token(user, group, caps, ttl, **audit_extra):
     except (RuntimeError, OSError) as exc:
         raise HTTPException(502, "store token not signed: %s" % exc)
     audit.record("store_token", user=user, group=group, jti=jti, exp=now + ttl,
-                 principal="human", **audit_extra)
+                 principal="build" if build else "human", **audit_extra)
     return {"token": tok, "group": group, "expires": now + ttl,
             "capabilities": [{"m": m, "p": p} for m, p in caps]}
 

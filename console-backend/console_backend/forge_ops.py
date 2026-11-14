@@ -372,6 +372,9 @@ class GitLabForge:
     def get_pipeline(self, pid):
         return self._get("/pipelines/%s" % pid)
 
+    def get_job(self, job_id):
+        return self._get("/jobs/%s" % job_id)
+
     def pipeline_jobs(self, pid):
         """Every job of the pipeline, retried attempts included."""
         return self._get_all("/pipelines/%s/jobs?include_retried=true" % pid)

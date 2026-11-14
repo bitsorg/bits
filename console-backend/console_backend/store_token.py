@@ -108,6 +108,7 @@ class StoreTokenSigner:
 
 
 _GROUP = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+_PLATFORM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
 def admin_capabilities(group):
@@ -117,3 +118,15 @@ def admin_capabilities(group):
         raise ValueError("group %r: a lower-case community name" % (group,))
     return [(m, "/%s/%s/**" % (kind, group)) for kind in ("store", "manifests")
             for m in METHODS] + [("GET", "/sources/**")]
+
+
+def build_capabilities(platform):
+    """What a build of *platform* may do in the store (ADR 0004 C): read and write
+    its packages (also of its build types, <platform>-opt, and shared ones) and
+    their revision markers; have the sources store fetch."""
+    if not isinstance(platform, str) or not _PLATFORM.fullmatch(platform):
+        raise ValueError("platform %r: not an architecture name" % (platform,))
+    return [cap for arch in (platform + "*", "share")
+            for cap in (("GET", "/store/%s/**" % arch), ("PUT", "/store/%s/**" % arch),
+                        ("GET", "/MANIFESTS/rev-index/%s/**" % arch),
+                        ("PUT", "/MANIFESTS/rev-index/%s/**" % arch))] + [("GET", "/sources/**")]

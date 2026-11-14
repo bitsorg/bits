@@ -289,16 +289,33 @@ class Settings:
         self.store_token_issuer = e.get("BITS_STORE_TOKEN_ISSUER", "")
         self.store_token_audience = e.get("BITS_STORE_TOKEN_AUDIENCE", "")
         self.store_token_ttl = int(e.get("BITS_STORE_TOKEN_TTL", "28800") or "28800")
+        # ... and the build jobs' (POST /ops/ci/store-token): a key of their own, signer
+        # 'build' in bits-store's config, by its own proxy route (same proxy) or seed.
+        self.store_build_token_sign_route = e.get("BITS_STORE_BUILD_TOKEN_SIGN_ROUTE", "")
+        self.store_build_token_sign_prefix = e.get("BITS_STORE_BUILD_TOKEN_SIGN_PREFIX",
+                                                   "/sign/store-build")
+        self.store_build_token_key = e.get("BITS_STORE_BUILD_TOKEN_KEY", "")
+        self.store_build_token_kid = e.get("BITS_STORE_BUILD_TOKEN_KID", "")
+        # ... at most this long, else until the job's ID token expires (its timeout).
+        self.store_build_token_max_ttl = int(e.get("BITS_STORE_BUILD_TOKEN_MAX_TTL", "86400") or "86400")
         # ... and a token `bits login` gets (approved with a passkey): a day.
         self.store_cli_token_ttl = int(e.get("BITS_STORE_CLI_TOKEN_TTL", "86400") or "86400")
+        if self.store_build_token_kid and self.store_build_token_kid == self.store_token_kid:
+            raise ValueError("BITS_STORE_BUILD_TOKEN_KID: the build key is not the user key")
         for name, v in (("BITS_STORE_TOKEN_TTL", self.store_token_ttl),
-                        ("BITS_STORE_CLI_TOKEN_TTL", self.store_cli_token_ttl)):
+                        ("BITS_STORE_CLI_TOKEN_TTL", self.store_cli_token_ttl),
+                        ("BITS_STORE_BUILD_TOKEN_MAX_TTL", self.store_build_token_max_ttl)):
             if not 60 <= v <= 7 * 86400:
                 raise ValueError("%s: 60 seconds to 7 days" % name)
 
     def store_tokens_configured(self) -> bool:
         return bool((self.store_token_sign_route or self.store_token_key) and self.store_token_kid
                     and self.store_token_issuer and self.store_token_audience)
+
+    def store_build_tokens_configured(self) -> bool:
+        return bool((self.store_build_token_sign_route or self.store_build_token_key)
+                    and self.store_build_token_kid and self.store_token_issuer
+                    and self.store_token_audience)
 
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks

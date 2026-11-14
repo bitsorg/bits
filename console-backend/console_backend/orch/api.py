@@ -37,6 +37,8 @@
     GET  /ops/trace?repo=&path=&build_id=   who built and approved a CVMFS path (bits trace)
     POST /ops/ci/published, /ops/ci/failed   {pipeline}: a CI job's hint to look
                                        at its pipeline now (GitLab CI ID token)
+    POST /ops/ci/store-token           a store token for the build job (its CI ID token):
+                                       its pipeline's group and platform, until its ID token expires
     GET  /ops/issues?community=&package=&limit=   deduplicated failures, last seen first
     GET  /ops/issues/{id}              one, with its occurrences
     GET  /ops/failures?pipeline=&community=&limit=   failed jobs' records, with excerpts
@@ -98,12 +100,13 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from .. import audit, authz, ci_auth, session
+from .. import audit, authz, ci_auth, session, store_token
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
                failures, hosts, kinds, nightlies, outside, phases, read_tokens, reconcile,
                sbom_history, sbom_licences, sbom_plan, sbom_scan, schedules, shadow, trace,
@@ -932,6 +935,74 @@ async def ci_published(request: Request):
 @router.post("/ops/ci/failed")
 async def ci_failed(request: Request):
     return await _hint(request, "failed")
+
+
+class _Refused(Exception):
+    """A store token the policy refuses (403, audited)."""
+
+
+@router.post("/ops/ci/store-token")
+async def ci_store_token(request: Request):
+    """A store token for the build job asking (ADR 0004 C), never from the request:
+    the job must be running in its pipeline (GitLab's word), a build pipeline the
+    worker records; the token has its community, its platform's packages and
+    markers, until the job's ID token expires."""
+    m = _m()
+    settings = m.settings
+    if not settings.store_build_tokens_configured():
+        raise HTTPException(503, "build store tokens are not configured")
+    claims = await _ci_claims(request, settings)
+    try:
+        pid, job, exp = int(str(claims["pipeline_id"])), int(str(claims["job_id"])), int(claims["exp"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(403, "the CI ID token names no pipeline, job or expiry")
+    who = {"user": "build:%d" % job, "pipeline": pid, "principal": "build",
+           "user_login": str(claims.get("user_login", "")), "ref": str(claims.get("ref", ""))}
+
+    def pipeline():
+        reader = kinds.Deps(settings).reader()
+        j = reader.get_job(job)
+        if j.get("status") != "running" or str((j.get("pipeline") or {}).get("id")) != str(pid):
+            raise _Refused("job %d is not running in pipeline %d" % (job, pid))
+        with _open() as conn:
+            row = conn.execute("SELECT * FROM pipelines WHERE id = ?", (pid,)).fetchone()
+            if row is None:                  # started before the worker's next pass
+                try:
+                    row = reconcile.record_pipeline(conn, reader, reader.get_pipeline(pid))
+                except sqlite3.IntegrityError:   # the worker recorded it meanwhile
+                    row = conn.execute("SELECT * FROM pipelines WHERE id = ?", (pid,)).fetchone()
+            return row
+
+    def deny(why):
+        audit.record("store_token_denied", reason=why, **who)
+        return HTTPException(403, "pipeline %d: %s" % (pid, why))
+    try:
+        row = await run_in_threadpool(pipeline)
+        who["group"] = group = row["community"]
+        if not (row["is_build"] and group):
+            raise _Refused("not a build pipeline of a community")
+        try:
+            caps = store_token.build_capabilities(row["platform"])
+        except ValueError as exc:
+            raise _Refused(str(exc))
+        ttl = min(exp - int(time.time()), settings.store_build_token_max_ttl)
+        if ttl < 60:
+            raise _Refused("the job's ID token expires within a minute")
+    except HTTPException:
+        raise
+    except kinds.NotConfigured as exc:
+        raise HTTPException(503, str(exc))
+    except _Refused as exc:
+        raise deny(str(exc))
+    except Exception as exc:
+        if reconcile._gone(exc):
+            raise deny("GitLab does not know the job or pipeline")
+        log.warning("store token for pipeline %s: %s", pid, exc)
+        raise HTTPException(502, "pipeline %d could not be read" % pid)
+    who.pop("user"), who.pop("principal"), who.pop("group")   # _sign_store_token's own
+    out = await run_in_threadpool(m._sign_store_token, "build:%d" % job, group, caps, ttl,
+                                  build=True, platform=row["platform"], **who)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 # --- failures -------------------------------------------------------------------
