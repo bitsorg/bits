@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Change]** An upload through bits-store shows its progress as a download does; in a log without a terminal (CI), an upload in parts says each part and when bits-store is storing it.
 - **[Feature]** `$BITS_STORE_TOKEN_FILE` names the store token's file, in place of `~/.bits/token` (`bits login` writes it there too): a CI job's own token, from the console's `POST /ops/ci/store-token`.
 - **[Feature]** A `bits-store+https://host/store` store takes uploads: `--write-store` or `::rw`, with the store token, the revision marker first, then the build (in parts above 5 GiB); a build already stored under its hash is kept and its sha256 recorded (REFERENCE "The site's package store").
 - **[Feature]** `--remote-store bits-store+https://host/store` reads pre-built packages through the site's bits-store: a build by its hash, with the store token, without listing the store; signed reuse reads the manifests from the service's `/MANIFESTS` (REFERENCE "The site's package store").

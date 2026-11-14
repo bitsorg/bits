@@ -367,8 +367,26 @@ class BitsStoreWriteTest(StandIn):
 
   def test_in_parts(self):
     spec = self.built(data=bytes(range(256)) * 3)
-    with patch.object(bits_store_sync, "ONE_PUT", 500), patch.object(bits_store_sync, "PART", 300):
+    shown, said = [], []
+    progress = MagicMock(side_effect=lambda txt, pct: shown.append(pct))
+    with patch.object(bits_store_sync, "ONE_PUT", 500), patch.object(bits_store_sync, "PART", 300), \
+         patch.object(bits_store_sync, "ProgressPrint", return_value=progress) as made, \
+         patch.object(bits_store_sync.sys.stdout, "isatty", return_value=False), \
+         patch.object(bits_store_sync, "info", lambda fmt, *a: said.append(fmt % a)):
       self.writer().upload_symlinks_and_tarball(spec)
+    name = "zlib-v1.3-2.%s.tar.gz" % ARCH
+    made.assert_called_once_with("Uploading " + name, min_interval=5.0)   # none for the marker
+    self.assertEqual(said, ["%s: part %d of 3 uploaded" % (name, n) for n in (1, 2, 3)]
+                     + ["%s: bits-store is storing it (0 MiB)" % name])
+    self.assertEqual(shown[-1], 100)                     # the build's bytes, the marker's not
+    self.assertEqual(shown, sorted(shown))
+    progress.end.assert_called_once_with("done")
+    said.clear()                                         # on a terminal, the progress alone
+    with patch.object(bits_store_sync, "ONE_PUT", 500), patch.object(bits_store_sync, "PART", 300), \
+         patch.object(bits_store_sync.sys.stdout, "isatty", return_value=True), \
+         patch.object(bits_store_sync, "info", lambda fmt, *a: said.append(fmt % a)):
+      self.writer().upload_symlinks_and_tarball(self.built(h="4" * 40, data=bytes(700)))
+    self.assertEqual(said, ["%s: bits-store is storing it (0 MiB)" % name])
     self.assertEqual(Store.builds[H1][1], bytes(range(256)) * 3)
     self.assertEqual(len([p for m, p, _ in Store.asked if p.startswith("/put/1/")]), 3)
     self.assertEqual(Store.staged["1"]["body"]["part_size"], 300)
@@ -398,8 +416,10 @@ class BitsStoreWriteTest(StandIn):
   def test_a_failed_put_is_never_completed(self):
     Store.put_fails = 1
     spec = self.built(revision="local1")              # no marker for a local revision
-    with self.assertRaises(StoreWriteError):
+    progress = MagicMock()
+    with self.assertRaises(StoreWriteError), patch.object(bits_store_sync, "ProgressPrint", return_value=progress):
       self.writer().upload_symlinks_and_tarball(spec)
+    progress.end.assert_called_once_with("failed", error=True)
     self.assertNotIn(H1, Store.builds)
     self.assertFalse(any("complete" in p for _, p, _ in Store.asked))
     self.assertEqual(Store.markers, {})

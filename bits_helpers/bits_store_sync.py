@@ -16,6 +16,7 @@ import hashlib
 import io
 import os
 import re
+import sys
 import threading
 import time
 
@@ -24,7 +25,7 @@ import urllib3
 
 from bits_helpers import rev_index
 from bits_helpers.arch import effective_arch
-from bits_helpers.log import debug, warning, dieOnError, ProgressPrint
+from bits_helpers.log import debug, info, warning, dieOnError, ProgressPrint
 from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
 from bits_helpers.source_store import store_token
 from bits_helpers.sync import RemoteSync
@@ -246,8 +247,26 @@ class BitsStoreSync(RemoteSync):
     if r is not None and r.status_code == 409:
       return None
     answer = _json(r, 201, url)
-    for i, part in enumerate(answer.get("parts") or [answer]):
-      self._put(part, path, data, i * PART, min(PART, size - i * PART) if parts else size)
+    puts = answer.get("parts") or [answer]
+    # a build's upload is shown as its download is; in parts, each part said where
+    # there is no terminal for the progress (CI logs)
+    progress = ProgressPrint("Uploading %s" % name, min_interval=5.0) if name else None
+    each_part = parts and name and not sys.stdout.isatty()   # as ProgressPrint decides
+    for i, part in enumerate(puts):
+      done = i * PART if parts else 0
+      shown = (lambda n: progress("[%.0f%%] uploaded...", 100 * (done + n) / max(size, 1))) if progress else None
+      try:
+        self._put(part, path, data, done, min(PART, size - done) if parts else size, shown)
+      except BaseException:
+        if progress:
+          progress.end("failed", error=True)
+        raise
+      if each_part:
+        info("%s: part %d of %d uploaded", name, i + 1, len(puts))
+    if progress:
+      progress.end("done")
+    if parts and name:                               # after end(): never on the spinner's line
+      info("%s: bits-store is storing it (%d MiB)", name, size >> 20)
     wait = 2 * (600 + (size >> 25)) + 300            # bits-store's own time for a complete
     deadline = time.monotonic() + wait
     while True:                                      # "busy": a promote of the name is running
@@ -261,15 +280,16 @@ class BitsStoreSync(RemoteSync):
     _json(r, 201, url)
     return sha
 
-  def _put(self, part, path, data, offset, size):
-    """One presigned PUT of *size* bytes at *offset*, tried again on failures."""
+  def _put(self, part, path, data, offset, size, shown=None):
+    """One presigned PUT of *size* bytes at *offset*, tried again on failures;
+    *shown* is told the bytes sent so far."""
     why = ""
     for attempt in range(TRIES):
       if attempt:
         time.sleep(0.5 * 2 ** attempt)
       try:
         with (open(path, "rb") if path else io.BytesIO(data)) as f:
-          with self._session().put(part["url"], data=_Slice(f, offset, size), headers=part.get("headers") or {},
+          with self._session().put(part["url"], data=_Slice(f, offset, size, shown), headers=part.get("headers") or {},
                                    timeout=self.timeout, verify=self.verify) as r:
             if r.status_code == 200:
               return
@@ -345,10 +365,11 @@ def _json(r, want, url):
 
 
 class _Slice:
-  """*size* bytes of *f* from *offset*, read as requests streams a body."""
-  def __init__(self, f, offset, size):
+  """*size* bytes of *f* from *offset*, read as requests streams a body; *shown*,
+  if any, told the bytes read so far."""
+  def __init__(self, f, offset, size, shown=None):
     f.seek(offset)
-    self.f, self.left, self.size = f, size, size
+    self.f, self.left, self.size, self.shown = f, size, size, shown
 
   def __len__(self):
     return self.size
@@ -357,4 +378,6 @@ class _Slice:
     n = self.left if n is None or n < 0 else min(n, self.left)
     chunk = self.f.read(n)
     self.left -= len(chunk)
+    if self.shown:
+      self.shown(self.size - self.left)
     return chunk
