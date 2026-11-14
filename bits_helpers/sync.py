@@ -352,8 +352,6 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
   # fall through to NoRemoteSync below and nothing would be uploaded.
   dieOnError(any(w.startswith("cvmfs://") for w in writes),
              "Cannot use a cvmfs:// store as a --write-store: CVMFS is read-only.")
-  dieOnError(any(w.startswith("bits-store+") for w in writes),
-             "A bits-store+ store takes no uploads yet: it is read only.")
   reads = reads or list(writes)
   # For S3-backed stores, resolve + export the connection config before any S3
   # backend is built, so boto3 and the upload subprocess share one
@@ -363,12 +361,12 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
                                  s3_region, s3_addressing_style)
   read_url = reads[0] if reads else ""
   write_url = writes[0] if writes else ""
-  # Several stores, a read-only reader (http) with a writer, or two b3:// buckets
-  # (each with its own credentials): one helper per store.
-  if len(reads) > 1 or len(writes) > 1 or (write_url and (
-      read_url.startswith(("http", "bits-store+")) or (read_url.startswith("b3://") and read_url != write_url))):
+  # Several stores, a read-only reader (http) with a writer, or two different
+  # b3:// or bits-store+ stores, or one with another kind: one helper per store.
+  if len(reads) > 1 or len(writes) > 1 or (write_url and (read_url.startswith("http") or (
+      read_url.startswith(("b3://", "bits-store+")) or write_url.startswith("bits-store+")) and read_url != write_url)):
     readers = [_reader_from_url(u, architecture, work_dir, insecure) for u in reads]
-    writers = [_writer_from_url(w, architecture, work_dir) for w in writes]
+    writers = [_writer_from_url(w, architecture, work_dir, insecure) for w in writes]
     if len(readers) == 1 and len(writers) == 1:
       return DualRemoteSync(readers[0], writers[0])
     return MultiRemoteSync(readers, writers)
@@ -376,7 +374,7 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
     return HttpRemoteSync(read_url, architecture, work_dir, insecure)
   if read_url.startswith("bits-store+"):
     from bits_helpers.bits_store_sync import BitsStoreSync
-    return BitsStoreSync(read_url, architecture, work_dir, insecure)
+    return BitsStoreSync(read_url, architecture, work_dir, insecure, writable=bool(write_url))
   if read_url.startswith("s3://"):
     return S3RemoteSync(read_url, write_url, architecture, work_dir)
   if read_url.startswith("b3://"):
@@ -410,12 +408,15 @@ def _reader_from_url(url, architecture, work_dir, insecure):
   return RsyncRemoteSync(url, "", architecture, work_dir)
 
 
-def _writer_from_url(write_url, architecture, work_dir):
+def _writer_from_url(write_url, architecture, work_dir, insecure=False):
   """Build a write helper for *write_url*, for the DualRemoteSync case.
 
   Constructed with read == write == write_url so the helper's skip/exists checks
   consult the write store itself; only its upload_* methods are ever called.
   """
+  if write_url.startswith("bits-store+"):
+    from bits_helpers.bits_store_sync import BitsStoreSync
+    return BitsStoreSync(write_url, architecture, work_dir, insecure, writable=True)
   if write_url.startswith("s3://"):
     return S3RemoteSync(write_url, write_url, architecture, work_dir)
   if write_url.startswith("b3://"):

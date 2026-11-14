@@ -73,6 +73,8 @@ def s3_of(store_url, work_dir="sw", arch="x86_64"):
     """(s3 client, bucket) of *store_url*, or None for a store that is not S3."""
     from bits_helpers.publish import _normalize_s3_store
     from bits_helpers.sync import remote_from_url
+    if str(store_url or "").startswith("bits-store+"):
+        return None
     store = _normalize_s3_store(store_url)
     if not store.startswith(("b3://", "s3://")):
         return None
