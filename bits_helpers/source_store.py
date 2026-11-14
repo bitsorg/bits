@@ -21,7 +21,9 @@ import urllib3
 from bits_helpers import site
 from bits_helpers.log import debug, info
 
-TOKEN_FILE = os.path.join(os.path.expanduser("~"), ".bits", "token")
+# the store token: bits login's, or a CI job's own file (kept out of the build container)
+TOKEN_FILE = os.path.abspath(os.path.expanduser(os.environ.get("BITS_STORE_TOKEN_FILE")
+                                                or os.path.join("~", ".bits", "token")))
 WAIT = 480           # seconds to wait for the store's fetch: under download()'s sentinel wait
 _REDIRECTS = (301, 302, 303, 307, 308)
 _SEGMENT = re.compile(r"[A-Za-z0-9._~+!@=,:-]{1,255}")   # bits-store's path rules

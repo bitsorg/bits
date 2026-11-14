@@ -284,5 +284,24 @@ class ConfiguredTest(unittest.TestCase):
       self.assertIsNone(source_store.configured())   # bits' own site configuration has none
 
 
+class TokenFileTest(unittest.TestCase):
+  def test_the_token_file_from_the_environment(self):
+    import subprocess, sys
+    with tempfile.TemporaryDirectory() as d:
+      path = os.path.join(d, "job-token")
+      with open(path, "w") as f:
+        f.write("job's\n")
+      code = ("from bits_helpers import source_store, store_login, bits_store_sync as b\n"
+              "print(source_store.store_token('https://s/x'), store_login.login.__defaults__[0] == %r,"
+              " b.BitsStoreSync('bits-store+https://s/store', 'a', '.').token)" % path)
+      env = dict(os.environ, BITS_STORE_TOKEN_FILE=path)
+      out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+      self.assertEqual(out.stdout.split(), ["job's", "True", "job's"], out.stderr)
+      env.pop("BITS_STORE_TOKEN_FILE")
+      env["HOME"] = d                                     # ~/.bits/token: none there
+      out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+      self.assertEqual(out.stdout.split()[0], "None", out.stderr)
+
+
 if __name__ == "__main__":
   unittest.main()

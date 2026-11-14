@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** `$BITS_STORE_TOKEN_FILE` names the store token's file, in place of `~/.bits/token` (`bits login` writes it there too): a CI job's own token, from the console's `POST /ops/ci/store-token`.
 - **[Feature]** A `bits-store+https://host/store` store takes uploads: `--write-store` or `::rw`, with the store token, the revision marker first, then the build (in parts above 5 GiB); a build already stored under its hash is kept and its sha256 recorded (REFERENCE "The site's package store").
 - **[Feature]** `--remote-store bits-store+https://host/store` reads pre-built packages through the site's bits-store: a build by its hash, with the store token, without listing the store; signed reuse reads the manifests from the service's `/MANIFESTS` (REFERENCE "The site's package store").
 - **[Feature]** A site's sources store (bits-store, site key `store.sources` or `$BITS_SOURCE_STORE`) is asked first for source archives. With a store token (`bits login`) bits passes the archive's URL and the store fetches a missing one, unless the recipe forbids redistributing its sources; otherwise, or on any other answer, the download goes on as before (REFERENCE "The site's sources store").

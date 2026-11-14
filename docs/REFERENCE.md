@@ -1569,7 +1569,7 @@ It authenticates with your GitLab token, as `bits certify` does (`~/.bits/gitlab
 
 ### bits login
 
-A bits-store token for a group, written to `~/.bits/token` (mode 0600), so the
+A bits-store token for a group, written to `~/.bits/token` (mode 0600; `$BITS_STORE_TOKEN_FILE` when set, where bits then also reads it), so the
 store can be read and written without storage keys.
 
 ```bash
@@ -1587,7 +1587,7 @@ the link alone does not give it out.
 |--------|---------|-------------|
 | `--group GROUP` | (required) | The group (community). |
 | `--console URL` | `$BITS_CONSOLE_URL`, else site `console.backend_url` | The console backend. |
-| `--token-file FILE` | `~/.bits/token` | Where the token is written. |
+| `--token-file FILE` | `$BITS_STORE_TOKEN_FILE`, else `~/.bits/token` | Where the token is written. |
 | `--timeout SECONDS` | 600 | How long to wait for the approval. |
 | `--console-cafile FILE` | system | CA bundle for the console's certificate. |
 | `--console-insecure` | off | Allow `http://` and skip TLS verification (a trusted testbed only). |
@@ -4245,7 +4245,7 @@ Without a write store (an `http(s)://` store alone is read-only), bits still fet
 
 `--remote-store bits-store+https://store.example.org/store` reads pre-built packages through bits-store's `tarballs` binding: bits asks for a build by its hash (`<arch>/<hash>`) and bits-store redirects to it, naming its file; bits never lists the store. The store token (`bits login`, `~/.bits/token`; over https, or plain http to this host only; never to the redirect) goes with every request; a token the store does not take is said once and dropped, and bits reads as anyone. A request that fails or gets a 5xx is tried 3 times; a download that fails is said, and the package built. The files are laid out as in any other store, so bits-store can serve an existing bucket as it is.
 
-As a `--write-store` (or `--remote-store …::rw`) it takes uploads with the store token only; bits stops at the start without one. For each package bits writes the revision marker first (`/MANIFESTS/rev-index/<arch>/<pkg>/<version>-<revision>` at the service's root, write-once; a marker that cannot be written fails the package, so the token needs `PUT` there too), then the build: one PUT up to 5 GiB, parts of 1 GiB above, staged and promoted by bits-store. A hash that already holds a build keeps it, whatever its file name (bits-store keeps one build per hash), and the build manifest records the stored build's sha256, as its writer declared it. Revision markers are read with `?revisions`, never by listing. `bits publish`, `certify`, `sign`, `gc`, `store-stats` and `compliance` work on the bucket with its own keys (`b3://`) and refuse a `bits-store+` store.
+As a `--write-store` (or `--remote-store …::rw`) it takes uploads with the store token only; bits stops at the start without one. A CI job keeps its token (from the console's `POST /ops/ci/store-token`, with the job's ID token) in a file of its own, named by `$BITS_STORE_TOKEN_FILE`, outside the build container. For each package bits writes the revision marker first (`/MANIFESTS/rev-index/<arch>/<pkg>/<version>-<revision>` at the service's root, write-once; a marker that cannot be written fails the package, so the token needs `PUT` there too), then the build: one PUT up to 5 GiB, parts of 1 GiB above, staged and promoted by bits-store. A hash that already holds a build keeps it, whatever its file name (bits-store keeps one build per hash), and the build manifest records the stored build's sha256, as its writer declared it. Revision markers are read with `?revisions`, never by listing. `bits publish`, `certify`, `sign`, `gc`, `store-stats` and `compliance` work on the bucket with its own keys (`b3://`) and refuse a `bits-store+` store.
 
 Signed reuse reads the signed common manifests from the service's root: `https://store.example.org/MANIFESTS/common-manifest-<arch>.json`, which bits-store serves from a binding `/MANIFESTS` (key prefix `MANIFESTS`, the same bucket). Without one, or with bits-store under a path of a proxy (`https://host/bits/store`), give `--trust-manifest`.
 
