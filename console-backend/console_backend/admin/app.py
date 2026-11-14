@@ -609,7 +609,7 @@ def create_app(state=None, helper=ask_helper, origins=None, store=None, security
         if not answer.get("base") or form.get("base") != answer["base"]:  # it would undo what changed since
             return _page("Store", "<p>The store's configuration changed since you opened this page. "
                          "<a href=/store>Open it again</a> and redo your changes.</p>")
-        config, why = store_page_view.config_from(form, answer.get("console_key"))
+        config, why = store_page_view.config_from(form, answer)
         if why:
             return _page("Store", "<p>Not possible: %s</p>%s" % (html.escape(why), back))
         credentials = store_page_view.credentials_from(form)

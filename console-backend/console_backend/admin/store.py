@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bits-admin's Store page (ADR bits-services 0004, K): bits-store's config.json as JSON,
 the keys its volumes name (set or missing; a new value typed here, kept only until the
-apply) and the console's store-token key. Planned by the host helper, which has
+apply) and the console's store-token keys (people's and build jobs'). Planned by the host helper, which has
 bits-store check the result; applied with a touch of the admin's own key."""
 
 import json
+import re
 from html import escape
 
 from .settings import CSS
@@ -17,6 +18,17 @@ TEMPLATE = {"issuer": "https://bits-store.example.org", "audience": "example-sit
                                  "secret_key_env": "BITS_STORE_MAIN_SECRET_KEY"}},
             "bindings": [{"prefix": "/store", "volume": "main", "key_prefix": "TARS"}]}
 CONSOLE_KID = "console-1"
+# The console's signing keys, as the host helper reports them: (its field, the form's,
+# the helper's field for its id in bits-store's config, the id else, signer, what it signs).
+SIGNERS = (("console_key", "trust_console", None, CONSOLE_KID, "user", "the console's store-token key"),
+           ("build_key", "trust_builds", "build_kid", "builds-1", "build", "the build jobs' store-token key"))
+_KID = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def _kid(answer, field, default):
+    """The key id the backend signs with, as the helper reports it, else *default*."""
+    kid = answer.get(field) if field else None
+    return kid if isinstance(kid, str) and _KID.fullmatch(kid) else default
 
 
 def key_names(config):
@@ -26,23 +38,26 @@ def key_names(config):
                    for k in ("access_key_env", "secret_key_env") if isinstance(v.get(k), str) and v.get(k)})
 
 
-def trusts(config, x):
+def trusts(config, x, signer="user"):
     keys = config.get("keys") if isinstance(config, dict) and isinstance(config.get("keys"), dict) else {}
-    return any(isinstance(k, dict) and k.get("x") == x for k in keys.values())
+    return any(isinstance(k, dict) and k.get("x") == x and k.get("signer", "user") == signer
+               for k in keys.values())
 
 
-def config_from(form, console_key):
-    """(config, None) from the form's JSON, the console's key added if asked; (None, why)."""
+def config_from(form, answer):
+    """(config, None) from the form's JSON, the console's keys added if asked; (None, why)."""
     try:
         config = json.loads(form.get("config") or "")
     except ValueError as e:
         return None, "the configuration is not JSON: %s" % e
     if not isinstance(config, dict):
         return None, "the configuration is a JSON object"
-    if form.get("trust_console") and console_key and not trusts(config, console_key):
-        if not isinstance(config.get("keys"), dict):
-            config["keys"] = {}
-        config["keys"][CONSOLE_KID] = {"x": console_key, "signer": "user"}
+    for name, field, kid_field, kid, signer, _ in SIGNERS:
+        x = answer.get(name)
+        if form.get(field) and x and not trusts(config, x, signer):
+            if not isinstance(config.get("keys"), dict):
+                config["keys"] = {}
+            config["keys"][_kid(answer, kid_field, kid)] = {"x": x, "signer": signer}
     return config, None
 
 
@@ -58,19 +73,22 @@ def credentials_from(form):
 def render(answer):
     config = answer.get("config")
     text = json.dumps(config if isinstance(config, dict) else TEMPLATE, indent=1)
-    have, console = set(answer.get("credentials") or []), answer.get("console_key")
+    have = set(answer.get("credentials") or [])
     names = key_names(config if isinstance(config, dict) else TEMPLATE)
     rows = "".join("<tr><td class=k>%s</td><td>%s</td><td><input type=password name=\"key:%s\" size=30 "
                    "autocomplete=off placeholder=\"%s\"></td></tr>" % (
                        escape(n), "set" if n in have else "<b>missing</b>", escape(n),
                        "unchanged" if n in have else "value") for n in names)
-    if console and trusts(config, console):
-        trust = "<p>The store trusts the console's store-token key.</p>"
-    elif console:
-        trust = ("<p><label><input type=checkbox name=trust_console value=1 checked> Trust the console's "
-                 "store-token key as <code>%s</code> (<code>%s</code>)</label></p>" % (CONSOLE_KID, escape(console)))
-    else:
-        trust = "<p>The store-token signer did not answer: its key cannot be added from here.</p>"
+    trust = ""
+    for name, field, kid_field, kid, signer, what in SIGNERS:
+        x = answer.get(name)
+        if x and trusts(config, x, signer):
+            trust += "<p>The store trusts %s.</p>" % what
+        elif x:
+            trust += ("<p><label><input type=checkbox name=%s value=1 checked> Trust %s as <code>%s</code> "
+                      "(<code>%s</code>)</label></p>" % (field, what, escape(_kid(answer, kid_field, kid)), escape(x)))
+        else:
+            trust += "<p>The store-token signer did not answer for %s: it cannot be added from here.</p>" % what
     first = "" if isinstance(config, dict) else (
         "<p>There is no <code>%s</code> yet: this is a template to start from.</p>" % escape(str(answer.get("path"))))
     return ("<style>%s</style><p>bits-store's configuration, <code>%s</code>: who may sign tokens "

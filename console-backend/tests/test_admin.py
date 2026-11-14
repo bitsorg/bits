@@ -847,7 +847,7 @@ class AdminTest(unittest.TestCase):
         self.assertEqual((row["kind"], json.loads(row["payload"])["profile_sha256"]), ("admin.settings_applied",
                          hashlib.sha256(b"# ours\nenv:\n  VM_RETENTION: '30'\n").hexdigest()))
 
-    def store_client(self, config=None, console_key="C" * 43):
+    def store_client(self, config=None, console_key="C" * 43, build_key="D" * 43):
         self.asked, self.base, self.plan_base = [], "s0", None
         config = config if config is not None else {
             "issuer": "https://bits-store.testbed", "audience": "testbed/store", "keys": {},
@@ -859,7 +859,8 @@ class AdminTest(unittest.TestCase):
             self.asked.append(request)
             if request["op"] == "store":
                 return {"ok": True, "config": config or None, "path": "config/bits-store/config.json", "base": self.base,
-                        "credentials": ["BITS_STORE_V_AK"], "console_key": console_key}
+                        "credentials": ["BITS_STORE_V_AK"], "console_key": console_key, "build_key": build_key,
+                        "build_kid": "builds-2"}
             if request["op"] == "store-plan":
                 if request["config"].get("issuer") == "refused":
                     return {"ok": False, "error": "bits-store refuses it: issuer"}
@@ -882,10 +883,21 @@ class AdminTest(unittest.TestCase):
         self.assertIn("<td class=k>BITS_STORE_V_AK</td><td>set</td>", page)
         self.assertIn("<td class=k>BITS_STORE_V_SK</td><td><b>missing</b></td>", page)
         self.assertIn("name=trust_console value=1 checked", page)
-        self.assertIn("did not answer", self.store_client(console_key=None).get("/store").text)
+        self.assertIn("name=trust_builds value=1 checked", page)
+        page = self.store_client(console_key=None).get("/store").text
+        self.assertIn("did not answer for the console", page)
+        self.assertIn("name=trust_builds", page)
         trusted = {"x": "C" * 43, "signer": "user"}
         page = self.store_client(config={"keys": {"console-1": trusted}, "volumes": {}, "bindings": []}).get("/store").text
         self.assertIn("The store trusts the console", page)
+        self.assertIn("name=trust_builds", page)
+        builds = {"x": "D" * 43, "signer": "build"}
+        page = self.store_client(config={"keys": {"b": builds}, "volumes": {}, "bindings": []}).get("/store").text
+        self.assertIn("The store trusts the build jobs", page)
+        as_user = {"x": "D" * 43, "signer": "user"}                     # bits-store would refuse build:<job>
+        page = self.store_client(config={"keys": {"b": as_user}, "volumes": {}, "bindings": []}).get("/store").text
+        self.assertIn("name=trust_builds value=1 checked", page)
+        self.assertIn("<code>builds-2</code>", page)
         self.assertIn("this is a template", self.store_client(config=False).get("/store").text)
 
     def test_the_store_is_planned_and_applied_with_your_key(self):
@@ -904,11 +916,12 @@ class AdminTest(unittest.TestCase):
         self.assertEqual([a for a in self.asked if a["op"] == "store-plan"][-1]["config"]["keys"], {})
         self.assertIn("not JSON", form(base="s0", config="{"))
         self.assertIn("bits-store refuses it: issuer", form(base="s0", config=json.dumps(dict(config, issuer="refused"))))
-        page = form(**{"base": "s0", "config": json.dumps(config), "trust_console": "1",
+        page = form(**{"base": "s0", "config": json.dumps(config), "trust_console": "1", "trust_builds": "1",
                        "key:BITS_STORE_V_SK": "secret-value", "key:BITS_STORE_V_AK": "",
                        "new_key_name": "BITS_STORE_W_AK", "new_key_value": "w"})
         planned = [a for a in self.asked if a["op"] == "store-plan"][-1]
-        self.assertEqual(planned["config"]["keys"], {"console-1": {"x": "C" * 43, "signer": "user"}})
+        self.assertEqual(planned["config"]["keys"], {"console-1": {"x": "C" * 43, "signer": "user"},
+                                                     "builds-2": {"x": "D" * 43, "signer": "build"}})
         self.assertEqual(planned["credentials"], {"BITS_STORE_V_SK": "secret-value", "BITS_STORE_W_AK": "w"})
         self.assertNotIn("secret-value", page)
         self.assertIn("make store-up", page)
