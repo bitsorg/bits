@@ -1579,8 +1579,9 @@ bits login --group lcg
 It shows a link (and QR code) to the console's approve page and a code. A
 community admin of the group opens the link, checks the code matches, and approves
 with their passkey; the token is then issued in their name, for a day
-(`BITS_STORE_CLI_TOKEN_TTL` on the console), with read and write on the group's
-store and manifests and read on the sources. Only this terminal can collect it:
+(`BITS_STORE_CLI_TOKEN_TTL` on the console), with read and write on the site's
+packages and their revision markers (one namespace per site; a stored build is never
+replaced) and on the group's manifests, and read on the sources. Only this terminal can collect it:
 the link alone does not give it out.
 
 | Option | Default | Description |

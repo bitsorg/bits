@@ -97,8 +97,9 @@ class StoreTokenIssueTest(unittest.TestCase):
         self.assertEqual(self._post("alice", {"group": "lcg"}).status_code, 503)   # no agent socket
 
     def test_capabilities(self):
-        self.assertEqual(admin_capabilities("lcg"), [
-            ("GET", "/store/lcg/**"), ("PUT", "/store/lcg/**"),
+        self.assertEqual(admin_capabilities("lcg"), [                     # as bits writes the store
+            ("GET", "/store/**"), ("PUT", "/store/**"),
+            ("GET", "/MANIFESTS/rev-index/**"), ("PUT", "/MANIFESTS/rev-index/**"),
             ("GET", "/manifests/lcg/**"), ("PUT", "/manifests/lcg/**"), ("GET", "/sources/**")])
         for g in ("", "LCG", "a/b", "..", "-x", "x" * 65):
             with self.assertRaises(ValueError, msg=g):
