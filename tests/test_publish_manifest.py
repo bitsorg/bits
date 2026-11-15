@@ -495,6 +495,20 @@ class _StoreWriter:
         spec["store_tarball_sha256"] = "sha256:" + spec["hash"]
 
 
+class _CreateOnlyWriter(_StoreWriter):
+    """bits-store as the publish sees it: objects by key, a name taken is kept."""
+    create_only = True
+
+    def get_key(self, key):
+        return self.s3.objects.get(key)
+
+    def put_key(self, key, data):
+        if key in self.s3.objects:
+            return False
+        self.s3.objects[key] = data
+        return True
+
+
 class TestPublishOnceAndConcurrently(unittest.TestCase):
     """The per-package store checks run a few at a time, and `bits certify` in
     the publish job uses the BOM the job's BOM step already published."""
@@ -603,6 +617,47 @@ class TestPublishOnceAndConcurrently(unittest.TestCase):
                 self._publish(w)
         self.assertLess(len(w.tarballs), 4)                           # not all twelve
         self.assertEqual([k for k in self.s3.objects if k.startswith("MANIFESTS/")], [])
+
+    def test_a_pipelines_bom_is_named_for_it(self):
+        self._publish(_StoreWriter(self.s3))                      # the bucket, with its keys
+        self.assertTrue(self._boms())
+        self.assertTrue(all(k.split("/")[-1].startswith("p4242-") for k in self.s3.objects
+                            if k.startswith("MANIFESTS/")))
+
+    def test_through_bits_store_a_retry_takes_what_its_record_names(self):
+        first = self._publish(_CreateOnlyWriter(self.s3))
+        (record,) = [k for k in self.s3.objects if k.startswith("BUILDS/by-pipeline/4242/")]
+        boms = len(self._boms())
+        again = self._publish(_CreateOnlyWriter(self.s3))          # the job retried
+        self.assertEqual((again[0], again[1]), (first[0], first[1]))
+        self.assertEqual(len(self._boms()), boms)                  # no BOM it could not record
+        key = json.loads(self.s3.objects[record])["keys"][0]
+        doc = json.loads(self.s3.objects[key])
+        doc["packages"][0]["view"] = {"include": ["everything"]}   # another build's, kept there
+        self.s3.objects[key] = json.dumps(doc).encode()
+        with self.assertRaises(SystemExit):
+            self._publish(_CreateOnlyWriter(self.s3))
+
+    def test_through_bits_store_a_publish_racing_its_pipelines_first_takes_its_boms(self):
+        first = self._publish(_CreateOnlyWriter(self.s3))
+        for k in [k for k in self.s3.objects if k.endswith(ARCH + ".json")]:
+            doc = json.loads(self.s3.objects[k])
+            self.s3.objects[k] = json.dumps(dict(doc, published_by="first")).encode()
+        late = _CreateOnlyWriter(self.s3)
+        seen, asked = late.get_key, []
+        def get_key(key):                                          # not there when first asked
+            asked.append(key)
+            return None if key.startswith("BUILDS/") and len(asked) == 1 else seen(key)
+        late.get_key = get_key
+        got = self._publish(late)
+        self.assertEqual(got[0], first[0])
+        self.assertEqual([d["published_by"] for _a, d in got[1]], ["first"])   # the recorded ones
+
+    def test_through_bits_store_a_bom_name_taken_fails_the_publish(self):
+        w = _CreateOnlyWriter(self.s3)
+        w.put_key = lambda key, data: False                        # bits-store keeps another
+        with self.assertRaises(SystemExit):
+            self._publish(w)
 
     def test_no_reuse_outside_a_pipeline_or_for_bits_publish(self):
         self._publish(_StoreWriter(self.s3))

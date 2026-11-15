@@ -199,6 +199,38 @@ class BitsStoreSync(RemoteSync):
       debug("rev-index: %s: %s", url, exc)
       return {}
 
+  create_only = True              # what is stored stays: a write of a name taken is refused
+
+  def get_key(self, key):
+    """The object *key* (under one of bits-store's bindings: MANIFESTS/, BUILDS/) as
+    bytes; None when there is none. StoreWriteError when bits-store cannot say."""
+    url = "%s/%s" % (self.root, key)
+    r = self._ask("GET", url)
+    if r is not None and r.status_code == 404:
+      return None
+    if r is None or r.status_code not in _REDIRECTS or not r.headers.get("Location"):
+      raise StoreWriteError("%s: %s" % (url, r.status_code if r is not None else "no answer"))
+    loc = requests.compat.urljoin(url, r.headers["Location"])
+    for attempt in range(TRIES):
+      if attempt:
+        time.sleep(0.5 * 2 ** attempt)
+      try:
+        with self._session().get(loc, timeout=self.timeout, verify=self.verify) as got:
+          if got.status_code == 200:
+            return got.content
+          if got.status_code == 404:
+            return None
+          if got.status_code < 500 and got.status_code != 429:     # final, as _download says
+            raise StoreWriteError("%s: %s from the store" % (key, got.status_code))
+          debug("%s: %s", key, got.status_code)
+      except _FAILED as exc:
+        debug("%s: %s", key, exc)
+    raise StoreWriteError("%s: the store did not answer" % url)
+
+  def put_key(self, key, data):
+    """*data* as the object *key*: True when written, False when the name is taken."""
+    return self._upload("%s/%s" % (self.root, key), data=data) is not None
+
   def writestore_has_tarball(self, spec, architecture=None):
     if not self.writeStore:
       return False

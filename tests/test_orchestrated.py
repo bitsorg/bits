@@ -71,6 +71,18 @@ class ReadTest(unittest.TestCase):
     def test_a_store_that_is_not_s3_has_no_orchestrator(self):
         self.assertIsNone(orchestrated.for_store("rsync://host/path"))
 
+    def test_through_bits_store_the_marker_by_name(self):
+        from bits_helpers import bits_store_sync as bss
+        url = "bits-store+https://bits.example:8444/store"
+        with patch.object(bss.BitsStoreSync, "get_key", return_value=None) as get:
+            self.assertIsNone(orchestrated.for_store(url + "::rw"))
+        self.assertEqual(get.call_args[0][0], orchestrated.MARKER)
+        with patch.object(bss.BitsStoreSync, "get_key", return_value=b'{"issuer": "o", "since": "s"}'):
+            self.assertEqual(orchestrated.for_store(url)["issuer"], "o")
+        with patch.object(bss.BitsStoreSync, "get_key", side_effect=bss.StoreWriteError("down")):
+            with self.assertRaises(orchestrated.Unknown):
+                orchestrated.for_store(url)
+
 
 class ConsoleTest(unittest.TestCase):
 

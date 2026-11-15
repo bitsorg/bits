@@ -175,16 +175,20 @@ def _release_files(entries, build_id, store_url=None, manifest=None):
     return files
 
 
-def upload_release_compliance(s3, bucket, build_id, entries, store_url=None, manifest=None):
+def upload_release_compliance(s3, bucket, build_id, entries, store_url=None, manifest=None,
+                              put=None, prefix=""):
     """Upload NOTICE + LICENSE-SOURCE-OFFER.txt (+ the SBOMs, given the full
-    *manifest*) next to the release's BOMs.
-
-    Best-effort: never raises, never fails the publish.
+    *manifest*) next to the release's BOMs, named *prefix*<name>; through *put*(key,
+    bytes) when given (a False answer: there already). Never raises, never fails a publish.
     """
     try:
         for name, body in _release_files(entries, build_id, store_url, manifest):
-            key = "MANIFESTS/%s/%s" % (build_id, name)
-            s3.put_object(Bucket=bucket, Key=key, Body=body.encode("utf-8"))
+            key = "MANIFESTS/%s/%s%s" % (build_id, prefix, name)
+            if put is None:
+                s3.put_object(Bucket=bucket, Key=key, Body=body.encode("utf-8"))
+            elif not put(key, body.encode("utf-8")):
+                info("compliance file %s/%s is there already", bucket, key)
+                continue
             info("compliance file -> %s/%s", bucket, key)
         return True
     except Exception as exc:              # pylint: disable=broad-except

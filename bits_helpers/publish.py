@@ -282,6 +282,35 @@ def _bom_documents(published, manifest_doc, architecture, build_id):
                       for arch in sorted(by_arch)]
 
 
+def _object_writer(w):
+    """Whether writer *w* can write the store's MANIFESTS/ and BUILDS/ objects: S3
+    with its keys, or bits-store (create-only)."""
+    return w is not None and bool(getattr(w, "writeStore", None)) and (
+        getattr(w, "create_only", False) or getattr(w, "s3", None) is not None)
+
+
+def _get_object(w, key):
+    """The object *key* of *w*'s store as bytes (None or an error when absent)."""
+    if getattr(w, "create_only", False):
+        return w.get_key(key)
+    return w.s3.get_object(Bucket=w.writeStore, Key=key)["Body"].read()
+
+
+def _put_object(w, key, data):
+    """*data* as *key* in *w*'s store: True; False when bits-store holds the name."""
+    if getattr(w, "create_only", False):
+        return w.put_key(key, data)
+    w.s3.put_object(Bucket=w.writeStore, Key=key, Body=data)
+    return True
+
+
+def _pipeline():
+    """This CI pipeline's id, and the prefix of what it names beside BOMs (pipeline_prefix)."""
+    from bits_helpers.provenance import pipeline_prefix
+    pid = os.environ.get("CI_PIPELINE_ID", "").strip()
+    return (pid, pipeline_prefix(int(pid))) if pid.isdigit() and int(pid) > 0 else ("", "")
+
+
 # Who and when: the only BOM fields a reused BOM may differ in.
 _BOM_RUN_FIELDS = ("published_by", "published_at")
 
@@ -299,14 +328,13 @@ def _published_bom(writers, build_id, published, manifest_doc, architecture):
     published them and when. Anything else in the bucket is never certified.
     """
     import json as _json
-    pid = os.environ.get("CI_PIPELINE_ID", "").strip()
+    pid = _pipeline()[0]
     w = next(iter(writers.values()), None)
-    if not (pid and build_id and w is not None and getattr(w, "s3", None)
-            and getattr(w, "writeStore", None)):
+    if not (pid and build_id and _object_writer(w)):
         return None
 
     def _get(key):
-        return _json.loads(w.s3.get_object(Bucket=w.writeStore, Key=key)["Body"].read())
+        return _json.loads(_get_object(w, key))
     try:
         index = _get("BUILDS/by-pipeline/%s/%s.json" % (pid, build_id))
         keys = index.get("keys") or []
@@ -373,7 +401,8 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
     architecture = manifest_doc.get("architecture") or architecture
     if not entries:
         parser.error("no packages listed in manifest %s" % man)
-    write_store = _normalize_s3_store(store_url)
+    # bits-store as it is (the job's token); else the bucket with its own keys
+    write_store = store_url if str(store_url).startswith("bits-store+") else _normalize_s3_store(store_url)
     from bits_helpers.utilities import resolve_store_path
     from bits_helpers.checksum import checksum_file
     import glob as _glob
@@ -533,17 +562,37 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
               "for a partial publish", n - ok, n)
     if not dry_run and ok == n:
         w = next(iter(writers.values()), None)
-        if w is not None and hasattr(w, "s3") and getattr(w, "writeStore", None):
+        if _object_writer(w):
             from bits_helpers.provenance import build_id_from_manifest
             import tempfile as _tf
             # Canonical, deterministic build_id (same id the build itself used):
             # <label>-<digest> over the full package set. Two hosts building the
             # same release agree on it, so it names the release in the bucket.
             build_id = build_id_from_manifest(manifest_doc) or "unknown"
-            leaf = _run_leaf()
+            _pipeline_id, _pre = _pipeline()
+            leaf = _pre + _run_leaf()          # a pipeline's files are named for it
             packages, docs = _bom_documents(published, manifest_doc, architecture, build_id)
-            _pipeline_id = os.environ.get("CI_PIPELINE_ID", "").strip()
             bom = []                    # [(effective_arch, bom_dict), ...]
+            # bits-store keeps what it has: a retry of this pipeline takes the BOMs its
+            # record names, if they describe this build; it cannot write others.
+            _create_only = getattr(w, "create_only", False)
+            if _create_only and _pipeline_id:
+                _index = "BUILDS/by-pipeline/%s/%s.json" % (_pipeline_id, build_id)
+                try:
+                    _recorded = _get_object(w, _index) is not None
+                except Exception as exc:  # pylint: disable=broad-except
+                    error("cannot read %s through %s (the job's store token?): %s",
+                          _index, write_store, exc)
+                    sys.exit(1)
+                if _recorded:
+                    _kept = _published_bom(writers, build_id, published, manifest_doc, architecture)
+                    if _kept is None:
+                        error("pipeline %s recorded build %s with BOMs that are not this build's, "
+                              "or could not be read (%s): bits-store keeps them, so this publish "
+                              "stops", _pipeline_id, build_id, _index)
+                        sys.exit(1)
+                    banner("Using the BOM this pipeline already published for %s", build_id)
+                    return build_id, _kept, _system_from_manifest(manifest_doc)
             _stem = leaf[:-len(".json")]
             # One temp dir for ALL per-arch BOMs, removed when done (the
             # previous mkdtemp-per-arch was never cleaned up and leaked one
@@ -562,7 +611,12 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                     # run (concurrent publishes never clobber each other).
                     key = "MANIFESTS/%s/%s" % (build_id, arch_leaf)
                     try:
-                        w.s3.upload_file(tmp, w.writeStore, key)
+                        if not _create_only:
+                            w.s3.upload_file(tmp, w.writeStore, key)
+                        else:
+                            with open(tmp, "rb") as _fh:
+                                if not w.put_key(key, _fh.read()):
+                                    raise RuntimeError("%s is there already" % key)
                         info("Manifest (minimal BOM, %d pkgs, %s, build_id=%s) -> %s/%s",
                              len(doc["packages"]), _arch, build_id, w.writeStore, key)
                         bom.append((_arch, doc))
@@ -573,19 +627,6 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             finally:
                 import shutil as _shutil
                 _shutil.rmtree(_bomdir, ignore_errors=True)
-            # Found again by the pipeline that made it: bits cvmfs release --pipeline.
-            # One file per build (a pipeline may build several platforms), outside
-            # MANIFESTS/ so the tools that read every BOM there do not see it.
-            if _bom_failed is None and _pipeline_id:
-                _index = "BUILDS/by-pipeline/%s/%s.json" % (_pipeline_id, build_id)
-                try:
-                    w.s3.put_object(Bucket=w.writeStore, Key=_index, Body=_json.dumps({
-                        "build_id": build_id,
-                        "keys": ["MANIFESTS/%s/%s.%s.json" % (build_id, _stem, _a)
-                                 for _a, _d in bom]}, indent=1).encode())
-                except Exception as exc:
-                    warning("could not record %s (bits cvmfs release --pipeline "
-                            "will not find this build): %s", _index, exc)
             if _bom_failed is not None:
                 error("BOM upload failed for architecture %s — aborting the "
                       "publish (no certification MR will be opened; already-"
@@ -610,8 +651,28 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                     x.get("hash") in _stored
                     or "binaries" not in _forms(x.get("redistributable", "all")))])
             from bits_helpers.notice import upload_release_compliance
-            upload_release_compliance(w.s3, w.writeStore, build_id, entries,
-                                      store_url=store_url, manifest=_sbom_manifest)
+            upload_release_compliance(getattr(w, "s3", None), w.writeStore, build_id, entries,
+                                      store_url=store_url, manifest=_sbom_manifest,
+                                      put=(lambda k, b: _put_object(w, k, b)), prefix=_pre)
+            # Found again by the pipeline that made it: bits cvmfs release --pipeline.
+            # One file per build (a pipeline may build several platforms), outside
+            # MANIFESTS/ so the tools that read every BOM there do not see it.
+            if _pipeline_id:
+                _index = "BUILDS/by-pipeline/%s/%s.json" % (_pipeline_id, build_id)
+                try:
+                    if not _put_object(w, _index, _json.dumps({
+                            "build_id": build_id,
+                            "keys": ["MANIFESTS/%s/%s.%s.json" % (build_id, _stem, _a)
+                                     for _a, _d in bom]}, indent=1).encode()):
+                        # another publish of this pipeline recorded it first: take its BOMs
+                        bom = _published_bom(writers, build_id, published, manifest_doc, architecture)
+                        if bom is None:
+                            error("pipeline %s recorded build %s first, with BOMs that are not "
+                                  "this build's or could not be read (%s)", _pipeline_id, build_id, _index)
+                            sys.exit(1)
+                except Exception as exc:
+                    warning("could not record %s (bits cvmfs release --pipeline "
+                            "will not find this build): %s", _index, exc)
 
     banner("%s %d package(s) to %s",
            "[dry-run] would publish" if dry_run else "Published", ok, write_store)

@@ -59,6 +59,10 @@ def read(s3, bucket):
         if _absent(exc) or _not_listed(s3, bucket):
             return None
         raise Unknown("cannot read %s from the store: %s" % (MARKER, exc))
+    return _marker(body)
+
+
+def _marker(body):
     try:
         doc = json.loads(body)
     except ValueError:
@@ -89,8 +93,15 @@ def s3_of(store_url, work_dir="sw", arch="x86_64"):
 
 
 def for_store(store_url, work_dir="sw", arch="x86_64"):
-    """The marker of the store at *store_url* (see :func:`read`); None for a store
-    that is not S3, which no orchestrator writes."""
+    """The marker of the store at *store_url* (see :func:`read`), read by name through
+    bits-store; None for a store that is neither, which no orchestrator writes."""
+    if str(store_url or "").startswith("bits-store+"):
+        from bits_helpers.bits_store_sync import BitsStoreSync
+        try:
+            body = BitsStoreSync(store_url.split("::")[0], arch, work_dir).get_key(MARKER)
+        except Exception as exc:          # pylint: disable=broad-except
+            raise Unknown("cannot read %s through %s: %s" % (MARKER, store_url, exc))
+        return None if body is None else _marker(body)
     client = s3_of(store_url, work_dir, arch)
     return read(*client) if client else None
 

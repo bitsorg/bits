@@ -37,6 +37,29 @@ class Store(BaseHTTPRequestHandler):
   def _route(self, body):
     auth = self.headers.get("Authorization")
     Store.asked.append((self.command, self.path, auth))
+    if self.path.startswith(("/MANIFESTS/", "/BUILDS/")):    # objects by key: 302 to /obj/
+      if Store.failing > 0:
+        Store.failing -= 1
+        return self._answer(503)
+      if auth not in (None, "Bearer good"):
+        return self._answer(401)
+      if self.path[1:] not in self.markers:
+        return self._answer(404)
+      self.send_response(302)
+      self.send_header("Location", "/obj/" + self.path[1:])
+      self.send_header("Content-Length", "0")
+      self.end_headers()
+      return
+    if self.path.startswith("/obj/"):                        # the bucket: never a token
+      key = self.path[len("/obj/"):]
+      if auth or key.endswith("forbidden") or key not in self.markers:
+        return self._answer(404 if key not in self.markers else 403)
+      data = self.markers[key].encode()
+      self.send_response(200)
+      self.send_header("Content-Length", str(len(data)))
+      self.end_headers()
+      self.wfile.write(data)
+      return
     if self.path.startswith("/bucket/"):
       h = self.path[len("/bucket/"):]
       build = self.builds.get(h)
@@ -304,6 +327,31 @@ class BitsStoreSyncTest(StandIn):
 
 
 BUILT = b"a new build, " * 5
+
+
+class BitsStoreObjectsTest(StandIn):
+  """Objects by key (BOMs, records, the marker): read through the redirect, the token
+  never sent to the bucket; written create-only."""
+
+  def test_put_create_only_and_get(self):
+    s = BitsStoreSync(self.url, ARCH, self.work, writable=True)
+    key = "MANIFESTS/release_x-ab/p7-NOTICE"
+    self.assertTrue(s.put_key(key, b"notice"))
+    self.assertFalse(s.put_key(key, b"another"))                 # taken: kept
+    self.assertEqual(s.get_key(key), b"notice")
+    self.assertIsNone(s.get_key("BUILDS/by-pipeline/7/release_x-ab.json"))
+    bucket = [a for m, p, a in Store.asked if p.startswith("/obj/")]
+    self.assertEqual(bucket, [None])                             # no token to the bucket
+
+  def test_a_store_that_cannot_say_is_an_error(self):
+    s = self.store()
+    Store.markers["MANIFESTS/forbidden"] = "x"
+    with self.assertRaises(StoreWriteError):
+      s.get_key("MANIFESTS/forbidden")                           # 403 at the bucket: final
+    self.assertEqual(sum(p == "/obj/MANIFESTS/forbidden" for m, p, a in Store.asked), 1)
+    Store.failing = 9
+    with self.assertRaises(StoreWriteError):
+      s.get_key("MANIFESTS/orchestrator.json")
 
 
 class BitsStoreWriteTest(StandIn):

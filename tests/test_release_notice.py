@@ -81,6 +81,13 @@ class ReleaseNoticeTestCase(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(d, "NOTICE")))
         self.assertTrue(os.path.isfile(os.path.join(d, "LICENSE-SOURCE-OFFER.txt")))
 
+    def test_through_a_put_with_the_pipelines_prefix(self):
+        got = {}
+        put = lambda k, b: got.setdefault(k, b) is b              # False when there already
+        self.assertTrue(notice.upload_release_compliance(None, "bkt", "b1", ENTRIES, put=put, prefix="p7-"))
+        self.assertEqual(sorted(got), ["MANIFESTS/b1/p7-LICENSE-SOURCE-OFFER.txt", "MANIFESTS/b1/p7-NOTICE"])
+        self.assertTrue(notice.upload_release_compliance(None, "bkt", "b1", ENTRIES, put=put, prefix="p7-"))
+
     def test_sboms_ride_along_with_the_manifest(self):
         man = {"schema_version": 4, "packages": ENTRIES}
         s3 = MagicMock()
