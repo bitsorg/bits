@@ -70,7 +70,8 @@ class StoreBuildTokenTest(_DB):
                        issuer="https://bits.example.org")
         self.assertEqual(jwt.get_unverified_header(tok)["kid"], "builds-1")
         self.assertEqual((c["sub"], c["grp"]), ("build:77", "testbed"))
-        self.assertEqual(c["cap"], [{"m": m, "p": p} for m, p in build_capabilities("el9")])
+        self.assertEqual(c["cap"], [{"m": m, "p": p} for m, p in build_capabilities("el9", 5)])
+        self.assertIn({"m": "PUT", "p": "/MANIFESTS/release*/p5-*"}, c["cap"])     # its own files
         self.assertLessEqual(c["exp"], self.claims["exp"])          # never past the job
         self.assertGreater(c["exp"], self.claims["exp"] - 10)
         with self.assertRaises(jwt.InvalidSignatureError):         # not the user key
@@ -87,6 +88,13 @@ class StoreBuildTokenTest(_DB):
         for bad in ("", "../x", "x/y", "*", None):
             with self.assertRaises(ValueError):
                 build_capabilities(bad)
+        # In a pipeline: its files beside a build's BOMs, and its own records.
+        self.assertEqual(build_capabilities("x86_64-el9", 77)[len(build_capabilities("x86_64-el9")):], [
+            ("PUT", "/MANIFESTS/release*/p77-*"),
+            ("GET", "/BUILDS/by-pipeline/77/release*.json"), ("PUT", "/BUILDS/by-pipeline/77/release*.json")])
+        for bad in (0, -1, "x", "1/2", "77", True, 1.5):
+            with self.assertRaises(ValueError):
+                build_capabilities("x86_64-el9", bad)
 
     def test_a_pipeline_the_worker_has_not_seen_yet_is_read_from_gitlab(self):
         self.gl.add(6, community="other")

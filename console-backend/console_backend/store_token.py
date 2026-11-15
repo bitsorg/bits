@@ -121,13 +121,20 @@ def admin_capabilities(group):
             for m in METHODS] + [("GET", "/sources/**")]
 
 
-def build_capabilities(platform):
+def build_capabilities(platform, pipeline=None):
     """What a build of *platform* may do in the store (ADR 0004 C): read and write
     its packages (also of its build types, <platform>-opt, and shared ones) and
-    their revision markers; have the sources store fetch."""
+    their revision markers; have the sources store fetch. In *pipeline* also (9a):
+    create its files beside a build's BOMs (named p<pipeline>-) and its records."""
     if not isinstance(platform, str) or not _PLATFORM.fullmatch(platform):
         raise ValueError("platform %r: not an architecture name" % (platform,))
-    return [cap for arch in (platform + "*", "share")
+    caps = [cap for arch in (platform + "*", "share")
             for cap in (("GET", "/store/%s/**" % arch), ("PUT", "/store/%s/**" % arch),
                         ("GET", "/MANIFESTS/rev-index/%s/**" % arch),
                         ("PUT", "/MANIFESTS/rev-index/%s/**" % arch))] + [("GET", "/sources/**")]
+    if pipeline is not None:
+        if type(pipeline) is not int or pipeline <= 0:              # not a bool, str or float
+            raise ValueError("pipeline %r: not a pipeline id" % (pipeline,))
+        rec = "/BUILDS/by-pipeline/%d/release*.json" % pipeline
+        caps += [("PUT", "/MANIFESTS/release*/p%d-*" % pipeline), ("GET", rec), ("PUT", rec)]
+    return caps

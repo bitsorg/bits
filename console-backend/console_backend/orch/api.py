@@ -985,7 +985,7 @@ async def ci_store_token(request: Request):
         if not (row["is_build"] and group):
             raise _Refused("not a build pipeline of a community")
         try:
-            caps = store_token.build_capabilities(row["platform"])
+            caps = store_token.build_capabilities(row["platform"], pid)
         except ValueError as exc:
             raise _Refused(str(exc))
         ttl = min(exp - int(time.time()), settings.store_build_token_max_ttl)
