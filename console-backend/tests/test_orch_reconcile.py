@@ -71,6 +71,10 @@ class FakeReader:
         return self.jobs[pid]
 
 
+class NoSuchKey(KeyError):
+    response = {"Error": {"Code": "NoSuchKey"}}               # as boto3's ClientError says it
+
+
 class FakeS3:
     def __init__(self, objects=None, page=2):
         self.objects = {k: json.dumps(v).encode() for k, v in (objects or {}).items()}
@@ -78,7 +82,7 @@ class FakeS3:
 
     def get_object(self, Bucket, Key):
         if Key not in self.objects:
-            raise KeyError(Key)
+            raise NoSuchKey(Key)
 
         class B:
             def __init__(s, d):
@@ -733,6 +737,11 @@ class ApiTest(_DB):
             self.assertEqual(r.status_code, 400)
             self.assertIn("b-1, b-2", r.json()["detail"])
             self.assertEqual(self._get("dave", "/ops/builds/1/sbom?build=b-2").status_code, 404)
+            s3.objects["MANIFESTS/b-2/p1-sbom.cdx.json"] = json.dumps({"bomFormat": "mine"}).encode()
+            s3.objects["MANIFESTS/b-2/p9-sbom.cdx.json"] = json.dumps({"bomFormat": "planted"}).encode()
+            s3.objects["MANIFESTS/b-2/sbom.cdx.json"] = json.dumps({"bomFormat": "older"}).encode()
+            r = self._get("dave", "/ops/builds/1/sbom?build=b-2")     # named for its pipeline
+            self.assertEqual(r.json(), {"bomFormat": "mine"})
         with patch.object(api, "_store", lambda: None):
             self.assertEqual(self._get("dave", "/ops/builds/1/sbom?build=b-1").status_code, 503)
 

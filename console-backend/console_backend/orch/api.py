@@ -639,15 +639,18 @@ async def _published_sbom(pipeline, name, build):
     if store is None:
         raise HTTPException(503, "no store configured (BITS_ORCH_STORE)")
     s3, bucket = store
-    key = "MANIFESTS/%s/%s" % (builds[0], name)
-    try:
-        body = await run_in_threadpool(lambda: s3.get_object(Bucket=bucket, Key=key)["Body"].read())
-    except Exception as e:                    # pylint: disable=broad-except
-        if _no_such_key(e):
-            raise HTTPException(404, "build %s has no %s" % (builds[0], name))
-        log.warning("reading %s: %s", key, e)
-        raise HTTPException(502, "the store did not answer")
-    return builds[0], body
+    from bits_helpers.provenance import pipeline_prefix
+    for leaf in (pipeline_prefix(pipeline) + name, name):     # its own, else an older build's
+        key = "MANIFESTS/%s/%s" % (builds[0], leaf)
+        try:
+            body = await run_in_threadpool(lambda k=key: s3.get_object(Bucket=bucket, Key=k)["Body"].read())
+        except Exception as e:                # pylint: disable=broad-except
+            if _no_such_key(e):
+                continue
+            log.warning("reading %s: %s", key, e)
+            raise HTTPException(502, "the store did not answer")
+        return builds[0], body
+    raise HTTPException(404, "build %s has no %s" % (builds[0], name))
 
 
 async def _with_findings(data, pipeline, bid, body):

@@ -391,8 +391,9 @@ def cli_boms(store, bid, approval):
         token = page.get("NextContinuationToken")
         if not page.get("IsTruncated") or not token:
             break
+    from bits_helpers.provenance import leaf_pipeline
     runs = {}                                        # run leaf -> {arch: (key, BOM)}
-    for key in sorted(keys):
+    for key in sorted(k for k in keys if leaf_pipeline(k) is None):   # not a CI job's
         try:
             doc = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
         except ValueError:

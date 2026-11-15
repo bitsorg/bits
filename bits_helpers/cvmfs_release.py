@@ -21,6 +21,7 @@ import sys
 import tempfile
 
 from bits_helpers.log import error, info, warning
+from bits_helpers.provenance import leaf_pipeline
 
 
 class ReleaseError(Exception):
@@ -58,7 +59,7 @@ def find_boms(s3, bucket, pipeline=None, build_id=None):
     """The BOMs of one build, newest per effective architecture: by the
     pipeline that made it (its index under BUILDS/by-pipeline/), by its build
     id (MANIFESTS/<build_id>/), or by both (that build of that pipeline)."""
-    keys, indexed = None, False
+    keys, indexed, others = None, False, []
     if pipeline:
         builds = {}
         for key in list_keys(s3, bucket, "BUILDS/by-pipeline/%s/" % pipeline):
@@ -80,8 +81,11 @@ def find_boms(s3, bucket, pipeline=None, build_id=None):
     if keys is None:
         if not build_id:
             raise ReleaseError("name the build with --pipeline or --build-id")
-        keys = [k for k in list_keys(s3, bucket, "MANIFESTS/%s/" % build_id)
-                if k.endswith(".json")]
+        listed = [k for k in list_keys(s3, bucket, "MANIFESTS/%s/" % build_id)
+                  if k.endswith(".json")]
+        # A pipeline's files only when it is named: anyone's job may name its own here.
+        keys = [k for k in listed if leaf_pipeline(k) in (None, pipeline and str(pipeline))]
+        others = sorted({leaf_pipeline(k) for k in listed} - {None, pipeline and str(pipeline)})
     newest = {}
     for key in keys:
         try:
@@ -93,12 +97,20 @@ def find_boms(s3, bucket, pipeline=None, build_id=None):
             continue
         if not is_bom(bom):
             continue   # NOTICE, SBOMs and other files beside the BOMs
+        named = leaf_pipeline(key)
+        if named is not None and named != str(bom.get("source_pipeline_id", "")):
+            warning("skipping %s: named for pipeline %s, of pipeline %s", key, named,
+                    bom.get("source_pipeline_id"))
+            continue
         if pipeline and str(bom.get("source_pipeline_id", "")) != str(pipeline):
             continue
         arch = bom["effective_architecture"]
         if arch not in newest or bom.get("published_at", "") > newest[arch].get("published_at", ""):
             newest[arch] = bom
     if not newest:
+        if keys is not None and not indexed and others:
+            raise ReleaseError("build %s was published by pipeline %s: name it with --pipeline"
+                               % (build_id, ", ".join(others)))
         raise ReleaseError("no BOM found for this build")
     return [newest[a] for a in sorted(newest)]
 

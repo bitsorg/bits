@@ -768,6 +768,18 @@ class CliBuildTest(CertifierBase):
         a = self.conn.execute("SELECT * FROM actions WHERE kind = 'certify'").fetchone()
         self.assertEqual((a["subject"], a["community"]), ("certify:cli:%s" % self.BID, "lcg"))
 
+    def test_a_ci_jobs_run_beside_a_cli_build_is_not_taken(self):
+        # Same hashes, sorted first, other licence: a job may name only its own files.
+        del self.s3.docs["MANIFESTS/%s/host-1.el9.json" % self.BID]
+        good = dict(_bom(self.BID, "el9", ("r", "h3")), source_pipeline_id=None)
+        self.s3.docs["MANIFESTS/%s/zz-host.el9.json" % self.BID] = good
+        self.s3.docs["MANIFESTS/%s/p77-run.el9.json" % self.BID] = dict(
+            good, packages=[dict(p, license="planted") for p in good["packages"]])
+        self.cli_approve()
+        self.assertEqual(self.certify(), 1)
+        m = json.loads(self.writer.puts[0][1])
+        self.assertEqual([p.get("license") for p in m["packages"]], [good["packages"][0].get("license")])
+
     def test_a_new_approval_signs_its_own_bytes(self):
         self.cli_approve()
         self.writer.fail = OSError("down")                     # signed, not written

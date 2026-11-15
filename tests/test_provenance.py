@@ -289,6 +289,19 @@ for extra in (False, True):
         self.assertEqual(self._record_specs(specs)["provenance"], "loose")
 
 
+class TestPipelineNames(unittest.TestCase):
+  """What a CI pipeline writes beside a build's BOMs is named for it."""
+
+  def test_prefix_and_back(self):
+    self.assertEqual(pv.pipeline_prefix(16389527), "p16389527-")
+    self.assertEqual(pv.leaf_pipeline("MANIFESTS/b/p16389527-sbom.cdx.json"), "16389527")
+    for k in ("MANIFESTS/b/sbom.cdx.json", "MANIFESTS/b/host-1.el9.json", "MANIFESTS/b/pz-x.json",
+              "MANIFESTS/p12-b/NOTICE"):
+      self.assertIsNone(pv.leaf_pipeline(k), k)
+    with self.assertRaises(ValueError):
+      pv.pipeline_prefix("x")
+
+
 class TestBuildIdFromManifest(unittest.TestCase):
     """build_id_from_manifest reconstructs the canonical id from a manifest dict."""
 

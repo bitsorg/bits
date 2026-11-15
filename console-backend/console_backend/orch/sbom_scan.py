@@ -236,6 +236,20 @@ def index(doc, vulns):
     return len(packages), identified, packages, sorted(k + f for k, f in findings.items())
 
 
+def sbom_keys(conn, bid):
+    """Where a build's SBOM may be: named for one pipeline that recorded it (one whose
+    build was certified, else the first: a later record may be a job's claim), then
+    unprefixed (an older build, or not from CI); never another pipeline's."""
+    from bits_helpers.provenance import pipeline_prefix
+    pids = [r["pipeline_id"] for r in conn.execute(
+        "SELECT b.pipeline_id FROM builds b WHERE b.build_id = ? AND b.pipeline_id > 0"
+        " ORDER BY EXISTS (SELECT 1 FROM certify_runs c WHERE c.pipeline_id = b.pipeline_id"
+        " AND c.build_id = b.build_id AND c.state = 'signed') DESC, b.recorded_ms",
+        (bid,))]
+    return ["MANIFESTS/%s/%s%s" % (bid, pipeline_prefix(p), SBOM) for p in pids[:1]] + [
+        "MANIFESTS/%s/%s" % (bid, SBOM)]
+
+
 def due(conn, db_built, now, limit=None):
     """Build ids to scan, newest first: never scanned (recorded SETTLE_MS ago:
     a running pipeline's build is recorded before its SBOM is uploaded), last good
@@ -332,11 +346,15 @@ def step(conn, store, url, directory, get=_get, post=_post, clock=time.monotonic
     for bid in due(conn, db_built, db.now_ms()):
         if clock() - start > BUDGET_S:
             break
-        try:
-            body = s3.get_object(Bucket=bucket, Key="MANIFESTS/%s/%s" % (bid, SBOM))["Body"].read()
-        except Exception as e:            # pylint: disable=broad-except
-            if not _missing(e):
-                raise
+        body = None
+        for key in sbom_keys(conn, bid):
+            try:
+                body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+                break
+            except Exception as e:        # pylint: disable=broad-except
+                if not _missing(e):
+                    raise
+        if body is None:
             _failed(conn, bid, "no %s in the store" % SBOM)
             continue
         try:

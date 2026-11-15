@@ -16,6 +16,7 @@ a near-empty environment must still produce a value, never raise.
 
 import hashlib
 import os
+import re
 from types import SimpleNamespace
 
 
@@ -58,6 +59,19 @@ def _member_tuple(spec) -> tuple:
         str(spec.get("revision", "")),
         str(spec.get("hash", "")),
     )
+
+
+def pipeline_prefix(pipeline_id) -> str:
+  """The name prefix of what a CI pipeline writes beside a build's BOMs
+  (MANIFESTS/<build_id>/p<pipeline>-...): its store token reaches no other name."""
+  return "p%d-" % int(pipeline_id)
+
+
+def leaf_pipeline(key):
+  """The pipeline a file under MANIFESTS/<build_id>/ is named for (pipeline_prefix),
+  or None: an older file, or one not written by a CI pipeline."""
+  m = re.match(r"p([0-9]+)-", str(key).rsplit("/", 1)[-1])
+  return m.group(1) if m else None
 
 
 def compute_build_id(specs, args) -> str:

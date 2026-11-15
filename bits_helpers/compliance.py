@@ -469,6 +469,14 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
                 n += 1
         return n
 
+    def _holds(prefix, package):
+        """Whether the build folder *prefix* holds builds of *package* only (a BOM
+        may say anything: one of a CI job's names no other build's hash)."""
+        names = [o["Key"].rsplit("/", 1)[-1]
+                 for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
+                 for o in page.get("Contents", []) or []]
+        return all(n.startswith(str(package) + "-") for n in names)
+
     from bits_helpers.utilities import resolve_store_path
     banner("Enforcing licence compliance on %s%s", bucket,
            " (dry run)" if dry_run else "")
@@ -510,9 +518,12 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
             arch = e.get("effective_architecture") or ""
             affected_archs.add(arch)
             found.add(str(e.get("package")))
-            removed += _delete_prefix(
-                resolve_store_path(arch, e.get("hash", "")) + "/",
-                "%s — redistributable: false" % e.get("package"))
+            folder = resolve_store_path(arch, e.get("hash", "")) + "/"
+            if not _holds(folder, e.get("package")):
+                warning("enforce: %s says %s is in %s, which holds other builds: kept",
+                        key, e.get("package"), folder)
+                continue
+            removed += _delete_prefix(folder, "%s — redistributable: false" % e.get("package"))
             removed += _delete_prefix(
                 "MANIFESTS/rev-index/%s/%s/" % (arch, e.get("package")),
                 "rev-index marker")

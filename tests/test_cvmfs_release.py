@@ -93,6 +93,23 @@ class FindAndMergeTest(unittest.TestCase):
         self.assertEqual(rel.find_boms(s3, "bkt", build_id="b"), [other])
         self.assertEqual(rel.find_boms(s3, "bkt", pipeline="4242", build_id="b"), [new])
 
+    def test_a_pipelines_files_only_when_it_is_named(self):
+        new = _bom(ARCH, [_pkg("ROOT", "r1")])
+        planted = _bom(ARCH, [_pkg("ROOT", "evil")], published_at="2026-10-13T00:00:00Z",
+                       source_pipeline_id="7")
+        mine = _bom(ARCH, [_pkg("ROOT", "r2")], published_at="2026-10-12T00:00:00Z")
+        liar = _bom(ARCH, [_pkg("ROOT", "evil")], published_at="2026-10-14T00:00:00Z")
+        s3 = _S3({"MANIFESTS/b/a.json": new, "MANIFESTS/b/p7-x.%s.json" % ARCH: planted,
+                  "MANIFESTS/b/p4242-y.%s.json" % ARCH: mine,
+                  "MANIFESTS/b/p8-z.%s.json" % ARCH: liar})          # says pipeline 4242
+        self.assertEqual(rel.find_boms(s3, "bkt", build_id="b"), [new])
+        self.assertEqual(rel.find_boms(s3, "bkt", pipeline="4242", build_id="b"), [mine])
+        del s3.objects["MANIFESTS/b/a.json"]
+        with self.assertRaises(rel.ReleaseError) as cm:              # only pipelines' files
+            rel.find_boms(s3, "bkt", build_id="b")
+        self.assertIn("--pipeline", str(cm.exception))
+        self.assertIn("4242", str(cm.exception))
+
     def test_merge_orders_by_requires_and_takes_the_top_levels_arch(self):
         boms = [_bom(ARCH, [_pkg("LCG", "l1", requires=["ROOT", "GCC"]),
                             _pkg("ROOT", "r1", requires=["GCC"])]),

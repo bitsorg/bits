@@ -202,6 +202,16 @@ class EnforceTestCase(unittest.TestCase):
         kept = json.loads(self.put["MANIFESTS/b1/x.el9.json"])
         self.assertEqual([p["package"] for p in kept["packages"]], ["Good"])
 
+    def test_a_bom_naming_another_builds_hash_deletes_nothing_of_it(self):
+        from bits_helpers.utilities import resolve_store_path
+        good = resolve_store_path("el9", "aa11") + "/Good-1-1.el9.tar.gz"
+        self.objects[good] = "bytes"
+        self.objects["MANIFESTS/b3/p77-run.el9.json"] = json.dumps({"packages": [
+            {"package": "Secret", "hash": "aa11", "effective_architecture": "el9"}]})
+        compliance.enforce_store("b3://bkt", self.rec, self.d)
+        self.assertNotIn(good, self.deleted)                       # Good's build stays
+        self.assertIn(resolve_store_path("el9", "beef01") + "/Secret-1-1.el9.tar.gz", self.deleted)
+
     def test_recert_failure_reported_not_crash(self):
         # Objects are deleted, then a PRE-EXISTING manifest conflict makes the
         # re-certification raise. enforce_store must catch it, report, and return

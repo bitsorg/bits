@@ -145,6 +145,44 @@ class SbomScanTest(Fixture):
         self.assertNotIn("b-new", sbom_scan.due(self.conn, "d", now, limit=10))
         self.assertIn("b-new", sbom_scan.due(self.conn, "d", now + sbom_scan.SETTLE_MS, limit=10))
 
+    def test_the_sbom_named_for_its_pipeline_is_scanned(self):
+        self.objects["MANIFESTS/b-2/p2-sbom.cdx.json"] = b'{"name": "b-2 of pipeline 2"}'
+        self.objects["MANIFESTS/b-2/p9-sbom.cdx.json"] = b'{"name": "planted"}'
+        # A later job's record claims the build too: not the first, not certified.
+        self.conn.execute("INSERT INTO pipelines (id, is_build, community, package, version,"
+                          " first_seen_ms) VALUES (9, 1, 'lhcb', 'Athena', '25', 0)")
+        self.conn.execute("INSERT INTO builds (pipeline_id, build_id, community, recorded_ms)"
+                          " VALUES (9, 'b-2', 'lhcb', 50)")
+        self.conn.commit()
+        s = Scanner()
+        self._step(s)
+        self.assertIn("b-2 of pipeline 2", s.scanned)
+        self.assertNotIn("planted", s.scanned)
+        self.assertNotIn("b-2", s.scanned)                     # not the unprefixed one
+
+    def test_a_certified_pipelines_sbom_comes_first(self):
+        from console_backend.orch import sbom_scan as ss
+        self.conn.execute("INSERT INTO pipelines (id, is_build, community, package, version,"
+                          " first_seen_ms) VALUES (9, 1, 'lhcb', 'Athena', '25', 0)")
+        self.conn.execute("INSERT INTO builds (pipeline_id, build_id, community, recorded_ms)"
+                          " VALUES (9, 'b-2', 'lhcb', 50)")
+        self.conn.execute("INSERT INTO certify_runs (pipeline_id, build_id, arch, state,"
+                          " created_ms, updated_ms) VALUES (9, 'b-2', 'el9', 'signed', 0, 0)")
+        self.assertEqual(ss.sbom_keys(self.conn, "b-2"), [
+            "MANIFESTS/b-2/p9-sbom.cdx.json", "MANIFESTS/b-2/sbom.cdx.json"])
+
+    def test_an_older_build_is_not_scanned_from_a_later_pipelines_file(self):
+        self.objects["MANIFESTS/b-2/p9-sbom.cdx.json"] = b'{"name": "planted"}'
+        self.conn.execute("INSERT INTO pipelines (id, is_build, community, package, version,"
+                          " first_seen_ms) VALUES (9, 1, 'lhcb', 'Athena', '25', 0)")
+        self.conn.execute("INSERT INTO builds (pipeline_id, build_id, community, recorded_ms)"
+                          " VALUES (9, 'b-2', 'lhcb', 50)")
+        self.conn.commit()
+        s = Scanner()
+        self._step(s)
+        self.assertIn("b-2", s.scanned)                        # its own, unprefixed
+        self.assertNotIn("planted", s.scanned)
+
     def test_a_missing_sbom_is_kept_and_retried_later(self):
         del self.objects["MANIFESTS/b-3/sbom.cdx.json"]
         self._step(Scanner())
