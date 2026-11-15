@@ -169,10 +169,6 @@ class Settings:
         # The sbom-scanner service (bits-services) that matches the builds' SBOMs
         # with a vulnerability database (sbom_scan.py); empty: no scans.
         self.orch_scanner_url = (e.get("BITS_ORCH_SCANNER_URL") or "").strip()
-        # Monitoring's VictoriaMetrics, to which the worker pushes the store's gauges
-        # (store_gauges.py) every BITS_ORCH_STORE_GAUGES_S seconds; empty: not pushed.
-        self.orch_metrics_url = (e.get("BITS_ORCH_METRICS_URL") or "").strip()
-        self.orch_store_gauges_s = max(300.0, float(e.get("BITS_ORCH_STORE_GAUGES_S", "3600") or "3600"))
         # The scans' vulnerabilities, beside the orchestrator database.
         self.orch_scans_dir = (os.path.join(os.path.dirname(os.path.abspath(self.orch_db)),
                                             "sbom-scans") if self.orch_db else "")

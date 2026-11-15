@@ -32,7 +32,7 @@ import time
 from .. import config
 from . import (actions, approvals, authority, build_queue, certifier, chat, cvmfs_status, db, events,
                failures, kinds, mirror, nightlies, outside, phases, reconcile, sbom_history,
-               sbom_scan, schedules, shadow, store_gauges, trace, watches)
+               sbom_scan, schedules, shadow, trace, watches)
 
 log = logging.getLogger("bits_orchestrator")
 
@@ -102,11 +102,6 @@ class Worker:
                 self.conn, self.deps.store(), settings.orch_scanner_url, settings.orch_scans_dir)))
             # Each release's risk, once a day (the Vulnerabilities page's chart).
             self.steps.insert(at + 1, ("history", lambda: sbom_history.snapshot(self.conn)))
-        if settings.orch_metrics_url:
-            # The store's gauges for Monitoring: a build through bits-store lists none.
-            at = [n for n, _ in self.steps].index("trace") + 1
-            self.steps.insert(at, ("store_gauges", lambda: store_gauges.step(
-                self.conn, self.deps.store(), settings.orch_metrics_url, settings.orch_store_gauges_s)))
         if settings.orch_owns_set:
             # M8b: the set is the worker's; bits-manifests mirrors it, and the
             # store says whose manifests these are.
