@@ -24,6 +24,22 @@ class TestDeriveTrustManifestSrcs(unittest.TestCase):
             ["https://s3.cern.ch/swift/v1/lcgapp-bits-testing/MANIFESTS/common-manifest-x86_64-el8.json",
              "https://s3.cern.ch/swift/v1/lcgapp-bits-testing/MANIFESTS/common-manifest-shared.json"])
 
+    def test_through_bits_store_the_toolchains_name_too(self):
+        # bits-store cannot be listed: every architecture a build stores under is
+        # asked for by name, once, before the shared one
+        root = "https://bits.example.org:8444/MANIFESTS/common-manifest-"
+        self.assertEqual(
+            d("bits-store+https://bits.example.org:8444/store", P,
+              ["x86_64-el9-gcc14-opt", "x86_64-el9-gcc14", "x86_64-el9-gcc14-opt", ""]),
+            [root + "x86_64-el9-gcc14-opt.json", root + "x86_64-el9-gcc14.json", root + "shared.json"])
+
+    def test_a_builds_architectures(self):
+        from types import SimpleNamespace
+        from bits_helpers.build import trust_arches
+        self.assertEqual(trust_arches(SimpleNamespace(architecture="x86_64-el9-gcc14-opt",
+                                                      architecture_own_hash="x86_64-el9-gcc14")),
+                         ["x86_64-el9-gcc14-opt", "x86_64-el9-gcc14"])
+
     def test_s3_scheme_same_as_b3(self):
         self.assertEqual(
             d("s3://mybucket", P, A)[0],

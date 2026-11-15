@@ -35,7 +35,7 @@ from bits_helpers.paths import resolveLocalPath, getConfigPaths
 from bits_helpers.git import Git, git
 from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
-from bits_helpers.sync import remote_from_url
+from bits_helpers.sync import remote_from_url, store_urls
 from bits_helpers.build_config import BuildConfig
 from bits_helpers import plan as _plan
 from bits_helpers import fetch_cache
@@ -441,7 +441,7 @@ def trusted_reuse_index(args, work_dir):
     warning("--require-signed-reuse set without --trust-manifest; "
             "no remote tarball will be reused.")
   guessed = getattr(args, "_guessedTrustManifests", None) or set()
-  absent = []
+  absent, verified = [], 0
   conflicts = set()
   for src in sources:
     kid, part = _load_trusted_index(src, work_dir, accept_groups)
@@ -454,6 +454,7 @@ def trusted_reuse_index(args, work_dir):
       warning("--require-signed-reuse: could not verify signed manifest %s; "
               "its tarballs will not be reused.", src)
       continue
+    verified += 1
     for key, sha in part.items():
       if key in conflicts:
         continue
@@ -472,6 +473,15 @@ def trusted_reuse_index(args, work_dir):
   if sources and len(absent) == len(sources):
     warning("--require-signed-reuse: no signed manifest found in the store (%s); "
             "no remote tarball will be reused.", ", ".join(absent))
+  # Through bits-store, no manifest at all is most likely a /MANIFESTS binding pointing
+  # elsewhere: its revision markers would be missed too, and revisions handed out again.
+  dieOnError(sources and not verified and
+             any(w.startswith("bits-store+") for w in store_urls(getattr(args, "writeStore", ""))),
+             "Stopping: the build writes through bits-store, but no signed manifest could be "
+             "read (%s), so nothing would be reused and the store's revision markers may be "
+             "out of reach too (check the store's /MANIFESTS binding, the trust manifests "
+             "and the warnings above). If the store has no signed manifest yet, build with "
+             "--no-require-signed-reuse." % ", ".join(sources))
   args._trustedReuseIndex = index
   return index
 
@@ -738,19 +748,28 @@ def trust_manifest_srcs(store, prefixes, endpoint, work_dir, arch):
   return sorted(chosen.values()), set()
 
 
+def trust_arches(args):
+  """The architectures a build's packages are stored under, whose signed manifests a
+  store that cannot be listed (bits-store) is asked for by name: its own and its
+  toolchain's (build-type neutral, compute_own_hash_arch)."""
+  return [str(getattr(args, a, "") or "") for a in ("architecture", "architecture_own_hash")]
+
+
 def derive_trust_manifest_srcs(store, prefix, arch, endpoint=None):
   """Construct the signed common-manifest URLs for *arch* + the shared one.
 
   Fallback for stores that cannot be listed (see _list_store_manifest_srcs):
   own-arch first, then the always-shared one; [] if the store form is
-  unsupported. ``endpoint`` defaults to CERN S3.
+  unsupported. ``endpoint`` defaults to CERN S3. *arch* may be several
+  architectures (the build's and its toolchain's, see compute_own_hash_arch).
   """
   prefix = str(prefix or "MANIFESTS/common-manifest").lstrip("/")
   root = _store_container_root(store, endpoint)
   if not root:
     return []
   base = root + "/" + prefix
-  srcs = ["%s-%s.json" % (base, arch)] if arch else []
+  arches = [arch] if isinstance(arch, str) else list(arch or ())
+  srcs = ["%s-%s.json" % (base, a) for a in dict.fromkeys(a for a in arches if a)]
   srcs.append("%s-shared.json" % base)
   return srcs
 
@@ -3810,7 +3829,7 @@ def doBuild(args, parser):
       _sep = (bucket_endpoint(_store[5:].split("/", 1)[0])
               if _store.startswith("b3://") else None) or _ep
       _s, _g = trust_manifest_srcs(_store, _prefix, _sep, getattr(args, "workDir", None),
-                                   str(getattr(args, "architecture", "") or ""))
+                                   trust_arches(args))
       _srcs += [x for x in _s if x not in _srcs]
       _guessed |= _g
     if _guessed:

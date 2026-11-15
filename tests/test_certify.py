@@ -628,6 +628,35 @@ class TestCertifyEndToEnd(unittest.TestCase):
         idx = build.trusted_reuse_index(args, self.tmp)
         self.assertEqual(idx, {})
 
+    def test_no_manifest_at_all_stops_a_write_through_bits_store(self):
+        # No signed manifest readable: through bits-store the binding is likely wrong and
+        # the revision markers out of reach too; a write store of another kind only warns
+        from unittest import mock
+        from bits_helpers import build
+        url = "https://bits.example.org:8444/MANIFESTS/common-manifest-x86_64-el9.json"
+        bs = "bits-store+https://bits.example.org:8444/store"
+        for write, absent, stops in ((bs, True, True), (bs, False, True),     # 404, or e.g. 403
+                                     ("b3://bucket", True, False), ("", True, False)):
+            with mock.patch("bits_helpers.build._load_trusted_index", return_value=(None, {})), \
+                 mock.patch("bits_helpers.build._url_not_found", return_value=absent), \
+                 mock.patch("bits_helpers.build.warning"):
+                args = SimpleNamespace(trustManifest=url, trustGroups=None, writeStore=write,
+                                       _guessedTrustManifests={url})
+                if stops:
+                    with self.assertRaises(SystemExit):
+                        build.trusted_reuse_index(args, self.tmp)
+                else:
+                    self.assertEqual(build.trusted_reuse_index(args, self.tmp), {})
+        found = lambda src: (("kid", {("a", "h"): "sha"}) if src == url else (None, {}))
+        with mock.patch("bits_helpers.build._load_trusted_index", side_effect=lambda src, *a: found(src)), \
+             mock.patch("bits_helpers.build._url_not_found", return_value=True), \
+             mock.patch("bits_helpers.build.warning"):
+            shared = url.replace("x86_64-el9", "shared")          # one found: no stop
+            args = SimpleNamespace(trustManifest=url + "," + shared, trustGroups=None,
+                                   writeStore="bits-store+https://bits.example.org:8444/store",
+                                   _guessedTrustManifests={url, shared})
+            self.assertEqual(build.trusted_reuse_index(args, self.tmp), {("a", "h"): "sha"})
+
     def test_guessed_absent_manifest_is_not_warned(self):
         # A manifest name guessed by derive_trust_manifest_srcs that does not exist
         # (e.g. no -shared manifest in the store) is skipped quietly; an absent

@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Fix]** Signed reuse also asks for the toolchain's signed manifest (`common-manifest-<arch without the build type>.json`), which a store that cannot be listed (bits-store) otherwise missed; and a build that writes through bits-store stops when no signed manifest can be read at all: the store's /MANIFESTS binding is then most likely wrong, and revisions already taken would be handed out again (`--no-require-signed-reuse` for a store with none yet).
 - **[Change]** An upload through bits-store shows its progress as a download does; in a log without a terminal (CI), an upload in parts says each part and when bits-store is storing it.
 - **[Feature]** `$BITS_STORE_TOKEN_FILE` names the store token's file, in place of `~/.bits/token` (`bits login` writes it there too): a CI job's own token, from the console's `POST /ops/ci/store-token`.
 - **[Feature]** A `bits-store+https://host/store` store takes uploads: `--write-store` or `::rw`, with the store token, the revision marker first, then the build (in parts above 5 GiB); a build already stored under its hash is kept and its sha256 recorded (REFERENCE "The site's package store").
