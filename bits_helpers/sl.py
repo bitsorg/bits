@@ -53,7 +53,7 @@ class Sapling(SCM):
     return ["bookmark", "--list", "--remote", "-R", repository]
 
   def cleanCmd(self):
-    return ["clean", "--all"]
+    return ["clean", "--ignored"]
 
   def diffCmd(self, directory):
     return "cd %s && sl diff && sl status" % directory
