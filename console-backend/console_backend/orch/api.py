@@ -947,13 +947,14 @@ class _Refused(Exception):
 @router.post("/ops/ci/store-token")
 async def ci_store_token(request: Request):
     """A store token for the build job asking (ADR 0004 C), never from the request:
-    the job must be running in its pipeline (GitLab's word), a build pipeline the
-    worker records; the token has its community, its platform's packages and
-    markers, until the job's ID token expires."""
+    its job running (GitLab's word) in a build pipeline the console dispatched; the
+    community queued (checked then), its platform's packages, until the job's ID token ends."""
     m = _m()
     settings = m.settings
     if not settings.store_build_tokens_configured():
         raise HTTPException(503, "build store tokens are not configured")
+    if not settings.orch_queue:
+        raise HTTPException(503, "build store tokens need the build queue (BITS_ORCH_QUEUE)")
     claims = await _ci_claims(request, settings)
     try:
         pid, job, exp = int(str(claims["pipeline_id"])), int(str(claims["job_id"])), int(claims["exp"])
@@ -974,16 +975,23 @@ async def ci_store_token(request: Request):
                     row = reconcile.record_pipeline(conn, reader, reader.get_pipeline(pid))
                 except sqlite3.IntegrityError:   # the worker recorded it meanwhile
                     row = conn.execute("SELECT * FROM pipelines WHERE id = ?", (pid,)).fetchone()
-        return row
+            return row, row and build_queue.started(conn, row)
 
     def deny(why):
         audit.record("store_token_denied", reason=why, **who)
         return HTTPException(403, "pipeline %d: %s" % (pid, why))
     try:
-        row = await run_in_threadpool(pipeline)
+        row, entry = await run_in_threadpool(pipeline)
         who["group"] = group = row["community"]
         if not (row["is_build"] and group):
             raise _Refused("not a build pipeline of a community")
+        if entry == "dispatching":       # GitLab's answer lost: the worker's next pass adopts it
+            raise HTTPException(503, "pipeline %d is still being dispatched: retry the job" % pid)
+        # its variables name any community: only one the console checked counts
+        if entry is None:
+            raise _Refused("not a build the console dispatched")
+        if (entry["community"], entry["platform"]) != (group, row["platform"]):
+            raise _Refused("not the community and platform it was queued for")
         arch = await run_in_threadpool(_build_arch, kinds.Deps(settings).reader(), row)
         try:
             caps = store_token.build_capabilities(row["platform"], pid, arch)

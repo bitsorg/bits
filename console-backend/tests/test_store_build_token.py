@@ -6,6 +6,7 @@ the pipeline; anything else is refused."""
 
 import base64
 import hashlib
+import json
 import sqlite3
 import time
 import unittest
@@ -28,7 +29,7 @@ ENV = {"GITLAB_API_URL": "https://gl/api/v4", "BITS_FORGE_PROJECT": "42",
        "BITS_STORE_TOKEN_KEY": b64(USER_SEED), "BITS_STORE_TOKEN_KID": "console-1",
        "BITS_STORE_BUILD_TOKEN_KEY": b64(BUILD_SEED), "BITS_STORE_BUILD_TOKEN_KID": "builds-1",
        "BITS_STORE_TOKEN_ISSUER": "https://bits.example.org",
-       "BITS_STORE_TOKEN_AUDIENCE": "example-site/store"}
+       "BITS_STORE_TOKEN_AUDIENCE": "example-site/store", "BITS_ORCH_QUEUE": "1"}
 
 
 class StoreBuildTokenTest(_DB):
@@ -41,6 +42,7 @@ class StoreBuildTokenTest(_DB):
         self.client = TestClient(main.app)
         self.gl.add(5, community="testbed")
         self._pass()
+        self.queued(5)
         self.jobs = {77: {"status": "running", "pipeline": {"id": 5}}}      # GitLab's jobs
 
         def get_job(jid):
@@ -50,6 +52,15 @@ class StoreBuildTokenTest(_DB):
         self.gl.get_job = get_job
         self.claims = {"project_id": "42", "ref_protected": "true", "pipeline_id": "5",
                        "job_id": "77", "exp": int(time.time()) + 3600}
+
+    def queued(self, pid, community="testbed", platform="el9", state="dispatched", token=""):
+        """The console's queue entry dispatched as pipeline *pid*."""
+        variables = [{"key": "PACKAGE", "value": "ROOT"}, {"key": "PLATFORM", "value": platform}]
+        self.conn.execute("INSERT INTO build_queue (batch, community, requested_by, ref, variables,"
+                          " digest, target, state, pipeline_id, token, created_ms, updated_ms)"
+                          " VALUES ('b', ?, 'alice', 'main', ?, 'd', 'el9', ?, ?, ?, 0, 0)",
+                          (community, json.dumps(variables), state, pid, token))
+        self.conn.commit()
 
     def configure(self, **over):
         main.settings = config.Settings(env={k: v for k, v in dict(ENV, BITS_ORCH_DB=self.path,
@@ -117,6 +128,7 @@ class StoreBuildTokenTest(_DB):
 
     def test_a_pipeline_the_worker_has_not_seen_yet_is_read_from_gitlab(self):
         self.gl.add(6, community="other")
+        self.queued(6, "other")
         self.jobs[78] = {"status": "running", "pipeline": {"id": 6}}
         r = self.ask(pipeline_id="6", job_id="78")
         self.assertEqual(r.status_code, 200, r.text)
@@ -127,6 +139,7 @@ class StoreBuildTokenTest(_DB):
 
     def test_recorded_by_the_worker_meanwhile(self):
         self.gl.add(6, community="other")
+        self.queued(6, "other")
         self.jobs[78] = {"status": "running", "pipeline": {"id": 6}}
         real = reconcile.record_pipeline
 
@@ -184,15 +197,61 @@ class StoreBuildTokenTest(_DB):
 
     def test_only_a_build_pipeline_with_a_platform(self):
         self.gl.add(7, source="push")                                  # not a build
+        self.queued(7)
         self.jobs[81] = {"status": "running", "pipeline": {"id": 7}}
         self.assertEqual(self.ask(pipeline_id="7", job_id="81").status_code, 403)
         self.gl.add(8)
         self.gl.variables[8] = [v for v in self.gl.variables[8] if v["key"] != "PLATFORM"]
+        self.queued(8, platform="")
         self.jobs[82] = {"status": "running", "pipeline": {"id": 8}}
         self.assertEqual(self.ask(pipeline_id="8", job_id="82").status_code, 403)
         self.conn.execute("UPDATE pipelines SET is_build = 0 WHERE id = 5")   # its platform kept
         self.conn.commit()
         self.assertEqual(self.ask().status_code, 403)
+
+    def test_only_a_build_the_console_dispatched(self):
+        # started in GitLab, naming a community: its variables are not the console's check
+        self.gl.add(9, source="web", community="testbed")
+        self.jobs[83] = {"status": "running", "pipeline": {"id": 9}}
+        seen = []
+        with patch.object(audit, "record", lambda kind, **kw: seen.append((kind, kw))):
+            self.assertEqual(self.ask(pipeline_id="9", job_id="83").status_code, 403)
+        self.assertEqual(seen[-1][1]["reason"], "not a build the console dispatched")
+        for community, platform, state, why in (
+                ("other", "el9", "dispatched", "not the community and platform it was queued for"),
+                ("testbed", "el8", "dispatched", "not the community and platform it was queued for"),
+                ("testbed", "el9", "dispatching", "not a build the console dispatched"),  # no token
+                ("testbed", "el9", "canceled", "not a build the console dispatched")):
+            self.conn.execute("DELETE FROM build_queue WHERE pipeline_id = 9")
+            self.queued(9, community, platform, state)
+            with patch.object(audit, "record", lambda kind, **kw: seen.append((kind, kw))):
+                self.assertEqual(self.ask(pipeline_id="9", job_id="83").status_code, 403, state)
+            self.assertEqual(seen[-1][1]["reason"], why, (community, platform, state))
+        self.conn.execute("DELETE FROM build_queue WHERE pipeline_id = 9")
+        self.queued(9, " TestBed ")                                    # as the console keeps it
+        self.assertEqual(self.ask(pipeline_id="9", job_id="83").status_code, 200)
+
+    def test_one_the_console_is_still_dispatching(self):
+        # GitLab's answer lost: recover adopts it later, by its attempt's token; not here
+        self.gl.add(10, community="testbed")
+        self.gl.variables[10].append({"key": "BITS_QUEUE_ENTRY", "value": "t1"})
+        self.jobs[100] = {"status": "running", "pipeline": {"id": 10}}
+        self.queued(None, state="dispatching", token="t1")
+        r = self.ask(pipeline_id="10", job_id="100")
+        self.assertEqual(r.status_code, 503, r.text)
+        self.assertIn("retry", r.text)
+        self.conn.execute("UPDATE build_queue SET state = 'queued' WHERE token = 't1'")
+        self.conn.commit()                       # requeued (its token kept): not this pipeline's
+        self.assertEqual(self.ask(pipeline_id="10", job_id="100").status_code, 403)
+        self.conn.execute("UPDATE build_queue SET state = 'dispatched', pipeline_id = 10 WHERE token = 't1'")
+        self.conn.commit()                       # adopted
+        self.assertEqual(self.ask(pipeline_id="10", job_id="100").status_code, 200)
+
+    def test_off_without_the_build_queue(self):
+        self.configure(BITS_ORCH_QUEUE=None)
+        r = self.ask()
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("BITS_ORCH_QUEUE", r.text)
 
     def test_the_lifetime(self):
         self.configure(BITS_STORE_BUILD_TOKEN_MAX_TTL="600")

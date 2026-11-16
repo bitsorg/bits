@@ -133,6 +133,22 @@ def get(conn, entry_id):
     return conn.execute("SELECT * FROM build_queue WHERE id = ?", (int(entry_id),)).fetchone()
 
 
+def started(conn, pipeline):
+    """The entry the console dispatched as *pipeline* (its row): its community and
+    platform as queued; "dispatching" while its attempt's token says it may become
+    one (recover decides); None for a pipeline started elsewhere."""
+    r = conn.execute("SELECT * FROM build_queue WHERE pipeline_id = ? AND state = 'dispatched'"
+                     " ORDER BY id DESC LIMIT 1", (int(pipeline["id"]),)).fetchone()
+    if r is None:
+        token = json.loads(pipeline["variables"] or "{}").get(ENTRY_VAR) or ""
+        if token and conn.execute("SELECT 1 FROM build_queue WHERE state = 'dispatching'"
+                                  " AND token = ?", (str(token),)).fetchone():
+            return "dispatching"
+        return None
+    return {"community": r["community"].strip().lower(),
+            "platform": _vars(json.loads(r["variables"])).get("PLATFORM", "")}
+
+
 def public(r, ahead=None):
     v = _vars(json.loads(r["variables"]))
     d = {k: r[k] for k in ("id", "batch", "community", "requested_by", "name", "target", "state",
