@@ -57,10 +57,6 @@ class StoreWriteError(Exception):
   pass
 
 
-class Refused(StoreWriteError):
-  """bits-store does not take this write there (no capability, no such binding)."""
-
-
 def restricted_statement(arch, pkg_hash, group, name, sha256_hex):
   """What bits-store signs for a restricted build (bits-store's restrictedStatement)."""
   return RESTRICTED_DOMAIN + json.dumps(
@@ -344,7 +340,7 @@ class BitsStoreSync(RemoteSync):
   def upload_symlinks_and_tarball(self, spec):
     """The revision marker, then the build; a build already stored is kept, and
     the sha256 of what the store holds recorded in store_tarball_sha256. False:
-    a restricted build bits-store does not take (kept on this host)."""
+    a restricted build bits-store did not store (kept on this host, as before)."""
     if not self.writeStore:
       return None
     arch = effective_arch(spec, self.architecture)
@@ -358,10 +354,11 @@ class BitsStoreSync(RemoteSync):
     try:
       sha = None if self._find_in(base, "HEAD", arch, spec["hash"], write=True)[0] else \
           self._upload(url, path, name=name)
-    except Refused as exc:
+    except StoreWriteError as exc:
       if base != self.restricted:
         raise
-      warning("%s: not stored, kept on this host (%s)", name, exc)   # no capability or binding there
+      # refused (no capability or binding), unsigned (the signer without its key), or down
+      warning("%s: not stored, kept on this host (%s)", name, exc)
       return False
     spec["store_tarball_sha256"] = sha or self._stored_sha256(base, arch, spec, name)
     return None
@@ -393,8 +390,6 @@ class BitsStoreSync(RemoteSync):
     r = self._ask("POST", url + "?uploads", body=start)
     if r is not None and r.status_code == 409:
       return None
-    if r is not None and r.status_code in (401, 403, 404):
-      raise Refused("%s: HTTP %d" % (url, r.status_code))     # no capability or binding there
     answer = _json(r, 201, url)
     puts = answer.get("parts") or [answer]
     # a build's upload is shown as its download is; in parts, each part said where

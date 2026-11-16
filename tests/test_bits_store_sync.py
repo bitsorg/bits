@@ -29,7 +29,7 @@ class Store(BaseHTTPRequestHandler):
   token other than "good" 401; /bucket/<hash> the bytes, refusing any token.
   /restricted/<arch>/<hash> likewise from private, for the token "good" only (403)."""
   builds, public, asked, cut, failing, bare, private = {}, False, [], False, 0, False, {}
-  group, sigs = "lhcb", {}                     # /restricted's Bits-Object-Group; signatures by hash
+  group, sigs, unsigned = "lhcb", {}, False     # /restricted's Bits-Object-Group; signatures by hash
   markers, meta, staged, busy, racer, put_fails = {}, {}, {}, 0, None, 0
   refused, failing_completes = "", 0           # refused: a path prefix answered 403
 
@@ -120,6 +120,8 @@ class Store(BaseHTTPRequestHandler):
       return self._json(401, {"error": "unauthorized"})
     if self.refused and self.path.startswith(self.refused):
       return self._json(403, {"error": "forbidden"})
+    if self.unsigned and self.path.startswith("/restricted/"):
+      return self._json(503, {"error": "unsigned"})       # its signer without its key
     path, _, query = self.path.partition("?")
     h = path.rsplit("/", 1)[1]
     kept = self.private if path.startswith("/restricted/") else self.builds
@@ -185,7 +187,7 @@ class Store(BaseHTTPRequestHandler):
 class StandIn(unittest.TestCase):
   def setUp(self):
     Store.builds, Store.public, Store.asked, Store.cut, Store.failing, Store.bare = {H2: (NAME, DATA)}, False, [], False, 0, False
-    Store.private, Store.group, Store.sigs = {}, "lhcb", {}
+    Store.private, Store.group, Store.sigs, Store.unsigned = {}, "lhcb", {}, False
     Store.markers, Store.meta, Store.staged, Store.busy, Store.racer, Store.put_fails = {}, {}, {}, 0, None, 0
     Store.refused, Store.failing_completes = "", 0
     p = patch("bits_helpers.bits_store_sync.time.sleep")
@@ -659,7 +661,10 @@ class RestrictedTest(StandIn):
     m = sync.MultiRemoteSync([w], [w, other])
     self.assertIs(m.upload_symlinks_and_tarball(spec), False)
     self.assertIn(H1, Store.private)             # the other has it
-    Store.refused = "/restricted"
+    Store.refused, Store.unsigned = "", True    # bits-store's signer without its key: kept here too
+    self.assertIs(w.upload_symlinks_and_tarball(self.built(h="4" * 40, revision="4", redistributable="none")), False)
+    self.assertNotIn("4" * 40, Store.private)
+    Store.unsigned = False
     Store.refused = "/store"                   # the store's refusal still fails the package
     with self.assertRaises(StoreWriteError):
       w.upload_symlinks_and_tarball(self.built(h="3" * 40, revision="3"))
