@@ -411,45 +411,61 @@ class GitSourcePatchTest(unittest.TestCase):
             return fh.read()
 
     def test_fresh_clone_is_patched(self):
-        self.assertEqual(self._read(self._checkout(), "hello.txt"), "hello patched\n")
+        """First build: the patch is applied after the clone."""
+        self.assertEqual(self._read(self._checkout(), "hello.txt"), "hello patched\n",
+                         "patch was not applied after cloning")
 
     def test_existing_checkout_is_patched_again(self):
+        """Rebuild: the reused checkout is reset and patched again."""
         self._checkout()
-        self.assertEqual(self._read(self._checkout(), "hello.txt"), "hello patched\n")
+        self.assertEqual(self._read(self._checkout(), "hello.txt"), "hello patched\n",
+                         "reused checkout was built without its patch")
 
     def test_a_file_a_patch_creates_stays_on_every_build(self):
-        for _ in range(3):
-            self.assertEqual(self._read(self._checkout(["new.patch"]), "new.txt"), "new\n")
+        """A file added by a patch is there on every build, not only the first."""
+        for build in range(1, 4):
+            self.assertEqual(self._read(self._checkout(["new.patch"]), "new.txt"), "new\n",
+                             "new.txt missing on build %d" % build)
 
     def test_a_file_from_a_dropped_patch_is_removed(self):
+        """Dropping a patch from the recipe also removes the file it added."""
         self._checkout(["hello.patch", "new.patch"])
         source_dir = self._checkout(["hello.patch"])
-        self.assertFalse(os.path.exists(os.path.join(source_dir, "new.txt")))
+        self.assertFalse(os.path.exists(os.path.join(source_dir, "new.txt")),
+                         "new.txt from the dropped patch is still there")
 
     def test_a_package_without_patches_gets_a_clean_tree(self):
+        """No patches: leftovers from the last build are still removed."""
         source_dir = self._checkout(())
         with open(os.path.join(source_dir, "leftover.txt"), "w") as fh:
             fh.write("from the last build\n")
         self._checkout(())
-        self.assertFalse(os.path.exists(os.path.join(source_dir, "leftover.txt")))
-        self.assertEqual(self._read(source_dir, "hello.txt"), "hello\n")
+        self.assertFalse(os.path.exists(os.path.join(source_dir, "leftover.txt")),
+                         "leftover.txt survived the rebuild")
+        self.assertEqual(self._read(source_dir, "hello.txt"), "hello\n",
+                         "the source itself was changed")
 
     def test_an_ignored_file_is_removed(self):
+        """Files matched by .gitignore (e.g. generated ones) are removed too."""
         source_dir = self._checkout()
         with open(os.path.join(source_dir, ".git", "info", "exclude"), "a") as fh:
             fh.write("*.gen\n")
         with open(os.path.join(source_dir, "configure.gen"), "w") as fh:
             fh.write("generated\n")
         self._checkout()
-        self.assertFalse(os.path.exists(os.path.join(source_dir, "configure.gen")))
+        self.assertFalse(os.path.exists(os.path.join(source_dir, "configure.gen")),
+                         "ignored file survived the rebuild (clean without -x?)")
 
     def test_a_nested_git_repository_is_kept(self):
+        """A nested repository, like a submodule, is left alone."""
         source_dir = self._checkout()
         sub = os.path.join(source_dir, "sub")
         subprocess.run(["git", "init", "-q", sub], check=True)
         with open(os.path.join(sub, "file.txt"), "w") as fh:
             fh.write("submodule\n")
         self._checkout()
+        self.assertTrue(os.path.exists(os.path.join(sub, "file.txt")),
+                        "nested repository was deleted (clean with -ff?)")
         self.assertEqual(self._read(sub, "file.txt"), "submodule\n")
 
 
