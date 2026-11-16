@@ -922,6 +922,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
       scm_exec(scm.fetchCmd(spec["source"], tag_ref), source_dir)
       scm_exec(scm.checkoutCmd(spec["tag"]), source_dir)
     _verify_commit_pin(scm, spec, source_dir, enforce_mode)
+    # clean even without patches, otherwise files added by a dropped patch stay around
     scm_exec(scm.cleanCmd(), source_dir)
     _stage_patches()
     _apply_patches(spec, source_dir)
