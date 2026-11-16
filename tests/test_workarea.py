@@ -426,6 +426,32 @@ class GitSourcePatchTest(unittest.TestCase):
         source_dir = self._checkout(["hello.patch"])
         self.assertFalse(os.path.exists(os.path.join(source_dir, "new.txt")))
 
+    def test_a_package_without_patches_gets_a_clean_tree(self):
+        source_dir = self._checkout(())
+        with open(os.path.join(source_dir, "leftover.txt"), "w") as fh:
+            fh.write("from the last build\n")
+        self._checkout(())
+        self.assertFalse(os.path.exists(os.path.join(source_dir, "leftover.txt")))
+        self.assertEqual(self._read(source_dir, "hello.txt"), "hello\n")
+
+    def test_an_ignored_file_is_removed(self):
+        source_dir = self._checkout()
+        with open(os.path.join(source_dir, ".git", "info", "exclude"), "a") as fh:
+            fh.write("*.gen\n")
+        with open(os.path.join(source_dir, "configure.gen"), "w") as fh:
+            fh.write("generated\n")
+        self._checkout()
+        self.assertFalse(os.path.exists(os.path.join(source_dir, "configure.gen")))
+
+    def test_a_nested_git_repository_is_kept(self):
+        source_dir = self._checkout()
+        sub = os.path.join(source_dir, "sub")
+        subprocess.run(["git", "init", "-q", sub], check=True)
+        with open(os.path.join(sub, "file.txt"), "w") as fh:
+            fh.write("submodule\n")
+        self._checkout()
+        self.assertEqual(self._read(sub, "file.txt"), "submodule\n")
+
 
 class SourceCheckoutValidityTest(unittest.TestCase):
     """_is_valid_source_checkout: a git source dir with no .git is not usable."""
