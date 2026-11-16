@@ -77,3 +77,13 @@ Sign a manifest and verify it:
 python3 -c 'from bits_helpers import trust; trust.sign_manifest("bits-manifest-latest.json","signing-key.pem")'
 python3 -c 'from bits_helpers import trust; print(trust.verify_manifest("bits-manifest-latest.json"))'
 ```
+
+## Restricted builds' keys
+
+`restricted/` holds the keys bits-store signs the builds it keeps in its private
+`/restricted` with (packages that may not be redistributed), made by bits-services'
+`make restricted-sign-key`. They vouch for those builds only and never for a
+manifest, and the manifest keys never for these; they are not enrolled in
+`key-policy.json`. `bits-store-key-26.0.pem` is CERN's (key id `512d56da4163ae97`).
+Without one, bits neither writes nor reads `/restricted`; other sites add theirs
+under `restricted/` of a `$BITS_TRUST_KEYS` directory or of `~/.config/bits/keys`.

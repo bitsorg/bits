@@ -206,6 +206,10 @@ class StandIn(unittest.TestCase):
     p.start()
     self.addCleanup(p.stop)
     self.work = os.path.join(self.tmp.name, "sw")
+    from bits_helpers import trust                # no restricted keys but a test's own
+    p = patch.object(trust, "default_trust_dirs", lambda: [os.path.join(self.tmp.name, "no-keys")])
+    p.start()
+    self.addCleanup(p.stop)
 
   def store(self):
     return BitsStoreSync(self.url, ARCH, self.work)
