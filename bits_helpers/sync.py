@@ -99,6 +99,12 @@ def binary_redistributable(spec) -> bool:
   return "binaries" in redistributable_forms(spec.get("redistributable"))
 
 
+def may_upload(sync_helper, spec) -> bool:
+  """Whether *spec*'s build may go to *sync_helper*'s write stores: any that may be
+  redistributed; the others only when every write store keeps them private."""
+  return binary_redistributable(spec) or (sync_helper is not None and sync_helper.stores_restricted())
+
+
 def sources_redistributable(spec) -> bool:
   """May this package's SOURCE archives be mirrored to the store?"""
   return "sources" in redistributable_forms(spec.get("redistributable"))
@@ -470,6 +476,18 @@ class RemoteSync:
     """Store tarball object names for an (architecture, hash), or []."""
     return []
 
+  def stores_restricted(self):
+    """Whether uploads keep a build that may not be redistributed private."""
+    return False
+
+  def stored_privately(self, arch, pkg_hash):
+    """Whether the build of (arch, hash) was found where it is kept private."""
+    return False
+
+  def verified_private(self, arch, pkg_hash):
+    """"sha256:<hex>" of a private build whose store signature verified on download, or None."""
+    return None
+
   def writestore_has_tarball(self, spec, architecture=None):
     """True iff *spec*'s content tarball already exists in the WRITE store.
 
@@ -577,6 +595,15 @@ class MultiRemoteSync(RemoteSync):
         return found
     return []
 
+  def stores_restricted(self):
+    return bool(self.writers) and all(w.stores_restricted() for w in self.writers)
+
+  def stored_privately(self, arch, pkg_hash):
+    return any(r.stored_privately(arch, pkg_hash) for r in self.readers)
+
+  def verified_private(self, arch, pkg_hash):
+    return next((v for v in (r.verified_private(arch, pkg_hash) for r in self.readers) if v), None)
+
   def writestore_has_tarball(self, spec, architecture=None):
     # Existence in EVERY write store — the readers are irrelevant to uploading.
     return bool(self.writers) and all(w.writestore_has_tarball(spec, architecture)
@@ -588,9 +615,10 @@ class MultiRemoteSync(RemoteSync):
       debug("Not uploading %s: recalled from a read store, not built this run.",
             spec.get("package", "?"))
       return None
-    first = None
+    first, kept = None, None
     for w in self.writers:                 # the manifest describes the first store's object
-      w.upload_symlinks_and_tarball(spec)
+      if w.upload_symlinks_and_tarball(spec) is False:
+        kept = False                       # a store did not take it: not all have it
       sha = spec.get("store_tarball_sha256")
       if first is None:
         first = sha
@@ -600,7 +628,7 @@ class MultiRemoteSync(RemoteSync):
                 spec.get("hash"), first, sha)
     if first is not None:
       spec["store_tarball_sha256"] = first
-    return None
+    return kept
 
   def upload_shell_command(self, spec):
     if self._was_recalled(spec):

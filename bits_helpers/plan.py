@@ -18,7 +18,7 @@ from glob import glob
 
 from bits_helpers.arch import effective_arch
 from bits_helpers.log import ProgressPrint, banner, debug
-from bits_helpers.sync import binary_redistributable
+from bits_helpers.sync import may_upload
 from bits_helpers.rev_index import revision_from_tarball
 from bits_helpers.utilities import is_virtual_package, resolve_store_path
 
@@ -101,6 +101,12 @@ def _local(spec, eff, work_dir, write_store):
   return None
 
 
+def _private(lister, arch, pkg_hash):
+  """A build found where the store keeps it private: its signature, not the signed
+  manifest, vouches for it (checked on download)."""
+  return bool(getattr(lister, "stored_privately", lambda a, h: False)(arch, pkg_hash))
+
+
 def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
              overlay=None, symlink=None):
   """Return (state, hash, revision) for *spec*, mirroring build_one_package.
@@ -134,7 +140,7 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
     for h in remote:
       rev = pick_revision(sync_helper.list_store_tarballs(eff, h), spec, eff, forced=forced)
       if rev is not None:
-        if trusted is not None and (eff, h) not in trusted:
+        if trusted is not None and (eff, h) not in trusted and not _private(sync_helper, eff, h):
           unsigned = (h, rev)
           break
         return REMOTE, h, rev
@@ -310,6 +316,9 @@ class _Listings:
     if self.kept is not None and self.trusted is not None and key in self.trusted:
       self.kept.put(key[0], key[1], names)
 
+  def stored_privately(self, arch, pkg_hash):
+    return self.helper.stored_privately(arch, pkg_hash)
+
   def list_store_tarballs(self, arch, pkg_hash):
     key = (arch, pkg_hash)
     if key not in self.cache:          # a hash the speculation did not foresee
@@ -455,7 +464,7 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
     states[p] = state
     if state == DEVEL:
       write_store = False   # the build disables uploads from here on (build.py)
-    if state in (BUILD, REMOTE_UNSIGNED) and write_store and not binary_redistributable(spec):
+    if state in (BUILD, REMOTE_UNSIGNED) and write_store and not may_upload(sync_helper, spec):
       unuploadable.add(p)
   if kept is not None:
     kept.save()

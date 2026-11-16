@@ -79,12 +79,15 @@ class TestRecorded(unittest.TestCase):
     def test_reasons(self):
         from bits_helpers import build
         from bits_helpers.sync import NoRemoteSync
-        store = SimpleNamespace(writeStore="b3://bucket")     # e.g. a CVMFS read + S3 write sync
+        store = SimpleNamespace(writeStore="b3://bucket",     # e.g. a CVMFS read + S3 write sync
+                                stores_restricted=lambda: False)
+        private = SimpleNamespace(writeStore="bits-store+https://h/store", stores_restricted=lambda: True)
         base = {"package": "P", "is_devel_pkg": False}
         cases = [
             (dict(base, is_devel_pkg=True), store, "development package"),
             (dict(base, force_rebuild=True), store, "forced rebuild"),
             (dict(base, redistributable="none"), store, "licence: never stored"),
+            (dict(base, redistributable="none"), private, "not found in the store"),
             (base, NoRemoteSync(), "no remote store"),
             (base, store, "not found in the store"),
         ]

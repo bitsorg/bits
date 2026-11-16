@@ -1890,14 +1890,14 @@ def _report_reuse(args, main_package, metrics_url, instance):
 
 def _rebuild_reason(spec, sync_helper):
   """Why a package with no tarball to reuse is built here, in a few words."""
-  from bits_helpers.sync import NoRemoteSync, binary_redistributable
+  from bits_helpers.sync import NoRemoteSync, may_upload
   if spec.get("is_devel_pkg"):
     return "development package"
   if spec.get("force_rebuild"):
     return "forced rebuild"
   if is_virtual_package(spec):
     return "never stored"
-  if not binary_redistributable(spec):
+  if not may_upload(sync_helper, spec):
     return "licence: never stored"
   if sync_helper is None or isinstance(sync_helper, NoRemoteSync):
     return "no remote store"
@@ -1920,26 +1920,25 @@ def doFinalSync(spec, specs, args, syncHelper):
   # trigger recipe-repo loading during resolution; they carry no publishable
   # artifacts and must NOT be pushed to the store (nor published to CVMFS). Skip
   # their upload the same way local-only builds are skipped.
-  from bits_helpers.sync import binary_redistributable
+  from bits_helpers.sync import may_upload
   if not spec["revision"].startswith("local") and not is_virtual_package(spec) \
-     and not binary_redistributable(spec):
-    # redistributable: sources|none (QGRAF, the CPC family, vendor EULAs …):
-    # the binary must not be uploaded — the store may be world-readable, and a
-    # "no redistribution" clause covers the binary form. The package is still
-    # built and usable locally; it just never leaves this host.
+     and not may_upload(syncHelper, spec):
+    # redistributable: sources|none (QGRAF, the CPC family, vendor EULAs …): never
+    # to a store that may be world-readable, only to one keeping it private
+    # (bits-store's /restricted); else it never leaves this host.
     if getattr(syncHelper, "writeStore", ""):
       package_info("%s: not uploaded (redistributable: %s)", package_label(spec),
                    spec.get("redistributable"))
   elif not spec["revision"].startswith("local") and not is_virtual_package(spec):
-    syncHelper.upload_symlinks_and_tarball(spec)
-    if getattr(syncHelper, "writeStore", ""):     # the store has it: prune may drop the local copy
+    stored = syncHelper.upload_symlinks_and_tarball(spec) is not False   # False: kept here
+    if stored and getattr(syncHelper, "writeStore", ""):  # the store has it: prune may drop the local copy
       from bits_helpers.arch import effective_arch as _store_arch
       from bits_helpers.cleanup import mark_in_store
       mark_in_store(args.workDir, _store_arch(spec, args.architecture), spec["hash"])
     # Log (info level) that a freshly built tarball was pushed to the write store.
     # Reused packages (cachedTarball) are already there and were marked
     # "[from store]" at build time, so they are skipped here.
-    if getattr(syncHelper, "writeStore", "") and not spec.get("cachedTarball"):
+    if stored and getattr(syncHelper, "writeStore", "") and not spec.get("cachedTarball"):
       package_info("%s: uploaded", package_label(spec))
     # Record the tarball's SHA-256 in the local integrity ledger so that
     # future recalls from the store can be verified against it.
@@ -2705,11 +2704,11 @@ def build_one_package(p, ctx):
       # it. upload_symlinks_and_tarball HEAD-skips when the object already exists,
       # so this is a cheap no-op in the common case. Guards mirror doFinalSync
       # (skip local revisions, repository packages, non-redistributable binaries).
-      from bits_helpers.sync import binary_redistributable
+      from bits_helpers.sync import may_upload
       if getattr(syncHelper, "writeStore", "") \
          and not spec["revision"].startswith("local") \
          and not spec.get("provides_repository") \
-         and binary_redistributable(spec):
+         and may_upload(syncHelper, spec):
         _eff_arch = effective_arch(spec, args.architecture)
         _tarname  = "%s-%s.%s.tar.gz" % (spec["package"], ver_rev(spec), _eff_arch)
         _local_tar = os.path.join(workDir, resolve_store_path(_eff_arch, spec["hash"]), _tarname)
@@ -2855,7 +2854,9 @@ def build_one_package(p, ctx):
     if (spec["cachedTarball"] and cfg.require_signed_reuse
         and spec["cachedTarball"] not in _preFetchTars):
       _idx = trusted_reuse_index(args, workDir)
-      _sha = _idx.get((effective_arch(spec, args.architecture), spec["hash"]))
+      _key = (effective_arch(spec, args.architecture), spec["hash"])
+      # a restricted build: vouched for by bits-store's signature, checked on download
+      _sha = _idx.get(_key) or syncHelper.verified_private(*_key)
       if _sha is None:
         warning("Trusted reuse: %s@%s not vouched for by the signed manifest; "
                 "discarding remote tarball and rebuilding.",

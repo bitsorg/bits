@@ -99,6 +99,13 @@ def load_trusted_keys(dirs=None) -> dict:
   return trusted
 
 
+def load_restricted_keys(dirs=None) -> dict:
+  """{key_id: pub} that sign bits-store's restricted builds: the keys under each
+  trust dir's restricted/, never taken for manifests (nor theirs for these)."""
+  return load_trusted_keys([os.path.join(d, "restricted")
+                            for d in (dirs if dirs is not None else default_trust_dirs())])
+
+
 def sign_bytes(data: bytes, priv: Ed25519PrivateKey) -> dict:
   """Detached signature envelope over *data*."""
   sig = priv.sign(data)

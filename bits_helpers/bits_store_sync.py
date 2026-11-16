@@ -9,11 +9,16 @@ to the redirect; a token the store does not take reads as anyone.
 
 As a write store it uploads through bits-store: the revision marker under the
 service's /MANIFESTS, then the build, staged and promoted once (first writer wins).
+A build that may not be redistributed goes to the service's /restricted, which
+bits-store keeps private (for the token's community) and signs; with a token and a
+key under the trust dirs' restricted/, reads try it too, and keep a build from it
+only when its signature verifies over the bytes downloaded.
 """
 
 import base64
 import hashlib
 import io
+import json
 import os
 import re
 import sys
@@ -28,10 +33,13 @@ from bits_helpers.arch import effective_arch
 from bits_helpers.log import debug, info, warning, dieOnError, ProgressPrint
 from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
 from bits_helpers.source_store import store_token
-from bits_helpers.sync import RemoteSync
+from bits_helpers.sync import RemoteSync, binary_redistributable
 from bits_helpers.utilities import resolve_store_path, ver_rev
 
 SCHEME = "bits-store+"
+RESTRICTED = "restricted"  # at the service's root: builds that may not be redistributed
+RESTRICTED_DOMAIN = b"bits-restricted-build v1\n"   # what bits-store's signature covers first
+_GROUP = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 TRIES = 3                  # a network failure, 5xx or 429 is tried again; a 404 never
 _NAME = re.compile(r"[A-Za-z0-9._~+!@=,:-]{1,255}")   # bits-store's path rules
 _REDIRECTS = (301, 302, 303, 307, 308)
@@ -42,10 +50,22 @@ _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 ONE_PUT = 5 << 30          # bits-store's most for one PUT; larger in parts of PART
 PART = 1 << 30
 BUSY_WAIT = 10             # seconds between completes while another promote runs
+_UNSIGNED = "its signature does not verify"
 
 
 class StoreWriteError(Exception):
   pass
+
+
+class Refused(StoreWriteError):
+  """bits-store does not take this write there (no capability, no such binding)."""
+
+
+def restricted_statement(arch, pkg_hash, group, name, sha256_hex):
+  """What bits-store signs for a restricted build (bits-store's restrictedStatement)."""
+  return RESTRICTED_DOMAIN + json.dumps(
+      {"arch": arch, "group": group, "hash": pkg_hash, "name": name, "sha256": sha256_hex},
+      sort_keys=True, separators=(",", ":")).encode()
 
 
 class BitsStoreSync(RemoteSync):
@@ -55,6 +75,7 @@ class BitsStoreSync(RemoteSync):
     self.base = remoteStore[len(SCHEME):].rstrip("/")
     u = requests.utils.urlparse(self.base)
     self.root = "%s://%s" % (u.scheme, u.netloc)     # the service's, for its /MANIFESTS
+    self.restricted = "%s/%s" % (self.root, RESTRICTED)
     self.writeStore = remoteStore if writable else ""
     self.architecture = architecture
     self.workdir = workdir
@@ -65,6 +86,10 @@ class BitsStoreSync(RemoteSync):
                "%s takes uploads with a store token only (bits login; over https)" % self.base)
     self._local = threading.local()      # a session per thread: the plan asks from 16
     self._lock = threading.Lock()
+    self._private = {}                   # (arch, hash) -> the group whose /restricted build it is
+    self._verified = {}                  # (arch, hash) -> "sha256:<hex>" of one whose signature verified
+    self._restricted_refused = False     # the token may not read /restricted: not asked again
+    self._restricted_keys = None
 
   def probe_url(self):
     return self.base
@@ -74,14 +99,14 @@ class BitsStoreSync(RemoteSync):
       self._local.session = requests.Session()
     return self._local.session
 
-  def _ask(self, method, url, body=None, content=False, timeout=None):
+  def _ask(self, method, url, body=None, content=False, timeout=None, write=False):
     """bits-store's answer to *method* on *url*, tried again on failures; the token
     dropped, once said, when bits-store does not take it for a package read. A write
-    (*body*, JSON) and *content* read the answer's body."""
+    (*body*, JSON) and *content* read the answer's body; *write*: a read for one."""
     for attempt in range(TRIES):
       if attempt:
         time.sleep(0.5 * 2 ** attempt)
-      token = self.write_token if body is not None else self.token
+      token = self.write_token if body is not None or write else self.token
       headers = {"Authorization": "Bearer " + token} if token else {}
       try:
         # GET for a GET-signed redirect (presigned URLs sign their method); a read
@@ -89,7 +114,7 @@ class BitsStoreSync(RemoteSync):
         with self._session().request(method, url, headers=headers, json=body, allow_redirects=False,
                                      stream=body is None and not content, timeout=timeout or self.timeout,
                                      verify=self.verify) as r:
-          if r.status_code in (401, 403) and headers and body is None and url.startswith(self.base + "/"):
+          if r.status_code in (401, 403) and headers and body is None and not write and url.startswith(self.base + "/"):
             with self._lock:                 # said once, whatever thread asks first
               if self.token:
                 warning("%s does not take your store token (bits login?): reading as anyone", self.base)
@@ -102,18 +127,85 @@ class BitsStoreSync(RemoteSync):
         debug("%s: %s", url, exc)
     return None
 
+  def _keys(self):
+    """The keys bits-store signs restricted builds with ({} without cryptography):
+    none, and /restricted is neither read nor written (nothing could be reused)."""
+    if self._restricted_keys is None:
+      try:
+        from bits_helpers.trust import load_restricted_keys
+        self._restricted_keys = load_restricted_keys()
+      except Exception as exc:  # pylint: disable=broad-except
+        debug("restricted keys: %s", exc)
+        self._restricted_keys = {}
+    return self._restricted_keys
+
+  def stores_restricted(self):
+    """Uploads keep a build that may not be redistributed private (/restricted)."""
+    return bool(self.writeStore) and bool(self._keys())
+
+  def stored_privately(self, arch, pkg_hash):
+    """The build of *pkg_hash* was found in /restricted (its signature checked on download)."""
+    return (arch, pkg_hash) in self._private
+
+  def verified_private(self, arch, pkg_hash):
+    """"sha256:<hex>" of the /restricted build downloaded with a valid signature, or None."""
+    return self._verified.get((arch, pkg_hash))
+
   def _find(self, method, arch, pkg_hash):
     """(file name, redirect) of the build of *pkg_hash*, or (None, None)."""
-    url = "%s/%s/%s" % (self.base, arch, pkg_hash)
-    r = self._ask(method, url)
+    return self._locate(method, arch, pkg_hash)[:2]
+
+  def _locate(self, method, arch, pkg_hash, private_first=False):
+    """(name, redirect, group) of the build of *pkg_hash*: the store's (group None),
+    or with a token (and the keys to check them) /restricted's, after the store
+    or before for one that may not be redistributed; (None, None, None) if none."""
+    areas = [self.base]
+    if self.token and not self._restricted_refused and self._keys():
+      areas.insert(0 if private_first else 1, self.restricted)
+    for base in areas:
+      name, location, group = self._find_in(base, method, arch, pkg_hash)
+      if name:
+        if base != self.restricted:
+          return name, location, None
+        self._private[(arch, pkg_hash)] = group
+        return name, location, group
+    return None, None, None
+
+  def _find_in(self, base, method, arch, pkg_hash, write=False):
+    """(name, redirect, group) of the build under *base*; the group of /restricted's
+    (where its signature was made), else ""."""
+    url = "%s/%s/%s" % (base, arch, pkg_hash)
+    r = self._ask(method, url, write=write)
+    private = base == self.restricted
+    if r is not None and r.status_code in (401, 403) and private and not write:
+      with self._lock:
+        if not self._restricted_refused:
+          debug("%s: the store token may not read it (%d): not asked again", self.restricted, r.status_code)
+          self._restricted_refused = True
     if r is None or r.status_code not in _REDIRECTS or not r.headers.get("Location"):
       debug("%s: %s", url, r.status_code if r is not None else "no answer")   # 404: not stored
-      return None, None
-    name = r.headers.get("Bits-Object-Name", "")
+      return None, None, ""
+    name, group = r.headers.get("Bits-Object-Name", ""), r.headers.get("Bits-Object-Group", "")
     if not _NAME.fullmatch(name) or name in (".", "..") or not name.endswith("." + arch + ".tar.gz"):
       debug("%s: ignoring the unsafe or foreign name %r", url, name)   # never a path outside
-      return None, None
-    return name, requests.compat.urljoin(url, r.headers["Location"])
+      return None, None, ""
+    if private and not _GROUP.fullmatch(group):
+      debug("%s: no group named: not one to verify", url)
+      return None, None, ""
+    return name, requests.compat.urljoin(url, r.headers["Location"]), group if private else ""
+
+  def _vouch(self, arch, pkg_hash, group, name, sha256_hex, signature):
+    """Whether bits-store's *signature* ("<key id>:<base64>") of the restricted build
+    verifies with a key under the trust dirs' restricted/."""
+    kid, _, sig = str(signature or "").partition(":")
+    pub = self._keys().get(kid)
+    try:
+      pub.verify(base64.b64decode(sig, validate=True),
+                 restricted_statement(arch, pkg_hash, group, name, sha256_hex))
+    except Exception:     # no such key, not base64, not the signature: never kept
+      return False
+    self._verified[(arch, pkg_hash)] = "sha256:" + sha256_hex
+    return True
 
   def list_store_tarballs(self, arch, pkg_hash):
     """The name of the build of *pkg_hash*, as a one-item list, or []."""
@@ -131,14 +223,18 @@ class BitsStoreSync(RemoteSync):
         debug("Previously downloaded tarball for %s with hash %s, reusing", spec["package"], pkg_hash)
         return
     for pkg_hash in spec["remote_hashes"]:
-      name, location = self._find("GET", arch, pkg_hash)
+      name, location, group = self._locate("GET", arch, pkg_hash, private_first=not binary_redistributable(spec))
       if name and pattern.match(name):
-        self._download(location, os.path.join(self.workdir, resolve_store_path(arch, pkg_hash)), name, spec)
+        check = None if group is None else (
+            lambda sha, sig, h=pkg_hash: self._vouch(arch, h, group, name, sha, sig))
+        self._download(location, os.path.join(self.workdir, resolve_store_path(arch, pkg_hash)),
+                       name, spec, check)
         return
     debug("Nothing fetched for %s (%s)", spec["package"], ", ".join(spec["remote_hashes"]))
 
-  def _download(self, location, directory, name, spec):
-    """The build at *location* into *directory*/*name*, whole or not at all."""
+  def _download(self, location, directory, name, spec, check=None):
+    """The build at *location* into *directory*/*name*, whole or not at all; with
+    *check(sha256 hex, signature)*, only when it says yes."""
     os.makedirs(directory, exist_ok=True)
     dest = os.path.join(directory, name)
     progress = ProgressPrint("Downloading tarball for %s@%s" % (spec["package"], spec["version"]),
@@ -147,31 +243,35 @@ class BitsStoreSync(RemoteSync):
     for attempt in range(TRIES):
       if attempt:
         time.sleep(0.5 * 2 ** attempt)
-      why = self._get(location, dest, progress)
+      why = self._get(location, dest, progress, check)
       if not why:
         progress.end("done")
         return
-      if why.startswith("HTTP 4"):
+      if why.startswith("HTTP 4") or why == _UNSIGNED:
         break                                  # the redirect expired or was refused
     progress.end("failed", error=True)
     warning("%s: download failed (%s); it will be built", name, why)
 
-  def _get(self, location, dest, progress):
-    """"" once *location* is in *dest*, else why not; never a partial file."""
+  def _get(self, location, dest, progress, check=None):
+    """"" once *location* is in *dest* (and *check* says yes), else why not; never a
+    partial or unchecked file."""
     tmp = "%s.%d.%s.part" % (dest, os.getpid(), os.urandom(4).hex())
     try:
       with self._session().get(location, stream=True, timeout=self.timeout, verify=self.verify) as r:
         if r.status_code != 200:
           return "HTTP %d" % r.status_code
-        size, want = 0, r.headers.get("Content-Length")
+        size, want, sha = 0, r.headers.get("Content-Length"), hashlib.sha256()
         with open(tmp, "wb") as f:
           for chunk in r.raw.stream(1 << 20, decode_content=False):   # the bytes as stored
             f.write(chunk)
+            sha.update(chunk)
             size += len(chunk)
             if want:
               progress("[%.0f%%] downloaded...", 100 * size / max(int(want), 1))
         if want is not None and size != int(want):
           return "%d of %s bytes" % (size, want)
+        if check is not None and not check(sha.hexdigest(), r.headers.get("x-amz-meta-bits-signature")):
+          return _UNSIGNED
         os.replace(tmp, dest)
         return ""
     except _FAILED as exc:
@@ -231,25 +331,40 @@ class BitsStoreSync(RemoteSync):
     """*data* as the object *key*: True when written, False when the name is taken."""
     return self._upload("%s/%s" % (self.root, key), data=data) is not None
 
+  def _area(self, spec):
+    """Where *spec*'s build goes: the store, or /restricted when it may not be redistributed."""
+    return self.base if binary_redistributable(spec) else self.restricted
+
   def writestore_has_tarball(self, spec, architecture=None):
     if not self.writeStore:
       return False
-    return bool(self.list_store_tarballs(effective_arch(spec, architecture or self.architecture), spec["hash"]))
+    arch = effective_arch(spec, architecture or self.architecture)
+    return bool(self._find_in(self._area(spec), "HEAD", arch, spec["hash"], write=True)[0])
 
-  def upload_symlinks_and_tarball(self, spec) -> None:
+  def upload_symlinks_and_tarball(self, spec):
     """The revision marker, then the build; a build already stored is kept, and
-    the sha256 of what the store holds recorded in store_tarball_sha256."""
+    the sha256 of what the store holds recorded in store_tarball_sha256. False:
+    a restricted build bits-store does not take (kept on this host)."""
     if not self.writeStore:
-      return
+      return None
     arch = effective_arch(spec, self.architecture)
     name = "{}-{}.{}.tar.gz".format(spec["package"], ver_rev(spec), arch)
     if not (_NAME.fullmatch(name) and _NAME.fullmatch(spec["version"]) and _HASH.fullmatch(spec["hash"])):
       raise StoreWriteError("%s (%s): not a name bits-store takes" % (name, spec["hash"]))
     self.write_rev_marker(spec, arch)
     path = os.path.join(self.workdir, resolve_store_path(arch, spec["hash"]), name)
-    url = "%s/%s/%s" % (self.base, arch, spec["hash"])
-    sha = None if self.list_store_tarballs(arch, spec["hash"]) else self._upload(url, path, name=name)
-    spec["store_tarball_sha256"] = sha or self._stored_sha256(arch, spec, name)
+    base = self._area(spec)
+    url = "%s/%s/%s" % (base, arch, spec["hash"])
+    try:
+      sha = None if self._find_in(base, "HEAD", arch, spec["hash"], write=True)[0] else \
+          self._upload(url, path, name=name)
+    except Refused as exc:
+      if base != self.restricted:
+        raise
+      warning("%s: not stored, kept on this host (%s)", name, exc)   # no capability or binding there
+      return False
+    spec["store_tarball_sha256"] = sha or self._stored_sha256(base, arch, spec, name)
+    return None
 
   def write_rev_marker(self, spec, arch):
     """This build's write-once revision marker; one taken by another hash stops a
@@ -278,6 +393,8 @@ class BitsStoreSync(RemoteSync):
     r = self._ask("POST", url + "?uploads", body=start)
     if r is not None and r.status_code == 409:
       return None
+    if r is not None and r.status_code in (401, 403, 404):
+      raise Refused("%s: HTTP %d" % (url, r.status_code))     # no capability or binding there
     answer = _json(r, 201, url)
     puts = answer.get("parts") or [answer]
     # a build's upload is shown as its download is; in parts, each part said where
@@ -332,10 +449,10 @@ class BitsStoreSync(RemoteSync):
         why = str(exc) or type(exc).__name__
     raise StoreWriteError("upload: %s" % why)
 
-  def _stored_sha256(self, arch, spec, name):
-    """The sha256 of the build bits-store holds for the hash: the one its writer
-    recorded, else of its bytes."""
-    stored, location = self._find("GET", arch, spec["hash"])
+  def _stored_sha256(self, base, arch, spec, name):
+    """The sha256 of the build bits-store holds for the hash under *base*: the one
+    its writer recorded, else of its bytes."""
+    stored, location, _ = self._find_in(base, "GET", arch, spec["hash"], write=True)
     if not location:
       raise StoreWriteError("%s/%s: stored, but bits-store does not return it" % (arch, spec["hash"]))
     if stored != name:

@@ -26,8 +26,10 @@ DATA = b"a build"
 
 class Store(BaseHTTPRequestHandler):
   """/store/<arch>/<hash>: 302 to /bucket/<hash> with the name, 404 if absent; a
-  token other than "good" 401; /bucket/<hash> the bytes, refusing any token."""
-  builds, public, asked, cut, failing, bare = {}, False, [], False, 0, False
+  token other than "good" 401; /bucket/<hash> the bytes, refusing any token.
+  /restricted/<arch>/<hash> likewise from private, for the token "good" only (403)."""
+  builds, public, asked, cut, failing, bare, private = {}, False, [], False, 0, False, {}
+  group, sigs = "lhcb", {}                     # /restricted's Bits-Object-Group; signatures by hash
   markers, meta, staged, busy, racer, put_fails = {}, {}, {}, 0, None, 0
   refused, failing_completes = "", 0           # refused: a path prefix answered 403
 
@@ -62,12 +64,16 @@ class Store(BaseHTTPRequestHandler):
       return
     if self.path.startswith("/bucket/"):
       h = self.path[len("/bucket/"):]
-      build = self.builds.get(h)
+      private = h.startswith("p")                         # /restricted's builds: /bucket/p<hash>
+      h = h[1:] if private else h
+      build = (self.private if private else self.builds).get(h)
       if auth or build is None:
         return self._answer(400 if auth else 404)
       self.send_response(200)
       if h in self.meta:
         self.send_header("x-amz-meta-sha256", self.meta[h])
+      if private and h in self.sigs:
+        self.send_header("x-amz-meta-bits-signature", self.sigs[h])
       self.send_header("Content-Length", str(len(build[1]) + (5 if self.cut else 0)))
       self.end_headers()
       if body:
@@ -80,14 +86,19 @@ class Store(BaseHTTPRequestHandler):
       return self._answer(403)                 # taken, but not for this path
     if auth not in (None, "Bearer good") or auth is None and not self.public:
       return self._answer(401)
-    arch, _, h = self.path[len("/store/"):].partition("/")
-    build = self.builds.get(h) if arch == ARCH else None
+    area, _, rest = self.path[1:].partition("/")
+    if area == "restricted" and (auth != "Bearer good" or self.refused == "/restricted"):
+      return self._answer(403)                 # no capability there
+    arch, _, h = rest.partition("/")
+    build = (self.private if area == "restricted" else self.builds).get(h) if arch == ARCH else None
     if build is None:
       return self._answer(404)
     self.send_response(302)
     if not self.bare:
-      self.send_header("Location", "/bucket/" + h)
+      self.send_header("Location", "/bucket/" + ("p" if area == "restricted" else "") + h)
       self.send_header("Bits-Object-Name", build[0])
+      if area == "restricted" and self.group:
+        self.send_header("Bits-Object-Group", self.group)
     self.send_header("Content-Length", "0")
     self.end_headers()
 
@@ -111,7 +122,8 @@ class Store(BaseHTTPRequestHandler):
       return self._json(403, {"error": "forbidden"})
     path, _, query = self.path.partition("?")
     h = path.rsplit("/", 1)[1]
-    taken = (lambda: h in self.builds) if path.startswith("/store/") else (lambda: path[1:] in self.markers)
+    kept = self.private if path.startswith("/restricted/") else self.builds
+    taken = (lambda: h in kept) if path.startswith(("/store/", "/restricted/")) else (lambda: path[1:] in self.markers)
     if query == "uploads":
       if taken():
         return self._json(409, {"error": "exists"})
@@ -136,8 +148,8 @@ class Store(BaseHTTPRequestHandler):
     data = b"".join(up["parts"][n] for n in sorted(up["parts"]))
     if len(data) != up["body"]["size"] or hashlib.sha256(data).hexdigest() != up["body"]["sha256"]:
       return self._json(422, {"error": "mismatch"})
-    if path.startswith("/store/"):
-      Store.builds[h], Store.meta[h] = (up["body"]["name"], data), "sha256:" + up["body"]["sha256"]
+    if path.startswith(("/store/", "/restricted/")):
+      kept[h], Store.meta[h] = (up["body"]["name"], data), "sha256:" + up["body"]["sha256"]
     else:
       Store.markers[path[1:]] = data.decode()
     return self._json(201, {})
@@ -173,6 +185,7 @@ class Store(BaseHTTPRequestHandler):
 class StandIn(unittest.TestCase):
   def setUp(self):
     Store.builds, Store.public, Store.asked, Store.cut, Store.failing, Store.bare = {H2: (NAME, DATA)}, False, [], False, 0, False
+    Store.private, Store.group, Store.sigs = {}, "lhcb", {}
     Store.markers, Store.meta, Store.staged, Store.busy, Store.racer, Store.put_fails = {}, {}, {}, 0, None, 0
     Store.refused, Store.failing_completes = "", 0
     p = patch("bits_helpers.bits_store_sync.time.sleep")
@@ -486,6 +499,204 @@ class BitsStoreWriteTest(StandIn):
     self.assertEqual(self.store().read_rev_markers("zlib", "../v1.3", ARCH), {})
     s = BitsStoreSync("bits-store+http://127.0.0.1:9/store", ARCH, self.work, timeout=(1, 1))
     self.assertEqual(s.read_rev_markers("zlib", "v1.3", ARCH), {})
+
+
+class RestrictedTest(StandIn):
+  """Builds that may not be redistributed: bits-store's /restricted, with a token,
+  reused only when bits-store's signature verifies over the bytes downloaded."""
+  built = BitsStoreWriteTest.built
+
+  def setUp(self):
+    super().setUp()
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from bits_helpers import trust
+    self.key = Ed25519PrivateKey.generate()
+    keys = os.path.join(self.tmp.name, "keys")
+    os.makedirs(os.path.join(keys, "restricted"))
+    with open(os.path.join(keys, "restricted", "store.pem"), "wb") as f:
+      f.write(self.key.public_key().public_bytes(serialization.Encoding.PEM,
+                                                 serialization.PublicFormat.SubjectPublicKeyInfo))
+    p = patch.object(trust, "default_trust_dirs", lambda: [keys])
+    p.start()
+    self.addCleanup(p.stop)
+    self.kid = trust.key_id(self.key.public_key())
+
+  def sign(self, h=H2, data=DATA, group="lhcb", name=NAME, key=None):
+    """bits-store's signature of the restricted build of *h*."""
+    sha = hashlib.sha256(data).hexdigest()
+    sig = (key or self.key).sign(bits_store_sync.restricted_statement(ARCH, h, group, name, sha))
+    return "%s:%s" % (self.kid, base64.b64encode(sig).decode())
+
+  def test_its_keys_sign_nothing_else(self):
+    from bits_helpers import trust
+    self.assertIn(self.kid, trust.load_restricted_keys())
+    self.assertNotIn(self.kid, trust.load_trusted_keys())          # never a manifest's
+
+  def test_the_statement_is_bits_stores(self):
+    # bits-store's TestTheRestrictedStatement: the same bytes
+    self.assertEqual(bits_store_sync.restricted_statement(
+        "x86_64-el9", "ab12", "a.b_c-d", "Aa0._~+!@=,:-1.0-1.x86_64-el9.tar.gz", "ff"),
+        b"bits-restricted-build v1\n" + b'{"arch":"x86_64-el9","group":"a.b_c-d","hash":"ab12",'
+        b'"name":"Aa0._~+!@=,:-1.0-1.x86_64-el9.tar.gz","sha256":"ff"}')
+
+  def test_read_after_the_store_with_a_token(self):
+    Store.builds, Store.private, Store.sigs = {}, {H2: (NAME, DATA)}, {H2: self.sign()}
+    store = self.store()
+    store.fetch_tarball(self.spec(H2))
+    self.assertEqual(self.stored(), DATA)
+    self.assertEqual([p for m, p, _ in Store.asked if m == "GET" and not p.startswith("/bucket/")],
+                     ["/store/%s/%s" % (ARCH, H2), "/restricted/%s/%s" % (ARCH, H2)])
+    self.assertTrue(store.stored_privately(ARCH, H2))
+    self.assertEqual(store.verified_private(ARCH, H2), "sha256:" + hashlib.sha256(DATA).hexdigest())
+    m = sync.MultiRemoteSync([sync.RemoteSync(), store], [])
+    self.assertEqual(m.verified_private(ARCH, H2), store.verified_private(ARCH, H2))
+    self.assertTrue(m.stored_privately(ARCH, H2))
+
+  def test_never_kept_unless_its_signature_verifies(self):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    swapped = b"swapped bytes"
+    for why, sig, group, data in (
+        ("none", None, "lhcb", DATA),
+        ("other bytes", self.sign(), "lhcb", swapped),
+        ("another group's", self.sign(group="atlas"), "lhcb", DATA),     # copied into lhcb's folder
+        ("no group said", self.sign(group=""), "", DATA),
+        ("another key", self.sign(key=Ed25519PrivateKey.generate()), "lhcb", DATA),
+        ("not base64", self.kid + ":%%%", "lhcb", DATA)):
+      with self.subTest(why):
+        Store.builds, Store.private, Store.group = {}, {H2: (NAME, data)}, group
+        Store.sigs = {H2: sig} if sig else {}
+        store = self.store()
+        store.fetch_tarball(self.spec(H2))
+        self.assertIsNone(self.stored(), why)
+        self.assertIsNone(store.verified_private(ARCH, H2))
+
+  def test_a_bad_signature_is_not_downloaded_again(self):
+    Store.builds, Store.private, Store.sigs = {}, {H2: (NAME, DATA)}, {H2: self.sign(data=b"other")}
+    self.store().fetch_tarball(self.spec(H2))
+    self.assertEqual(len([p for m, p, _ in Store.asked if m == "GET" and p.startswith("/bucket/")]), 1)
+
+  def test_without_its_keys_never_used(self):
+    from bits_helpers import trust
+    Store.builds, Store.private, Store.sigs = {}, {H2: (NAME, DATA)}, {H2: self.sign()}
+    for why, keys in (("no key", lambda: {}), ("no cryptography", lambda: (_ for _ in ()).throw(ImportError("x")))):
+      with self.subTest(why), patch.object(trust, "load_restricted_keys", keys):
+        Store.asked = []
+        store, w = self.store(), BitsStoreSync(self.url, ARCH, self.work, writable=True)
+        store.fetch_tarball(self.spec(H2))
+        self.assertIsNone(self.stored())
+        self.assertFalse([p for _, p, _ in Store.asked if p.startswith("/restricted/")])
+        self.assertFalse(w.stores_restricted())
+    # a manifest key (a trust dir's own) vouches for nothing restricted
+    with patch.object(trust, "load_restricted_keys", lambda: {}), \
+         patch.object(trust, "load_trusted_keys", lambda *a: {self.kid: self.key.public_key()}):
+      self.store().fetch_tarball(self.spec(H2))
+    self.assertIsNone(self.stored())
+
+  def test_one_not_to_be_redistributed_is_looked_for_there_first(self):
+    Store.builds, Store.private, Store.sigs = {H2: (NAME, b"public")}, {H2: (NAME, DATA)}, {H2: self.sign()}
+    self.store().fetch_tarball(dict(self.spec(H2), redistributable="none"))
+    self.assertEqual(self.stored(), DATA)
+
+  def test_a_readers_build_by_its_group(self):
+    Store.builds, Store.private, Store.group = {}, {H2: (NAME, DATA)}, "atlas"   # lhcb reads atlas's
+    Store.sigs = {H2: self.sign(group="atlas")}
+    self.store().fetch_tarball(self.spec(H2))
+    self.assertEqual(self.stored(), DATA)
+
+  def test_never_asked_without_a_token(self):
+    Store.builds, Store.private, Store.public = {}, {H2: (NAME, DATA)}, True
+    os.unlink(self.token)
+    self.store().fetch_tarball(self.spec(H2))
+    self.assertIsNone(self.stored())
+    self.assertFalse([p for _, p, _ in Store.asked if p.startswith("/restricted/")])
+
+  def test_a_token_without_it_asks_once(self):
+    Store.builds, Store.private, Store.refused = {H1: (NAME, DATA)}, {H2: (NAME, DATA)}, "/restricted"
+    store = self.store()                     # a member's token: no /restricted capability
+    self.assertEqual(store.list_store_tarballs(ARCH, H2), [])
+    self.assertEqual(store.list_store_tarballs(ARCH, "3" * 40), [])
+    asked = [(p, a) for _, p, a in Store.asked if p.startswith("/restricted/")]
+    self.assertEqual(asked, [("/restricted/%s/%s" % (ARCH, H2), "Bearer good")])   # refused once
+    self.assertEqual(store.list_store_tarballs(ARCH, H1), [NAME])
+    self.assertEqual(Store.asked[-1][2], "Bearer good")   # the store still with it
+
+  def test_uploaded_there_and_only_there(self):
+    w = BitsStoreSync(self.url, ARCH, self.work, writable=True)
+    Store.builds = {}
+    spec = self.built(redistributable="none")
+    self.assertIsNone(w.upload_symlinks_and_tarball(spec))
+    self.assertIn(H1, Store.private)
+    self.assertNotIn(H1, Store.builds)
+    self.assertEqual(Store.markers, {"MANIFESTS/rev-index/%s/zlib/v1.3-2" % ARCH: H1})
+    self.assertEqual(spec["store_tarball_sha256"], Store.meta[H1])
+    self.assertTrue(w.writestore_has_tarball(spec))
+    public = self.built(h=H2, revision="3")      # one that may be: the store, not /restricted
+    self.assertFalse(w.writestore_has_tarball(public))
+    w.upload_symlinks_and_tarball(public)
+    self.assertIn(H2, Store.builds)
+    self.assertNotIn(H2, Store.private)
+
+  def test_a_build_now_public_goes_to_the_store(self):
+    # redistributable is not in the hash: a build in /restricted is still uploaded to the store
+    w = BitsStoreSync(self.url, ARCH, self.work, writable=True)
+    Store.builds, Store.private = {}, {H1: ("zlib-v1.3-2.%s.tar.gz" % ARCH, BUILT)}
+    w.upload_symlinks_and_tarball(self.built())
+    self.assertIn(H1, Store.builds)
+
+  def test_a_refused_upload_keeps_it_here(self):
+    w = BitsStoreSync(self.url, ARCH, self.work, writable=True)
+    Store.refused = "/restricted"              # a person's token, or no such binding
+    spec = self.built(redistributable="none")
+    self.assertIs(w.upload_symlinks_and_tarball(spec), False)
+    self.assertNotIn(H1, Store.private)
+    self.assertNotIn("store_tarball_sha256", spec)
+    m = sync.MultiRemoteSync([w], [w])
+    self.assertIs(m.upload_symlinks_and_tarball(spec), False)
+    Store.refused = "/nowhere"
+    other = BitsStoreSync(self.url, ARCH, self.work, writable=True)
+    other.restricted = other.root + "/nowhere"   # one of two write stores without the binding
+    m = sync.MultiRemoteSync([w], [w, other])
+    self.assertIs(m.upload_symlinks_and_tarball(spec), False)
+    self.assertIn(H1, Store.private)             # the other has it
+    Store.refused = "/restricted"
+    Store.refused = "/store"                   # the store's refusal still fails the package
+    with self.assertRaises(StoreWriteError):
+      w.upload_symlinks_and_tarball(self.built(h="3" * 40, revision="3"))
+
+  def test_the_write_path_keeps_its_token(self):
+    w = BitsStoreSync(self.url, ARCH, self.work, writable=True)
+    w.token = None                             # reads refused once: the uploads' checks still ask
+    Store.private = {H1: ("zlib-v1.3-2.%s.tar.gz" % ARCH, BUILT)}
+    Store.meta[H1] = "sha256:" + hashlib.sha256(BUILT).hexdigest()
+    spec = self.built(redistributable="none")
+    w.upload_symlinks_and_tarball(spec)
+    self.assertEqual(spec["store_tarball_sha256"], Store.meta[H1])
+
+  def test_which_stores_may_take_it(self):
+    w = BitsStoreSync(self.url, ARCH, self.work, writable=True)
+    private, public = {"redistributable": "none"}, {}
+    self.assertTrue(sync.may_upload(w, private))
+    self.assertFalse(sync.may_upload(self.store(), private))          # read only
+    b3 = sync.RemoteSync()                                            # any other store
+    self.assertFalse(sync.may_upload(sync.MultiRemoteSync([w], [w, b3]), private))
+    self.assertTrue(sync.may_upload(sync.MultiRemoteSync([b3], [w]), private))
+    self.assertTrue(sync.may_upload(b3, public))
+    self.assertFalse(sync.may_upload(None, private))
+    m = sync.MultiRemoteSync([w], [w])
+    m.writeStore = ""                                                 # a development package
+    self.assertFalse(sync.may_upload(m, private))
+
+  def test_the_plan_takes_it_for_vouched(self):
+    Store.builds, Store.private = {}, {H2: (NAME, DATA)}
+    spec = dict(self.spec(H2), remote_revision_hash=H2, hash=H2, revision="1",
+                local_revision_hash=H2, local_hashes=[], is_devel_pkg=False)
+    state = plan.classify(spec, ARCH, self.work, self.store(), True, False, trusted={})[0]
+    self.assertEqual(state, plan.REMOTE)
+    Store.private = {}
+    Store.builds = {H2: (NAME, DATA)}                                 # the store's, unsigned
+    state = plan.classify(spec, ARCH, self.work, self.store(), True, False, trusted={})[0]
+    self.assertEqual(state, plan.REMOTE_UNSIGNED)
 
 
 if __name__ == "__main__":

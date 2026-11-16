@@ -666,7 +666,7 @@ class TarballsTest(unittest.TestCase):
 class MarkInStoreTest(unittest.TestCase):
     """doFinalSync marks a tarball the write store has, so prune may drop the local copy."""
 
-    def _sync(self, write_store):
+    def _sync(self, write_store, private=None, taken=None):
         from bits_helpers import build
         wd = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, wd, True)
@@ -675,14 +675,27 @@ class MarkInStoreTest(unittest.TestCase):
         os.makedirs(d)
         spec = {"package": "A", "version": "1", "revision": "1", "hash": h, "requires": [],
                 "full_requires": [], "full_runtime_requires": []}
+        if private is not None:                      # a build that may not be redistributed
+            spec["redistributable"] = "none"
         args = Namespace(workDir=wd, architecture=ARCH, manifest=None, aggressiveCleanup=False,
                          storeIntegrity=False)
         helper = MagicMock(writeStore=write_store)
+        helper.stores_restricted.return_value = bool(private)
+        helper.upload_symlinks_and_tarball.return_value = taken
         with patch.object(build, "createDistLinks"), patch.object(build, "package_info"), \
              patch("bits_helpers.cleanup.touch_sentinel"):
             build.doFinalSync(spec, {"A": spec}, args, helper)
+        if private is False:
+            helper.upload_symlinks_and_tarball.assert_not_called()
+            return None
         helper.upload_symlinks_and_tarball.assert_called_once()
         return os.path.exists(os.path.join(d, ".in-store"))
+
+    def test_one_not_to_be_redistributed(self):
+        self.assertIsNone(self._sync("b3://store", private=False))     # never to a store anyone may read
+        self.assertTrue(self._sync("bits-store+https://h/store", private=True))
+        # bits-store did not take it (no capability or binding): kept, never marked as stored
+        self.assertFalse(self._sync("bits-store+https://h/store", private=True, taken=False))
 
     def test_with_a_write_store(self):
         self.assertTrue(self._sync("b3://store"))

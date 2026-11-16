@@ -887,6 +887,8 @@ class HashPolicyBuildFallbackTest(unittest.TestCase):
     class StopAtBuildScript(Exception):
         pass
 
+    private_sha = None                        # what the store's signature vouches for, if any
+
     def _run_package(self, work_dir, *, remote_tarball=False, prepare=None):
         arch = TEST_ARCHITECTURE
         remote_hash = self.remote_hash
@@ -900,11 +902,16 @@ class HashPolicyBuildFallbackTest(unittest.TestCase):
             "requires": [], "build_requires": [], "runtime_requires": [],
         }
 
+        private_sha = getattr(self, "private_sha", None)
+
         class ReadOnlyStore:
             writeStore = ""
 
             def fetch_symlinks(self, _spec):
                 pass
+
+            def verified_private(self, a, h):
+                return private_sha if (a, h) == (arch, remote_hash) else None
 
             def fetch_tarball(self, _spec):
                 if remote_tarball:
@@ -1050,6 +1057,33 @@ class PlannedReuseBuiltAfterAllTest(unittest.TestCase):
                 result, spec = self._run(work_dir, skipped, order, planned=planned)
                 self.assertIsInstance(result, self.StopAtBuildScript)
                 self.assertEqual((order, spec["cachedTarball"]), ([], ""))
+
+
+class PrivateReuseTest(unittest.TestCase):
+    """A restricted build bits-store's signature vouches for (checked on download)
+    passes signed reuse without a signed manifest; bytes other than vouched do not."""
+
+    remote_hash = HashPolicyBuildFallbackTest.remote_hash
+    local_hash = HashPolicyBuildFallbackTest.local_hash
+    StopAtBuildScript = HashPolicyBuildFallbackTest.StopAtBuildScript
+    _run_package = HashPolicyBuildFallbackTest._run_package
+
+    def _run(self, sha):
+        self.private_sha = sha
+
+        def prepare(ctx):
+            ctx.cfg.require_signed_reuse = True
+            return ctx
+        with tempfile.TemporaryDirectory() as work_dir, \
+             patch("bits_helpers.build.trusted_reuse_index", return_value={}):
+            return self._run_package(work_dir, remote_tarball=True, prepare=prepare)[1]
+
+    def test_vouched_by_its_signature(self):
+        import hashlib
+        good = "sha256:" + hashlib.sha256(b"remote").hexdigest()
+        self.assertTrue(self._run(good)["cachedTarball"])
+        self.assertEqual(self._run("sha256:" + "0" * 64)["cachedTarball"], "")   # other bytes
+        self.assertEqual(self._run(None)["cachedTarball"], "")                  # not vouched
 
 
 class EnterTargetTest(unittest.TestCase):

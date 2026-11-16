@@ -797,7 +797,7 @@ See: [rsync / local filesystem](REFERENCE.md#rsync--local-filesystem), [Local fi
 
 ### I built with --write-store but some packages were not uploaded. Which packages does bits skip?
 
-Packages recalled from a store, packages with `local` revisions, and packages whose `redistributable:` forbids binary redistribution are not uploaded. Only packages built from source in this run are uploaded.
+Packages recalled from a store, packages with `local` revisions, and packages whose `redistributable:` forbids binary redistribution are not uploaded; the last go to a bits-store write store only, into its private `/restricted`. Only packages built from source in this run are uploaded.
 
 See: [Build lifecycle with a store](REFERENCE.md#build-lifecycle-with-a-store).
 
