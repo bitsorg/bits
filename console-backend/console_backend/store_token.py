@@ -121,14 +121,17 @@ def admin_capabilities(group):
             for m in METHODS] + [("GET", "/sources/**")]
 
 
-def build_capabilities(platform, pipeline=None):
+def build_capabilities(platform, pipeline=None, arch=None):
     """What a build of *platform* may do in the store (ADR 0004 C): read and write
     its packages (also of its build types, <platform>-opt, and shared ones) and
-    their revision markers; have the sources store fetch. In *pipeline* also (9a):
+    their revision markers, and those of its *arch* when another (ALICE's x86_64-el9
+    builds slc9_x86-64); have the sources store fetch. In *pipeline* also (9a):
     create its files beside a build's BOMs (named p<pipeline>-) and its records."""
-    if not isinstance(platform, str) or not _PLATFORM.fullmatch(platform):
-        raise ValueError("platform %r: not an architecture name" % (platform,))
-    caps = [cap for arch in (platform + "*", "share")
+    for name in (platform, arch or platform):
+        if not isinstance(name, str) or not _PLATFORM.fullmatch(name):
+            raise ValueError("platform %r: not an architecture name" % (name,))
+    archs = dict.fromkeys((platform + "*", (arch or platform) + "*", "share"))
+    caps = [cap for arch in archs
             for cap in (("GET", "/store/%s/**" % arch), ("PUT", "/store/%s/**" % arch),
                         ("GET", "/MANIFESTS/rev-index/%s/**" % arch),
                         ("PUT", "/MANIFESTS/rev-index/%s/**" % arch))] + [("GET", "/sources/**")]

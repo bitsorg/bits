@@ -108,7 +108,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import audit, authz, ci_auth, session, store_token
 from . import (actions, approvals, build_queue, canary, certified, certifier, db, events,
-               failures, hosts, kinds, nightlies, outside, phases, read_tokens, reconcile,
+               failures, hosts, kinds, nightlies, outside, phases, read_tokens, reconcile, replay,
                sbom_history, sbom_licences, sbom_plan, sbom_scan, schedules, shadow, trace,
                vuln_triage, watches)
 
@@ -974,7 +974,7 @@ async def ci_store_token(request: Request):
                     row = reconcile.record_pipeline(conn, reader, reader.get_pipeline(pid))
                 except sqlite3.IntegrityError:   # the worker recorded it meanwhile
                     row = conn.execute("SELECT * FROM pipelines WHERE id = ?", (pid,)).fetchone()
-            return row
+        return row
 
     def deny(why):
         audit.record("store_token_denied", reason=why, **who)
@@ -984,8 +984,9 @@ async def ci_store_token(request: Request):
         who["group"] = group = row["community"]
         if not (row["is_build"] and group):
             raise _Refused("not a build pipeline of a community")
+        arch = await run_in_threadpool(_build_arch, kinds.Deps(settings).reader(), row)
         try:
-            caps = store_token.build_capabilities(row["platform"], pid)
+            caps = store_token.build_capabilities(row["platform"], pid, arch)
         except ValueError as exc:
             raise _Refused(str(exc))
         ttl = min(exp - int(time.time()), settings.store_build_token_max_ttl)
@@ -1006,6 +1007,21 @@ async def ci_store_token(request: Request):
     out = await run_in_threadpool(m._sign_store_token, "build:%d" % job, group, caps, ttl,
                                   build=True, platform=row["platform"], **who)
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+def _build_arch(reader, row):
+    """The architecture a build pipeline writes: its platform's in the community's
+    ui-config.yaml, else config/platforms.yaml, at its commit (as the runner resolves
+    it); the platform itself when they cannot be read."""
+    if not row["sha"]:
+        return row["platform"]
+    try:
+        _, cfg = replay.community_config(reader, row)
+        platforms = nightlies._yaml(reader, "config/platforms.yaml", row["sha"]).get("platforms") or []
+        return nightlies.resolve_platform(row["platform"], platforms, cfg)[2]
+    except Exception as exc:
+        log.warning("store token for pipeline %s: its architecture: %s", row["id"], exc)
+        return row["platform"]
 
 
 # --- failures -------------------------------------------------------------------

@@ -96,6 +96,25 @@ class StoreBuildTokenTest(_DB):
             with self.assertRaises(ValueError):
                 build_capabilities("x86_64-el9", bad)
 
+    def test_a_platform_building_another_architecture(self):
+        # ALICE's x86_64-el9 builds slc9_x86-64 (ui-config.yaml's 4th field): both
+        caps = build_capabilities("x86_64-el9", None, "slc9_x86-64")
+        self.assertIn(("PUT", "/MANIFESTS/rev-index/slc9_x86-64*/**"), caps)
+        self.assertIn(("PUT", "/store/x86_64-el9*/**"), caps)
+        self.assertEqual(build_capabilities("el9", 5, "el9"), build_capabilities("el9", 5))
+        with self.assertRaises(ValueError):
+            build_capabilities("el9", 5, "../x")
+        files = {("communities/TESTBED/ui-config.yaml", "abc"): b"platforms:\n  - el9|img||slc9_x86-64\n"}
+        self.gl.file_raw = lambda path, ref, max_bytes=1 << 20: files.get((path, ref))
+        r = self.ask()
+        self.assertEqual(r.status_code, 200, r.text)
+        c = jwt.decode(r.json()["token"], options={"verify_signature": False})
+        self.assertEqual(c["cap"], [{"m": m, "p": p} for m, p in build_capabilities("el9", 5, "slc9_x86-64")])
+        # its configuration unreadable: its platform's, as before
+        self.gl.file_raw = lambda *a, **k: (_ for _ in ()).throw(forge_ops.ForgeError(500, "down"))
+        c = jwt.decode(self.ask().json()["token"], options={"verify_signature": False})
+        self.assertEqual(c["cap"], [{"m": m, "p": p} for m, p in build_capabilities("el9", 5)])
+
     def test_a_pipeline_the_worker_has_not_seen_yet_is_read_from_gitlab(self):
         self.gl.add(6, community="other")
         self.jobs[78] = {"status": "running", "pipeline": {"id": 6}}
