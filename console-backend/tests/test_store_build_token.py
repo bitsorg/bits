@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from console_backend import audit, ci_auth, config, forge_ops, main
 from console_backend.orch import kinds, reconcile
-from console_backend.store_token import build_capabilities
+from console_backend.store_token import StoreTokenSigner, build_capabilities
 
 from test_orch_reconcile import _DB
 
@@ -92,8 +92,10 @@ class StoreBuildTokenTest(_DB):
     def test_its_capabilities(self):
         self.assertEqual(build_capabilities("x86_64-el9"), [
             ("GET", "/store/x86_64-el9*/**"), ("PUT", "/store/x86_64-el9*/**"),
+            ("GET", "/restricted/x86_64-el9*/**"), ("PUT", "/restricted/x86_64-el9*/**"),
             ("GET", "/MANIFESTS/rev-index/x86_64-el9*/**"), ("PUT", "/MANIFESTS/rev-index/x86_64-el9*/**"),
             ("GET", "/store/share/**"), ("PUT", "/store/share/**"),
+            ("GET", "/restricted/share/**"), ("PUT", "/restricted/share/**"),
             ("GET", "/MANIFESTS/rev-index/share/**"), ("PUT", "/MANIFESTS/rev-index/share/**"),
             ("GET", "/sources/**")])
         for bad in ("", "../x", "x/y", "*", None):
@@ -106,11 +108,16 @@ class StoreBuildTokenTest(_DB):
         for bad in (0, -1, "x", "1/2", "77", True, 1.5):
             with self.assertRaises(ValueError):
                 build_capabilities("x86_64-el9", bad)
+        # the longest names still sign into a token bits-store takes
+        signer = StoreTokenSigner("k", Ed25519PrivateKey.generate(), "https://bits.example.org",
+                                  "example-site/store", signer="build")
+        signer.sign("build:%d" % 2**52, "g" * 64, build_capabilities("a" * 64, 2**52, "b" * 64), 3600)
 
     def test_a_platform_building_another_architecture(self):
         # ALICE's x86_64-el9 builds slc9_x86-64 (ui-config.yaml's 4th field): both
         caps = build_capabilities("x86_64-el9", None, "slc9_x86-64")
         self.assertIn(("PUT", "/MANIFESTS/rev-index/slc9_x86-64*/**"), caps)
+        self.assertIn(("GET", "/restricted/slc9_x86-64*/**"), caps)
         self.assertIn(("PUT", "/store/x86_64-el9*/**"), caps)
         self.assertEqual(build_capabilities("el9", 5, "el9"), build_capabilities("el9", 5))
         with self.assertRaises(ValueError):
