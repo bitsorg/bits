@@ -242,12 +242,13 @@ class ReconcileTest(_DB):
         self.assertEqual(self._count(), 150)
 
     def test_times_with_offsets_and_fractions(self):
-        # After the clocks go back: the later update has the smaller local time.
-        self.gl.add(1, updated="2026-10-25T02:50:00.250+02:00")              # 00:50 UTC
-        self.gl.add(2, updated="2026-10-25T02:10:00+01:00", community="x")   # 01:10 UTC
+        # As after the clocks go back: the later update has the smaller local time
+        # (on DAY: inside the lookback whenever the tests run).
+        self.gl.add(1, updated=DAY + "T02:50:00.250+02:00")              # 00:50 UTC
+        self.gl.add(2, updated=DAY + "T02:10:00+01:00", community="x")   # 01:10 UTC
         reconcile.discover(self.conn, self.gl)
         self.assertEqual(reconcile._kv_get(self.conn, "gitlab.updated_after"),
-                         "2026-10-25T01:10:00Z")
+                         DAY + "T01:10:00Z")
 
     def test_a_running_pipeline_is_rechecked_at_most_every_two_minutes(self):
         self.gl.add(1)
