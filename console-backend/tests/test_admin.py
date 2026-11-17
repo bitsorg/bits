@@ -847,7 +847,7 @@ class AdminTest(unittest.TestCase):
         self.assertEqual((row["kind"], json.loads(row["payload"])["profile_sha256"]), ("admin.settings_applied",
                          hashlib.sha256(b"# ours\nenv:\n  VM_RETENTION: '30'\n").hexdigest()))
 
-    def store_client(self, config=None, console_key="C" * 43, build_key="D" * 43):
+    def store_client(self, config=None, console_key="C" * 43, build_key="D" * 43, admin_key="E" * 43):
         self.asked, self.base, self.plan_base = [], "s0", None
         config = config if config is not None else {
             "issuer": "https://bits-store.testbed", "audience": "testbed/store", "keys": {},
@@ -860,7 +860,7 @@ class AdminTest(unittest.TestCase):
             if request["op"] == "store":
                 return {"ok": True, "config": config or None, "path": "config/bits-store/config.json", "base": self.base,
                         "credentials": ["BITS_STORE_V_AK"], "console_key": console_key, "build_key": build_key,
-                        "build_kid": "builds-2"}
+                        "build_kid": "builds-2", "admin_key": admin_key, "admin_kid": "admin-2"}
             if request["op"] == "store-plan":
                 if request["config"].get("issuer") == "refused":
                     return {"ok": False, "error": "bits-store refuses it: issuer"}
@@ -898,6 +898,11 @@ class AdminTest(unittest.TestCase):
         page = self.store_client(config={"keys": {"b": as_user}, "volumes": {}, "bindings": []}).get("/store").text
         self.assertIn("name=trust_builds value=1 checked", page)
         self.assertIn("<code>builds-2</code>", page)
+        self.assertIn("name=trust_admin value=1 checked", page)
+        self.assertIn("<code>admin-2</code>", page)
+        admin_ = {"x": "E" * 43, "signer": "admin"}
+        page = self.store_client(config={"keys": {"a": admin_}, "volumes": {}, "bindings": []}).get("/store").text
+        self.assertIn("The store trusts the console's key for the store's admin API", page)
         self.assertIn("this is a template", self.store_client(config=False).get("/store").text)
 
     def test_the_store_is_planned_and_applied_with_your_key(self):
@@ -917,11 +922,13 @@ class AdminTest(unittest.TestCase):
         self.assertIn("not JSON", form(base="s0", config="{"))
         self.assertIn("bits-store refuses it: issuer", form(base="s0", config=json.dumps(dict(config, issuer="refused"))))
         page = form(**{"base": "s0", "config": json.dumps(config), "trust_console": "1", "trust_builds": "1",
+                       "trust_admin": "1",
                        "key:BITS_STORE_V_SK": "secret-value", "key:BITS_STORE_V_AK": "",
                        "new_key_name": "BITS_STORE_W_AK", "new_key_value": "w"})
         planned = [a for a in self.asked if a["op"] == "store-plan"][-1]
         self.assertEqual(planned["config"]["keys"], {"console-1": {"x": "C" * 43, "signer": "user"},
-                                                     "builds-2": {"x": "D" * 43, "signer": "build"}})
+                                                     "builds-2": {"x": "D" * 43, "signer": "build"},
+                                                     "admin-2": {"x": "E" * 43, "signer": "admin"}})
         self.assertEqual(planned["credentials"], {"BITS_STORE_V_SK": "secret-value", "BITS_STORE_W_AK": "w"})
         self.assertNotIn("secret-value", page)
         self.assertIn("make store-up", page)

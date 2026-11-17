@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bits-admin's Store page (ADR bits-services 0004, K): bits-store's config.json as JSON,
 the keys its volumes name (set or missing; a new value typed here, kept only until the
-apply) and the console's store-token keys (people's and build jobs'). Planned by the host helper, which has
+apply) and the console's store-token keys (people's, build jobs' and the admin API's). Planned by the host helper, which has
 bits-store check the result; applied with a touch of the admin's own key."""
 
 import json
@@ -21,7 +21,8 @@ CONSOLE_KID = "console-1"
 # The console's signing keys, as the host helper reports them: (its field, the form's,
 # the helper's field for its id in bits-store's config, the id else, signer, what it signs).
 SIGNERS = (("console_key", "trust_console", None, CONSOLE_KID, "user", "the console's store-token key"),
-           ("build_key", "trust_builds", "build_kid", "builds-1", "build", "the build jobs' store-token key"))
+           ("build_key", "trust_builds", "build_kid", "builds-1", "build", "the build jobs' store-token key"),
+           ("admin_key", "trust_admin", "admin_kid", "admin-1", "admin", "the console's key for the store's admin API"))
 _KID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 

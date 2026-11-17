@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** bits-admin's Store page offers the console's admin key (signer `admin`) for bits-store's `keys`, beside the people's and build jobs' keys, as the host helper reports it (bits-services' `make store-admin-token-key`).
 - **[Feature]** The console backend shows bits-store's admin views to overall admins (`GET /store-admin/{summary,objects,object,access}`, for the coming Store page): each request goes to bits-store's admin API (`BITS_STORE_ADMIN_URL`, an internal network) with a minute's token from the admin key (`BITS_STORE_ADMIN_TOKEN_SIGN_ROUTE`, `BITS_STORE_ADMIN_TOKEN_KID`, signer `admin`; bits-store v0.6.0), audited as store tokens are. Off until both are set. A first search of a large package binding can answer 502 while bits-store plans its verdicts; it goes on, and a retry answers.
 - **[Change]** People's store tokens (`bits login`, the console) also read and write `/restricted`: an admin's builds through bits-store reuse their community's packages that may not be redistributed (and those of the communities it is a reader of), which then land on the admin's machine; and one they upload is signed and reused like a CI build's (the first upload of a hash is kept), with no certification.
 - **[Change]** bits ships CERN's key for bits-store's restricted builds (`keys/restricted/`): run from a checkout, builds through bits-store with a store token now store and reuse packages that may not be redistributed there.
