@@ -77,6 +77,14 @@ class StoreTokenTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 s.sign(sub, "lhcb", CAPS, 600)
 
+    def test_admin_signer(self):
+        # bits-store's rule: admin:<user> exactly from an admin key (its vectors' cases)
+        a, b = signer(signer="admin"), signer(signer="build")
+        self.assertTrue(a.sign("admin:alice", "site", [("GET", "/_admin/**")], 60))
+        for s, sub in ((a, "alice"), (a, "build:1"), (signer(), "admin:alice"), (b, "admin:1")):
+            with self.assertRaises(ValueError, msg=(s.signer, sub)):
+                s.sign(sub, "site", [("GET", "/_admin/**")], 60)
+
     def test_patterns(self):
         for p in ("/a/~+!@=,:._-", "/store/lhcb/x86_64-el10*/**", "/a/*b*c*d*", "/**", "/a/*"):
             check_pattern(p)
@@ -109,7 +117,7 @@ class StoreTokenTest(unittest.TestCase):
         for life in (30 * 86400, 59, 3600.0):
             with self.assertRaises(ValueError, msg=repr(life)):
                 signer(max_lifetime=life)
-        for bad in (dict(kid=""), dict(issuer=""), dict(signer="admin")):
+        for bad in (dict(kid=""), dict(issuer=""), dict(signer="root")):
             with self.assertRaises(ValueError):
                 StoreTokenSigner(bad.get("kid", "k"), Ed25519PrivateKey.generate(),
                                  bad.get("issuer", ISS), AUD, signer=bad.get("signer", "user"))

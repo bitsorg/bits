@@ -20,6 +20,8 @@ MAX_TIME = 2**53 - 1
 METHODS = ("GET", "PUT")
 _SEGMENT = re.compile(r"[A-Za-z0-9._~+!@=,:*-]{1,255}")
 _SEED = re.compile(r"[A-Za-z0-9_-]{43}")
+# The prefix a token's sub has exactly when its key's signer is that one (bits-store's).
+SUBJECTS = {"build": "build:", "admin": "admin:"}
 
 
 def check_pattern(p):
@@ -42,14 +44,15 @@ def _b64(b):
 
 class StoreTokenSigner:
     """Signs store tokens with one Ed25519 key, known to bits-store by *kid* with
-    *signer* 'user' (bits-console) or 'build' (the orchestrator). *key*: the private
-    key, or a function signing bytes with it elsewhere (the security proxy)."""
+    *signer* 'user' (bits-console), 'build' (the orchestrator) or 'admin' (its admin
+    API alone). *key*: the private key, or a function signing bytes with it elsewhere
+    (the security proxy)."""
 
     def __init__(self, kid, key, issuer, audience, signer="user", max_lifetime=MAX_LIFETIME):
         if not all(isinstance(v, str) and v for v in (kid, issuer, audience)):
             raise ValueError("kid, issuer and audience must be non-empty strings")
-        if signer not in ("user", "build") or not (isinstance(key, Ed25519PrivateKey) or callable(key)):
-            raise ValueError("signer is 'user' or 'build', key an Ed25519 private key or a signer")
+        if signer not in ("user", *SUBJECTS) or not (isinstance(key, Ed25519PrivateKey) or callable(key)):
+            raise ValueError("signer is 'user', 'build' or 'admin', key an Ed25519 private key or a signer")
         if not (isinstance(max_lifetime, int) and 60 <= max_lifetime <= MAX_LIFETIME):
             raise ValueError("max_lifetime: 60 to %d seconds, as the verifier's" % MAX_LIFETIME)
         self.kid, self.key, self.issuer, self.audience = kid, key, issuer, audience
@@ -70,8 +73,9 @@ class StoreTokenSigner:
         pairs) for *lifetime* seconds from *now*."""
         if not (isinstance(sub, str) and sub and isinstance(grp, str) and grp):
             raise ValueError("sub and grp must be non-empty strings")
-        if sub.startswith("build:") != (self.signer == "build"):
-            raise ValueError("sub is build:<job> exactly when the signer is 'build'")
+        for signer, prefix in SUBJECTS.items():
+            if sub.startswith(prefix) != (self.signer == signer):
+                raise ValueError("sub is %s... exactly when the signer is %r" % (prefix, signer))
         try:
             caps = [(m, p) for m, p in caps]  # once: caps may be a generator
         except (TypeError, ValueError):
