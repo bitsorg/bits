@@ -99,6 +99,7 @@ class StoreTokenIssueTest(unittest.TestCase):
     def test_capabilities(self):
         self.assertEqual(admin_capabilities("lcg"), [                     # as bits writes the store
             ("GET", "/store/**"), ("PUT", "/store/**"),
+            ("GET", "/restricted/**"), ("PUT", "/restricted/**"),           # kept per group by bits-store
             ("GET", "/MANIFESTS/rev-index/**"), ("PUT", "/MANIFESTS/rev-index/**"),
             ("GET", "/manifests/lcg/**"), ("PUT", "/manifests/lcg/**"), ("GET", "/sources/**")])
         for g in ("", "LCG", "a/b", "..", "-x", "x" * 65):
