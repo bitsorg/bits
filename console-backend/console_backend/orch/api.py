@@ -1013,7 +1013,7 @@ async def ci_store_token(request: Request):
         raise HTTPException(502, "pipeline %d could not be read" % pid)
     who.pop("user"), who.pop("principal"), who.pop("group")   # _sign_store_token's own
     out = await run_in_threadpool(m._sign_store_token, "build:%d" % job, group, caps, ttl,
-                                  build=True, platform=row["platform"], **who)
+                                  signer="build", platform=row["platform"], **who)
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 

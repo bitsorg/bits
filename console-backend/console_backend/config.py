@@ -298,6 +298,18 @@ class Settings:
         self.store_build_token_kid = e.get("BITS_STORE_BUILD_TOKEN_KID", "")
         # ... at most this long, else until the job's ID token expires (its timeout).
         self.store_build_token_max_ttl = int(e.get("BITS_STORE_BUILD_TOKEN_MAX_TTL", "86400") or "86400")
+        # ... and bits-store's admin API (the Store page, overall admins): its address on
+        # an internal network, and its tokens' key (signer 'admin'), by route or seed.
+        self.store_admin_url = e.get("BITS_STORE_ADMIN_URL", "")
+        self.store_admin_token_sign_route = e.get("BITS_STORE_ADMIN_TOKEN_SIGN_ROUTE", "")
+        self.store_admin_token_sign_prefix = e.get("BITS_STORE_ADMIN_TOKEN_SIGN_PREFIX", "/sign/store-admin")
+        self.store_admin_token_key = e.get("BITS_STORE_ADMIN_TOKEN_KEY", "")
+        self.store_admin_token_kid = e.get("BITS_STORE_ADMIN_TOKEN_KID", "")
+        if self.store_admin_url and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?", self.store_admin_url):
+            raise ValueError("BITS_STORE_ADMIN_URL: http(s)://host[:port], bits-store's admin listener")
+        if self.store_admin_token_kid and self.store_admin_token_kid in (self.store_token_kid,
+                                                                       self.store_build_token_kid):
+            raise ValueError("BITS_STORE_ADMIN_TOKEN_KID: the admin key is neither the user nor the build key")
         # ... and a token `bits login` gets (approved with a passkey): a day.
         self.store_cli_token_ttl = int(e.get("BITS_STORE_CLI_TOKEN_TTL", "86400") or "86400")
         if self.store_build_token_kid and self.store_build_token_kid == self.store_token_kid:
@@ -316,6 +328,10 @@ class Settings:
         return bool((self.store_build_token_sign_route or self.store_build_token_key)
                     and self.store_build_token_kid and self.store_token_issuer
                     and self.store_token_audience)
+
+    def store_admin_configured(self) -> bool:
+        return bool(self.store_admin_url and (self.store_admin_token_sign_route or self.store_admin_token_key)
+                    and self.store_admin_token_kid and self.store_token_issuer and self.store_token_audience)
 
     def oidc_login_configured(self) -> bool:
         # Only issuer + client id + redirect are required. The authorize/token/jwks

@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials, credproxy,
-               forge_ops, identity, session, signproxy, store_token, webauthn_rp)
+               forge_ops, identity, session, signproxy, store_admin, store_token, webauthn_rp)
 from fastapi.responses import RedirectResponse
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
@@ -800,13 +800,49 @@ async def store_token_issue(request: Request):
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
-def _store_token_signature(data, build=False):
-    """Ed25519 signature of *data* by the security proxy's store-token route (the
-    build tokens' with *build*)."""
+@app.get("/store-admin/{view}")
+async def store_admin_view(view: str, request: Request):
+    """bits-store's admin API, read only, for overall admins (the Store page): the
+    query passed on, a minute's admin token per request (audited as store tokens are)."""
+    if view not in store_admin.VIEWS:
+        raise HTTPException(404, "no such view")
+    if not settings.store_admin_configured():
+        raise HTTPException(503, "bits-store's admin API is not configured")
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    overall, _ = authz.admin_groups(data["user"], await run_in_threadpool(_resolved_policy, data["token"]))
+    if not overall:
+        audit.record("store_admin_denied", user=data["user"], view=view, principal="human")
+        raise HTTPException(403, "only a bits admin may see the store's admin views")
+    try:
+        pairs = store_admin.params(request.url.query)
+    except ValueError as exc:
+        raise HTTPException(400, "query: %s" % exc)
+    out = await run_in_threadpool(_sign_store_token, "admin:" + data["user"], "admin",
+                                  [("GET", "/_admin/**")], store_admin.TOKEN_TTL, "admin", view=view)
+    try:
+        code, body = await run_in_threadpool(store_admin.get, settings.store_admin_url, view, pairs, out["token"])
+    except store_admin.Unreachable as exc:
+        raise HTTPException(502, str(exc))
+    return JSONResponse(body, status_code=code, headers={"Cache-Control": "no-store"})
+
+
+def _store_key(signer):
+    """(kid, route, prefix, seed) of the store tokens' key of *signer*: user, build or admin."""
+    s = settings
+    return {"user": (s.store_token_kid, s.store_token_sign_route, s.store_token_sign_prefix, s.store_token_key),
+            "build": (s.store_build_token_kid, s.store_build_token_sign_route,
+                      s.store_build_token_sign_prefix, s.store_build_token_key),
+            "admin": (s.store_admin_token_kid, s.store_admin_token_sign_route,
+                      s.store_admin_token_sign_prefix, s.store_admin_token_key)}[signer]
+
+
+def _store_token_signature(data, signer="user"):
+    """Ed25519 signature of *data* by the security proxy's route for *signer*'s key."""
     if trust is None:
         raise signproxy.Unavailable("bits_helpers is not installed")
-    route, prefix = ((settings.store_build_token_sign_route, settings.store_build_token_sign_prefix)
-                     if build else (settings.store_token_sign_route, settings.store_token_sign_prefix))
+    _, route, prefix, _ = _store_key(signer)
     env = signproxy.call(settings, trust.sign_bytes_via_proxy, data, route=route, prefix=prefix,
                          agent_socket=settings.store_token_sign_socket or None,
                          host=(settings.store_token_sign_host or None) if settings.store_token_sign_socket else None)
@@ -819,23 +855,21 @@ def _store_token_signature(data, build=False):
     return sig
 
 
-def _sign_store_token(user, group, caps, ttl, build=False, **audit_extra):
-    """Sign and audit a store token: {token, group, expires, capabilities}; with
-    *build*, a build job's (*user* build:<job>) with the build key."""
+def _sign_store_token(user, group, caps, ttl, signer="user", **audit_extra):
+    """Sign and audit a store token: {token, group, expires, capabilities}, with the
+    key of *signer*: user, build (*user* build:<job>) or admin (admin:<user>)."""
     args = (settings.store_token_issuer, settings.store_token_audience)
-    kid, route, key = ((settings.store_build_token_kid, settings.store_build_token_sign_route,
-                        settings.store_build_token_key) if build else
-                       (settings.store_token_kid, settings.store_token_sign_route, settings.store_token_key))
-    kind = {"signer": "build" if build else "user"}
+    kid, route, _, key = _store_key(signer)
+    kind = {"signer": signer}
     try:
-        signer = (store_token.StoreTokenSigner(kid, lambda d: _store_token_signature(d, build), *args, **kind)
-                  if route else store_token.StoreTokenSigner.from_seed(kid, key, *args, **kind))
+        signer_ = (store_token.StoreTokenSigner(kid, lambda d: _store_token_signature(d, signer), *args, **kind)
+                   if route else store_token.StoreTokenSigner.from_seed(kid, key, *args, **kind))
     except ValueError as exc:
         raise HTTPException(503, "store tokens: %s" % exc)
     jti = secrets.token_urlsafe(16)
     now = int(time.time())
     try:
-        tok = signer.sign(user, group, caps, ttl, now=now, jti=jti)
+        tok = signer_.sign(user, group, caps, ttl, now=now, jti=jti)
     except ValueError as exc:    # e.g. a user name the token format reserves
         raise HTTPException(500, "store token not signed: %s" % exc)
     except signproxy.Unavailable as exc:
@@ -843,7 +877,7 @@ def _sign_store_token(user, group, caps, ttl, build=False, **audit_extra):
     except (RuntimeError, OSError) as exc:
         raise HTTPException(502, "store token not signed: %s" % exc)
     audit.record("store_token", user=user, group=group, jti=jti, exp=now + ttl,
-                 principal="build" if build else "human", **audit_extra)
+                 principal="build" if signer == "build" else "human", **audit_extra)
     return {"token": tok, "group": group, "expires": now + ttl,
             "capabilities": [{"m": m, "p": p} for m, p in caps]}
 
