@@ -236,8 +236,9 @@ def doRpm(args, parser):
       rpms.append(rpmbuild(view_spec(args.rpmView, meta, packages, prefix, join(top, "root")),
                            top, out))
   if args.rpmSignKey:
+    env = {"GPG_TTY": os.ttyname(0) if os.isatty(0) else "", **os.environ}
     subprocess.run(["rpmsign", "--define", "_gpg_name " + args.rpmSignKey, "--addsign"] + rpms,
-                   check=True, stdout=subprocess.DEVNULL)
+                   check=True, stdout=subprocess.DEVNULL, env=env)
   if args.rpmRepo:
     repo = abspath(args.rpmRepo)
     publish(rpms, repo, args.rpmRepoUrl, args.rpmSignKey)
