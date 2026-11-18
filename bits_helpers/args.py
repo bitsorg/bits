@@ -1167,6 +1167,12 @@ def add_rpm_arguments(subparsers, ctx):
   rpm_parser.add_argument("--view", dest="rpmView", metavar="NAME",
                           help="Also make bits-view-NAME_<arch>, which requires them all and links "
                                "PREFIX/NAME/<pkg>/<version>/<arch> to each.")
+  rpm_parser.add_argument("--repo", dest="rpmRepo", metavar="DIR",
+                          help="Also publish them to the yum repository in DIR, with DIR/bits.repo.")
+  rpm_parser.add_argument("--repo-url", dest="rpmRepoUrl", metavar="URL",
+                          help="Where users reach DIR, for bits.repo. Default: file://DIR.")
+  rpm_parser.add_argument("--sign", dest="rpmSignKey", metavar="KEY",
+                          help="Sign the RPMs, and the repository, with this GPG key.")
   return rpm_parser
 
 

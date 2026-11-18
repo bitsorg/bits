@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import glob
 import io
 import json
 import os
@@ -53,8 +54,8 @@ class RpmTest(unittest.TestCase):
 
   def args(self, **kw):
     values = dict(package="hello", version=None, workDir=self.work_dir, architecture=ARCH,
-                  rpmPrefix="/opt/bits", rpmView=None,
-                  rpmOutputDir=os.path.join(self.work_dir, "out"))
+                  rpmPrefix="/opt/bits", rpmView=None, rpmRepo=None, rpmRepoUrl=None,
+                  rpmSignKey=None, rpmOutputDir=os.path.join(self.work_dir, "out"))
     values.update(kw)
     return SimpleNamespace(**values)
 
@@ -130,6 +131,29 @@ class RpmTest(unittest.TestCase):
     files = subprocess.run(["rpm", "-qlp", os.path.join(out, view)], capture_output=True,
                            text=True, check=True).stdout.split()
     self.assertIn("/opt/bits/dev3/hello/1.0/x86_64-el9", files)
+
+  def test_repo_file(self):
+    self.assertEqual(rpm.repo_file("file:///srv/rpms", False),
+                     "[bits]\nname=bits\nbaseurl=file:///srv/rpms\nenabled=1\n"
+                     "gpgcheck=0\nrepo_gpgcheck=0\n")
+    self.assertIn("gpgkey=https://x/rpms/RPM-GPG-KEY-bits\n", rpm.repo_file("https://x/rpms", True))
+    self.assertIn("gpgcheck=1\nrepo_gpgcheck=1\n", rpm.repo_file("https://x/rpms", True))
+
+  def test_repo_url_needs_repo(self):
+    with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+      rpm.doRpm(self.args(rpmRepoUrl="https://x/rpms"), argparse.ArgumentParser())
+
+  @unittest.skipUnless(shutil.which("rpmbuild") and shutil.which("createrepo_c"),
+                       "needs rpmbuild and createrepo_c")
+  def test_repo(self):
+    repo = os.path.join(self.work_dir, "repo")
+    for _ in range(2):
+      with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        rpm.doRpm(self.args(rpmRepo=repo), argparse.ArgumentParser())
+    self.assertTrue(os.path.exists(os.path.join(repo, "repodata", "repomd.xml")))
+    self.assertEqual(len(glob.glob(os.path.join(repo, "*.rpm"))), 2)
+    with open(os.path.join(repo, "bits.repo")) as f:
+      self.assertIn("baseurl=file://%s\n" % repo, f.read())
 
   @unittest.skipUnless(shutil.which("rpmbuild"), "needs rpmbuild")
   def test_default_output_dir(self):

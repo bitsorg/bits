@@ -160,14 +160,36 @@ def rpmbuild(text, top, out):
   subprocess.run(["rpmbuild", "--quiet", "-bb", "--define", "_topdir " + top, spec_file],
                  check=True)
   made, = glob.glob(join(top, "RPMS", "*", "*.rpm"))
-  shutil.move(made, join(out, os.path.basename(made)))
+  return shutil.move(made, join(out, os.path.basename(made)))
 
 
 def build(root, meta, prefix, out):
   banner("Making the RPM of %s %s", meta["package"]["name"], version_dir(meta["package"]))
   with tempfile.TemporaryDirectory(prefix="bits-rpm-") as top:
     stage(root, meta, prefix, top)
-    rpmbuild(spec(meta, prefix, join(top, "root")), top, out)
+    return rpmbuild(spec(meta, prefix, join(top, "root")), top, out)
+
+
+def repo_file(url, signed):
+  lines = ["[bits]", "name=bits", "baseurl=" + url, "enabled=1",
+           "gpgcheck=%d" % signed, "repo_gpgcheck=%d" % signed]
+  if signed:
+    lines.append("gpgkey=%s/RPM-GPG-KEY-bits" % url)
+  return "\n".join(lines) + "\n"
+
+
+def publish(rpms, repo, url, key):
+  banner("Publishing %d RPMs to %s", len(rpms), repo)
+  os.makedirs(repo, exist_ok=True)
+  for r in rpms:
+    shutil.copy(r, repo)
+  subprocess.run(["createrepo_c", "-q", "--update", repo], check=True)
+  if key:
+    gpg = ["gpg", "--batch", "--yes", "--armor", "--local-user", key]
+    subprocess.run(gpg + ["--detach-sign", join(repo, "repodata", "repomd.xml")], check=True)
+    subprocess.run(gpg + ["--output", join(repo, "RPM-GPG-KEY-bits"), "--export", key], check=True)
+  with open(join(repo, "bits.repo"), "w") as f:
+    f.write(repo_file(url or "file://" + repo, bool(key)))
 
 
 def doRpm(args, parser):
@@ -178,8 +200,14 @@ def doRpm(args, parser):
     parser.error("--prefix must be an absolute path")
   if args.rpmView and not re.match(r"^[A-Za-z0-9._+-]+$", args.rpmView):
     parser.error("--view must be a name of letters, digits and ._+-")
-  if not shutil.which("rpmbuild"):
-    error("bits rpm needs rpmbuild: dnf install rpm-build")
+  if args.rpmRepoUrl and not args.rpmRepo:
+    parser.error("--repo-url needs --repo")
+  needs = ["rpmbuild"] + ["createrepo_c"] * bool(args.rpmRepo) + ["rpmsign", "gpg"] * bool(
+    args.rpmSignKey)
+  missing = [n for n in needs if not shutil.which(n)]
+  if missing:
+    error("bits rpm needs %s: dnf install rpm-build rpm-sign createrepo_c gnupg2",
+          " ".join(missing))
     sys.exit(1)
 
   work_dir = abspath(args.workDir)
@@ -200,11 +228,19 @@ def doRpm(args, parser):
 
   out = abspath(args.rpmOutputDir or join(work_dir, "RPMS", rpm_name(meta["package"])))
   os.makedirs(out, exist_ok=True)
-  for r, m in packages:
-    build(r, m, prefix, out)
+  rpms = [build(r, m, prefix, out) for r, m in packages]
   if args.rpmView:
     banner("Making the RPM of the %s view", args.rpmView)
     with tempfile.TemporaryDirectory(prefix="bits-rpm-") as top:
       stage_view(args.rpmView, packages, prefix, top)
-      rpmbuild(view_spec(args.rpmView, meta, packages, prefix, join(top, "root")), top, out)
-  banner("RPMs in %s. To install them: dnf install %s/*.rpm", out, out)
+      rpms.append(rpmbuild(view_spec(args.rpmView, meta, packages, prefix, join(top, "root")),
+                           top, out))
+  if args.rpmSignKey:
+    subprocess.run(["rpmsign", "--define", "_gpg_name " + args.rpmSignKey, "--addsign"] + rpms,
+                   check=True, stdout=subprocess.DEVNULL)
+  if args.rpmRepo:
+    repo = abspath(args.rpmRepo)
+    publish(rpms, repo, args.rpmRepoUrl, args.rpmSignKey)
+    banner("Repository in %s. To use it: cp %s/bits.repo /etc/yum.repos.d/", repo, repo)
+  else:
+    banner("RPMs in %s. To install them: dnf install %s/*.rpm", out, out)
