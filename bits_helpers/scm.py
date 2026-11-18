@@ -18,6 +18,8 @@ class SCM:
     raise NotImplementedError
   def checkoutCmd(self, tag):
     raise NotImplementedError
+  def cleanCmd(self):
+    raise NotImplementedError
   def fetchCmd(self, remote, *refs):
     raise NotImplementedError
   def cloneReferenceCmd(self, spec, referenceRepo, usePartialClone):
