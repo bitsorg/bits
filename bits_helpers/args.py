@@ -1154,6 +1154,22 @@ def add_publish_arguments(subparsers, ctx):
   return publish_parser
 
 
+def add_rpm_arguments(subparsers, ctx):
+  rpm_parser = subparsers.add_parser("rpm", help="make RPMs of built packages")
+  rpm_parser.add_argument("package", metavar="PACKAGE")
+  rpm_parser.add_argument("version", metavar="VERSION", nargs="?", default=None)
+  ctx.work_dir(rpm_parser, help="Default: %(default)s.")
+  ctx.architecture(rpm_parser, help="Default: %(default)s.")
+  rpm_parser.add_argument("--prefix", dest="rpmPrefix", metavar="PATH", default="/opt/bits",
+                          help="Default: %(default)s.")
+  rpm_parser.add_argument("-o", "--output-dir", dest="rpmOutputDir", metavar="DIR",
+                          help="Default: WORKDIR/RPMS/<package RPM name>.")
+  rpm_parser.add_argument("--view", dest="rpmView", metavar="NAME",
+                          help="Also make bits-view-NAME_<arch>, which requires them all and links "
+                               "PREFIX/NAME/<pkg>/<version>/<arch> to each.")
+  return rpm_parser
+
+
 def add_certify_arguments(subparsers, ctx):
   """`bits certify` — make the latest (or a given) build trusted."""
   p = subparsers.add_parser(
@@ -2053,6 +2069,7 @@ def doParseArgs():
   init_parser = add_init_arguments(subparsers, ctx)
   version_parser = add_version_arguments(subparsers, ctx)
   publish_parser = add_publish_arguments(subparsers, ctx)
+  add_rpm_arguments(subparsers, ctx)
   certify_parser = add_certify_arguments(subparsers, ctx)
   sign_parser = add_sign_arguments(subparsers, ctx)
   # `gc` and `store-stats` moved into the `store` group: they are now

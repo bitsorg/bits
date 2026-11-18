@@ -146,6 +146,11 @@ def doMain(args, parser):
     _rc = doPublish(args, parser)        # --release-view returns a bool; package path returns None
     sys.exit(0 if _rc is None or _rc else 1)
 
+  if args.action == "rpm":
+    from bits_helpers.rpm import doRpm
+    doRpm(args, parser)
+    sys.exit(0)
+
   if args.action == "certify":
     from bits_helpers.publish import doCertify
     doCertify(args, parser)
