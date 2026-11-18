@@ -163,16 +163,16 @@ class RpmTest(unittest.TestCase):
   def test_repo(self):
     repo = os.path.join(self.work_dir, "repo")
     published = []
-    for _ in range(2):
+    for url in ("http://example.org/repo", None):
       with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        rpm.doRpm(self.args(rpmRepo=repo), argparse.ArgumentParser())
+        rpm.doRpm(self.args(rpmRepo=repo, rpmRepoUrl=url), argparse.ArgumentParser())
       rpms = sorted(glob.glob(os.path.join(repo, "*.rpm")))
       published.append([(r, os.stat(r).st_mtime_ns) for r in rpms])
     self.assertTrue(os.path.exists(os.path.join(repo, "repodata", "repomd.xml")))
     self.assertEqual(len(published[1]), 2)
     self.assertEqual(published[0], published[1])
     with open(os.path.join(repo, "bits.repo")) as f:
-      self.assertIn("baseurl=file://%s\n" % repo, f.read())
+      self.assertIn("baseurl=http://example.org/repo\n", f.read())
 
   @unittest.skipUnless(shutil.which("rpmbuild"), "needs rpmbuild")
   def test_default_output_dir(self):

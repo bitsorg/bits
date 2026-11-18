@@ -193,6 +193,14 @@ def signing_problem(repo, key):
     return "%s is not signed: publish to it without --sign" % repo
 
 
+def published_url(repo):
+  try:
+    with open(join(repo, "bits.repo")) as f:
+      return re.search(r"^baseurl=(.*)$", f.read(), re.M).group(1)
+  except (OSError, AttributeError):
+    return None
+
+
 def publish(rpms, repo, url, key):
   banner("Publishing %d RPMs to %s", len(rpms), repo)
   os.makedirs(repo, exist_ok=True)
@@ -204,8 +212,9 @@ def publish(rpms, repo, url, key):
     gpg = ["gpg", "--batch", "--yes", "--armor", "--local-user", key]
     subprocess.run(gpg + ["--detach-sign", join(repo, "repodata", "repomd.xml")], check=True)
     subprocess.run(gpg + ["--output", join(repo, "RPM-GPG-KEY-bits"), "--export", key], check=True)
+  text = repo_file(url or published_url(repo) or "file://" + repo, bool(key))
   with open(join(repo, "bits.repo"), "w") as f:
-    f.write(repo_file(url or "file://" + repo, bool(key)))
+    f.write(text)
 
 
 def doRpm(args, parser):
