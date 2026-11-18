@@ -178,6 +178,21 @@ def repo_file(url, signed):
   return "\n".join(lines) + "\n"
 
 
+def fingerprints(*args):
+  out = subprocess.run(["gpg", "--batch", "--with-colons"] + list(args), capture_output=True,
+                       text=True).stdout
+  return {line.split(":")[9] for line in out.splitlines() if line.startswith("fpr:")}
+
+
+def signing_problem(repo, key):
+  key_file = join(repo, "RPM-GPG-KEY-bits")
+  if os.path.exists(key_file):
+    if not key or fingerprints("--list-keys", key) != fingerprints("--show-keys", key_file):
+      return "%s is signed: use --sign with the key in %s" % (repo, key_file)
+  elif key and glob.glob(join(repo, "*.rpm")):
+    return "%s is not signed: publish to it without --sign" % repo
+
+
 def publish(rpms, repo, url, key):
   banner("Publishing %d RPMs to %s", len(rpms), repo)
   os.makedirs(repo, exist_ok=True)
@@ -210,6 +225,10 @@ def doRpm(args, parser):
     error("bits rpm needs %s: dnf install rpm-build rpm-sign createrepo_c gnupg2",
           " ".join(missing))
     sys.exit(1)
+  if args.rpmRepo:
+    problem = signing_problem(abspath(args.rpmRepo), args.rpmSignKey)
+    if problem:
+      parser.error(problem)
 
   work_dir = abspath(args.workDir)
   root = _find_installroot(work_dir, args.architecture, args.package, args.version)

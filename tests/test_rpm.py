@@ -143,6 +143,21 @@ class RpmTest(unittest.TestCase):
     with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
       rpm.doRpm(self.args(rpmRepoUrl="https://x/rpms"), argparse.ArgumentParser())
 
+  def test_a_signed_repository_needs_its_key(self):
+    repo = os.path.join(self.work_dir, "repo")
+    os.makedirs(repo)
+    open(os.path.join(repo, "RPM-GPG-KEY-bits"), "w").close()
+    with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()), \
+         mock.patch("shutil.which", return_value="/usr/bin/tool"):
+      rpm.doRpm(self.args(rpmRepo=repo), argparse.ArgumentParser())
+
+  def test_an_unsigned_repository_stays_unsigned(self):
+    repo = os.path.join(self.work_dir, "repo")
+    os.makedirs(repo)
+    open(os.path.join(repo, "old.rpm"), "w").close()
+    self.assertIn("is not signed", rpm.signing_problem(repo, "some key"))
+    self.assertIsNone(rpm.signing_problem(repo, None))
+
   @unittest.skipUnless(shutil.which("rpmbuild") and shutil.which("createrepo_c"),
                        "needs rpmbuild and createrepo_c")
   def test_repo(self):
