@@ -182,7 +182,8 @@ def publish(rpms, repo, url, key):
   banner("Publishing %d RPMs to %s", len(rpms), repo)
   os.makedirs(repo, exist_ok=True)
   for r in rpms:
-    shutil.copy(r, repo)
+    if not os.path.exists(join(repo, os.path.basename(r))):
+      shutil.copy(r, repo)
   subprocess.run(["createrepo_c", "-q", "--update", repo], check=True)
   if key:
     gpg = ["gpg", "--batch", "--yes", "--armor", "--local-user", key]
