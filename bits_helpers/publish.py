@@ -370,7 +370,7 @@ def _published_bom(writers, build_id, published, manifest_doc, architecture):
 
 
 def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=None, dry_run=False,
-                           reuse_pipeline_bom=False, gauges=True):
+                           reuse_pipeline_bom=False):
     """Bulk-upload every built package in a manifest to the S3 store.
 
     *manifest* is a manifest file path, or 'latest'/None to use the newest under
@@ -678,20 +678,6 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
            "[dry-run] would publish" if dry_run else "Published", ok, write_store)
     if not dry_run and n and ok != n:
         sys.exit(1)
-    # Best-effort: refresh the S3 store-usage gauges on VM. Publish (including a
-    # re-publish, which never runs `bits build`) is a store mutation, and the
-    # Monitoring dashboard's store bar reads these gauges via the snapshot —
-    # without this push the bar goes stale/empty between builds.
-    # (*gauges*: once per publish, for the first store: they carry no bucket label.)
-    if not dry_run and ok and gauges:
-        _mon = (os.environ.get("METRICS_URL") or "").strip().rstrip("/")
-        _w = next(iter(writers.values()), None)
-        if _mon and _w is not None and getattr(_w, "s3", None) and getattr(_w, "writeStore", None):
-            from bits_helpers import store_stats as _ss
-            from bits_helpers.sync import s3_settings
-            _ss.push_store_gauges(_w.s3, _w.writeStore, _mon, work_dir=work_dir,
-                                  store=getattr(_w, "remoteStore", "") or _w.writeStore,
-                                  endpoint=s3_settings(_w.writeStore)["endpoint"])
     if dry_run or not bom:
         return None
     return build_id, bom, _system_from_manifest(manifest_doc)
@@ -855,10 +841,10 @@ def doCertify(args, parser):
         parser.error("certify: no GitLab token for the MR — ~/.bits/gitlab-token, "
                      "$BITS_CERTIFIER_TOKEN or --gitlab-token")
     res, ref = None, None
-    for i, url in enumerate(stores):
+    for url in stores:
         got = _publish_from_manifest(architecture, abspath(args.workDir), url, parser,
                                      manifest=getattr(args, "fromManifest", None) or "latest",
-                                     dry_run=dry, reuse_pipeline_bom=True, gauges=i == 0)
+                                     dry_run=dry, reuse_pipeline_bom=True)
         if res is None:
             res, ref = got, url                # the first store with a BOM is certified
         elif got:
@@ -928,10 +914,9 @@ def doPublish(args, parser):
         stores = store_urls(getattr(args, "publishStore", None) or DEFAULT_S3_STORE)
         if not stores:
             parser.error(_NO_STORE)
-        for i, url in enumerate(stores):       # every write store gets the build
+        for url in stores:                     # every write store gets the build
             _publish_from_manifest(architecture, abspath(args.workDir), url, parser,
-                                   manifest=_fm, dry_run=getattr(args, "dryRun", False),
-                                   gauges=i == 0)
+                                   manifest=_fm, dry_run=getattr(args, "dryRun", False))
         return
 
     if not getattr(args, "package", None):

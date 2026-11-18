@@ -3,11 +3,8 @@
 """S3 binary-store statistics, computed by bits itself.
 
 bits already holds the S3 credentials and the (signed) manifests, so it can
-summarise the store directly instead of a separate CI collector walking the
-bucket. This produces the document the Monitoring dashboard's S3 bar consumes:
-per-architecture totals *and* a per-build (manifest) breakdown with a signed
-flag, so a platform bar can be split into per-build segments marked signed /
-uncertified.
+summarise the store directly: per-architecture totals *and* a per-build
+(manifest) breakdown with a signed flag, as `bits store stats` reports them.
 
 The aggregation is pure (no S3, no network) so it is unit-testable; the CLI
 (`bits store-stats`, see :func:`doStoreStats`) wires it to the real S3 client
@@ -20,7 +17,7 @@ import json
 import os
 import time
 
-from bits_helpers.log import debug, info
+from bits_helpers.log import debug
 
 SCHEMA_VERSION = 2          # v1 had arch/other/totals; v2 adds "manifests"
 UNCERTIFIED = "(uncertified)"
@@ -142,63 +139,6 @@ def to_prometheus(stats):
     return "\n".join(lines) + "\n"
 
 
-def push_store_gauges(s3_client, bucket, monitor_url, work_dir=None,
-                      store=None, endpoint=None) -> bool:
-    """Summarise the S3 store and POST the gauges to the VM *monitor_url*.
-
-    Called wherever the store was just mutated — end of a `bits build` that
-    uploaded, and end of a `bits publish` bulk upload (re-publishes go through
-    publish, not build, and the Monitoring dashboard's store bar would otherwise
-    go stale/empty between builds). Best-effort and fire-and-forget: listing the
-    store or pushing the gauges must never fail the caller. Returns True when
-    the push succeeded.
-
-    When *store* (the http/b3/s3 store URL) is given, the signed/unsigned split
-    is populated from the store's signed common manifests — the same
-    ``MANIFESTS/common-manifest-<arch>.json`` files `bits build --require-signed-
-    reuse` derives — so the dashboard reflects certification automatically, not
-    only via the `bits store-stats --trust-manifest` CLI. Without it (or if the
-    manifests are absent/unverifiable), builds degrade to uncertified.
-    """
-    try:
-        hash_to_build = {}
-        if work_dir:
-            try:
-                from bits_helpers import certify as _certify
-                hash_to_build = hash_to_build_map(_certify.load_build_manifests(
-                    [os.path.join(work_dir, "MANIFESTS")]))
-            except Exception:  # pylint: disable=broad-except
-                pass  # per-build attribution is optional; degrade to (uncertified)
-        objects = list(iter_s3_objects(s3_client, bucket))
-        stats = summarise(objects, hash_to_build, set())
-        # Signed set from the store's signed common manifests (own-arch files that
-        # actually appear in the store + the always-shared one), verified against
-        # the trust anchor. Best-effort: an unsupported store form, a missing
-        # manifest, or a bad signature just leaves builds uncertified.
-        signed = set()
-        if store:
-            try:
-                from bits_helpers.build import derive_trust_manifest_srcs
-                srcs = []
-                for _a in (e.get("arch") for e in stats.get("arch", []) if e.get("arch")):
-                    srcs += derive_trust_manifest_srcs(store, "MANIFESTS/common-manifest", _a, endpoint)
-                srcs = [s for s in dict.fromkeys(srcs) if s]
-                if srcs:
-                    signed = signed_builds_from_common(_load_common_manifests(",".join(srcs)))
-            except Exception as exc:  # pylint: disable=broad-except
-                debug("store-stats: trust-manifest derivation skipped: %s", exc)
-        if signed:
-            stats = summarise(objects, hash_to_build, signed)
-        from bits_helpers.metrics import push_prometheus
-        push_prometheus(monitor_url, to_prometheus(stats), timeout=15)
-        info("store-stats: pushed store gauges to %s (%d objects, %d arch)",
-             monitor_url, stats["total_objects"], len(stats["arch"]))
-        return True
-    except Exception as exc:  # pylint: disable=broad-except
-        debug("store-stats push skipped: %s", exc)
-        return False
-
-
 def iter_s3_objects(client, bucket, prefix=""):
     """Yield ``(key, size)`` for every object in the bucket (paginated)."""
     paginator = client.get_paginator("list_objects_v2")
@@ -211,7 +151,7 @@ def iter_s3_objects(client, bucket, prefix=""):
 
 
 def build_document(stats, bucket=None, endpoint=None):
-    """Wrap *stats* in the versioned document the dashboard fetches."""
+    """Wrap *stats* in the versioned document `bits store stats` writes."""
     doc = {"v": SCHEMA_VERSION, "ts": int(time.time())}
     if bucket:
         doc["bucket"] = bucket

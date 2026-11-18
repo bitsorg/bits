@@ -4721,24 +4721,4 @@ def doBuild(args, parser):
     from bits_helpers.provenance import compute_build_id
     send_reuse_beacon(_beaconUrl, compute_build_id(specs, args), sorted(_reused))
 
-  # ── Best-effort: refresh S3 store-usage gauges on VM ───────────────────────
-  # bits just uploaded artefacts to the store, so summarise the store and push
-  # the gauges to the same VM endpoint the runner metrics use (the Monitoring
-  # dashboard reads them via the snapshot). This is why there is no scheduled
-  # store-stats job. Only when we actually wrote to a store AND a monitor URL is
-  # configured. Fire-and-forget: listing the store or the push never fails build.
-  # Resolved here rather than reusing the monitor block's _mon_url: that lives in
-  # a conditional branch and may never have been assigned on this path.
-  _store_mon_url = (cfg.monitor_url
-                    or os.environ.get("METRICS_URL") or "").strip().rstrip("/")
-  # The first b3:// write store's (the gauges carry no bucket label).
-  _w = next((w for w in (getattr(syncHelper, "writers", None) or [syncHelper])
-             if getattr(w, "writeStore", "") and getattr(w, "s3", None)), None)
-  if _store_mon_url and _w is not None:
-    from bits_helpers import store_stats as _ss
-    from bits_helpers.sync import s3_settings
-    _bucket = getattr(_w, "remoteStore", "") or getattr(_w, "writeStore", "")
-    _ss.push_store_gauges(_w.s3, _bucket, _store_mon_url, work_dir=args.workDir,
-                          store="b3://" + _bucket, endpoint=s3_settings(_bucket)["endpoint"])
-
   debug("Everything done")

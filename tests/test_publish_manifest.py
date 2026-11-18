@@ -45,6 +45,10 @@ class _FakeS3:
     def put_object(self, Bucket, Key, Body):
         self.texts[Key] = Body.decode("utf-8")
 
+    def get_paginator(self, op):         # a listing of the bucket: none expected
+        self.listed = True
+        return type("P", (), {"paginate": lambda self, **kw: iter([{"Contents": []}])})()
+
 
 class _FakeWriter:
     """Stands in for the boto3 remote sync: records tarball + manifest uploads."""
@@ -128,6 +132,15 @@ class TestPublishFromManifest(unittest.TestCase):
         w = self._run()
         # Only Top's tarball is uploaded (defaults excluded, NoTar skipped).
         self.assertEqual(w.tarballs, ["aa11"])
+
+    def test_no_store_gauges_pushed(self):
+        # bits-store's own /metrics has them: a publish no longer lists the store for them
+        import bits_helpers.metrics as metrics
+        pushed = []
+        with patch.dict(os.environ, {"METRICS_URL": "http://vm:8428"}), \
+                patch.object(metrics, "push_prometheus", lambda *a, **k: pushed.append(a)):
+            w = self._run()
+        self.assertEqual((w.tarballs, pushed, hasattr(w.s3, "listed")), (["aa11"], [], False))
 
     def test_manifest_key_namespaced_by_build_id_and_unique_leaf(self):
         w = self._run()
