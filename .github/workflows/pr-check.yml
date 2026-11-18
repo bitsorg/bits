@@ -110,9 +110,10 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          # Hack to remove whatever the CI default image brings now, as it
-          # conflicts with the one in o2-full-deps [O2-5580]
-          brew uninstall --ignore-dependencies --force pkg-config@0.29.2 
+          # Only if the image actually ships it: it conflicts with the one in
+          # o2-full-deps [O2-5580], but macos-15 ships pkgconf instead and an
+          # uninstall of a keg that is not there fails the step under bash -e.
+          brew uninstall --ignore-dependencies --force pkg-config@0.29.2 || true
           brew install modules alisw/system-deps/o2-full-deps sapling
           # tox -e darwin names its env: tox-gh-actions would only warn.
           python3 -m pip install --upgrade tox coverage
