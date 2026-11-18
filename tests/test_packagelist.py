@@ -167,7 +167,7 @@ RECIPES = {
 }
 
 class MockReader:
-    def __init__(self, url, dist=None, genPackages=None):
+    def __init__(self, url, dist=None, genPackages=None, repo_dir=None):
         self._contents = RECIPES[url]
         self.url = "mock://" + url
 

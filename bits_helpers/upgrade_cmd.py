@@ -33,6 +33,7 @@ import urllib.request
 import yaml
 
 from bits_helpers.log import banner, info, warning
+from bits_helpers.paths import checkForFilename, package_recipe_dir
 
 TIMEOUT_S = 20
 
@@ -631,9 +632,15 @@ def _status_args(args):
         sys.argv = saved
 
 
-def _cached(path):
-    """Is *path* in a repository provider's checkout (bits' cache, not to edit)?"""
-    return os.path.exists(os.path.join(os.path.dirname(os.path.realpath(path)), ".bits_provider_ok"))
+def _cached_repo(path):
+    """Return the root of a cached provider checkout containing *path*, if any."""
+    directory = os.path.dirname(os.path.realpath(path))
+    parent = os.path.dirname(directory)
+    if os.path.exists(os.path.join(directory, ".bits_provider_ok")):
+        return directory
+    if directory == package_recipe_dir(parent) and os.path.exists(os.path.join(parent, ".bits_provider_ok")):
+        return parent
+    return None
 
 
 def _patches_of(text):
@@ -652,8 +659,10 @@ def _bring_in(path, config_dir, package, dry):
     """A file of a provider's cached checkout: its copy in *config_dir* (which is
     searched first), with the patches and the checksum file it uses. Returns
     (the copy, [what was copied]); NeedsHand when a copy would replace a file."""
-    src_dir = os.path.dirname(path)
-    dest = os.path.join(config_dir, os.path.basename(path))
+    src_dir = _cached_repo(path) or os.path.dirname(path)
+    dest = checkForFilename({}, os.path.basename(path)[:-3], config_dir)
+    if not os.path.exists(dest):
+        dest = os.path.join(package_recipe_dir(config_dir), os.path.basename(path))
     if os.path.exists(dest):
         raise NeedsHand("%s exists: it would be replaced by %s's" % (dest, path))
     with open(path) as f:
@@ -677,7 +686,6 @@ def _bring_in(path, config_dir, package, dry):
 
 def _recipe_file(taps, spec):
     """The recipe file *spec* was read from (in its own directory), or None."""
-    from bits_helpers.paths import checkForFilename
     path = checkForFilename(taps, spec["package"].lower(), spec.get("pkgdir") or "")
     return path if os.path.isfile(path) and path.endswith(".sh") else None
 
@@ -686,7 +694,8 @@ def _origin(path, provider_dirs):
     """The repository a file was read from: its provider's name, else its git root's."""
     d = os.path.dirname(os.path.abspath(path))
     for pd, (name, commit) in (provider_dirs or {}).items():
-        if os.path.abspath(pd) == d:
+        root = os.path.abspath(pd)
+        if d in (root, package_recipe_dir(root)):
             return "%s@%s" % (name, str(commit)[:10])
     r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     return os.path.basename(r.stdout.strip()) if r.returncode == 0 else d
@@ -750,7 +759,7 @@ def doUpgrade(args, parser):
         try:
             if pin.startswith("defaults:"):
                 path = resolveDefaultsFilename(pin.split(":", 1)[1], sargs.configDir, failOnError=False)
-                if path and _cached(path):
+                if path and _cached_repo(path):
                     raise NeedsHand("its profile is in a provider's cached checkout (%s): check that"
                                     " repository out and build with it" % _origin(path, r["provider_dirs"]))
                 def edit(t):
@@ -775,7 +784,7 @@ def doUpgrade(args, parser):
             where = _origin(path, r["provider_dirs"])
             if path in copies:
                 row["detail"] = "in the copy made above"
-            elif _cached(path):           # a provider's cached checkout: work on a copy
+            elif _cached_repo(path):           # a provider's cached checkout: work on a copy
                 target, copied = _bring_in(path, sargs.configDir, os.path.basename(path)[:-3], dry)
                 copies[path], texts[target] = target, texts.pop(path)
                 row["detail"] = "copied %s from %s" % (", ".join(copied), where)

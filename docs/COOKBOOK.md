@@ -280,6 +280,8 @@ The **aliBuild** front-end is the legacy path instead: `aliBuild init` checks ou
 
 ### Use a private recipe repository alongside the defaults
 
+Put package recipes in `packages/`. Keep `defaults-*.sh`, `cvmfs.yaml`, `patches/` and `checksums/` at the repository root, and pass that root (not `packages/`) to `-c`. Existing flat repositories still work; once you add `packages/`, move all package recipes there, not just the new ones.
+
 Set `BITS_PATH` to add a repository to the recipe search path. A plain name such as `myorg` means `<recipe dir>/myorg.bits`; an absolute path is used as is. These directories are searched *after* the main recipe directory:
 
 ```bash

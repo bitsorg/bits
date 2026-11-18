@@ -7,11 +7,44 @@ utilities.py as a leaf (depends only on the logger and checksum.parse_entry), so
 layers above it can share these without an import cycle."""
 
 import os
-from os.path import exists, join
+from os.path import exists, isdir, join, lexists
 
 from bits_helpers.log import dieOnError, error
 
+# A legacy checkout can already use packages/ for a recipe or generator.
+LEGACY_PACKAGES_ENTRIES = ("latest", "packages.py")
+
+
+def package_recipe_dir(repo):
+  """Return the package directory, or the checkout root for a flat repository."""
+  packages = join(repo, "packages")
+  if isdir(packages) and not any(lexists(join(packages, f)) for f in LEGACY_PACKAGES_ENTRIES):
+    return packages
+  return repo
+
+
+def recipe_files(repo, include_defaults=False, strict=False):
+  """List package recipe files; optionally include root-level defaults profiles."""
+  def scan(directory, defaults):
+    try:
+      with os.scandir(directory) as entries:
+        return [e.path for e in entries if e.name.endswith(".sh")
+                and e.name.startswith("defaults-") == defaults and e.is_file()]
+    except OSError:
+      if strict:
+        raise
+      return []
+
+  packages = package_recipe_dir(repo)
+  files = scan(packages, defaults=False)
+  if include_defaults:
+    files.extend(scan(repo, defaults=True))
+  return sorted(files)
+
+
 def checkForFilename(taps, pkg, d, ext=".sh"):
+  if ext == ".sh" and not pkg.startswith("defaults-"):
+    d = package_recipe_dir(d)
   filename = taps.get(pkg, "{}/{}{}".format(d, pkg, ext))
   if not exists(filename):
     if "/" in pkg:
