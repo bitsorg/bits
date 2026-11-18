@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from os.path import abspath, dirname, join, relpath
 
 from bits_helpers.log import banner, error
@@ -132,7 +133,7 @@ def view_spec(view, meta, packages, prefix, root):
   pkg = meta["package"]
   lines = [
     "Name: bits-view-%s_%s" % (clean(view), clean(pkg["effective_architecture"])),
-    "Version: 1",
+    "Version: " + time.strftime("%Y%m%d%H%M%S"),
     "Release: " + pkg["hash"][:12],
     "Summary: the %s view, built by bits" % clean(view),
     "License: NOASSERTION",

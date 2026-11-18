@@ -95,7 +95,9 @@ class RpmTest(unittest.TestCase):
     rpm.stage_view("LCG_110", packages, "/opt/bits", top)
     link = os.path.join(top, "root", "opt", "bits", "LCG_110", "hello", "1.0", ARCH)
     self.assertEqual(os.readlink(link), "../../../hello/1.0-hhhhhhhhhhhh/x86_64-el9")
-    lines = rpm.view_spec("LCG_110", self.meta, packages, "/opt/bits", "/stage").splitlines()
+    text = rpm.view_spec("LCG_110", self.meta, packages, "/opt/bits", "/stage")
+    self.assertRegex(text, r"\nVersion: \d{14}\n")
+    lines = text.splitlines()
     for line in ("Name: bits-view-LCG_110_x86_64_el9", "Release: hhhhhhhhhhhh", "BuildArch: noarch",
                  "Prefix: /opt/bits", "Requires: hello-hhhhhhhhhhhh_1.0_x86_64_el9",
                  "Requires: zlib-zzzzzzzzzzzz_1.0_x86_64_el9", '"/opt/bits/LCG_110"'):
