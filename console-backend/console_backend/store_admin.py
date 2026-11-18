@@ -4,13 +4,18 @@
 reached on its own address (BITS_STORE_ADMIN_URL, an internal network) with a short
 admin token per request, never through the store's public address."""
 
+import json
 import re
 from urllib.parse import parse_qsl
 
 import requests
 
-VIEWS = ("summary", "objects", "object", "access")  # GET /_admin/<view>, read only
+VIEWS = ("summary", "objects", "object", "access", "withdrawn", "gc", "gc/files", "gc/log")  # GET
+ACTIONS = ("withdraw", "lift", "delete", "gc/plan", "gc/apply")  # PUT, a JSON object
 MAX_QUERY = 2048
+MAX_BODY = 4096                                     # as bits-store takes them
+AUDITED = ("binding", "sha256", "key", "etag", "id", "files", "why",  # an action's fields, audited
+           "grace", "read", "reads", "keep_builds", "max")
 TOKEN_TTL = 60                                      # a token per request: a minute
 _STRAY_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
@@ -48,6 +53,51 @@ def get(base, view, pairs, token, timeout=(5, 60)):
             raise Unreachable("bits-store's admin API: %s" % type(exc).__name__) from None
     if r.status_code not in (200, 400, 404):    # 401/403: the store does not take the console's key
         raise Unreachable("bits-store's admin API answered %d" % r.status_code)
+    if view == "gc/log" and r.status_code == 200:
+        return 200, r.text                      # plain text
+    return _answer(r)
+
+
+_KEY = re.compile(r"[a-z0-9_]+")
+
+
+def body(raw):
+    """The action's JSON object; ValueError unless each key is lower-case ASCII and
+    once: bits-store's Go decoder folds case and keeps the last, so the audit reads
+    exactly the fields it acts on."""
+    def pairs(items):
+        keys = [k for k, _ in items]
+        if len(set(keys)) != len(keys) or not all(_KEY.fullmatch(k) for k in keys):
+            raise ValueError("keys: lower-case, each once")
+        return dict(items)
+    try:
+        obj = json.loads(raw, object_pairs_hook=pairs)
+    except RecursionError:
+        raise ValueError("too deep") from None
+    if not isinstance(obj, dict):
+        raise ValueError("not a JSON object")
+    return obj
+
+
+def put(base, action, body, token, timeout=(5, 60)):
+    """(status, JSON body) of PUT <base>/_admin/<action> with the JSON *body* (bytes):
+    bits-store's answer when it took the token (200, 202, 400, 404, 409); else Unreachable."""
+    if action not in ACTIONS:
+        raise ValueError("not an admin action: %r" % (action,))
+    with requests.Session() as s:
+        s.trust_env = False
+        try:
+            r = s.put("%s/_admin/%s" % (base.rstrip("/"), action), data=body, timeout=timeout,
+                      headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+                      allow_redirects=False)
+        except requests.RequestException as exc:
+            raise Unreachable("bits-store's admin API: %s" % type(exc).__name__) from None
+    if r.status_code not in (200, 202, 400, 404, 409):
+        raise Unreachable("bits-store's admin API answered %d" % r.status_code)
+    return _answer(r)
+
+
+def _answer(r):
     try:
         body = r.json()
     except ValueError:

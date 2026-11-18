@@ -26,8 +26,8 @@ ENV = {"GITLAB_API_URL": "https://gl/api/v4", "BITS_ADMINS_POLICY": "lcg @alice\
 
 
 class Answer:
-    def __init__(self, code, body):
-        self.status_code, self.body = code, body
+    def __init__(self, code, body, text=""):
+        self.status_code, self.body, self.text = code, body, text
 
     def json(self):
         if isinstance(self.body, Exception):
@@ -55,6 +55,15 @@ class StoreAdminTest(unittest.TestCase):
         p = mock.patch.object(requests.Session, "get", fake_get)
         p.start()
         self.addCleanup(p.stop)
+
+        def fake_put(session, url, data=None, headers=None, timeout=None, allow_redirects=True):
+            self.calls.append((url, data, headers, allow_redirects, session.trust_env))
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+        q = mock.patch.object(requests.Session, "put", fake_put)
+        q.start()
+        self.addCleanup(q.stop)
         self.audited = []
         a = mock.patch.object(audit, "record", lambda kind, **kw: self.audited.append((kind, kw)))
         a.start()
@@ -103,6 +112,66 @@ class StoreAdminTest(unittest.TestCase):
             self.assertEqual(self.get("carol", "/store-admin/summary").status_code, 502, answer)
         self.answer = Answer(404, ValueError())                  # bits-store's plain 404
         self.assertEqual(self.get("carol", "/store-admin/object?key=x").status_code, 404)
+
+    def put(self, user, path, body):
+        return self.client.put(path, content=body, headers={"Authorization": "Bearer %s" % user} if user else {})
+
+    def test_an_overall_admin_acts_on_the_store(self):
+        body = b'{"binding": "/restricted", "sha256": "sha256:ab", "why": "a licence"}'
+        self.answer = Answer(200, {"added": True})
+        r = self.put("carol", "/store-admin/withdraw", body)
+        self.assertEqual((r.status_code, r.json(), r.headers.get("cache-control")), (200, {"added": True}, "no-store"))
+        url, data, headers, redirects, trust_env = self.calls[-1]
+        self.assertEqual((url, data, headers["Content-Type"]), ("http://bits-store:8099/_admin/withdraw", body, "application/json"))
+        self.assertFalse(redirects or trust_env)
+        tok = headers["Authorization"].removeprefix("Bearer ")
+        pub = Ed25519PrivateKey.from_private_bytes(ADMIN_SEED).public_key()
+        c = jwt.decode(tok, pub, algorithms=["EdDSA"], audience="example-site/store", issuer="https://bits.example.org")
+        self.assertEqual((c["sub"], c["exp"] - c["iat"], c["cap"]), ("admin:carol", 60, [{"m": "PUT", "p": "/_admin/withdraw"}]))
+        self.assertEqual(self.audited[-1], ("store_admin_action", {"user": "carol", "action": "withdraw", "code": 200,
+                                            "principal": "human", "binding": "/restricted", "sha256": "sha256:ab",
+                                            "why": "a licence"}))
+        # a collection: its plan accepted, its apply refused by bits-store, both passed on and audited
+        self.answer = Answer(202, {"id": "x"})
+        self.assertEqual(self.put("carol", "/store-admin/gc/plan", b'{"grace":"168h"}').status_code, 202)
+        self.assertEqual(self.calls[-1][:2], ("http://bits-store:8099/_admin/gc/plan", b'{"grace":"168h"}'))  # as sent
+        self.assertEqual((self.audited[-1][1]["id"], self.audited[-1][1]["grace"]), ("x", "168h"))
+        self.answer = Answer(400, {"error": "why"})
+        r = self.put("carol", "/store-admin/withdraw", b'{"why": ""}')
+        self.assertEqual((r.status_code, r.json()), (400, {"error": "why"}))
+        self.answer = Answer(404, ValueError())                  # bits-store's plain 404
+        self.assertEqual(self.put("carol", "/store-admin/lift", b"{}").json(), {"error": "not found"})
+        self.answer = Answer(409, {"error": "applied already"})
+        r = self.put("carol", "/store-admin/gc/apply", b'{"id": "x", "files": 3}')
+        self.assertEqual((r.status_code, r.json()), (409, {"error": "applied already"}))
+        self.assertEqual(self.audited[-1][1]["code"], 409)
+        self.assertEqual((self.audited[-1][1]["id"], self.audited[-1][1]["files"]), ("x", "3"))
+        for answer in (Answer(401, {"error": "x"}), Answer(500, ValueError()), requests.ConnectionError("down")):
+            self.answer = answer
+            self.assertEqual(self.put("carol", "/store-admin/delete", b"{}").status_code, 502, answer)
+            self.assertEqual(self.audited[-1][1]["code"], 502)
+
+    def test_actions_refused(self):
+        n = len(self.calls)
+        for user, path, body, code in ((None, "/store-admin/withdraw", b"{}", 401), ("alice", "/store-admin/withdraw", b"{}", 403),
+                                       ("carol", "/store-admin/summary", b"{}", 404), ("carol", "/store-admin/gc", b"{}", 404),
+                                       ("carol", "/store-admin/withdraw", b"[1]", 400), ("carol", "/store-admin/withdraw", b"{", 400),
+                                       ("carol", "/store-admin/withdraw", b"{}" + b" " * 5000, 413)):
+            self.assertEqual(self.put(user, path, body).status_code, code, (user, path, body[:9]))
+        self.assertEqual(len(self.calls), n)                     # bits-store never asked
+        self.assertIn(("store_admin_denied", {"user": "alice", "action": "withdraw", "principal": "human"}), self.audited)
+        # what bits-store's decoder would read otherwise than the audit: a key in other case, twice
+        for body in (b'{"why": "benign", "WHY": "real"}', b'{"key": "a", "key": "b"}', b'{"\xc5\xbfha256": "x"}'):
+            self.assertEqual(self.put("carol", "/store-admin/delete", body).status_code, 400, body)
+        self.assertEqual(len(self.calls), n)
+        self.assertEqual(self.get("carol", "/store-admin/withdraw").status_code, 404)   # actions are PUTs
+
+    def test_a_collections_log(self):
+        self.answer = Answer(200, ValueError(), text="applied by admin:carol\ndeleted: x\n")
+        r = self.get("carol", "/store-admin/gc/log?id=x")
+        self.assertEqual((r.status_code, r.text, r.headers["content-type"].split(";")[0]),
+                         (200, "applied by admin:carol\ndeleted: x\n", "text/plain"))
+        self.assertEqual(self.calls[-1][0], "http://bits-store:8099/_admin/gc/log")
 
     def test_signed_by_the_security_proxy(self):
         from bits_helpers import trust

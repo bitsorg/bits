@@ -18,7 +18,7 @@ import secrets
 import time
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from . import (audit, auth_oidc, authz, catalog, ci_auth, config, credentials, credproxy,
@@ -800,7 +800,7 @@ async def store_token_issue(request: Request):
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
-@app.get("/store-admin/{view}")
+@app.get("/store-admin/{view:path}")
 async def store_admin_view(view: str, request: Request):
     """bits-store's admin API, read only, for overall admins (the Store page): the
     query passed on, a minute's admin token per request (audited as store tokens are)."""
@@ -825,7 +825,44 @@ async def store_admin_view(view: str, request: Request):
         code, body = await run_in_threadpool(store_admin.get, settings.store_admin_url, view, pairs, out["token"])
     except store_admin.Unreachable as exc:
         raise HTTPException(502, str(exc))
+    if isinstance(body, str):                   # a collection's log
+        return PlainTextResponse(body, headers={"Cache-Control": "no-store"})
     return JSONResponse(body, status_code=code, headers={"Cache-Control": "no-store"})
+
+
+@app.put("/store-admin/{action:path}")
+async def store_admin_action(action: str, request: Request):
+    """bits-store's admin actions (withdraw, lift, delete, a collection's plan and
+    apply) for overall admins: the JSON body passed on with a minute's token allowed
+    that action alone; each audited, with bits-store's answer."""
+    if action not in store_admin.ACTIONS:
+        raise HTTPException(404, "no such action")
+    if not settings.store_admin_configured():
+        raise HTTPException(503, "bits-store's admin API is not configured")
+    data = await _current_async(request)
+    if not data:
+        raise HTTPException(401, "not authenticated")
+    overall, _ = authz.admin_groups(data["user"], await run_in_threadpool(_resolved_policy, data["token"]))
+    if not overall:
+        audit.record("store_admin_denied", user=data["user"], action=action, principal="human")
+        raise HTTPException(403, "only a bits admin may act on the store")
+    body = await _read_capped(request, store_admin.MAX_BODY)
+    try:
+        payload = store_admin.body(body)
+    except ValueError as exc:
+        raise HTTPException(400, "body: %s" % exc)
+    out = await run_in_threadpool(_sign_store_token, "admin:" + data["user"], "admin",
+                                  [("PUT", "/_admin/" + action)], store_admin.TOKEN_TTL, "admin", action=action)
+    what = {k: str(v)[:500] for k, v in payload.items() if k in store_admin.AUDITED}
+    try:
+        code, answer = await run_in_threadpool(store_admin.put, settings.store_admin_url, action, body, out["token"])
+    except store_admin.Unreachable as exc:
+        audit.record("store_admin_action", user=data["user"], action=action, code=502, principal="human", **what)
+        raise HTTPException(502, str(exc))
+    if code == 202 and isinstance(answer.get("id"), str):
+        what["id"] = answer["id"][:64]          # a plan's: its later apply names it
+    audit.record("store_admin_action", user=data["user"], action=action, code=code, principal="human", **what)
+    return JSONResponse(answer, status_code=code, headers={"Cache-Control": "no-store"})
 
 
 def _store_key(signer):
