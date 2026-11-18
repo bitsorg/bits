@@ -215,8 +215,10 @@ def publish(rpms, repo, url, key):
       error("%s is already in %s, with the prefix %s", os.path.basename(r), repo, prefix_of(there))
       sys.exit(1)
   for r in rpms:
-    if not os.path.exists(join(repo, os.path.basename(r))):
-      shutil.copy(r, repo)
+    there = join(repo, os.path.basename(r))
+    if not os.path.exists(there):
+      shutil.copy(r, there + ".part")
+      os.replace(there + ".part", there)
   subprocess.run(["createrepo_c", "-q", "--update", repo], check=True)
   if key:
     gpg = ["gpg", "--batch", "--yes", "--armor", "--local-user", key]
