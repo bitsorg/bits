@@ -201,9 +201,19 @@ def published_url(repo):
     return None
 
 
+def prefix_of(path):
+  return subprocess.run(["rpm", "-qp", "--qf", "%{PREFIXES}", path], capture_output=True,
+                        text=True).stdout
+
+
 def publish(rpms, repo, url, key):
   banner("Publishing %d RPMs to %s", len(rpms), repo)
   os.makedirs(repo, exist_ok=True)
+  for r in rpms:
+    there = join(repo, os.path.basename(r))
+    if os.path.exists(there) and prefix_of(there) != prefix_of(r):
+      error("%s is already in %s, with the prefix %s", os.path.basename(r), repo, prefix_of(there))
+      sys.exit(1)
   for r in rpms:
     if not os.path.exists(join(repo, os.path.basename(r))):
       shutil.copy(r, repo)

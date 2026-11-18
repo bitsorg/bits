@@ -174,6 +174,15 @@ class RpmTest(unittest.TestCase):
     with open(os.path.join(repo, "bits.repo")) as f:
       self.assertIn("baseurl=http://example.org/repo\n", f.read())
 
+  @unittest.skipUnless(shutil.which("rpmbuild") and shutil.which("createrepo_c"),
+                       "needs rpmbuild and createrepo_c")
+  def test_a_repository_keeps_its_prefix(self):
+    repo = os.path.join(self.work_dir, "repo")
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+      rpm.doRpm(self.args(rpmRepo=repo), argparse.ArgumentParser())
+      with self.assertRaises(SystemExit):
+        rpm.doRpm(self.args(rpmRepo=repo, rpmPrefix="/opt/other"), argparse.ArgumentParser())
+
   @unittest.skipUnless(shutil.which("rpmbuild"), "needs rpmbuild")
   def test_default_output_dir(self):
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
